@@ -48486,6 +48486,51 @@ async fn native_content_process_drives_websocket_text_binary_and_close_events() 
 }
 
 #[tokio::test]
+async fn native_content_process_dispatches_large_websocket_event_as_data() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = format!(
+            "<script>globalThis.largeLength = 0; globalThis.socket = new WebSocket('ws://{address}/socket'); socket.onmessage = event => {{ largeLength = typeof event.data === 'string' ? event.data.length : -1; socket.close(); }}; socket.onerror = () => {{ largeLength = -1; }};</script>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(stream).await.unwrap();
+        websocket
+            .send(Message::Text("x".repeat(20_000).into()))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), websocket.next()).await;
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await new Promise((resolve, reject) => { const check = () => { if (largeLength === 20000) { resolve(largeLength); return; } if (largeLength < 0) { reject(new Error('large websocket event failed')); return; } setTimeout(check, 1); }; check(); })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(20_000)
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_delivers_queued_websocket_events_on_ordinary_turns() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -48636,6 +48681,68 @@ async fn native_content_process_worker_drives_websocket_text_binary_and_close_ev
 }
 
 #[tokio::test]
+async fn native_content_process_worker_dispatches_large_websocket_event_as_data() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/worker-large-websocket-page")
+        );
+        let body = "<script>globalThis.workerLength = 0; globalThis.worker = new Worker('/worker-large-websocket.js'); worker.onmessage = event => { workerLength = event.data; };</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/worker-large-websocket.js")
+        );
+        let body = format!(
+            "const socket = new WebSocket('ws://{address}/socket'); socket.onmessage = event => {{ postMessage(typeof event.data === 'string' ? event.data.length : -1); socket.close(); }}; socket.onerror = () => postMessage(-1);"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(stream).await.unwrap();
+        websocket
+            .send(Message::Text("x".repeat(20_000).into()))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), websocket.next()).await;
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/worker-large-websocket-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let mut length = serde_json::Value::Null;
+    for _ in 0..20 {
+        length = engine.evaluate_async("workerLength").await.unwrap();
+        if length == serde_json::json!(20_000) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(length, serde_json::json!(20_000));
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_worker_drives_event_source_named_events() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -48712,6 +48819,71 @@ async fn native_content_process_worker_drives_event_source_named_events() {
             ]
         ]])
     );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_worker_dispatches_large_event_source_event_as_data() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/worker-large-eventsource-page")
+        );
+        let body = "<script>globalThis.workerLength = 0; globalThis.worker = new Worker('/worker-large-eventsource.js'); worker.onmessage = event => { workerLength = event.data; };</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/worker-large-eventsource.js")
+        );
+        let body = "const source = new EventSource('/worker-large-events'); source.onmessage = event => { postMessage(event.data.length); source.close(); }; source.onerror = () => postMessage(-1);";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/worker-large-events")
+        );
+        let body = format!("data: {}\r\n\r\n", "x".repeat(20_000));
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/worker-large-eventsource-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let mut length = serde_json::Value::Null;
+    for _ in 0..20 {
+        length = engine.evaluate_async("workerLength").await.unwrap();
+        if length == serde_json::json!(20_000) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(length, serde_json::json!(20_000));
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
@@ -48825,6 +48997,53 @@ async fn native_content_process_drives_event_source_named_multiline_events() {
 }
 
 #[tokio::test]
+async fn native_content_process_dispatches_large_event_source_event_as_data() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = format!(
+            "<script>globalThis.largeLength = 0; globalThis.source = new EventSource('/events'); source.onmessage = event => {{ largeLength = event.data.length; source.close(); }}; source.onerror = () => {{ largeLength = -1; }};</script>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/events"));
+        let body = format!("data: {}\r\n\r\n", "x".repeat(20_000));
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await new Promise((resolve, reject) => { const check = () => { if (largeLength === 20000) { resolve(largeLength); return; } if (largeLength < 0) { reject(new Error('large EventSource event failed')); return; } setTimeout(check, 1); }; check(); })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(20_000)
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_streams_fetch_response_body_incrementally() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -48879,6 +49098,58 @@ async fn native_content_process_streams_fetch_response_body_incrementally() {
             .await
             .unwrap(),
         serde_json::json!([200, true, [1, 2, 3], [4, 5], true])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_dispatches_large_fetch_stream_chunk_as_data() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<body>Large Fetch stream</body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/stream"));
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let first = vec![7_u8; 20_000];
+        stream
+            .write_all(format!("{:X}\r\n", first.len()).as_bytes())
+            .await
+            .unwrap();
+        stream.write_all(&first).await.unwrap();
+        stream.write_all(b"\r\n0\r\n\r\n").await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await fetch('/stream').then(async response => { const reader = response.body.getReader(); let total = 0; for (;;) { const part = await reader.read(); if (part.value) total += part.value.length; if (part.done) return [total, response.body instanceof ReadableStream]; } })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([20_000, true])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

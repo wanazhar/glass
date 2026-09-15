@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-371`, with native-first product
+expansion checkpoint is `native-engine-browser-372`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -186,9 +186,20 @@ response settlements, and `clients.openWindow()` settlements. Worker-turn
 dispatch now parses each bounded host payload into QuickJS and calls the
 installed resolver while the authored continuation remains `undefined;`.
 Process-backed 20,000-byte Worker Fetch, Service Worker nested Fetch, and
-CacheStorage match witnesses pass. Stream event transport and the global
-scheduler remain separate issue #40 gates; the witness is recorded in
-`docs/plan/tasks/native-engine-browser-371.md`. The
+CacheStorage match witnesses pass. Page and worker stream event transport
+remains a separate issue #40 gate; the witness is recorded in
+`docs/plan/tasks/native-engine-browser-371.md`. Slice 372 removes generated-
+source coupling from network event delivery. Page WebSocket, EventSource, and
+Fetch-stream payloads, plus dedicated/shared Worker WebSocket and EventSource
+payloads, cross the host boundary as bounded parsed values and invoke their
+installed dispatch functions directly. Large process-backed page WebSocket,
+EventSource, and Fetch-stream witnesses plus large Worker WebSocket and
+EventSource witnesses pass. The existing per-source queues, task-turn
+serialization, and transport size limits are unchanged. This closes the
+remaining structured network-event paths covered by the current transport
+protocol, but not browser-wide task-source arbitration or the remaining Core
+Web Profile gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-372.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

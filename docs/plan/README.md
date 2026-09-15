@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-384` locally. Native is now the default runtime for
+`native-engine-browser-385` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -362,6 +362,16 @@ retains its existing bridge contract. Unsupported functions, symbols,
 Promise-like values, SharedArrayBuffer, and ArrayBuffer detachment remain
 explicit gates. Browser-wide task-source arbitration and the remaining Core
 Web Profile gates remain active issue #40 work.
+
+The completed native WindowProxy transfer-list slice is
+[native-engine-browser-385](tasks/native-engine-browser-385.md): WindowProxy
+`postMessage` now accepts both the legacy transfer-list overload and the
+options-object overload, carries bounded MessagePort descriptors through page,
+frame, and content-process delivery, and exposes decoded receiving ports in
+`MessageEvent.ports` with structured-clone identity preserved. Source ports
+remain detached only after a successful clone. Return routing from a receiving
+cross-window port, browser-wide task-source arbitration, and the remaining
+Core Web Profile gates remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

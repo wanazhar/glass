@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-384` slice. The native runtime is now the primary
+`native-engine-browser-385` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -672,6 +672,16 @@ SharedArrayBuffer, and ArrayBuffer transfer/detachment remain explicit
 DataCloneError or follow-up gates; browser-wide task-source arbitration and
 final Core Web Profile certification remain open. Exact evidence is recorded
 in `docs/plan/tasks/native-engine-browser-384.md`.
+
+Slice 385 carries WindowProxy `postMessage` transfer lists through the native
+page, frame, and content-process boundaries. Both the legacy third-argument
+transfer-list overload and the options-object overload use the shared bounded
+structured-clone owner; receiving `MessageEvent` instances decode their
+transferred ports and preserve the identity between `event.data` and
+`event.ports`. Source endpoints are detached only after the clone succeeds.
+The receiving bridge's return route and full browser-wide task-source
+arbitration remain issue #40 promotion work. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-385.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

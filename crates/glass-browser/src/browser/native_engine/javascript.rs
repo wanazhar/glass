@@ -217,6 +217,8 @@ pub(crate) enum NativeScriptCommand {
         data: serde_json::Value,
         #[serde(default)]
         target_context_id: Option<String>,
+        #[serde(default)]
+        transfer_ports: Vec<NativeMessagePortTransfer>,
     },
     Fetch {
         request_id: u32,
@@ -913,6 +915,8 @@ pub(crate) struct NativePageMessageEvent {
     pub(crate) source_context_id: String,
     pub(crate) source_origin: String,
     pub(crate) data: serde_json::Value,
+    #[serde(default)]
+    pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
 }
 
 /// A browser-owned page event delivered through the installed host dispatcher.
@@ -2664,10 +2668,14 @@ pub(crate) struct NativePostMessageRequest {
     pub(crate) data: serde_json::Value,
     #[serde(default)]
     pub(crate) target_context_id: Option<String>,
+    #[serde(default)]
+    pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
     #[serde(default, skip_serializing)]
     pub(crate) source_context_id: String,
     #[serde(default, skip_serializing)]
     pub(crate) source_origin: String,
+    #[serde(default, skip_serializing)]
+    pub(crate) source_frame_id: String,
 }
 
 /// A bounded request for the parent target owner to close a WindowProxy target.
@@ -9878,6 +9886,7 @@ impl NativeJavaScriptRuntime {
             target_origin,
             data,
             target_context_id,
+            transfer_ports,
         } = command
         else {
             return Ok(false);
@@ -9906,6 +9915,14 @@ impl NativeJavaScriptRuntime {
                 encoded.len(),
             ));
         }
+        validate_message_port_transfers(transfer_ports)?;
+        validate_native_message_payload(
+            &serde_json::json!({
+                "data": data,
+                "transfer_ports": transfer_ports,
+            }),
+            "native postMessage data",
+        )?;
         let mut messages =
             self.post_message_events
                 .lock()
@@ -9925,8 +9942,10 @@ impl NativeJavaScriptRuntime {
             target_origin: target_origin.clone(),
             data: data.clone(),
             target_context_id: target_context_id.clone(),
+            transfer_ports: transfer_ports.clone(),
             source_context_id: String::new(),
             source_origin: String::new(),
+            source_frame_id: self.frame_id(),
         });
         Ok(true)
     }
@@ -12645,11 +12664,13 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
     for message in &events.post_message_events {
         validate_context_id(&message.source_context_id)?;
         validate_url_text("native message source origin", &message.source_origin)?;
+        validate_message_port_transfers(&message.transfer_ports)?;
         validate_native_message_payload(
             &serde_json::json!({
                 "source_context_id": &message.source_context_id,
                 "source_origin": &message.source_origin,
                 "data": &message.data,
+                "transfer_ports": &message.transfer_ports,
             }),
             "native page message event",
         )?;
@@ -12926,6 +12947,7 @@ fn dispatch_page_event_batch(
                 "source_context_id": &message.source_context_id,
                 "source_origin": &message.source_origin,
                 "data": &message.data,
+                "transfer_ports": &message.transfer_ports,
             }),
             "native page message event",
         )?;
@@ -28491,15 +28513,30 @@ fn document_bootstrap(
     : new Map();
   globalThis.__glassWindowProxyStates = windowProxyStates;
   const cloneMessageData = (value) => glassMessageClone(value);
-  const queueWindowMessage = (handle, targetContextId, message, targetOrigin) => {{
-    const origin = targetOrigin === undefined ? "/" : String(targetOrigin);
+  const windowMessageOptions = (targetOrigin, transfer) => {{
+    let origin = targetOrigin;
+    let options = transfer;
+    if (targetOrigin && typeof targetOrigin === "object" && !Array.isArray(targetOrigin)) {{
+      options = targetOrigin;
+      origin = targetOrigin.targetOrigin;
+    }}
+    return {{
+      targetOrigin: origin === undefined ? "/" : String(origin),
+      transfer: glassMessageTransferList(options),
+    }};
+  }};
+  const queueWindowMessage = (handle, targetContextId, message, targetOrigin, transfer) => {{
+    const options = windowMessageOptions(targetOrigin, transfer);
+    const envelope = glassMessageCloneWithTransfers(message, options.transfer);
+    const origin = options.targetOrigin;
     if (origin.length === 0 || origin.length > {storage_key_limit}) throw new TypeError("invalid postMessage target origin");
     pushCommand({{
       kind: "postMessage",
       target: String(handle || ""),
       target_origin: origin,
-      data: cloneMessageData(message),
+      data: envelope.data,
       target_context_id: targetContextId || null,
+      transfer_ports: envelope.transfer_ports,
     }});
   }};
   const currentDocumentOrigin = String(host.origin || "null");
@@ -28603,8 +28640,8 @@ fn document_bootstrap(
           target_context_id: state.targetContextId || targetContextId || null,
         }});
       }},
-      postMessage(message, targetOrigin = "/") {{
-        queueWindowMessage(handle, targetContextId, message, targetOrigin);
+      postMessage(message, targetOrigin = "/", transfer) {{
+        queueWindowMessage(handle, targetContextId, message, targetOrigin, transfer);
       }},
       toJSON() {{
         return {{ name: this.name, closed: this.closed }};
@@ -28671,18 +28708,17 @@ fn document_bootstrap(
     enumerable: true,
     get: () => openerProxy,
   }});
-  globalThis.postMessage = (message, targetOrigin = "/") =>
-    queueWindowMessage("", host.context_id, message, targetOrigin);
+  globalThis.postMessage = (message, targetOrigin = "/", transfer) =>
+    queueWindowMessage("", host.context_id, message, targetOrigin, transfer);
   globalThis.__glassDispatchMessage = (descriptor) => {{
     const event = createEvent("message", {{ bubbles: false, cancelable: false }});
-    event.data = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "data")
-      ? glassMessageDecodeClone(descriptor.data, [])
-      : null;
+    const envelope = glassMessageDecodeEnvelope(descriptor || {{}});
+    event.data = envelope.data;
     event.origin = String(descriptor && descriptor.source_origin || "null");
     event.source = descriptor && descriptor.source_context_id
       ? makeWindowProxy("source:" + String(descriptor.source_context_id), "", String(descriptor.source_context_id), "about:blank")
       : null;
-    event.ports = [];
+    event.ports = envelope.ports;
     return dispatchTarget(globalThis, event);
   }};
   const workers = globalThis.__glassWorkers instanceof Map

@@ -8503,6 +8503,54 @@ async fn native_window_identity_exposes_opener_and_persists_name() {
 }
 
 #[tokio::test]
+async fn native_window_proxy_post_message_transfers_message_ports() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://window-message-transfer-parent",
+            "<title>Message transfer parent</title><script>globalThis.senderState = []; const legacy = new MessageChannel(); const options = new MessageChannel(); globalThis.child = window.open('fixture://window-message-transfer-child', 'message-transfer-child'); child.postMessage({ kind: 'legacy', port: legacy.port1 }, '*', [legacy.port1]); child.postMessage({ kind: 'options', port: options.port1 }, { targetOrigin: '*', transfer: [options.port1] }); try { legacy.port1.postMessage({ value: 1 }); } catch (error) { senderState.push(error.name); } try { options.port1.postMessage({ value: 2 }); } catch (error) { senderState.push(error.name); }</script><p>parent</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://window-message-transfer-child",
+            "<title>Message transfer child</title><script>globalThis.received = []; addEventListener('message', event => { received.push([event.data.kind, event.ports.length, event.data.port === event.ports[0], event.ports[0] instanceof MessagePort, event.origin]); });</script><p>child</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://window-message-transfer-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let child_id = targets
+        .iter()
+        .find(|target| !target.active)
+        .unwrap()
+        .id
+        .clone();
+    session.native_select_target(&child_id).await.unwrap();
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!([
+            ["legacy", 1, true, true, "null"],
+            ["options", 1, true, true, "null"],
+        ])
+    );
+
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("globalThis.senderState")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["InvalidStateError", "InvalidStateError"])
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_window_proxy_close_removes_popup_target() {
     let config = NativeEngineConfig::default()
         .with_fixture(

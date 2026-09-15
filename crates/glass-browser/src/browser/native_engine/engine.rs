@@ -23,20 +23,21 @@ use super::javascript::{
     MAX_NATIVE_SCRIPT_BYTES, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeHashChangeEvent,
     NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
-    NativeMessagePortPageMessage, NativePageEventBatch, NativePageMessageEvent,
-    NativePageNavigation, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
-    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
-    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
-    apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_inline_scripts, frame_event_batch, host_event_batch,
-    host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
-    load_service_worker_client_leases, load_web_storage_profile, new_storage_writer_id,
-    page_script_sources_to_scripts, read_storage_event_journal, register_storage_reader,
-    save_web_storage_profile, storage_event_cursor, storage_key,
-    unregister_service_worker_client_lease, unregister_storage_reader,
-    validate_frame_script_command, validate_service_worker_client_states,
+    NativeMessagePortPageMessage, NativeMessagePortTransfer, NativePageEventBatch,
+    NativePageMessageEvent, NativePageNavigation, NativePopupRequest, NativePostMessageRequest,
+    NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerClientLease,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
+    NativeServiceWorkerOpenWindowRequest, NativeStorageEvent, NativeWebStorageState,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    NativeWorkerRegistry, append_storage_changes, apply_indexed_db_changes,
+    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_inline_scripts,
+    frame_event_batch, host_event_batch, host_key_event_batch_with_modifiers,
+    host_submit_event_batch, load_indexed_db_profile, load_service_worker_client_leases,
+    load_web_storage_profile, new_storage_writer_id, page_script_sources_to_scripts,
+    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
+    storage_event_cursor, storage_key, unregister_service_worker_client_lease,
+    unregister_storage_reader, validate_frame_script_command, validate_message_port_transfers,
+    validate_service_worker_client_states,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -2518,6 +2519,7 @@ impl NativeEngine {
                 encoded.len(),
             ));
         }
+        validate_message_port_transfers(&message.transfer_ports)?;
         if message.source_context_id.is_empty() {
             message.source_context_id = self.config.context_id.clone();
         } else {
@@ -2527,6 +2529,11 @@ impl NativeEngine {
             message.source_origin = self.origin.serialized();
         } else {
             validate_url_text("postMessage source origin", &message.source_origin)?;
+        }
+        if message.source_frame_id.is_empty() {
+            message.source_frame_id = self.frame_id.clone();
+        } else {
+            validate_context_id(&message.source_frame_id)?;
         }
         self.pending_post_messages.push_back(message);
         Ok(())
@@ -2834,8 +2841,10 @@ impl NativeEngine {
         source_context_id: &str,
         source_origin: &str,
         data: &serde_json::Value,
+        transfer_ports: &[NativeMessagePortTransfer],
     ) -> Result<(), NativeEngineError> {
         self.require_running("message event")?;
+        validate_message_port_transfers(transfer_ports)?;
         let mut page_events = NativePageEventBatch::default();
         page_events
             .post_message_events
@@ -2843,6 +2852,7 @@ impl NativeEngine {
                 source_context_id: source_context_id.to_owned(),
                 source_origin: source_origin.to_owned(),
                 data: data.clone(),
+                transfer_ports: transfer_ports.to_vec(),
             });
         self.evaluate_page_with_events_async("undefined;".into(), page_events)
             .await

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-369` locally. Native is now the default runtime for
+`native-engine-browser-370` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -212,9 +212,18 @@ Worker, MessagePort, and Service Worker client events now cross local and
 content-process host turns as structured batches and enter already-installed
 QuickJS dispatch functions directly. Valid 20,000-byte Worker messages no
 longer consume the 16 KiB user-script source budget; per-message,
-per-queue, transfer, and ordering bounds remain enforced. Fetch response
-continuation and complete global task-source arbitration remain separate issue
-#40 gates.
+per-queue, transfer, and ordering bounds remain enforced. The following page
+Fetch continuation slice removes the same source-size coupling from page
+response settlement; complete global task-source arbitration remains an issue
+#40 gate.
+
+The completed native page Fetch response-dispatch slice is
+[native-engine-browser-370](tasks/native-engine-browser-370.md): page Fetch
+responses now enter the installed `__glassResolveFetch` function as bounded
+parsed values, allowing a 20,000-byte HTTP response to resolve without
+consuming the 16 KiB user-script source budget. Worker and Service Worker Fetch
+response continuations, stream event transport, and complete global task-source
+arbitration remain separate issue #40 gates.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

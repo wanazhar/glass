@@ -927,6 +927,13 @@ enum NativeWorkerDispatch<'a> {
     },
 }
 
+enum NativePageDispatch<'a> {
+    Fetch {
+        request_id: u32,
+        payload: &'a serde_json::Value,
+    },
+}
+
 /// A browser-owned request for a Service Worker to create a new top-level
 /// WindowClient. The source context is filled by the owning NativeEngine after
 /// the content-process response crosses back into the browser backend.
@@ -9912,6 +9919,27 @@ impl NativeJavaScriptRuntime {
         viewport: Viewport,
         page_events: &NativePageEventBatch,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.evaluate_with_page_events_and_dispatch(
+            source,
+            document,
+            document_url,
+            origin,
+            viewport,
+            page_events,
+            None,
+        )
+    }
+
+    fn evaluate_with_page_events_and_dispatch(
+        &self,
+        source: &str,
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+        page_events: &NativePageEventBatch,
+        dispatch: Option<NativePageDispatch<'_>>,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if source.is_empty() {
             return Err(NativeEngineError::invalid(
                 "script source",
@@ -9981,6 +10009,9 @@ impl NativeJavaScriptRuntime {
                     })?;
             }
             dispatch_page_event_batch(ctx.clone(), page_events)?;
+            if let Some(dispatch) = dispatch {
+                dispatch_page_payload(ctx.clone(), dispatch)?;
+            }
             let mut top_level_await_pending = false;
             let (value, async_evaluation): (Value, bool) = match ctx.eval::<Value, _>(source) {
                 Ok(value) => (value, false),
@@ -11047,29 +11078,23 @@ impl NativeJavaScriptRuntime {
         viewport: Viewport,
         page_events: &NativePageEventBatch,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize JavaScript fetch response".into(),
-            reason: "native fetch response could not be serialized".into(),
-        })?;
-        if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
-            return self.evaluate_with_page_events(
-                &format!(
-                    "globalThis.__glassResolveFetch({request_id}, {{ error: \"fetch response exceeded the script transfer limit\" }});",
-                ),
-                document,
-                document_url,
-                origin,
-                viewport,
-                page_events,
-            );
+        if request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native fetch response request id",
+                "must be positive",
+            ));
         }
-        self.evaluate_with_page_events(
-            &format!("globalThis.__glassResolveFetch({request_id}, {serialized});"),
+        self.evaluate_with_page_events_and_dispatch(
+            "undefined;",
             document,
             document_url,
             origin,
             viewport,
             page_events,
+            Some(NativePageDispatch::Fetch {
+                request_id,
+                payload,
+            }),
         )
     }
 
@@ -12405,6 +12430,31 @@ fn native_message_payload<'js>(
         })
 }
 
+fn native_fetch_payload<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    payload: &serde_json::Value,
+) -> Result<Value<'js>, NativeEngineError> {
+    let encoded = serde_json::to_vec(payload).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native fetch response".into(),
+        reason: "native fetch response could not be serialized".into(),
+    })?;
+    if encoded.len() > MAX_NATIVE_SCRIPT_COMMAND_BYTES {
+        return Err(NativeEngineError::limit(
+            "native fetch response",
+            MAX_NATIVE_SCRIPT_COMMAND_BYTES,
+            encoded.len(),
+        ));
+    }
+    ctx.json_parse(encoded)
+        .map_err(|error| NativeEngineError::Worker {
+            operation: "parse native fetch response".into(),
+            reason: format!(
+                "native fetch response could not enter the JavaScript realm: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })
+}
+
 fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), NativeEngineError> {
     for (operation, count) in [
         ("native Worker event batch", events.worker_messages.len()),
@@ -12597,6 +12647,39 @@ fn dispatch_page_event_batch(
                     CaughtError::from_error(&ctx, error)
                 ),
             })?;
+    }
+    Ok(())
+}
+
+fn dispatch_page_payload(
+    ctx: rquickjs::Ctx<'_>,
+    dispatch: NativePageDispatch<'_>,
+) -> Result<(), NativeEngineError> {
+    match dispatch {
+        NativePageDispatch::Fetch {
+            request_id,
+            payload,
+        } => {
+            let payload = native_fetch_payload(&ctx, payload)?;
+            let resolve: Function = ctx.globals().get("__glassResolveFetch").map_err(|error| {
+                NativeEngineError::Worker {
+                    operation: "dispatch native fetch response".into(),
+                    reason: format!(
+                        "native fetch resolver was unavailable: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                }
+            })?;
+            resolve
+                .call::<_, Value>((request_id, payload))
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native fetch response".into(),
+                    reason: format!(
+                        "native fetch response dispatch failed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+        }
     }
     Ok(())
 }

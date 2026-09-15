@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-369` slice. The native runtime is now the primary
+`native-engine-browser-370` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -493,10 +493,21 @@ QuickJS functions with parsed values. The local and content-process paths share
 the same queue order, 64-item per-queue cap, transfer validation, and 256 KiB
 per-message bound. A 20,000-byte Worker round-trip is covered in both paths,
 so valid event data no longer fails because the 16 KiB user-script limit was
-consumed by generated dispatch text. Fetch-response continuation still has its
-existing source-transfer boundary, and complete global task-source arbitration
-remains an issue #40 gate. Exact evidence is recorded in
+consumed by generated dispatch text. Slice 370 removes the same source-size
+coupling from page Fetch response settlement; complete global task-source
+arbitration remains an issue #40 gate. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-369.md`.
+
+Slice 370 dispatches a page Fetch response through the installed
+`__glassResolveFetch` function as a parsed QuickJS value, while the page host
+evaluates only a bounded `undefined;` continuation. The direct response
+envelope is capped at 16 MiB, and existing loader, body, header, opaque, and
+stream ownership limits remain authoritative. A process-backed 20,000-byte
+same-origin response and the existing same-origin POST/fetch regression prove
+that response settlement no longer fails at the 16 KiB authored-script limit.
+Worker and Service Worker response continuations, stream event transport, and
+complete global task-source arbitration remain separate issue #40 gates. Exact
+evidence is recorded in `docs/plan/tasks/native-engine-browser-370.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

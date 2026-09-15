@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-369`, with native-first product
+expansion checkpoint is `native-engine-browser-370`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -171,9 +171,15 @@ functions with parsed values in both local and content-process page turns.
 The existing per-message, per-queue, transfer, and task-source ordering bounds
 remain in force, while local and HTTP(S) witnesses cover a 20,000-byte Worker
 round trip. This does not yet solve the separate bounded fetch-response source
-transport or establish one global scheduler across page, worker, networking,
-rendering, and browser-context sources; the witness is recorded in
-`docs/plan/tasks/native-engine-browser-369.md`. The
+transport for page Fetch continuations or establish one global scheduler across
+page, worker, networking, rendering, and browser-context sources; the witness
+is recorded in `docs/plan/tasks/native-engine-browser-369.md`. The completed
+Slice 370 removes the page Fetch response source-transfer boundary: the host
+passes a bounded parsed response value directly to `__glassResolveFetch`, and a
+process-backed 20,000-byte response plus the existing same-origin POST/fetch
+regression pass. Worker and Service Worker Fetch response continuation, stream
+event transport, and the global scheduler remain separate issue #40 gates; the
+witness is recorded in `docs/plan/tasks/native-engine-browser-370.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

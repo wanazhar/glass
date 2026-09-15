@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-381` locally. Native is now the default runtime for
+`native-engine-browser-382` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -334,6 +334,15 @@ continuation. Named-worker reuse, connect ordering, port identity, and the
 classic/module paths remain intact without a connection-specific generated
 source string. Browser-wide task-source arbitration and the remaining Core Web
 Profile gates remain active issue #40 work.
+
+The completed native Service Worker client-projection slice is
+[native-engine-browser-382](tasks/native-engine-browser-382.md): each Service
+Worker turn now receives the bounded browser-wide client array through a
+structured dispatcher before scripts, lifecycle callbacks, timers, messages,
+or Fetch continuations run. Client identity, control, visibility, and
+classic/module behavior remain intact without serializing live client state
+into bootstrap source. Browser-wide task-source arbitration and the remaining
+Core Web Profile gates remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

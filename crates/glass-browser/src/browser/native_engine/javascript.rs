@@ -10534,6 +10534,9 @@ impl NativeJavaScriptRuntime {
                         CaughtError::from_error(&ctx, error)
                     ),
                 })?;
+            if service_worker {
+                dispatch_service_worker_clients(&ctx, &self.service_worker_clients())?;
+            }
             let await_dispatch = if let Some(dispatch) = dispatch {
                 dispatch_worker_event(ctx.clone(), dispatch)?
             } else {
@@ -10802,7 +10805,6 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             import_script_counts,
             module_name.is_some(),
-            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap(
             worker_id,
@@ -10828,7 +10830,6 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             is_module,
-            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event(
             worker_id,
@@ -10855,7 +10856,6 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             is_module,
-            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event(
             worker_id,
@@ -10881,7 +10881,6 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             is_module,
-            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap(
             worker_id,
@@ -10913,7 +10912,6 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             false,
-            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event(
             worker_id,
@@ -10964,7 +10962,6 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             false,
-            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event(
             worker_id,
@@ -11002,7 +10999,6 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             is_module,
-            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event(
             worker_id,
@@ -11039,7 +11035,6 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             is_module,
-            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event(
             worker_id,
@@ -11076,7 +11071,6 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             is_module,
-            &self.service_worker_clients(),
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event(
             worker_id,
@@ -13346,6 +13340,45 @@ fn dispatch_worker_promise(
     Ok(())
 }
 
+fn dispatch_service_worker_clients(
+    ctx: &rquickjs::Ctx<'_>,
+    clients: &[serde_json::Value],
+) -> Result<(), NativeEngineError> {
+    let payload = serde_json::Value::Array(clients.to_vec());
+    let encoded = serde_json::to_vec(&payload).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native service worker clients".into(),
+        reason: "native service worker clients could not be serialized".into(),
+    })?;
+    if encoded.len() > MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native service worker clients",
+            MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASE_BYTES,
+            encoded.len(),
+        ));
+    }
+    let payload = native_structured_payload(ctx, &payload, "native service worker clients")?;
+    let dispatch: Function = ctx
+        .globals()
+        .get("__glassSetServiceWorkerClients")
+        .map_err(|error| NativeEngineError::Worker {
+            operation: "dispatch native service worker clients".into(),
+            reason: format!(
+                "native service worker client dispatcher was unavailable: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
+    dispatch
+        .call::<_, Value>((payload,))
+        .map_err(|error| NativeEngineError::Worker {
+            operation: "dispatch native service worker clients".into(),
+            reason: format!(
+                "native service worker client dispatch failed: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
+    Ok(())
+}
+
 fn dispatch_worker_resolver(
     ctx: &rquickjs::Ctx<'_>,
     global_name: &str,
@@ -13931,6 +13964,53 @@ mod native_host_event_tests {
             seen.value,
             serde_json::json!([key, key, true, true, true, false])
         );
+    }
+}
+
+#[cfg(test)]
+mod native_service_worker_client_tests {
+    use super::*;
+
+    #[test]
+    fn service_worker_clients_accept_maximum_url_without_bootstrap_source_coupling() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("service-worker-client-test")
+            .expect("native JavaScript runtime must construct");
+        let worker_url = "https://example.test/sw.js";
+        let prefix = "https://example.test/";
+        let client_url = format!(
+            "{prefix}{}",
+            "a".repeat(MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES - prefix.len())
+        );
+        assert_eq!(client_url.len(), MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES);
+        runtime.set_service_worker_clients(vec![serde_json::json!({
+            "clientId": "client-one",
+            "clientUrl": client_url,
+            "clientType": "window",
+            "frameType": "top-level",
+            "visibilityState": "visible",
+            "focused": true,
+            "controlled": true,
+        })]);
+
+        runtime
+            .evaluate_service_worker_source(
+                1,
+                worker_url,
+                None,
+                "globalThis.__seenClientUrl = null; globalThis.clients.matchAll({ includeUncontrolled: true }).then(clients => { globalThis.__seenClientUrl = clients[0].url; }); true",
+                &BTreeMap::new(),
+            )
+            .expect("service worker client projection must dispatch");
+        let evaluation = runtime
+            .evaluate_service_worker_source(
+                1,
+                worker_url,
+                None,
+                "globalThis.__seenClientUrl",
+                &BTreeMap::new(),
+            )
+            .expect("service worker client projection must remain observable");
+        assert_eq!(evaluation.value, serde_json::json!(client_url));
     }
 }
 
@@ -17095,7 +17175,6 @@ fn service_worker_bootstrap(
     now_ms: u64,
     import_script_counts: &BTreeMap<String, usize>,
     is_module: bool,
-    clients: &[serde_json::Value],
 ) -> Result<String, NativeEngineError> {
     let mut bootstrap = worker_bootstrap(
         worker_id,
@@ -17111,7 +17190,7 @@ fn service_worker_bootstrap(
             operation: "install native service worker host view".into(),
             reason: "native service worker bootstrap boundary was not found".into(),
         })?;
-    bootstrap.insert_str(insertion, &service_worker_bootstrap_script(clients)?);
+    bootstrap.insert_str(insertion, &service_worker_bootstrap_script());
     Ok(bootstrap)
 }
 
@@ -17140,22 +17219,8 @@ fn shared_worker_bootstrap(
     Ok(bootstrap)
 }
 
-fn service_worker_bootstrap_script(
-    clients: &[serde_json::Value],
-) -> Result<String, NativeEngineError> {
-    let serialized_clients =
-        serde_json::to_string(clients).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native service worker clients".into(),
-            reason: "native service worker clients could not be serialized".into(),
-        })?;
-    if serialized_clients.len() > MAX_NATIVE_SCRIPT_BYTES {
-        return Err(NativeEngineError::limit(
-            "native service worker clients",
-            MAX_NATIVE_SCRIPT_BYTES,
-            serialized_clients.len(),
-        ));
-    }
-    Ok(NATIVE_SERVICE_WORKER_BOOTSTRAP
+fn service_worker_bootstrap_script() -> String {
+    NATIVE_SERVICE_WORKER_BOOTSTRAP
         .replace(
             "__GLASS_SERVICE_WORKER_BODY_LIMIT__",
             &MAX_NATIVE_FORM_BODY_BYTES.to_string(),
@@ -17168,7 +17233,6 @@ fn service_worker_bootstrap_script(
             "__GLASS_SERVICE_WORKER_CACHE_ENTRY_LIMIT__",
             &MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES.to_string(),
         )
-        .replace("__GLASS_SERVICE_WORKER_CLIENTS__", &serialized_clients))
 }
 
 const NATIVE_SHARED_WORKER_BOOTSTRAP: &str = r###"
@@ -18107,7 +18171,12 @@ fn service_worker_page_script() -> String {
 
 const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
   globalThis.__glassServiceWorkerClientState = null;
-  globalThis.__glassServiceWorkerClients = __GLASS_SERVICE_WORKER_CLIENTS__;
+  globalThis.__glassServiceWorkerClients = [];
+  globalThis.__glassSetServiceWorkerClients = (clients) => {
+    if (!Array.isArray(clients)) throw new TypeError("native service worker clients are invalid");
+    globalThis.__glassServiceWorkerClients = clients;
+    return null;
+  };
   const serviceWorkerCachePendingRequests = globalThis.__glassServiceWorkerCachePendingRequests instanceof Map
     ? globalThis.__glassServiceWorkerCachePendingRequests
     : new Map();

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-370`, with native-first product
+expansion checkpoint is `native-engine-browser-371`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -180,6 +180,15 @@ process-backed 20,000-byte response plus the existing same-origin POST/fetch
 regression pass. Worker and Service Worker Fetch response continuation, stream
 event transport, and the global scheduler remain separate issue #40 gates; the
 witness is recorded in `docs/plan/tasks/native-engine-browser-370.md`. The
+completed Slice 371 removes the same source-transfer coupling from
+dedicated, shared, and Service Worker Fetch continuations, CacheStorage
+response settlements, and `clients.openWindow()` settlements. Worker-turn
+dispatch now parses each bounded host payload into QuickJS and calls the
+installed resolver while the authored continuation remains `undefined;`.
+Process-backed 20,000-byte Worker Fetch, Service Worker nested Fetch, and
+CacheStorage match witnesses pass. Stream event transport and the global
+scheduler remain separate issue #40 gates; the witness is recorded in
+`docs/plan/tasks/native-engine-browser-371.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

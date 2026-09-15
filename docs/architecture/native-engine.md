@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-381` slice. The native runtime is now the primary
+`native-engine-browser-383` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -650,6 +650,14 @@ identity, control, visibility, type, frame projection, and existing lease
 limits remain unchanged; browser-wide task-source arbitration and the
 remaining Core Web Profile gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-382.md`.
+
+Slice 383 removes the last dynamic host-clock interpolation from timer-delay
+inspection. Page and worker timer queues now receive the current monotonic
+clock through a direct host-owned numeric value and run fixed inspection
+programs. Timer ordering, due-time calculation, and the existing clock and
+queue bounds remain unchanged; browser-wide task-source arbitration and the
+remaining Core Web Profile gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-383.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

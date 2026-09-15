@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-381`, with native-first product
+expansion checkpoint is `native-engine-browser-383`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -308,6 +308,13 @@ visibility, type, frame projection, and lease bounds remain unchanged. The
 remaining worker task-source and Core Web Profile gates remain open. Exact
 evidence is recorded in
 `docs/plan/tasks/native-engine-browser-382.md`. The
+completed Slice 383 removes the last dynamic host-clock interpolation from
+timer-delay inspection. Page and worker timer queues receive the current
+monotonic clock through a direct host-owned numeric value and run fixed
+inspection programs, preserving due-time ordering and the existing timer
+limits. Browser-wide task-source arbitration and the remaining Core Web
+Profile gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-383.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through
@@ -5912,8 +5919,56 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-359.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-383.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-382.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-381.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-380.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-379.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-378.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-377.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-376.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-375.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-374.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-373.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-372.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-371.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-370.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-369.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-368.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-367.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-366.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-365.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-364.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-363.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-362.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-361.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-360.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-359.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-358.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-357.md` is the preceding completed
@@ -6007,8 +6062,9 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain is `native-engine-browser-356`,
-`native-engine-browser-355`,
+The current browser-slice evidence chain starts at `native-engine-browser-383`.
+Slices 382 through 356 are summarized in the current checkpoint paragraphs
+above; the historical continuation below begins with `native-engine-browser-355`,
 `native-engine-browser-354`,
 `native-engine-browser-353`, `native-engine-browser-352`,
 `native-engine-browser-351`,
@@ -6184,7 +6240,7 @@ browser task;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed browser-expansion checkpoint is recorded for
-`docs/plan/tasks/native-engine-browser-362.md`; its implementation and focused
+`docs/plan/tasks/native-engine-browser-383.md`; its implementation and focused
 verification are recorded in that task file. The CSS foundation checkpoint
 remains `docs/plan/tasks/native-engine-234.md`: implementation is `8a96f56b`
 (design `b2119e5f`). It accepts bounded standalone case-insensitive finite

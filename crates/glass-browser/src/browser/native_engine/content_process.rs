@@ -1241,6 +1241,44 @@ impl NativeContentProcess {
         result
     }
 
+    pub(crate) async fn sync_service_worker_registrations(
+        &mut self,
+    ) -> Result<(), NativeEngineError> {
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "service_worker_registrations_sync",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content-process Service Worker registration synchronization",
+                    NativeWorkerFailureKind::Timeout,
+                    "content-process Service Worker registration synchronization exceeded its deadline",
+                ));
+            }
+        };
+        let result = require_response_kind(
+            &response,
+            "service_worker_registrations_synced",
+            id,
+            "content-process Service Worker registration synchronization",
+        );
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+            let _ = self.child.start_kill();
+        }
+        result
+    }
+
     pub(crate) async fn commit(&mut self) -> Result<(), NativeEngineError> {
         let id = self.next_id();
         let response = self
@@ -4209,6 +4247,20 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     })?;
                 service_workers.replace_client_states(clients)?;
                 json!({"kind":"service_worker_clients_synced","id":id})
+            }
+            "service_worker_registrations_sync" if protocol_matches(&request) && running => {
+                if let Some(path) = storage_profile_path.as_deref() {
+                    let profiles = load_service_worker_registration_profiles(Some(path))?;
+                    service_workers.replace_registration_profiles(profiles)?;
+                    if let (Some(runtime), Some(document_url)) =
+                        (javascript_runtime.as_ref(), document_url.as_deref())
+                    {
+                        runtime.set_service_worker_registrations(
+                            service_workers.states_for_document(document_url)?,
+                        );
+                    }
+                }
+                json!({"kind":"service_worker_registrations_synced","id":id})
             }
             "service_worker_open_window_resolve" if protocol_matches(&request) && running => {
                 let worker_id = request

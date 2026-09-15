@@ -651,6 +651,18 @@ impl NativeEngine {
         Ok(())
     }
 
+    pub(crate) async fn synchronize_service_worker_registrations(
+        &mut self,
+    ) -> Result<(), NativeEngineError> {
+        if self.config.storage_path.is_none() {
+            return Ok(());
+        }
+        if let Some(process) = self.content_process.as_mut() {
+            process.sync_service_worker_registrations().await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn resolve_service_worker_open_window_async(
         &mut self,
         worker_id: u32,

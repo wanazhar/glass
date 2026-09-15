@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-362`, with native-first product
+expansion checkpoint is `native-engine-browser-363`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -100,6 +100,19 @@ committed through the normal content owner without a CDP path. Browser-wide
 registration arbitration, durable live-client leases, richer transferables,
 complete task-source conformance, and production certification remain separate
 gates. The
+completed Slice 363 adds a bounded profile synchronization turn before normal
+operations in each running native target and frame owner. Persisted Service
+Worker registration descriptors are reloaded and reconciled with live active
+and waiting workers, stale worker delivery routes are removed, and a
+profile-backed registration is projected into a page even before its worker
+realm is lazily recreated. The no-storage path skips synchronization so
+in-memory registrations remain authoritative; scope matching now observes
+exact path boundaries rather than treating `/app` as a prefix of
+`/application`. The cross-target registration/unregistration witness is
+recorded in `docs/plan/tasks/native-engine-browser-363.md`. Full
+multi-instance registration arbitration, durable live-client leases, richer
+transferables, complete task-source conformance, and production certification
+remain separate gates. The
 completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,

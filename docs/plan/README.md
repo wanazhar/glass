@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-377` locally. Native is now the default runtime for
+`native-engine-browser-378` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -296,6 +296,15 @@ script budget; frame identity, command allowlists, event ordering, and the
 existing bounded IPC/document limits remain enforced. Browser-wide task-source
 arbitration and the remaining Core Web Profile gates remain active issue #40
 work.
+
+The completed native hash-change transport slice is
+[native-engine-browser-378](tasks/native-engine-browser-378.md): local and
+HTTP(S) fragment navigation now deliver old/new URL metadata through the typed
+page-event batch and a static continuation. 8.2 KiB fragments cross both
+owners without consuming the authored-script source budget, while
+same-document navigation, URL validation, history behavior, and event re-entry
+remain unchanged. Browser-wide task-source arbitration and the remaining Core
+Web Profile gates remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

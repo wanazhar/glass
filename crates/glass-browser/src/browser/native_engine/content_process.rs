@@ -28,15 +28,16 @@ use super::javascript::{
     MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES, MAX_NATIVE_WEBSOCKET_PROTOCOLS,
     MAX_NATIVE_WORKER_MESSAGES, MAX_NATIVE_XHR_TIMEOUT_MS, NativeCookieChange,
     NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState,
-    NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativePageEventBatch, NativePageScript,
-    NativePageScriptResult, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
+    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHashChangeEvent,
+    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
+    NativeMessagePortPageMessage, NativePageEventBatch, NativePageScript, NativePageScriptResult,
+    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
     NativeServiceWorkerOpenWindowRequest, NativeStorageEvent, NativeWebStorageState,
     NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
     NativeWorkerEventSourceCommand, NativeWorkerMessage, NativeWorkerRegistry,
     NativeWorkerWebSocketCommand, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
+    execute_page_scripts, host_event_script, host_key_event_script,
     host_key_event_script_with_modifiers, host_submit_event_script,
     literal_dynamic_module_specifiers, load_indexed_db_profile, load_service_worker_cache_profile,
     load_service_worker_registration_profiles, load_web_storage_profile, order_page_scripts,
@@ -8427,13 +8428,21 @@ fn mutate_hash_change(
     document_origin: &NativeOrigin,
     viewport: Viewport,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
-    let source = host_hash_change_event_script(old_url, new_url)?.ok_or_else(|| {
-        NativeEngineError::Worker {
-            operation: "content process hashchange".into(),
-            reason: "hashchange event source was empty".into(),
-        }
-    })?;
-    let evaluation = runtime.evaluate(&source, current, new_url, document_origin, viewport)?;
+    let page_events = NativePageEventBatch {
+        hash_change_events: vec![NativeHashChangeEvent {
+            old_url: old_url.to_owned(),
+            new_url: new_url.to_owned(),
+        }],
+        ..NativePageEventBatch::default()
+    };
+    let evaluation = runtime.evaluate_with_page_events(
+        "undefined;",
+        current,
+        new_url,
+        document_origin,
+        viewport,
+        &page_events,
+    )?;
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = extract_scroll_commands(&evaluation.commands);

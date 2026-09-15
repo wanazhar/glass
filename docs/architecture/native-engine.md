@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-377` slice. The native runtime is now the primary
+`native-engine-browser-378` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -589,6 +589,19 @@ checks, and IPC/document limits remain enforced; browser-wide task-source
 arbitration and the remaining Core Web Profile gates remain open. Exact
 evidence is recorded in
 `docs/plan/tasks/native-engine-browser-377.md`.
+
+Slice 378 removes generated-source coupling from hash-change delivery. Local
+and HTTP(S) fragment navigation now place validated old/new URL metadata in a
+`NativeHashChangeEvent` page-event record and invoke the installed host-event
+dispatcher during a static `undefined;` continuation. Same-document history,
+handler mutations, re-entry navigation, and the `HashChangeEvent` URL surface
+remain owned by the existing navigation and document coordinators. An 8.2 KiB
+fragment pair passes through both local and content-process owners even though
+the former generated event source exceeded the 16 KiB authored-script budget.
+URL, IPC, document-wire, and host-turn bounds remain enforced; browser-wide
+task-source arbitration and the remaining Core Web Profile gates remain open.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-378.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

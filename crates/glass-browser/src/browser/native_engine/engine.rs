@@ -21,22 +21,21 @@ use super::interaction::{
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
     MAX_NATIVE_SCRIPT_BYTES, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
-    NativeFrameScriptContext, NativeFrameScriptRequest, NativeIndexedDbChange,
-    NativeIndexedDbState, NativeJavaScriptRuntime, NativeMessagePortPageMessage,
-    NativePageEventBatch, NativePageMessageEvent, NativePageNavigation, NativePopupRequest,
-    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
-    NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
+    NativeFrameScriptContext, NativeFrameScriptRequest, NativeHashChangeEvent,
+    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
+    NativeMessagePortPageMessage, NativePageEventBatch, NativePageMessageEvent,
+    NativePageNavigation, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
+    NativeScriptEvaluation, NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
     apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_inline_scripts, frame_event_batch, host_event_script, host_hash_change_event_script,
-    host_submit_event_script, load_indexed_db_profile, load_service_worker_client_leases,
-    load_web_storage_profile, new_storage_writer_id, page_script_sources_to_scripts,
-    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
-    storage_event_cursor, storage_key, unregister_service_worker_client_lease,
-    unregister_storage_reader, validate_frame_script_command,
-    validate_service_worker_client_states,
+    execute_inline_scripts, frame_event_batch, host_event_script, host_submit_event_script,
+    load_indexed_db_profile, load_service_worker_client_leases, load_web_storage_profile,
+    new_storage_writer_id, page_script_sources_to_scripts, read_storage_event_journal,
+    register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
+    unregister_service_worker_client_lease, unregister_storage_reader,
+    validate_frame_script_command, validate_service_worker_client_states,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -4679,12 +4678,6 @@ impl NativeEngine {
         if self.javascript.is_none() {
             return Ok(None);
         }
-        let source = host_hash_change_event_script(old_url, new_url)?.ok_or_else(|| {
-            NativeEngineError::Worker {
-                operation: "native hashchange".into(),
-                reason: "hashchange event source was empty".into(),
-            }
-        })?;
         let javascript = self
             .javascript
             .as_ref()
@@ -4692,16 +4685,24 @@ impl NativeEngine {
         javascript.set_scroll_offset(self.scroll_offset);
         javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
         self.sync_javascript_history();
+        let page_events = NativePageEventBatch {
+            hash_change_events: vec![NativeHashChangeEvent {
+                old_url: old_url.to_owned(),
+                new_url: new_url.to_owned(),
+            }],
+            ..NativePageEventBatch::default()
+        };
         let evaluation = self
             .javascript
             .as_ref()
             .expect("local JavaScript runtime is present")
-            .evaluate(
-                &source,
+            .evaluate_with_page_events(
+                "undefined;",
                 &self.document,
                 new_url,
                 &self.origin,
                 self.config.viewport,
+                &page_events,
             )?;
         let history_commands = extract_local_history_commands(&evaluation.commands);
         self.drain_local_popups()?;

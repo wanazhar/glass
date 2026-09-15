@@ -935,6 +935,14 @@ pub(crate) struct NativeFrameEventBatch {
     pub(crate) events: Vec<NativeFrameEvent>,
 }
 
+/// Hash-change metadata delivered to the page owner without embedding URLs in
+/// generated JavaScript source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct NativeHashChangeEvent {
+    pub(crate) old_url: String,
+    pub(crate) new_url: String,
+}
+
 /// Page-facing events admitted for one JavaScript host turn. The payloads stay
 /// structured until they enter the already-installed QuickJS dispatch
 /// functions; concatenating their JSON into the user script would make a
@@ -953,6 +961,8 @@ pub(crate) struct NativePageEventBatch {
     pub(crate) frame_event_batches: Vec<NativeFrameEventBatch>,
     #[serde(default)]
     pub(crate) frame_script_commands: Vec<NativeScriptCommand>,
+    #[serde(default)]
+    pub(crate) hash_change_events: Vec<NativeHashChangeEvent>,
 }
 
 enum NativeWorkerDispatch<'a> {
@@ -8111,31 +8121,6 @@ pub(crate) fn host_submit_event_script(
     host_event_script_with_submitters(&[(form_index, NativeEventKind::Submit, submitter_index)])
 }
 
-pub(crate) fn host_hash_change_event_script(
-    old_url: &str,
-    new_url: &str,
-) -> Result<Option<String>, NativeEngineError> {
-    let old_url = serde_json::to_string(old_url).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize hashchange event".into(),
-        reason: "hashchange old URL could not be serialized".into(),
-    })?;
-    let new_url = serde_json::to_string(new_url).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize hashchange event".into(),
-        reason: "hashchange new URL could not be serialized".into(),
-    })?;
-    let source = format!(
-        "globalThis.__glassDispatchHostEvents([{{\"node_index\":4294967295,\"type\":\"hashchange\",\"bubbles\":false,\"cancelable\":false,\"old_url\":{old_url},\"new_url\":{new_url}}}])"
-    );
-    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-        return Err(NativeEngineError::limit(
-            "hashchange event",
-            MAX_NATIVE_SCRIPT_BYTES,
-            source.len(),
-        ));
-    }
-    Ok(Some(source))
-}
-
 fn host_event_script_with_submitters(
     events: &[(u32, NativeEventKind, Option<u32>)],
 ) -> Result<Option<String>, NativeEngineError> {
@@ -12499,6 +12484,10 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
             "native frame script command batch",
             events.frame_script_commands.len(),
         ),
+        (
+            "native hashchange event batch",
+            events.hash_change_events.len(),
+        ),
     ] {
         if count > MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
@@ -12646,6 +12635,18 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
     }
     for command in &events.frame_script_commands {
         validate_frame_script_command(command)?;
+    }
+    for event in &events.hash_change_events {
+        validate_url_text("native hashchange old URL", &event.old_url)?;
+        validate_url_text("native hashchange new URL", &event.new_url)?;
+        if without_fragment(&event.old_url) != without_fragment(&event.new_url)
+            || event.old_url == event.new_url
+        {
+            return Err(NativeEngineError::invalid(
+                "native hashchange URLs",
+                "must differ only by a non-empty fragment",
+            ));
+        }
     }
     Ok(())
 }
@@ -12834,6 +12835,39 @@ fn dispatch_page_event_batch(
                 operation: "dispatch native frame script command".into(),
                 reason: format!(
                     "native frame script command dispatch failed: {}",
+                    CaughtError::from_error(&ctx, error)
+                ),
+            })?;
+    }
+    for event in &events.hash_change_events {
+        let payload = native_structured_payload(
+            &ctx,
+            &serde_json::json!([{
+                "node_index": u32::MAX,
+                "type": "hashchange",
+                "bubbles": false,
+                "cancelable": false,
+                "old_url": &event.old_url,
+                "new_url": &event.new_url,
+            }]),
+            "native hashchange event",
+        )?;
+        let dispatch: Function =
+            ctx.globals()
+                .get("__glassDispatchHostEvents")
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native hashchange event".into(),
+                    reason: format!(
+                        "native hashchange dispatcher was unavailable: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+        dispatch
+            .call::<_, Value>((payload,))
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "dispatch native hashchange event".into(),
+                reason: format!(
+                    "native hashchange event dispatch failed: {}",
                     CaughtError::from_error(&ctx, error)
                 ),
             })?;

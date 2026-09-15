@@ -298,6 +298,16 @@ and port projection semantics; Rust retains descriptor validation and bridge
 identity. Browser-wide task-source arbitration and the remaining Core Web
 Profile gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-381.md`. The
+completed Slice 382 removes live Service Worker client projections from
+generated worker bootstrap source. Each Service Worker turn installs an empty
+projection and Rust sends the current bounded client array through the parsed
+`__glassSetServiceWorkerClients` dispatcher before worker code or an event
+runs. Initial script, lifecycle/fetch/cache/open-window, timer, and message
+turns share the same structured client-state boundary; identity, control,
+visibility, type, frame projection, and lease bounds remain unchanged. The
+remaining worker task-source and Core Web Profile gates remain open. Exact
+evidence is recorded in
+`docs/plan/tasks/native-engine-browser-382.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

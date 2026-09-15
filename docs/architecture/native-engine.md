@@ -640,6 +640,17 @@ route identity. Browser-wide task-source arbitration and the remaining Core
 Web Profile gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-381.md`.
 
+Slice 382 removes live Service Worker client projections from generated worker
+bootstrap source. Each Service Worker turn installs an empty projection, then
+Rust sends the current bounded client array through the parsed
+`__glassSetServiceWorkerClients` dispatcher before worker code or an event
+runs. Initial scripts, lifecycle/fetch/cache/open-window continuations, timers,
+and messages therefore share one structured client-state boundary. Client
+identity, control, visibility, type, frame projection, and existing lease
+limits remain unchanged; browser-wide task-source arbitration and the
+remaining Core Web Profile gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-382.md`.
+
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-
 incognito profile maps to Rust-owned storage at

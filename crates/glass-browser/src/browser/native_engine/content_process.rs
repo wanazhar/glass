@@ -29,7 +29,7 @@ use super::javascript::{
     MAX_NATIVE_WORKER_MESSAGES, MAX_NATIVE_XHR_TIMEOUT_MS, NativeCookieChange,
     NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
     NativeFrameScriptRequest, NativeFrameScriptWindow, NativeIndexedDbChange, NativeIndexedDbState,
-    NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativePageScript,
+    NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativePageEventBatch, NativePageScript,
     NativePageScriptResult, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
     NativeScriptEvaluation, NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
     NativeServiceWorkerOpenWindowRequest, NativeStorageEvent, NativeWebStorageState,
@@ -39,10 +39,9 @@ use super::javascript::{
     execute_page_scripts, host_event_script, host_hash_change_event_script, host_key_event_script,
     host_key_event_script_with_modifiers, host_submit_event_script,
     literal_dynamic_module_specifiers, load_indexed_db_profile, load_service_worker_cache_profile,
-    load_service_worker_registration_profiles, load_web_storage_profile, message_port_script,
-    order_page_scripts, page_script_sources_to_scripts, save_service_worker_cache_profile,
-    save_web_storage_profile, service_worker_client_message_script, static_module_specifiers,
-    storage_key, validate_message_port_transfers, worker_message_script,
+    load_service_worker_registration_profiles, load_web_storage_profile, order_page_scripts,
+    page_script_sources_to_scripts, save_service_worker_cache_profile, save_web_storage_profile,
+    static_module_specifiers, storage_key, validate_message_port_transfers,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -1633,9 +1632,10 @@ impl NativeContentProcess {
         result
     }
 
-    pub(crate) async fn evaluate(
+    pub(crate) async fn evaluate_with_page_events(
         &mut self,
         source: &str,
+        page_events: &NativePageEventBatch,
     ) -> Result<NativeContentScriptResult, NativeEngineError> {
         let id = self.next_id();
         let response = match timeout(
@@ -1645,6 +1645,7 @@ impl NativeContentProcess {
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "source": source,
+                "page_events": page_events,
             })),
         )
         .await
@@ -4802,6 +4803,18 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .ok_or_else(|| {
                         NativeEngineError::invalid("content-process script source", "must be text")
                     })?;
+                let mut page_events: NativePageEventBatch = request
+                    .get("page_events")
+                    .map(|value| {
+                        serde_json::from_value(value.clone()).map_err(|_| {
+                            NativeEngineError::invalid(
+                                "content-process page events",
+                                "must be a valid native event batch",
+                            )
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
                 if javascript_runtime.is_none() {
                     match NativeJavaScriptRuntime::new_with_context_metadata(
                         &storage_context_id,
@@ -4885,35 +4898,33 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     loader,
                 )
                 .await?;
-                pending_worker_messages.extend(workers.take_messages());
-                pending_message_port_messages.extend(workers.take_message_port_messages());
-                pending_message_port_messages.extend(service_workers.take_message_port_messages());
-                pending_service_worker_client_messages
+                page_events
+                    .worker_messages
+                    .extend(pending_worker_messages.drain(..));
+                page_events
+                    .message_port_messages
+                    .extend(pending_message_port_messages.drain(..));
+                page_events
+                    .service_worker_client_messages
+                    .extend(pending_service_worker_client_messages.drain(..));
+                page_events.worker_messages.extend(workers.take_messages());
+                page_events
+                    .message_port_messages
+                    .extend(workers.take_message_port_messages());
+                page_events
+                    .message_port_messages
+                    .extend(service_workers.take_message_port_messages());
+                page_events
+                    .service_worker_client_messages
                     .extend(service_workers.take_client_messages());
-                let worker_messages = std::mem::take(&mut pending_worker_messages)
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                let message_port_messages = std::mem::take(&mut pending_message_port_messages)
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                let mut source = source.to_owned();
-                if let Some(prefix) = worker_message_script(&worker_messages)? {
-                    source = format!("{prefix}{source}");
-                }
-                if let Some(prefix) = message_port_script(&message_port_messages)? {
-                    source = format!("{prefix}{source}");
-                }
-                let service_worker_client_messages =
-                    std::mem::take(&mut pending_service_worker_client_messages)
-                        .into_iter()
-                        .collect::<Vec<_>>();
-                if let Some(prefix) =
-                    service_worker_client_message_script(&service_worker_client_messages)?
-                {
-                    source = format!("{prefix}{source}");
-                }
-                let evaluation =
-                    runtime.evaluate(&source, current, &committed_url, document_origin, viewport);
+                let evaluation = runtime.evaluate_with_page_events(
+                    source,
+                    current,
+                    &committed_url,
+                    document_origin,
+                    viewport,
+                    &page_events,
+                );
                 let Some(loader) = resource_loader.as_mut() else {
                     return Err(NativeEngineError::Worker {
                         operation: "content process Worker scheduling".into(),
@@ -9882,9 +9893,10 @@ async fn resolve_script_fetches(
                     "fetch",
                 )
                 .await;
-            let service_worker_client_messages = service_workers.take_client_messages();
-            let service_worker_client_prefix =
-                service_worker_client_message_script(&service_worker_client_messages)?;
+            let page_events = NativePageEventBatch {
+                service_worker_client_messages: service_workers.take_client_messages(),
+                ..NativePageEventBatch::default()
+            };
             let payload = match intercepted {
                 Ok(NativeServiceWorkerFetchOutcome::Handled(response)) => {
                     fetch_response_payload(Ok(response))
@@ -9951,7 +9963,7 @@ async fn resolve_script_fetches(
                 &current_url,
                 document_origin,
                 viewport,
-                service_worker_client_prefix.as_deref(),
+                &page_events,
             )?;
             if top_level_await_pending && let Some(value) = runtime.take_top_level_await_result()? {
                 resolved_value = Some(value);

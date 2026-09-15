@@ -23,19 +23,20 @@ use super::javascript::{
     MAX_NATIVE_SCRIPT_BYTES, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeIndexedDbChange,
     NativeIndexedDbState, NativeJavaScriptRuntime, NativeMessagePortPageMessage,
-    NativePageNavigation, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
-    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
-    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
-    apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_inline_scripts, frame_event_script, host_event_script, host_hash_change_event_script,
+    NativePageEventBatch, NativePageNavigation, NativePopupRequest, NativePostMessageRequest,
+    NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerClientLease,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
+    NativeServiceWorkerOpenWindowRequest, NativeStorageEvent, NativeWebStorageState,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    NativeWorkerRegistry, append_storage_changes, apply_indexed_db_changes,
+    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_inline_scripts,
+    frame_event_script, host_event_script, host_hash_change_event_script,
     host_message_event_script, host_submit_event_script, load_indexed_db_profile,
-    load_service_worker_client_leases, load_web_storage_profile, message_port_script,
-    new_storage_writer_id, page_script_sources_to_scripts, read_storage_event_journal,
-    register_storage_reader, save_web_storage_profile, service_worker_client_message_script,
-    storage_event_cursor, storage_key, unregister_service_worker_client_lease,
-    unregister_storage_reader, validate_service_worker_client_states, worker_message_script,
+    load_service_worker_client_leases, load_web_storage_profile, new_storage_writer_id,
+    page_script_sources_to_scripts, read_storage_event_journal, register_storage_reader,
+    save_web_storage_profile, storage_event_cursor, storage_key,
+    unregister_service_worker_client_lease, unregister_storage_reader,
+    validate_service_worker_client_states,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -780,14 +781,11 @@ impl NativeEngine {
                 "message client does not belong to this native frame",
             ));
         }
-        let source = service_worker_client_message_script(std::slice::from_ref(&message))?
-            .ok_or_else(|| {
-                NativeEngineError::invalid(
-                    "service worker client message",
-                    "message payload was empty",
-                )
-            })?;
-        self.evaluate_async(source).await.map(|_| ())
+        let mut page_events = NativePageEventBatch::default();
+        page_events.service_worker_client_messages.push(message);
+        self.evaluate_page_with_events_async("undefined;".into(), page_events)
+            .await
+            .map(|_| ())
     }
 
     pub(crate) fn service_worker_clients(&self) -> Vec<NativeServiceWorkerClientState> {
@@ -1857,8 +1855,16 @@ impl NativeEngine {
         &mut self,
         source: impl Into<String>,
     ) -> Result<serde_json::Value, NativeEngineError> {
+        self.evaluate_page_with_events_async(source.into(), NativePageEventBatch::default())
+            .await
+    }
+
+    async fn evaluate_page_with_events_async(
+        &mut self,
+        source: String,
+        mut page_events: NativePageEventBatch,
+    ) -> Result<serde_json::Value, NativeEngineError> {
         self.require_running("script")?;
-        let source = source.into();
         self.sync_external_storage_events()?;
         if self.content_process.is_some() {
             self.deliver_pending_external_storage_events().await?;
@@ -1905,7 +1911,9 @@ impl NativeEngine {
                     ));
                 }
                 self.request_ledger.begin()?;
-                let result = process.evaluate(&source).await;
+                let result = process
+                    .evaluate_with_page_events(&source, &page_events)
+                    .await;
                 self.request_ledger.finish();
                 result?
             };
@@ -1995,29 +2003,26 @@ impl NativeEngine {
             .apply_page_message_port_commands(initial_message_port_commands, &mut self.loader)
             .await?;
         self.workers.run_due_timers(&mut self.loader).await?;
-        self.pending_message_port_messages
+        page_events
+            .worker_messages
+            .extend(self.workers.take_messages());
+        page_events
+            .message_port_messages
+            .extend(std::mem::take(&mut self.pending_message_port_messages));
+        page_events
+            .message_port_messages
             .extend(self.workers.take_message_port_messages());
-        let worker_messages = self.workers.take_messages();
-        let message_port_messages = std::mem::take(&mut self.pending_message_port_messages)
-            .into_iter()
-            .collect::<Vec<_>>();
-        let mut source = source;
-        if let Some(prefix) = worker_message_script(&worker_messages)? {
-            source = format!("{prefix}{source}");
-        }
-        if let Some(prefix) = message_port_script(&message_port_messages)? {
-            source = format!("{prefix}{source}");
-        }
         let evaluation = self
             .javascript
             .as_ref()
             .expect("local JavaScript runtime initialized")
-            .evaluate(
+            .evaluate_with_page_events(
                 &source,
                 &self.document,
                 &self.url,
                 &self.origin,
                 self.config.viewport,
+                &page_events,
             )?;
         let worker_commands = self
             .javascript

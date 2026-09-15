@@ -1442,6 +1442,44 @@ async fn native_local_script_runs_dedicated_worker_and_delivers_messages() {
 }
 
 #[tokio::test]
+async fn native_local_worker_message_delivery_preserves_large_payloads() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://large-worker-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://large-worker-script",
+            "self.onmessage = event => postMessage(event.data);",
+        )
+        .unwrap()
+        .with_initial_url("fixture://large-worker-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    engine
+        .evaluate_async(
+            "globalThis.workerMessages = []; globalThis.worker = new Worker('fixture://large-worker-script'); worker.onmessage = event => workerMessages.push(event.data); true",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async("worker.postMessage('x'.repeat(20000)); true")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async("workerMessages[0].length")
+            .await
+            .unwrap(),
+        serde_json::json!(20000)
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_message_channels_deliver_events_in_page_and_worker_realms() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -3565,6 +3603,56 @@ async fn native_content_process_runs_worker_created_during_page_load() {
             "value": 5,
             "href": format!("http://{address}/worker.js"),
         }])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_worker_message_delivery_preserves_large_payloads() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            (
+                "/large-worker-page",
+                "text/html",
+                "<script>globalThis.workerMessages = []; globalThis.worker = new Worker('/large-worker.js'); worker.onmessage = event => workerMessages.push(event.data);</script><main>Native</main>",
+            ),
+            (
+                "/large-worker.js",
+                "text/javascript",
+                "self.onmessage = event => postMessage(event.data);",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/large-worker-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async("worker.postMessage('x'.repeat(20000)); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("workerMessages[0].length")
+            .await
+            .unwrap(),
+        serde_json::json!(20000)
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

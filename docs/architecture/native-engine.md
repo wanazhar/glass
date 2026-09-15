@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-368` slice. The native runtime is now the primary
+`native-engine-browser-369` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -485,6 +485,18 @@ operation-boundary scheduling rather than complete global task-source ordering;
 page, dedicated/shared-worker, networking, rendering, and browser-context
 arbitration remain issue #40 gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-368.md`.
+
+Slice 369 separates cross-realm event payloads from executable script source.
+Page-facing Worker, MessagePort, and Service Worker client events are admitted
+as one bounded `NativePageEventBatch` and dispatched through the installed
+QuickJS functions with parsed values. The local and content-process paths share
+the same queue order, 64-item per-queue cap, transfer validation, and 256 KiB
+per-message bound. A 20,000-byte Worker round-trip is covered in both paths,
+so valid event data no longer fails because the 16 KiB user-script limit was
+consumed by generated dispatch text. Fetch-response continuation still has its
+existing source-transfer boundary, and complete global task-source arbitration
+remains an issue #40 gate. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-369.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

@@ -883,7 +883,7 @@ pub(crate) struct NativeWorkerMessage {
 }
 
 /// A MessagePort event waiting for delivery to the page realm.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct NativeMessagePortPageMessage {
     pub(crate) bridge_key: String,
     pub(crate) data: serde_json::Value,
@@ -899,6 +899,32 @@ pub(crate) struct NativeServiceWorkerClientMessage {
     pub(crate) client_id: String,
     pub(crate) data: serde_json::Value,
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
+}
+
+/// Page-facing events admitted for one JavaScript host turn. The payloads stay
+/// structured until they enter the already-installed QuickJS dispatch
+/// functions; concatenating their JSON into the user script would make a
+/// valid postMessage payload consume the script-source budget.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct NativePageEventBatch {
+    #[serde(default)]
+    pub(crate) worker_messages: Vec<NativeWorkerMessage>,
+    #[serde(default)]
+    pub(crate) message_port_messages: Vec<NativeMessagePortPageMessage>,
+    #[serde(default)]
+    pub(crate) service_worker_client_messages: Vec<NativeServiceWorkerClientMessage>,
+}
+
+enum NativeWorkerDispatch<'a> {
+    Message {
+        data: &'a serde_json::Value,
+        transfer_ports: &'a [NativeMessagePortTransfer],
+    },
+    MessagePort {
+        bridge_key: &'a str,
+        data: &'a serde_json::Value,
+        transfer_ports: &'a [NativeMessagePortTransfer],
+    },
 }
 
 /// A browser-owned request for a Service Worker to create a new top-level
@@ -1013,6 +1039,61 @@ impl NativeDedicatedWorker {
             self.runtime
                 .evaluate_worker(worker_id, &self.url, source, &self.import_script_counts)
         }
+    }
+
+    fn evaluate_turn_with_event(
+        &self,
+        worker_id: u32,
+        dispatch: NativeWorkerDispatch<'_>,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        let empty_import_script_counts = BTreeMap::new();
+        let import_script_counts = if self.is_module {
+            &empty_import_script_counts
+        } else {
+            &self.import_script_counts
+        };
+        let bootstrap = if self.is_shared {
+            shared_worker_bootstrap(
+                worker_id,
+                &self.url,
+                self.runtime.now_ms(),
+                import_script_counts,
+                self.is_module,
+            )?
+        } else {
+            worker_bootstrap(
+                worker_id,
+                &self.url,
+                self.runtime.now_ms(),
+                import_script_counts,
+                self.is_module,
+            )?
+        };
+        let module_name = if self.is_module {
+            let turn = self.next_module_turn.fetch_add(1, Ordering::Relaxed);
+            let prefix = if self.is_shared {
+                "glass-shared-worker-event"
+            } else {
+                "glass-worker-event"
+            };
+            Some(format!("{}#{prefix}-{turn}", self.url))
+        } else {
+            None
+        };
+        if self.is_module {
+            self.runtime.set_module_sources(self.module_sources.clone());
+        }
+        self.runtime
+            .evaluate_worker_source_with_bootstrap_and_event(
+                worker_id,
+                &self.url,
+                module_name.as_deref(),
+                "undefined;",
+                bootstrap,
+                false,
+                false,
+                Some(dispatch),
+            )
     }
 
     fn evaluate_shared_connect(
@@ -1557,33 +1638,24 @@ impl NativeWorkerRegistry {
             return Ok(());
         }
         self.register_page_transfers(worker_id, &transfer_ports)?;
-        let serialized = serde_json::to_string(&data).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native Worker message".into(),
-            reason: "native Worker message could not be serialized".into(),
-        })?;
-        if serialized.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
-            return Err(NativeEngineError::limit(
-                "native Worker message",
-                MAX_NATIVE_POST_MESSAGE_BYTES,
-                serialized.len(),
-            ));
-        }
+        validate_native_message_payload(
+            &serde_json::json!({
+                "data": &data,
+                "transfer_ports": &transfer_ports,
+            }),
+            "native Worker message",
+        )?;
         let evaluation = {
             let worker = self
                 .workers
                 .get(&worker_id)
                 .expect("worker presence was checked");
-            worker.evaluate_turn(
+            worker.evaluate_turn_with_event(
                 worker_id,
-                &format!(
-                    "globalThis.__glassDispatchWorkerMessage({{data:{serialized},transfer_ports:{}}});",
-                    serde_json::to_string(&transfer_ports).map_err(|_| {
-                        NativeEngineError::Worker {
-                            operation: "serialize native Worker port transfers".into(),
-                            reason: "Worker port transfers could not be serialized".into(),
-                        }
-                    })?
-                ),
+                NativeWorkerDispatch::Message {
+                    data: &data,
+                    transfer_ports: &transfer_ports,
+                },
             )
         };
         match evaluation {
@@ -1758,24 +1830,27 @@ impl NativeWorkerRegistry {
                 continue;
             };
             self.register_page_transfers(route.worker_id, &transfer_ports)?;
-            let serialized_data =
-                serde_json::to_string(&data).map_err(|_| NativeEngineError::Worker {
-                    operation: "serialize native page MessagePort data".into(),
-                    reason: "page MessagePort data could not be serialized".into(),
-                })?;
-            let serialized_transfers =
-                serde_json::to_string(&transfer_ports).map_err(|_| NativeEngineError::Worker {
-                    operation: "serialize native page MessagePort transfers".into(),
-                    reason: "page MessagePort transfers could not be serialized".into(),
-                })?;
-            let source = format!(
-                "globalThis.__glassDispatchMessagePortByBridge({bridge_key:?}, {{data:{serialized_data},transfer_ports:{serialized_transfers}}});"
-            );
+            validate_native_message_payload(
+                &serde_json::json!({
+                    "data": &data,
+                    "transfer_ports": &transfer_ports,
+                }),
+                "native page MessagePort event",
+            )?;
             let worker_id = route.worker_id;
             let evaluation = self
                 .workers
                 .get(&worker_id)
-                .map(|worker| worker.evaluate_turn(worker_id, &source))
+                .map(|worker| {
+                    worker.evaluate_turn_with_event(
+                        worker_id,
+                        NativeWorkerDispatch::MessagePort {
+                            bridge_key: &bridge_key,
+                            data: &data,
+                            transfer_ports: &transfer_ports,
+                        },
+                    )
+                })
                 .ok_or_else(|| {
                     NativeEngineError::invalid(
                         "native page MessagePort route",
@@ -9818,6 +9893,25 @@ impl NativeJavaScriptRuntime {
         origin: &NativeOrigin,
         viewport: Viewport,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.evaluate_with_page_events(
+            source,
+            document,
+            document_url,
+            origin,
+            viewport,
+            &NativePageEventBatch::default(),
+        )
+    }
+
+    pub(crate) fn evaluate_with_page_events(
+        &self,
+        source: &str,
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+        page_events: &NativePageEventBatch,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if source.is_empty() {
             return Err(NativeEngineError::invalid(
                 "script source",
@@ -9886,6 +9980,7 @@ impl NativeJavaScriptRuntime {
                         reason: "native WindowProxy state could not be synchronized".into(),
                     })?;
             }
+            dispatch_page_event_batch(ctx.clone(), page_events)?;
             let mut top_level_await_pending = false;
             let (value, async_evaluation): (Value, bool) = match ctx.eval::<Value, _>(source) {
                 Ok(value) => (value, false),
@@ -10297,6 +10392,29 @@ impl NativeJavaScriptRuntime {
         service_worker: bool,
         await_promise: bool,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.evaluate_worker_source_with_bootstrap_and_event(
+            worker_id,
+            worker_url,
+            module_name,
+            source,
+            bootstrap,
+            service_worker,
+            await_promise,
+            None,
+        )
+    }
+
+    fn evaluate_worker_source_with_bootstrap_and_event(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        module_name: Option<&str>,
+        source: &str,
+        bootstrap: String,
+        service_worker: bool,
+        await_promise: bool,
+        dispatch: Option<NativeWorkerDispatch<'_>>,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if worker_id == 0 {
             return Err(NativeEngineError::invalid(
                 "native Worker id",
@@ -10331,6 +10449,9 @@ impl NativeJavaScriptRuntime {
                         CaughtError::from_error(&ctx, error)
                     ),
                 })?;
+            if let Some(dispatch) = dispatch {
+                dispatch_worker_event(ctx.clone(), dispatch)?;
+            }
             let mut top_level_await_pending = false;
             let value: Value = if await_promise {
                 let promise = ctx.eval_promise(source).map_err(|error| {
@@ -10698,19 +10819,7 @@ impl NativeJavaScriptRuntime {
             "data": data,
             "transfer_ports": transfer_ports,
         });
-        let serialized =
-            serde_json::to_string(&payload).map_err(|_| NativeEngineError::Worker {
-                operation: "serialize native service worker message".into(),
-                reason: "service worker message could not be serialized".into(),
-            })?;
-        if serialized.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
-            return Err(NativeEngineError::limit(
-                "native service worker message",
-                MAX_NATIVE_POST_MESSAGE_BYTES,
-                serialized.len(),
-            ));
-        }
-        let source = format!("globalThis.__glassDispatchWorkerMessage({serialized});");
+        validate_native_message_payload(&payload, "native service worker message")?;
         let bootstrap = service_worker_bootstrap(
             worker_id,
             worker_url,
@@ -10719,8 +10828,18 @@ impl NativeJavaScriptRuntime {
             false,
             &self.service_worker_clients(),
         )?;
-        self.evaluate_worker_source_with_bootstrap(
-            worker_id, worker_url, None, &source, bootstrap, true, false,
+        self.evaluate_worker_source_with_bootstrap_and_event(
+            worker_id,
+            worker_url,
+            None,
+            "undefined;",
+            bootstrap,
+            true,
+            false,
+            Some(NativeWorkerDispatch::Message {
+                data,
+                transfer_ports,
+            }),
         )
     }
 
@@ -10747,29 +10866,11 @@ impl NativeJavaScriptRuntime {
             ));
         }
         validate_message_port_transfers(transfer_ports)?;
-        let bridge_key =
-            serde_json::to_string(bridge_key).map_err(|_| NativeEngineError::Worker {
-                operation: "serialize native service worker MessagePort bridge key".into(),
-                reason: "service worker MessagePort bridge key could not be serialized".into(),
-            })?;
         let payload = serde_json::json!({
             "data": data,
             "transfer_ports": transfer_ports,
         });
-        let serialized =
-            serde_json::to_string(&payload).map_err(|_| NativeEngineError::Worker {
-                operation: "serialize native service worker MessagePort event".into(),
-                reason: "service worker MessagePort event could not be serialized".into(),
-            })?;
-        if serialized.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
-            return Err(NativeEngineError::limit(
-                "native service worker MessagePort event",
-                MAX_NATIVE_POST_MESSAGE_BYTES,
-                serialized.len(),
-            ));
-        }
-        let source =
-            format!("globalThis.__glassDispatchMessagePortByBridge({bridge_key}, {serialized});");
+        validate_native_message_payload(&payload, "native service worker MessagePort event")?;
         let bootstrap = service_worker_bootstrap(
             worker_id,
             worker_url,
@@ -10778,8 +10879,19 @@ impl NativeJavaScriptRuntime {
             false,
             &self.service_worker_clients(),
         )?;
-        self.evaluate_worker_source_with_bootstrap(
-            worker_id, worker_url, None, &source, bootstrap, true, false,
+        self.evaluate_worker_source_with_bootstrap_and_event(
+            worker_id,
+            worker_url,
+            None,
+            "undefined;",
+            bootstrap,
+            true,
+            false,
+            Some(NativeWorkerDispatch::MessagePort {
+                bridge_key,
+                data,
+                transfer_ports,
+            }),
         )
     }
 
@@ -10933,33 +11045,31 @@ impl NativeJavaScriptRuntime {
         document_url: &str,
         origin: &NativeOrigin,
         viewport: Viewport,
-        prefix: Option<&str>,
+        page_events: &NativePageEventBatch,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         let serialized = serde_json::to_string(payload).map_err(|_| NativeEngineError::Worker {
             operation: "serialize JavaScript fetch response".into(),
             reason: "native fetch response could not be serialized".into(),
         })?;
         if serialized.len() > MAX_NATIVE_SCRIPT_BYTES {
-            return self.evaluate(
+            return self.evaluate_with_page_events(
                 &format!(
-                    "{}globalThis.__glassResolveFetch({request_id}, {{ error: \"fetch response exceeded the script transfer limit\" }});",
-                    prefix.unwrap_or_default(),
+                    "globalThis.__glassResolveFetch({request_id}, {{ error: \"fetch response exceeded the script transfer limit\" }});",
                 ),
                 document,
                 document_url,
                 origin,
                 viewport,
+                page_events,
             );
         }
-        self.evaluate(
-            &format!(
-                "{}globalThis.__glassResolveFetch({request_id}, {serialized});",
-                prefix.unwrap_or_default(),
-            ),
+        self.evaluate_with_page_events(
+            &format!("globalThis.__glassResolveFetch({request_id}, {serialized});"),
             document,
             document_url,
             origin,
             viewport,
+            page_events,
         )
     }
 
@@ -12252,6 +12362,317 @@ fn read_script_commands<'js>(
         ));
     }
     Ok(commands)
+}
+
+fn encode_native_message_payload(
+    payload: &serde_json::Value,
+    operation: &str,
+) -> Result<Vec<u8>, NativeEngineError> {
+    let encoded = serde_json::to_vec(payload).map_err(|_| NativeEngineError::Worker {
+        operation: format!("serialize {operation}"),
+        reason: "native message payload could not be serialized".into(),
+    })?;
+    if encoded.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
+        return Err(NativeEngineError::limit(
+            operation,
+            MAX_NATIVE_POST_MESSAGE_BYTES,
+            encoded.len(),
+        ));
+    }
+    Ok(encoded)
+}
+
+fn validate_native_message_payload(
+    payload: &serde_json::Value,
+    operation: &str,
+) -> Result<(), NativeEngineError> {
+    encode_native_message_payload(payload, operation).map(|_| ())
+}
+
+fn native_message_payload<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    payload: &serde_json::Value,
+    operation: &str,
+) -> Result<Value<'js>, NativeEngineError> {
+    let encoded = encode_native_message_payload(payload, operation)?;
+    ctx.json_parse(encoded)
+        .map_err(|error| NativeEngineError::Worker {
+            operation: format!("parse {operation}"),
+            reason: format!(
+                "native message payload could not enter the JavaScript realm: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })
+}
+
+fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), NativeEngineError> {
+    for (operation, count) in [
+        ("native Worker event batch", events.worker_messages.len()),
+        (
+            "native page MessagePort event batch",
+            events.message_port_messages.len(),
+        ),
+        (
+            "native service-worker client event batch",
+            events.service_worker_client_messages.len(),
+        ),
+    ] {
+        if count > MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                operation,
+                MAX_NATIVE_WORKER_MESSAGES,
+                count,
+            ));
+        }
+    }
+    for message in &events.worker_messages {
+        if message.worker_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native Worker message id",
+                "must be positive",
+            ));
+        }
+        validate_message_port_transfers(&message.transfer_ports)?;
+        validate_native_message_payload(
+            &serde_json::json!({
+                "data": &message.data,
+                "error": &message.error,
+                "transfer_ports": &message.transfer_ports,
+            }),
+            "native Worker event",
+        )?;
+    }
+    for message in &events.message_port_messages {
+        validate_url_text("native MessagePort bridge key", &message.bridge_key)?;
+        if message.bridge_key.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "native MessagePort bridge key",
+                "must not be empty",
+            ));
+        }
+        if message.bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+            return Err(NativeEngineError::limit(
+                "native MessagePort bridge key",
+                crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                message.bridge_key.len(),
+            ));
+        }
+        validate_message_port_transfers(&message.transfer_ports)?;
+        validate_native_message_payload(
+            &serde_json::json!({
+                "data": &message.data,
+                "transfer_ports": &message.transfer_ports,
+            }),
+            "native page MessagePort event",
+        )?;
+    }
+    for message in &events.service_worker_client_messages {
+        if message.worker_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native service-worker client message worker id",
+                "must be positive",
+            ));
+        }
+        if message.client_id.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "native service-worker client message id",
+                "must not be empty",
+            ));
+        }
+        if message.client_id.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+            return Err(NativeEngineError::limit(
+                "native service-worker client message id",
+                crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                message.client_id.len(),
+            ));
+        }
+        validate_message_port_transfers(&message.transfer_ports)?;
+        validate_native_message_payload(
+            &serde_json::json!({
+                "worker_id": message.worker_id,
+                "data": &message.data,
+                "transfer_ports": &message.transfer_ports,
+            }),
+            "native service-worker client event",
+        )?;
+    }
+    Ok(())
+}
+
+fn dispatch_page_event_batch(
+    ctx: rquickjs::Ctx<'_>,
+    events: &NativePageEventBatch,
+) -> Result<(), NativeEngineError> {
+    validate_page_event_batch(events)?;
+
+    // Keep the established task-source order: Service Worker client events,
+    // MessagePort events, then dedicated/shared-worker events. Each function
+    // call remains in the same QuickJS context and therefore shares the host
+    // command buffer with the user script that follows it.
+    for message in &events.service_worker_client_messages {
+        let payload = native_message_payload(
+            &ctx,
+            &serde_json::json!({
+                "worker_id": message.worker_id,
+                "data": &message.data,
+                "transfer_ports": &message.transfer_ports,
+            }),
+            "native service-worker client event",
+        )?;
+        let dispatch: Function = ctx
+            .globals()
+            .get("__glassDispatchServiceWorkerClientMessage")
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "dispatch native service-worker client event".into(),
+                reason: format!(
+                    "native service-worker client dispatcher was unavailable: {}",
+                    CaughtError::from_error(&ctx, error)
+                ),
+            })?;
+        dispatch
+            .call::<_, Value>((payload,))
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "dispatch native service-worker client event".into(),
+                reason: format!(
+                    "native service-worker client event dispatch failed: {}",
+                    CaughtError::from_error(&ctx, error)
+                ),
+            })?;
+    }
+    for message in &events.message_port_messages {
+        let payload = native_message_payload(
+            &ctx,
+            &serde_json::json!({
+                "data": &message.data,
+                "transfer_ports": &message.transfer_ports,
+            }),
+            "native page MessagePort event",
+        )?;
+        let dispatch: Function = ctx
+            .globals()
+            .get("__glassDispatchMessagePortByBridge")
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "dispatch native page MessagePort event".into(),
+                reason: format!(
+                    "native page MessagePort dispatcher was unavailable: {}",
+                    CaughtError::from_error(&ctx, error)
+                ),
+            })?;
+        dispatch
+            .call::<_, Value>((message.bridge_key.as_str(), payload))
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "dispatch native page MessagePort event".into(),
+                reason: format!(
+                    "native page MessagePort event dispatch failed: {}",
+                    CaughtError::from_error(&ctx, error)
+                ),
+            })?;
+    }
+    for message in &events.worker_messages {
+        let payload = native_message_payload(
+            &ctx,
+            &serde_json::json!({
+                "data": &message.data,
+                "error": &message.error,
+                "transfer_ports": &message.transfer_ports,
+            }),
+            "native Worker event",
+        )?;
+        let dispatch: Function =
+            ctx.globals()
+                .get("__glassDispatchWorkerMessage")
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native Worker event".into(),
+                    reason: format!(
+                        "native Worker dispatcher was unavailable: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+        dispatch
+            .call::<_, Value>((message.worker_id, payload))
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "dispatch native Worker event".into(),
+                reason: format!(
+                    "native Worker event dispatch failed: {}",
+                    CaughtError::from_error(&ctx, error)
+                ),
+            })?;
+    }
+    Ok(())
+}
+
+fn dispatch_worker_event(
+    ctx: rquickjs::Ctx<'_>,
+    dispatch: NativeWorkerDispatch<'_>,
+) -> Result<(), NativeEngineError> {
+    match dispatch {
+        NativeWorkerDispatch::Message {
+            data,
+            transfer_ports,
+        } => {
+            let payload = native_message_payload(
+                &ctx,
+                &serde_json::json!({
+                    "data": data,
+                    "transfer_ports": transfer_ports,
+                }),
+                "native service-worker message",
+            )?;
+            let dispatch: Function =
+                ctx.globals()
+                    .get("__glassDispatchWorkerMessage")
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "dispatch native service-worker message".into(),
+                        reason: format!(
+                            "native service-worker message dispatcher was unavailable: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?;
+            dispatch
+                .call::<_, Value>((payload,))
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native service-worker message".into(),
+                    reason: format!(
+                        "native service-worker message dispatch failed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+        }
+        NativeWorkerDispatch::MessagePort {
+            bridge_key,
+            data,
+            transfer_ports,
+        } => {
+            let payload = native_message_payload(
+                &ctx,
+                &serde_json::json!({
+                    "data": data,
+                    "transfer_ports": transfer_ports,
+                }),
+                "native service-worker MessagePort event",
+            )?;
+            let dispatch: Function = ctx
+                .globals()
+                .get("__glassDispatchMessagePortByBridge")
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native service-worker MessagePort event".into(),
+                    reason: format!(
+                        "native service-worker MessagePort dispatcher was unavailable: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            dispatch
+                .call::<_, Value>((bridge_key, payload))
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native service-worker MessagePort event".into(),
+                    reason: format!(
+                        "native service-worker MessagePort dispatch failed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_message_port_transfers(
@@ -15947,146 +16368,6 @@ const NATIVE_SHARED_WORKER_BOOTSTRAP: &str = r###"
     return null;
   };
 "###;
-
-pub(crate) fn worker_message_script(
-    messages: &[NativeWorkerMessage],
-) -> Result<Option<String>, NativeEngineError> {
-    if messages.is_empty() {
-        return Ok(None);
-    }
-    let mut source = String::new();
-    for message in messages {
-        if message.worker_id == 0 {
-            return Err(NativeEngineError::invalid(
-                "native Worker message id",
-                "must be positive",
-            ));
-        }
-        validate_message_port_transfers(&message.transfer_ports)?;
-        let payload = serde_json::json!({
-            "data": message.data,
-            "error": message.error,
-            "transfer_ports": message.transfer_ports,
-        });
-        let encoded = serde_json::to_string(&payload).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native Worker event".into(),
-            reason: "native Worker event could not be serialized".into(),
-        })?;
-        source.push_str(&format!(
-            "globalThis.__glassDispatchWorkerMessage({}, {encoded});",
-            message.worker_id
-        ));
-    }
-    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-        return Err(NativeEngineError::limit(
-            "native Worker event script",
-            MAX_NATIVE_SCRIPT_BYTES,
-            source.len(),
-        ));
-    }
-    Ok(Some(source))
-}
-
-pub(crate) fn message_port_script(
-    messages: &[NativeMessagePortPageMessage],
-) -> Result<Option<String>, NativeEngineError> {
-    if messages.is_empty() {
-        return Ok(None);
-    }
-    let mut source = String::new();
-    for message in messages {
-        validate_url_text("native MessagePort bridge key", &message.bridge_key)?;
-        if message.bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
-            return Err(NativeEngineError::limit(
-                "native MessagePort bridge key",
-                crate::browser_backend::MAX_BACKEND_ID_BYTES,
-                message.bridge_key.len(),
-            ));
-        }
-        let bridge_key =
-            serde_json::to_string(&message.bridge_key).map_err(|_| NativeEngineError::Worker {
-                operation: "serialize native MessagePort bridge key".into(),
-                reason: "native MessagePort bridge key could not be serialized".into(),
-            })?;
-        if message.bridge_key.is_empty() {
-            return Err(NativeEngineError::invalid(
-                "native MessagePort bridge key",
-                "must not be empty",
-            ));
-        }
-        validate_message_port_transfers(&message.transfer_ports)?;
-        let payload = serde_json::json!({
-            "data": message.data,
-            "transfer_ports": message.transfer_ports,
-        });
-        let encoded = serde_json::to_string(&payload).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native page MessagePort event".into(),
-            reason: "native page MessagePort event could not be serialized".into(),
-        })?;
-        source.push_str(&format!(
-            "globalThis.__glassDispatchMessagePortByBridge({bridge_key}, {encoded});"
-        ));
-    }
-    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-        return Err(NativeEngineError::limit(
-            "native page MessagePort event script",
-            MAX_NATIVE_SCRIPT_BYTES,
-            source.len(),
-        ));
-    }
-    Ok(Some(source))
-}
-
-pub(crate) fn service_worker_client_message_script(
-    messages: &[NativeServiceWorkerClientMessage],
-) -> Result<Option<String>, NativeEngineError> {
-    if messages.is_empty() {
-        return Ok(None);
-    }
-    let mut source = String::new();
-    for message in messages {
-        if message.worker_id == 0 {
-            return Err(NativeEngineError::invalid(
-                "native service-worker client message worker id",
-                "must be positive",
-            ));
-        }
-        if message.client_id.is_empty() {
-            return Err(NativeEngineError::invalid(
-                "native service-worker client message id",
-                "must not be empty",
-            ));
-        }
-        if message.client_id.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
-            return Err(NativeEngineError::limit(
-                "native service-worker client message id",
-                crate::browser_backend::MAX_BACKEND_ID_BYTES,
-                message.client_id.len(),
-            ));
-        }
-        validate_message_port_transfers(&message.transfer_ports)?;
-        let payload = serde_json::json!({
-            "worker_id": message.worker_id,
-            "data": message.data,
-            "transfer_ports": message.transfer_ports,
-        });
-        let encoded = serde_json::to_string(&payload).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native service-worker client event".into(),
-            reason: "native service-worker client event could not be serialized".into(),
-        })?;
-        source.push_str(&format!(
-            "globalThis.__glassDispatchServiceWorkerClientMessage({encoded});"
-        ));
-    }
-    if source.len() > MAX_NATIVE_SCRIPT_BYTES {
-        return Err(NativeEngineError::limit(
-            "native service-worker client event script",
-            MAX_NATIVE_SCRIPT_BYTES,
-            source.len(),
-        ));
-    }
-    Ok(Some(source))
-}
 
 fn is_ready_state_comparison(source: &str) -> bool {
     let source = source

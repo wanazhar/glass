@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-368` locally. Native is now the default runtime for
+`native-engine-browser-369` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -205,6 +205,16 @@ client messages, MessagePort commands, and bounded Service Worker host work use
 the existing settlement queues. This closes a worker-realm timer liveness gap
 without claiming global cross-source ordering or final production
 certification.
+
+The completed native structured cross-realm event-dispatch slice is
+[native-engine-browser-369](tasks/native-engine-browser-369.md): page-facing
+Worker, MessagePort, and Service Worker client events now cross local and
+content-process host turns as structured batches and enter already-installed
+QuickJS dispatch functions directly. Valid 20,000-byte Worker messages no
+longer consume the 16 KiB user-script source budget; per-message,
+per-queue, transfer, and ordering bounds remain enforced. Fetch response
+continuation and complete global task-source arbitration remain separate issue
+#40 gates.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-368`, with native-first product
+expansion checkpoint is `native-engine-browser-369`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -164,6 +164,16 @@ callback reaches the page on the following evaluation. This closes a Service
 Worker timer liveness gap without claiming one global ordering across page,
 dedicated/shared-worker, networking, rendering, and browser-context sources;
 the witness is recorded in `docs/plan/tasks/native-engine-browser-368.md`. The
+completed Slice 369 removes source-size coupling from page-facing cross-realm
+events. Worker, MessagePort, and Service Worker client messages are admitted
+as a bounded structured batch and dispatched through installed QuickJS
+functions with parsed values in both local and content-process page turns.
+The existing per-message, per-queue, transfer, and task-source ordering bounds
+remain in force, while local and HTTP(S) witnesses cover a 20,000-byte Worker
+round trip. This does not yet solve the separate bounded fetch-response source
+transport or establish one global scheduler across page, worker, networking,
+rendering, and browser-context sources; the witness is recorded in
+`docs/plan/tasks/native-engine-browser-369.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

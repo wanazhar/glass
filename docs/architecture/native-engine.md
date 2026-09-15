@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-365` slice. The native runtime is now the primary
+`native-engine-browser-366` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -451,6 +451,18 @@ commit. Same-scope conflicts remain explicitly last-writer-wins at the profile
 lock boundary, so full event-order arbitration and final Core Web Profile
 certification remain issue #40 gates. The deterministic merge/tombstone witness
 is recorded in `docs/plan/tasks/native-engine-browser-365.md`.
+
+Slice 366 extends the content-process task-source turn to already-open page
+WebSocket and EventSource transports. Queued callbacks are considered on the
+next ordinary evaluation even when that evaluation has no top-level `await` or
+new transport command, and the existing round-robin order still prevents one
+ready source from monopolizing the turn. Event delivery remains serialized on
+the page owner, so callbacks installed before the host turn observe the same
+DOM/network mutation boundary. This is operation-boundary delivery rather
+than an autonomous background event loop; visibility throttling, independent
+background page scheduling, and complete cross-source conformance remain
+issue #40 gates. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-366.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

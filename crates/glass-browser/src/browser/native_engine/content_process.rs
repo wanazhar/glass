@@ -5017,6 +5017,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     | NativeScriptCommand::EventSourceClose { .. }
                             )
                         });
+                        let has_open_background_transport = !websocket_connections.is_empty()
+                            || !event_source_connections.is_empty();
                         let result = resolve_script_fetches(
                             current,
                             runtime,
@@ -5028,7 +5030,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             &script_url,
                             document_origin,
                             viewport,
-                            top_level_await_pending || has_websocket || has_event_source,
+                            top_level_await_pending
+                                || has_websocket
+                                || has_event_source
+                                || has_open_background_transport,
                             NativeScriptEvaluation {
                                 value: value.clone(),
                                 commands,

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-365`, with native-first product
+expansion checkpoint is `native-engine-browser-366`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -135,7 +135,18 @@ serialization with last-writer-wins for two owners changing the same scope, not
 full cross-instance event-order arbitration; the witness is recorded in
 `docs/plan/tasks/native-engine-browser-365.md`. Complete background event/task
 parity, richer transferables, full arbitration semantics, and production
-certification remain separate gates. The
+certification remain separate gates. The completed Slice 366 widens the
+content-process host-turn admission rule to include already-open page
+WebSocket and EventSource connections. A normal evaluation now drains
+callbacks that have arrived since the prior turn, even when it emits no new
+transport command and has no top-level await; transport callbacks still pass
+through the existing rotating source scheduler and the serialized
+JavaScript/mutation owner. The focused ordinary-evaluation witness is recorded
+in `docs/plan/tasks/native-engine-browser-366.md`. This closes a queued-
+delivery gap without claiming a resident background loop, visibility
+throttling, or full cross-source task ordering. Autonomous background
+scheduling, worker/Service Worker/MessagePort/rendering fairness, and
+production certification remain separate gates. The
 completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-380` locally. Native is now the default runtime for
+`native-engine-browser-381` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -325,6 +325,15 @@ continuation. Default-prevention results for click, submit, keydown, and
 beforeunload remain intact, while event metadata no longer consumes authored
 JavaScript source budget. Browser-wide task-source arbitration and the
 remaining Core Web Profile gates remain active issue #40 work.
+
+The completed native SharedWorker connection transport slice is
+[native-engine-browser-381](tasks/native-engine-browser-381.md): transferred
+MessagePort descriptors now enter SharedWorker realms through the typed worker
+dispatch channel and the installed connect dispatcher during a static
+continuation. Named-worker reuse, connect ordering, port identity, and the
+classic/module paths remain intact without a connection-specific generated
+source string. Browser-wide task-source arbitration and the remaining Core Web
+Profile gates remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

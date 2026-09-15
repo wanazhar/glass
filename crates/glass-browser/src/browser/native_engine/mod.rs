@@ -66,6 +66,7 @@ pub(crate) use javascript::{
     NativeFrameScriptWindow, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
     NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
     NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    synchronize_service_worker_client_leases,
 };
 pub use layout::{
     NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect, NativeSvgSubpath,

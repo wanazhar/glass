@@ -19,6 +19,7 @@ use super::native_engine::{
     NativeScriptCommand, NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
     NativeSurface, NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, Viewport, parse_point_target,
+    synchronize_service_worker_client_leases,
 };
 use crate::browser::session::{
     FrameInfo, GeoLocation, NavigationControlOutcome, NetworkConditions, PageTargetInfo,
@@ -3868,13 +3869,9 @@ impl NativeEngineBackend {
         } else {
             "top-level"
         };
-        let mut clients = Vec::new();
-        clients.push(
-            engine.service_worker_client_state(
-                active_frame_type,
-                focused_frame_id == active_frame_id,
-            ),
-        );
+        let mut local_leases = Vec::new();
+        let active_focused = focused_frame_id == active_frame_id;
+        local_leases.push(engine.service_worker_client_lease(active_frame_type, active_focused));
         for (frame_id, frame) in &targets.active_frames.parked {
             if frame.engine.lifecycle() != super::native_engine::NativeLifecycleState::Running {
                 continue;
@@ -3884,10 +3881,11 @@ impl NativeEngineBackend {
             } else {
                 "top-level"
             };
-            clients.push(
+            let focused = focused_frame_id == *frame_id;
+            local_leases.push(
                 frame
                     .engine
-                    .service_worker_client_state(frame_type, focused_frame_id == *frame_id),
+                    .service_worker_client_lease(frame_type, focused),
             );
         }
         for target in targets.parked.values() {
@@ -3897,7 +3895,7 @@ impl NativeEngineBackend {
                 } else {
                     "top-level"
                 };
-                clients.push(target.engine.service_worker_client_state(frame_type, false));
+                local_leases.push(target.engine.service_worker_client_lease(frame_type, false));
             }
             for frame in target.frames.parked.values() {
                 if frame.engine.lifecycle() != super::native_engine::NativeLifecycleState::Running {
@@ -3908,9 +3906,14 @@ impl NativeEngineBackend {
                 } else {
                     "top-level"
                 };
-                clients.push(frame.engine.service_worker_client_state(frame_type, false));
+                local_leases.push(frame.engine.service_worker_client_lease(frame_type, false));
             }
         }
+        let clients = synchronize_service_worker_client_leases(
+            engine.config().storage_path.as_deref(),
+            &local_leases,
+        )
+        .map_err(native_error)?;
 
         engine
             .replace_service_worker_clients(clients.clone())
@@ -4073,6 +4076,7 @@ impl BrowserBackend for NativeEngineBackend {
                         service_worker_client_messages,
                     )
                     .await?;
+                    self.synchronize_native_service_worker_clients().await?;
                     Ok(BackendResponse::Unit)
                 }
                 (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {

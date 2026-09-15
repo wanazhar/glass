@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-363` locally. Native is now the default runtime for
+`native-engine-browser-364` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -156,6 +156,16 @@ boundary matching covers root, trailing-slash, and nested paths. Full
 multi-instance registration arbitration, durable live-client leases, richer
 transferables, complete task-source scheduling, and final production
 certification remain active issue #40 gates.
+
+The completed native durable Service Worker client-lease slice is
+[native-engine-browser-364](tasks/native-engine-browser-364.md): bounded
+profile sidecar leases preserve live window/frame client identities across
+independent native sessions and content-process startup, prune crashed owners,
+and use owner-fenced removal during orderly close. Active, parked, and frame
+owners are merged with the durable projection before normal operations. Lease
+heartbeats are operation-boundary updates with a bounded idle-expiry window;
+full background event/task parity, multi-instance arbitration, and final
+production certification remain active issue #40 gates.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

@@ -111,6 +111,12 @@ const MAX_NATIVE_STORAGE_READER_LEASE_BYTES: usize = 64 * 1024;
 const NATIVE_STORAGE_READER_LEASE_VERSION: u64 = 1;
 const NATIVE_STORAGE_READER_LEASE_TTL: Duration = Duration::from_secs(15 * 60);
 const NATIVE_STORAGE_READER_HEARTBEAT: Duration = Duration::from_secs(30);
+const MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASES: usize =
+    crate::browser::session::TOPOLOGY_MAX_TARGETS * crate::browser::session::TOPOLOGY_MAX_FRAMES;
+const MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASE_BYTES: usize = 128 * 1024;
+const NATIVE_SERVICE_WORKER_CLIENT_LEASE_VERSION: u64 = 1;
+const NATIVE_SERVICE_WORKER_CLIENT_LEASE_TTL: Duration = Duration::from_secs(15 * 60);
+const NATIVE_SERVICE_WORKER_CLIENT_HEARTBEAT: Duration = Duration::from_secs(30);
 pub(crate) const MAX_NATIVE_COOKIE_PROFILE_ENTRIES: usize = 128;
 pub(crate) const MAX_NATIVE_COOKIE_PROFILE_BYTES: usize = 4096;
 pub(crate) const MAX_NATIVE_DIALOGS: usize = 32;
@@ -621,6 +627,88 @@ pub(crate) struct NativeServiceWorkerClientState {
     pub(crate) frame_type: String,
     pub(crate) visibility_state: String,
     pub(crate) focused: bool,
+}
+
+/// Durable ownership for one live Service Worker window or frame client.
+/// Client identity remains stable across content-process replacement, while
+/// the owner token prevents an old process from removing a newer lease during
+/// shutdown after a recovery or context replacement.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct NativeServiceWorkerClientLease {
+    #[serde(flatten)]
+    pub(crate) state: NativeServiceWorkerClientState,
+    pub(crate) owner_id: String,
+    pub(crate) heartbeat_unix_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NativeServiceWorkerClientLeaseFile {
+    version: u64,
+    clients: Vec<NativeServiceWorkerClientLease>,
+}
+
+pub(crate) fn validate_service_worker_client_states(
+    states: &[NativeServiceWorkerClientState],
+) -> Result<(), NativeEngineError> {
+    if states.len() > MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASES {
+        return Err(NativeEngineError::limit(
+            "native service worker clients",
+            MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASES,
+            states.len(),
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    for state in states {
+        validate_context_id(&state.id)?;
+        if state.id.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "native service worker client id",
+                "must not be empty",
+            ));
+        }
+        if !ids.insert(state.id.clone()) {
+            return Err(NativeEngineError::invalid(
+                "native service worker client id",
+                "must be unique within the client projection",
+            ));
+        }
+        validate_url_text("native service worker client URL", &state.url)?;
+        if state.url.len() > MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native service worker client URL",
+                MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
+                state.url.len(),
+            ));
+        }
+        if !matches!(
+            state.client_type.as_str(),
+            "window" | "worker" | "sharedworker"
+        ) {
+            return Err(NativeEngineError::invalid(
+                "native service worker client type",
+                "must be window, worker, or sharedworker",
+            ));
+        }
+        if !matches!(
+            state.frame_type.as_str(),
+            "top-level" | "nested" | "auxiliary" | "none"
+        ) {
+            return Err(NativeEngineError::invalid(
+                "native service worker client frame type",
+                "must be top-level, nested, auxiliary, or none",
+            ));
+        }
+        if !matches!(
+            state.visibility_state.as_str(),
+            "visible" | "hidden" | "prerender"
+        ) {
+            return Err(NativeEngineError::invalid(
+                "native service worker client visibility state",
+                "must be visible, hidden, or prerender",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Persistent metadata for one activated Service Worker registration. The
@@ -3740,6 +3828,263 @@ fn storage_reader_lease_path(path: &Path) -> PathBuf {
     path.with_extension("readers")
 }
 
+fn service_worker_client_lease_path(path: &Path) -> PathBuf {
+    path.with_extension("clients")
+}
+
+fn read_service_worker_client_leases(
+    path: &Path,
+) -> Result<Vec<NativeServiceWorkerClientLease>, NativeEngineError> {
+    let lease_path = service_worker_client_lease_path(path);
+    let metadata = match fs::metadata(&lease_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => {
+            return Err(NativeEngineError::Worker {
+                operation: "read native Service Worker client leases".into(),
+                reason: "native Service Worker client lease metadata is unavailable".into(),
+            });
+        }
+    };
+    let lease_bytes = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+    if lease_bytes > MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Service Worker client leases",
+            MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASE_BYTES,
+            lease_bytes,
+        ));
+    }
+    let bytes = fs::read(&lease_path).map_err(|_| NativeEngineError::Worker {
+        operation: "read native Service Worker client leases".into(),
+        reason: "native Service Worker client leases cannot be read".into(),
+    })?;
+    let file: NativeServiceWorkerClientLeaseFile =
+        serde_json::from_slice(&bytes).map_err(|_| {
+            NativeEngineError::invalid(
+                "native Service Worker client leases",
+                "must contain a valid client lease file",
+            )
+        })?;
+    if file.version != NATIVE_SERVICE_WORKER_CLIENT_LEASE_VERSION {
+        return Err(NativeEngineError::invalid(
+            "native Service Worker client lease version",
+            "is unsupported",
+        ));
+    }
+    if file.clients.len() > MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASES {
+        return Err(NativeEngineError::limit(
+            "native Service Worker client leases",
+            MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASES,
+            file.clients.len(),
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    for lease in &file.clients {
+        validate_context_id(&lease.owner_id)?;
+        validate_service_worker_client_states(std::slice::from_ref(&lease.state))?;
+        if !ids.insert(lease.state.id.clone()) {
+            return Err(NativeEngineError::invalid(
+                "native Service Worker client leases",
+                "must not contain duplicate client IDs",
+            ));
+        }
+    }
+    Ok(file.clients)
+}
+
+fn write_service_worker_client_leases(
+    path: &Path,
+    clients: &[NativeServiceWorkerClientLease],
+) -> Result<(), NativeEngineError> {
+    let lease_path = service_worker_client_lease_path(path);
+    if clients.is_empty() {
+        match fs::remove_file(&lease_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(_) => {
+                return Err(NativeEngineError::Worker {
+                    operation: "remove native Service Worker client leases".into(),
+                    reason: "native Service Worker client leases cannot be removed".into(),
+                });
+            }
+        }
+        return Ok(());
+    }
+    let file = NativeServiceWorkerClientLeaseFile {
+        version: NATIVE_SERVICE_WORKER_CLIENT_LEASE_VERSION,
+        clients: clients.to_vec(),
+    };
+    let bytes = serde_json::to_vec(&file).map_err(|_| NativeEngineError::Worker {
+        operation: "encode native Service Worker client leases".into(),
+        reason: "native Service Worker client leases cannot be encoded".into(),
+    })?;
+    if bytes.len() > MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Service Worker client leases",
+            MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASE_BYTES,
+            bytes.len(),
+        ));
+    }
+    let temporary_path = lease_path.with_extension(format!(
+        "clients-tmp-{}-{}",
+        std::process::id(),
+        NATIVE_STORAGE_WRITER_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut temporary = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary_path)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "write native Service Worker client leases".into(),
+            reason: "native Service Worker client leases cannot be opened".into(),
+        })?;
+    temporary
+        .write_all(&bytes)
+        .and_then(|_| temporary.sync_data())
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "write native Service Worker client leases".into(),
+            reason: "native Service Worker client leases cannot be committed".into(),
+        })?;
+    drop(temporary);
+    if let Err(rename_error) = fs::rename(&temporary_path, &lease_path) {
+        let expected_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let fallback = fs::copy(&temporary_path, &lease_path).and_then(|copied_bytes| {
+            (copied_bytes == expected_bytes)
+                .then_some(())
+                .ok_or_else(|| std::io::Error::from(ErrorKind::WriteZero))
+        });
+        if fallback.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(NativeEngineError::Worker {
+                operation: "write native Service Worker client leases".into(),
+                reason: format!(
+                    "native Service Worker client leases cannot be committed: {rename_error}"
+                ),
+            });
+        }
+        let _ = fs::remove_file(&temporary_path);
+    }
+    Ok(())
+}
+
+fn prune_service_worker_client_leases(
+    clients: &mut Vec<NativeServiceWorkerClientLease>,
+    now: u64,
+) -> bool {
+    let original_len = clients.len();
+    clients.retain(|client| {
+        now.saturating_sub(client.heartbeat_unix_seconds)
+            <= NATIVE_SERVICE_WORKER_CLIENT_LEASE_TTL.as_secs()
+    });
+    clients.len() != original_len
+}
+
+fn upsert_service_worker_client_lease(
+    clients: &mut Vec<NativeServiceWorkerClientLease>,
+    state: &NativeServiceWorkerClientState,
+    owner_id: &str,
+    now: u64,
+) -> Result<bool, NativeEngineError> {
+    validate_context_id(owner_id)?;
+    validate_service_worker_client_states(std::slice::from_ref(state))?;
+    if let Some(client) = clients
+        .iter_mut()
+        .find(|client| client.state.id == state.id)
+    {
+        let heartbeat_due = now.saturating_sub(client.heartbeat_unix_seconds)
+            >= NATIVE_SERVICE_WORKER_CLIENT_HEARTBEAT.as_secs();
+        let changed = client.owner_id != owner_id || client.state != *state || heartbeat_due;
+        if changed {
+            client.state = state.clone();
+            client.owner_id = owner_id.to_owned();
+            client.heartbeat_unix_seconds = now;
+        }
+        return Ok(changed);
+    }
+    if clients.len() >= MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASES {
+        return Err(NativeEngineError::limit(
+            "native Service Worker client leases",
+            MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASES,
+            clients.len().saturating_add(1),
+        ));
+    }
+    clients.push(NativeServiceWorkerClientLease {
+        state: state.clone(),
+        owner_id: owner_id.to_owned(),
+        heartbeat_unix_seconds: now,
+    });
+    Ok(true)
+}
+
+pub(crate) fn load_service_worker_client_leases(
+    path: Option<&Path>,
+) -> Result<Vec<NativeServiceWorkerClientState>, NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let _lock = lock_web_storage_profile(path, true)?;
+    let now = unix_time_seconds();
+    let mut leases = read_service_worker_client_leases(path)?;
+    if prune_service_worker_client_leases(&mut leases, now) {
+        write_service_worker_client_leases(path, &leases)?;
+    }
+    Ok(leases.into_iter().map(|lease| lease.state).collect())
+}
+
+pub(crate) fn synchronize_service_worker_client_leases(
+    path: Option<&Path>,
+    local_leases: &[NativeServiceWorkerClientLease],
+) -> Result<Vec<NativeServiceWorkerClientState>, NativeEngineError> {
+    if local_leases.len() > MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASES {
+        return Err(NativeEngineError::limit(
+            "native Service Worker client leases",
+            MAX_NATIVE_SERVICE_WORKER_CLIENT_LEASES,
+            local_leases.len(),
+        ));
+    }
+    let local_states = local_leases
+        .iter()
+        .map(|lease| lease.state.clone())
+        .collect::<Vec<_>>();
+    validate_service_worker_client_states(&local_states)?;
+    let Some(path) = path else {
+        return Ok(local_states);
+    };
+    let _lock = lock_web_storage_profile(path, true)?;
+    let now = unix_time_seconds();
+    let mut leases = read_service_worker_client_leases(path)?;
+    let mut changed = prune_service_worker_client_leases(&mut leases, now);
+    for lease in local_leases {
+        changed |=
+            upsert_service_worker_client_lease(&mut leases, &lease.state, &lease.owner_id, now)?;
+    }
+    if changed {
+        write_service_worker_client_leases(path, &leases)?;
+    }
+    Ok(leases.into_iter().map(|lease| lease.state).collect())
+}
+
+pub(crate) fn unregister_service_worker_client_lease(
+    path: Option<&Path>,
+    client_id: &str,
+    owner_id: &str,
+) -> Result<(), NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    validate_context_id(client_id)?;
+    validate_context_id(owner_id)?;
+    let _lock = lock_web_storage_profile(path, true)?;
+    let mut leases = read_service_worker_client_leases(path)?;
+    let original_len = leases.len();
+    leases.retain(|lease| !(lease.state.id == client_id && lease.owner_id == owner_id));
+    if leases.len() != original_len {
+        write_service_worker_client_leases(path, &leases)?;
+    }
+    Ok(())
+}
+
 fn complete_storage_journal_len(bytes: &[u8]) -> usize {
     bytes
         .iter()
@@ -4357,7 +4702,7 @@ mod storage_journal_tests {
     }
 
     fn remove_test_profile(path: &Path) {
-        for suffix in ["", "lock", "events", "readers"] {
+        for suffix in ["", "lock", "events", "readers", "clients"] {
             let candidate = if suffix.is_empty() {
                 path.to_owned()
             } else {
@@ -4367,6 +4712,11 @@ mod storage_journal_tests {
         }
         let _ = fs::remove_file(path.with_extension(format!("events-tmp-{}", std::process::id())));
         let _ = fs::remove_file(path.with_extension(format!("readers-tmp-{}", std::process::id())));
+        let _ = fs::remove_file(path.with_extension(format!(
+            "clients-tmp-{}-{}",
+            std::process::id(),
+            NATIVE_STORAGE_WRITER_SEQUENCE.load(Ordering::Relaxed)
+        )));
     }
 
     fn journal_event(index: usize) -> NativeStorageEvent {
@@ -4453,6 +4803,70 @@ mod storage_journal_tests {
         assert_eq!(cursor, recovered_cursor);
 
         unregister_storage_reader(Some(&profile_path), "crashed-reader").unwrap();
+        remove_test_profile(&profile_path);
+    }
+
+    #[test]
+    fn service_worker_client_leases_prune_stale_and_fence_release() {
+        let profile_path = test_profile_path("client-leases");
+        remove_test_profile(&profile_path);
+        let state = NativeServiceWorkerClientState {
+            id: "client-one".into(),
+            url: "https://client.test/".into(),
+            client_type: "window".into(),
+            frame_type: "top-level".into(),
+            visibility_state: "visible".into(),
+            focused: true,
+        };
+        let owner_a = NativeServiceWorkerClientLease {
+            state: state.clone(),
+            owner_id: "owner-a".into(),
+            heartbeat_unix_seconds: 0,
+        };
+        assert_eq!(
+            synchronize_service_worker_client_leases(
+                Some(&profile_path),
+                std::slice::from_ref(&owner_a),
+            )
+            .unwrap(),
+            vec![state.clone()]
+        );
+        let owner_b = NativeServiceWorkerClientLease {
+            state: state.clone(),
+            owner_id: "owner-b".into(),
+            heartbeat_unix_seconds: 0,
+        };
+        synchronize_service_worker_client_leases(
+            Some(&profile_path),
+            std::slice::from_ref(&owner_b),
+        )
+        .unwrap();
+        unregister_service_worker_client_lease(Some(&profile_path), "client-one", "owner-a")
+            .unwrap();
+        assert_eq!(
+            load_service_worker_client_leases(Some(&profile_path)).unwrap(),
+            vec![state.clone()]
+        );
+        unregister_service_worker_client_lease(Some(&profile_path), "client-one", "owner-b")
+            .unwrap();
+        assert!(
+            load_service_worker_client_leases(Some(&profile_path))
+                .unwrap()
+                .is_empty()
+        );
+
+        let stale = NativeServiceWorkerClientLease {
+            state,
+            owner_id: "owner-stale".into(),
+            heartbeat_unix_seconds: unix_time_seconds()
+                .saturating_sub(NATIVE_SERVICE_WORKER_CLIENT_LEASE_TTL.as_secs() + 1),
+        };
+        write_service_worker_client_leases(&profile_path, &[stale]).unwrap();
+        assert!(
+            load_service_worker_client_leases(Some(&profile_path))
+                .unwrap()
+                .is_empty()
+        );
         remove_test_profile(&profile_path);
     }
 }

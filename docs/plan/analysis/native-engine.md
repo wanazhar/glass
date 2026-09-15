@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-363`, with native-first product
+expansion checkpoint is `native-engine-browser-364`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -113,6 +113,19 @@ recorded in `docs/plan/tasks/native-engine-browser-363.md`. Full
 multi-instance registration arbitration, durable live-client leases, richer
 transferables, complete task-source conformance, and production certification
 remain separate gates. The
+completed Slice 364 adds durable live-client leases alongside the persisted
+Service Worker profile. A versioned `.clients` sidecar is atomically updated
+under the existing profile lock, stale heartbeats are pruned, and a lease is
+fenced by its storage-writer owner token so an old process cannot remove a
+newer owner for the same stable client identity. Native engine construction
+loads surviving leases before content-process startup; the backend refreshes
+active, parked, and frame-owned leases and merges them with the local
+projection before normal operations. The cross-session and stale-release
+witness is recorded in `docs/plan/tasks/native-engine-browser-364.md`. This
+is an operation-boundary lease model with a bounded idle-expiry window rather
+than an always-running heartbeat thread; complete background event/task parity,
+multi-instance arbitration, and production certification remain separate
+gates. The
 completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,

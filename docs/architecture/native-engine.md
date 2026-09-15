@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-363` slice. The native runtime is now the primary
+`native-engine-browser-364` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -426,6 +426,19 @@ cross-target registration/unregistration witness is recorded in
 registration arbitration, durable live-client leases, richer transferables,
 complete task-source conformance, and final Core Web Profile certification
 remain issue #40 gates.
+
+Slice 364 adds durable live-client leases for Service Worker client
+projection. A bounded, atomically replaced profile sidecar records active,
+parked, and frame-owned client identities with an owner token and heartbeat;
+new native engines load and prune it before content-process startup, and each
+backend operation refreshes the local leases before merging the projection.
+Orderly close and drop remove only the matching owner lease, while a newer
+owner can replace an abandoned record without allowing the old owner to delete
+it. The cross-session and stale-release evidence is recorded in
+`docs/plan/tasks/native-engine-browser-364.md`; leases remain operation-boundary
+with a bounded idle-expiry window, and complete background event/task parity,
+multi-instance arbitration, and final Core Web Profile certification remain
+issue #40 gates.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

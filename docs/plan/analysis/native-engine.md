@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-372`, with native-first product
+expansion checkpoint is `native-engine-browser-373`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -200,6 +200,17 @@ remaining structured network-event paths covered by the current transport
 protocol, but not browser-wide task-source arbitration or the remaining Core
 Web Profile gates. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-372.md`. The
+completed Slice 373 extends structured host dispatch to Service Worker Fetch
+request envelopes, lifecycle events, and page registration settlements. Fetch
+and lifecycle payloads are parsed once into QuickJS, passed to the installed
+worker callback directly, and awaited through the existing Promise settlement
+contract; registration results use the page dispatch boundary. A
+process-backed 20,000-byte POST request is consumed by
+`event.request.text()` and returned through `respondWith()`, and the focused
+17-test Service Worker suite remains green. The existing 16 MiB envelope,
+body, IPC, and operation limits remain authoritative. Browser-wide task-source
+arbitration and the remaining Core Web Profile gates remain open. Exact
+evidence is recorded in `docs/plan/tasks/native-engine-browser-373.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

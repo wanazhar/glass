@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-378` locally. Native is now the default runtime for
+`native-engine-browser-379` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -305,6 +305,16 @@ owners without consuming the authored-script source budget, while
 same-document navigation, URL validation, history behavior, and event re-entry
 remain unchanged. Browser-wide task-source arbitration and the remaining Core
 Web Profile gates remain active issue #40 work.
+
+The completed native WindowProxy transport slice is
+[native-engine-browser-379](tasks/native-engine-browser-379.md): browser-owned
+WindowProxy target metadata now crosses the runtime boundary as validated
+structured values and calls the installed `__glassSyncWindowProxies` dispatcher
+directly. A maximum-size 16 KiB target URL is accepted and applied without
+coupling the update to authored JavaScript source; popup identity, navigation,
+close state, cache-key matching, content-process routing, and existing bounds
+remain intact. Browser-wide task-source arbitration and the remaining Core Web
+Profile gates remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

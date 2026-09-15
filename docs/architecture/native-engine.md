@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-378` slice. The native runtime is now the primary
+`native-engine-browser-379` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -602,6 +602,18 @@ URL, IPC, document-wire, and host-turn bounds remain enforced; browser-wide
 task-source arbitration and the remaining Core Web Profile gates remain open.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-378.md`.
+
+Slice 379 removes generated-source coupling from browser-owned WindowProxy
+state synchronization. Validated `NativeWindowProxyUpdate` records are queued
+in Rust, parsed once at the QuickJS boundary, and passed to the installed
+`__glassSyncWindowProxies` function through a static host turn. A maximum-size
+16 KiB target URL is accepted and applied to a cached proxy even though the
+former interpolated update source would exceed the authored-script budget.
+Cache-key matching, target identity, navigation, close state, content-process
+transport, and the existing per-field, envelope, and host-turn limits remain
+unchanged; browser-wide task-source arbitration and the remaining Core Web
+Profile gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-379.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

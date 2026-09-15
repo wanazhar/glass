@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-366` locally. Native is now the default runtime for
+`native-engine-browser-367` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -187,6 +187,15 @@ round-robin task-source turn and page mutation owner. This is not an autonomous
 background loop; visibility/background scheduling, worker and Service Worker
 fairness, full cross-source ordering, and final production certification remain
 active issue #40 gates.
+
+The completed native worker timer fairness slice is
+[native-engine-browser-367](tasks/native-engine-browser-367.md): each content
+or local host boundary runs at most one due dedicated/shared-worker timer turn
+through a rotating worker-id cursor. Busy lower-id workers therefore cannot
+monopolize successive page operations, while each worker realm keeps its
+existing bounded timer queue and serialized command routing. Full
+cross-source task ordering and final production certification remain active
+issue #40 gates.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

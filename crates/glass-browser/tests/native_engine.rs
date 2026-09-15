@@ -1688,6 +1688,43 @@ async fn native_local_worker_timers_run_on_the_next_page_turn() {
 }
 
 #[tokio::test]
+async fn native_local_worker_timers_round_robin_across_workers() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-timer-round-robin-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-timer-round-robin-script",
+            "setTimeout(() => postMessage('timer'), 0);",
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-timer-round-robin-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.first = new Worker('fixture://worker-timer-round-robin-script'); first.onmessage = event => workerMessages.push('first'); globalThis.second = new Worker('fixture://worker-timer-round-robin-script'); second.onmessage = event => workerMessages.push('second'); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!(["first"])
+    );
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!(["first", "second"])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_worker_preloads_import_scripts_dependencies() {
     let config = NativeEngineConfig::default()
         .with_fixture(

@@ -1080,6 +1080,7 @@ impl NativeDedicatedWorker {
 pub(crate) struct NativeWorkerRegistry {
     workers: BTreeMap<u32, NativeDedicatedWorker>,
     shared_worker_keys: BTreeMap<String, u32>,
+    next_worker_timer_id: u32,
     pending_messages: VecDeque<NativeWorkerMessage>,
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
     pending_websocket_commands: VecDeque<NativeWorkerWebSocketCommand>,
@@ -1092,6 +1093,7 @@ impl NativeWorkerRegistry {
         Self {
             workers: BTreeMap::new(),
             shared_worker_keys: BTreeMap::new(),
+            next_worker_timer_id: 0,
             pending_messages: VecDeque::new(),
             pending_message_port_messages: VecDeque::new(),
             pending_websocket_commands: VecDeque::new(),
@@ -1103,6 +1105,7 @@ impl NativeWorkerRegistry {
     pub(crate) fn clear(&mut self) {
         self.workers.clear();
         self.shared_worker_keys.clear();
+        self.next_worker_timer_id = 0;
         self.pending_messages.clear();
         self.pending_message_port_messages.clear();
         self.pending_websocket_commands.clear();
@@ -1126,47 +1129,62 @@ impl NativeWorkerRegistry {
         self.pending_event_source_commands.drain(..).collect()
     }
 
-    /// Run one due timer turn for each worker that has work ready. Worker
+    /// Run one due timer turn for the next worker that has work ready. Worker
     /// callbacks stay inside their isolated realm and can only emit the
-    /// bounded worker message/lifecycle/fetch commands.
+    /// bounded worker message/lifecycle/fetch commands. A rotating cursor
+    /// prevents the lowest worker id from monopolizing each page boundary.
     pub(crate) async fn run_due_timers(
         &mut self,
         loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
-        let due_workers = self
-            .workers
+        let worker_ids = self.workers.keys().copied().collect::<Vec<_>>();
+        let mut selected_worker_id = None;
+        let after_cursor = worker_ids
             .iter()
-            .map(|(worker_id, worker)| {
-                let delay = worker.runtime.next_worker_timer_delay_ms()?;
-                Ok::<_, NativeEngineError>((worker_id.to_owned(), delay))
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter_map(|(worker_id, delay)| (delay == Some(0)).then_some(worker_id))
-            .collect::<Vec<_>>();
-        for worker_id in due_workers {
+            .copied()
+            .filter(|worker_id| *worker_id > self.next_worker_timer_id);
+        let before_cursor = worker_ids
+            .iter()
+            .copied()
+            .filter(|worker_id| *worker_id <= self.next_worker_timer_id);
+        for worker_id in after_cursor.chain(before_cursor) {
             let Some(worker) = self.workers.get(&worker_id) else {
                 continue;
             };
-            let evaluation = worker.evaluate_turn(
-                worker_id,
-                "globalThis.__glassRunWorkerTimers(performance.now());",
-            );
-            match evaluation {
-                Ok(evaluation) => {
-                    self.collect_worker_evaluation(worker_id, evaluation, loader)
-                        .await?
-                }
-                Err(error) => {
-                    let worker_url = self
-                        .workers
-                        .get(&worker_id)
-                        .map(|worker| worker.url.clone())
-                        .unwrap_or_default();
-                    self.workers.remove(&worker_id);
-                    self.remove_worker_routes(worker_id);
-                    self.queue_error(worker_id, &worker_url, &error.to_string())?;
-                }
+            if worker
+                .runtime
+                .next_worker_timer_delay_ms()?
+                .is_some_and(|delay| delay == 0)
+            {
+                selected_worker_id = Some(worker_id);
+                break;
+            }
+        }
+        let Some(worker_id) = selected_worker_id else {
+            return Ok(());
+        };
+        self.next_worker_timer_id = worker_id;
+        let Some(worker) = self.workers.get(&worker_id) else {
+            return Ok(());
+        };
+        let evaluation = worker.evaluate_turn(
+            worker_id,
+            "globalThis.__glassRunWorkerTimers(performance.now());",
+        );
+        match evaluation {
+            Ok(evaluation) => {
+                self.collect_worker_evaluation(worker_id, evaluation, loader)
+                    .await?
+            }
+            Err(error) => {
+                let worker_url = self
+                    .workers
+                    .get(&worker_id)
+                    .map(|worker| worker.url.clone())
+                    .unwrap_or_default();
+                self.workers.remove(&worker_id);
+                self.remove_worker_routes(worker_id);
+                self.queue_error(worker_id, &worker_url, &error.to_string())?;
             }
         }
         Ok(())

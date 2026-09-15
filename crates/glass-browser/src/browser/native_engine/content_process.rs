@@ -51,12 +51,15 @@ use super::resource_loader::{
     MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES, MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode,
     NativeFetchCacheMode, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
     NativeFetchResponseStream, NativeNavigationMethod, NativeNavigationRequest, NativeRequestBody,
-    NativeResourceLoader, NativeWebSocketTarget,
+    NativeResource, NativeResourceLoader, NativeWebSocketTarget,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
 use super::sandbox::prepare_worker_command;
-use super::service_worker::NativeServiceWorkerRegistry;
+use super::service_worker::{
+    NativeServiceWorkerFetchCompletion, NativeServiceWorkerFetchOutcome,
+    NativeServiceWorkerNavigationOutcome, NativeServiceWorkerRegistry,
+};
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -79,7 +82,7 @@ use url::Url;
 // the base64 envelope and the rest of the document state.
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 9;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 10;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -136,6 +139,11 @@ pub(crate) struct NativeContentLoad {
     pub(crate) service_worker_client_messages: Vec<NativeServiceWorkerClientMessage>,
     pub(crate) service_worker_open_windows: Vec<NativeServiceWorkerOpenWindowRequest>,
     pub(crate) window_name: String,
+}
+
+pub(crate) enum NativeContentLoadResult {
+    Loaded(NativeContentLoad),
+    Suspended(Vec<NativeServiceWorkerOpenWindowRequest>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1009,6 +1017,7 @@ pub(crate) struct NativeContentScriptResult {
     pub(crate) window_navigations: Vec<NativeWindowNavigationRequest>,
     pub(crate) service_worker_client_messages: Vec<NativeServiceWorkerClientMessage>,
     pub(crate) service_worker_open_windows: Vec<NativeServiceWorkerOpenWindowRequest>,
+    pub(crate) service_worker_fetch_resumed: bool,
     pub(crate) window_name: String,
 }
 
@@ -1297,7 +1306,7 @@ impl NativeContentProcess {
         referrer: Option<&str>,
         client_id: &str,
         service_worker_clients: &[NativeServiceWorkerClientState],
-    ) -> Result<NativeContentLoad, NativeEngineError> {
+    ) -> Result<NativeContentLoadResult, NativeEngineError> {
         let id = self.next_id();
         let response = match timeout(
             CONTENT_PROCESS_LOAD_TIMEOUT,
@@ -1353,7 +1362,51 @@ impl NativeContentProcess {
                     .into(),
             });
         }
-        let result = decode_loaded_response(&response, id);
+        let result = decode_load_response(&response, id);
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+            let _ = self.child.start_kill();
+        }
+        result
+    }
+
+    pub(crate) async fn resume_service_worker_navigation(
+        &mut self,
+    ) -> Result<NativeContentLoadResult, NativeEngineError> {
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_LOAD_TIMEOUT,
+            self.exchange(json!({
+                "kind": "load",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "resume_service_worker_fetch": true,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process service worker fetch resume",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process service worker fetch resume exceeded its deadline",
+                ));
+            }
+        };
+        if response.get("kind").and_then(Value::as_str) == Some("error") {
+            return Err(NativeEngineError::Worker {
+                operation: "content process service worker fetch resume".into(),
+                reason: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("content process rejected the service worker fetch resume")
+                    .into(),
+            });
+        }
+        let result = decode_load_response(&response, id);
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
             let _ = self.child.start_kill();
@@ -2284,10 +2337,24 @@ fn require_response_kind(
     ))
 }
 
-fn decode_loaded_response(
+fn decode_load_response(
     response: &Value,
     id: u64,
-) -> Result<NativeContentLoad, NativeEngineError> {
+) -> Result<NativeContentLoadResult, NativeEngineError> {
+    if response.get("kind").and_then(Value::as_str) == Some("service_worker_fetch_suspended") {
+        require_response_kind(
+            response,
+            "service_worker_fetch_suspended",
+            id,
+            "content process service worker fetch suspension",
+        )?;
+        return Ok(NativeContentLoadResult::Suspended(
+            decode_service_worker_open_window_requests(
+                response,
+                "decode content process service worker fetch suspension",
+            )?,
+        ));
+    }
     require_response_kind(response, "loaded", id, "content process load")?;
     let url =
         response
@@ -2354,7 +2421,7 @@ fn decode_loaded_response(
         decode_service_worker_open_window_requests(response, "decode content process load")?;
     let window_name = decode_window_name(response, "decode content process load")?;
     let frame_sources = decode_frame_sources(response, "decode content process load")?;
-    Ok(NativeContentLoad {
+    Ok(NativeContentLoadResult::Loaded(NativeContentLoad {
         url: url.into(),
         origin,
         document,
@@ -2372,7 +2439,7 @@ fn decode_loaded_response(
         service_worker_client_messages,
         service_worker_open_windows,
         window_name,
-    })
+    }))
 }
 
 fn decode_frame_sources(
@@ -3185,6 +3252,10 @@ fn decode_script_response(
     )?;
     let service_worker_open_windows =
         decode_service_worker_open_window_requests(response, "decode content process script")?;
+    let service_worker_fetch_resumed = response
+        .get("service_worker_fetch_resumed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let frame_scripts = decode_frame_script_requests(response, "decode content process script")?;
     let window_name = decode_window_name(response, "decode content process script")?;
     let history = decode_history_commands(response, "decode content process script")?;
@@ -3222,6 +3293,7 @@ fn decode_script_response(
         },
         service_worker_client_messages,
         service_worker_open_windows,
+        service_worker_fetch_resumed,
         window_name,
     })
 }
@@ -3705,6 +3777,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut opener_url = String::new();
     let mut frame_script_context: Option<NativeFrameScriptContext> = None;
     let mut frame_script_bindings = Vec::new();
+    let mut pending_service_worker_navigation: Option<Value> = None;
     loop {
         let payload = read_frame(&mut stdin).await?;
         let request: Value =
@@ -4174,7 +4247,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .resolve_open_window(loader, worker_id, request_id, window)
                     .await
                 {
-                    Ok(()) => {
+                    Ok(service_worker_fetch_resumed) => {
                         pending_message_port_messages
                             .extend(service_workers.take_message_port_messages());
                         pending_service_worker_client_messages
@@ -4185,6 +4258,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "value": Value::Null,
                             "history": [],
                             "frame_scripts": [],
+                            "service_worker_fetch_resumed": service_worker_fetch_resumed,
                         })
                     }
                     Err(error) => content_error_response(id, error),
@@ -4227,291 +4301,344 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 json!({"kind":"storage_state_synced","id":id})
             }
             "load" if protocol_matches(&request) && running => {
-                frame_script_bindings.clear();
-                websocket_connections.clear();
-                worker_websocket_connections.clear();
-                fetch_stream_connections.clear();
-                event_source_connections.clear();
-                worker_event_source_connections.clear();
-                workers.clear();
-                pending_worker_messages.clear();
-                pending_message_port_messages.clear();
-                pending_service_worker_client_messages.clear();
-                service_workers.clear_page_message_port_routes();
-                if let Some(runtime) = javascript_runtime.as_ref() {
-                    storage_state = runtime.storage_state();
-                }
-                match load_content_resource(
-                    &request,
-                    &mut resource_loader,
-                    storage_profile_path.as_deref(),
-                    &environment,
-                    &mut service_workers,
-                )
-                .await
-                {
-                    Ok((
-                        resource,
-                        mut parsed,
-                        loaded_viewport,
-                        script_sources,
-                        resource_events,
-                    )) => {
-                        pending_service_worker_client_messages
-                            .extend(service_workers.take_client_messages());
-                        let mut script_runtime =
-                            match NativeJavaScriptRuntime::new_with_context_metadata(
-                                &storage_context_id,
-                                &window_name,
-                                opener_context_id.as_deref(),
-                                &opener_window_name,
-                                &opener_url,
-                            ) {
-                                Ok(runtime) => Some(runtime),
-                                Err(error) => {
-                                    let response = content_error_response(id, error);
-                                    write_value_frame(&mut stdout, &response).await?;
-                                    continue;
-                                }
-                            };
-                        if let Some(runtime) = script_runtime.as_ref() {
-                            runtime.set_environment(environment.clone());
-                            runtime.set_frame_id(frame_id.clone());
-                            runtime.set_frame_script_context(frame_script_context.clone());
-                            runtime.set_frame_script_bindings(frame_script_bindings.clone());
-                            if let Ok(registrations) =
-                                service_workers.states_for_document(&resource.url)
-                            {
-                                runtime.set_service_worker_registrations(registrations);
+                let resume_service_worker_fetch = request
+                    .get("resume_service_worker_fetch")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if !resume_service_worker_fetch && pending_service_worker_navigation.is_some() {
+                    content_error_response(
+                        id,
+                        NativeEngineError::Worker {
+                            operation: "content process load".into(),
+                            reason:
+                                "a Service Worker fetch navigation is awaiting browser resolution"
+                                    .into(),
+                        },
+                    )
+                } else {
+                    if !resume_service_worker_fetch {
+                        frame_script_bindings.clear();
+                        websocket_connections.clear();
+                        worker_websocket_connections.clear();
+                        fetch_stream_connections.clear();
+                        event_source_connections.clear();
+                        worker_event_source_connections.clear();
+                        workers.clear();
+                        pending_worker_messages.clear();
+                        pending_message_port_messages.clear();
+                        pending_service_worker_client_messages.clear();
+                        service_workers.clear_page_message_port_routes();
+                    }
+                    let load_request = if resume_service_worker_fetch {
+                        pending_service_worker_navigation.clone().ok_or_else(|| {
+                            NativeEngineError::Worker {
+                                operation: "content process service worker fetch resume".into(),
+                                reason: "no suspended navigation is available".into(),
                             }
-                            runtime.set_scroll_offset(scroll_offset);
-                            runtime.set_nested_scroll_offsets(nested_scroll_offsets.clone());
-                        }
-                        let document_cookie = resource_loader
-                            .as_ref()
-                            .map(|loader| loader.document_cookie(&resource.url))
-                            .transpose()?
-                            .unwrap_or_default();
-                        let page_scripts = execute_page_scripts(
-                            &mut parsed,
-                            &mut script_runtime,
-                            &storage_context_id,
-                            &script_sources,
-                            &resource.url,
-                            &resource.origin,
+                        })?
+                    } else {
+                        request.clone()
+                    };
+                    let resumed_fetch = if resume_service_worker_fetch {
+                        Some(service_workers.take_completed_fetch().ok_or_else(|| {
+                            NativeEngineError::Worker {
+                                operation: "content process service worker fetch resume".into(),
+                                reason: "the suspended fetch has no completed response".into(),
+                            }
+                        })?)
+                    } else {
+                        None
+                    };
+                    if let Some(runtime) = javascript_runtime.as_ref() {
+                        storage_state = runtime.storage_state();
+                    }
+                    match load_content_resource(
+                        &load_request,
+                        &mut resource_loader,
+                        storage_profile_path.as_deref(),
+                        &environment,
+                        &mut service_workers,
+                        resumed_fetch,
+                    )
+                    .await
+                    {
+                        Ok(Some((
+                            resource,
+                            mut parsed,
                             loaded_viewport,
-                            &storage_state,
-                            &indexed_db_state,
-                            &document_cookie,
-                            &resource_events,
-                        );
-                        let prepared = match page_scripts {
-                            Ok(page_scripts) if page_scripts.navigation.is_some() => {
-                                let dialogs = page_scripts.dialogs;
-                                let events = page_scripts.events;
-                                let scroll_commands = page_scripts.scroll_commands;
-                                let navigation = page_scripts.navigation.map(|navigation| {
-                                    NativeContentNavigation {
-                                        node_index: 0,
-                                        href: navigation.href,
-                                        submitter_node_index: None,
-                                        location: true,
-                                        replace_history: navigation.replace_history,
+                            script_sources,
+                            resource_events,
+                        ))) => {
+                            if resume_service_worker_fetch {
+                                pending_service_worker_navigation = None;
+                            }
+                            pending_service_worker_client_messages
+                                .extend(service_workers.take_client_messages());
+                            let mut script_runtime =
+                                match NativeJavaScriptRuntime::new_with_context_metadata(
+                                    &storage_context_id,
+                                    &window_name,
+                                    opener_context_id.as_deref(),
+                                    &opener_window_name,
+                                    &opener_url,
+                                ) {
+                                    Ok(runtime) => Some(runtime),
+                                    Err(error) => {
+                                        let response = content_error_response(id, error);
+                                        write_value_frame(&mut stdout, &response).await?;
+                                        continue;
                                     }
-                                });
-                                Ok((parsed, navigation, dialogs, events, scroll_commands))
+                                };
+                            if let Some(runtime) = script_runtime.as_ref() {
+                                runtime.set_environment(environment.clone());
+                                runtime.set_frame_id(frame_id.clone());
+                                runtime.set_frame_script_context(frame_script_context.clone());
+                                runtime.set_frame_script_bindings(frame_script_bindings.clone());
+                                if let Ok(registrations) =
+                                    service_workers.states_for_document(&resource.url)
+                                {
+                                    runtime.set_service_worker_registrations(registrations);
+                                }
+                                runtime.set_scroll_offset(scroll_offset);
+                                runtime.set_nested_scroll_offsets(nested_scroll_offsets.clone());
                             }
-                            Ok(page_scripts)
-                                if page_scripts.pending_fetches.is_empty()
-                                    && page_scripts.service_worker_commands.is_empty()
-                                    && page_scripts.websocket_commands.is_empty()
-                                    && page_scripts.event_source_commands.is_empty() =>
-                            {
-                                Ok((
-                                    parsed,
-                                    None,
-                                    page_scripts.dialogs,
-                                    page_scripts.events,
-                                    page_scripts.scroll_commands,
-                                ))
-                            }
-                            Ok(mut page_scripts) => {
-                                let page_dialogs = page_scripts.dialogs;
-                                let mut page_events = page_scripts.events;
-                                let mut page_scroll_commands = page_scripts.scroll_commands;
-                                let service_worker_commands =
-                                    std::mem::take(&mut page_scripts.service_worker_commands);
-                                if !service_worker_commands.is_empty() {
-                                    let resolved = match (
-                                        script_runtime.as_ref(),
-                                        resource_loader.as_mut(),
-                                    ) {
-                                        (Some(runtime), Some(loader)) => {
-                                            resolve_service_worker_commands(
-                                                service_worker_commands,
-                                                &mut service_workers,
-                                                loader,
-                                                runtime,
-                                                &mut parsed,
-                                                &resource.url,
-                                                &resource.origin,
-                                                loaded_viewport,
-                                            )
-                                            .await?
+                            let document_cookie = resource_loader
+                                .as_ref()
+                                .map(|loader| loader.document_cookie(&resource.url))
+                                .transpose()?
+                                .unwrap_or_default();
+                            let page_scripts = execute_page_scripts(
+                                &mut parsed,
+                                &mut script_runtime,
+                                &storage_context_id,
+                                &script_sources,
+                                &resource.url,
+                                &resource.origin,
+                                loaded_viewport,
+                                &storage_state,
+                                &indexed_db_state,
+                                &document_cookie,
+                                &resource_events,
+                            );
+                            let prepared = match page_scripts {
+                                Ok(page_scripts) if page_scripts.navigation.is_some() => {
+                                    let dialogs = page_scripts.dialogs;
+                                    let events = page_scripts.events;
+                                    let scroll_commands = page_scripts.scroll_commands;
+                                    let navigation = page_scripts.navigation.map(|navigation| {
+                                        NativeContentNavigation {
+                                            node_index: 0,
+                                            href: navigation.href,
+                                            submitter_node_index: None,
+                                            location: true,
+                                            replace_history: navigation.replace_history,
                                         }
-                                        _ => {
-                                            return Err(NativeEngineError::Worker {
+                                    });
+                                    Ok((parsed, navigation, dialogs, events, scroll_commands))
+                                }
+                                Ok(page_scripts)
+                                    if page_scripts.pending_fetches.is_empty()
+                                        && page_scripts.service_worker_commands.is_empty()
+                                        && page_scripts.websocket_commands.is_empty()
+                                        && page_scripts.event_source_commands.is_empty() =>
+                                {
+                                    Ok((
+                                        parsed,
+                                        None,
+                                        page_scripts.dialogs,
+                                        page_scripts.events,
+                                        page_scripts.scroll_commands,
+                                    ))
+                                }
+                                Ok(mut page_scripts) => {
+                                    let page_dialogs = page_scripts.dialogs;
+                                    let mut page_events = page_scripts.events;
+                                    let mut page_scroll_commands = page_scripts.scroll_commands;
+                                    let service_worker_commands =
+                                        std::mem::take(&mut page_scripts.service_worker_commands);
+                                    if !service_worker_commands.is_empty() {
+                                        let resolved = match (
+                                            script_runtime.as_ref(),
+                                            resource_loader.as_mut(),
+                                        ) {
+                                            (Some(runtime), Some(loader)) => {
+                                                resolve_service_worker_commands(
+                                                    service_worker_commands,
+                                                    &mut service_workers,
+                                                    loader,
+                                                    runtime,
+                                                    &mut parsed,
+                                                    &resource.url,
+                                                    &resource.origin,
+                                                    loaded_viewport,
+                                                )
+                                                .await?
+                                            }
+                                            _ => {
+                                                return Err(NativeEngineError::Worker {
                                                 operation: "service worker registration".into(),
                                                 reason:
                                                     "content process service worker state is unavailable"
                                                         .into(),
                                             });
-                                        }
-                                    };
-                                    pending_message_port_messages
-                                        .extend(service_workers.take_message_port_messages());
-                                    pending_service_worker_client_messages
-                                        .extend(service_workers.take_client_messages());
-                                    page_scripts.pending_fetches.extend(resolved);
-                                }
-                                match (script_runtime.as_ref(), resource_loader.as_mut()) {
-                                    (Some(runtime), Some(loader)) => {
-                                        let script_fetch_result = resolve_script_fetches(
-                                            &parsed,
-                                            runtime,
-                                            Some(loader),
-                                            &mut service_workers,
-                                            &mut websocket_connections,
-                                            &mut fetch_stream_connections,
-                                            &mut event_source_connections,
-                                            &resource.url,
-                                            &resource.origin,
-                                            loaded_viewport,
-                                            false,
-                                            NativeScriptEvaluation {
-                                                value: Value::Null,
-                                                commands: page_scripts
-                                                    .pending_fetches
-                                                    .into_iter()
-                                                    .chain(page_scripts.websocket_commands)
-                                                    .chain(page_scripts.event_source_commands)
-                                                    .collect(),
-                                                top_level_await_pending: false,
-                                            },
-                                        )
-                                        .await;
+                                            }
+                                        };
                                         pending_message_port_messages
                                             .extend(service_workers.take_message_port_messages());
                                         pending_service_worker_client_messages
                                             .extend(service_workers.take_client_messages());
-                                        match script_fetch_result {
-                                            Ok((next, mutation, _resolved_value)) => {
-                                                page_events.extend(
-                                                    mutation.events.into_iter().map(|event| {
-                                                        (event.node_index, event.kind)
-                                                    }),
-                                                );
-                                                page_scroll_commands
-                                                    .extend(mutation.scroll_commands);
-                                                Ok((
-                                                    next,
-                                                    mutation.navigation,
-                                                    page_dialogs,
-                                                    page_events,
-                                                    page_scroll_commands,
-                                                ))
-                                            }
-                                            Err(error) => Err(error),
-                                        }
+                                        page_scripts.pending_fetches.extend(resolved);
                                     }
-                                    _ => Err(NativeEngineError::Worker {
-                                        operation: "page-load fetch scheduling".into(),
-                                        reason: "content process fetch state is unavailable".into(),
-                                    }),
+                                    match (script_runtime.as_ref(), resource_loader.as_mut()) {
+                                        (Some(runtime), Some(loader)) => {
+                                            let script_fetch_result = resolve_script_fetches(
+                                                &parsed,
+                                                runtime,
+                                                Some(loader),
+                                                &mut service_workers,
+                                                &mut websocket_connections,
+                                                &mut fetch_stream_connections,
+                                                &mut event_source_connections,
+                                                &resource.url,
+                                                &resource.origin,
+                                                loaded_viewport,
+                                                false,
+                                                NativeScriptEvaluation {
+                                                    value: Value::Null,
+                                                    commands: page_scripts
+                                                        .pending_fetches
+                                                        .into_iter()
+                                                        .chain(page_scripts.websocket_commands)
+                                                        .chain(page_scripts.event_source_commands)
+                                                        .collect(),
+                                                    top_level_await_pending: false,
+                                                },
+                                            )
+                                            .await;
+                                            pending_message_port_messages.extend(
+                                                service_workers.take_message_port_messages(),
+                                            );
+                                            pending_service_worker_client_messages
+                                                .extend(service_workers.take_client_messages());
+                                            match script_fetch_result {
+                                                Ok((next, mutation, _resolved_value)) => {
+                                                    page_events.extend(
+                                                        mutation.events.into_iter().map(|event| {
+                                                            (event.node_index, event.kind)
+                                                        }),
+                                                    );
+                                                    page_scroll_commands
+                                                        .extend(mutation.scroll_commands);
+                                                    Ok((
+                                                        next,
+                                                        mutation.navigation,
+                                                        page_dialogs,
+                                                        page_events,
+                                                        page_scroll_commands,
+                                                    ))
+                                                }
+                                                Err(error) => Err(error),
+                                            }
+                                        }
+                                        _ => Err(NativeEngineError::Worker {
+                                            operation: "page-load fetch scheduling".into(),
+                                            reason: "content process fetch state is unavailable"
+                                                .into(),
+                                        }),
+                                    }
                                 }
-                            }
-                            Err(error) => Err(error),
-                        };
-                        match prepared {
-                            Ok((parsed, navigation, dialogs, events, scroll_commands)) => {
-                                if let Some(runtime) = script_runtime.as_ref() {
-                                    storage_state = runtime.storage_state();
-                                    indexed_db_state.replace_origin(
-                                        storage_key(&resource.url, &resource.origin),
-                                        runtime.indexed_db_state(),
-                                    )?;
-                                    let worker_commands = runtime.take_worker_commands();
-                                    let Some(loader) = resource_loader.as_mut() else {
-                                        return Err(NativeEngineError::Worker {
-                                            operation: "page-load Worker scheduling".into(),
-                                            reason:
-                                                "content process resource loader is unavailable"
-                                                    .into(),
-                                        });
-                                    };
-                                    workers
-                                        .apply_commands(worker_commands, loader, &resource.url)
-                                        .await?;
-                                    let message_port_commands =
-                                        runtime.take_message_port_commands();
-                                    service_workers
-                                        .apply_page_message_port_commands(
-                                            message_port_commands.clone(),
-                                            loader,
-                                        )
-                                        .await?;
-                                    workers
-                                        .apply_page_message_port_commands(
-                                            message_port_commands,
-                                            loader,
-                                        )
-                                        .await?;
-                                    process_worker_websocket_commands(
-                                        workers.take_websocket_commands(),
-                                        &mut worker_websocket_connections,
-                                        Some(&*loader),
-                                    )?;
-                                    process_worker_event_source_commands(
-                                        workers.take_event_source_commands(),
-                                        &mut worker_event_source_connections,
-                                        Some(&*loader),
-                                    )?;
-                                    pending_worker_messages.extend(workers.take_messages());
-                                    pending_message_port_messages
-                                        .extend(workers.take_message_port_messages());
+                                Err(error) => Err(error),
+                            };
+                            match prepared {
+                                Ok((parsed, navigation, dialogs, events, scroll_commands)) => {
+                                    if let Some(runtime) = script_runtime.as_ref() {
+                                        storage_state = runtime.storage_state();
+                                        indexed_db_state.replace_origin(
+                                            storage_key(&resource.url, &resource.origin),
+                                            runtime.indexed_db_state(),
+                                        )?;
+                                        let worker_commands = runtime.take_worker_commands();
+                                        let Some(loader) = resource_loader.as_mut() else {
+                                            return Err(NativeEngineError::Worker {
+                                                operation: "page-load Worker scheduling".into(),
+                                                reason:
+                                                    "content process resource loader is unavailable"
+                                                        .into(),
+                                            });
+                                        };
+                                        workers
+                                            .apply_commands(worker_commands, loader, &resource.url)
+                                            .await?;
+                                        let message_port_commands =
+                                            runtime.take_message_port_commands();
+                                        service_workers
+                                            .apply_page_message_port_commands(
+                                                message_port_commands.clone(),
+                                                loader,
+                                            )
+                                            .await?;
+                                        workers
+                                            .apply_page_message_port_commands(
+                                                message_port_commands,
+                                                loader,
+                                            )
+                                            .await?;
+                                        process_worker_websocket_commands(
+                                            workers.take_websocket_commands(),
+                                            &mut worker_websocket_connections,
+                                            Some(&*loader),
+                                        )?;
+                                        process_worker_event_source_commands(
+                                            workers.take_event_source_commands(),
+                                            &mut worker_event_source_connections,
+                                            Some(&*loader),
+                                        )?;
+                                        pending_worker_messages.extend(workers.take_messages());
+                                        pending_message_port_messages
+                                            .extend(workers.take_message_port_messages());
+                                    }
+                                    let document_wire = parsed.to_content_wire();
+                                    document = Some(parsed);
+                                    document_url = Some(resource.url.clone());
+                                    document_origin = Some(resource.origin.clone());
+                                    viewport = loaded_viewport;
+                                    javascript_runtime = script_runtime;
+                                    json!({
+                                        "kind": "loaded",
+                                        "id": id,
+                                        "url": resource.url,
+                                        "navigation": navigation.as_ref().map(|navigation| json!({
+                                            "node_index": navigation.node_index,
+                                            "href": navigation.href,
+                                            "submitter_node_index": navigation.submitter_node_index,
+                                            "location": navigation.location,
+                                            "replace_history": navigation.replace_history,
+                                        })),
+                                        "dialogs": dialogs,
+                                        "events": events.iter().map(|(node_index, kind)| json!({
+                                            "node_index": node_index,
+                                            "kind": event_kind_text(*kind),
+                                        })).collect::<Vec<_>>(),
+                                        "scroll_commands": scroll_commands,
+                                        "frame_sources": resource.frame_sources,
+                                        "document_base64": base64::engine::general_purpose::STANDARD
+                                            .encode(serde_json::to_vec(&document_wire).unwrap_or_default()),
+                                    })
                                 }
-                                let document_wire = parsed.to_content_wire();
-                                document = Some(parsed);
-                                document_url = Some(resource.url.clone());
-                                document_origin = Some(resource.origin.clone());
-                                viewport = loaded_viewport;
-                                javascript_runtime = script_runtime;
-                                json!({
-                                    "kind": "loaded",
-                                    "id": id,
-                                    "url": resource.url,
-                                    "navigation": navigation.as_ref().map(|navigation| json!({
-                                        "node_index": navigation.node_index,
-                                        "href": navigation.href,
-                                        "submitter_node_index": navigation.submitter_node_index,
-                                        "location": navigation.location,
-                                        "replace_history": navigation.replace_history,
-                                    })),
-                                    "dialogs": dialogs,
-                                    "events": events.iter().map(|(node_index, kind)| json!({
-                                        "node_index": node_index,
-                                        "kind": event_kind_text(*kind),
-                                    })).collect::<Vec<_>>(),
-                                    "scroll_commands": scroll_commands,
-                                    "frame_sources": resource.frame_sources,
-                                    "document_base64": base64::engine::general_purpose::STANDARD
-                                        .encode(serde_json::to_vec(&document_wire).unwrap_or_default()),
-                                })
+                                Err(error) => content_error_response(id, error),
                             }
-                            Err(error) => content_error_response(id, error),
                         }
+                        Ok(None) => {
+                            pending_service_worker_navigation = Some(load_request);
+                            let open_windows = service_workers.take_open_windows();
+                            json!({
+                                "kind": "service_worker_fetch_suspended",
+                                "id": id,
+                                "service_worker_open_windows": open_windows,
+                            })
+                        }
+                        Err(error) => content_error_response(id, error),
                     }
-                    Err(error) => content_error_response(id, error),
                 }
             }
             "fetch" if protocol_matches(&request) && running => {
@@ -4573,8 +4700,17 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 pending_service_worker_client_messages
                     .extend(service_workers.take_client_messages());
                 let fetch = match intercepted {
-                    Ok(Some(response)) => Ok(response),
-                    Ok(None) => loader.fetch_async(document_url, href, credentials).await,
+                    Ok(NativeServiceWorkerFetchOutcome::Handled(response)) => Ok(response),
+                    Ok(NativeServiceWorkerFetchOutcome::NotHandled) => {
+                        loader.fetch_async(document_url, href, credentials).await
+                    }
+                    Ok(NativeServiceWorkerFetchOutcome::Suspended) => {
+                        Err(NativeEngineError::Worker {
+                            operation: "content process fetch".into(),
+                            reason: "Service Worker fetch is awaiting a browser WindowClient"
+                                .into(),
+                        })
+                    }
                     Err(error) => Err(error),
                 };
                 match fetch {
@@ -5843,8 +5979,30 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             document_url.as_deref(),
             document_origin.as_ref(),
         )?;
-        let service_worker_open_windows = service_workers.take_open_windows();
-        let service_worker_client_messages = service_workers.take_external_client_messages();
+        let mut service_worker_open_windows = decode_service_worker_open_window_requests(
+            &response,
+            "merge content process openWindow",
+        )?;
+        service_worker_open_windows.extend(service_workers.take_open_windows());
+        if service_worker_open_windows.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "content-process service worker openWindow requests",
+                MAX_NATIVE_EFFECTS,
+                service_worker_open_windows.len(),
+            ));
+        }
+        let mut service_worker_client_messages = decode_service_worker_client_messages(
+            &response,
+            "merge content process client messages",
+        )?;
+        service_worker_client_messages.extend(service_workers.take_external_client_messages());
+        if service_worker_client_messages.len() > MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "content-process service worker client messages",
+                MAX_NATIVE_WORKER_MESSAGES,
+                service_worker_client_messages.len(),
+            ));
+        }
         if javascript_runtime.is_some() {
             window_name = response_window_name.clone();
         }
@@ -6212,14 +6370,15 @@ async fn load_content_resource(
     storage_path: Option<&Path>,
     environment: &NativeEnvironmentOverrides,
     service_workers: &mut NativeServiceWorkerRegistry,
+    resumed_fetch: Option<NativeServiceWorkerFetchCompletion>,
 ) -> Result<
-    (
+    Option<(
         NativeContentLoad,
         NativeDocument,
         Viewport,
         Vec<NativePageScript>,
         Vec<(u32, NativeEventKind)>,
-    ),
+    )>,
     NativeEngineError,
 > {
     let url = request
@@ -6417,17 +6576,29 @@ async fn load_content_resource(
         }
     };
     loader.set_environment(environment)?;
-    service_workers.begin_document(url, client_id)?;
-    service_workers.restore_for_document(url, loader).await?;
-    let resource = match service_workers
-        .intercept_navigation(loader, &navigation, referrer)
-        .await?
-    {
-        Some(resource) => resource,
-        None => {
-            loader
-                .load_async_request_with_referrer(&navigation, referrer)
-                .await?
+    let resource = if let Some(completion) = resumed_fetch {
+        match completion.response {
+            Some(response) => service_worker_fetch_resource(response, url)?,
+            None => {
+                loader
+                    .load_async_request_with_referrer(&navigation, referrer)
+                    .await?
+            }
+        }
+    } else {
+        service_workers.begin_document(url, client_id)?;
+        service_workers.restore_for_document(url, loader).await?;
+        match service_workers
+            .intercept_navigation(loader, &navigation, referrer)
+            .await?
+        {
+            NativeServiceWorkerNavigationOutcome::Handled(resource) => resource,
+            NativeServiceWorkerNavigationOutcome::NotHandled => {
+                loader
+                    .load_async_request_with_referrer(&navigation, referrer)
+                    .await?
+            }
+            NativeServiceWorkerNavigationOutcome::Suspended => return Ok(None),
         }
     };
     service_workers.commit_document(&resource.url)?;
@@ -6469,7 +6640,7 @@ async fn load_content_resource(
     resource_events.sort_unstable_by_key(|(node_index, _)| *node_index);
     resource_events.dedup();
     let wire = document.to_content_wire();
-    Ok((
+    Ok(Some((
         NativeContentLoad {
             url: resource.url,
             origin: resource.origin,
@@ -6499,7 +6670,27 @@ async fn load_content_resource(
         viewport,
         script_sources,
         resource_events,
-    ))
+    )))
+}
+
+fn service_worker_fetch_resource(
+    response: NativeFetchResponse,
+    fallback_url: &str,
+) -> Result<NativeResource, NativeEngineError> {
+    let url = if response.url.is_empty() {
+        without_fragment(fallback_url).to_owned()
+    } else {
+        response.url
+    };
+    let parsed = Url::parse(without_fragment(&url)).map_err(|_| NativeEngineError::Worker {
+        operation: "service worker fetch resume".into(),
+        reason: "service worker returned an invalid response URL".into(),
+    })?;
+    Ok(NativeResource {
+        url,
+        origin: NativeOrigin::from_url(&parsed)?,
+        body: String::from_utf8_lossy(&response.body).into_owned(),
+    })
 }
 
 async fn load_external_images(
@@ -9633,8 +9824,10 @@ async fn resolve_script_fetches(
             let service_worker_client_prefix =
                 service_worker_client_message_script(&service_worker_client_messages)?;
             let payload = match intercepted {
-                Ok(Some(response)) => fetch_response_payload(Ok(response)),
-                Ok(None) => {
+                Ok(NativeServiceWorkerFetchOutcome::Handled(response)) => {
+                    fetch_response_payload(Ok(response))
+                }
+                Ok(NativeServiceWorkerFetchOutcome::NotHandled) => {
                     let opened = loader
                         .open_fetch_response_stream_async(NativeFetchRequest {
                             document_url: &current_url,
@@ -9680,6 +9873,12 @@ async fn resolve_script_fetches(
                         }
                         Err(error) => fetch_response_payload(Err(error)),
                     }
+                }
+                Ok(NativeServiceWorkerFetchOutcome::Suspended) => {
+                    fetch_response_payload(Err(NativeEngineError::Worker {
+                        operation: "content process script fetch".into(),
+                        reason: "Service Worker fetch is awaiting a browser WindowClient".into(),
+                    }))
                 }
                 Err(error) => fetch_response_payload(Err(error)),
             };

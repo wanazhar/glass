@@ -9089,19 +9089,17 @@ impl NativeJavaScriptRuntime {
     /// monotonic clock and never exposes callback objects or page data.
     pub(crate) fn next_timer_delay_ms(&self) -> Result<Option<u64>, NativeEngineError> {
         let now_ms = self.now_ms();
-        let source = format!(
-            "JSON.stringify((() => {{ let next = null; const consider = values => {{ for (const timer of values) {{ const dueAt = Number(timer && (timer.dueAt === undefined ? timer.timeoutAt : timer.dueAt)); if (!Number.isFinite(dueAt)) continue; const delay = Math.max(0, Math.ceil(dueAt - {now_ms})); if (next === null || delay < next) next = delay; }} }}; consider(globalThis.__glassTimers instanceof Map ? globalThis.__glassTimers.values() : []); consider(globalThis.__glassAnimationFrames instanceof Map ? globalThis.__glassAnimationFrames.values() : []); consider(globalThis.__glassIdleCallbacks instanceof Map ? globalThis.__glassIdleCallbacks.values() : []); return next; }})())"
-        );
         self.context.with(|ctx| {
-            let json: String =
-                ctx.eval(source.as_str())
-                    .map_err(|error| NativeEngineError::Worker {
-                        operation: "inspect native timer queue".into(),
-                        reason: format!(
-                            "native timer queue could not be inspected: {}",
-                            CaughtError::from_error(&ctx, error)
-                        ),
-                    })?;
+            set_native_timer_clock(&ctx, now_ms)?;
+            let json: String = ctx.eval(NATIVE_PAGE_TIMER_DELAY_SOURCE).map_err(|error| {
+                NativeEngineError::Worker {
+                    operation: "inspect native timer queue".into(),
+                    reason: format!(
+                        "native timer queue could not be inspected: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                }
+            })?;
             if json.len() > MAX_NATIVE_SCRIPT_RESULT_BYTES {
                 return Err(NativeEngineError::limit(
                     "native timer queue",
@@ -9121,19 +9119,17 @@ impl NativeJavaScriptRuntime {
     /// same monotonic host clock and bounded inspection contract.
     pub(crate) fn next_worker_timer_delay_ms(&self) -> Result<Option<u64>, NativeEngineError> {
         let now_ms = self.now_ms();
-        let source = format!(
-            "JSON.stringify((() => {{ let next = null; const timers = globalThis.__glassWorkerTimers instanceof Map ? globalThis.__glassWorkerTimers.values() : []; for (const timer of timers) {{ const dueAt = Number(timer && timer.dueAt); if (!Number.isFinite(dueAt)) continue; const delay = Math.max(0, Math.ceil(dueAt - {now_ms})); if (next === null || delay < next) next = delay; }} return next; }})())"
-        );
         self.context.with(|ctx| {
-            let json: String =
-                ctx.eval(source.as_str())
-                    .map_err(|error| NativeEngineError::Worker {
-                        operation: "inspect native Worker timer queue".into(),
-                        reason: format!(
-                            "native Worker timer queue could not be inspected: {}",
-                            CaughtError::from_error(&ctx, error)
-                        ),
-                    })?;
+            set_native_timer_clock(&ctx, now_ms)?;
+            let json: String = ctx
+                .eval(NATIVE_WORKER_TIMER_DELAY_SOURCE)
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "inspect native Worker timer queue".into(),
+                    reason: format!(
+                        "native Worker timer queue could not be inspected: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
             if json.len() > MAX_NATIVE_SCRIPT_RESULT_BYTES {
                 return Err(NativeEngineError::limit(
                     "native Worker timer queue",
@@ -12409,6 +12405,50 @@ fn validate_native_message_payload(
     encode_native_message_payload(payload, operation).map(|_| ())
 }
 
+fn set_native_timer_clock(ctx: &rquickjs::Ctx<'_>, now_ms: u64) -> Result<(), NativeEngineError> {
+    ctx.globals()
+        .set("__glassNativeTimerNowMs", now_ms as f64)
+        .map_err(|error| NativeEngineError::Worker {
+            operation: "set native timer clock".into(),
+            reason: format!(
+                "native timer clock could not enter the JavaScript realm: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })
+}
+
+const NATIVE_PAGE_TIMER_DELAY_SOURCE: &str = r#"JSON.stringify((() => {
+  const now = Number(globalThis.__glassNativeTimerNowMs);
+  let next = null;
+  const consider = values => {
+    for (const timer of values) {
+      const dueAt = Number(timer && (timer.dueAt === undefined ? timer.timeoutAt : timer.dueAt));
+      if (!Number.isFinite(dueAt)) continue;
+      const delay = Math.max(0, Math.ceil(dueAt - now));
+      if (next === null || delay < next) next = delay;
+    }
+  };
+  consider(globalThis.__glassTimers instanceof Map ? globalThis.__glassTimers.values() : []);
+  consider(globalThis.__glassAnimationFrames instanceof Map ? globalThis.__glassAnimationFrames.values() : []);
+  consider(globalThis.__glassIdleCallbacks instanceof Map ? globalThis.__glassIdleCallbacks.values() : []);
+  return next;
+})())"#;
+
+const NATIVE_WORKER_TIMER_DELAY_SOURCE: &str = r#"JSON.stringify((() => {
+  const now = Number(globalThis.__glassNativeTimerNowMs);
+  let next = null;
+  const timers = globalThis.__glassWorkerTimers instanceof Map
+    ? globalThis.__glassWorkerTimers.values()
+    : [];
+  for (const timer of timers) {
+    const dueAt = Number(timer && timer.dueAt);
+    if (!Number.isFinite(dueAt)) continue;
+    const delay = Math.max(0, Math.ceil(dueAt - now));
+    if (next === null || delay < next) next = delay;
+  }
+  return next;
+})())"#;
+
 fn native_message_payload<'js>(
     ctx: &rquickjs::Ctx<'js>,
     payload: &serde_json::Value,
@@ -14011,6 +14051,46 @@ mod native_service_worker_client_tests {
             )
             .expect("service worker client projection must remain observable");
         assert_eq!(evaluation.value, serde_json::json!(client_url));
+    }
+}
+
+#[cfg(test)]
+mod native_timer_probe_tests {
+    use super::*;
+
+    #[test]
+    fn timer_delay_probes_receive_host_clock_without_source_interpolation() {
+        assert!(!NATIVE_PAGE_TIMER_DELAY_SOURCE.contains("{now_ms}"));
+        assert!(!NATIVE_WORKER_TIMER_DELAY_SOURCE.contains("{now_ms}"));
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("timer-probe-test")
+            .expect("native JavaScript runtime must construct");
+        runtime.context.with(|ctx| {
+            ctx.eval::<(), _>("globalThis.__glassTimers = new Map([[1, { dueAt: 25 }]]);")
+                .expect("timer queue must install");
+            set_native_timer_clock(&ctx, 10).expect("host clock must enter the realm");
+            let json: String = ctx
+                .eval(NATIVE_PAGE_TIMER_DELAY_SOURCE)
+                .expect("page timer queue must be inspected");
+            assert_eq!(
+                serde_json::from_str::<Option<u64>>(&json).expect("timer delay must be JSON"),
+                Some(15)
+            );
+        });
+
+        runtime
+            .evaluate_service_worker_source(
+                1,
+                "https://example.test/sw.js",
+                None,
+                "setTimeout(() => {}, 25); true",
+                &BTreeMap::new(),
+            )
+            .expect("service worker timer must schedule");
+        let delay = runtime
+            .next_worker_timer_delay_ms()
+            .expect("worker timer delay must be inspectable");
+        assert!(delay.is_some_and(|delay| delay <= 25));
     }
 }
 

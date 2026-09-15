@@ -344,6 +344,14 @@ classic/module behavior remain intact without serializing live client state
 into bootstrap source. Browser-wide task-source arbitration and the remaining
 Core Web Profile gates remain active issue #40 work.
 
+The completed native timer-probe transport slice is
+[native-engine-browser-383](tasks/native-engine-browser-383.md): page and
+worker timer-delay inspection now receives the host monotonic clock through a
+direct numeric host value and executes fixed probe programs. Due-time ordering,
+timer bounds, and the existing serialized owner remain unchanged; browser-wide
+task-source arbitration and the remaining Core Web Profile gates remain active
+issue #40 work.
+
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native
 visual capture contract now emits bounded PNG, JPEG, and WebP bytes with

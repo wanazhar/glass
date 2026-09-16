@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-389` locally. Native is now the default runtime for
+`native-engine-browser-390` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -415,6 +415,16 @@ source only after successful clone admission. Closed sources remain rejected,
 and the existing message-size, origin, and canvas bounds remain enforced.
 Other transferable platform objects, browser-wide task-source arbitration,
 and the remaining Core Web Profile gates remain active issue #40 work.
+
+The completed native `OffscreenCanvas` transfer slice is
+[native-engine-browser-390](tasks/native-engine-browser-390.md): DOM-controlled
+and standalone offscreen surfaces now transfer through the shared bounded
+pixel descriptor, reconstruct a fresh receiver object, preserve worker 2D
+painting and page raster readback, and invalidate both the transferred source
+and its placeholder control after successful admission. Existing message,
+canvas, origin, and payload limits remain enforced. Other transferable
+platform objects, browser-wide task-source arbitration, and the remaining Core
+Web Profile gates remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

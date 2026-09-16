@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-389` slice. The native runtime is now the primary
+`native-engine-browser-390` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -733,6 +733,18 @@ message-size and canvas bounds. Other transferable platform objects,
 browser-wide task-source conformance, and the remaining Core Web Profile and
 production certification gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-389.md`.
+
+Slice 390 completes bounded `OffscreenCanvas` transfer across native realms.
+DOM-controlled and standalone offscreen surfaces now serialize validated RGBA
+descriptors, reconstruct realm-local OffscreenCanvas objects, preserve the
+origin-clean bit and pixels, and detach the source after successful clone
+admission. The worker receiver includes bounded 2D surface operations, so a
+page-to-worker-to-page transfer is observable through actual raster readback;
+the existing message, canvas, and origin limits remain enforced. Other
+transferable platform objects, browser-wide task-source conformance, and the
+remaining Core Web Profile and production certification gates remain open.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-390.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

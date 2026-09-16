@@ -17611,6 +17611,109 @@ async fn native_image_bitmap_transfer_preserves_pixels_across_worker_realm() {
 }
 
 #[tokio::test]
+async fn native_offscreen_canvas_transfer_preserves_worker_raster_and_detaches_source() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 8,
+            height: 4,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://offscreen-transfer-page",
+            "<html><body><canvas id='placeholder' width='2' height='1' style='display:block;width:2px;height:1px'></canvas></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://offscreen-transfer-worker",
+            r#"self.onmessage = event => {
+                const canvas = event.data.canvas;
+                const context = canvas.getContext('2d');
+                context.fillStyle = '#00ff00';
+                context.fillRect(0, 0, canvas.width, canvas.height);
+                postMessage({
+                    canvas,
+                    identity: [canvas instanceof OffscreenCanvas, canvas.width, canvas.height],
+                    pixel: Array.from(context.getImageData(0, 0, 1, 1).data),
+                }, [canvas]);
+            }"#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://offscreen-transfer-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    const localCanvas = new OffscreenCanvas(2, 1);
+                    const localContext = localCanvas.getContext('2d');
+                    localContext.fillStyle = '#ff0000';
+                    localContext.fillRect(0, 0, 2, 1);
+                    const localClone = structuredClone(localCanvas, { transfer: [localCanvas] });
+                    let localSourceError = '';
+                    try { localCanvas.width; } catch (error) { localSourceError = error.name; }
+                    globalThis.localOffscreenTransfer = [
+                        localSourceError,
+                        localClone instanceof OffscreenCanvas,
+                        localClone.width,
+                        localClone.height,
+                        Array.from(localClone.getContext('2d').getImageData(0, 0, 1, 1).data),
+                    ];
+                    const placeholder = document.getElementById('placeholder');
+                    globalThis.offscreen = placeholder.transferControlToOffscreen();
+                    globalThis.workerMessages = [];
+                    globalThis.worker = new Worker('fixture://offscreen-transfer-worker');
+                    worker.onmessage = event => {
+                        const output = document.createElement('canvas');
+                        output.width = 2;
+                        output.height = 1;
+                        document.body.appendChild(output);
+                        const outputContext = output.getContext('2d');
+                        outputContext.drawImage(event.data.canvas, 0, 0);
+                        workerMessages.push({
+                            identity: event.data.identity,
+                            pixel: event.data.pixel,
+                            outputPixel: Array.from(outputContext.getImageData(0, 0, 1, 1).data),
+                        });
+                    };
+                    globalThis.sourceState = null;
+                    globalThis.placeholder = placeholder;
+                    return [offscreen instanceof OffscreenCanvas, offscreen.width, offscreen.height];
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 2, 1])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "worker.postMessage({ canvas: offscreen }, [offscreen]); let offscreenError = ''; try { offscreen.width; } catch (error) { offscreenError = error.name; } let placeholderError = ''; try { placeholder.getContext('2d'); } catch (error) { placeholderError = error.name; } sourceState = [offscreenError, placeholderError]; true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ localOffscreenTransfer, sourceState, workerMessages })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "localOffscreenTransfer": ["InvalidStateError", true, 2, 1, [255, 0, 0, 255]],
+            "sourceState": ["InvalidStateError", "InvalidStateError"],
+            "workerMessages": [{
+                "identity": [true, 2, 1],
+                "pixel": [0, 255, 0, 255],
+                "outputPixel": [0, 255, 0, 255],
+            }],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_canvas_image_source_preserves_animated_frames() {
     let source = format!(
         "data:image/gif;base64,{}",

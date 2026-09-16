@@ -1235,7 +1235,35 @@ impl NativeCspPolicy {
                 values.len(),
             ));
         }
+        if self.header_policy_count.saturating_add(values.len()) > MAX_NATIVE_CSP_POLICIES {
+            return Err(NativeEngineError::limit(
+                "CSP policies",
+                MAX_NATIVE_CSP_POLICIES,
+                self.header_policy_count.saturating_add(values.len()),
+            ));
+        }
         self.policies.truncate(self.header_policy_count);
+        self.policies
+            .extend(values.iter().map(|value| parse_csp_directives(value)));
+        Ok(())
+    }
+
+    fn append_meta_policies(&mut self, values: &[String]) -> Result<(), NativeEngineError> {
+        if values.len() > MAX_NATIVE_CSP_POLICIES {
+            return Err(NativeEngineError::limit(
+                "CSP meta policies",
+                MAX_NATIVE_CSP_POLICIES,
+                values.len(),
+            ));
+        }
+        let next_len = self.policies.len().saturating_add(values.len());
+        if next_len > MAX_NATIVE_CSP_POLICIES {
+            return Err(NativeEngineError::limit(
+                "CSP policies",
+                MAX_NATIVE_CSP_POLICIES,
+                next_len,
+            ));
+        }
         self.policies
             .extend(values.iter().map(|value| parse_csp_directives(value)));
         Ok(())
@@ -2503,6 +2531,36 @@ impl NativeResourceLoader {
         let key = cache_key(&document_url);
         let policy = self.network.document_policies.entry(key).or_default();
         policy.replace_meta_policies(policies)
+    }
+
+    pub(crate) fn append_meta_content_security_policies(
+        &mut self,
+        document_url: &str,
+        policies: &[String],
+    ) -> Result<(), NativeEngineError> {
+        if policies.is_empty() {
+            return Ok(());
+        }
+        validate_url_text("CSP meta policy owner URL", document_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "CSP meta policy owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(());
+        }
+        reject_credentials(&document_url)?;
+        if policies.len() > MAX_NATIVE_CSP_POLICIES {
+            return Err(NativeEngineError::limit(
+                "CSP meta policies",
+                MAX_NATIVE_CSP_POLICIES,
+                policies.len(),
+            ));
+        }
+        let key = cache_key(&document_url);
+        let policy = self.network.document_policies.entry(key).or_default();
+        policy.append_meta_policies(policies)
     }
 
     pub(crate) fn set_document_content_security_policy_from_pairs(
@@ -6927,6 +6985,38 @@ mod tests {
         let second = loader.inline_script_policy(document_url).unwrap();
         assert!(!second.allows("globalThis.value = 1", Some("first")));
         assert!(second.allows("globalThis.value = 1", Some("second")));
+    }
+
+    #[test]
+    fn csp_meta_policies_append_without_relaxing_prior_state() {
+        let mut loader = NativeResourceLoader::for_content_process(
+            NativeEngineConfig::default().limits.max_document_bytes,
+            None,
+        )
+        .unwrap();
+        let document_url = "http://app.test/page";
+        loader
+            .set_document_content_security_policy_from_pairs(
+                document_url,
+                &[(
+                    "Content-Security-Policy".into(),
+                    "script-src 'unsafe-inline'".into(),
+                )],
+            )
+            .unwrap();
+        loader
+            .apply_meta_content_security_policies(
+                document_url,
+                &["script-src 'nonce-first'".into()],
+            )
+            .unwrap();
+        loader
+            .append_meta_content_security_policies(document_url, &["script-src 'none'".into()])
+            .unwrap();
+
+        let policy = loader.inline_script_policy(document_url).unwrap();
+        assert!(!policy.allows("globalThis.value = 1", Some("first")));
+        assert!(!policy.allows("globalThis.value = 1", None));
     }
 
     #[test]

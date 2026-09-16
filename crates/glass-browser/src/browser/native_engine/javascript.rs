@@ -7447,6 +7447,13 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
       originClean: descriptor.originClean !== false,
     });
   };
+  globalThis.__glassNativeImageBitmapFromSurface = (surface) =>
+    nativeCanvasImageBitmap({
+      width: Number(surface && surface.width),
+      height: Number(surface && surface.height),
+      pixels: Array.isArray(surface && surface.pixels) ? surface.pixels.slice() : [],
+      originClean: !surface || surface.originClean !== false,
+    });
   Object.defineProperties(ImageBitmapNative.prototype, {
     width: {
       configurable: true,
@@ -7766,7 +7773,17 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
       return nativeCanvasGetImageData.call(this, ...args);
     },
   });
+  const nativeCanvasOffscreenSurface = (canvas) => {
+    if (!canvas || canvas.__glassCanvasDetached === true)
+      throw nativeCanvasError("OffscreenCanvas has been transferred", "InvalidStateError");
+    if (canvas.__glassCanvasSurface) return canvas.__glassCanvasSurface;
+    if (typeof canvas.__glassCanvasEntry === "function")
+      return nativeCanvasSurfaceForEntry(canvas.__glassCanvasEntry());
+    throw nativeCanvasError("canvas context has no backing surface", "InvalidStateError");
+  };
   const nativeCanvasContextSurfaceFor = (canvas) => {
+    if (canvas && canvas.__glassCanvasDetached === true)
+      throw nativeCanvasError("OffscreenCanvas has been transferred", "InvalidStateError");
     if (canvas && canvas.__glassCanvasSurface) return canvas.__glassCanvasSurface;
     if (canvas && typeof canvas.__glassCanvasEntry === "function") {
       return nativeCanvasSurfaceForEntry(canvas.__glassCanvasEntry());
@@ -7812,12 +7829,19 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     Object.defineProperty(this, "__glassCanvasSurface", {
       configurable: false,
       enumerable: false,
+      writable: true,
       value: {
         width: normalizedWidth,
         height: normalizedHeight,
         pixels: nativeCanvasBlankPixels(normalizedWidth, normalizedHeight),
         originClean: true,
       },
+    });
+    Object.defineProperty(this, "__glassCanvasDetached", {
+      configurable: false,
+      enumerable: false,
+      writable: true,
+      value: false,
     });
     Object.defineProperty(this, "nodeIndex", {
       configurable: false,
@@ -7831,10 +7855,10 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     width: {
       configurable: true,
       enumerable: true,
-      get() { return this.__glassCanvasSurface.width; },
+      get() { return nativeCanvasOffscreenSurface(this).width; },
       set(value) {
         const width = nativeCanvasOffscreenDimension(value);
-        const surface = this.__glassCanvasSurface;
+        const surface = nativeCanvasOffscreenSurface(this);
         if (width * surface.height > nativeCanvasPixelLimit) throw nativeCanvasError("OffscreenCanvas exceeds the native pixel limit", "QuotaExceededError");
         nativeCanvasResizeSurface(surface, width, surface.height);
         if (this.__glassCanvasContext) this.__glassCanvasContext.__glassCanvasState = nativeCanvasState();
@@ -7845,10 +7869,10 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     height: {
       configurable: true,
       enumerable: true,
-      get() { return this.__glassCanvasSurface.height; },
+      get() { return nativeCanvasOffscreenSurface(this).height; },
       set(value) {
         const height = nativeCanvasOffscreenDimension(value);
-        const surface = this.__glassCanvasSurface;
+        const surface = nativeCanvasOffscreenSurface(this);
         if (surface.width * height > nativeCanvasPixelLimit) throw nativeCanvasError("OffscreenCanvas exceeds the native pixel limit", "QuotaExceededError");
         nativeCanvasResizeSurface(surface, surface.width, height);
         if (this.__glassCanvasContext) this.__glassCanvasContext.__glassCanvasState = nativeCanvasState();
@@ -7860,6 +7884,7 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
       configurable: true,
       enumerable: true,
       value(type) {
+        nativeCanvasOffscreenSurface(this);
         if (String(type).toLowerCase() !== "2d") return null;
         if (!this.__glassCanvasContext) {
           Object.defineProperty(this, "__glassCanvasContext", {
@@ -7879,7 +7904,7 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
           try {
             const type = String(options && options.type || "image/png").toLowerCase();
             if (type !== "image/png") throw nativeCanvasError("only image/png is supported", "NotSupportedError");
-            const bytes = nativeCanvasPngBytes(this.__glassCanvasSurface);
+            const bytes = nativeCanvasPngBytes(nativeCanvasOffscreenSurface(this));
             resolve(new BlobNative([new Uint8Array(bytes)], { type }));
           } catch (error) {
             reject(error);
@@ -7890,9 +7915,70 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     transferToImageBitmap: {
       configurable: true,
       enumerable: true,
-      value() { return nativeCanvasImageBitmap({ ...this.__glassCanvasSurface, pixels: this.__glassCanvasSurface.pixels.slice() }); },
+      value() {
+        const surface = nativeCanvasOffscreenSurface(this);
+        return nativeCanvasImageBitmap({ ...surface, pixels: surface.pixels.slice() });
+      },
     },
   });
+  const nativeCanvasOffscreenCanvasSurface = (value) => {
+    try {
+      return value instanceof OffscreenCanvasNative
+        ? nativeCanvasOffscreenSurface(value)
+        : null;
+    } catch (_error) {
+      return null;
+    }
+  };
+  globalThis.__glassNativeOffscreenCanvasIsOffscreenCanvas = (value) => {
+    try { return value instanceof OffscreenCanvasNative; }
+    catch (_error) { return false; }
+  };
+  globalThis.__glassNativeOffscreenCanvasTransferDescriptor = (value) => {
+    const surface = nativeCanvasOffscreenCanvasSurface(value);
+    if (!surface) throw new TypeError("OffscreenCanvas is detached");
+    return {
+      type: "offscreencanvas",
+      width: surface.width,
+      height: surface.height,
+      pixels: Array.isArray(surface.pixels) ? surface.pixels.slice() : [],
+      originClean: surface.originClean !== false,
+    };
+  };
+  globalThis.__glassNativeOffscreenCanvasDetach = (value) => {
+    const surface = nativeCanvasOffscreenCanvasSurface(value);
+    if (!surface) return false;
+    value.__glassCanvasDetached = true;
+    return true;
+  };
+  globalThis.__glassNativeOffscreenCanvasFromTransfer = (descriptor) => {
+    if (!descriptor || typeof descriptor !== "object")
+      throw new TypeError("OffscreenCanvas transfer descriptor is invalid");
+    const canvas = Object.create(OffscreenCanvasNative.prototype);
+    Object.defineProperty(canvas, "__glassCanvasSurface", {
+      configurable: false,
+      enumerable: false,
+      writable: true,
+      value: {
+        width: Number(descriptor.width),
+        height: Number(descriptor.height),
+        pixels: Array.isArray(descriptor.pixels) ? descriptor.pixels.slice() : [],
+        originClean: descriptor.originClean !== false,
+      },
+    });
+    Object.defineProperty(canvas, "__glassCanvasDetached", {
+      configurable: false,
+      enumerable: false,
+      writable: true,
+      value: false,
+    });
+    Object.defineProperty(canvas, "nodeIndex", {
+      configurable: false,
+      enumerable: false,
+      value: null,
+    });
+    return canvas;
+  };
   const nativeCanvasInstallElement = (element, entry) => {
     if (element.localName !== "canvas") return null;
     let context = null;
@@ -7910,7 +7996,7 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
       getContext: { configurable: false, enumerable: true, value(type) { if (transferred) throw nativeCanvasError("canvas control has been transferred", "InvalidStateError"); if (String(type).toLowerCase() !== "2d") return null; if (!context) context = nativeCanvasMakeContext(element); element.__glassCanvasContext = context; return context; } },
       toDataURL: { configurable: false, enumerable: true, value(type = "image/png") { if (transferred) throw nativeCanvasError("canvas control has been transferred", "InvalidStateError"); const normalized = String(type).toLowerCase(); if (normalized !== "image/png") return "data:,"; const surface = nativeCanvasSurfaceForEntry(entry); const bytes = nativeCanvasPngBytes(surface); return "data:image/png;base64," + encodeBase64(bytes, nativeCanvasByteLimit); } },
       toBlob: { configurable: false, enumerable: true, value(callback, type = "image/png") { if (transferred) throw nativeCanvasError("canvas control has been transferred", "InvalidStateError"); if (typeof callback !== "function") throw new TypeError("toBlob callback must be callable"); const normalized = String(type).toLowerCase(); const result = normalized === "image/png" ? new BlobNative([new Uint8Array(nativeCanvasPngBytes(nativeCanvasSurfaceForEntry(entry)))], { type: normalized }) : null; setTimeoutNative(() => callback(result), 0); } },
-      transferControlToOffscreen: { configurable: false, enumerable: true, value() { if (transferred || context) throw nativeCanvasError("canvas control is already in use", "InvalidStateError"); const offscreen = Object.create(OffscreenCanvasNative.prototype); Object.defineProperties(offscreen, { __glassCanvasEntry: { configurable: false, enumerable: false, value: () => entry }, __glassCanvasSurface: { configurable: false, enumerable: false, get() { return nativeCanvasSurfaceForEntry(entry); } }, nodeIndex: { configurable: false, enumerable: false, value: Number(element.nodeIndex) } }); transferred = offscreen; return offscreen; } },
+      transferControlToOffscreen: { configurable: false, enumerable: true, value() { if (transferred || context) throw nativeCanvasError("canvas control is already in use", "InvalidStateError"); const offscreen = Object.create(OffscreenCanvasNative.prototype); Object.defineProperties(offscreen, { __glassCanvasEntry: { configurable: false, enumerable: false, value: () => entry }, __glassCanvasSurface: { configurable: false, enumerable: false, get() { return nativeCanvasSurfaceForEntry(entry); } }, __glassCanvasDetached: { configurable: false, enumerable: false, writable: true, value: false }, nodeIndex: { configurable: false, enumerable: false, value: Number(element.nodeIndex) } }); transferred = offscreen; return offscreen; } },
       getContextAttributes: { configurable: false, enumerable: true, value() { return { alpha: true, desynchronized: false, willReadFrequently: false }; } },
     });
     return reset;
@@ -17559,11 +17645,214 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       pixels: Array.isArray(descriptor.pixels) ? descriptor.pixels.slice() : [],
       originClean: descriptor.originClean !== false,
     });
+    globalThis.__glassNativeImageBitmapFromSurface = (surface) => makeImageBitmap({
+      width: Number(surface && surface.width),
+      height: Number(surface && surface.height),
+      pixels: Array.isArray(surface && surface.pixels) ? surface.pixels.slice() : [],
+      originClean: !surface || surface.originClean !== false,
+    });
+  }
+  if (typeof globalThis.__glassNativeOffscreenCanvasIsOffscreenCanvas !== "function") {
+    const GlassOffscreenCanvasNative = globalThis.__glassOffscreenCanvasConstructor
+      || function OffscreenCanvas(width, height) {
+        if (!new.target) throw new TypeError("OffscreenCanvas must be constructed with new");
+        const normalizedWidth = Number(width);
+        const normalizedHeight = Number(height);
+        if (!Number.isSafeInteger(normalizedWidth) || !Number.isSafeInteger(normalizedHeight)
+            || normalizedWidth < 0 || normalizedHeight < 0
+            || normalizedWidth > 4096 || normalizedHeight > 4096
+            || normalizedWidth * normalizedHeight > 262144)
+          throw new RangeError("OffscreenCanvas dimensions are outside the native limit");
+        Object.defineProperty(this, "__glassCanvasSurface", {
+          configurable: false,
+          enumerable: false,
+          writable: true,
+          value: {
+            width: normalizedWidth,
+            height: normalizedHeight,
+            pixels: new Array(normalizedWidth * normalizedHeight * 4).fill(0),
+            originClean: true,
+          },
+        });
+        Object.defineProperty(this, "__glassCanvasDetached", {
+          configurable: false,
+          enumerable: false,
+          writable: true,
+          value: false,
+        });
+        Object.defineProperty(this, "nodeIndex", {
+          configurable: false,
+          enumerable: false,
+          value: null,
+        });
+      };
+    const workerOffscreenSurface = (value) => {
+      if (!(value instanceof GlassOffscreenCanvasNative) || value.__glassCanvasDetached === true)
+        return null;
+      return value.__glassCanvasSurface || null;
+    };
+    const workerCanvasSourceSurface = (value) => {
+      if (value && value.__glassImageBitmapSurface) return value.__glassImageBitmapSurface;
+      return workerOffscreenSurface(value);
+    };
+    const workerCanvasSurface = (context) => {
+      const surface = workerOffscreenSurface(context.__glassCanvas);
+      if (!surface) throw new DOMException("OffscreenCanvas is detached", "InvalidStateError");
+      return surface;
+    };
+    const workerCanvasColor = (value) => {
+      const text = String(value || "").trim().toLowerCase();
+      const match = text.match(/^#([0-9a-f]{6})$/);
+      if (!match) return [0, 0, 0, 255];
+      return [
+        Number.parseInt(match[1].slice(0, 2), 16),
+        Number.parseInt(match[1].slice(2, 4), 16),
+        Number.parseInt(match[1].slice(4, 6), 16),
+        255,
+      ];
+    };
+    const WorkerCanvasRenderingContext2DNative = function CanvasRenderingContext2D() {
+      throw new TypeError("CanvasRenderingContext2D cannot be constructed directly");
+    };
+    const workerCanvasImageData = (width, height, data) => ({
+      data: data || new Uint8ClampedArray(width * height * 4),
+      width,
+      height,
+    });
+    const workerCanvasContext = (canvas) => {
+      const context = Object.create(WorkerCanvasRenderingContext2DNative.prototype);
+      Object.defineProperty(context, "__glassCanvas", { configurable: false, enumerable: false, value: canvas });
+      context.fillStyle = "#000000";
+      context.clearRect = (x, y, width, height) => {
+        const surface = workerCanvasSurface(context);
+        const left = Math.max(0, Math.floor(Number(x)));
+        const top = Math.max(0, Math.floor(Number(y)));
+        const right = Math.min(surface.width, Math.ceil(Number(x) + Number(width)));
+        const bottom = Math.min(surface.height, Math.ceil(Number(y) + Number(height)));
+        for (let row = top; row < bottom; row += 1) {
+          for (let column = left; column < right; column += 1) {
+            const index = (row * surface.width + column) * 4;
+            surface.pixels[index] = 0;
+            surface.pixels[index + 1] = 0;
+            surface.pixels[index + 2] = 0;
+            surface.pixels[index + 3] = 0;
+          }
+        }
+      };
+      context.fillRect = (x, y, width, height) => {
+        const surface = workerCanvasSurface(context);
+        const color = workerCanvasColor(context.fillStyle);
+        const left = Math.max(0, Math.floor(Number(x)));
+        const top = Math.max(0, Math.floor(Number(y)));
+        const right = Math.min(surface.width, Math.ceil(Number(x) + Number(width)));
+        const bottom = Math.min(surface.height, Math.ceil(Number(y) + Number(height)));
+        for (let row = top; row < bottom; row += 1) {
+          for (let column = left; column < right; column += 1) {
+            const index = (row * surface.width + column) * 4;
+            surface.pixels[index] = color[0];
+            surface.pixels[index + 1] = color[1];
+            surface.pixels[index + 2] = color[2];
+            surface.pixels[index + 3] = color[3];
+          }
+        }
+      };
+      context.getImageData = (x, y, width, height) => {
+        const surface = workerCanvasSurface(context);
+        const normalizedWidth = Number(width);
+        const normalizedHeight = Number(height);
+        if (!Number.isSafeInteger(normalizedWidth) || !Number.isSafeInteger(normalizedHeight)
+            || normalizedWidth < 0 || normalizedHeight < 0)
+          throw new RangeError("ImageData dimensions are invalid");
+        const data = new Uint8ClampedArray(normalizedWidth * normalizedHeight * 4);
+        for (let row = 0; row < normalizedHeight; row += 1) {
+          for (let column = 0; column < normalizedWidth; column += 1) {
+            const sourceX = Math.floor(Number(x)) + column;
+            const sourceY = Math.floor(Number(y)) + row;
+            const targetIndex = (row * normalizedWidth + column) * 4;
+            if (sourceX < 0 || sourceY < 0 || sourceX >= surface.width || sourceY >= surface.height) continue;
+            const sourceIndex = (sourceY * surface.width + sourceX) * 4;
+            for (let channel = 0; channel < 4; channel += 1) data[targetIndex + channel] = surface.pixels[sourceIndex + channel];
+          }
+        }
+        return workerCanvasImageData(normalizedWidth, normalizedHeight, data);
+      };
+      context.putImageData = (image, x, y) => {
+        const surface = workerCanvasSurface(context);
+        const width = Number(image && image.width);
+        const height = Number(image && image.height);
+        const data = image && image.data;
+        if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || !data
+            || data.length !== width * height * 4)
+          throw new TypeError("ImageData is invalid");
+        for (let row = 0; row < height; row += 1) {
+          for (let column = 0; column < width; column += 1) {
+            const targetX = Math.floor(Number(x)) + column;
+            const targetY = Math.floor(Number(y)) + row;
+            if (targetX < 0 || targetY < 0 || targetX >= surface.width || targetY >= surface.height) continue;
+            const sourceIndex = (row * width + column) * 4;
+            const targetIndex = (targetY * surface.width + targetX) * 4;
+            for (let channel = 0; channel < 4; channel += 1) surface.pixels[targetIndex + channel] = data[sourceIndex + channel];
+          }
+        }
+      };
+      context.createImageData = (width, height) => workerCanvasImageData(Number(width), Number(height));
+      context.drawImage = (source, x, y) => {
+        const sourceSurface = workerCanvasSourceSurface(source);
+        const target = workerCanvasSurface(context);
+        if (!sourceSurface) throw new DOMException("image source is invalid", "InvalidStateError");
+        const offsetX = Math.floor(Number(x));
+        const offsetY = Math.floor(Number(y));
+        for (let row = 0; row < sourceSurface.height; row += 1) {
+          for (let column = 0; column < sourceSurface.width; column += 1) {
+            const targetX = offsetX + column;
+            const targetY = offsetY + row;
+            if (targetX < 0 || targetY < 0 || targetX >= target.width || targetY >= target.height) continue;
+            const sourceIndex = (row * sourceSurface.width + column) * 4;
+            const targetIndex = (targetY * target.width + targetX) * 4;
+            for (let channel = 0; channel < 4; channel += 1) target.pixels[targetIndex + channel] = sourceSurface.pixels[sourceIndex + channel];
+          }
+        }
+      };
+      return context;
+    };
+    globalThis.__glassOffscreenCanvasConstructor = GlassOffscreenCanvasNative;
+    globalThis.OffscreenCanvas = GlassOffscreenCanvasNative;
+    Object.defineProperties(GlassOffscreenCanvasNative.prototype, {
+      width: { configurable: true, enumerable: true, get() { return workerOffscreenSurface(this).width; }, set(value) { const surface = workerOffscreenSurface(this); const width = Number(value); if (!Number.isSafeInteger(width) || width < 0 || width > 4096 || width * surface.height > 262144) throw new RangeError("OffscreenCanvas width is invalid"); surface.width = width; surface.pixels = new Array(width * surface.height * 4).fill(0); } },
+      height: { configurable: true, enumerable: true, get() { return workerOffscreenSurface(this).height; }, set(value) { const surface = workerOffscreenSurface(this); const height = Number(value); if (!Number.isSafeInteger(height) || height < 0 || height > 4096 || surface.width * height > 262144) throw new RangeError("OffscreenCanvas height is invalid"); surface.height = height; surface.pixels = new Array(surface.width * height * 4).fill(0); } },
+      getContext: { configurable: true, enumerable: true, value(type) { workerOffscreenSurface(this); if (String(type).toLowerCase() !== "2d") return null; if (!this.__glassCanvasContext) Object.defineProperty(this, "__glassCanvasContext", { configurable: false, enumerable: false, value: workerCanvasContext(this) }); return this.__glassCanvasContext; } },
+      transferToImageBitmap: { configurable: true, enumerable: true, value() { const surface = workerOffscreenSurface(this); return globalThis.__glassNativeImageBitmapFromSurface(surface); } },
+    });
+    globalThis.__glassNativeOffscreenCanvasIsOffscreenCanvas = (value) => {
+      try { return value instanceof GlassOffscreenCanvasNative; }
+      catch (_error) { return false; }
+    };
+    globalThis.__glassNativeOffscreenCanvasTransferDescriptor = (value) => {
+      const surface = workerOffscreenSurface(value);
+      if (!surface) throw new TypeError("OffscreenCanvas is detached");
+      return { type: "offscreencanvas", width: surface.width, height: surface.height, pixels: surface.pixels.slice(), originClean: surface.originClean !== false };
+    };
+    globalThis.__glassNativeOffscreenCanvasDetach = (value) => {
+      if (!workerOffscreenSurface(value)) return false;
+      value.__glassCanvasDetached = true;
+      return true;
+    };
+    globalThis.__glassNativeOffscreenCanvasFromTransfer = (descriptor) => {
+      const canvas = Object.create(GlassOffscreenCanvasNative.prototype);
+      Object.defineProperty(canvas, "__glassCanvasSurface", { configurable: false, enumerable: false, writable: true, value: { width: Number(descriptor.width), height: Number(descriptor.height), pixels: descriptor.pixels.slice(), originClean: descriptor.originClean !== false } });
+      Object.defineProperty(canvas, "__glassCanvasDetached", { configurable: false, enumerable: false, writable: true, value: false });
+      Object.defineProperty(canvas, "nodeIndex", { configurable: false, enumerable: false, value: null });
+      return canvas;
+    };
   }
   const glassMessageImageBitmapIsImageBitmap = globalThis.__glassNativeImageBitmapIsImageBitmap;
   const glassMessageImageBitmapTransferDescriptor = globalThis.__glassNativeImageBitmapTransferDescriptor;
   const glassMessageImageBitmapDetach = globalThis.__glassNativeImageBitmapDetach;
   const glassMessageImageBitmapFromTransfer = globalThis.__glassNativeImageBitmapFromTransfer;
+  const glassMessageOffscreenCanvasIsOffscreenCanvas = globalThis.__glassNativeOffscreenCanvasIsOffscreenCanvas;
+  const glassMessageOffscreenCanvasTransferDescriptor = globalThis.__glassNativeOffscreenCanvasTransferDescriptor;
+  const glassMessageOffscreenCanvasDetach = globalThis.__glassNativeOffscreenCanvasDetach;
+  const glassMessageOffscreenCanvasFromTransfer = globalThis.__glassNativeOffscreenCanvasFromTransfer;
   const glassMessageArrayBufferIsAttached = globalThis.__glassNativeArrayBufferIsAttached;
   const glassMessageDetachArrayBuffer = globalThis.__glassNativeDetachArrayBuffer;
   const glassMessagePortRegistry = globalThis.__glassMessagePortRegistry instanceof Map
@@ -17653,6 +17942,14 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       return false;
     }
   };
+  const glassMessageOffscreenCanvasValue = (value) => {
+    try {
+      return typeof glassMessageOffscreenCanvasIsOffscreenCanvas === "function"
+        && glassMessageOffscreenCanvasIsOffscreenCanvas(value) === true;
+    } catch (_error) {
+      return false;
+    }
+  };
   const glassMessageNumberDescriptor = (value) => {
     if (Number.isNaN(value)) return { type: "number", value: "nan" };
     if (value === Infinity) return { type: "number", value: "infinity" };
@@ -17724,7 +18021,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       if (transfers && transfers.has(current)) {
         const transfer = transfers.get(current);
         if (typeof transfer === "number") return { type: "port", index: transfer };
-        if (transfer && transfer.kind === "imageBitmap"
+        if (transfer && (transfer.kind === "imageBitmap" || transfer.kind === "offscreenCanvas")
             && Number.isSafeInteger(transfer.index))
           return { type: "transfer", index: transfer.index };
         throw glassMessageException("message transfer reference is invalid", "DataCloneError");
@@ -17733,6 +18030,8 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
         throw glassMessageException("MessagePort is not in the transfer list", "DataCloneError");
       if (glassMessageImageBitmapValue(current))
         throw glassMessageException("ImageBitmap is not in the transfer list", "DataCloneError");
+      if (glassMessageOffscreenCanvasValue(current))
+        throw glassMessageException("OffscreenCanvas is not in the transfer list", "DataCloneError");
       if (seen.has(current)) return { ref: seen.get(current) };
 
       const id = reserve();
@@ -17901,25 +18200,25 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
         || glassMessageArrayBufferIsAttached(value) !== true)
       throw glassMessageException("ArrayBuffer is not transferable", "DataCloneError");
   };
-  const glassMessageValidateImageBitmapDescriptor = (descriptor) => {
-    if (!descriptor || typeof descriptor !== "object" || descriptor.type !== "imagebitmap")
-      throw glassMessageException("ImageBitmap transfer descriptor is invalid", "DataCloneError");
+  const glassMessageValidateImageBitmapDescriptor = (descriptor, expectedType = "imagebitmap", label = "ImageBitmap") => {
+    if (!descriptor || typeof descriptor !== "object" || descriptor.type !== expectedType)
+      throw glassMessageException(label + " transfer descriptor is invalid", "DataCloneError");
     const width = Number(descriptor.width);
     const height = Number(descriptor.height);
     if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
         || width < 1 || height < 1 || width > 4096 || height > 4096
         || width * height > glassMessageCloneNodeLimit)
-      throw glassMessageException("ImageBitmap dimensions are invalid", "DataCloneError");
+      throw glassMessageException(label + " dimensions are invalid", "DataCloneError");
     if (!Array.isArray(descriptor.pixels)
         || descriptor.pixels.length !== width * height * 4
         || descriptor.pixels.length > glassMessageCloneNodeLimit)
-      throw glassMessageException("ImageBitmap pixels are invalid", "DataCloneError");
+      throw glassMessageException(label + " pixels are invalid", "DataCloneError");
     for (const byte of descriptor.pixels) {
       if (!Number.isInteger(byte) || byte < 0 || byte > 255)
-        throw glassMessageException("ImageBitmap pixels are invalid", "DataCloneError");
+        throw glassMessageException(label + " pixels are invalid", "DataCloneError");
     }
     return {
-      type: "imagebitmap",
+      type: expectedType,
       width,
       height,
       pixels: descriptor.pixels.slice(),
@@ -17935,6 +18234,15 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     catch (_error) { throw glassMessageException("ImageBitmap is not transferable", "DataCloneError"); }
     return glassMessageValidateImageBitmapDescriptor(descriptor);
   };
+  const glassMessageOffscreenCanvasTransfer = (value) => {
+    if (!glassMessageOffscreenCanvasValue(value)) return null;
+    if (typeof glassMessageOffscreenCanvasTransferDescriptor !== "function")
+      throw glassMessageException("OffscreenCanvas transfer is unavailable", "DataCloneError");
+    let descriptor;
+    try { descriptor = glassMessageOffscreenCanvasTransferDescriptor(value); }
+    catch (_error) { throw glassMessageException("OffscreenCanvas is not transferable", "DataCloneError"); }
+    return glassMessageValidateImageBitmapDescriptor(descriptor, "offscreencanvas", "OffscreenCanvas");
+  };
   const glassMessageCommitImageBitmapTransfers = (bitmaps) => {
     for (const bitmap of bitmaps) {
       let detached = false;
@@ -17944,6 +18252,17 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       } catch (_error) {}
       if (!detached)
         throw glassMessageException("ImageBitmap could not be detached", "DataCloneError");
+    }
+  };
+  const glassMessageCommitOffscreenCanvasTransfers = (canvases) => {
+    for (const canvas of canvases) {
+      let detached = false;
+      try {
+        detached = typeof glassMessageOffscreenCanvasDetach === "function"
+          && glassMessageOffscreenCanvasDetach(canvas) === true;
+      } catch (_error) {}
+      if (!detached)
+        throw glassMessageException("OffscreenCanvas could not be detached", "DataCloneError");
     }
   };
   const glassMessageDecodeImageBitmapTransfer = (descriptor) => {
@@ -17956,6 +18275,26 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     if (!glassMessageImageBitmapValue(result))
       throw glassMessageException("ImageBitmap transfer result is invalid", "DataCloneError");
     return result;
+  };
+  const glassMessageDecodeOffscreenCanvasTransfer = (descriptor) => {
+    const normalized = glassMessageValidateImageBitmapDescriptor(
+      descriptor,
+      "offscreencanvas",
+      "OffscreenCanvas",
+    );
+    if (typeof glassMessageOffscreenCanvasFromTransfer !== "function")
+      throw glassMessageException("OffscreenCanvas transfer is unavailable", "DataCloneError");
+    let result;
+    try { result = glassMessageOffscreenCanvasFromTransfer(normalized); }
+    catch (_error) { throw glassMessageException("OffscreenCanvas transfer is invalid", "DataCloneError"); }
+    if (!glassMessageOffscreenCanvasValue(result))
+      throw glassMessageException("OffscreenCanvas transfer result is invalid", "DataCloneError");
+    return result;
+  };
+  const glassMessageDecodeTransferValue = (descriptor) => {
+    if (descriptor && descriptor.type === "offscreencanvas")
+      return glassMessageDecodeOffscreenCanvasTransfer(descriptor);
+    return glassMessageDecodeImageBitmapTransfer(descriptor);
   };
   const glassMessageCommitArrayBufferTransfers = (buffers) => {
     for (const buffer of buffers) {
@@ -18009,6 +18348,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     const prepared = [];
     const buffers = [];
     const bitmaps = [];
+    const offscreenCanvases = [];
     const members = new Map();
     const transferValues = [];
     const transferMembers = new Set();
@@ -18032,6 +18372,14 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
         members.set(member, { kind: "imageBitmap", index });
         continue;
       }
+      const offscreenCanvas = glassMessageOffscreenCanvasTransfer(member);
+      if (offscreenCanvas) {
+        const index = transferValues.length;
+        transferValues.push(offscreenCanvas);
+        offscreenCanvases.push(member);
+        members.set(member, { kind: "offscreenCanvas", index });
+        continue;
+      }
       if (members.has(member))
         throw glassMessageException("MessagePort appears more than once in the transfer list", "DataCloneError");
       const descriptor = glassMessageTransferDescriptor(member);
@@ -18043,6 +18391,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     const data = glassMessageEncodeMessage(value, members, transferValues);
     glassMessageCommitArrayBufferTransfers(buffers);
     glassMessageCommitImageBitmapTransfers(bitmaps);
+    glassMessageCommitOffscreenCanvasTransfers(offscreenCanvases);
     for (const descriptor of prepared) glassMessageCommitTransfer(descriptor);
     return {
       data,
@@ -18084,6 +18433,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     const prepared = [];
     const buffers = [];
     const bitmaps = [];
+    const offscreenCanvases = [];
     const members = new Map();
     const transferValues = [];
     const transferMembers = new Set();
@@ -18107,6 +18457,14 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
         members.set(member, { kind: "imageBitmap", index });
         continue;
       }
+      const offscreenCanvas = glassMessageOffscreenCanvasTransfer(member);
+      if (offscreenCanvas) {
+        const index = transferValues.length;
+        transferValues.push(offscreenCanvas);
+        offscreenCanvases.push(member);
+        members.set(member, { kind: "offscreenCanvas", index });
+        continue;
+      }
       const descriptor = glassMessageTransferDescriptor(member);
       if (members.has(descriptor.peer))
         throw glassMessageException("both endpoints of a MessageChannel cannot be transferred together", "DataCloneError");
@@ -18118,6 +18476,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     const result = glassMessageDecodeClone(data, ports);
     glassMessageCommitArrayBufferTransfers(buffers);
     glassMessageCommitImageBitmapTransfers(bitmaps);
+    glassMessageCommitOffscreenCanvasTransfers(offscreenCanvases);
     for (let index = 0; index < prepared.length; index += 1)
       glassMessageCommitLocalPortTransfer(prepared[index], ports[index]);
     return { data: result, ports };
@@ -18202,7 +18561,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       if (!Number.isSafeInteger(index) || index < 0 || index >= transferValues.length)
         throw glassMessageException("message transfer reference is invalid", "DataCloneError");
       if (transferCache.has(index)) return transferCache.get(index);
-      const result = glassMessageDecodeImageBitmapTransfer(transferValues[index]);
+      const result = glassMessageDecodeTransferValue(transferValues[index]);
       transferCache.set(index, result);
       return result;
     };

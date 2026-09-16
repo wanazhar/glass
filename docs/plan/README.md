@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-387` locally. Native is now the default runtime for
+`native-engine-browser-388` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -394,6 +394,17 @@ returns a fresh clone and detaches its source. The existing JSON-safe wire
 contract is unchanged. Complete transferability for other platform objects,
 browser-wide task-source arbitration, and the remaining Core Web Profile gates
 remain active issue #40 work.
+
+The completed native same-realm transferable-port slice is
+[native-engine-browser-388](tasks/native-engine-browser-388.md): local
+`MessagePort.postMessage()` and `structuredClone(value, { transfer })` now
+transfer bounded MessagePort and ArrayBuffer members through a fresh local
+endpoint, move queued messages, preserve entanglement and data/port identity,
+and invalidate the source only after successful decode. Cross-target ports
+continue through the browser-owned route map, and invalid, duplicate,
+detached, typed-array/DataView, and SharedArrayBuffer members fail closed. The
+remaining transferable platform objects, browser-wide task-source arbitration,
+and Core Web Profile gates remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

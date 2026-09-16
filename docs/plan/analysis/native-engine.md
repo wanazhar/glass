@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is the completed `native-engine-browser-411`, with
+expansion checkpoint is the completed `native-engine-browser-412`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -576,14 +576,21 @@ issuing a navigation request; enforced policies intersect, and an omitted
 `form-action` does not inherit `default-src`. The shared loader records
 report-only observations, while delivery through every form-event path and
 broader conformance remain issue #40 gates. The completed
-`native-engine-browser-411` slice closes the Glass-owned explicit `navigate-to`
+`native-engine-browser-412` closes the live `navigate-to` policy transfer
+boundary: after every content-process mutation/evaluation that carries a
+document snapshot, the child returns the bounded effective source groups from
+its append-only policy container, and the parent stores that snapshot before
+its lifecycle-only fast path. Dynamic CSP meta insertion therefore governs
+subsequent top-level link and `location` navigation without a reload. The
+preceding `native-engine-browser-411` slice closes the Glass-owned explicit
+`navigate-to`
 navigation-policy extension: bounded response and initial head-meta source
 groups cross the content-process boundary and are intersected by the parent
 navigation owner before direct, same-document, page-script, link, download,
 popup, history, or final content-process navigation is issued or committed.
 This is a Glass-owned extension rather than a normative CSP Level 3 directive;
-dynamic policy mutation, report-only delivery through every navigation path,
-and broader browser conformance remain issue #40 gates. The completed 234 slice
+report-only delivery through every navigation path and broader browser
+conformance remain issue #40 gates. The completed 234 slice
 carries
 bounded
 root-scroll sticky positioning through

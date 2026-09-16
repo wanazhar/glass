@@ -1,9 +1,22 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-411` slice. The native runtime is now the primary
+`native-engine-browser-412` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
+`navigate-to` navigation-policy extension. After each content-process
+document mutation, the child recomputes its bounded effective source groups
+from the append-only CSP policy container and adds them to the existing
+mutation/evaluation envelope. The parent validates and commits that snapshot
+before lifecycle-only short circuits, so a meta policy inserted by script,
+input, lifecycle, hash-change, or a script event-loop turn governs the next
+top-level link or location decision without a reload. The IPC schema is
+versioned with the rest of the content worker boundary; an absent directive
+remains distinct from an explicit source group, and the parent remains the
+navigation authority. Report-only delivery through every navigation path and
+broader CSP conformance remain separate issue #40 gates.
 
 Slice 411 closes the Glass-owned explicit `navigate-to` navigation-policy
 extension. This is intentionally documented as a Glass policy extension, not
@@ -14,8 +27,8 @@ intersected, and carried from the content process to the parent navigation
 owner. Direct navigation, same-document and page-script handoffs, links,
 downloads, popups, history traversal, and final content-process URLs check the
 owner policy before they issue or commit a navigation. A denied request leaves
-the current document in place. Dynamic policy mutation and report-only
-delivery through every navigation path remain separate issue #40 gates.
+the current document in place. Report-only delivery through every navigation
+path remains a separate issue #40 gate.
 
 Slice 410 closes the explicit CSP `form-action` boundary. Validated GET/POST
 form submissions from local documents and the HTTP content process now check

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-411` locally. Native is now the default runtime for
+`native-engine-browser-412` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -567,9 +567,18 @@ process boundary and are intersected by the parent navigation owner. Direct,
 same-document, page-script, link, download, popup, history, and final
 content-process navigation decisions consult the active policy before issuing
 or committing a request. This is a Glass-owned extension rather than a
-normative CSP Level 3 directive; dynamic policy mutation, report-only delivery
-through every navigation path, and broader browser conformance remain issue
-#40 gates.
+normative CSP Level 3 directive; live policy mutation was completed in the
+following 412 transfer slice, while report-only delivery through every
+navigation path and broader browser conformance remain issue #40 gates.
+
+The completed live `navigate-to` transfer slice is
+[native-engine-browser-412](tasks/native-engine-browser-412.md): every
+content-process mutation/evaluation that carries a document snapshot now
+returns the child policy container's bounded effective source groups, and the
+parent commits them before applying navigation or lifecycle effects. A CSP
+meta policy inserted after load therefore governs the next link or
+`location` navigation without requiring a reload. Report-only delivery through
+every navigation path and broader browser conformance remain issue #40 gates.
 
 The completed CSP source-expression matching slice is
 [native-engine-browser-404](tasks/native-engine-browser-404.md): the shared

@@ -5701,6 +5701,7 @@ impl NativeEngine {
         next_revision: u64,
         mut mutation: NativeContentMutation,
     ) -> Result<NativeActionResult, NativeEngineError> {
+        let navigate_to_sources = mutation.navigate_to_sources.take();
         self.config.window_name = mutation.window_name.clone();
         self.queue_popup_requests(std::mem::take(&mut mutation.popups))?;
         self.queue_post_message_requests(std::mem::take(&mut mutation.post_messages))?;
@@ -5740,6 +5741,7 @@ impl NativeEngine {
                 return Err(error);
             }
         };
+        self.document_navigate_to_sources = navigate_to_sources;
         let document_changed = {
             let mut normalized = document.clone();
             normalized.set_revision(self.document.revision());

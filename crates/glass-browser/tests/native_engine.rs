@@ -54063,6 +54063,116 @@ async fn native_content_process_xhr_exposes_bounded_xml_response_document() {
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_response_type_is_canonical_and_state_aware() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..4 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .expect("timed out waiting for the next response-type request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let (content_type, body) = match path {
+                "/page" => (
+                    "text/html",
+                    r#"<script>
+globalThis.pageResponseTypePromise = new Promise(resolve => {
+  const xhr = new XMLHttpRequest();
+  let invalidType = '';
+  let loadingError = '';
+  let doneError = '';
+  xhr.open('GET', '/type-page');
+  try { xhr.responseType = 'unsupported'; } catch (error) { invalidType = error.name; }
+  xhr.responseType = 'JSON';
+  xhr.onreadystatechange = () => {
+    if (xhr.readyState === 3) {
+      try { xhr.responseType = 'text'; } catch (error) { loadingError = error.name; }
+    }
+    if (xhr.readyState === 4) {
+      try { xhr.responseType = 'text'; } catch (error) { doneError = error.name; }
+    }
+  };
+  xhr.onload = () => resolve({ canonical: xhr.responseType, data: xhr.response, invalidType, loadingError, doneError });
+  xhr.onerror = () => resolve({ error: 'page-xhr' });
+  xhr.send();
+});
+globalThis.workerResponseTypePromise = new Promise(resolve => {
+  const worker = new Worker('/worker-type.js');
+  worker.onmessage = event => resolve(event.data);
+  worker.onerror = () => resolve({ error: 'worker-script' });
+});
+</script><main>XHR response type</main>"#,
+                ),
+                "/worker-type.js" => (
+                    "text/javascript",
+                    r#"const xhr = new XMLHttpRequest();
+let invalidType = '';
+let loadingError = '';
+let doneError = '';
+xhr.open('GET', '/type-worker');
+try { xhr.responseType = 'unsupported'; } catch (error) { invalidType = error.name; }
+xhr.responseType = 'TEXT';
+xhr.onreadystatechange = () => {
+  if (xhr.readyState === 3) {
+    try { xhr.responseType = 'json'; } catch (error) { loadingError = error.name; }
+  }
+  if (xhr.readyState === 4) {
+    try { xhr.responseType = 'json'; } catch (error) { doneError = error.name; }
+  }
+};
+xhr.onload = () => postMessage({ canonical: xhr.responseType, data: xhr.response, invalidType, loadingError, doneError });
+xhr.onerror = () => postMessage({ error: 'worker-xhr' });
+xhr.send();"#,
+                ),
+                "/type-page" => ("application/json", r#"{"page":true}"#),
+                "/type-worker" => ("text/plain", "worker-response"),
+                other => panic!("unexpected response-type request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await Promise.all([pageResponseTypePromise, workerResponseTypePromise])",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            {
+                "canonical": "json",
+                "data": {"page": true},
+                "invalidType": "TypeError",
+                "loadingError": "InvalidStateError",
+                "doneError": "InvalidStateError",
+            },
+            {
+                "canonical": "text",
+                "data": "worker-response",
+                "invalidType": "TypeError",
+                "loadingError": "InvalidStateError",
+                "doneError": "InvalidStateError",
+            },
+        ])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_xhr_abort_is_observable_and_ignores_late_callbacks() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

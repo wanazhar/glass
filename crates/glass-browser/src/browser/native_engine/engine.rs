@@ -24,20 +24,21 @@ use super::javascript::{
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeHashChangeEvent,
     NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
     NativeMessagePortPageMessage, NativeMessagePortTransfer, NativePageEventBatch,
-    NativePageMessageEvent, NativePageNavigation, NativePopupRequest, NativePostMessageRequest,
-    NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerClientLease,
-    NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
-    NativeServiceWorkerOpenWindowRequest, NativeStorageEvent, NativeWebStorageState,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    NativeWorkerRegistry, append_storage_changes, apply_indexed_db_changes,
-    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_inline_scripts,
-    frame_event_batch, host_event_batch, host_key_event_batch_with_modifiers,
-    host_submit_event_batch, load_indexed_db_profile, load_service_worker_client_leases,
-    load_web_storage_profile, new_storage_writer_id, page_script_sources_to_scripts,
-    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
-    storage_event_cursor, storage_key, unregister_service_worker_client_lease,
-    unregister_storage_reader, validate_frame_script_command, validate_message_port_transfers,
-    validate_service_worker_client_states,
+    NativePageMessageEvent, NativePageMessagePortCommand, NativePageNavigation, NativePopupRequest,
+    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
+    NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
+    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
+    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
+    apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
+    execute_inline_scripts, frame_event_batch, host_event_batch,
+    host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
+    load_service_worker_client_leases, load_web_storage_profile, new_storage_writer_id,
+    page_script_sources_to_scripts, read_storage_event_journal, register_storage_reader,
+    save_web_storage_profile, storage_event_cursor, storage_key,
+    unregister_service_worker_client_lease, unregister_storage_reader,
+    validate_frame_script_command, validate_message_port_transfers,
+    validate_page_message_port_command, validate_service_worker_client_states,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -371,6 +372,7 @@ pub struct NativeEngine {
     pending_popups: VecDeque<NativePopupRequest>,
     pending_post_messages: VecDeque<NativePostMessageRequest>,
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
+    pending_page_message_port_commands: VecDeque<NativePageMessagePortCommand>,
     pending_window_closes: VecDeque<NativeWindowCloseRequest>,
     pending_window_navigations: VecDeque<NativeWindowNavigationRequest>,
     pending_service_worker_client_messages: VecDeque<NativeServiceWorkerClientMessage>,
@@ -480,6 +482,7 @@ impl NativeEngine {
             pending_popups: VecDeque::new(),
             pending_post_messages: VecDeque::new(),
             pending_message_port_messages: VecDeque::new(),
+            pending_page_message_port_commands: VecDeque::new(),
             pending_window_closes: VecDeque::new(),
             pending_window_navigations: VecDeque::new(),
             pending_service_worker_client_messages: VecDeque::new(),
@@ -712,6 +715,7 @@ impl NativeEngine {
             dialogs,
             popups,
             post_messages,
+            page_message_port_commands,
             window_closes,
             window_navigations,
             service_worker_client_messages,
@@ -744,6 +748,7 @@ impl NativeEngine {
         };
         self.config.window_name = window_name;
         self.queue_frame_script_requests(frame_scripts)?;
+        self.queue_page_message_port_commands(page_message_port_commands)?;
         self.queue_service_worker_client_messages(service_worker_client_messages)?;
         self.queue_service_worker_open_window_requests(service_worker_open_windows)?;
         if let Some(mutation) = mutation {
@@ -1449,6 +1454,9 @@ impl NativeEngine {
             std::mem::take(&mut content.post_messages),
             &content_origin,
         )?;
+        self.queue_page_message_port_commands(std::mem::take(
+            &mut content.page_message_port_commands,
+        ))?;
         self.queue_window_close_requests(std::mem::take(&mut content.window_closes))?;
         self.queue_window_navigation_requests(std::mem::take(&mut content.window_navigations))?;
         self.queue_service_worker_client_messages(std::mem::take(
@@ -1889,6 +1897,7 @@ impl NativeEngine {
                 dialogs,
                 popups,
                 post_messages,
+                page_message_port_commands,
                 window_closes,
                 window_navigations,
                 service_worker_client_messages,
@@ -1920,6 +1929,7 @@ impl NativeEngine {
             };
             self.config.window_name = window_name;
             self.queue_frame_script_requests(frame_scripts)?;
+            self.queue_page_message_port_commands(page_message_port_commands)?;
             self.queue_service_worker_client_messages(service_worker_client_messages)?;
             self.queue_service_worker_open_window_requests(service_worker_open_windows)?;
             let mut history_traversal = None;
@@ -2003,6 +2013,7 @@ impl NativeEngine {
         self.workers
             .apply_page_message_port_commands(initial_message_port_commands, &mut self.loader)
             .await?;
+        self.collect_page_message_port_commands()?;
         self.workers.run_due_timers(&mut self.loader).await?;
         page_events
             .worker_messages
@@ -2042,6 +2053,7 @@ impl NativeEngine {
         self.workers
             .apply_page_message_port_commands(message_port_commands, &mut self.loader)
             .await?;
+        self.collect_page_message_port_commands()?;
         self.pending_message_port_messages
             .extend(self.workers.take_message_port_messages());
         if !self.workers.take_websocket_commands().is_empty() {
@@ -2079,6 +2091,7 @@ impl NativeEngine {
         self.workers
             .apply_page_message_port_commands(dynamic_message_port_commands, &mut self.loader)
             .await?;
+        self.collect_page_message_port_commands()?;
         self.pending_message_port_messages
             .extend(self.workers.take_message_port_messages());
         if !self.workers.take_websocket_commands().is_empty() {
@@ -2563,6 +2576,41 @@ impl NativeEngine {
         Ok(())
     }
 
+    pub(crate) fn queue_page_message_port_commands(
+        &mut self,
+        commands: Vec<NativePageMessagePortCommand>,
+    ) -> Result<(), NativeEngineError> {
+        for mut command in commands {
+            validate_page_message_port_command(&command)?;
+            if self.pending_page_message_port_commands.len() >= MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    "native pending page MessagePort commands",
+                    MAX_NATIVE_EFFECTS,
+                    self.pending_page_message_port_commands
+                        .len()
+                        .saturating_add(1),
+                ));
+            }
+            if command.source_context_id.is_empty() {
+                command.source_context_id = self.config.context_id.clone();
+            } else {
+                validate_context_id(&command.source_context_id)?;
+            }
+            if command.source_frame_id.is_empty() {
+                command.source_frame_id = self.frame_id.clone();
+            } else {
+                validate_context_id(&command.source_frame_id)?;
+            }
+            self.pending_page_message_port_commands.push_back(command);
+        }
+        Ok(())
+    }
+
+    fn collect_page_message_port_commands(&mut self) -> Result<(), NativeEngineError> {
+        let commands = self.workers.take_page_message_port_commands();
+        self.queue_page_message_port_commands(commands)
+    }
+
     fn queue_window_close_request(
         &mut self,
         mut request: NativeWindowCloseRequest,
@@ -2757,6 +2805,12 @@ impl NativeEngine {
         self.pending_post_messages.drain(..).collect()
     }
 
+    pub(crate) fn take_pending_page_message_port_commands(
+        &mut self,
+    ) -> Vec<NativePageMessagePortCommand> {
+        self.pending_page_message_port_commands.drain(..).collect()
+    }
+
     pub(crate) fn take_pending_window_closes(&mut self) -> Vec<NativeWindowCloseRequest> {
         self.pending_window_closes.drain(..).collect()
     }
@@ -2853,6 +2907,34 @@ impl NativeEngine {
                 source_origin: source_origin.to_owned(),
                 data: data.clone(),
                 transfer_ports: transfer_ports.to_vec(),
+            });
+        self.evaluate_page_with_events_async("undefined;".into(), page_events)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn dispatch_page_message_port(
+        &mut self,
+        bridge_key: &str,
+        data: &serde_json::Value,
+        transfer_ports: &[NativeMessagePortTransfer],
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("MessagePort event")?;
+        let command = NativePageMessagePortCommand {
+            bridge_key: bridge_key.to_owned(),
+            data: data.clone(),
+            transfer_ports: transfer_ports.to_vec(),
+            source_context_id: String::new(),
+            source_frame_id: String::new(),
+        };
+        validate_page_message_port_command(&command)?;
+        let mut page_events = NativePageEventBatch::default();
+        page_events
+            .message_port_messages
+            .push(NativeMessagePortPageMessage {
+                bridge_key: command.bridge_key,
+                data: command.data,
+                transfer_ports: command.transfer_ports,
             });
         self.evaluate_page_with_events_async("undefined;".into(), page_events)
             .await
@@ -6011,6 +6093,7 @@ impl NativeEngine {
         self.document = prepared.document;
         self.workers.clear();
         self.pending_message_port_messages.clear();
+        self.pending_page_message_port_commands.clear();
         self.javascript = javascript;
         self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;
@@ -6143,6 +6226,7 @@ impl NativeEngine {
         self.document = prepared.document;
         self.workers.clear();
         self.pending_message_port_messages.clear();
+        self.pending_page_message_port_commands.clear();
         self.javascript = javascript;
         self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;

@@ -63,10 +63,12 @@ pub use interaction::{
 };
 pub(crate) use javascript::{
     NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
-    NativeFrameScriptWindow, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
+    NativeFrameScriptWindow, NativeMessagePortTransfer, NativePageMessagePortCommand,
+    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
     NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
     NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    synchronize_service_worker_client_leases,
+    synchronize_service_worker_client_leases, validate_message_port_transfers,
+    validate_page_message_port_command,
 };
 pub use layout::{
     NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect, NativeSvgSubpath,

@@ -8389,10 +8389,10 @@ async fn native_http_post_message_crosses_content_worker_and_replies() {
             let path = request.split_whitespace().nth(1).unwrap();
             let body = match path {
                 "/message-parent" => {
-                    "<title>HTTP message parent</title><script>addEventListener('message', event => { globalThis.reply = event.data.reply; }); const child = window.open('/message-child', 'message-child'); child.postMessage({ kind: 'worker-greeting', payload: 'x'.repeat(20000) }, '*');</script><p>parent</p>"
+                    "<title>HTTP message parent</title><script>addEventListener('message', event => { globalThis.reply = event.data.reply; }); globalThis.portReply = []; const channel = new MessageChannel(); channel.port2.addEventListener('message', event => { portReply = [event.data.kind, event.data.value]; }); channel.port2.start(); const child = window.open('/message-child', 'message-child'); child.postMessage({ kind: 'worker-greeting', payload: 'x'.repeat(20000), port: channel.port1 }, '*', [channel.port1]);</script><p>parent</p>"
                 }
                 "/message-child" => {
-                    "<script>addEventListener('message', event => { globalThis.received = [event.data.kind, event.data.payload.length, event.origin, Boolean(event.source)]; event.source.postMessage({ reply: event.data.kind }, '*'); });</script><title>HTTP message child</title><p>child</p>"
+                    "<script>addEventListener('message', event => { globalThis.received = [event.data.kind, event.data.payload.length, event.origin, Boolean(event.source), event.ports.length]; event.ports[0].postMessage({ kind: 'port-reply', value: 9 }); event.source.postMessage({ reply: event.data.kind }, '*'); });</script><title>HTTP message child</title><p>child</p>"
                 }
                 other => panic!("unexpected postMessage request path: {other}"),
             };
@@ -8415,7 +8415,13 @@ async fn native_http_post_message_crosses_content_worker_and_replies() {
     session.native_select_target(&child.id).await.unwrap();
     assert_eq!(
         session.script("globalThis.received").await.unwrap().value,
-        serde_json::json!(["worker-greeting", 20000, format!("http://{address}"), true])
+        serde_json::json!([
+            "worker-greeting",
+            20000,
+            format!("http://{address}"),
+            true,
+            1
+        ])
     );
     session
         .native_select_target("native-context")
@@ -8428,6 +8434,14 @@ async fn native_http_post_message_crosses_content_worker_and_replies() {
             .unwrap()
             .value,
         serde_json::json!("worker-greeting")
+    );
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("globalThis.portReply").await.unwrap().value,
+        serde_json::json!(["port-reply", 9])
     );
 
     session.close().await.unwrap();
@@ -8546,6 +8560,103 @@ async fn native_window_proxy_post_message_transfers_message_ports() {
             .unwrap()
             .value,
         serde_json::json!(["InvalidStateError", "InvalidStateError"])
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_window_proxy_message_port_round_trip_reaches_original_peer() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://window-message-port-round-trip-parent",
+            "<title>Message port round trip parent</title><script>globalThis.replies = []; const channel = new MessageChannel(); channel.port2.addEventListener('message', event => { replies.push([event.data.kind, event.data.value, event.ports.length, event.data.port === event.ports[0]]); event.ports[0].postMessage({ kind: 'ack', value: 8 }); }); channel.port2.start(); globalThis.child = window.open('fixture://window-message-port-round-trip-child', 'message-port-round-trip-child'); child.postMessage({ kind: 'connect', port: channel.port1 }, '*', [channel.port1]);</script><p>parent</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://window-message-port-round-trip-child",
+            "<title>Message port round trip child</title><script>globalThis.received = []; globalThis.responseReply = null; addEventListener('message', event => { const port = event.ports[0]; received = [event.data.kind, event.ports.length, event.data.port === port, port instanceof MessagePort, event.origin]; const response = new MessageChannel(); response.port2.addEventListener('message', event => { responseReply = [event.data.kind, event.data.value]; }); response.port2.start(); port.postMessage({ kind: 'reply', value: 7, port: response.port1 }, [response.port1]); });</script><p>child</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://window-message-port-round-trip-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let child_id = targets
+        .iter()
+        .find(|target| !target.active)
+        .unwrap()
+        .id
+        .clone();
+    session.native_select_target(&child_id).await.unwrap();
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!(["connect", 1, true, true, "null"])
+    );
+
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("globalThis.replies").await.unwrap().value,
+        serde_json::json!([["reply", 7, 1, true]])
+    );
+    session.native_select_target(&child_id).await.unwrap();
+    assert_eq!(
+        session
+            .script("globalThis.responseReply")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["ack", 8])
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_window_proxy_message_port_routes_reset_with_navigation() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://window-message-port-route-reuse-parent",
+            "<title>Message port route reuse parent</title><script>const child = window.open('fixture://window-message-port-route-reuse-child', 'message-port-route-reuse-child'); const channel = new MessageChannel(); child.postMessage({ port: channel.port1 }, '*', [channel.port1]);</script><p>parent</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://window-message-port-route-reuse-child",
+            "<title>Message port route reuse child</title><script>addEventListener('message', event => { globalThis.connected = event.ports.length; });</script><p>child</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://window-message-port-route-reuse-parent-next",
+            "<title>Message port route reuse parent next</title><script>const child = window.open('fixture://window-message-port-route-reuse-child-next', 'message-port-route-reuse-child-next'); const channel = new MessageChannel(); child.postMessage({ port: channel.port1 }, '*', [channel.port1]);</script><p>parent next</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://window-message-port-route-reuse-child-next",
+            "<title>Message port route reuse child next</title><script>addEventListener('message', event => { globalThis.connected = event.ports.length; });</script><p>child next</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://window-message-port-route-reuse-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 2);
+
+    session
+        .navigate("fixture://window-message-port-route-reuse-parent-next")
+        .await
+        .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 3);
+    let next_child_id = targets
+        .iter()
+        .find(|target| target.title == "Message port route reuse child next")
+        .unwrap()
+        .id
+        .clone();
+    session.native_select_target(&next_child_id).await.unwrap();
+    assert_eq!(
+        session.script("globalThis.connected").await.unwrap().value,
+        serde_json::json!(1)
     );
     session.close().await.unwrap();
 }

@@ -30,14 +30,14 @@ use super::javascript::{
     NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
     NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHashChangeEvent,
     NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
-    NativeMessagePortPageMessage, NativePageEventBatch, NativePageScript, NativePageScriptResult,
-    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
-    NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
-    NativeServiceWorkerOpenWindowRequest, NativeStorageEvent, NativeWebStorageState,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    NativeWorkerEventSourceCommand, NativeWorkerMessage, NativeWorkerRegistry,
-    NativeWorkerWebSocketCommand, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_page_scripts, host_event_batch, host_key_event_batch,
+    NativeMessagePortPageMessage, NativePageEventBatch, NativePageMessagePortCommand,
+    NativePageScript, NativePageScriptResult, NativePopupRequest, NativePostMessageRequest,
+    NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerClientMessage,
+    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
+    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
+    NativeWorkerRegistry, NativeWorkerWebSocketCommand, diff_indexed_db_changes,
+    execute_dynamic_page_scripts, execute_page_scripts, host_event_batch, host_key_event_batch,
     host_key_event_batch_with_modifiers, host_submit_event_batch,
     literal_dynamic_module_specifiers, load_indexed_db_profile, load_service_worker_cache_profile,
     load_service_worker_registration_profiles, load_web_storage_profile, order_page_scripts,
@@ -134,6 +134,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) dialogs: Vec<NativeDialog>,
     pub(crate) popups: Vec<NativePopupRequest>,
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
+    pub(crate) page_message_port_commands: Vec<NativePageMessagePortCommand>,
     pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
     pub(crate) window_navigations: Vec<NativeWindowNavigationRequest>,
     pub(crate) service_worker_client_messages: Vec<NativeServiceWorkerClientMessage>,
@@ -1013,6 +1014,7 @@ pub(crate) struct NativeContentScriptResult {
     pub(crate) dialogs: Vec<NativeDialog>,
     pub(crate) popups: Vec<NativePopupRequest>,
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
+    pub(crate) page_message_port_commands: Vec<NativePageMessagePortCommand>,
     pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
     pub(crate) window_navigations: Vec<NativeWindowNavigationRequest>,
     pub(crate) service_worker_client_messages: Vec<NativeServiceWorkerClientMessage>,
@@ -2450,6 +2452,10 @@ fn decode_load_response(
     let dialogs = decode_dialogs(response, "decode content process load")?;
     let popups = decode_popup_requests(response, "decode content process load")?;
     let post_messages = decode_post_message_requests(response, "decode content process load")?;
+    let page_message_port_commands = decode_page_message_port_commands(
+        response,
+        "decode content process page MessagePort commands",
+    )?;
     let window_closes = decode_window_close_requests(response, "decode content process load")?;
     let window_navigations =
         decode_window_navigation_requests(response, "decode content process load")?;
@@ -2474,6 +2480,7 @@ fn decode_load_response(
         dialogs,
         popups,
         post_messages,
+        page_message_port_commands,
         window_closes,
         window_navigations,
         service_worker_client_messages,
@@ -3010,6 +3017,35 @@ fn decode_post_message_requests(
     Ok(messages)
 }
 
+fn decode_page_message_port_commands(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativePageMessagePortCommand>, NativeEngineError> {
+    let Some(value) = response.get("page_message_port_commands") else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid page MessagePort commands".into(),
+    })?;
+    if values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process page MessagePort commands",
+            MAX_NATIVE_EFFECTS,
+            values.len(),
+        ));
+    }
+    let commands = serde_json::from_value::<Vec<NativePageMessagePortCommand>>(value.clone())
+        .map_err(|_| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned malformed page MessagePort commands".into(),
+        })?;
+    for command in &commands {
+        super::javascript::validate_page_message_port_command(command)?;
+    }
+    Ok(commands)
+}
+
 fn decode_content_navigation(
     value: &Value,
     operation: &str,
@@ -3283,6 +3319,10 @@ fn decode_script_response(
     };
     let has_mutation = mutation.is_some();
     let post_messages = decode_post_message_requests(response, "decode content process script")?;
+    let page_message_port_commands = decode_page_message_port_commands(
+        response,
+        "decode content process page MessagePort commands",
+    )?;
     let window_closes = decode_window_close_requests(response, "decode content process script")?;
     let window_navigations =
         decode_window_navigation_requests(response, "decode content process script")?;
@@ -3321,6 +3361,7 @@ fn decode_script_response(
         } else {
             post_messages
         },
+        page_message_port_commands,
         window_closes: if has_mutation {
             Vec::new()
         } else {
@@ -3799,6 +3840,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut service_workers = NativeServiceWorkerRegistry::default();
     let mut pending_worker_messages: VecDeque<NativeWorkerMessage> = VecDeque::new();
     let mut pending_message_port_messages: VecDeque<NativeMessagePortPageMessage> = VecDeque::new();
+    let mut pending_page_message_port_commands: VecDeque<NativePageMessagePortCommand> =
+        VecDeque::new();
     let mut pending_service_worker_client_messages: VecDeque<NativeServiceWorkerClientMessage> =
         VecDeque::new();
     let mut websocket_connections = BTreeMap::new();
@@ -4650,6 +4693,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         pending_worker_messages.extend(workers.take_messages());
                                         pending_message_port_messages
                                             .extend(workers.take_message_port_messages());
+                                        pending_page_message_port_commands
+                                            .extend(workers.take_page_message_port_commands());
                                     }
                                     let document_wire = parsed.to_content_wire();
                                     document = Some(parsed);
@@ -4976,6 +5021,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 )?;
                 pending_worker_messages.extend(workers.take_messages());
                 pending_message_port_messages.extend(workers.take_message_port_messages());
+                pending_page_message_port_commands
+                    .extend(workers.take_page_message_port_commands());
                 match evaluation.map(|mut evaluation| {
                     evaluation.commands.extend(resolved_service_worker_commands);
                     evaluation
@@ -5109,6 +5156,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 pending_worker_messages.extend(workers.take_messages());
                                 pending_message_port_messages
                                     .extend(workers.take_message_port_messages());
+                                pending_page_message_port_commands
+                                    .extend(workers.take_page_message_port_commands());
                                 if !mutation.history.is_empty() {
                                     let Some(base_url) = document_url.as_deref() else {
                                         let response = content_error_response(
@@ -6104,6 +6153,18 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 response_post_messages.len(),
             ));
         }
+        let mut response_page_message_port_commands = decode_page_message_port_commands(
+            &response,
+            "merge content process page MessagePort commands",
+        )?;
+        response_page_message_port_commands.extend(pending_page_message_port_commands.drain(..));
+        if response_page_message_port_commands.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "content-process page MessagePort commands",
+                MAX_NATIVE_EFFECTS,
+                response_page_message_port_commands.len(),
+            ));
+        }
         let mut response_window_closes =
             decode_window_close_requests(&response, "merge content process window close")?;
         response_window_closes.extend(window_closes);
@@ -6163,6 +6224,16 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     NativeEngineError::Worker {
                         operation: "encode content process postMessage requests".into(),
                         reason: "content process postMessage requests could not be encoded".into(),
+                    }
+                })?,
+            );
+            object.insert(
+                "page_message_port_commands".into(),
+                serde_json::to_value(response_page_message_port_commands).map_err(|_| {
+                    NativeEngineError::Worker {
+                        operation: "encode content process page MessagePort commands".into(),
+                        reason: "content process page MessagePort commands could not be encoded"
+                            .into(),
                     }
                 })?,
             );
@@ -6734,6 +6805,7 @@ async fn load_content_resource(
             dialogs: Vec::new(),
             popups: Vec::new(),
             post_messages: Vec::new(),
+            page_message_port_commands: Vec::new(),
             window_closes: Vec::new(),
             window_navigations: Vec::new(),
             service_worker_client_messages: Vec::new(),

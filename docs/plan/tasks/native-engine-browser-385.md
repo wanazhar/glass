@@ -45,7 +45,8 @@ The transfer descriptors are now admitted by WindowProxy delivery, but the
 receiving port's subsequent `postMessage` return route is not yet connected to
 the browser-wide owner map; that remains a separate issue-40 slice rather than
 silently dropping a command or pretending that a local bridge is cross-target.
-ArrayBuffer detachment remains outside this slice. Full browser-wide task-source
+That follow-up was delivered in `native-engine-browser-386`. ArrayBuffer
+detachment remains outside this slice. Full browser-wide task-source
 arbitration and Core Web Profile certification remain open.
 
 ## Touched paths

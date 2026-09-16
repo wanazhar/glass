@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is the completed `native-engine-browser-399`, with
+expansion checkpoint is the completed `native-engine-browser-400`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -454,10 +454,10 @@ meta policies with every response-header policy. Head-only
 `Content-Security-Policy` meta values now constrain the existing Rust-owned
 subresource, inline-element/attribute, and child-frame decisions; multiple
 frame source groups remain an intersection across the typed content-process
-wire. Report-only violation delivery is covered by the following 399 slice;
-strict-dynamic, dynamic policy mutation, and the complete CSP source grammar
-remain separate issue #40 security gates. The contract and evidence are
-recorded in `docs/plan/tasks/native-engine-browser-398.md`. The
+wire. Report-only violation delivery is covered by the following 399 and 400
+slices; strict-dynamic, dynamic policy mutation, and the complete CSP source
+grammar remain separate issue #40 security gates. The contract and evidence
+are recorded in `docs/plan/tasks/native-engine-browser-398.md`. The
 completed `native-engine-browser-399` slice carries response-header
 `Content-Security-Policy-Report-Only` declarations into the Rust-owned
 resource policy, emits bounded structured violation records for URL and
@@ -467,7 +467,14 @@ The enforced policy remains authoritative and report-only records never
 authorize or block requests. Network report delivery, strict-dynamic, dynamic
 policy mutation, and the complete CSP source grammar remain separate issue
 #40 security gates. The contract and evidence are recorded in
-`docs/plan/tasks/native-engine-browser-399.md`. The
+`docs/plan/tasks/native-engine-browser-399.md`. The completed
+`native-engine-browser-400` slice completes delivery ownership for those
+records: Fetch consumes connect-policy reports after the loader operation,
+EventSource carries reports over open/reconnect/error stream events to page
+and dedicated-worker realms, and inline-style refreshes use a document-local
+ledger so unchanged nodes do not report repeatedly while policy enforcement is
+still reevaluated. The contract and evidence are recorded in
+`docs/plan/tasks/native-engine-browser-400.md`. The
 completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,
@@ -6401,9 +6408,9 @@ browser task;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed browser-expansion checkpoint is recorded for
-`docs/plan/tasks/native-engine-browser-390.md`; its implementation and focused
+`docs/plan/tasks/native-engine-browser-400.md`; its implementation and focused
 verification are recorded in that task file. The preceding browser-expansion
-checkpoint is `docs/plan/tasks/native-engine-browser-389.md`. The CSS foundation checkpoint
+checkpoint is `docs/plan/tasks/native-engine-browser-399.md`. The CSS foundation checkpoint
 remains `docs/plan/tasks/native-engine-234.md`: implementation is `8a96f56b`
 (design `b2119e5f`). It accepts bounded standalone case-insensitive finite
 `overflow: visible|auto|scroll`, `overflow-x: visible|auto|scroll`, and

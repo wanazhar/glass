@@ -14635,6 +14635,24 @@ async fn native_content_process_delivers_report_only_csp_violation_events() {
             ],
         })
     );
+    engine
+        .evaluate_async("document.querySelector('style').textContent = 'body { color: blue; }'")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "cspReports.filter(event => event.blocked === 'inline').map(event => event.sample)"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "body { color: red; }",
+            "globalThis.cspReports = []; document.add",
+            "globalThis.reportOnlyScript = true;",
+            "body { color: blue; }",
+        ])
+    );
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
@@ -14683,6 +14701,96 @@ async fn native_content_process_delivers_report_only_events_for_dynamic_scripts(
                 ["script-src", "inline", "globalThis.dynamicReportScript = true"],
             ],
         })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_delivers_report_only_connect_events_before_fetch_resolution() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<script>globalThis.cspReports = []; addEventListener('securitypolicyviolation', event => cspReports.push([event.effectiveDirective, event.blockedURI, event.disposition]));</script><body>Fetch report</body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy-Report-Only: connect-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/connect"));
+        let body = "fetch-ok";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await fetch('/connect').then(async response => [await response.text(), cspReports])",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["fetch-ok", [["connect-src", format!("http://{address}/connect"), "report"]]])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_delivers_report_only_connect_events_for_event_source() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<script>globalThis.cspReports = []; addEventListener('securitypolicyviolation', event => cspReports.push([event.effectiveDirective, event.blockedURI, event.disposition])); globalThis.source = new EventSource('/events');</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy-Report-Only: connect-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/events"));
+        let body = "data: event-source-ok\r\n\r\n";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await new Promise((resolve, reject) => { source.onmessage = event => { source.close(); resolve([event.data, cspReports]); }; source.onerror = event => reject(new Error(String(event.message || 'event source failed'))); })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["event-source-ok", [["connect-src", format!("http://{address}/events"), "report"]]])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

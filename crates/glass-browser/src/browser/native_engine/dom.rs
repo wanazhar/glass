@@ -599,6 +599,8 @@ pub struct NativeDocument {
     background_image_sources: BTreeMap<u32, String>,
     background_image_resources: BTreeMap<u32, NativeImageResource>,
     canvas_resources: BTreeMap<u32, NativeCanvasResource>,
+    inline_style_element_reports: BTreeMap<u32, (String, Option<String>)>,
+    inline_style_attribute_reports: BTreeMap<u32, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -813,6 +815,8 @@ impl NativeDocument {
             background_image_sources: BTreeMap::new(),
             background_image_resources: BTreeMap::new(),
             canvas_resources: BTreeMap::new(),
+            inline_style_element_reports: BTreeMap::new(),
+            inline_style_attribute_reports: BTreeMap::new(),
         };
         let mut stack = vec![root];
         let mut document_type_seen = false;
@@ -1010,6 +1014,64 @@ impl NativeDocument {
                     .map(|source| (node.id().index(), source.to_owned()))
             })
             .collect()
+    }
+
+    /// Mark the currently attached inline styles as already evaluated by the
+    /// document loader. The initial parser probes styles once to determine
+    /// enforced policy; the committed document must not report those same
+    /// declarations again during its first refresh.
+    pub(crate) fn mark_inline_style_reports_seen(&mut self) {
+        self.inline_style_element_reports = self
+            .inline_style_elements()
+            .into_iter()
+            .map(|(node_index, source, nonce)| (node_index, (source, nonce)))
+            .collect();
+        self.inline_style_attribute_reports = self.inline_style_attributes().into_iter().collect();
+    }
+
+    pub(crate) fn inline_style_element_reported(
+        &self,
+        node_index: u32,
+        source: &str,
+        nonce: Option<&str>,
+    ) -> bool {
+        self.inline_style_element_reports
+            .get(&node_index)
+            .is_some_and(|(reported_source, reported_nonce)| {
+                reported_source == source && reported_nonce.as_deref() == nonce
+            })
+    }
+
+    pub(crate) fn mark_inline_style_element_reported(
+        &mut self,
+        node_index: u32,
+        source: String,
+        nonce: Option<String>,
+    ) {
+        self.inline_style_element_reports
+            .insert(node_index, (source, nonce));
+    }
+
+    pub(crate) fn inline_style_attribute_reported(&self, node_index: u32, source: &str) -> bool {
+        self.inline_style_attribute_reports
+            .get(&node_index)
+            .is_some_and(|reported_source| reported_source == source)
+    }
+
+    pub(crate) fn mark_inline_style_attribute_reported(&mut self, node_index: u32, source: String) {
+        self.inline_style_attribute_reports
+            .insert(node_index, source);
+    }
+
+    pub(crate) fn prune_inline_style_reports(
+        &mut self,
+        element_nodes: &BTreeSet<u32>,
+        attribute_nodes: &BTreeSet<u32>,
+    ) {
+        self.inline_style_element_reports
+            .retain(|node_index, _| element_nodes.contains(node_index));
+        self.inline_style_attribute_reports
+            .retain(|node_index, _| attribute_nodes.contains(node_index));
     }
 
     /// Return parser-time enforced CSP policies declared by `meta` elements
@@ -2166,8 +2228,11 @@ impl NativeDocument {
             background_image_sources,
             background_image_resources,
             canvas_resources,
+            inline_style_element_reports: BTreeMap::new(),
+            inline_style_attribute_reports: BTreeMap::new(),
         };
         document.normalize_select_defaults();
+        document.mark_inline_style_reports_seen();
         Ok(document)
     }
 
@@ -2239,6 +2304,8 @@ impl NativeDocument {
             background_image_sources: BTreeMap::new(),
             background_image_resources: BTreeMap::new(),
             canvas_resources: BTreeMap::new(),
+            inline_style_element_reports: BTreeMap::new(),
+            inline_style_attribute_reports: BTreeMap::new(),
         }
     }
 

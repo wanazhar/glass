@@ -1,9 +1,21 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-399` slice. The native runtime is now the primary
+`native-engine-browser-400` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 400 completes the report-only CSP delivery lifecycle for the current
+native HTTP(S) owners. Fetch drains connect-policy records after the loader
+operation and delivers them in the owning page turn; EventSource carries
+open/reconnect/error records across its asynchronous channel to page and
+dedicated-worker realms; and document-owned inline-style observation suppresses
+duplicate unchanged-node records while rechecking enforcement and pruning
+detached entries. Records remain bounded, structured, validated, and
+report-only: they never authorize or block a resource. Network `report-uri`/
+`report-to` delivery, strict-dynamic trust propagation, dynamic policy
+mutation, WebSocket reporting, and the complete CSP source-expression grammar
+remain separate issue #40 gates.
 
 Slice 399 adds bounded report-only CSP observation to the native HTTP(S)
 document path. Response `Content-Security-Policy-Report-Only` declarations
@@ -840,10 +852,10 @@ parser-time enforced policies in a document-head CSP meta element now
 intersect with response-header policies. The Rust loader applies that
 intersection to subresources, inline elements/attributes, and child-frame
 navigation; multiple frame source groups remain distinct across the typed
-content-process boundary. Report-only violation delivery is now covered by
-the following `native-engine-browser-399` slice; strict-dynamic, dynamic
-policy mutation, and the complete CSP source grammar remain separate issue
-#40 security gates.
+content-process boundary. Report-only violation delivery is covered by the
+following `native-engine-browser-399` and `native-engine-browser-400` slices;
+strict-dynamic, dynamic policy mutation, and the complete CSP source grammar
+remain separate issue #40 security gates.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

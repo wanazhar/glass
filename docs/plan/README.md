@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-391` locally. Native is now the default runtime for
+`native-engine-browser-392` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -433,10 +433,22 @@ demand-driven bridge rather than an eager snapshot. Source locking occurs
 after clone admission, receiving reads issue bounded pull controls, and close,
 error, cancellation, ordered chunks, and hidden transport ports use the
 existing structured-clone/MessagePort owner. Local and page-to-worker
-witnesses cover the transfer and bounded multi-turn scheduler. Worker-created
-underlying-source parity, remote-stream tee parity, upload backpressure,
-browser-wide task-source ordering, and final Core Web Profile certification
-remain active issue #40 work.
+witnesses cover the transfer and bounded multi-turn scheduler. At that
+checkpoint, worker-created underlying-source parity and remote-stream tee
+parity remained open; the following 392 slice closes those two gaps. Upload
+backpressure, browser-wide task-source ordering, and final Core Web Profile
+certification remain active issue #40 work.
+
+The completed native worker `ReadableStream` parity slice is
+[native-engine-browser-392](tasks/native-engine-browser-392.md): worker-created
+default and byte streams now drive bounded `start`/`pull`/`cancel` sources,
+controllers, BYOB reads, closed/error settlement, and source locking. Worker
+`tee()` now owns one upstream reader and bounded branch queues for both local
+and transferred streams, with ordered close/error/cancellation propagation.
+Source-backed worker Request/Response bodies fail explicitly at the current
+synchronous snapshot boundary; asynchronous body transport and upload
+backpressure remain active issue #40 work alongside browser-wide task-source
+ordering and final Core Web Profile certification.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-391`, with native-first product
+expansion checkpoint is `native-engine-browser-392`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -395,10 +395,19 @@ and source readers are installed only after clone admission succeeds. Local
 structured cloning and page-to-worker witnesses cover source locking, receiver
 identity, hidden transport ports, ordered pull delivery, close, and bounded
 multi-turn progress. Remote chunks remain bounded copies through the existing
-JSON-framed owner, so worker-created underlying-source parity, remote-stream
-`tee()`, upload backpressure, global task-source arbitration, and the remaining
-Core Web Profile and production certification gates remain open. Exact evidence
-is recorded in `docs/plan/tasks/native-engine-browser-391.md`. The
+JSON-framed owner. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-391.md`. The
+completed Slice 392 closes worker-created `ReadableStream` source parity and
+remote-stream `tee()` parity. Worker default and byte sources now own bounded
+queues/controllers with source lifecycle, BYOB response, desired-size,
+closed/error, and cancellation behavior; one upstream reader feeds bounded
+branches for local and transferred streams while preserving order. The worker
+Request/Response snapshot boundary rejects source-backed or remote streams
+explicitly instead of silently emitting empty bodies. Asynchronous worker body
+transport, upload backpressure, worker piping/TransformStream parity, global
+task-source arbitration, and the remaining Core Web Profile and production
+certification gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-392.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

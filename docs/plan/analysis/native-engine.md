@@ -1,8 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-426` with
-`native-engine-browser-427`, following completed
+expansion checkpoint is completed `native-engine-browser-428`, following
+completed `native-engine-browser-427`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and
 `native-engine-browser-420`, with
@@ -72,6 +72,12 @@ Slice 427 completes the buffered XHR download-progress follow-up: page and
 worker realms now dispatch one target-preserving `ProgressEvent` during
 `LOADING`, bounded loaded/total byte fields, and validated content-length
 computability before terminal callbacks, without claiming network streaming.
+Slice 428 completes the page XHR response-streaming follow-up: page XHR now
+consumes the existing demand-driven native Fetch reader, reports each admitted
+non-empty response chunk during `LOADING`, preserves split UTF-8 text, and
+cancels the reader on abort. Worker XHR remains buffered through its separate
+whole-response Fetch host path; worker streaming, streaming upload, synchronous
+XHR, and complete XHR/Streams Web IDL parity remain open.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

@@ -54607,6 +54607,180 @@ xhr.send();"#,
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_streams_page_response_progress() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/stream"] {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .expect("timed out waiting for the streaming XHR request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/page" {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 13\r\nConnection: close\r\n\r\n<p>stream</p>",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 17\r\nConnection: close\r\n\r\nfirst-\xF0",
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            stream.write_all(b"\x9F\x92\xA9-second").await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(() => {
+                globalThis.streamingXhrPromise = new Promise(resolve => {
+                    const xhr = new XMLHttpRequest();
+                    const states = [];
+                    const progress = [];
+                    xhr.onreadystatechange = () => {
+                        if (xhr.readyState === 3)
+                            states.push([xhr.readyState, xhr.responseText]);
+                    };
+                    xhr.onprogress = event => progress.push([
+                        xhr.readyState,
+                        event.loaded,
+                        event.total,
+                        event.lengthComputable,
+                    ]);
+                    xhr.onload = () => resolve({
+                        states,
+                        progress,
+                        text: xhr.responseText,
+                    });
+                    xhr.onerror = () => resolve({ error: 'streaming-xhr' });
+                    xhr.open('GET', '/stream');
+                    xhr.send();
+                });
+            })()"#,
+        )
+        .await
+        .unwrap();
+    let result = engine
+        .evaluate_async("await streamingXhrPromise")
+        .await
+        .unwrap();
+    let progress = result
+        .get("progress")
+        .and_then(serde_json::Value::as_array)
+        .unwrap();
+    assert!(
+        progress.len() >= 2,
+        "expected multiple progress events: {result}"
+    );
+    assert_eq!(
+        progress.last().unwrap(),
+        &serde_json::json!([3, 17, 17, true])
+    );
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "states": [[3, "first-"], [3, "first-💩-second"]],
+            "progress": [[3, 7, 17, true], [3, 17, 17, true]],
+            "text": "first-💩-second",
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_xhr_stream_abort_cancels_response_reader() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/abort-stream"] {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .expect("timed out waiting for the aborting XHR request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/page" {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 12\r\nConnection: close\r\n\r\n<p>abort</p>",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 12\r\nConnection: close\r\n\r\nfirst-",
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _ = stream.write_all(b"second").await;
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(() => {
+                globalThis.streamingAbortPromise = new Promise(resolve => {
+                    const xhr = new XMLHttpRequest();
+                    const events = [];
+                    xhr.onreadystatechange = () => events.push(`state:${xhr.readyState}`);
+                    xhr.onprogress = event => {
+                        events.push(`progress:${event.loaded}`);
+                        xhr.abort();
+                    };
+                    xhr.onload = () => events.push('load');
+                    xhr.onerror = () => events.push('error');
+                    xhr.onabort = () => events.push(`abort:${xhr.readyState}`);
+                    xhr.onloadend = () => resolve(events);
+                    xhr.open('GET', '/abort-stream');
+                    xhr.send();
+                });
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await streamingAbortPromise")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "state:1",
+            "state:2",
+            "state:3",
+            "progress:6",
+            "state:0",
+            "abort:0"
+        ])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_xhr_abort_is_observable_and_ignores_late_callbacks() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

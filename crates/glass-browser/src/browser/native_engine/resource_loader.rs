@@ -3862,6 +3862,24 @@ impl NativeResourceLoader {
         request: NativeFetchRequest<'_>,
     ) -> Result<NativeFetchResponse, NativeEngineError> {
         let opened = self.open_fetch_response_stream_async(request).await?;
+        self.finish_fetch_response_stream_async(opened).await
+    }
+
+    pub(crate) async fn fetch_request_with_body_async(
+        &mut self,
+        request: NativeFetchRequest<'_>,
+        request_body: reqwest::Body,
+    ) -> Result<NativeFetchResponse, NativeEngineError> {
+        let opened = self
+            .open_fetch_response_stream_with_body_async(request, Some(request_body))
+            .await?;
+        self.finish_fetch_response_stream_async(opened).await
+    }
+
+    async fn finish_fetch_response_stream_async(
+        &mut self,
+        opened: NativeFetchResponseStream,
+    ) -> Result<NativeFetchResponse, NativeEngineError> {
         let NativeFetchResponseStream {
             mut response,
             body: response_body,

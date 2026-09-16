@@ -2889,10 +2889,9 @@ impl NativeWorkerRegistry {
                     });
                 match evaluation {
                     Ok(evaluation) => {
-                        if let Err(error) = Box::pin(
-                            self.collect_worker_evaluation(worker_id, evaluation, loader),
-                        )
-                        .await
+                        if let Err(error) =
+                            Box::pin(self.collect_worker_evaluation(worker_id, evaluation, loader))
+                                .await
                         {
                             task.abort();
                             self.cancel_worker_fetch_upload_connection(upload_key);
@@ -11922,7 +11921,7 @@ impl NativeJavaScriptRuntime {
                     | NativeScriptCommand::FetchUploadCancel {
                         worker_id: Some(command_worker_id),
                         ..
-                    } => !service_worker && *command_worker_id == worker_id,
+                    } => *command_worker_id == worker_id,
                     NativeScriptCommand::MessagePortPostMessage {
                         worker_id: Some(command_worker_id),
                         ..
@@ -12219,6 +12218,42 @@ impl NativeJavaScriptRuntime {
             Some(NativeWorkerDispatch::Fetch {
                 request_id,
                 payload,
+            }),
+        )
+    }
+
+    pub(crate) fn evaluate_service_worker_fetch_upload_event(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        stream_id: u32,
+        event: &serde_json::Value,
+        is_module: bool,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if stream_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native service worker fetch upload stream id",
+                "must be positive",
+            ));
+        }
+        let bootstrap = service_worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            &BTreeMap::new(),
+            is_module,
+        )?;
+        self.evaluate_worker_source_with_bootstrap_and_event(
+            worker_id,
+            worker_url,
+            None,
+            "undefined;",
+            bootstrap,
+            true,
+            false,
+            Some(NativeWorkerDispatch::FetchUpload {
+                stream_id,
+                payload: event,
             }),
         )
     }

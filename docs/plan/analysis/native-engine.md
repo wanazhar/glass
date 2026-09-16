@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is the completed `native-engine-browser-406`, with
+expansion checkpoint is the completed `native-engine-browser-407`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -524,9 +524,9 @@ checks use the same decision, inline script `unsafe-inline` cannot override a
 strict-dynamic source list, and initial lifecycle-created external sources are
 drained instead of being dropped. The contract and evidence are recorded in
 `docs/plan/tasks/native-engine-browser-405.md`. Remaining CSP promotion gates
-are dynamic policy mutation, Service Worker policy-container propagation,
-redirect-aware path handling, and broader conformance beyond the bounded
-matcher. The completed `native-engine-browser-406` slice closes dynamic
+are dynamic policy mutation, redirect-aware path handling, and broader
+conformance beyond the bounded matcher. The completed
+`native-engine-browser-406` slice closes dynamic
 enforced CSP meta-policy ownership: parser-discovered head policies are
 committed once, newly inserted head policies append in document order, and
 processed-node removal or `content` edits cannot relax the policy container.
@@ -535,8 +535,16 @@ paths all commit new meta nodes before later resource or inline-style checks;
 the shared bounded loader and report-only separation remain unchanged. The
 contract and evidence are recorded in
 `docs/plan/tasks/native-engine-browser-406.md`. Remaining CSP promotion gates
-are Service Worker policy-container propagation, redirect-aware path handling,
-and broader conformance beyond the bounded matcher. The completed 234 slice
+are redirect-aware path handling and broader conformance beyond the bounded
+matcher. The completed `native-engine-browser-407` slice closes the Service
+Worker document policy-container boundary: controlled page Fetch/XHR requests
+pass enforced `connect-src` and mixed-content checks before worker evaluation,
+handled report-only records retain exactly-once ownership, unhandled requests
+fall through without duplicate reports, and a synthetic worker navigation's
+final-URL CSP governs the first page Fetch. The contract and evidence are
+recorded in `docs/plan/tasks/native-engine-browser-407.md`. Remaining CSP
+promotion gates are redirect-aware path handling and broader conformance
+beyond the bounded matcher. The completed 234 slice
 carries
 bounded
 root-scroll sticky positioning through

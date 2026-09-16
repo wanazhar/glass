@@ -36,7 +36,8 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Cursor;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -4540,6 +4541,129 @@ self.addEventListener('fetch', event => {
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_propagates_service_worker_document_csp_to_controlled_fetch() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let blocked_request = Arc::new(AtomicBool::new(false));
+    let blocked_request_server = blocked_request.clone();
+    let server = tokio::spawn(async move {
+        for (expected_path, content_type, headers, body) in [
+            (
+                "/register",
+                "text/html",
+                "Content-Security-Policy: script-src 'unsafe-inline'; worker-src 'self'\r\n",
+                "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script>",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                "",
+                r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+    const path = new URL(event.request.url).pathname;
+    if (path === '/controlled') {
+        event.respondWith(new Response("<!doctype html><script>globalThis.fetchResultPromise = fetch('/blocked').then(response => response.text()).then(text => 'unexpected:' + text).catch(() => 'blocked');</script>", {
+            headers: {
+                'Content-Type': 'text/html',
+                'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; connect-src 'none'",
+            },
+        }));
+    } else if (path === '/controlled-report') {
+        event.respondWith(new Response("<!doctype html><script>globalThis.reportEvents = []; addEventListener('securitypolicyviolation', event => reportEvents.push([event.effectiveDirective, event.blockedURI, event.disposition])); globalThis.reportFetchPromise = fetch('/report-only-blocked').then(response => response.text());</script>", {
+            headers: {
+                'Content-Type': 'text/html',
+                'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; connect-src 'self'",
+                'Content-Security-Policy-Report-Only': "connect-src 'none'",
+            },
+        }));
+    } else if (path === '/blocked') {
+        event.respondWith(new Response('service worker unexpectedly ran', { headers: { 'Content-Type': 'text/plain' } }));
+    } else if (path === '/report-only-blocked') {
+        event.respondWith(new Response('worker report response', { headers: { 'Content-Type': 'text/plain' } }));
+    }
+});"#,
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+        if let Ok((mut stream, _)) = listener.accept().await {
+            let request = read_http_request(&mut stream).await;
+            if request.split_whitespace().nth(1) == Some("/blocked") {
+                blocked_request_server.store(true, Ordering::SeqCst);
+            }
+            let body = "unexpected network request";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/register")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(async registration => [registration.active.state, navigator.serviceWorker.controller !== null])",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["activated", true])
+    );
+
+    engine
+        .navigate_async(format!("http://{address}/controlled"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await fetchResultPromise")
+            .await
+            .unwrap(),
+        serde_json::json!("blocked")
+    );
+    assert!(!blocked_request.load(Ordering::SeqCst));
+
+    engine
+        .navigate_async(format!("http://{address}/controlled-report"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await reportFetchPromise")
+            .await
+            .unwrap(),
+        serde_json::json!("worker report response")
+    );
+    assert_eq!(
+        engine.evaluate_async("reportEvents").await.unwrap(),
+        serde_json::json!([[
+            "connect-src",
+            format!("http://{address}/report-only-blocked"),
+            "report"
+        ]])
+    );
+    assert!(!blocked_request.load(Ordering::SeqCst));
+
+    engine.close_async().await.unwrap();
+    server.abort();
+    let _ = server.await;
 }
 
 #[tokio::test]

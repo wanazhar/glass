@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-406` slice. The native runtime is now the primary
+`native-engine-browser-407` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -13,9 +13,9 @@ comparison. Schemeless hosts inherit the protected document scheme, `'self'`
 keeps its safe same-origin upgrade rules, and malformed credentials, hosts,
 ports, paths, and non-ASCII source syntax fail closed. The shared decision is
 used by enforced and report-only page/worker resource checks, frames,
-EventSource, and WebSocket policy matching. Dynamic policy mutation, Service
-Worker policy-container propagation, redirect-aware path handling, and broader
-CSP conformance remain separate issue #40 gates.
+EventSource, and WebSocket policy matching. Dynamic policy mutation,
+redirect-aware path handling, and broader CSP conformance remain separate
+issue #40 gates.
 
 Slice 405 closes the bounded CSP `strict-dynamic` script boundary. External
 script nonces are retained from parser and mutation-created script elements;
@@ -27,8 +27,18 @@ parser metadata, nonce, and redirect decisions, while inline script
 `unsafe-inline` cannot bypass a strict-dynamic source list. Initial
 DOMContentLoaded/load-time dynamic script sources now drain through the normal
 content-process loader instead of being dropped. Dynamic policy mutation,
-Service Worker policy-container propagation, redirect-aware path handling, and
-broader CSP conformance remain separate issue #40 gates.
+redirect-aware path handling, and broader CSP conformance remain separate
+issue #40 gates.
+
+Slice 407 closes the Service Worker document policy-container boundary.
+Controlled page Fetch/XHR requests now pass the document's enforced
+`connect-src` and mixed-content decision before an active worker evaluates the
+fetch event, while handled report-only records remain exactly once and
+unhandled requests retain normal loader ownership. Worker-served navigations
+install their final-URL CSP response headers before parsing; an integration
+witness confirms that policy governs the first page Fetch. Dynamic policy
+mutation, redirect-aware path handling, and broader CSP conformance remain
+separate issue #40 gates.
 
 Slice 406 closes the live-document CSP meta-policy boundary. Parser-discovered
 enforced head policies are committed once to the document policy container;
@@ -39,8 +49,8 @@ attribute edit cannot relax the container, while each normal content-process
 script, input-event, lifecycle, hash-change, and scroll turn commits newly
 inserted nodes before later resource and inline-style decisions. The bounded
 policy cap, URL validation, report-only separation, and shared Rust loader
-remain in force. Service Worker policy-container propagation, redirect-aware
-path handling, and broader CSP conformance remain separate issue #40 gates.
+remain in force. Redirect-aware path handling and broader CSP conformance
+remain separate issue #40 gates.
 
 Slice 403 closes report-only CSP network delivery for the current native
 HTTP(S) owners. `report-uri` declarations produce bounded legacy
@@ -50,8 +60,8 @@ HTTP(S) owners. `report-uri` declarations produce bounded legacy
 document, credential-bearing and insecure endpoints from secure documents are
 rejected, redirects and cookies are not used, and delivery is asynchronous
 behind a bounded process-wide concurrency gate. Endpoint failures never alter
-the protected request or surface report payloads in logs. Service Worker
-policy-container propagation, dynamic policy mutation, strict-dynamic trust,
+the protected request or surface report payloads in logs. Dynamic policy
+mutation, strict-dynamic trust,
 and broader CSP conformance beyond the bounded source matcher remain separate
 issue #40 gates.
 
@@ -62,8 +72,7 @@ asynchronous connection channel, and dispatch them before the first open or
 handshake-error observation. The actual `ws`/`wss` blocked URI is retained
 while the normalized HTTP(S) policy URL is accepted for source matching;
 report-only records never authorize, block, or duplicate a connection.
-Service Worker policy-container propagation, dynamic policy mutation,
-strict-dynamic trust, and the complete CSP
+Dynamic policy mutation, strict-dynamic trust, and the complete CSP
 source-expression grammar remain separate issue #40 gates.
 
 Slice 401 preserves successful HTTP(S) worker-script response CSP under the
@@ -71,8 +80,7 @@ resolved worker URL. Dedicated and shared worker EventSource, Fetch, and
 WebSocket owners now see that worker policy, while page `worker-src`
 authorization remains separate. A later worker load replaces stale policy
 state; report-only records remain bounded and never authorize or block a
-request. Service Worker policy-container propagation, dynamic policy mutation,
-strict-dynamic trust, and the complete CSP
+request. Dynamic policy mutation, strict-dynamic trust, and the complete CSP
 source-expression grammar remain separate issue #40 gates.
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current

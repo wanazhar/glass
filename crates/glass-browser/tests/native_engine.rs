@@ -71,7 +71,55 @@ async fn read_http_request_bytes(stream: &mut TcpStream) -> Vec<u8> {
                 })
             })
             .unwrap_or_default();
-        if request.len() >= header_end.saturating_add(content_length) {
+        let chunked = String::from_utf8_lossy(&request[..header_end])
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("transfer-encoding").then(|| {
+                        value
+                            .split(',')
+                            .any(|part| part.trim().eq_ignore_ascii_case("chunked"))
+                    })
+                })
+            })
+            .unwrap_or(false);
+        if chunked {
+            let mut offset = header_end;
+            let mut decoded = request[..header_end].to_vec();
+            let mut complete = false;
+            loop {
+                let Some(line_end) = request[offset..]
+                    .windows(2)
+                    .position(|window| window == b"\r\n")
+                else {
+                    break;
+                };
+                let line_end = offset + line_end;
+                let size = usize::from_str_radix(
+                    String::from_utf8_lossy(&request[offset..line_end])
+                        .split(';')
+                        .next()
+                        .unwrap()
+                        .trim(),
+                    16,
+                )
+                .unwrap();
+                let body_start = line_end + 2;
+                let body_end = body_start.saturating_add(size);
+                if request.len() < body_end.saturating_add(2) {
+                    break;
+                }
+                decoded.extend_from_slice(&request[body_start..body_end]);
+                offset = body_end + 2;
+                if size == 0 {
+                    complete = true;
+                    break;
+                }
+            }
+            if complete {
+                return decoded;
+            }
+        } else if request.len() >= header_end.saturating_add(content_length) {
             break;
         }
     }
@@ -53224,6 +53272,148 @@ async fn native_content_process_fetches_stream_request_bodies_and_clones_them() 
             "afterClone": [true, true],
             "options": "ok"
         })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_commits_page_work_from_stream_upload_pull() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/upload"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/upload" {
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                assert_eq!(body, "pull-body");
+            }
+            let content_type = if expected_path == "/page" {
+                "text/html"
+            } else {
+                "text/plain"
+            };
+            let body = if expected_path == "/page" {
+                "<title>Initial</title><body>Upload pull</body>"
+            } else {
+                "ok"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const stream = new ReadableStream({
+                        pull(controller) {
+                            document.title = 'Pulled';
+                            controller.enqueue('pull-');
+                            controller.enqueue('body');
+                            controller.close();
+                        },
+                    });
+                    const response = await fetch('/upload', { method: 'POST', body: stream });
+                    return [await response.text(), document.title];
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["ok", "Pulled"])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_does_not_replay_stream_request_bodies_across_redirects() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/switch", "/redirect-final", "/replay"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request_bytes(&mut stream).await;
+            let header_end = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .unwrap()
+                + 4;
+            let request_text = String::from_utf8_lossy(&request[..header_end]);
+            assert_eq!(request_text.split_whitespace().nth(1), Some(expected_path));
+            if matches!(expected_path, "/switch" | "/replay") {
+                assert_eq!(request_text.split_whitespace().next(), Some("POST"));
+                assert_eq!(&request[header_end..], b"redirect-body");
+            }
+            let response = match expected_path {
+                "/page" => {
+                    let body = "<body>Stream redirect owner</body>";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "/switch" => {
+                    "HTTP/1.1 302 Found\r\nLocation: /redirect-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
+                }
+                "/redirect-final" => {
+                    let body = "switched";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "/replay" => {
+                    "HTTP/1.1 307 Temporary Redirect\r\nLocation: /replay-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
+                }
+                _ => unreachable!(),
+            };
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const makeStream = () => new ReadableStream({
+                        start(controller) {
+                            controller.enqueue('redirect-');
+                            controller.enqueue('body');
+                            controller.close();
+                        },
+                    });
+                    const followed = await fetch('/switch', { method: 'POST', body: makeStream() })
+                        .then(async response => [response.status, await response.text()]);
+                    const replay = await fetch('/replay', { method: 'POST', body: makeStream() })
+                        .then(() => 'fulfilled', error => [error.name, error.message.includes('cannot be replayed')]);
+                    return [followed, replay];
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([[200, "switched"], ["Error", true]])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

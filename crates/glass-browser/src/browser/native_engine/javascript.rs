@@ -254,6 +254,8 @@ pub(crate) enum NativeScriptCommand {
         cache: Option<String>,
         #[serde(default)]
         timeout_ms: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        upload_stream_id: Option<u32>,
     },
     ServiceWorkerRegister {
         request_id: u32,
@@ -409,6 +411,28 @@ pub(crate) enum NativeScriptCommand {
         worker_id: Option<u32>,
     },
     FetchStreamCancel {
+        stream_id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
+    },
+    FetchUploadChunk {
+        stream_id: u32,
+        data_base64: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
+    },
+    FetchUploadEnd {
+        stream_id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
+    },
+    FetchUploadError {
+        stream_id: u32,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
+    },
+    FetchUploadCancel {
         stream_id: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         worker_id: Option<u32>,
@@ -1096,6 +1120,10 @@ enum NativePageDispatch<'a> {
         payload: &'a serde_json::Value,
     },
     FetchStream {
+        stream_id: u32,
+        payload: &'a serde_json::Value,
+    },
+    FetchUpload {
         stream_id: u32,
         payload: &'a serde_json::Value,
     },
@@ -2543,6 +2571,7 @@ impl NativeWorkerRegistry {
             redirect,
             cache,
             timeout_ms,
+            upload_stream_id,
         } = command
         else {
             return Err(NativeEngineError::invalid(
@@ -2550,6 +2579,12 @@ impl NativeWorkerRegistry {
                 "command was not a worker fetch",
             ));
         };
+        if upload_stream_id.is_some() {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "streaming Worker request bodies are not wired into the worker host yet"
+                    .into(),
+            });
+        }
         if command_worker_id != worker_id {
             return Err(NativeEngineError::invalid(
                 "native Worker fetch command",
@@ -9940,6 +9975,33 @@ impl NativeJavaScriptRuntime {
         )
     }
 
+    /// Deliver one HTTP request-body demand to the persistent page realm.
+    /// The page-side stream reader answers by emitting exactly one upload
+    /// command, keeping the request body pull-driven across the process
+    /// boundary.
+    pub(crate) fn dispatch_fetch_upload_event(
+        &self,
+        stream_id: u32,
+        event: &serde_json::Value,
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.evaluate_with_page_events_and_dispatch(
+            "undefined;",
+            document,
+            document_url,
+            origin,
+            viewport,
+            &NativePageEventBatch::default(),
+            Some(NativePageDispatch::FetchUpload {
+                stream_id,
+                payload: event,
+            }),
+        )
+    }
+
     pub(crate) fn dispatch_script_error_event(
         &self,
         node_index: Option<u32>,
@@ -13981,6 +14043,13 @@ fn dispatch_page_payload(
             &ctx,
             "__glassDispatchFetchStreamEvent",
             "native fetch response stream event",
+            stream_id,
+            payload,
+        )?,
+        NativePageDispatch::FetchUpload { stream_id, payload } => dispatch_page_resolver(
+            &ctx,
+            "__glassDispatchFetchUploadEvent",
+            "native fetch request upload event",
             stream_id,
             payload,
         )?,
@@ -25988,7 +26057,7 @@ fn document_bootstrap(
   const clearFetchAbortListener = (pending) => {{
     if (pending.signal && pending.abortListener) pending.signal.removeEventListener("abort", pending.abortListener);
   }};
-  const fetchNativeDispatch = (input, options, streamedBodyBytes) => {{
+  const fetchNativeDispatch = (input, options, streamedBodyBytes, streamedBodyStream) => {{
     const sourceRequest = input && input.__glassRequest === true ? input : null;
     const sourceUrl = input && input.__glassUrl === true ? input : null;
     if (typeof input !== "string" && !sourceRequest && !sourceUrl) throw new TypeError("native fetch requires a URL string, URL, or Request");
@@ -26022,12 +26091,13 @@ fn document_bootstrap(
     if (cache === "only-if-cached" && mode !== "same-origin")
       return Promise.reject(new TypeError("native only-if-cached fetches require same-origin mode"));
     const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
-    const blobBody = sourceBodyPayload
+    const hasStreamedBody = streamedBodyStream !== undefined;
+    const blobBody = sourceBodyPayload || hasStreamedBody
       ? null
       : settings.body && settings.body.__glassNativeBlob === true
       ? settings.body
       : null;
-    const binaryBody = sourceBodyPayload
+    const binaryBody = sourceBodyPayload || hasStreamedBody
       ? null
       : streamedBodyBytes !== undefined
       ? streamedBodyBytes
@@ -26036,7 +26106,7 @@ fn document_bootstrap(
       : typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(settings.body)
         ? Array.from(new Uint8Array(settings.body.buffer, settings.body.byteOffset, settings.body.byteLength))
         : null;
-    const rawBody = sourceBodyPayload || streamedBodyBytes !== undefined || settings.body === undefined || settings.body === null || blobBody || binaryBody !== null
+    const rawBody = sourceBodyPayload || streamedBodyBytes !== undefined || hasStreamedBody || settings.body === undefined || settings.body === null || blobBody || binaryBody !== null
       ? null
       : String(settings.body);
     const formData = sourceBodyPayload
@@ -26049,14 +26119,18 @@ fn document_bootstrap(
       : settings.body && settings.body.__glassUrlSearchParams === true
       ? settings.body
       : null;
-    let body = sourceBodyPayload
+    let body = hasStreamedBody
+      ? null
+      : sourceBodyPayload
       ? utf8TextFromBytes(sourceBodyPayload.bytes)
       : blobBody
       ? blobBody._text
       : binaryBody !== null
         ? utf8TextFromBytes(binaryBody)
         : rawBody;
-    let bodyBase64 = sourceBodyPayload
+    let bodyBase64 = hasStreamedBody
+      ? null
+      : sourceBodyPayload
       ? encodeBase64(sourceBodyPayload.bytes, nativeFormBodyLimit)
       : streamedBodyBytes !== undefined
       ? encodeBase64(streamedBodyBytes, nativeFormBodyLimit)
@@ -26069,7 +26143,7 @@ fn document_bootstrap(
       return Promise.reject(new TypeError("native fetch method is unsupported"));
     }}
     const usesSourceBody = sourceBodyPayload !== null;
-    if (usesSourceBody && streamedBodyBytes === undefined) {{
+    if (usesSourceBody && streamedBodyBytes === undefined && !hasStreamedBody) {{
       if (!nativeRequestBodyUse(sourceRequest)) return Promise.reject(new TypeError("native Request body is unusable"));
     }}
     const requestHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -26131,7 +26205,7 @@ fn document_bootstrap(
       contentType = "application/x-www-form-urlencoded;charset=UTF-8";
     }}
     if (blobBody && contentType === null && blobBody.type) contentType = blobBody.type;
-    if (nativeBodylessMethods.includes(method) && body !== null) {{
+    if (nativeBodylessMethods.includes(method) && (body !== null || hasStreamedBody)) {{
       return Promise.reject(new TypeError(method + " fetch requests must not have a body"));
     }}
     nextFetchRequestId += 1;
@@ -26143,19 +26217,25 @@ fn document_bootstrap(
     const timeoutMs = timeoutSetting === 0 ? null : timeoutSetting;
     if (timeoutMs !== null && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > {max_native_xhr_timeout_ms}))
       throw new RangeError("native fetch timeout is outside the bounded XHR range");
+    if (hasStreamedBody) {{
+      try {{ startFetchUpload(streamedBodyStream, requestId); }}
+      catch (error) {{ return Promise.reject(error); }}
+    }}
     return new Promise((resolve, reject) => {{
-      const pending = {{ resolve, reject, signal, abortListener: null }};
+      const pending = {{ resolve, reject, signal, abortListener: null, uploadStreamId: hasStreamedBody ? requestId : null }};
       const abort = () => {{
         if (fetchRequests.get(requestId) !== pending) return;
         fetchRequests.delete(requestId);
         clearFetchAbortListener(pending);
+        if (pending.uploadStreamId !== null)
+          cancelFetchUploadGroup(fetchUploadGroups.get(pending.uploadStreamId), "native fetch was aborted");
         reject(signal.reason === undefined ? nativeAbortError() : signal.reason);
       }};
       pending.abortListener = abort;
       fetchRequests.set(requestId, pending);
       if (signal) signal.addEventListener("abort", abort);
       if (!fetchRequests.has(requestId)) return;
-      pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, cache, timeout_ms: timeoutMs }});
+      pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, cache, timeout_ms: timeoutMs, upload_stream_id: hasStreamedBody ? requestId : null }});
     }});
   }};
   const responseHeaders = (rawEntries, contentType) => {{
@@ -26208,6 +26288,69 @@ fn document_bootstrap(
   const fetchStreamGroups = globalThis.__glassFetchStreamGroups instanceof Map
     ? globalThis.__glassFetchStreamGroups
     : new Map();
+  const fetchUploadGroups = globalThis.__glassFetchUploadGroups instanceof Map
+    ? globalThis.__glassFetchUploadGroups
+    : new Map();
+  const fetchUploadGroup = (streamId) => {{
+    const id = Number(streamId);
+    if (!Number.isSafeInteger(id) || id <= 0)
+      throw new TypeError("native fetch upload stream identifier is invalid");
+    let group = fetchUploadGroups.get(id);
+    if (!group) {{
+      group = {{
+        id,
+        reader: null,
+        streamState: null,
+        demandPending: false,
+        done: false,
+        cancelled: false,
+        error: null,
+        totalBytes: 0,
+      }};
+      fetchUploadGroups.set(id, group);
+    }}
+    return group;
+  }};
+  const releaseFetchUploadReader = (group) => {{
+    if (!group || !group.reader) return;
+    const reader = group.reader;
+    group.reader = null;
+    if (group.streamState) group.streamState.consumingRequestBody = false;
+    try {{ reader.releaseLock(); }} catch (_) {{}}
+  }};
+  const startFetchUpload = (stream, streamId) => {{
+    const state = readableStreamState(stream);
+    if (state.locked) throw new TypeError("native fetch request body stream is locked");
+    if (!state.consumedByRequest) {{
+      if (state.disturbed) throw new TypeError("native fetch request body stream is unusable");
+      state.consumedByRequest = true;
+      markReadableStreamDisturbed(state);
+    }}
+    if (state.consumedByResponse) throw new TypeError("native fetch request body stream is unusable");
+    const group = fetchUploadGroup(streamId);
+    if (group.reader || group.done) throw new TypeError("native fetch upload stream is already active");
+    state.consumingRequestBody = true;
+    try {{ group.reader = stream.getReader(); }}
+    catch (error) {{
+      state.consumingRequestBody = false;
+      throw error;
+    }}
+    group.streamState = state;
+    return group;
+  }};
+  const cancelFetchUploadGroup = (group, reason) => {{
+    if (!group || group.done) return;
+    group.cancelled = true;
+    group.done = true;
+    group.error = reason === undefined ? "native fetch request body was cancelled" : String(reason);
+    const reader = group.reader;
+    if (group.streamState) group.streamState.consumingRequestBody = false;
+    group.reader = null;
+    if (reader) {{
+      try {{ Promise.resolve(reader.cancel(reason)).catch(() => {{}}); }} catch (_) {{}}
+    }}
+    pushCommand({{ kind: "fetchUploadCancel", stream_id: Number(group.id) }});
+  }};
   const fetchStreamGroup = (streamId) => {{
     const id = Number(streamId);
     if (!Number.isSafeInteger(id) || id <= 0) throw new TypeError("native fetch stream identifier is invalid");
@@ -27162,6 +27305,56 @@ fn document_bootstrap(
   }};
   globalThis.TransformStream = TransformStreamNative;
   globalThis.WritableStream = WritableStreamNative;
+  globalThis.__glassDispatchFetchUploadEvent = (streamId, payload) => {{
+    const group = fetchUploadGroup(streamId);
+    if (!payload || typeof payload !== "object" || group.done || !group.reader) return null;
+    if (String(payload.type || "") !== "demand" || group.demandPending) return null;
+    group.demandPending = true;
+    const fail = error => {{
+      if (group.done) return;
+      group.demandPending = false;
+      group.done = true;
+      group.error = String(error && error.message !== undefined ? error.message : error).slice(0, 4096);
+      releaseFetchUploadReader(group);
+      try {{
+        pushCommand({{ kind: "fetchUploadError", stream_id: Number(group.id), message: group.error }});
+      }} catch (_) {{}}
+    }};
+    let read;
+    try {{ read = group.reader.read(); }}
+    catch (error) {{ fail(error); return null; }}
+    Promise.resolve(read).then(
+      result => {{
+        if (group.done || group.cancelled) return;
+        group.demandPending = false;
+        if (!result || result.done) {{
+          group.done = true;
+          releaseFetchUploadReader(group);
+          try {{ pushCommand({{ kind: "fetchUploadEnd", stream_id: Number(group.id) }}); }}
+          catch (error) {{ fail(error); }}
+          return;
+        }}
+        let bytes;
+        try {{ bytes = nativeReadableStreamChunkBytes(result.value); }}
+        catch (error) {{ fail(error); return; }}
+        const nextTotal = group.totalBytes + bytes.length;
+        if (nextTotal > nativeFormBodyLimit) {{
+          fail(new RangeError("native fetch request body exceeds its limit"));
+          return;
+        }}
+        group.totalBytes = nextTotal;
+        try {{
+          pushCommand({{
+            kind: "fetchUploadChunk",
+            stream_id: Number(group.id),
+            data_base64: encodeBase64(bytes, nativeFormBodyLimit),
+          }});
+        }} catch (error) {{ fail(error); }}
+      }},
+      fail,
+    );
+    return null;
+  }};
   globalThis.__glassDispatchFetchStreamEvent = (streamId, payload) => {{
     const group = fetchStreamGroup(streamId);
     if (!payload || typeof payload !== "object" || group.done) return null;
@@ -27231,6 +27424,7 @@ fn document_bootstrap(
     return null;
   }};
   globalThis.__glassFetchStreamGroups = fetchStreamGroups;
+  globalThis.__glassFetchUploadGroups = fetchUploadGroups;
   globalThis.__glassReadableStreamConstructor = ReadableStreamNative;
   globalThis.ReadableStream = ReadableStreamNative;
   globalThis.__glassNativeReadableStreamIsReadableStream = value => {{
@@ -27528,8 +27722,7 @@ fn document_bootstrap(
     const sourceBody = sourceRequest && !hasBodyOverride ? sourceRequest.body : null;
     if (sourceBody && sourceBody.__glassReadableStream === true) {{
       if (!nativeRequestBodyUse(sourceRequest)) return Promise.reject(new TypeError("native Request body is unusable"));
-      return nativeDrainReadableStream(sourceBody, true)
-        .then(bytes => fetchNativeDispatch(input, options, bytes));
+      return fetchNativeDispatch(input, options, undefined, sourceBody);
     }}
     const settings = Object.assign(
       {{}},
@@ -27538,8 +27731,7 @@ fn document_bootstrap(
     );
     const body = settings.body;
     if (body && body.__glassReadableStream === true)
-      return nativeDrainReadableStream(body, false)
-        .then(bytes => fetchNativeDispatch(input, options, bytes));
+      return fetchNativeDispatch(input, options, undefined, body);
     return fetchNativeDispatch(input, options);
   }};
   RequestNative.prototype.text = function() {{
@@ -28452,6 +28644,11 @@ fn document_bootstrap(
     if (!pending) return;
     fetchRequests.delete(Number(requestId));
     clearFetchAbortListener(pending);
+    if (pending.uploadStreamId !== null) {{
+      const uploadGroup = fetchUploadGroups.get(pending.uploadStreamId);
+      cancelFetchUploadGroup(uploadGroup, "native fetch request completed");
+      fetchUploadGroups.delete(pending.uploadStreamId);
+    }}
     if (payload && payload.error) {{
       pending.reject(payload.timeout === true ? nativeTimeoutError() : new Error(String(payload.error)));
     }}

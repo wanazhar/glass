@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-431`, following
+expansion checkpoint is completed `native-engine-browser-432`, following
+completed `native-engine-browser-431`, following
 completed `native-engine-browser-428`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and
@@ -94,8 +95,20 @@ Slice 431 closes the corresponding inline worker-response gap for supported
 fixture owners. `NativeEngine` now enables the worker stream registry, the
 fixture loader exposes bounded response bytes through the same 8 KiB
 demand-driven transport, and page-boundary pumping delivers chunks through
-the existing worker event path. Streaming uploads, synchronous XHR, and
-complete XHR/Streams Web IDL parity remain open.
+the existing worker event path. At that checkpoint page Fetch uploads,
+synchronous XHR, and complete XHR/Streams Web IDL parity remained open.
+Slice 432 closes page Fetch request-body streaming for HTTP(S) documents. A
+page `ReadableStream` body is connected to a one-shot reqwest body through a
+bounded content-process upload-demand queue; the page reader is advanced only
+when the HTTP transport asks for another chunk, with independent byte and
+chunk-count limits. Cancellation, stream errors, request teardown, and task
+completion close the bridge, while a task-local loader snapshot merges cookie,
+cache, and CSP state back into the live owner. Page work emitted by an upload
+`pull()` callback uses the ordinary serialized mutation path. 301/302/303 may
+switch to a bodyless GET; 307/308 reject replay of the non-replayable stream.
+Fixture-owned bodyful requests remain fail-closed, and Worker upload,
+controlled Service Worker upload replay, synchronous XHR, and complete
+XHR/Streams Web IDL parity remain separate issue #40 gates.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

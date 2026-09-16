@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-431`, following completed
+`native-engine-browser-432`, following completed
+`native-engine-browser-431`,
 `native-engine-browser-423`,
 `native-engine-browser-422` and `native-engine-browser-420`. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
@@ -195,8 +196,19 @@ returns bounded local response bodies through the shared demand-driven 8 KiB
 transport, and the engine pumps those events at page boundaries. A real
 worker witness covers two chunks split through a UTF-8 code point, response
 cloning, body ownership, and total-byte preservation. HTTP(S) workers remain
-owned by the content process; streaming uploads, synchronous XHR, and complete
-XHR/Streams Web IDL parity remain open.
+owned by the content process. At that checkpoint page Fetch uploads,
+synchronous XHR, and complete XHR/Streams Web IDL parity remained open; page
+upload streaming is now covered by slice 432.
+
+The completed page Fetch request-upload streaming slice is
+[native-engine-browser-432](tasks/native-engine-browser-432.md): page
+`ReadableStream` request bodies now cross the HTTP(S) content-process boundary
+on one-shot transport demand, with bounded body bytes and chunk count,
+cancel/error propagation, page callback mutation handling, and explicit
+non-replayable redirect behavior. 301/302/303 method switches clear the body;
+307/308 replay attempts reject. Fixture-owned bodyful requests, worker upload
+bridges, controlled Service Worker upload replay, synchronous XHR, and complete
+XHR/Streams Web IDL parity remain issue #40 gates.
 
 The completed page XHR reopen-cancellation slice is
 [native-engine-browser-429](tasks/native-engine-browser-429.md): reopening a

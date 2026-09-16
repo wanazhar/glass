@@ -1,8 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-417`, following
-completed `native-engine-browser-416`, with
+expansion checkpoint is completed `native-engine-browser-418`, following
+completed `native-engine-browser-417`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -15,7 +15,12 @@ navigation effects. New POST targets avoid a duplicate GET by bootstrapping
 from `about:blank`; the parent validates the transferred request against its
 document-owned form reconstruction before dispatch. Multipart streaming,
 upload progress, service-worker body replay, and broader form conformance
-remain separate issue #40 gates. Slice 346 closes bounded document-navigation HTTP cache
+remain separate issue #40 gates. Slice 418 completes the bounded XHR upload
+lifecycle: page and worker XMLHttpRequest realms expose an upload event target,
+byte-accurate buffered progress, and one terminal/loadend sequence from the
+same normalized request bytes; transport-level chunk progress, streaming
+backpressure, and full ProgressEvent/Web IDL parity stay open. Slice 346 closes
+bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-
 safe eviction are implemented without changing the existing no-header

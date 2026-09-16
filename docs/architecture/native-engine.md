@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
-`native-engine-browser-426`, following completed
+`native-engine-browser-427`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and `native-engine-browser-420`. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
@@ -125,6 +125,12 @@ the empty/`text` response types, reject binary/JSON/document reads with
 `InvalidStateError`, expose buffered text during `LOADING`, and clear it
 across `open()` and terminal lifecycle resets. Response-type decoding and the
 remaining XHR streaming/Web IDL gates stay unchanged.
+
+Slice 427 completes the buffered XHR download-progress follow-up. Page and
+worker realms dispatch one response `ProgressEvent` while `readyState` is
+`LOADING`, with bounded loaded/total byte fields and validated `Content-Length`
+computability before terminal load delivery. Socket-level chunk progress and
+streaming XHR remain separate issue #40 gates.
 
 Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
 `navigate-to` navigation-policy extension. After each content-process

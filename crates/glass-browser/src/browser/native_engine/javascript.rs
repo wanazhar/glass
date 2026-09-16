@@ -18439,6 +18439,23 @@ fn worker_bootstrap(
     workerXhrDispatch(xhr.upload, type, extra);
     workerXhrDispatch(xhr.upload, "loadend", extra);
   }};
+  const workerXhrResponseProgress = (xhr, value) => {{
+    const header = xhr._responseHeaders.get("content-length");
+    const total = header === null || header === undefined ? -1 : Number(header);
+    const lengthComputable = Number.isSafeInteger(total) && total >= 0 && total <= {fetch_body_limit};
+    const loaded = typeof value === "string"
+      ? workerUtf8Bytes(value).length
+      : value instanceof ArrayBuffer
+        ? value.byteLength
+        : value && typeof value.size === "number"
+          ? value.size
+          : lengthComputable ? total : 0;
+    workerXhrDispatch(xhr, "progress", {{
+      lengthComputable,
+      loaded,
+      total: lengthComputable ? total : 0,
+    }});
+  }};
   const WorkerXMLHttpRequestNative = typeof globalThis.__glassWorkerXmlHttpRequestConstructor === "function"
     ? globalThis.__glassWorkerXmlHttpRequestConstructor
     : function() {{
@@ -18454,6 +18471,7 @@ fn worker_bootstrap(
     this.responseXML = null;
     this.withCredentials = false;
     this.onreadystatechange = null;
+    this.onprogress = null;
     this.onload = null;
     this.onerror = null;
     this.onabort = null;
@@ -18616,6 +18634,7 @@ fn worker_bootstrap(
       this._responseText = typeof value === "string" ? value : "";
       this.readyState = 3;
       this._notifyReadyState();
+      workerXhrResponseProgress(this, value);
       this._responseText = typeof value === "string" ? value : "";
       this.response = value;
       this._sent = false;
@@ -27134,6 +27153,23 @@ fn document_bootstrap(
       total: xhr._uploadTotal,
     }});
   }};
+  const nativeXhrResponseProgress = (xhr, value) => {{
+    const header = xhr._responseHeaders.get("content-length");
+    const total = header === null || header === undefined ? -1 : Number(header);
+    const lengthComputable = Number.isSafeInteger(total) && total >= 0 && total <= nativeXmlMaxBytes;
+    const loaded = typeof value === "string"
+      ? blobUtf8Bytes(value).length
+      : value instanceof ArrayBuffer
+        ? value.byteLength
+        : value && typeof value.size === "number"
+          ? value.size
+          : lengthComputable ? total : 0;
+    nativeXhrDispatch(xhr, "progress", {{
+      lengthComputable,
+      loaded,
+      total: lengthComputable ? total : 0,
+    }});
+  }};
   const XMLHttpRequestNative = function() {{
     this.readyState = 0;
     this.status = 0;
@@ -27324,6 +27360,7 @@ fn document_bootstrap(
       this._responseText = typeof value === "string" ? value : "";
       this.readyState = 3;
       this._notifyReadyState();
+      nativeXhrResponseProgress(this, value);
       const xmlContent = typeof globalThis.__glassIsXmlMime === "function"
         && globalThis.__glassIsXmlMime(this._responseContentType);
       const htmlContent = typeof globalThis.__glassIsHtmlMime === "function"

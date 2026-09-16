@@ -1,8 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-426`, following
-completed
+expansion checkpoint is completed `native-engine-browser-426` with
+`native-engine-browser-427`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and
 `native-engine-browser-420`, with
@@ -68,6 +68,10 @@ realms now use guarded internal text projections, with valid empty/text reads
 during buffered `LOADING`/`DONE`, `InvalidStateError` for binary/JSON/document
 reads, and lifecycle reset coverage across reopen, abort, timeout, and terminal
 error paths.
+Slice 427 completes the buffered XHR download-progress follow-up: page and
+worker realms now dispatch one target-preserving `ProgressEvent` during
+`LOADING`, bounded loaded/total byte fields, and validated content-length
+computability before terminal callbacks, without claiming network streaming.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

@@ -54495,6 +54495,118 @@ xhr.send();"#,
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_reports_buffered_download_progress() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in [
+            "/page",
+            "/download-progress",
+            "/worker-download-progress.js",
+            "/worker-download-progress",
+        ] {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .expect("timed out waiting for the download progress request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let (content_type, body, content_length) = match expected_path {
+                "/page" => ("text/html", "<p>XHR progress</p>", Some(19_usize)),
+                "/download-progress" => ("text/plain", "page-body", Some(9_usize)),
+                "/worker-download-progress.js" => (
+                    "text/javascript",
+                    r#"const xhr = new XMLHttpRequest();
+const events = [];
+xhr.onprogress = event => events.push([
+  event.type,
+  event instanceof ProgressEvent,
+  event.target === xhr,
+  event.currentTarget === xhr,
+  xhr.readyState,
+  event.lengthComputable,
+  event.loaded,
+  event.total,
+]);
+xhr.onload = () => {
+  events.push('load');
+  postMessage(events);
+};
+xhr.onerror = () => postMessage(['error']);
+xhr.open('GET', '/worker-download-progress');
+xhr.send();"#,
+                    None,
+                ),
+                "/worker-download-progress" => ("text/plain", "worker-body", None),
+                other => panic!("unexpected download progress request path: {other}"),
+            };
+            let length_header = content_length
+                .map(|length| format!("Content-Length: {length}\r\n"))
+                .unwrap_or_default();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{length_header}Connection: close\r\n\r\n{body}"
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(() => {
+                globalThis.downloadProgressPromise = new Promise(resolve => {
+                    const xhr = new XMLHttpRequest();
+                    const events = [];
+                    xhr.onprogress = event => events.push([
+                        event.type,
+                        event instanceof ProgressEvent,
+                        event.target === xhr,
+                        event.currentTarget === xhr,
+                        xhr.readyState,
+                        event.lengthComputable,
+                        event.loaded,
+                        event.total,
+                    ]);
+                    xhr.onload = () => {
+                        events.push('load');
+                        const worker = new Worker('/worker-download-progress.js');
+                        worker.onmessage = event => resolve({ page: events, worker: event.data });
+                        worker.onerror = () => resolve({ error: 'worker-script' });
+                    };
+                    xhr.onerror = () => resolve({ error: 'page-xhr' });
+                    xhr.open('GET', '/download-progress');
+                    xhr.send();
+                });
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await downloadProgressPromise")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "page": [
+                ["progress", true, true, true, 3, true, 9, 9],
+                "load",
+            ],
+            "worker": [
+                ["progress", true, true, true, 3, false, 11, 0],
+                "load",
+            ],
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_xhr_abort_is_observable_and_ignores_late_callbacks() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -1,7 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through completed
-`native-engine-browser-413` slice. The native runtime is now the primary
+`native-engine-browser-414` slice, following completed
+`native-engine-browser-413`. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -16,6 +17,18 @@ and direct async navigations now share this preflight. The `navigate-to`
 vocabulary remains a Glass-owned extension, not a normative CSP Level 3
 directive; broader report and CSP conformance remain issue #40 gates.
 
+Slice 414 carries report-only `form-action` violations through the existing
+child-owned submit turn. After submit handlers determine the final form
+target, the content process transfers its queued report records with the
+mutation envelope; the parent commits the child snapshot and dispatches the
+records through the persistent page event bridge before navigation proceeds.
+Click and page-script submission share the policy decision and event ordering;
+enforced blocking still emits no request, while an allowed submission remains
+report-only and proceeds to the parent navigation owner. The `form-action`
+vocabulary remains a Glass-owned extension rather than a normative CSP Level 3
+directive; broader CSP and Core Web Profile conformance remain issue #40
+gates.
+
 Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
 `navigate-to` navigation-policy extension. After each content-process
 document mutation, the child recomputes its bounded effective source groups
@@ -26,8 +39,9 @@ input, lifecycle, hash-change, or a script event-loop turn governs the next
 top-level link or location decision without a reload. The IPC schema is
 versioned with the rest of the content worker boundary; an absent directive
 remains distinct from an explicit source group, and the parent remains the
-navigation authority. Report-only delivery through every navigation path and
-broader CSP conformance remain separate issue #40 gates.
+navigation authority. Report-only delivery through the async navigation paths
+was completed in slice 413; form-action delivery and broader CSP conformance
+remain separate issue #40 gates.
 
 Slice 411 closes the Glass-owned explicit `navigate-to` navigation-policy
 extension. This is intentionally documented as a Glass policy extension, not
@@ -39,15 +53,16 @@ owner. Direct navigation, same-document and page-script handoffs, links,
 downloads, popups, history traversal, and final content-process URLs check the
 owner policy before they issue or commit a navigation. A denied request leaves
 the current document in place. Report-only delivery through every navigation
-path remains a separate issue #40 gate.
+path was completed by slice 413; form-action delivery remains the active
+follow-up in slice 414.
 
 Slice 410 closes the explicit CSP `form-action` boundary. Validated GET/POST
 form submissions from local documents and the HTTP content process now check
 the shared document policy after submit handling and before a navigation
 request is issued; enforced policies intersect, and an omitted `form-action`
 does not inherit `default-src`. The shared loader records report-only
-observations, while delivery through every form-event path remains a separate
-issue #40 gate.
+observations; slice 414 completes delivery through the content-process
+form-event paths and mutation envelope.
 
 Slice 409 closes external-resource Subresource Integrity. External scripts and
 stylesheet links now carry `integrity` and `crossorigin` through DOM discovery,

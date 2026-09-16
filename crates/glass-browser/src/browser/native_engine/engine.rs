@@ -46,7 +46,7 @@ use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
-    NativeFetchResponse, NativeNavigationMethod, NativeNavigationPolicyKind,
+    NativeCspViolation, NativeFetchResponse, NativeNavigationMethod, NativeNavigationPolicyKind,
     NativeNavigationRequest, NativeResource, NativeResourceLoader, csp_sources_allow,
     csp_sources_allow_for_redirect, referrer_for_navigation,
 };
@@ -755,9 +755,12 @@ impl NativeEngine {
         self.queue_page_message_port_commands(page_message_port_commands)?;
         self.queue_service_worker_client_messages(service_worker_client_messages)?;
         self.queue_service_worker_open_window_requests(service_worker_open_windows)?;
-        if let Some(mutation) = mutation {
+        if let Some(mut mutation) = mutation {
+            let csp_violations = std::mem::take(&mut mutation.csp_violations);
             let navigation = mutation.navigation.clone();
             self.apply_content_process_mutation(mutation)?;
+            self.dispatch_content_csp_violations_async(csp_violations)
+                .await?;
             self.apply_content_history_commands(&history)?;
             if let Some(navigation) = navigation {
                 self.navigate_script_navigation_async(navigation, 0).await?;
@@ -2200,9 +2203,12 @@ impl NativeEngine {
                 .map(|mutation| mutation.history.clone())
                 .unwrap_or_default();
             history.extend(mutation_history);
-            if let Some(mutation) = mutation {
+            if let Some(mut mutation) = mutation {
+                let csp_violations = std::mem::take(&mut mutation.csp_violations);
                 let navigation = mutation.navigation.clone();
                 self.apply_content_process_mutation(mutation)?;
+                self.dispatch_content_csp_violations_async(csp_violations)
+                    .await?;
                 history_traversal = self.apply_content_history_commands(&history)?;
                 if let Some(navigation) = navigation {
                     self.navigate_script_navigation_async(navigation, 0).await?;
@@ -2378,6 +2384,21 @@ impl NativeEngine {
             self.navigate_request_async(navigation, 0).await?;
         }
         Ok(evaluation.value)
+    }
+
+    async fn dispatch_content_csp_violations_async(
+        &mut self,
+        csp_violations: Vec<NativeCspViolation>,
+    ) -> Result<(), NativeEngineError> {
+        if csp_violations.is_empty() {
+            return Ok(());
+        }
+        let page_events = NativePageEventBatch {
+            csp_violations,
+            ..NativePageEventBatch::default()
+        };
+        Box::pin(self.evaluate_page_with_events_async("undefined;".into(), page_events)).await?;
+        Ok(())
     }
 
     pub(crate) async fn sync_window_proxies(
@@ -5674,6 +5695,7 @@ impl NativeEngine {
         next_revision: u64,
         mut mutation: NativeContentMutation,
     ) -> Result<NativeActionResult, NativeEngineError> {
+        let csp_violations = std::mem::take(&mut mutation.csp_violations);
         let history = std::mem::take(&mut mutation.history);
         if history.iter().any(|command| {
             matches!(
@@ -5687,6 +5709,8 @@ impl NativeEngine {
             });
         }
         let outcome = self.apply_content_process_mutation_at(next_revision, mutation)?;
+        self.dispatch_content_csp_violations_async(csp_violations)
+            .await?;
         let history_traversal = self.apply_content_history_commands(&history)?;
         if !history.is_empty() {
             self.sync_content_history_async().await?;

@@ -2427,7 +2427,9 @@ impl NativeStylesheet {
             );
         }
 
-        if let Some(inline_style) = node.attribute("style") {
+        if node.inline_style_allowed()
+            && let Some(inline_style) = node.attribute("style")
+        {
             let declarations = parse_declarations(inline_style);
             apply_local_important_cascade_declaration(
                 declarations.display,

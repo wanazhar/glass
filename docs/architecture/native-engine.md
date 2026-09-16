@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-394` slice. The native runtime is now the primary
+`native-engine-browser-395` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -792,6 +792,19 @@ cross-source task ordering, and final Core Web Profile and production
 certification remain issue #40 gates. The exact contract and evidence are
 recorded in
 `docs/plan/tasks/native-engine-browser-394.md`.
+
+Slice 395 closes the inline-content CSP bypass in the HTTP(S) content owner.
+The Rust policy preserves nonce/hash source-expression bytes, applies the
+`script-src-elem`/`style-src-elem` and fallback directive chain to inline and
+external element resources, and applies `style-src-attr`/fallback policy to
+`style="..."` declarations. Inline scripts and style elements support the
+bounded `unsafe-inline`, exact nonce, and SHA-256/SHA-384/SHA-512 hash
+admission forms; style attributes require `unsafe-inline` or a matching hash
+with `unsafe-hashes`. Dynamic script/style mutations are rechecked before
+they can execute or enter computed style. The broader CSP grammar, reporting,
+and strict-dynamic behavior remain explicit issue #40 security gates. The
+contract and evidence are recorded in
+`docs/plan/tasks/native-engine-browser-395.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

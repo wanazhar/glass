@@ -22,8 +22,8 @@ use super::layout::NativePoint;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
     NativeCorsMode, NativeFetchCacheMode, NativeFetchRedirectMode, NativeFetchRequest,
-    NativeFetchResponse, NativeNavigationMethod, NativeRequestBody, NativeResourceLoader,
-    NativeScriptResource,
+    NativeFetchResponse, NativeInlineScriptPolicy, NativeNavigationMethod, NativeRequestBody,
+    NativeResourceLoader, NativeScriptResource,
 };
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes192, Aes256};
@@ -5918,6 +5918,7 @@ pub(crate) fn execute_inline_scripts(
                 source,
                 timing,
                 node_index,
+                nonce: _,
             } => Some((
                 timing,
                 NativePageScript::Classic {
@@ -5929,6 +5930,7 @@ pub(crate) fn execute_inline_scripts(
                 source,
                 timing,
                 node_index,
+                nonce: _,
             } => Some((
                 timing,
                 NativePageScript::Module {
@@ -8499,6 +8501,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     service_worker_commands: Arc<Mutex<Vec<NativeScriptCommand>>>,
     service_worker_registrations: Arc<Mutex<Vec<NativeServiceWorkerRegistrationState>>>,
     service_worker_clients: Arc<Mutex<Vec<serde_json::Value>>>,
+    inline_script_policy: Arc<Mutex<NativeInlineScriptPolicy>>,
     pending_window_proxy_updates: Arc<Mutex<Vec<NativeWindowProxyUpdate>>>,
     frame_script_bindings: Arc<Mutex<Vec<NativeFrameScriptBinding>>>,
     frame_script_context: Arc<Mutex<Option<NativeFrameScriptContext>>>,
@@ -8643,6 +8646,7 @@ impl NativeJavaScriptRuntime {
             service_worker_commands: Arc::new(Mutex::new(Vec::new())),
             service_worker_registrations: Arc::new(Mutex::new(Vec::new())),
             service_worker_clients: Arc::new(Mutex::new(Vec::new())),
+            inline_script_policy: Arc::new(Mutex::new(NativeInlineScriptPolicy::default())),
             pending_window_proxy_updates: Arc::new(Mutex::new(Vec::new())),
             frame_script_bindings: Arc::new(Mutex::new(Vec::new())),
             frame_script_context: Arc::new(Mutex::new(None)),
@@ -8664,6 +8668,12 @@ impl NativeJavaScriptRuntime {
     pub(crate) fn set_environment(&self, environment: NativeEnvironmentOverrides) {
         if let Ok(mut current) = self.environment.lock() {
             *current = environment;
+        }
+    }
+
+    pub(crate) fn set_inline_script_policy(&self, policy: NativeInlineScriptPolicy) {
+        if let Ok(mut current) = self.inline_script_policy.lock() {
+            *current = policy;
         }
     }
 
@@ -10257,6 +10267,10 @@ impl NativeJavaScriptRuntime {
         }
         let result = self.context.with(|ctx| {
             install_native_crypto_sources(ctx.clone())?;
+            install_native_inline_script_policy(
+                ctx.clone(),
+                Arc::clone(&self.inline_script_policy),
+            )?;
             ctx.eval::<(), _>(bootstrap.as_str())
                 .map_err(|_| NativeEngineError::Worker {
                     operation: "install JavaScript host view".into(),
@@ -12211,6 +12225,29 @@ mod native_ed25519_tests {
         assert_eq!(native_ed25519_sign(&private_key, &[]).unwrap(), signature);
         assert!(native_ed25519_verify(&public_key, &signature, &[]).unwrap());
     }
+}
+
+fn install_native_inline_script_policy<'js>(
+    ctx: rquickjs::Ctx<'js>,
+    policy: Arc<Mutex<NativeInlineScriptPolicy>>,
+) -> Result<(), NativeEngineError> {
+    let allows = Function::new(ctx.clone(), move |source: String, nonce: String| -> bool {
+        let nonce = (!nonce.is_empty()).then_some(nonce.as_str());
+        policy
+            .lock()
+            .map(|policy| policy.allows(&source, nonce))
+            .unwrap_or(false)
+    })
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install inline script policy".into(),
+        reason: "native inline script policy could not be installed".into(),
+    })?;
+    ctx.globals()
+        .set("__glassAllowsInlineScript", allows)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "publish inline script policy".into(),
+            reason: "native inline script policy could not be published".into(),
+        })
 }
 
 fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), NativeEngineError> {
@@ -27301,6 +27338,7 @@ fn document_bootstrap(
     let imageNaturalWidth = Number(entry.imageNaturalWidth) || 0;
     let imageNaturalHeight = Number(entry.imageNaturalHeight) || 0;
     let imageCurrentSrc = String(entry.imageCurrentSrc || "");
+    let inlineStyleAllowed = entry.inlineStyleAllowed !== false;
     let computedStyle = entry.computedStyle && typeof entry.computedStyle === "object"
       ? entry.computedStyle
       : {{}};
@@ -28035,6 +28073,11 @@ fn document_bootstrap(
       configurable: false,
       value() {{ return computedStyle; }},
     }});
+    Object.defineProperty(element, "__glassInlineStyleAllowed", {{
+      enumerable: false,
+      configurable: false,
+      value() {{ return inlineStyleAllowed; }},
+    }});
     Object.defineProperty(element, "__glassRefresh", {{
       enumerable: false,
       configurable: false,
@@ -28043,6 +28086,7 @@ fn document_bootstrap(
         computedStyle = nextEntry.computedStyle && typeof nextEntry.computedStyle === "object"
           ? nextEntry.computedStyle
           : {{}};
+        inlineStyleAllowed = nextEntry.inlineStyleAllowed !== false;
         if (!entry.attributeNamespaces || typeof entry.attributeNamespaces !== "object") entry.attributeNamespaces = {{}};
         element.nodeIndex = nextEntry.nodeIndex;
         element.parentIndex = nextEntry.parentIndex;
@@ -28152,6 +28196,21 @@ fn document_bootstrap(
       const classic = type === "" || type === "text/javascript" || type === "application/javascript";
       if (!node.getAttribute("src") && classic && source) {{
         pushCommand({{ kind: "startScript", node_index: node.nodeIndex }});
+        let allowed = true;
+        if (typeof globalThis.__glassAllowsInlineScript === "function") {{
+          try {{
+            allowed = Boolean(globalThis.__glassAllowsInlineScript(
+              source,
+              String(node.getAttribute("nonce") || ""),
+            ));
+          }} catch (_error) {{
+            allowed = false;
+          }}
+        }}
+        if (!allowed) {{
+          dispatchTarget(node, createEvent("error"));
+          return;
+        }}
         try {{
           (0, eval)(source);
         }} catch (error) {{
@@ -30064,7 +30123,10 @@ fn document_bootstrap(
     return "";
   }};
   const makeComputedStyle = (element) => {{
-    const inline = () => parseStyleDeclarations(element.getAttribute("style") || "");
+    const inline = () => typeof element.__glassInlineStyleAllowed !== "function"
+      || element.__glassInlineStyleAllowed()
+      ? parseStyleDeclarations(element.getAttribute("style") || "")
+      : [];
     const api = {{
       get length() {{ return computedStyleProperties.length; }},
       item(index) {{

@@ -4498,6 +4498,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 }
                                 runtime.set_scroll_offset(scroll_offset);
                                 runtime.set_nested_scroll_offsets(nested_scroll_offsets.clone());
+                                if let Some(loader) = resource_loader.as_ref() {
+                                    runtime.set_inline_script_policy(
+                                        loader.inline_script_policy(&resource.url)?,
+                                    );
+                                }
                             }
                             let document_cookie = resource_loader
                                 .as_ref()
@@ -4517,6 +4522,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 &document_cookie,
                                 &resource_events,
                             );
+                            if let Some(loader) = resource_loader.as_ref() {
+                                refresh_inline_style_policy(&mut parsed, loader, &resource.url)?;
+                            }
                             let prepared = match page_scripts {
                                 Ok(page_scripts) if page_scripts.navigation.is_some() => {
                                     let dialogs = page_scripts.dialogs;
@@ -4920,6 +4928,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         reason: "content process resource loader is unavailable".into(),
                     });
                 };
+                runtime.set_inline_script_policy(loader.inline_script_policy(&committed_url)?);
                 service_workers.run_due_timers(loader).await?;
                 workers.run_due_timers(loader).await?;
                 process_worker_websocket_commands(
@@ -6749,6 +6758,7 @@ async fn load_content_resource(
     service_workers.commit_document(&resource.url)?;
     let frame_sources = loader.frame_sources_for_document(&resource.url)?;
     let discovery = NativeDocument::parse(&resource.body, &limits)?;
+    let allowed_inline_style_nodes = inline_style_policy_nodes(&discovery, loader, &resource.url)?;
     let mut external_stylesheets = Vec::new();
     let mut resource_events = Vec::new();
     for href in discovery
@@ -6775,8 +6785,13 @@ async fn load_content_resource(
         };
         resource_events.push((node_index, event_kind));
     }
-    let mut document =
-        NativeDocument::parse_with_stylesheets(&resource.body, &limits, &external_stylesheets, 1)?;
+    let mut document = NativeDocument::parse_with_stylesheets_and_inline_style_policy(
+        &resource.body,
+        &limits,
+        &external_stylesheets,
+        1,
+        Some(&allowed_inline_style_nodes),
+    )?;
     resource_events
         .extend(load_external_images(&mut document, loader, &resource.url, viewport).await?);
     let (script_sources, script_resource_events) =
@@ -6837,6 +6852,35 @@ fn service_worker_fetch_resource(
         origin: NativeOrigin::from_url(&parsed)?,
         body: String::from_utf8_lossy(&response.body).into_owned(),
     })
+}
+
+fn inline_style_policy_nodes(
+    document: &NativeDocument,
+    loader: &NativeResourceLoader,
+    document_url: &str,
+) -> Result<BTreeSet<u32>, NativeEngineError> {
+    let mut allowed = BTreeSet::new();
+    for (node_index, source, nonce) in document.inline_style_elements() {
+        if loader.allows_inline_style_element(document_url, &source, nonce.as_deref())? {
+            allowed.insert(node_index);
+        }
+    }
+    for (node_index, source) in document.inline_style_attributes() {
+        if loader.allows_inline_style_attribute(document_url, &source)? {
+            allowed.insert(node_index);
+        }
+    }
+    Ok(allowed)
+}
+
+fn refresh_inline_style_policy(
+    document: &mut NativeDocument,
+    loader: &NativeResourceLoader,
+    document_url: &str,
+) -> Result<(), NativeEngineError> {
+    let allowed = inline_style_policy_nodes(document, loader, document_url)?;
+    document.set_inline_style_policy(&allowed);
+    Ok(())
 }
 
 async fn load_external_images(
@@ -6923,7 +6967,12 @@ async fn load_page_script_source_list(
                 source,
                 timing,
                 node_index,
+                nonce,
             } => {
+                if !loader.allows_inline_script(document_url, &source, nonce.as_deref())? {
+                    resource_events.push((node_index, NativeEventKind::Error));
+                    continue;
+                }
                 sources.push((
                     timing,
                     NativePageScript::Classic {
@@ -6936,7 +6985,12 @@ async fn load_page_script_source_list(
                 source,
                 timing,
                 node_index,
+                nonce,
             } => {
+                if !loader.allows_inline_script(document_url, &source, nonce.as_deref())? {
+                    resource_events.push((node_index, NativeEventKind::Error));
+                    continue;
+                }
                 let name = format!("{document_url}#{module_name_prefix}-{index}");
                 let mut seen = BTreeSet::new();
                 seen.insert(name.clone());
@@ -8666,6 +8720,9 @@ async fn mutate_script_document(
     let mut dynamic_result = NativePageScriptResult::default();
     let mut next = current.clone();
     let mut events = next.apply_script_commands_allowing_links(commands)?;
+    if let Some(loader) = loader.as_deref_mut() {
+        refresh_inline_style_policy(&mut next, loader, &document_url)?;
+    }
     next.refresh_image_loads(viewport);
     next.refresh_background_image_sources();
     let dynamic_sources = next.take_newly_attached_page_script_sources(
@@ -8733,6 +8790,9 @@ async fn mutate_script_document(
                 replace_history: page_navigation.replace_history,
             });
         }
+        if let Some(loader) = loader.as_deref_mut() {
+            refresh_inline_style_policy(&mut next, loader, &document_url)?;
+        }
     }
     let validation_ids = events
         .iter()
@@ -8764,7 +8824,7 @@ async fn mutate_script_document(
         scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
         events.extend(next.apply_script_commands(&evaluation.commands)?);
     }
-    let image_events = if let Some(loader) = loader {
+    let image_events = if let Some(loader) = loader.as_deref_mut() {
         load_external_images(&mut next, loader, &document_url, viewport).await?
     } else {
         Vec::new()
@@ -8795,6 +8855,9 @@ async fn mutate_script_document(
         ));
     }
     next.refresh_image_loads(viewport);
+    if let Some(loader) = loader.as_deref_mut() {
+        refresh_inline_style_policy(&mut next, loader, &document_url)?;
+    }
     next.refresh_background_image_sources();
     let mut navigation = script_navigation_target(&next, &document_url, commands)?;
     if let Some(dynamic_navigation) = dynamic_navigation {

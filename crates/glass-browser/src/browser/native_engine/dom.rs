@@ -122,6 +122,7 @@ pub(crate) struct NativeElementState {
     selection_start: Option<usize>,
     selection_end: Option<usize>,
     selection_direction: Option<String>,
+    inline_style_allowed: bool,
 }
 
 impl NativeElementState {
@@ -144,6 +145,7 @@ impl NativeElementState {
             selection_start: None,
             selection_end: None,
             selection_direction: None,
+            inline_style_allowed: true,
         }
     }
 }
@@ -169,6 +171,8 @@ pub enum NativeNodeKind {
 pub(crate) struct NativeDocumentWire {
     pub(crate) nodes: Vec<NativeNodeWire>,
     pub(crate) computed_styles: Vec<NativeComputedStyle>,
+    #[serde(default)]
+    pub(crate) blocked_inline_style_nodes: Vec<u32>,
     #[serde(default)]
     pub(crate) script_nodes: Vec<NativeScriptNodeIdentity>,
     #[serde(default)]
@@ -366,6 +370,10 @@ impl NativeNode {
             .then(|| self.state.namespace_uri.as_deref())
             .flatten()
     }
+
+    pub(crate) fn inline_style_allowed(&self) -> bool {
+        self.state.inline_style_allowed
+    }
 }
 
 /// Bounded semantic projection of one supported native element.
@@ -508,12 +516,18 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) scroll_x: u32,
     #[serde(default)]
     pub(crate) scroll_y: u32,
+    #[serde(default = "default_inline_style_allowed")]
+    pub(crate) inline_style_allowed: bool,
     /// The layout owner's computed style for this element.  Keeping this in
     /// the same snapshot as attributes and geometry lets one JavaScript turn
     /// observe a coherent style/layout revision rather than reconstructing
     /// CSS from inline attributes alone.
     #[serde(default)]
     pub(crate) computed_style: NativeComputedStyle,
+}
+
+fn default_inline_style_allowed() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -545,6 +559,7 @@ pub(crate) enum NativePageScriptSource {
         source: String,
         timing: NativePageScriptTiming,
         node_index: u32,
+        nonce: Option<String>,
     },
     External {
         href: String,
@@ -555,6 +570,7 @@ pub(crate) enum NativePageScriptSource {
         source: String,
         timing: NativePageScriptTiming,
         node_index: u32,
+        nonce: Option<String>,
     },
     ModuleExternal {
         href: String,
@@ -744,6 +760,22 @@ impl NativeDocument {
         external_stylesheets: &[String],
         generation: u32,
     ) -> Result<Self, NativeEngineError> {
+        Self::parse_with_stylesheets_and_inline_style_policy(
+            source,
+            limits,
+            external_stylesheets,
+            generation,
+            None,
+        )
+    }
+
+    pub(crate) fn parse_with_stylesheets_and_inline_style_policy(
+        source: &str,
+        limits: &NativeEngineLimits,
+        external_stylesheets: &[String],
+        generation: u32,
+        allowed_inline_style_nodes: Option<&BTreeSet<u32>>,
+    ) -> Result<Self, NativeEngineError> {
         limits.validate()?;
         if source.len() > limits.max_document_bytes {
             return Err(NativeEngineError::limit(
@@ -911,10 +943,13 @@ impl NativeDocument {
             }
         }
         document.assign_parsed_namespaces();
+        if let Some(allowed_inline_style_nodes) = allowed_inline_style_nodes {
+            document.set_inline_style_policy(allowed_inline_style_nodes);
+        }
         let mut style_sources = document
             .nodes
             .iter()
-            .filter(|node| node.element_name() == Some("style"))
+            .filter(|node| node.element_name() == Some("style") && node.inline_style_allowed())
             .map(|node| {
                 let mut source = String::new();
                 document.collect_raw_text(node.id(), &mut source);
@@ -927,6 +962,9 @@ impl NativeDocument {
             NativeStylesheet::from_sources_with_diagnostics(style_sources, &mut diagnostics)?;
         document.background_image_sources = document.stylesheet.background_image_sources().clone();
         for node in &document.nodes {
+            if !node.inline_style_allowed() {
+                continue;
+            }
             let Some(inline_style) = node.attribute("style") else {
                 continue;
             };
@@ -945,6 +983,42 @@ impl NativeDocument {
         document.diagnostics_truncated = diagnostics_truncated;
         document.normalize_select_defaults();
         Ok(document)
+    }
+
+    pub(crate) fn inline_style_elements(&self) -> Vec<(u32, String, Option<String>)> {
+        self.nodes
+            .iter()
+            .filter(|node| self.is_attached(node.id()) && node.element_name() == Some("style"))
+            .map(|node| {
+                let mut source = String::new();
+                self.collect_raw_text(node.id(), &mut source);
+                (
+                    node.id().index(),
+                    source,
+                    node.attribute("nonce").map(str::to_owned),
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn inline_style_attributes(&self) -> Vec<(u32, String)> {
+        self.nodes
+            .iter()
+            .filter(|node| self.is_attached(node.id()) && node.attribute("style").is_some())
+            .filter_map(|node| {
+                node.attribute("style")
+                    .map(|source| (node.id().index(), source.to_owned()))
+            })
+            .collect()
+    }
+
+    pub(crate) fn set_inline_style_policy(&mut self, allowed_nodes: &BTreeSet<u32>) {
+        for node in &mut self.nodes {
+            if node.element_name() == Some("style") || node.attribute("style").is_some() {
+                node.state.inline_style_allowed = allowed_nodes.contains(&node.id().index());
+            }
+        }
+        self.computed_styles = None;
     }
 
     pub(crate) fn external_stylesheet_links(&self) -> Vec<(u32, String)> {
@@ -1267,6 +1341,7 @@ impl NativeDocument {
         let inline_sources = self
             .nodes
             .iter()
+            .filter(|node| node.inline_style_allowed())
             .filter_map(|node| node.attribute("style").map(str::to_owned))
             .collect::<Vec<_>>();
         for inline_style in inline_sources {
@@ -1429,6 +1504,15 @@ impl NativeDocument {
         NativeDocumentWire {
             nodes,
             computed_styles,
+            blocked_inline_style_nodes: self
+                .nodes
+                .iter()
+                .filter(|node| {
+                    (node.element_name() == Some("style") || node.attribute("style").is_some())
+                        && !node.inline_style_allowed()
+                })
+                .map(|node| node.id().index())
+                .collect(),
             script_nodes: self
                 .script_node_ids
                 .iter()
@@ -1509,6 +1593,45 @@ impl NativeDocument {
             return Err(NativeEngineError::Parse {
                 offset: 0,
                 reason: "content process returned an unknown background image source".into(),
+            });
+        }
+        if wire.blocked_inline_style_nodes.len() > limits.max_nodes {
+            return Err(NativeEngineError::limit(
+                "content-process blocked inline styles",
+                limits.max_nodes,
+                wire.blocked_inline_style_nodes.len(),
+            ));
+        }
+        let blocked_inline_style_nodes = wire
+            .blocked_inline_style_nodes
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if blocked_inline_style_nodes.len() != wire.blocked_inline_style_nodes.len()
+            || blocked_inline_style_nodes.iter().any(|node_index| {
+                let Ok(index) = usize::try_from(*node_index) else {
+                    return true;
+                };
+                let Some(node) = wire.nodes.get(index) else {
+                    return true;
+                };
+                match &node.kind {
+                    NativeNodeKindWire::Element { name, attributes } => {
+                        !name.eq_ignore_ascii_case("style")
+                            && !attributes
+                                .iter()
+                                .any(|(name, _)| name.eq_ignore_ascii_case("style"))
+                    }
+                    NativeNodeKindWire::Document
+                    | NativeNodeKindWire::DocumentType { .. }
+                    | NativeNodeKindWire::Comment(_)
+                    | NativeNodeKindWire::Text(_) => true,
+                }
+            })
+        {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned an invalid blocked inline style node".into(),
             });
         }
         let node_id = |index: u32| -> Result<NativeNodeId, NativeEngineError> {
@@ -1633,6 +1756,7 @@ impl NativeDocument {
                     selection_start: wire_node.state.selection_start,
                     selection_end: wire_node.state.selection_end,
                     selection_direction: wire_node.state.selection_direction.clone(),
+                    inline_style_allowed: !blocked_inline_style_nodes.contains(&index),
                 },
             });
         }
@@ -1938,6 +2062,9 @@ impl NativeDocument {
         };
         let mut diagnostics = NativeDiagnosticSink::default();
         for node in &nodes {
+            if !node.inline_style_allowed() {
+                continue;
+            }
             let Some(inline_style) = node.attribute("style") else {
                 continue;
             };
@@ -2326,6 +2453,7 @@ impl NativeDocument {
                     image_current_src,
                     scroll_x: 0,
                     scroll_y: 0,
+                    inline_style_allowed: node.inline_style_allowed(),
                     computed_style,
                 })
             })
@@ -2538,12 +2666,14 @@ impl NativeDocument {
                         source,
                         timing,
                         node_index: node.id().index(),
+                        nonce: node.attribute("nonce").map(str::to_owned),
                     }
                 } else {
                     NativePageScriptSource::Inline {
                         source,
                         timing,
                         node_index: node.id().index(),
+                        nonce: node.attribute("nonce").map(str::to_owned),
                     }
                 })
             })

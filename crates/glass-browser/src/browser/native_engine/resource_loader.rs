@@ -14,6 +14,7 @@ use super::origin::NativeOrigin;
 use base64::Engine as _;
 use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
+use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -46,6 +47,13 @@ pub(crate) enum NativeSubresourceKind {
     Frame,
     Connect,
     Worker,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeInlineCspKind {
+    ScriptElement,
+    StyleElement,
+    StyleAttribute,
 }
 
 #[allow(dead_code)]
@@ -678,7 +686,10 @@ impl NativeCookie {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct NativeCspPolicy {
     style_sources: Option<Vec<String>>,
+    style_element_sources: Option<Vec<String>>,
+    style_attribute_sources: Option<Vec<String>>,
     script_sources: Option<Vec<String>>,
+    script_element_sources: Option<Vec<String>>,
     image_sources: Option<Vec<String>>,
     font_sources: Option<Vec<String>>,
     media_sources: Option<Vec<String>>,
@@ -697,8 +708,14 @@ impl NativeCspPolicy {
 
     fn sources_for(&self, kind: NativeSubresourceKind) -> Option<&Vec<String>> {
         match kind {
-            NativeSubresourceKind::Style => self.style_sources.as_ref(),
-            NativeSubresourceKind::Script => self.script_sources.as_ref(),
+            NativeSubresourceKind::Style => self
+                .style_element_sources
+                .as_ref()
+                .or(self.style_sources.as_ref()),
+            NativeSubresourceKind::Script => self
+                .script_element_sources
+                .as_ref()
+                .or(self.script_sources.as_ref()),
             NativeSubresourceKind::Image => self.image_sources.as_ref(),
             NativeSubresourceKind::Font => self.font_sources.as_ref(),
             NativeSubresourceKind::Media => self.media_sources.as_ref(),
@@ -708,6 +725,46 @@ impl NativeCspPolicy {
             NativeSubresourceKind::Connect => self.connect_sources.as_ref(),
             NativeSubresourceKind::Worker => self.worker_sources.as_ref(),
         }
+    }
+
+    fn inline_sources_for(&self, kind: NativeInlineCspKind) -> Option<&Vec<String>> {
+        match kind {
+            NativeInlineCspKind::ScriptElement => self
+                .script_element_sources
+                .as_ref()
+                .or(self.script_sources.as_ref())
+                .or(self.default_sources.as_ref()),
+            NativeInlineCspKind::StyleElement => self
+                .style_element_sources
+                .as_ref()
+                .or(self.style_sources.as_ref())
+                .or(self.default_sources.as_ref()),
+            NativeInlineCspKind::StyleAttribute => self
+                .style_attribute_sources
+                .as_ref()
+                .or(self.style_sources.as_ref())
+                .or(self.default_sources.as_ref()),
+        }
+    }
+
+    fn allows_inline(&self, kind: NativeInlineCspKind, source: &str, nonce: Option<&str>) -> bool {
+        inline_csp_sources_allow(
+            self.inline_sources_for(kind).map(Vec::as_slice),
+            source,
+            nonce,
+            kind == NativeInlineCspKind::StyleAttribute,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct NativeInlineScriptPolicy {
+    sources: Option<Vec<String>>,
+}
+
+impl NativeInlineScriptPolicy {
+    pub(crate) fn allows(&self, source: &str, nonce: Option<&str>) -> bool {
+        inline_csp_sources_allow(self.sources.as_deref(), source, nonce, false)
     }
 }
 
@@ -728,13 +785,13 @@ pub(crate) fn csp_sources_allow(
     }
     let document_origin = document_url.origin();
     for source in sources {
-        if source == "'none'" {
+        if source.eq_ignore_ascii_case("'none'") {
             return false;
         }
         if source == "*" {
             return true;
         }
-        if source == "'self'" && resource_url.origin() == document_origin {
+        if source.eq_ignore_ascii_case("'self'") && resource_url.origin() == document_origin {
             return true;
         }
         if source.ends_with(':')
@@ -747,6 +804,71 @@ pub(crate) fn csp_sources_allow(
         }
     }
     false
+}
+
+fn inline_csp_sources_allow(
+    sources: Option<&[String]>,
+    source: &str,
+    nonce: Option<&str>,
+    style_attribute: bool,
+) -> bool {
+    let Some(sources) = sources else {
+        return true;
+    };
+    if sources.is_empty() {
+        return false;
+    }
+    if sources
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case("'unsafe-inline'"))
+    {
+        return true;
+    }
+    if !style_attribute
+        && nonce.is_some_and(|nonce| {
+            sources
+                .iter()
+                .any(|candidate| csp_nonce_matches(candidate, nonce))
+        })
+    {
+        return true;
+    }
+    let unsafe_hashes = sources
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case("'unsafe-hashes'"));
+    if style_attribute && !unsafe_hashes {
+        return false;
+    }
+    sources
+        .iter()
+        .any(|candidate| csp_hash_matches(candidate, source))
+}
+
+fn csp_nonce_matches(source: &str, nonce: &str) -> bool {
+    let Some(value) = source.strip_suffix('\'').and_then(|source| source.get(7..)) else {
+        return false;
+    };
+    source
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("'nonce-"))
+        && value == nonce
+}
+
+fn csp_hash_matches(source: &str, value: &str) -> bool {
+    let Some(source) = source.strip_suffix('\'') else {
+        return false;
+    };
+    let Some((algorithm, expected)) = source.get(1..).and_then(|source| source.split_once('-'))
+    else {
+        return false;
+    };
+    let digest = match algorithm.to_ascii_lowercase().as_str() {
+        "sha256" => Sha256::digest(value.as_bytes()).to_vec(),
+        "sha384" => Sha384::digest(value.as_bytes()).to_vec(),
+        "sha512" => Sha512::digest(value.as_bytes()).to_vec(),
+        _ => return false,
+    };
+    base64::engine::general_purpose::STANDARD.encode(digest) == expected
 }
 
 impl NativeResourceLoader {
@@ -834,6 +956,72 @@ impl NativeResourceLoader {
 
     pub(crate) fn max_document_bytes(&self) -> usize {
         self.max_document_bytes
+    }
+
+    pub(crate) fn inline_script_policy(
+        &self,
+        document_url: &str,
+    ) -> Result<NativeInlineScriptPolicy, NativeEngineError> {
+        Ok(self
+            .document_policy(document_url)?
+            .map(|policy| NativeInlineScriptPolicy {
+                sources: policy
+                    .inline_sources_for(NativeInlineCspKind::ScriptElement)
+                    .cloned(),
+            })
+            .unwrap_or_default())
+    }
+
+    pub(crate) fn allows_inline_script(
+        &self,
+        document_url: &str,
+        source: &str,
+        nonce: Option<&str>,
+    ) -> Result<bool, NativeEngineError> {
+        Ok(self.document_policy(document_url)?.is_none_or(|policy| {
+            policy.allows_inline(NativeInlineCspKind::ScriptElement, source, nonce)
+        }))
+    }
+
+    pub(crate) fn allows_inline_style_element(
+        &self,
+        document_url: &str,
+        source: &str,
+        nonce: Option<&str>,
+    ) -> Result<bool, NativeEngineError> {
+        Ok(self.document_policy(document_url)?.is_none_or(|policy| {
+            policy.allows_inline(NativeInlineCspKind::StyleElement, source, nonce)
+        }))
+    }
+
+    pub(crate) fn allows_inline_style_attribute(
+        &self,
+        document_url: &str,
+        source: &str,
+    ) -> Result<bool, NativeEngineError> {
+        Ok(self.document_policy(document_url)?.is_none_or(|policy| {
+            policy.allows_inline(NativeInlineCspKind::StyleAttribute, source, None)
+        }))
+    }
+
+    fn document_policy(
+        &self,
+        document_url: &str,
+    ) -> Result<Option<&NativeCspPolicy>, NativeEngineError> {
+        validate_url_text("CSP document URL", document_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "CSP document URL is not valid URL syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(None);
+        }
+        reject_credentials(&document_url)?;
+        Ok(self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url)))
     }
 
     pub(crate) fn websocket_target(
@@ -3160,10 +3348,13 @@ fn content_security_policy(headers: &HeaderMap) -> NativeCspPolicy {
             let Some(name) = parts.next() else {
                 continue;
             };
-            let sources = parts.map(str::to_ascii_lowercase).collect::<Vec<_>>();
+            let sources = parts.map(str::to_owned).collect::<Vec<_>>();
             match name.to_ascii_lowercase().as_str() {
                 "style-src" => policy.style_sources = Some(sources),
+                "style-src-elem" => policy.style_element_sources = Some(sources),
+                "style-src-attr" => policy.style_attribute_sources = Some(sources),
                 "script-src" => policy.script_sources = Some(sources),
+                "script-src-elem" => policy.script_element_sources = Some(sources),
                 "img-src" => policy.image_sources = Some(sources),
                 "font-src" => policy.font_sources = Some(sources),
                 "media-src" => policy.media_sources = Some(sources),
@@ -4582,18 +4773,20 @@ mod tests {
     };
     use super::{
         MAX_NATIVE_CACHE_ENTRIES, NativeCookieProfileEntry, NativeCorsMode, NativeEngineConfig,
-        NativeNavigationMethod, NativeNetworkState, NativeResource, NativeResourceLoader,
-        NativeSubresourceKind, cache_control_max_age, cache_control_requires_revalidation,
-        content_security_policy, cors_origin_header, cors_preflight_response_allowed,
-        cors_response_allowed, decode_html_body, document_cache_fresh_until,
-        document_cache_storage_allowed, mixed_content_allowed, referrer_for_navigation,
-        resolve_subresource_url,
+        NativeInlineCspKind, NativeNavigationMethod, NativeNetworkState, NativeResource,
+        NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
+        cache_control_requires_revalidation, content_security_policy, cors_origin_header,
+        cors_preflight_response_allowed, cors_response_allowed, decode_html_body,
+        document_cache_fresh_until, document_cache_storage_allowed, mixed_content_allowed,
+        referrer_for_navigation, resolve_subresource_url,
     };
+    use base64::Engine as _;
     use reqwest::header::{
         ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS,
         ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL,
         CONTENT_SECURITY_POLICY, HeaderMap, HeaderValue, PRAGMA, VARY,
     };
+    use sha2::{Digest, Sha256};
     use std::fs;
     use std::time::Instant;
     use url::Url;
@@ -4898,6 +5091,45 @@ mod tests {
         assert!(policy.allows(NativeSubresourceKind::Connect, &document, &document));
         assert!(!policy.allows(NativeSubresourceKind::Connect, &document, &socket));
         assert!(!policy.allows(NativeSubresourceKind::Font, &document, &document));
+    }
+
+    #[test]
+    fn csp_inline_sources_preserve_nonce_hash_and_element_directive_semantics() {
+        let script = "globalThis.cspInline = true;";
+        let nonce_script = "globalThis.cspNonce = true;";
+        let style_element = "body { color: red; }";
+        let style_attribute = "color: blue";
+        let script_hash =
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(script.as_bytes()));
+        let style_element_hash = base64::engine::general_purpose::STANDARD
+            .encode(Sha256::digest(style_element.as_bytes()));
+        let style_attribute_hash = base64::engine::general_purpose::STANDARD
+            .encode(Sha256::digest(style_attribute.as_bytes()));
+        let mut headers = HeaderMap::new();
+        let policy_header = format!(
+            "default-src 'none'; script-src 'nonce-Wrong'; script-src-elem 'nonce-AbC123' 'sha256-{script_hash}'; style-src 'none'; style-src-elem 'nonce-Style123' 'sha256-{style_element_hash}'; style-src-attr 'unsafe-hashes' 'sha256-{style_attribute_hash}'"
+        );
+        headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_str(&policy_header).unwrap(),
+        );
+        let policy = content_security_policy(&headers);
+
+        assert!(policy.allows_inline(NativeInlineCspKind::ScriptElement, script, Some("AbC123"),));
+        assert!(!policy.allows_inline(
+            NativeInlineCspKind::ScriptElement,
+            nonce_script,
+            Some("abc123"),
+        ));
+        assert!(policy.allows_inline(NativeInlineCspKind::ScriptElement, script, None));
+        assert!(policy.allows_inline(
+            NativeInlineCspKind::StyleElement,
+            style_element,
+            Some("Style123"),
+        ));
+        assert!(policy.allows_inline(NativeInlineCspKind::StyleElement, style_element, None,));
+        assert!(policy.allows_inline(NativeInlineCspKind::StyleAttribute, style_attribute, None,));
+        assert!(!policy.allows_inline(NativeInlineCspKind::StyleAttribute, "color: green", None,));
     }
 
     #[test]

@@ -36,9 +36,9 @@ use super::javascript::{
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
-    NativeWorkerRegistry, NativeWorkerWebSocketCommand, diff_indexed_db_changes,
-    execute_dynamic_page_scripts, execute_page_scripts, host_event_batch, host_key_event_batch,
-    host_key_event_batch_with_modifiers, host_submit_event_batch,
+    NativeWorkerRegistry, NativeWorkerWebSocketCommand, apply_page_script_evaluation,
+    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts, host_event_batch,
+    host_key_event_batch, host_key_event_batch_with_modifiers, host_submit_event_batch,
     literal_dynamic_module_specifiers, load_indexed_db_profile, load_service_worker_cache_profile,
     load_service_worker_registration_profiles, load_web_storage_profile, order_page_scripts,
     page_script_sources_to_scripts, save_service_worker_cache_profile, save_web_storage_profile,
@@ -212,6 +212,7 @@ enum NativeEventSourceEvent {
     Open {
         origin: String,
         cookie_changes: Vec<NativeCookieChange>,
+        csp_violations: Vec<NativeCspViolation>,
     },
     Message {
         event: String,
@@ -221,6 +222,7 @@ enum NativeEventSourceEvent {
     },
     Error {
         message: String,
+        csp_violations: Vec<NativeCspViolation>,
     },
     Close,
 }
@@ -841,6 +843,7 @@ async fn run_native_event_source(
                     &events,
                     NativeEventSourceEvent::Error {
                         message: bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES),
+                        csp_violations: loader.take_csp_violations(),
                     },
                 )
                 .await
@@ -861,6 +864,7 @@ async fn run_native_event_source(
                     &events,
                     NativeEventSourceEvent::Error {
                         message: "native EventSource connection timed out".into(),
+                        csp_violations: loader.take_csp_violations(),
                     },
                 )
                 .await
@@ -877,6 +881,7 @@ async fn run_native_event_source(
                 continue;
             }
         };
+        let csp_violations = loader.take_csp_violations();
         let cookie_changes = loader.take_cookie_changes();
         reconnects = 0;
         if !queue_event_source_event(
@@ -884,6 +889,7 @@ async fn run_native_event_source(
             NativeEventSourceEvent::Open {
                 origin: url.origin().ascii_serialization(),
                 cookie_changes,
+                csp_violations,
             },
         )
         .await
@@ -912,6 +918,7 @@ async fn run_native_event_source(
                                 Err(error) => {
                                     let _ = queue_event_source_event(&events, NativeEventSourceEvent::Error {
                                         message: bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES),
+                                        csp_violations: Vec::new(),
                                     }).await;
                                     break;
                                 }
@@ -932,6 +939,7 @@ async fn run_native_event_source(
                         Some(Err(error)) => {
                             let _ = queue_event_source_event(&events, NativeEventSourceEvent::Error {
                                 message: bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES),
+                                csp_violations: Vec::new(),
                             }).await;
                             break;
                         }
@@ -4527,7 +4535,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 .map(|loader| loader.document_cookie(&resource.url))
                                 .transpose()?
                                 .unwrap_or_default();
-                            let page_scripts = execute_page_scripts(
+                            let mut page_scripts = execute_page_scripts(
                                 &mut parsed,
                                 &mut script_runtime,
                                 &storage_context_id,
@@ -4541,8 +4549,43 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 &resource_events,
                                 &resource.csp_violations,
                             );
-                            if let Some(loader) = resource_loader.as_mut() {
+                            let mut post_script_csp_result = NativePageScriptResult::default();
+                            let mut post_script_csp_events = Vec::new();
+                            let mut post_script_csp_history = Vec::new();
+                            let mut post_script_csp_scroll_commands = Vec::new();
+                            let mut post_script_document_url = resource.url.clone();
+                            if let (Some(loader), Some(runtime)) =
+                                (resource_loader.as_mut(), script_runtime.as_ref())
+                            {
                                 refresh_inline_style_policy(&mut parsed, loader, &resource.url)?;
+                                dispatch_pending_csp_violations(
+                                    &mut parsed,
+                                    runtime,
+                                    &mut post_script_document_url,
+                                    &resource.origin,
+                                    loaded_viewport,
+                                    loader,
+                                    &mut post_script_csp_result,
+                                    &mut post_script_csp_events,
+                                    &mut post_script_csp_history,
+                                    &mut post_script_csp_scroll_commands,
+                                )?;
+                            }
+                            drop(post_script_csp_history);
+                            drop(post_script_document_url);
+                            if let Ok(page_scripts) = page_scripts.as_mut() {
+                                merge_dynamic_page_script_result(
+                                    page_scripts,
+                                    post_script_csp_result,
+                                )?;
+                                page_scripts.events.extend(
+                                    post_script_csp_events
+                                        .into_iter()
+                                        .map(|(node_index, kind)| (node_index.index(), kind)),
+                                );
+                                page_scripts
+                                    .scroll_commands
+                                    .extend(post_script_csp_scroll_commands);
                             }
                             let prepared = match page_scripts {
                                 Ok(page_scripts) if page_scripts.navigation.is_some() => {
@@ -6783,13 +6826,14 @@ async fn load_content_resource(
         }
     };
     service_workers.commit_document(&resource.url)?;
-    let discovery = NativeDocument::parse(&resource.body, &limits)?;
+    let mut discovery = NativeDocument::parse(&resource.body, &limits)?;
     loader.apply_meta_content_security_policies(
         &resource.url,
         &discovery.content_security_policy_meta(),
     )?;
     let frame_sources = loader.frame_sources_for_document(&resource.url)?;
-    let allowed_inline_style_nodes = inline_style_policy_nodes(&discovery, loader, &resource.url)?;
+    let allowed_inline_style_nodes =
+        inline_style_policy_nodes(&mut discovery, loader, &resource.url)?;
     let mut external_stylesheets = Vec::new();
     let mut resource_events = Vec::new();
     for href in discovery
@@ -6823,6 +6867,7 @@ async fn load_content_resource(
         1,
         Some(&allowed_inline_style_nodes),
     )?;
+    document.mark_inline_style_reports_seen();
     resource_events
         .extend(load_external_images(&mut document, loader, &resource.url, viewport).await?);
     let (script_sources, script_resource_events) =
@@ -6887,21 +6932,45 @@ fn service_worker_fetch_resource(
 }
 
 fn inline_style_policy_nodes(
-    document: &NativeDocument,
+    document: &mut NativeDocument,
     loader: &mut NativeResourceLoader,
     document_url: &str,
 ) -> Result<BTreeSet<u32>, NativeEngineError> {
     let mut allowed = BTreeSet::new();
+    let mut element_nodes = BTreeSet::new();
+    let mut attribute_nodes = BTreeSet::new();
     for (node_index, source, nonce) in document.inline_style_elements() {
-        if loader.allows_inline_style_element(document_url, &source, nonce.as_deref())? {
+        element_nodes.insert(node_index);
+        let reported =
+            document.inline_style_element_reported(node_index, &source, nonce.as_deref());
+        let allowed_by_policy = if reported {
+            loader.allows_inline_style_element_silent(document_url, &source, nonce.as_deref())?
+        } else {
+            loader.allows_inline_style_element(document_url, &source, nonce.as_deref())?
+        };
+        if !reported {
+            document.mark_inline_style_element_reported(node_index, source.clone(), nonce.clone());
+        }
+        if allowed_by_policy {
             allowed.insert(node_index);
         }
     }
     for (node_index, source) in document.inline_style_attributes() {
-        if loader.allows_inline_style_attribute(document_url, &source)? {
+        attribute_nodes.insert(node_index);
+        let reported = document.inline_style_attribute_reported(node_index, &source);
+        let allowed_by_policy = if reported {
+            loader.allows_inline_style_attribute_silent(document_url, &source)?
+        } else {
+            loader.allows_inline_style_attribute(document_url, &source)?
+        };
+        if !reported {
+            document.mark_inline_style_attribute_reported(node_index, source.clone());
+        }
+        if allowed_by_policy {
             allowed.insert(node_index);
         }
     }
+    document.prune_inline_style_reports(&element_nodes, &attribute_nodes);
     Ok(allowed)
 }
 
@@ -6912,6 +6981,63 @@ fn refresh_inline_style_policy(
 ) -> Result<(), NativeEngineError> {
     let allowed = inline_style_policy_nodes(document, loader, document_url)?;
     document.set_inline_style_policy(&allowed);
+    Ok(())
+}
+
+/// Drain report-only CSP records produced during a content-process mutation
+/// and deliver them through the owning page realm before the turn commits.
+/// Listener commands remain part of the same bounded script result so a CSP
+/// observer can perform ordinary DOM or network work without losing ordering.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_pending_csp_violations(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &mut String,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    loader: &mut NativeResourceLoader,
+    result: &mut NativePageScriptResult,
+    events: &mut Vec<(NativeNodeId, NativeEventKind)>,
+    history: &mut Vec<NativeScriptCommand>,
+    scroll_commands: &mut Vec<NativeScriptCommand>,
+) -> Result<(), NativeEngineError> {
+    let violations = loader.take_csp_violations();
+    if violations.is_empty() {
+        return Ok(());
+    }
+    let page_events = NativePageEventBatch {
+        csp_violations: violations,
+        ..NativePageEventBatch::default()
+    };
+    let evaluation = runtime.evaluate_with_page_events(
+        "undefined;",
+        document,
+        document_url,
+        document_origin,
+        viewport,
+        &page_events,
+    )?;
+    let commands = evaluation.commands.clone();
+    apply_content_event_history(&commands, document_url, document_origin, runtime, history)?;
+    let emitted = apply_page_script_evaluation(
+        document,
+        evaluation,
+        &mut result.pending_fetches,
+        &mut result.websocket_commands,
+        &mut result.event_source_commands,
+        scroll_commands,
+        &mut result.navigation,
+    )?;
+    events.extend(emitted.into_iter().map(|(node_index, kind)| {
+        (
+            NativeNodeId::from_parts(document.generation(), node_index),
+            kind,
+        )
+    }));
+    result
+        .service_worker_commands
+        .extend(runtime.take_service_worker_commands());
+    result.dialogs.extend(runtime.take_dialog_events());
     Ok(())
 }
 
@@ -8756,6 +8882,18 @@ async fn mutate_script_document(
     let mut events = next.apply_script_commands_allowing_links(commands)?;
     if let Some(loader) = loader.as_deref_mut() {
         refresh_inline_style_policy(&mut next, loader, &document_url)?;
+        dispatch_pending_csp_violations(
+            &mut next,
+            runtime,
+            &mut document_url,
+            document_origin,
+            viewport,
+            loader,
+            &mut dynamic_result,
+            &mut events,
+            &mut history,
+            &mut scroll_commands,
+        )?;
     }
     next.refresh_image_loads(viewport);
     next.refresh_background_image_sources();
@@ -8827,6 +8965,18 @@ async fn mutate_script_document(
         }
         if let Some(loader) = loader.as_deref_mut() {
             refresh_inline_style_policy(&mut next, loader, &document_url)?;
+            dispatch_pending_csp_violations(
+                &mut next,
+                runtime,
+                &mut document_url,
+                document_origin,
+                viewport,
+                loader,
+                &mut dynamic_result,
+                &mut events,
+                &mut history,
+                &mut scroll_commands,
+            )?;
         }
     }
     let validation_ids = events
@@ -8892,6 +9042,18 @@ async fn mutate_script_document(
     next.refresh_image_loads(viewport);
     if let Some(loader) = loader.as_deref_mut() {
         refresh_inline_style_policy(&mut next, loader, &document_url)?;
+        dispatch_pending_csp_violations(
+            &mut next,
+            runtime,
+            &mut document_url,
+            document_origin,
+            viewport,
+            loader,
+            &mut dynamic_result,
+            &mut events,
+            &mut history,
+            &mut scroll_commands,
+        )?;
     }
     next.refresh_background_image_sources();
     let mut navigation = script_navigation_target(&next, &document_url, commands)?;
@@ -9584,6 +9746,7 @@ async fn pump_worker_event_source_event(
             worker_id,
             source_id,
             &event_source_event_payload(&event),
+            event_source_csp_violations(&event),
             loader,
         )
         .await?;
@@ -9685,10 +9848,18 @@ fn event_source_event_payload(event: &NativeEventSourceEvent) -> Value {
             "lastEventId": last_event_id,
             "origin": origin,
         }),
-        NativeEventSourceEvent::Error { message } => {
+        NativeEventSourceEvent::Error { message, .. } => {
             json!({"type": "error", "message": message})
         }
         NativeEventSourceEvent::Close => json!({"type": "close"}),
+    }
+}
+
+fn event_source_csp_violations(event: &NativeEventSourceEvent) -> &[NativeCspViolation] {
+    match event {
+        NativeEventSourceEvent::Open { csp_violations, .. }
+        | NativeEventSourceEvent::Error { csp_violations, .. } => csp_violations,
+        NativeEventSourceEvent::Message { .. } | NativeEventSourceEvent::Close => &[],
     }
 }
 
@@ -10138,10 +10309,6 @@ async fn resolve_script_fetches(
                     "fetch",
                 )
                 .await;
-            let page_events = NativePageEventBatch {
-                service_worker_client_messages: service_workers.take_client_messages(),
-                ..NativePageEventBatch::default()
-            };
             let payload = match intercepted {
                 Ok(NativeServiceWorkerFetchOutcome::Handled(response)) => {
                     fetch_response_payload(Ok(response))
@@ -10200,6 +10367,11 @@ async fn resolve_script_fetches(
                     }))
                 }
                 Err(error) => fetch_response_payload(Err(error)),
+            };
+            let page_events = NativePageEventBatch {
+                service_worker_client_messages: service_workers.take_client_messages(),
+                csp_violations: loader.take_csp_violations(),
+                ..NativePageEventBatch::default()
             };
             let resolved = runtime.resolve_fetch(
                 request_id,
@@ -10508,6 +10680,7 @@ async fn resolve_script_fetches(
             let event_evaluation = runtime.dispatch_event_source_event(
                 source_id,
                 &event_source_event_payload(&event),
+                event_source_csp_violations(&event),
                 &next,
                 &current_url,
                 document_origin,

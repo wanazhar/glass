@@ -1064,6 +1064,7 @@ enum NativeWorkerDispatch<'a> {
     EventSource {
         source_id: u32,
         payload: &'a serde_json::Value,
+        csp_violations: &'a [NativeCspViolation],
     },
 }
 
@@ -1295,12 +1296,14 @@ impl NativeDedicatedWorker {
         worker_id: u32,
         source_id: u32,
         event: &serde_json::Value,
+        csp_violations: &[NativeCspViolation],
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         self.evaluate_turn_with_event(
             worker_id,
             NativeWorkerDispatch::EventSource {
                 source_id,
                 payload: event,
+                csp_violations,
             },
         )
     }
@@ -2192,12 +2195,14 @@ impl NativeWorkerRegistry {
         worker_id: u32,
         source_id: u32,
         event: &serde_json::Value,
+        csp_violations: &[NativeCspViolation],
         loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
         let Some(worker) = self.workers.get(&worker_id) else {
             return Ok(());
         };
-        let evaluation = worker.evaluate_event_source_event(worker_id, source_id, event);
+        let evaluation =
+            worker.evaluate_event_source_event(worker_id, source_id, event, csp_violations);
         match evaluation {
             Ok(evaluation) => {
                 self.collect_worker_evaluation(worker_id, evaluation, loader)
@@ -8102,7 +8107,7 @@ fn is_ignorable_page_script_error(error: &NativeEngineError) -> bool {
     )
 }
 
-fn apply_page_script_evaluation(
+pub(crate) fn apply_page_script_evaluation(
     document: &mut NativeDocument,
     evaluation: NativeScriptEvaluation,
     pending_fetches: &mut Vec<NativeScriptCommand>,
@@ -8110,7 +8115,7 @@ fn apply_page_script_evaluation(
     event_source_commands: &mut Vec<NativeScriptCommand>,
     scroll_commands: &mut Vec<NativeScriptCommand>,
     navigation: &mut Option<NativePageNavigation>,
-) -> Result<(), NativeEngineError> {
+) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
     let mut commands = Vec::new();
     for command in evaluation.commands {
         match command {
@@ -8140,12 +8145,16 @@ fn apply_page_script_evaluation(
         }
     }
     if commands.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut next = document.clone();
-    next.apply_script_commands(&commands)?;
+    let events = next
+        .apply_script_commands(&commands)?
+        .into_iter()
+        .map(|(node, kind)| (node.index(), kind))
+        .collect();
     *document = next;
-    Ok(())
+    Ok(events)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9454,12 +9463,16 @@ impl NativeJavaScriptRuntime {
         &self,
         source_id: u32,
         event: &serde_json::Value,
+        csp_violations: &[NativeCspViolation],
         document: &NativeDocument,
         document_url: &str,
         origin: &NativeOrigin,
         viewport: Viewport,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        let page_events = NativePageEventBatch::default();
+        let page_events = NativePageEventBatch {
+            csp_violations: csp_violations.to_vec(),
+            ..NativePageEventBatch::default()
+        };
         self.evaluate_with_page_events_and_dispatch(
             "undefined;",
             document,
@@ -13782,7 +13795,12 @@ fn dispatch_worker_event(
             )?;
             false
         }
-        NativeWorkerDispatch::EventSource { source_id, payload } => {
+        NativeWorkerDispatch::EventSource {
+            source_id,
+            payload,
+            csp_violations,
+        } => {
+            dispatch_worker_csp_violations(&ctx, csp_violations)?;
             dispatch_worker_resolver(
                 &ctx,
                 "__glassDispatchWorkerEventSourceEvent",
@@ -13793,6 +13811,45 @@ fn dispatch_worker_event(
             false
         }
     })
+}
+
+fn dispatch_worker_csp_violations(
+    ctx: &rquickjs::Ctx<'_>,
+    violations: &[NativeCspViolation],
+) -> Result<(), NativeEngineError> {
+    if violations.is_empty() {
+        return Ok(());
+    }
+    let events = NativePageEventBatch {
+        csp_violations: violations.to_vec(),
+        ..NativePageEventBatch::default()
+    };
+    validate_page_event_batch(&events)?;
+    let payload = serde_json::to_value(violations).map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native Worker CSP violations".into(),
+        reason: "native Worker CSP violation metadata could not be serialized".into(),
+    })?;
+    let payload = native_structured_payload(ctx, &payload, "native Worker CSP violations")?;
+    let dispatch: Function = ctx
+        .globals()
+        .get("__glassDispatchWorkerCspViolations")
+        .map_err(|error| NativeEngineError::Worker {
+            operation: "dispatch native Worker CSP violations".into(),
+            reason: format!(
+                "native Worker CSP violation dispatcher was unavailable: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
+    dispatch
+        .call::<_, Value>((payload,))
+        .map_err(|error| NativeEngineError::Worker {
+            operation: "dispatch native Worker CSP violations".into(),
+            reason: format!(
+                "native Worker CSP violation dispatch failed: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
+    Ok(())
 }
 
 fn dispatch_worker_promise(
@@ -14668,9 +14725,18 @@ fn worker_bootstrap(
   let onConnect = typeof globalThis.__glassWorkerOnConnect === "function"
     ? globalThis.__glassWorkerOnConnect
     : null;
+  let onSecurityPolicyViolation = typeof globalThis.__glassWorkerOnSecurityPolicyViolation === "function"
+    ? globalThis.__glassWorkerOnSecurityPolicyViolation
+    : null;
   let closed = globalThis.__glassWorkerClosed === true;
   const dispatch = (type, event) => {{
-    const handler = type === "message" ? onMessage : type === "connect" ? onConnect : null;
+    const handler = type === "message"
+      ? onMessage
+      : type === "connect"
+        ? onConnect
+        : type === "securitypolicyviolation"
+          ? onSecurityPolicyViolation
+          : null;
     if (typeof handler === "function") {{
       try {{ handler.call(globalThis, event); }} catch (_error) {{}}
     }}
@@ -15365,6 +15431,33 @@ fn worker_bootstrap(
   }}
   globalThis.__glassWorkerErrorEventConstructor = WorkerErrorEventNative;
   globalThis.ErrorEvent = WorkerErrorEventNative;
+  const hasWorkerSecurityPolicyViolationEventConstructor = typeof globalThis.__glassWorkerSecurityPolicyViolationEventConstructor === "function";
+  const WorkerSecurityPolicyViolationEventNative = hasWorkerSecurityPolicyViolationEventConstructor
+    ? globalThis.__glassWorkerSecurityPolicyViolationEventConstructor
+    : function(type, init) {{
+        const settings = init && typeof init === "object" ? init : {{}};
+        WorkerEventNative.call(this, type, settings);
+        this.documentURI = settings.documentURI === undefined ? "" : String(settings.documentURI);
+        this.referrer = settings.referrer === undefined ? "" : String(settings.referrer);
+        this.blockedURI = settings.blockedURI === undefined ? "" : String(settings.blockedURI);
+        this.effectiveDirective = settings.effectiveDirective === undefined ? "" : String(settings.effectiveDirective);
+        this.violatedDirective = settings.violatedDirective === undefined
+          ? this.effectiveDirective
+          : String(settings.violatedDirective);
+        this.originalPolicy = settings.originalPolicy === undefined ? "" : String(settings.originalPolicy);
+        this.sourceFile = settings.sourceFile === undefined ? "" : String(settings.sourceFile);
+        this.sample = settings.sample === undefined ? "" : String(settings.sample);
+        this.disposition = settings.disposition === undefined ? "enforce" : String(settings.disposition);
+        this.statusCode = Number(settings.statusCode) || 0;
+        this.lineNumber = Number(settings.lineNumber) || 0;
+        this.columnNumber = Number(settings.columnNumber) || 0;
+      }};
+  if (!hasWorkerSecurityPolicyViolationEventConstructor) {{
+    WorkerSecurityPolicyViolationEventNative.prototype = Object.create(WorkerEventNative.prototype);
+    WorkerSecurityPolicyViolationEventNative.prototype.constructor = WorkerSecurityPolicyViolationEventNative;
+  }}
+  globalThis.__glassWorkerSecurityPolicyViolationEventConstructor = WorkerSecurityPolicyViolationEventNative;
+  globalThis.SecurityPolicyViolationEvent = WorkerSecurityPolicyViolationEventNative;
   const WorkerEventTargetNative = typeof globalThis.__glassWorkerEventTargetConstructor === "function"
     ? globalThis.__glassWorkerEventTargetConstructor
     : function() {{ this._eventListeners = new Map(); }};
@@ -18618,9 +18711,39 @@ fn worker_bootstrap(
     dispatch("message", {{ type: "message", data: envelope.data, ports: envelope.ports, origin: "", source: null, target: globalThis, currentTarget: globalThis }});
     return null;
   }};
+  globalThis.__glassDispatchWorkerCspViolations = (violations) => {{
+    if (!Array.isArray(violations)) throw new TypeError("native Worker CSP violations are invalid");
+    return violations.map((descriptor) => {{
+      if (!descriptor || typeof descriptor !== "object") throw new TypeError("native Worker CSP violation is invalid");
+      const event = new WorkerSecurityPolicyViolationEventNative("securitypolicyviolation", {{
+        documentURI: descriptor.document_uri,
+        referrer: descriptor.referrer,
+        blockedURI: descriptor.blocked_uri,
+        effectiveDirective: descriptor.effective_directive,
+        violatedDirective: descriptor.violated_directive,
+        originalPolicy: descriptor.original_policy,
+        sourceFile: descriptor.source_file,
+        sample: descriptor.sample,
+        disposition: descriptor.disposition,
+        statusCode: descriptor.status_code,
+        lineNumber: descriptor.line_number,
+        columnNumber: descriptor.column_number,
+        bubbles: true,
+        cancelable: false,
+      }});
+      event.target = globalThis;
+      event.currentTarget = globalThis;
+      event.eventPhase = 2;
+      dispatch("securitypolicyviolation", event);
+      event.currentTarget = null;
+      event.eventPhase = 0;
+      return null;
+    }});
+  }};
   globalThis.__glassWorkerListeners = listeners;
   globalThis.__glassWorkerOnMessage = onMessage;
   globalThis.__glassWorkerOnConnect = onConnect;
+  globalThis.__glassWorkerOnSecurityPolicyViolation = onSecurityPolicyViolation;
   globalThis.__glassHostCommands = commands;
   Object.defineProperty(globalThis, "onmessage", {{
     configurable: true,
@@ -18633,6 +18756,12 @@ fn worker_bootstrap(
     enumerable: true,
     get() {{ return onConnect; }},
     set(value) {{ onConnect = typeof value === "function" ? value : null; globalThis.__glassWorkerOnConnect = onConnect; }},
+  }});
+  Object.defineProperty(globalThis, "onsecuritypolicyviolation", {{
+    configurable: true,
+    enumerable: true,
+    get() {{ return onSecurityPolicyViolation; }},
+    set(value) {{ onSecurityPolicyViolation = typeof value === "function" ? value : null; globalThis.__glassWorkerOnSecurityPolicyViolation = onSecurityPolicyViolation; }},
   }});
   globalThis.__glassWorkerTimers = timers;
   globalThis.__glassWorkerRunningTimers = runningTimers;

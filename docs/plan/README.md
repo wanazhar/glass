@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-399` locally. Native is now the default runtime for
+`native-engine-browser-400` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -498,8 +498,17 @@ policy text, bounded URL and inline checks deliver structured
 `securitypolicyviolation` records, and synchronously inserted classic inline
 scripts report through the persistent QuickJS page bridge without changing
 authorization. `report-uri`/`report-to`, strict-dynamic, dynamic policy
-mutation, and the complete CSP source grammar remain issue #40 promotion
-gates. The preceding CSP meta-composition slice is
+The completed CSP report-delivery lifecycle slice is
+[native-engine-browser-400](tasks/native-engine-browser-400.md): Fetch drains
+connect-policy records after the loader operation, EventSource carries
+open/reconnect/error records to page and dedicated-worker owners, and
+document-local inline-style observation reports a changed or newly attached
+node once while rerunning enforced policy on every refresh. The records remain
+bounded and report-only; `report-uri`/`report-to`, strict-dynamic, dynamic
+policy mutation, WebSocket reporting, and the complete CSP source grammar
+remain issue #40 promotion gates.
+
+The preceding CSP meta-composition slice is
 [native-engine-browser-398](tasks/native-engine-browser-398.md): parser-time
 enforced CSP policies in the document head now intersect with every response
 header policy, and the same bounded policy applies to subresources, inline

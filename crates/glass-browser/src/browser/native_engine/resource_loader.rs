@@ -1364,36 +1364,24 @@ impl NativeResourceLoader {
         source: &str,
         nonce: Option<&str>,
     ) -> Result<bool, NativeEngineError> {
-        validate_url_text("CSP document URL", document_url)?;
-        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
-            NativeEngineError::UnsupportedUrl {
-                reason: "CSP document URL is not valid URL syntax".into(),
-            }
-        })?;
-        reject_credentials(&document_url)?;
-        if !is_network_url(document_url.as_str()) {
-            return Ok(true);
-        }
-        let policy = self
-            .network
-            .document_policies
-            .get(&cache_key(&document_url))
-            .cloned()
-            .unwrap_or_default();
-        self.record_report_only_inline_violations(
-            &policy,
-            NativeInlineCspKind::StyleElement,
-            &document_url,
-            source,
-            nonce,
-        );
-        Ok(policy.allows_inline(NativeInlineCspKind::StyleElement, source, nonce))
+        self.allows_inline_style_element_with_reporting(document_url, source, nonce, true)
     }
 
-    pub(crate) fn allows_inline_style_attribute(
+    pub(crate) fn allows_inline_style_element_silent(
         &mut self,
         document_url: &str,
         source: &str,
+        nonce: Option<&str>,
+    ) -> Result<bool, NativeEngineError> {
+        self.allows_inline_style_element_with_reporting(document_url, source, nonce, false)
+    }
+
+    fn allows_inline_style_element_with_reporting(
+        &mut self,
+        document_url: &str,
+        source: &str,
+        nonce: Option<&str>,
+        report: bool,
     ) -> Result<bool, NativeEngineError> {
         validate_url_text("CSP document URL", document_url)?;
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
@@ -1411,13 +1399,65 @@ impl NativeResourceLoader {
             .get(&cache_key(&document_url))
             .cloned()
             .unwrap_or_default();
-        self.record_report_only_inline_violations(
-            &policy,
-            NativeInlineCspKind::StyleAttribute,
-            &document_url,
-            source,
-            None,
-        );
+        if report {
+            self.record_report_only_inline_violations(
+                &policy,
+                NativeInlineCspKind::StyleElement,
+                &document_url,
+                source,
+                nonce,
+            );
+        }
+        Ok(policy.allows_inline(NativeInlineCspKind::StyleElement, source, nonce))
+    }
+
+    pub(crate) fn allows_inline_style_attribute(
+        &mut self,
+        document_url: &str,
+        source: &str,
+    ) -> Result<bool, NativeEngineError> {
+        self.allows_inline_style_attribute_with_reporting(document_url, source, true)
+    }
+
+    pub(crate) fn allows_inline_style_attribute_silent(
+        &mut self,
+        document_url: &str,
+        source: &str,
+    ) -> Result<bool, NativeEngineError> {
+        self.allows_inline_style_attribute_with_reporting(document_url, source, false)
+    }
+
+    fn allows_inline_style_attribute_with_reporting(
+        &mut self,
+        document_url: &str,
+        source: &str,
+        report: bool,
+    ) -> Result<bool, NativeEngineError> {
+        validate_url_text("CSP document URL", document_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "CSP document URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(true);
+        }
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .cloned()
+            .unwrap_or_default();
+        if report {
+            self.record_report_only_inline_violations(
+                &policy,
+                NativeInlineCspKind::StyleAttribute,
+                &document_url,
+                source,
+                None,
+            );
+        }
         Ok(policy.allows_inline(NativeInlineCspKind::StyleAttribute, source, None))
     }
 

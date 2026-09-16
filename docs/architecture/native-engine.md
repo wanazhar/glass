@@ -1,9 +1,17 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-409` slice. The native runtime is now the primary
+`native-engine-browser-410` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 410 closes the explicit CSP `form-action` boundary. Validated GET/POST
+form submissions from local documents and the HTTP content process now check
+the shared document policy after submit handling and before a navigation
+request is issued; enforced policies intersect, and an omitted `form-action`
+does not inherit `default-src`. The shared loader records report-only
+observations, while delivery through every form-event path and the custom
+`navigate-to` policy remain separate issue #40 gates.
 
 Slice 409 closes external-resource Subresource Integrity. External scripts and
 stylesheet links now carry `integrity` and `crossorigin` through DOM discovery,

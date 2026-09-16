@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-409` locally. Native is now the default runtime for
+`native-engine-browser-410` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -550,6 +550,15 @@ require explicit CORS while bypassing URL-only cache reuse. Mismatches use the
 existing resource-error path and leave the document alive. SRI for Fetch,
 images, frames, media, Integrity-Policy headers, and future metadata options
 remain separate issue #40 gates.
+
+The completed CSP form-action slice is
+[native-engine-browser-410](tasks/native-engine-browser-410.md): validated
+GET/POST form submissions from local documents and the HTTP content process
+now consult the shared `form-action` policy after submit handling and before a
+navigation request is issued. Enforced policies intersect, and an omitted
+`form-action` does not inherit `default-src`. The shared loader records
+report-only observations; delivery through every form-event path, custom
+`navigate-to`, and broader browser conformance remain issue #40 gates.
 
 The completed CSP source-expression matching slice is
 [native-engine-browser-404](tasks/native-engine-browser-404.md): the shared

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is the completed `native-engine-browser-409`, with
+expansion checkpoint is the completed `native-engine-browser-410`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -568,7 +568,14 @@ existing bounded resource-error path and leave the document alive. The
 contract and evidence are recorded in
 `docs/plan/tasks/native-engine-browser-409.md`. SRI for Fetch, images, frames,
 media, Integrity-Policy headers, future metadata options, and broader browser
-conformance remain issue #40 gates. The completed 234 slice
+conformance remain issue #40 gates. The completed
+`native-engine-browser-410` slice closes the explicit CSP `form-action`
+boundary: validated GET/POST form submissions from local documents and the
+HTTP content process consult the shared policy after submit handling and before
+issuing a navigation request; enforced policies intersect, and an omitted
+`form-action` does not inherit `default-src`. The shared loader records
+report-only observations, while delivery through every form-event path, custom
+`navigate-to`, and broader conformance remain issue #40 gates. The completed 234 slice
 carries
 bounded
 root-scroll sticky positioning through

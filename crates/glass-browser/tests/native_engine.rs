@@ -2346,6 +2346,153 @@ async fn native_local_worker_exposes_standard_runtime_primitives() {
 }
 
 #[tokio::test]
+async fn native_local_worker_streams_compose_through_bounded_pipes() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-stream-composition-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-stream-composition-script",
+            r#"(async () => {
+                const pipeEvents = [];
+                const sink = new WritableStream({
+                    write(value) { pipeEvents.push('write:' + value); },
+                    close() { pipeEvents.push('close'); },
+                });
+                const source = new ReadableStream({
+                    start(controller) {
+                        controller.enqueue('one');
+                        controller.enqueue('two');
+                        controller.close();
+                    },
+                });
+                await source.pipeTo(sink);
+                const writer = sink.getWriter();
+                const writerClosed = writer.closed.then(() => 'resolved', error => 'rejected:' + error.name);
+                const afterPipe = [source.locked, sink.locked, writer.desiredSize];
+                const closedState = await writerClosed;
+                writer.releaseLock();
+
+                const failureEvents = [];
+                const failingSource = new ReadableStream({
+                    start(controller) { controller.enqueue('bad'); },
+                    cancel(reason) { failureEvents.push('cancel:' + reason.message); },
+                });
+                const failingSink = new WritableStream({
+                    write() { throw new Error('sink-failure'); },
+                    abort(reason) { failureEvents.push('abort:' + reason.message); },
+                });
+                const failure = await failingSource.pipeTo(failingSink).then(
+                    () => 'resolved',
+                    error => error.message,
+                );
+
+                const transformEvents = [];
+                const transform = new TransformStream({
+                    start() { transformEvents.push('start'); },
+                    transform(value, controller) {
+                        transformEvents.push('transform:' + value);
+                        controller.enqueue(value.toUpperCase());
+                    },
+                    flush(controller) {
+                        transformEvents.push('flush');
+                        controller.enqueue('tail');
+                    },
+                });
+                const transformSource = new ReadableStream({
+                    start(controller) {
+                        controller.enqueue('one');
+                        controller.enqueue('two');
+                        controller.close();
+                    },
+                });
+                const output = transformSource.pipeThrough(transform);
+                const reader = output.getReader();
+                const first = await reader.read();
+                const second = await reader.read();
+                const tail = await reader.read();
+                const end = await reader.read();
+                reader.releaseLock();
+                postMessage({
+                    kind: 'composition',
+                    constructors: [typeof ReadableStream, typeof WritableStream, typeof TransformStream],
+                    pipe: {
+                        events: pipeEvents,
+                        afterPipe,
+                        writerClosed: closedState,
+                        failure,
+                        failureEvents,
+                        sourceLocked: source.locked,
+                        sinkLocked: sink.locked,
+                        failingSourceLocked: failingSource.locked,
+                        failingSinkLocked: failingSink.locked,
+                    },
+                    transform: {
+                        events: transformEvents,
+                        values: [first.value, second.value, tail.value, end.done],
+                        identities: [output === transform.readable, transform.writable instanceof WritableStream, output instanceof ReadableStream],
+                        sourceLocked: transformSource.locked,
+                        outputLocked: output.locked,
+                    },
+                });
+            })().catch(error => postMessage({ kind: 'error', name: error.name, message: error.message }));"#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-stream-composition-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://worker-stream-composition-script'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let expected = serde_json::json!({
+        "messages": [{
+            "kind": "composition",
+            "constructors": ["function", "function", "function"],
+            "pipe": {
+                "events": ["write:one", "write:two", "close"],
+                "afterPipe": [false, true, serde_json::Value::Null],
+                "writerClosed": "resolved",
+                "failure": "sink-failure",
+                "failureEvents": ["abort:sink-failure", "cancel:sink-failure"],
+                "sourceLocked": false,
+                "sinkLocked": false,
+                "failingSourceLocked": false,
+                "failingSinkLocked": false,
+            },
+            "transform": {
+                "events": ["start", "transform:one", "transform:two", "flush"],
+                "values": ["ONE", "TWO", "tail", true],
+                "identities": [true, true, true],
+                "sourceLocked": false,
+                "outputLocked": false,
+            },
+        }],
+        "errors": [],
+    });
+    let mut messages = serde_json::json!({ "messages": [], "errors": [] });
+    for _ in 0..16 {
+        messages = engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap();
+        if messages == expected {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(messages, expected);
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_worker_exposes_os_seeded_crypto() {
     let config = NativeEngineConfig::default()
         .with_fixture(

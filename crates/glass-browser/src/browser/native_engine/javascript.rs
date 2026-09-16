@@ -16,7 +16,7 @@ use super::environment::NativeEnvironmentOverrides;
 use super::error::NativeEngineError;
 use super::fetch_stream::{
     NativeFetchStreamCommand, NativeFetchStreamConnection, NativeFetchStreamEvent,
-    spawn_native_fetch_stream,
+    spawn_native_fetch_bytes_stream, spawn_native_fetch_stream,
 };
 use super::interaction::{
     MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FORM_BODY_BYTES, MAX_NATIVE_SCRIPT_COMMAND_BYTES,
@@ -1363,10 +1363,10 @@ impl NativeWorkerRegistry {
         Self::new_inner(false)
     }
 
-    /// Construct a registry for the content owner, where worker response
-    /// bodies can use the same demand-driven stream transport as page fetches.
-    /// The in-process compatibility owner keeps its historical buffered path
-    /// because it has no event pump for asynchronous worker transport.
+    /// Construct a registry with worker response streams enabled. The
+    /// content-process owner uses this for HTTP(S) responses and the inline
+    /// owner uses it for registered fixture responses; both feed the same
+    /// demand-driven transport and serialized worker event pump.
     pub(crate) fn new_with_fetch_streams() -> Self {
         Self::new_inner(true)
     }
@@ -2630,7 +2630,7 @@ impl NativeWorkerRegistry {
                 Ok(mut opened)
                     if !opened.response.opaque
                         && !opened.response.opaque_redirect
-                        && opened.body.is_some() =>
+                        && (opened.body.is_some() || opened.cached_body.is_some()) =>
                 {
                     let stream_key = (worker_id, request_id);
                     if self
@@ -2651,13 +2651,17 @@ impl NativeWorkerRegistry {
                         )))
                     } else {
                         let response = opened.response;
-                        let stream = spawn_native_fetch_stream(
-                            opened
-                                .body
-                                .take()
-                                .expect("Worker fetch stream body is present"),
-                            opened.max_response_bytes,
-                        );
+                        let stream = if let Some(body) = opened.body.take() {
+                            spawn_native_fetch_stream(body, opened.max_response_bytes)
+                        } else {
+                            spawn_native_fetch_bytes_stream(
+                                opened
+                                    .cached_body
+                                    .take()
+                                    .expect("Worker fetch stream cached body is present"),
+                                opened.max_response_bytes,
+                            )
+                        };
                         self.worker_fetch_stream_connections
                             .insert(stream_key, stream);
                         worker_fetch_response_stream_payload(response, request_id)

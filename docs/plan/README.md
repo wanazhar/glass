@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-430`, following completed
+`native-engine-browser-431`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and `native-engine-browser-420`. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
@@ -184,10 +184,19 @@ The completed content-process worker XHR streaming slice is
 responses now use the shared bounded demand-driven stream transport in the
 content owner, and worker XHR publishes `HEADERS_RECEIVED`, per-chunk
 `LOADING`/`ProgressEvent` updates, split-UTF-8-safe `responseText`, and
-abort/reopen-safe terminal delivery. The in-process `NativeEngine` owner stays
-buffered because it has no asynchronous worker-stream pump; all-owner streaming,
-streaming upload, synchronous XHR, and complete XHR/Streams Web IDL parity
-remain issue #40 gates.
+abort/reopen-safe terminal delivery. The inline worker follow-up is recorded
+in slice 431; streaming upload, synchronous XHR, and complete XHR/Streams Web
+IDL parity remain issue #40 gates.
+
+The completed inline worker response-streaming slice is
+[native-engine-browser-431](tasks/native-engine-browser-431.md): the inline
+`NativeEngine` owner enables the worker stream registry, the fixture loader
+returns bounded local response bodies through the shared demand-driven 8 KiB
+transport, and the engine pumps those events at page boundaries. A real
+worker witness covers two chunks split through a UTF-8 code point, response
+cloning, body ownership, and total-byte preservation. HTTP(S) workers remain
+owned by the content process; streaming uploads, synchronous XHR, and complete
+XHR/Streams Web IDL parity remain open.
 
 The completed page XHR reopen-cancellation slice is
 [native-engine-browser-429](tasks/native-engine-browser-429.md): reopening a

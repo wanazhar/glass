@@ -3935,8 +3935,53 @@ impl NativeResourceLoader {
             }
         })?;
         if !is_network_url(document_url.as_str()) {
-            return Err(NativeEngineError::UnsupportedUrl {
-                reason: "native fetch requires an HTTP(S) document owner".into(),
+            if document_url.scheme() != "fixture" {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "native fetch requires an HTTP(S) or fixture document owner".into(),
+                });
+            }
+            if !method.is_bodyless() {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "fixture fetch supports only bodyless GET and HEAD requests".into(),
+                });
+            }
+            let target_url = Url::parse(href)
+                .or_else(|_| document_url.join(href))
+                .map_err(|_| NativeEngineError::UnsupportedUrl {
+                    reason: "fixture fetch URL could not be resolved against its owner".into(),
+                })?;
+            if target_url.scheme() != "fixture"
+                || target_url.host_str() != document_url.host_str()
+                || target_url.port_or_known_default() != document_url.port_or_known_default()
+            {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "fixture fetch must remain on its registered fixture host".into(),
+                });
+            }
+            let target_url = without_fragment(target_url.as_str()).to_owned();
+            let resource = self.load(&target_url)?;
+            let body = resource.body.into_bytes();
+            if body.len() > max_response_bytes {
+                return Err(NativeEngineError::limit(
+                    "fetch response",
+                    max_response_bytes,
+                    body.len(),
+                ));
+            }
+            return Ok(NativeFetchResponseStream {
+                response: NativeFetchResponse {
+                    url: target_url,
+                    status: 200,
+                    content_type: None,
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                    redirected: false,
+                    opaque: false,
+                    opaque_redirect: false,
+                },
+                body: None,
+                cached_body: Some(body),
+                max_response_bytes,
             });
         }
         reject_credentials(&document_url)?;

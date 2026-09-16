@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-430`, following
+expansion checkpoint is completed `native-engine-browser-431`, following
 completed `native-engine-browser-428`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and
@@ -89,10 +89,13 @@ Slice 430 closes content-process worker XHR response streaming: worker Fetch
 responses use the shared bounded demand-driven transport, worker-owned stream
 read/cancel commands are validated at the registry boundary, and worker XHR
 publishes `HEADERS_RECEIVED`, per-chunk `LOADING`/`ProgressEvent` updates,
-split-UTF-8-safe `responseText`, and abort/reopen-safe terminal delivery. The
-in-process `NativeEngine` owner remains buffered because it has no asynchronous
-worker-stream event pump; all-owner streaming, streaming upload, synchronous
-XHR, and complete XHR/Streams Web IDL parity remain open.
+split-UTF-8-safe `responseText`, and abort/reopen-safe terminal delivery.
+Slice 431 closes the corresponding inline worker-response gap for supported
+fixture owners. `NativeEngine` now enables the worker stream registry, the
+fixture loader exposes bounded response bytes through the same 8 KiB
+demand-driven transport, and page-boundary pumping delivers chunks through
+the existing worker event path. Streaming uploads, synchronous XHR, and
+complete XHR/Streams Web IDL parity remain open.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

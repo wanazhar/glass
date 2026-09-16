@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
-`native-engine-browser-430`, following completed
+`native-engine-browser-431`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and `native-engine-browser-420`. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
@@ -13,9 +13,13 @@ page and worker Fetch, validates worker-owned read/cancel commands, and
 dispatches admitted byte chunks into each worker realm. Worker XHR exposes
 `HEADERS_RECEIVED`, per-chunk `LOADING`/`ProgressEvent` updates, split-UTF-8
 safe `responseText`, and abort/reopen ownership checks before its final
-response projection. The in-process `NativeEngine` owner remains intentionally
-buffered because it has no asynchronous worker-stream event pump; complete
-all-owner streaming and XHR/Streams Web IDL parity remain issue #40 gates.
+response projection. Slice 431 extends the same worker stream owner to the
+inline `NativeEngine` path for registered fixture responses: a bounded local
+transport is demand-driven in 8 KiB parts and pumped at each page boundary,
+so worker Fetch/clone readers no longer silently switch to a whole-response
+buffer in that owner. HTTP(S) worker streams remain content-process-owned;
+streaming uploads, synchronous XHR, and complete XHR/Streams Web IDL parity
+remain issue #40 gates.
 
 Slice 413 closes report-only navigation preflight across the content-process
 boundary. The child remains the owner of its live HTTP(S) navigation policy

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is the completed `native-engine-browser-401`, with
+expansion checkpoint is the completed `native-engine-browser-402`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -482,8 +482,19 @@ without changing page `worker-src` authorization. A later worker response
 replaces stale policy state; the existing bounded page/worker report transport
 then delivers report-only records in the owning worker realm. The contract and
 evidence are recorded in
-`docs/plan/tasks/native-engine-browser-401.md`. The
-completed 234 slice carries bounded
+`docs/plan/tasks/native-engine-browser-401.md`. The completed
+`native-engine-browser-402` slice closes the WebSocket report-only CSP owner
+boundary: page and dedicated-worker WebSocket `connect-src` checks compute
+bounded records alongside the enforced decision, carry them through the
+asynchronous connection channel, and dispatch them before the first open or
+handshake-error event. The actual `ws`/`wss` blocked URI is retained while the
+normalized HTTP(S) policy URL is accepted for source matching, and report-only
+records never alter authorization or duplicate a connection. The contract and
+evidence are recorded in
+`docs/plan/tasks/native-engine-browser-402.md`. Remaining CSP promotion gates
+are network report delivery, dynamic policy mutation, strict-dynamic trust,
+and the complete source-expression grammar. The completed 234 slice carries
+bounded
 root-scroll sticky positioning through
 shared flow,
 projection, paint, capture, overflow, and hit-test owners. The preceding 233

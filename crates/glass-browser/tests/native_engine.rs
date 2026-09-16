@@ -14797,6 +14797,131 @@ async fn native_content_process_delivers_report_only_connect_events_for_event_so
 }
 
 #[tokio::test]
+async fn native_content_process_delivers_report_only_connect_events_for_websocket() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = format!(
+            "<script>globalThis.websocketResult = null; globalThis.websocketReports = []; addEventListener('securitypolicyviolation', event => websocketReports.push([event.effectiveDirective, event.blockedURI, event.disposition])); globalThis.socket = new WebSocket('ws://{address}/socket'); globalThis.socket.onmessage = event => {{ websocketResult = [event.data, websocketReports]; globalThis.socket.close(); }}; globalThis.socket.onerror = () => {{ websocketResult = ['error', websocketReports]; }};</script>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy-Report-Only: connect-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(stream).await.unwrap();
+        websocket
+            .send(Message::Text("websocket-report-ok".into()))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), websocket.next()).await;
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await new Promise((resolve, reject) => { const check = () => { if (globalThis.websocketResult) { resolve(globalThis.websocketResult); return; } setTimeout(check, 1); }; check(); })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "websocket-report-ok",
+            [[
+                "connect-src",
+                format!("ws://{address}/socket"),
+                "report"
+            ]]
+        ])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_worker_delivers_report_only_connect_events_for_websocket() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/worker-csp-websocket-page")
+        );
+        let body = "<script>globalThis.workerMessages = []; globalThis.worker = new Worker('/worker-csp-websocket.js'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerMessages.push(['worker-error', String(event.message || '')]);</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/worker-csp-websocket.js")
+        );
+        let body = format!(
+            "const reports = []; addEventListener('securitypolicyviolation', event => reports.push([event.effectiveDirective, event.blockedURI, event.disposition])); const socket = new WebSocket('ws://{address}/socket'); socket.onmessage = event => {{ postMessage([event.data, reports]); socket.close(); }}; socket.onerror = event => postMessage(['error', reports, String(event.message || '')]);"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Security-Policy-Report-Only: connect-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(stream).await.unwrap();
+        websocket
+            .send(Message::Text("worker-websocket-report-ok".into()))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), websocket.next()).await;
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/worker-csp-websocket-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let mut messages = serde_json::Value::Null;
+    for _ in 0..20 {
+        messages = engine.evaluate_async("workerMessages").await.unwrap();
+        if messages
+            == serde_json::json!([[
+                "worker-websocket-report-ok",
+                [["connect-src", format!("ws://{address}/socket"), "report"]]
+            ]])
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        messages,
+        serde_json::json!([[
+            "worker-websocket-report-ok",
+            [["connect-src", format!("ws://{address}/socket"), "report"]]
+        ]])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_worker_delivers_report_only_connect_events_for_event_source() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

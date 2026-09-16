@@ -163,6 +163,7 @@ enum NativeWebSocketCommand {
 enum NativeWebSocketEvent {
     Open {
         protocol: String,
+        csp_violations: Vec<NativeCspViolation>,
     },
     MessageText {
         data: String,
@@ -174,6 +175,7 @@ enum NativeWebSocketEvent {
     },
     Error {
         message: String,
+        csp_violations: Vec<NativeCspViolation>,
     },
     Close {
         code: u16,
@@ -434,7 +436,7 @@ fn validate_websocket_protocols(protocols: &[String]) -> Result<(), NativeEngine
 }
 
 fn native_websocket_request(
-    target: NativeWebSocketTarget,
+    target: &NativeWebSocketTarget,
     origin: &NativeOrigin,
     protocols: &[String],
 ) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, NativeEngineError> {
@@ -458,7 +460,7 @@ fn native_websocket_request(
             },
         )?,
     );
-    if let Some(cookie) = target.cookie {
+    if let Some(cookie) = &target.cookie {
         headers.insert(
             tokio_tungstenite::tungstenite::http::header::COOKIE,
             tokio_tungstenite::tungstenite::http::HeaderValue::from_str(&cookie).map_err(|_| {
@@ -494,6 +496,7 @@ async fn queue_websocket_event(
 async fn run_native_websocket(
     request: tokio_tungstenite::tungstenite::http::Request<()>,
     origin: String,
+    csp_violations: Vec<NativeCspViolation>,
     mut commands: mpsc::Receiver<NativeWebSocketCommand>,
     events: mpsc::Sender<NativeWebSocketEvent>,
 ) {
@@ -502,7 +505,15 @@ async fn run_native_websocket(
         Ok(Ok(connection)) => connection,
         Ok(Err(error)) => {
             let message = bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES);
-            if !queue_websocket_event(&events, NativeWebSocketEvent::Error { message }).await {
+            if !queue_websocket_event(
+                &events,
+                NativeWebSocketEvent::Error {
+                    message,
+                    csp_violations,
+                },
+            )
+            .await
+            {
                 return;
             }
             let _ = queue_websocket_event(
@@ -521,6 +532,7 @@ async fn run_native_websocket(
                 &events,
                 NativeWebSocketEvent::Error {
                     message: "native WebSocket handshake timed out".into(),
+                    csp_violations,
                 },
             )
             .await
@@ -545,7 +557,15 @@ async fn run_native_websocket(
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_owned();
-    if !queue_websocket_event(&events, NativeWebSocketEvent::Open { protocol }).await {
+    if !queue_websocket_event(
+        &events,
+        NativeWebSocketEvent::Open {
+            protocol,
+            csp_violations,
+        },
+    )
+    .await
+    {
         return;
     }
     let (mut sink, mut stream) = socket.split();
@@ -556,7 +576,15 @@ async fn run_native_websocket(
                     Some(NativeWebSocketCommand::Send(message)) => {
                         if let Err(error) = sink.send(message).await {
                             let message = bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES);
-                            if !queue_websocket_event(&events, NativeWebSocketEvent::Error { message }).await {
+                            if !queue_websocket_event(
+                                &events,
+                                NativeWebSocketEvent::Error {
+                                    message,
+                                    csp_violations: Vec::new(),
+                                },
+                            )
+                            .await
+                            {
                                 return;
                             }
                             let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
@@ -599,6 +627,7 @@ async fn run_native_websocket(
                         if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
                             let _ = queue_websocket_event(&events, NativeWebSocketEvent::Error {
                                 message: "native WebSocket message exceeds its limit".into(),
+                                csp_violations: Vec::new(),
                             }).await;
                             let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
                                 code: 1009,
@@ -616,6 +645,7 @@ async fn run_native_websocket(
                         if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
                             let _ = queue_websocket_event(&events, NativeWebSocketEvent::Error {
                                 message: "native WebSocket message exceeds its limit".into(),
+                                csp_violations: Vec::new(),
                             }).await;
                             let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
                                 code: 1009,
@@ -642,7 +672,15 @@ async fn run_native_websocket(
                     Some(Ok(Message::Ping(data))) => {
                         if let Err(error) = sink.send(Message::Pong(data)).await {
                             let message = bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES);
-                            if !queue_websocket_event(&events, NativeWebSocketEvent::Error { message }).await {
+                            if !queue_websocket_event(
+                                &events,
+                                NativeWebSocketEvent::Error {
+                                    message,
+                                    csp_violations: Vec::new(),
+                                },
+                            )
+                            .await
+                            {
                                 return;
                             }
                             let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
@@ -657,7 +695,15 @@ async fn run_native_websocket(
                     Some(Ok(_)) => {}
                     Some(Err(error)) => {
                         let message = bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES);
-                        if !queue_websocket_event(&events, NativeWebSocketEvent::Error { message }).await {
+                        if !queue_websocket_event(
+                            &events,
+                            NativeWebSocketEvent::Error {
+                                message,
+                                csp_violations: Vec::new(),
+                            },
+                        )
+                        .await
+                        {
                             return;
                         }
                         let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
@@ -686,12 +732,14 @@ fn spawn_native_websocket(
     origin: &NativeOrigin,
     protocols: &[String],
 ) -> Result<NativeWebSocketConnection, NativeEngineError> {
-    let request = native_websocket_request(target, origin, protocols)?;
+    let request = native_websocket_request(&target, origin, protocols)?;
+    let csp_violations = target.csp_violations;
     let (command_sender, command_receiver) = mpsc::channel(MAX_NATIVE_WEBSOCKET_EVENTS);
     let (event_sender, event_receiver) = mpsc::channel(MAX_NATIVE_WEBSOCKET_EVENTS);
     tokio::spawn(run_native_websocket(
         request,
         origin.serialized(),
+        csp_violations,
         command_receiver,
         event_sender,
     ));
@@ -9713,6 +9761,7 @@ async fn pump_worker_websocket_event(
             worker_id,
             socket_id,
             &websocket_event_payload(&event),
+            websocket_event_csp_violations(&event),
             loader,
         )
         .await?;
@@ -9804,7 +9853,7 @@ fn take_fetch_stream_event(
 
 fn websocket_event_payload(event: &NativeWebSocketEvent) -> Value {
     match event {
-        NativeWebSocketEvent::Open { protocol } => {
+        NativeWebSocketEvent::Open { protocol, .. } => {
             json!({"type": "open", "protocol": protocol})
         }
         NativeWebSocketEvent::MessageText { data, origin } => {
@@ -9817,7 +9866,9 @@ fn websocket_event_payload(event: &NativeWebSocketEvent) -> Value {
             "binary": true,
             "origin": origin,
         }),
-        NativeWebSocketEvent::Error { message } => json!({"type": "error", "message": message}),
+        NativeWebSocketEvent::Error { message, .. } => {
+            json!({"type": "error", "message": message})
+        }
         NativeWebSocketEvent::Close {
             code,
             reason,
@@ -9828,6 +9879,16 @@ fn websocket_event_payload(event: &NativeWebSocketEvent) -> Value {
             "reason": reason,
             "wasClean": was_clean,
         }),
+    }
+}
+
+fn websocket_event_csp_violations(event: &NativeWebSocketEvent) -> &[NativeCspViolation] {
+    match event {
+        NativeWebSocketEvent::Open { csp_violations, .. }
+        | NativeWebSocketEvent::Error { csp_violations, .. } => csp_violations,
+        NativeWebSocketEvent::MessageText { .. }
+        | NativeWebSocketEvent::MessageBinary { .. }
+        | NativeWebSocketEvent::Close { .. } => &[],
     }
 }
 
@@ -10475,6 +10536,7 @@ async fn resolve_script_fetches(
             let event_evaluation = runtime.dispatch_websocket_event(
                 socket_id,
                 &websocket_event_payload(&event),
+                websocket_event_csp_violations(&event),
                 &next,
                 &current_url,
                 document_origin,

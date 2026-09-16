@@ -277,6 +277,7 @@ pub(crate) struct NativeFetchRequest<'a> {
 pub(crate) struct NativeWebSocketTarget {
     pub(crate) url: Url,
     pub(crate) cookie: Option<String>,
+    pub(crate) csp_violations: Vec<NativeCspViolation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -951,6 +952,26 @@ impl NativeCspPolicy {
             .collect()
     }
 
+    fn report_only_websocket_violations(
+        &self,
+        document_url: &Url,
+        websocket_url: &Url,
+        policy_url: &Url,
+    ) -> Vec<(&NativeCspDeclaration, &'static str)> {
+        self.report_only_policies
+            .iter()
+            .filter_map(|declaration| {
+                let (directive, sources) = declaration
+                    .directives
+                    .directive_for(NativeSubresourceKind::Connect)?;
+                let allowed =
+                    csp_sources_allow(Some(sources.as_slice()), document_url, websocket_url)
+                        || csp_sources_allow(Some(sources.as_slice()), document_url, policy_url);
+                (!allowed).then_some((declaration, directive))
+            })
+            .collect()
+    }
+
     fn report_only_inline_violations(
         &self,
         kind: NativeInlineCspKind,
@@ -1245,18 +1266,14 @@ impl NativeResourceLoader {
         std::mem::take(&mut self.csp_violations)
     }
 
-    fn queue_csp_violation(
-        &mut self,
+    fn csp_violation_record(
         document_url: &Url,
         blocked_uri: impl Into<String>,
         effective_directive: &str,
         original_policy: &str,
         sample: impl Into<String>,
-    ) {
-        if self.csp_violations.len() >= MAX_NATIVE_CSP_VIOLATIONS {
-            return;
-        }
-        self.csp_violations.push(NativeCspViolation {
+    ) -> NativeCspViolation {
+        NativeCspViolation {
             document_uri: without_fragment(document_url.as_str()).to_owned(),
             referrer: String::new(),
             blocked_uri: blocked_uri.into(),
@@ -1269,7 +1286,27 @@ impl NativeResourceLoader {
             status_code: 0,
             line_number: 0,
             column_number: 0,
-        });
+        }
+    }
+
+    fn queue_csp_violation(
+        &mut self,
+        document_url: &Url,
+        blocked_uri: impl Into<String>,
+        effective_directive: &str,
+        original_policy: &str,
+        sample: impl Into<String>,
+    ) {
+        if self.csp_violations.len() >= MAX_NATIVE_CSP_VIOLATIONS {
+            return;
+        }
+        self.csp_violations.push(Self::csp_violation_record(
+            document_url,
+            blocked_uri,
+            effective_directive,
+            original_policy,
+            sample,
+        ));
     }
 
     fn record_report_only_url_violations(
@@ -1533,6 +1570,21 @@ impl NativeResourceLoader {
             .map_err(|_| NativeEngineError::UnsupportedUrl {
                 reason: "WebSocket policy URL could not be normalized".into(),
             })?;
+        let blocked_uri = without_fragment(target_url.as_str()).to_owned();
+        let csp_violations = policy
+            .report_only_websocket_violations(&document_url, &target_url, &policy_target)
+            .into_iter()
+            .take(MAX_NATIVE_CSP_VIOLATIONS)
+            .map(|(declaration, directive)| {
+                Self::csp_violation_record(
+                    &document_url,
+                    blocked_uri.clone(),
+                    directive,
+                    &declaration.original_policy,
+                    "",
+                )
+            })
+            .collect();
         if !policy.allows(NativeSubresourceKind::Connect, &document_url, &target_url)
             && !policy.allows(
                 NativeSubresourceKind::Connect,
@@ -1563,6 +1615,7 @@ impl NativeResourceLoader {
                 false,
                 NativeNavigationMethod::Get,
             ),
+            csp_violations,
         })
     }
 

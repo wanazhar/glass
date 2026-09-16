@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-392` slice. The native runtime is now the primary
+`native-engine-browser-393` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -763,13 +763,23 @@ bounded queues and controllers with `start`, `pull`, `cancel`, BYOB response,
 error, close, desired-size, and reader-closed behavior. Worker `tee()` uses
 one upstream reader and bounded branches for both local and hidden transferred
 streams, preserving order and canceling upstream only after both branches
-cancel. Source-backed worker Request/Response bodies fail explicitly at the
-current synchronous snapshot boundary instead of becoming empty bodies.
-Streaming worker body transport, upload backpressure, worker piping and
-TransformStream parity, global task-source conformance, broader transferables,
-and final Core Web Profile and production certification gates remain open.
-Exact evidence is recorded in
-`docs/plan/tasks/native-engine-browser-392.md`.
+cancel. At that checkpoint, source-backed worker Request/Response bodies still
+stopped at the synchronous snapshot boundary; the following 393 slice closes
+that ownership gap while leaving true upload backpressure open. Exact evidence
+is recorded in `docs/plan/tasks/native-engine-browser-392.md`.
+
+Slice 393 extends worker Body ownership through asynchronous stream drains.
+Worker Request and Response constructors retain source-backed, byte-mode, and
+transferred streams; body methods consume them through bounded internal
+readers; Request and Response clone operations tee independent branches; and
+worker Fetch drains both a Request-source body and an options body before
+emitting the existing host command. Direct stream disturbance contributes to
+`bodyUsed`, and a signal aborted while draining prevents dispatch. The worker
+realm still buffers one bounded byte payload at the existing host boundary,
+so chunked upload backpressure, worker piping/TransformStream parity, global
+task-source conformance, broader transferables, and final Core Web Profile and
+production certification gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-393.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

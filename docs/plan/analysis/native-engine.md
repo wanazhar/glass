@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-392`, with native-first product
+expansion checkpoint is `native-engine-browser-393`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -401,13 +401,25 @@ completed Slice 392 closes worker-created `ReadableStream` source parity and
 remote-stream `tee()` parity. Worker default and byte sources now own bounded
 queues/controllers with source lifecycle, BYOB response, desired-size,
 closed/error, and cancellation behavior; one upstream reader feeds bounded
-branches for local and transferred streams while preserving order. The worker
-Request/Response snapshot boundary rejects source-backed or remote streams
-explicitly instead of silently emitting empty bodies. Asynchronous worker body
-transport, upload backpressure, worker piping/TransformStream parity, global
-task-source arbitration, and the remaining Core Web Profile and production
-certification gates remain open. Exact evidence is recorded in
+branches for local and transferred streams while preserving order. At that
+checkpoint, the worker Request/Response snapshot boundary rejected
+source-backed or remote streams explicitly instead of silently emitting empty
+bodies. Slice 393 closes that body ownership boundary while leaving true
+upload backpressure open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-392.md`. The
+completed Slice 393 extends worker Body ownership through asynchronous stream
+drains. Worker Request and Response constructors retain source-backed,
+byte-mode, and transferred streams; body methods consume them through bounded
+internal readers; Request and Response clone operations tee independent
+branches; and worker Fetch drains both a Request-source body and an options
+body before emitting the existing host command. Direct stream disturbance
+contributes to `bodyUsed`, and a signal aborted while draining prevents
+dispatch. The worker realm still buffers one bounded byte payload at the
+existing host boundary, so chunked upload backpressure, worker
+piping/TransformStream parity, global task-source arbitration, broader
+transferables, and the remaining Core Web Profile and production
+certification gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-393.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

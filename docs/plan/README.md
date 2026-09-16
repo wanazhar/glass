@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-392` locally. Native is now the default runtime for
+`native-engine-browser-393` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -445,10 +445,22 @@ default and byte streams now drive bounded `start`/`pull`/`cancel` sources,
 controllers, BYOB reads, closed/error settlement, and source locking. Worker
 `tee()` now owns one upstream reader and bounded branch queues for both local
 and transferred streams, with ordered close/error/cancellation propagation.
-Source-backed worker Request/Response bodies fail explicitly at the current
-synchronous snapshot boundary; asynchronous body transport and upload
-backpressure remain active issue #40 work alongside browser-wide task-source
-ordering and final Core Web Profile certification.
+At that checkpoint, source-backed worker Request/Response bodies still stopped
+at the synchronous snapshot boundary; the following 393 slice closes that
+ownership gap while leaving true upload backpressure open.
+
+The completed native worker stream-body slice is
+[native-engine-browser-393](tasks/native-engine-browser-393.md): Worker
+Request and Response objects retain source-backed, byte-mode, and transferred
+streams; body methods drain them asynchronously through bounded consuming
+owners; Request and Response cloning tees independent branches; and worker
+Fetch drains both Request-source and options-body streams before dispatching
+the existing host command. Direct stream disturbance now updates `bodyUsed`,
+and aborts observed during a drain prevent dispatch. The host boundary still
+buffers one bounded body payload, so chunked upload backpressure, worker
+pipe/TransformStream parity, browser-wide task-source ordering, broader
+transferables, and final Core Web Profile certification remain issue #40
+gates.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

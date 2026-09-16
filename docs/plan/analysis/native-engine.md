@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-388`, with native-first product
+expansion checkpoint is `native-engine-browser-389`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -368,6 +368,16 @@ closed. Transferability for other platform objects, browser-wide task-source
 conformance, and the remaining Core Web Profile and production certification
 gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-388.md`. The
+completed Slice 389 completes bounded `ImageBitmap` transfer across native
+realms. The shared structured-clone owner validates pixel descriptors,
+reconstructs fresh realm-local instances, and closes sources only after
+successful clone admission. Same-realm structured cloning, page/worker
+postMessage round trips, and the page canvas pixel witness preserve dimensions,
+origin-clean state, and bytes under the existing message and canvas bounds.
+Other transferable platform objects, browser-wide task-source conformance,
+and the remaining Core Web Profile and production certification gates remain
+open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-389.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through
@@ -5973,9 +5983,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-388.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-389.md` is the latest completed browser
 task;
-`docs/plan/tasks/native-engine-browser-387.md` is the preceding completed
+`docs/plan/tasks/native-engine-browser-388.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-385.md` is the preceding completed
 browser task;
@@ -6124,8 +6134,8 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain starts at `native-engine-browser-388`.
-Slices 388 through 356 are summarized in the current checkpoint paragraphs
+The current browser-slice evidence chain starts at `native-engine-browser-389`.
+Slices 389 through 356 are summarized in the current checkpoint paragraphs
 above; the historical continuation below begins with `native-engine-browser-355`,
 `native-engine-browser-354`,
 `native-engine-browser-353`, `native-engine-browser-352`,
@@ -6302,9 +6312,9 @@ browser task;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed browser-expansion checkpoint is recorded for
-`docs/plan/tasks/native-engine-browser-388.md`; its implementation and focused
+`docs/plan/tasks/native-engine-browser-389.md`; its implementation and focused
 verification are recorded in that task file. The preceding browser-expansion
-checkpoint is `docs/plan/tasks/native-engine-browser-387.md`. The CSS foundation checkpoint
+checkpoint is `docs/plan/tasks/native-engine-browser-388.md`. The CSS foundation checkpoint
 remains `docs/plan/tasks/native-engine-234.md`: implementation is `8a96f56b`
 (design `b2119e5f`). It accepts bounded standalone case-insensitive finite
 `overflow: visible|auto|scroll`, `overflow-x: visible|auto|scroll`, and

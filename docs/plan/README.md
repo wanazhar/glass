@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-388` locally. Native is now the default runtime for
+`native-engine-browser-389` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -405,6 +405,16 @@ continue through the browser-owned route map, and invalid, duplicate,
 detached, typed-array/DataView, and SharedArrayBuffer members fail closed. The
 remaining transferable platform objects, browser-wide task-source arbitration,
 and Core Web Profile gates remain active issue #40 work.
+
+The completed native `ImageBitmap` transfer slice is
+[native-engine-browser-389](tasks/native-engine-browser-389.md): the shared
+structured-clone owner now transfers bounded pixel-backed `ImageBitmap`
+instances through same-realm and page/worker message paths, reconstructs a
+fresh receiver object, preserves dimensions and pixel readback, and closes the
+source only after successful clone admission. Closed sources remain rejected,
+and the existing message-size, origin, and canvas bounds remain enforced.
+Other transferable platform objects, browser-wide task-source arbitration,
+and the remaining Core Web Profile gates remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-386` locally. Native is now the default runtime for
+`native-engine-browser-387` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -358,10 +358,10 @@ transport now carries a bounded tagged graph instead of a JSON-only value
 projection. Local and cross-realm page/worker message paths preserve rich
 cloneable values, cycles, shared object identity, binary views, Blob/File
 metadata, and independent recipient clones; transferred MessagePort routing
-retains its existing bridge contract. Unsupported functions, symbols,
-Promise-like values, SharedArrayBuffer, and ArrayBuffer detachment remain
-explicit gates. Browser-wide task-source arbitration and the remaining Core
-Web Profile gates remain active issue #40 work.
+retains its existing bridge contract. At that checkpoint, unsupported
+functions, symbols, Promise-like values, SharedArrayBuffer, and ArrayBuffer
+detachment remained explicit gates. Browser-wide task-source arbitration and
+the remaining Core Web Profile gates remain active issue #40 work.
 
 The completed native WindowProxy transfer-list slice is
 [native-engine-browser-385](tasks/native-engine-browser-385.md): WindowProxy
@@ -382,6 +382,18 @@ atomic, stale routes are pruned, and navigation/close paths clear old realm
 routes before port IDs can be reused. Browser-wide task-source arbitration,
 ArrayBuffer detachment, and the remaining Core Web Profile gates remain
 active issue #40 work.
+
+The completed native ArrayBuffer transfer slice is
+[native-engine-browser-387](tasks/native-engine-browser-387.md): page, worker,
+bridged MessagePort, WindowProxy, and content-process message paths now admit
+bounded ArrayBuffer transfer lists, encode bytes and view aliasing before
+commit, and detach sender buffers only after a successful clone. Detached and
+duplicate members, typed-array/DataView transfer members, and
+SharedArrayBuffer fail closed; `structuredClone(value, { transfer: [buffer] })`
+returns a fresh clone and detaches its source. The existing JSON-safe wire
+contract is unchanged. Complete transferability for other platform objects,
+browser-wide task-source arbitration, and the remaining Core Web Profile gates
+remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

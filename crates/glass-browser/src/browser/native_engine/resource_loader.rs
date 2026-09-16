@@ -281,7 +281,28 @@ impl NativeNavigationRequest {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub(crate) enum NativeRequestBody {
     Text(String),
-    Bytes(Vec<u8>),
+    Bytes(#[serde(with = "native_request_body_bytes")] Vec<u8>),
+}
+
+mod native_request_body_bytes {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        STANDARD.decode(encoded).map_err(serde::de::Error::custom)
+    }
 }
 
 impl NativeRequestBody {
@@ -6994,13 +7015,14 @@ mod tests {
     use super::{
         MAX_NATIVE_CACHE_ENTRIES, MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, NativeCookieProfileEntry,
         NativeCorsMode, NativeEngineConfig, NativeInlineCspKind, NativeNavigationMethod,
-        NativeNavigationPolicyKind, NativeNetworkState, NativeResource, NativeResourceLoader,
-        NativeSubresourceKind, cache_control_max_age, cache_control_requires_revalidation,
-        content_security_policy, cors_origin_header, cors_preflight_response_allowed,
-        cors_response_allowed, csp_report_deliveries_for_declaration, csp_sources_allow,
-        csp_sources_allow_for_redirect, decode_html_body, document_cache_fresh_until,
-        document_cache_storage_allowed, mixed_content_allowed, referrer_for_navigation,
-        resolve_subresource_url, subresource_integrity_matches,
+        NativeNavigationPolicyKind, NativeNetworkState, NativeRequestBody, NativeResource,
+        NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
+        cache_control_requires_revalidation, content_security_policy, cors_origin_header,
+        cors_preflight_response_allowed, cors_response_allowed,
+        csp_report_deliveries_for_declaration, csp_sources_allow, csp_sources_allow_for_redirect,
+        decode_html_body, document_cache_fresh_until, document_cache_storage_allowed,
+        mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
+        subresource_integrity_matches,
     };
     use base64::Engine as _;
     use reqwest::header::{
@@ -7012,6 +7034,18 @@ mod tests {
     use std::fs;
     use std::time::Instant;
     use url::Url;
+
+    #[test]
+    fn binary_navigation_body_uses_compact_base64_wire_encoding() {
+        let body = NativeRequestBody::Bytes((0_u8..=255).collect());
+        let encoded = serde_json::to_value(&body).unwrap();
+        assert_eq!(encoded["kind"], "bytes");
+        let encoded_value = encoded["value"].as_str().unwrap();
+        assert_eq!(encoded_value.len(), 344);
+        assert!(encoded_value.len() < 256 * 2);
+        let decoded: NativeRequestBody = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, body);
+    }
 
     #[test]
     fn decodes_bounded_declared_html_charsets() {

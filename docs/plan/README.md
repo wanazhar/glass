@@ -27,9 +27,9 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion is now active through completed
-`native-engine-browser-416`, following completed
-`native-engine-browser-415` locally. Native is now the default runtime for
+the browser-complete expansion has completed
+`native-engine-browser-417`, following completed
+`native-engine-browser-416`. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -76,6 +76,13 @@ duplicate GET, and the parent must validate the transferred payload against
 the document-owned form state before dispatch. Multipart streaming, upload
 progress, service-worker body replay, and broader form conformance remain
 separate issue #40 gates.
+
+The completed compact binary form-body slice is
+[native-engine-browser-417](tasks/native-engine-browser-417.md): multipart and
+file-backed `Bytes` request bodies use compact base64 transport across the
+content-process navigation envelope instead of a JSON number array. The
+existing bounded body limit remains authoritative; upload streaming and
+progress remain separate issue #40 gates.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI

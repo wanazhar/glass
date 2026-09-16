@@ -18535,7 +18535,7 @@ fn worker_bootstrap(
     if (this.readyState !== 1 || this._sent)
       throw new TypeError("native Worker XMLHttpRequest is not open");
     const responseType = String(this.responseType || "").toLowerCase();
-    if (!["", "text", "arraybuffer", "blob"].includes(responseType))
+    if (!["", "text", "json", "arraybuffer", "blob"].includes(responseType))
       throw new TypeError("native Worker XMLHttpRequest responseType is unsupported");
     const token = this._token + 1;
     this._token = token;
@@ -18557,6 +18557,7 @@ fn worker_bootstrap(
       this._responseHeaders = response.headers;
       this.readyState = 2;
       this._notifyReadyState();
+      if (responseType === "json") return response.json();
       if (responseType === "arraybuffer") return response.arrayBuffer();
       if (responseType === "blob") return response.blob();
       return response.text();
@@ -26167,7 +26168,7 @@ fn document_bootstrap(
   XMLHttpRequestNative.prototype.send = function(body) {{
     if (this.readyState !== 1) throw new TypeError("native XMLHttpRequest is not open");
     const responseType = String(this.responseType || "").toLowerCase();
-    if (!["", "text", "arraybuffer", "blob"].includes(responseType)) throw new TypeError("native XMLHttpRequest responseType is unsupported");
+    if (!["", "text", "json", "arraybuffer", "blob"].includes(responseType)) throw new TypeError("native XMLHttpRequest responseType is unsupported");
     const requestBody = body && (body.__glassFormData === true || body.__glassUrlSearchParams === true || body.__glassNativeBlob === true)
       ? body
       : body instanceof ArrayBuffer || (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(body))
@@ -26194,6 +26195,7 @@ fn document_bootstrap(
       this._responseHeaders = response.headers;
       this.readyState = 2;
       this._notifyReadyState();
+      if (responseType === "json") return response.json();
       if (responseType === "arraybuffer") return response.arrayBuffer();
       if (responseType === "blob") return response.blob();
       return response.text();

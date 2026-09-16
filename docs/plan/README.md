@@ -28,8 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-420`, following completed
-`native-engine-browser-419`. Native is now the default runtime for
+`native-engine-browser-421`, following completed
+`native-engine-browser-420`. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -105,6 +105,13 @@ through worker `fetch(Request)` with exact method, headers, content type, and
 body bytes. The native dispatch restores the separately transferred content
 type when constructing `event.request`; streaming replay and complete
 Request/Streams Web IDL parity remain separate issue #40 gates.
+
+The completed XHR JSON response-type slice is
+[native-engine-browser-421](tasks/native-engine-browser-421.md): page and
+worker asynchronous XMLHttpRequests accept `responseType = "json"` and expose
+bounded parsed values through `response` while retaining an empty text
+projection. Synchronous XHR, XML documents, streaming JSON, and complete
+XHR/Web IDL parity remain separate issue #40 gates.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI

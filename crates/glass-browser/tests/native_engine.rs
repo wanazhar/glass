@@ -53803,6 +53803,83 @@ async fn native_content_process_xhr_publishes_response_state_lifecycle() {
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_supports_json_response_type_in_page_and_worker() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let (content_type, body) = match path {
+                "/page" => (
+                    "text/html",
+                    r#"<script>
+globalThis.pageJsonPromise = new Promise(resolve => {
+  const xhr = new XMLHttpRequest();
+  xhr.responseType = 'json';
+  xhr.onload = () => resolve({ identity: xhr.response instanceof Object, data: xhr.response, text: xhr.responseText });
+  xhr.onerror = () => resolve({ error: 'page-xhr' });
+  xhr.open('GET', '/json');
+  xhr.send();
+});
+globalThis.workerMessages = [];
+globalThis.workerPromise = new Promise(resolve => {
+  globalThis.worker = new Worker('/worker.js');
+  worker.onmessage = event => { workerMessages.push(event.data); resolve(event.data); };
+});
+</script><main>XHR JSON</main>"#,
+                ),
+                "/worker.js" => (
+                    "text/javascript",
+                    r#"const xhr = new XMLHttpRequest();
+xhr.responseType = 'json';
+xhr.onload = () => postMessage({ identity: xhr.response instanceof Object, data: xhr.response, text: xhr.responseText });
+xhr.onerror = () => postMessage({ error: 'worker-xhr' });
+xhr.open('GET', '/worker-json');
+xhr.send();"#,
+                ),
+                "/json" => ("application/json", r#"{"page":true,"value":7}"#),
+                "/worker-json" => ("application/json", r#"{"worker":true,"value":9}"#),
+                other => panic!("unexpected XHR JSON request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await Promise.all([pageJsonPromise, workerPromise])")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            {
+                "identity": true,
+                "data": {"page": true, "value": 7},
+                "text": ""
+            },
+            {
+                "identity": true,
+                "data": {"worker": true, "value": 9},
+                "text": ""
+            }
+        ])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_xhr_abort_is_observable_and_ignores_late_callbacks() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

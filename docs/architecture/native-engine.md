@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
-`native-engine-browser-421`, following completed
+`native-engine-browser-422`, following completed
 `native-engine-browser-420`. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
@@ -86,6 +86,12 @@ asynchronous XMLHttpRequests select the existing bounded Response JSON decoder
 and expose its parsed value through `response`, with the text projection
 remaining empty. Synchronous XHR, XML documents, streaming JSON, and complete
 XHR/Web IDL parity remain issue #40 gates.
+
+Slice 422 completes the XHR ProgressEvent identity follow-up. Page and worker
+upload lifecycle notifications use each realm's ProgressEvent constructor while
+preserving bounded progress fields, target identity, and existing terminal
+ordering. Socket-level progress, complete event/Web IDL parity, and streaming
+upload remain issue #40 gates.
 
 Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
 `navigate-to` navigation-policy extension. After each content-process

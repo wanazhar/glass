@@ -15506,6 +15506,24 @@ fn worker_bootstrap(
   WorkerEventNative.prototype.composedPath = function() {{ return this.target ? [this.target] : []; }};
   globalThis.__glassWorkerEventConstructor = WorkerEventNative;
   globalThis.Event = WorkerEventNative;
+  const hasWorkerProgressEventConstructor = typeof globalThis.__glassWorkerProgressEventConstructor === "function";
+  const WorkerProgressEventNative = hasWorkerProgressEventConstructor
+    ? globalThis.__glassWorkerProgressEventConstructor
+    : function ProgressEvent(type, init) {{
+        const settings = init && typeof init === "object" ? init : {{}};
+        WorkerEventNative.call(this, type, settings);
+        this.lengthComputable = settings.lengthComputable === true;
+        const loaded = Number(settings.loaded);
+        const total = Number(settings.total);
+        this.loaded = Number.isFinite(loaded) ? Math.max(0, Math.trunc(loaded)) : 0;
+        this.total = Number.isFinite(total) ? Math.max(0, Math.trunc(total)) : 0;
+      }};
+  if (!hasWorkerProgressEventConstructor) {{
+    WorkerProgressEventNative.prototype = Object.create(WorkerEventNative.prototype);
+    WorkerProgressEventNative.prototype.constructor = WorkerProgressEventNative;
+  }}
+  globalThis.__glassWorkerProgressEventConstructor = WorkerProgressEventNative;
+  globalThis.ProgressEvent = WorkerProgressEventNative;
   const hasWorkerCustomEventConstructor = typeof globalThis.__glassWorkerCustomEventConstructor === "function";
   const WorkerCustomEventNative = hasWorkerCustomEventConstructor
     ? globalThis.__glassWorkerCustomEventConstructor
@@ -18344,7 +18362,12 @@ fn worker_bootstrap(
     return dispatch(payload.bodyNull ? [] : payload.bytes);
   }};
   const workerXhrDispatch = (xhr, type, extra) => {{
-    const event = Object.assign({{ type, target: xhr, currentTarget: xhr }}, extra || {{}});
+    const event = extra && Object.prototype.hasOwnProperty.call(extra, "loaded")
+      && typeof globalThis.ProgressEvent === "function"
+      ? new globalThis.ProgressEvent(type, extra)
+      : Object.assign({{ type, target: xhr, currentTarget: xhr }}, extra || {{}});
+    event.target = xhr;
+    event.currentTarget = xhr;
     const handler = xhr["on" + type];
     if (typeof handler === "function") {{
       try {{ handler.call(xhr, event); }} catch (_) {{}}
@@ -25985,7 +26008,12 @@ fn document_bootstrap(
   }};
   const nativeXhrEventTypes = ["readystatechange", "loadstart", "progress", "load", "error", "timeout", "abort", "loadend"];
   const nativeXhrDispatch = (target, type, extra) => {{
-    const event = Object.assign({{ type, target, currentTarget: target }}, extra || {{}});
+    const event = extra && Object.prototype.hasOwnProperty.call(extra, "loaded")
+      && typeof globalThis.ProgressEvent === "function"
+      ? new globalThis.ProgressEvent(type, extra)
+      : Object.assign({{ type, target, currentTarget: target }}, extra || {{}});
+    event.target = target;
+    event.currentTarget = target;
     const handler = target["on" + type];
     if (typeof handler === "function") {{
       try {{ handler.call(target, event); }} catch (_error) {{}}
@@ -35493,6 +35521,24 @@ fn document_bootstrap(
   const EventNative = globalThis.__glassEventConstructor || function Event(type, options) {{
     return globalThis.__glassCreateEvent(type, options);
   }};
+  const hasProgressEventConstructor = typeof globalThis.__glassProgressEventConstructor === "function";
+  const ProgressEventNative = hasProgressEventConstructor
+    ? globalThis.__glassProgressEventConstructor
+    : function ProgressEvent(type, options) {{
+        const event = globalThis.__glassCreateEvent(type, options);
+        const settings = options && typeof options === "object" ? options : {{}};
+        event.lengthComputable = settings.lengthComputable === true;
+        const loaded = Number(settings.loaded);
+        const total = Number(settings.total);
+        event.loaded = Number.isFinite(loaded) ? Math.max(0, Math.trunc(loaded)) : 0;
+        event.total = Number.isFinite(total) ? Math.max(0, Math.trunc(total)) : 0;
+        try {{ Object.setPrototypeOf(event, ProgressEventNative.prototype); }} catch (_error) {{}}
+        return event;
+      }};
+  if (!hasProgressEventConstructor) {{
+    ProgressEventNative.prototype = Object.create(EventNative.prototype);
+    ProgressEventNative.prototype.constructor = ProgressEventNative;
+  }}
   const CustomEventNative = globalThis.__glassCustomEventConstructor || function CustomEvent(type, options) {{
     const event = globalThis.__glassCreateEvent(type, options);
     event.detail = options && typeof options === "object" ? options.detail : undefined;
@@ -35549,6 +35595,7 @@ fn document_bootstrap(
     return event;
   }};
   globalThis.__glassEventConstructor = EventNative;
+  globalThis.__glassProgressEventConstructor = ProgressEventNative;
   globalThis.__glassCustomEventConstructor = CustomEventNative;
   globalThis.__glassStorageEventConstructor = StorageEventNative;
   globalThis.__glassErrorEventConstructor = ErrorEventNative;
@@ -35556,6 +35603,7 @@ fn document_bootstrap(
   globalThis.__glassSecurityPolicyViolationEventConstructor = SecurityPolicyViolationEventNative;
   globalThis.__glassCreateEvent = createEvent;
   globalThis.Event = EventNative;
+  globalThis.ProgressEvent = ProgressEventNative;
   globalThis.CustomEvent = CustomEventNative;
   globalThis.StorageEvent = StorageEventNative;
   globalThis.ErrorEvent = ErrorEventNative;

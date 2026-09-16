@@ -2295,6 +2295,54 @@ async fn native_local_worker_fetch_honors_abort_signal() {
 }
 
 #[tokio::test]
+async fn native_local_worker_fetch_streams_fixture_response_body() {
+    let response_body = format!("{}💩-tail", "x".repeat(8190));
+    let expected_length = response_body.len();
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-stream.test/page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-stream.test/script",
+            "(async () => { const response = await fetch('/response'); const clone = response.clone(); const reader = response.body.getReader(); const chunks = []; let total = 0; for (;;) { const part = await reader.read(); if (part.done) break; chunks.push(part.value.byteLength); total += part.value.byteLength; } reader.releaseLock(); const text = await clone.text(); postMessage({ status: response.status, url: response.url, chunks, total, textLength: text.length, prefix: text.slice(0, 3), suffix: text.slice(-5), containsEmoji: text.includes('💩'), bodyUsed: [response.bodyUsed, clone.bodyUsed] }); })().catch(error => postMessage({ kind: 'error', name: error.name, message: error.message }));",
+        )
+        .unwrap()
+        .with_fixture("fixture://worker-stream.test/response", &response_body)
+        .unwrap()
+        .with_initial_url("fixture://worker-stream.test/page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.worker = new Worker('fixture://worker-stream.test/script'); worker.onmessage = event => workerMessages.push(event.data); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([{
+            "status": 200,
+            "url": "fixture://worker-stream.test/response",
+            "chunks": [8192, expected_length - 8192],
+            "total": expected_length,
+            "textLength": response_body.encode_utf16().count(),
+            "prefix": "xxx",
+            "suffix": "-tail",
+            "containsEmoji": true,
+            "bodyUsed": [true, true],
+        }])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_worker_exposes_standard_runtime_primitives() {
     let config = NativeEngineConfig::default()
         .with_fixture(

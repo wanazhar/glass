@@ -20,9 +20,9 @@ use super::interaction::{
 };
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
-    MAX_NATIVE_SCRIPT_BYTES, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
-    NativeFrameScriptContext, NativeFrameScriptRequest, NativeHashChangeEvent,
-    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
+    MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_WORKER_MESSAGES, NativeCookieProfileEntry, NativeDialog,
+    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
+    NativeHashChangeEvent, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
     NativeMessagePortPageMessage, NativeMessagePortTransfer, NativePageEventBatch,
     NativePageMessageEvent, NativePageMessagePortCommand, NativePageNavigation, NativePopupRequest,
     NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
@@ -471,7 +471,7 @@ impl NativeEngine {
             content_process: None,
             javascript: None,
             service_worker_clients,
-            workers: NativeWorkerRegistry::new(),
+            workers: NativeWorkerRegistry::new_with_fetch_streams(),
             web_storage,
             indexed_db,
             storage_writer_id,
@@ -2141,6 +2141,25 @@ impl NativeEngine {
             .await
     }
 
+    /// Give the inline owner the same bounded worker Fetch stream turn that
+    /// the content process already runs around page evaluations. The yield is
+    /// intentional: local fixture streams are spawned tasks, so their next
+    /// demand-driven event must get a scheduler opportunity before the owner
+    /// polls the event channel.
+    async fn pump_local_worker_fetch_streams(&mut self) -> Result<(), NativeEngineError> {
+        for _ in 0..MAX_NATIVE_WORKER_MESSAGES {
+            tokio::task::yield_now().await;
+            if !self
+                .workers
+                .pump_fetch_stream_event(&mut self.loader)
+                .await?
+            {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     async fn evaluate_page_with_events_async(
         &mut self,
         source: String,
@@ -2290,7 +2309,9 @@ impl NativeEngine {
             .apply_page_message_port_commands(initial_message_port_commands, &mut self.loader)
             .await?;
         self.collect_page_message_port_commands()?;
+        self.pump_local_worker_fetch_streams().await?;
         self.workers.run_due_timers(&mut self.loader).await?;
+        self.pump_local_worker_fetch_streams().await?;
         page_events
             .worker_messages
             .extend(self.workers.take_messages());
@@ -2330,6 +2351,7 @@ impl NativeEngine {
             .apply_page_message_port_commands(message_port_commands, &mut self.loader)
             .await?;
         self.collect_page_message_port_commands()?;
+        self.pump_local_worker_fetch_streams().await?;
         self.pending_message_port_messages
             .extend(self.workers.take_message_port_messages());
         if !self.workers.take_websocket_commands().is_empty() {
@@ -2368,6 +2390,7 @@ impl NativeEngine {
             .apply_page_message_port_commands(dynamic_message_port_commands, &mut self.loader)
             .await?;
         self.collect_page_message_port_commands()?;
+        self.pump_local_worker_fetch_streams().await?;
         self.pending_message_port_messages
             .extend(self.workers.take_message_port_messages());
         if !self.workers.take_websocket_commands().is_empty() {

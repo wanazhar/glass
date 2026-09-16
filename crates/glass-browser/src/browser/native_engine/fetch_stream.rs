@@ -50,6 +50,29 @@ pub(crate) fn spawn_native_fetch_stream(
     }
 }
 
+/// Create the same demand-driven transport for a bounded local response.
+/// Fixture-owned documents do not have a reqwest response, but they still
+/// need to exercise the exact stream ownership, chunking, and cancellation
+/// contract used by the process-backed network path.
+pub(crate) fn spawn_native_fetch_bytes_stream(
+    body: Vec<u8>,
+    max_response_bytes: usize,
+) -> NativeFetchStreamConnection {
+    let (command_sender, command_receiver) = mpsc::channel(MAX_NATIVE_FETCH_STREAM_CONNECTIONS);
+    let (event_sender, event_receiver) = mpsc::channel(MAX_NATIVE_FETCH_STREAM_CONNECTIONS);
+    tokio::spawn(run_native_fetch_bytes_stream(
+        body,
+        max_response_bytes,
+        command_receiver,
+        event_sender,
+    ));
+    NativeFetchStreamConnection {
+        commands: command_sender,
+        events: event_receiver,
+        read_pending: false,
+    }
+}
+
 async fn run_native_fetch_stream(
     response: reqwest::Response,
     max_response_bytes: usize,
@@ -135,5 +158,50 @@ async fn run_native_fetch_stream(
                 }
             }
         }
+    }
+}
+
+async fn run_native_fetch_bytes_stream(
+    body: Vec<u8>,
+    max_response_bytes: usize,
+    mut commands: mpsc::Receiver<NativeFetchStreamCommand>,
+    events: mpsc::Sender<NativeFetchStreamEvent>,
+) {
+    if body.len() > max_response_bytes {
+        let _ = events
+            .send(NativeFetchStreamEvent::Error {
+                message: "native fetch response stream exceeds its limit".into(),
+            })
+            .await;
+        return;
+    }
+    let mut pending_parts = body
+        .chunks(MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES)
+        .map(|part| part.to_vec())
+        .collect::<VecDeque<_>>();
+    loop {
+        match commands.recv().await {
+            Some(NativeFetchStreamCommand::Read) => {}
+            Some(NativeFetchStreamCommand::Cancel) | None => return,
+        }
+        if let Some(part) = pending_parts.pop_front() {
+            if events
+                .send(NativeFetchStreamEvent::Chunk { data: part })
+                .await
+                .is_err()
+            {
+                return;
+            }
+            continue;
+        }
+        if events.send(NativeFetchStreamEvent::End).await.is_err() {
+            return;
+        }
+        while let Some(command) = commands.recv().await {
+            if matches!(command, NativeFetchStreamCommand::Cancel) {
+                return;
+            }
+        }
+        return;
     }
 }

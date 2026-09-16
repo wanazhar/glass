@@ -17531,6 +17531,47 @@ async fn native_content_process_form_action_blocks_click_and_script_submit() {
 }
 
 #[tokio::test]
+async fn native_content_process_navigate_to_blocks_link_and_location_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let initial_url = format!("http://{address}/start");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/start"));
+        let body = "<a id='go' href='/result'>Go</a>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src *; navigate-to 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        tokio::time::timeout(Duration::from_millis(300), listener.accept())
+            .await
+            .expect_err("navigate-to blocked navigation must not issue a second request");
+    });
+
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(initial_url.clone()))
+            .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .action_async(NativeAction::Click {
+            target: "id=go".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().url, initial_url);
+    engine
+        .evaluate_async("location.href = '/result'")
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().url, initial_url);
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_form_validation_covers_common_constraints() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -390,6 +390,7 @@ pub struct NativeEngine {
     url: String,
     origin: NativeOrigin,
     document_frame_sources: Option<Vec<Vec<String>>>,
+    document_navigate_to_sources: Option<Vec<Vec<String>>>,
     frame_script_bindings: Vec<NativeFrameScriptBinding>,
     frame_script_context: Option<NativeFrameScriptContext>,
     embedding_document_url: Option<String>,
@@ -499,6 +500,7 @@ impl NativeEngine {
             document: NativeDocument::empty(),
             origin: NativeOrigin::Opaque,
             document_frame_sources: None,
+            document_navigate_to_sources: None,
             frame_script_bindings: Vec::new(),
             frame_script_context: None,
             embedding_document_url: None,
@@ -918,6 +920,84 @@ impl NativeEngine {
             }))
     }
 
+    fn allows_top_level_navigation(&mut self, target_url: &str) -> Result<bool, NativeEngineError> {
+        let document_url = self.url.clone();
+        let sources = self.document_navigate_to_sources.clone();
+        self.allows_top_level_navigation_for_owner(
+            &document_url,
+            target_url,
+            sources.as_deref(),
+            true,
+        )
+    }
+
+    fn allows_top_level_navigation_silent(
+        &self,
+        target_url: &str,
+    ) -> Result<bool, NativeEngineError> {
+        let document_url = self.url.clone();
+        let sources = self.document_navigate_to_sources.clone();
+        if !self.loader.allows_navigation_silent(
+            &document_url,
+            target_url,
+            NativeNavigationPolicyKind::NavigateTo,
+        )? {
+            return Ok(false);
+        }
+        Self::navigation_sources_allow(&document_url, target_url, sources.as_deref())
+    }
+
+    fn allows_top_level_navigation_for_owner(
+        &mut self,
+        document_url: &str,
+        target_url: &str,
+        sources: Option<&[Vec<String>]>,
+        report: bool,
+    ) -> Result<bool, NativeEngineError> {
+        let loader_allowed = if report {
+            self.loader.allows_navigation(
+                document_url,
+                target_url,
+                NativeNavigationPolicyKind::NavigateTo,
+            )?
+        } else {
+            self.loader.allows_navigation_silent(
+                document_url,
+                target_url,
+                NativeNavigationPolicyKind::NavigateTo,
+            )?
+        };
+        if !loader_allowed {
+            return Ok(false);
+        }
+        Self::navigation_sources_allow(document_url, target_url, sources)
+    }
+
+    fn navigation_sources_allow(
+        document_url: &str,
+        target_url: &str,
+        sources: Option<&[Vec<String>]>,
+    ) -> Result<bool, NativeEngineError> {
+        let Some(sources) = sources else {
+            return Ok(true);
+        };
+        validate_url_text("CSP navigation owner URL", document_url)?;
+        validate_url_text("CSP navigation target URL", target_url)?;
+        let document_url = url::Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "CSP navigation owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        let target_url = url::Url::parse(without_fragment(target_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "CSP navigation target URL is not valid URL syntax".into(),
+            }
+        })?;
+        Ok(sources
+            .iter()
+            .all(|group| csp_sources_allow(Some(group), &document_url, &target_url)))
+    }
+
     fn allows_frame_navigation_after_redirect(
         &self,
         initial_url: &str,
@@ -1176,6 +1256,9 @@ impl NativeEngine {
         self.pending_lifecycle_effects.clear();
         self.sync_external_storage_events()?;
         let url = url.into();
+        if !self.allows_top_level_navigation(&url)? {
+            return Ok(self.snapshot_unchecked());
+        }
         let resource = self.loader.load(&url)?;
         if self.is_same_document_navigation(&resource.url) {
             if let Some(navigation) =
@@ -1251,6 +1334,15 @@ impl NativeEngine {
         dispatch_lifecycle: bool,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
+        let same_document = self.is_same_document_navigation(&navigation.url);
+        let allowed = if !same_document && is_network_url(&navigation.url) {
+            self.allows_top_level_navigation_silent(&navigation.url)?
+        } else {
+            self.allows_top_level_navigation(&navigation.url)?
+        };
+        if !allowed {
+            return Ok(self.snapshot_unchecked());
+        }
         if dispatch_lifecycle {
             self.pending_lifecycle_effects.clear();
         }
@@ -1263,7 +1355,6 @@ impl NativeEngine {
         } else {
             HistoryCommit::Push
         };
-        let same_document = self.is_same_document_navigation(url);
         if !same_document && !self.allows_frame_navigation(url)? {
             return Ok(self.snapshot_unchecked());
         }
@@ -1426,8 +1517,18 @@ impl NativeEngine {
                 page_navigation_handoffs,
             ));
         }
+        let mut policy_owner_url = self.url.clone();
+        let mut policy_sources = self.document_navigate_to_sources.clone();
         loop {
             let initial_url = navigation.url.clone();
+            if !self.allows_top_level_navigation_for_owner(
+                &policy_owner_url,
+                &initial_url,
+                policy_sources.as_deref(),
+                true,
+            )? {
+                return Ok(None);
+            }
             self.request_ledger.begin()?;
             let client_id = self.service_worker_client_id();
             let service_worker_clients = self.service_worker_clients.clone();
@@ -1470,6 +1571,14 @@ impl NativeEngine {
                 }
             };
             self.apply_content_load_effects(&mut content)?;
+            if !self.allows_top_level_navigation_for_owner(
+                &policy_owner_url,
+                &content.url,
+                policy_sources.as_deref(),
+                false,
+            )? {
+                return Ok(None);
+            }
             let Some(page_navigation) = content.navigation.clone() else {
                 return Ok(Some((
                     content,
@@ -1478,6 +1587,8 @@ impl NativeEngine {
                     initial_url,
                 )));
             };
+            policy_sources = content.navigate_to_sources.clone();
+            policy_owner_url = content.url.clone();
             if page_navigation_handoffs == MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS {
                 return Err(NativeEngineError::limit(
                     "page navigation handoffs",
@@ -1564,6 +1675,16 @@ impl NativeEngine {
                     .into(),
             })?;
         self.apply_content_load_effects(&mut content)?;
+        let policy_owner_url = self.url.clone();
+        let policy_sources = self.document_navigate_to_sources.clone();
+        if !self.allows_top_level_navigation_for_owner(
+            &policy_owner_url,
+            &content.url,
+            policy_sources.as_deref(),
+            false,
+        )? {
+            return Ok(());
+        }
         if !self.is_same_document_navigation(&content.url)
             && !self.allows_frame_navigation_after_redirect(&pending.initial_url, &content.url)?
         {
@@ -3524,6 +3645,12 @@ impl NativeEngine {
                 }
                 if click_allowed && let Some(href) = link_href {
                     let target_url = self.resolve_link_href(&href)?;
+                    if !self.allows_top_level_navigation(&target_url)? {
+                        return Ok(NativeActionResult {
+                            revision: self.revision,
+                            accepted: outcome.accepted,
+                        });
+                    }
                     if let Some(download_attribute) = download_attribute {
                         self.queue_download(target_url, &download_attribute)?;
                         return Ok(NativeActionResult {
@@ -4347,6 +4474,11 @@ impl NativeEngine {
         }
         if navigation.location {
             let target_url = self.resolve_link_href(&navigation.href)?;
+            if self.is_same_document_navigation(&target_url)
+                && !self.allows_top_level_navigation(&target_url)?
+            {
+                return Ok(());
+            }
             let mut request = NativeNavigationRequest::get(target_url);
             request.replace_history = navigation.replace_history;
             Box::pin(self.navigate_request_async(request, page_navigation_handoffs))
@@ -4372,19 +4504,24 @@ impl NativeEngine {
             });
         }
         let target_url = self.resolve_link_href(&request.url)?;
+        let same_document = self.is_same_document_navigation(&target_url);
+        let opens_new_target = self.document.link_opens_new_target(id);
+        if (same_document || download_attribute.is_some() || opens_new_target)
+            && !self.allows_top_level_navigation(&target_url)?
+        {
+            return Ok(());
+        }
         if let Some(download_attribute) = download_attribute {
             self.queue_download(target_url, &download_attribute)?;
             return Ok(());
         }
-        if self.document.link_opens_new_target(id) {
+        if opens_new_target {
             self.queue_popup(target_url)?;
             return Ok(());
         }
         request.url = target_url.clone();
         request.replace_history = navigation.replace_history;
-        if request.method == NativeNavigationMethod::Get
-            && self.is_same_document_navigation(&target_url)
-        {
+        if request.method == NativeNavigationMethod::Get && same_document {
             let history_commit = if request.replace_history {
                 HistoryCommit::Replace
             } else {
@@ -5161,6 +5298,9 @@ impl NativeEngine {
         if !self.allows_frame_navigation(&target_url)? {
             return Ok(());
         }
+        if !self.allows_top_level_navigation_silent(&target_url)? {
+            return Ok(());
+        }
         self.loader.load(&target_url).map(|_| ())
     }
 
@@ -5663,6 +5803,22 @@ impl NativeEngine {
         } else {
             self.next_revision()?
         };
+        if !self.allows_top_level_navigation(&target_url)? {
+            let events = if click_already_applied {
+                Vec::new()
+            } else {
+                self.document.apply_click(id)?
+            };
+            self.document.set_revision(revision);
+            self.revision = revision;
+            self.history
+                .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
+            self.record_effects(events);
+            return Ok(NativeActionResult {
+                revision,
+                accepted: true,
+            });
+        }
         if let Some(download_attribute) =
             self.document.link_download_attribute(id).map(str::to_owned)
         {
@@ -5778,6 +5934,7 @@ impl NativeEngine {
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
+        self.document_navigate_to_sources = prepared.navigate_to_sources;
         self.scroll_offset = scroll_offset;
         self.sync_javascript_scroll_offset();
         self.revision = revision;
@@ -5921,6 +6078,9 @@ impl NativeEngine {
                             .into(),
                 });
             }
+            if !self.allows_top_level_navigation(&navigation.url)? {
+                return Ok(());
+            }
             let history_commit = if navigation.replace_history {
                 HistoryCommit::Replace
             } else {
@@ -6050,6 +6210,7 @@ impl NativeEngine {
             },
             document,
             frame_sources: content.frame_sources,
+            navigate_to_sources: content.navigate_to_sources,
             dialogs: content.dialogs,
             initial_events,
             initial_scroll_commands: content.scroll_commands,
@@ -6076,10 +6237,15 @@ impl NativeEngine {
         let document =
             NativeDocument::parse_with_generation(&resource.body, &self.config.limits, generation)?;
         let frame_sources = self.loader.frame_sources_for_document(&resource.url)?;
+        let navigate_to_sources = self.loader.navigation_sources_for_document(
+            &resource.url,
+            NativeNavigationPolicyKind::NavigateTo,
+        )?;
         Ok(PreparedNavigation {
             resource,
             document,
             frame_sources,
+            navigate_to_sources,
             dialogs: Vec::new(),
             initial_events: Vec::new(),
             initial_scroll_commands: Vec::new(),
@@ -6190,6 +6356,7 @@ impl NativeEngine {
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
+        self.document_navigate_to_sources = prepared.navigate_to_sources;
         self.scroll_offset = fragment_scroll_offset;
         self.sync_javascript_scroll_offset();
         let _ = self.apply_scroll_commands(&self.document.clone(), &initial_scroll_commands)?;
@@ -6323,6 +6490,7 @@ impl NativeEngine {
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
+        self.document_navigate_to_sources = prepared.navigate_to_sources;
         self.scroll_offset = fragment_scroll_offset;
         self.sync_javascript_scroll_offset();
         let _ = self.apply_scroll_commands(&self.document.clone(), &initial_scroll_commands)?;
@@ -6644,6 +6812,7 @@ impl NativeEngine {
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
+        self.document_navigate_to_sources = prepared.navigate_to_sources;
         self.scroll_offset = scroll_offset;
         self.revision = revision;
         self.pending_dialogs.clear();
@@ -6693,6 +6862,7 @@ impl NativeEngine {
         self.url = prepared.resource.url;
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
+        self.document_navigate_to_sources = prepared.navigate_to_sources;
         self.scroll_offset = scroll_offset;
         self.revision = revision;
         self.pending_dialogs.clear();
@@ -6727,6 +6897,9 @@ impl NativeEngine {
             })?
             .url
             .clone();
+        if !self.allows_top_level_navigation(&target_url)? {
+            return Ok(Some(self.snapshot_unchecked()));
+        }
         if self.history.is_same_document(history_index) {
             if let Some(navigation) = self.commit_same_document_navigation(
                 target_url,
@@ -6795,9 +6968,17 @@ impl NativeEngine {
             })?
             .url
             .clone();
-        if self.history.is_same_document(history_index)
-            || self.is_same_document_navigation(&target_url)
-        {
+        let same_document_target = self.history.is_same_document(history_index)
+            || self.is_same_document_navigation(&target_url);
+        let allowed = if !same_document_target && is_network_url(&target_url) {
+            self.allows_top_level_navigation_silent(&target_url)?
+        } else {
+            self.allows_top_level_navigation(&target_url)?
+        };
+        if !allowed {
+            return Ok(Some(self.snapshot_unchecked()));
+        }
+        if same_document_target {
             if let Some(worker) = self.runtime_worker.clone() {
                 self.commit_same_document_navigation_async(
                     target_url,
@@ -7225,6 +7406,7 @@ struct PreparedNavigation {
     resource: NativeResource,
     document: NativeDocument,
     frame_sources: Option<Vec<Vec<String>>>,
+    navigate_to_sources: Option<Vec<Vec<String>>>,
     dialogs: Vec<NativeDialog>,
     initial_events: Vec<(u32, NativeEventKind)>,
     initial_scroll_commands: Vec<NativeScriptCommand>,

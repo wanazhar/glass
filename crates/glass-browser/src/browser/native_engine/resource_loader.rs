@@ -62,12 +62,14 @@ pub(crate) enum NativeSubresourceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeNavigationPolicyKind {
     FormAction,
+    NavigateTo,
 }
 
 impl NativeNavigationPolicyKind {
     const fn directive(self) -> &'static str {
         match self {
             Self::FormAction => "form-action",
+            Self::NavigateTo => "navigate-to",
         }
     }
 }
@@ -914,6 +916,7 @@ struct NativeCspDirectives {
     connect_sources: Option<Vec<String>>,
     worker_sources: Option<Vec<String>>,
     form_action_sources: Option<Vec<String>>,
+    navigate_to_sources: Option<Vec<String>>,
     default_sources: Option<Vec<String>>,
     report_uris: Vec<String>,
     report_to: Option<String>,
@@ -1001,6 +1004,7 @@ impl NativeCspDirectives {
     fn navigation_sources_for(&self, kind: NativeNavigationPolicyKind) -> Option<&Vec<String>> {
         match kind {
             NativeNavigationPolicyKind::FormAction => self.form_action_sources.as_ref(),
+            NativeNavigationPolicyKind::NavigateTo => self.navigate_to_sources.as_ref(),
         }
     }
 
@@ -1258,6 +1262,18 @@ impl NativeCspPolicy {
                     .or(policy.default_sources.as_ref())
                     .cloned()
             })
+            .collect::<Vec<_>>();
+        (!groups.is_empty()).then_some(groups)
+    }
+
+    fn navigation_source_groups(
+        &self,
+        kind: NativeNavigationPolicyKind,
+    ) -> Option<Vec<Vec<String>>> {
+        let groups = self
+            .policies
+            .iter()
+            .filter_map(|policy| policy.navigation_sources_for(kind).cloned())
             .collect::<Vec<_>>();
         (!groups.is_empty()).then_some(groups)
     }
@@ -2922,6 +2938,28 @@ impl NativeResourceLoader {
             .and_then(NativeCspPolicy::frame_source_groups))
     }
 
+    pub(crate) fn navigation_sources_for_document(
+        &self,
+        document_url: &str,
+        kind: NativeNavigationPolicyKind,
+    ) -> Result<Option<Vec<Vec<String>>>, NativeEngineError> {
+        validate_url_text("navigation policy owner URL", document_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "navigation policy owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(None);
+        }
+        reject_credentials(&document_url)?;
+        Ok(self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .and_then(|policy| policy.navigation_source_groups(kind)))
+    }
+
     pub(crate) fn apply_meta_content_security_policies(
         &mut self,
         document_url: &str,
@@ -3054,6 +3092,28 @@ impl NativeResourceLoader {
         target_url: &str,
         kind: NativeNavigationPolicyKind,
     ) -> Result<bool, NativeEngineError> {
+        let (document_url, target_url, policy) =
+            self.navigation_policy(document_url, target_url)?;
+        self.record_report_only_navigation_violations(&policy, kind, &document_url, &target_url);
+        Ok(policy.allows_navigation(kind, &document_url, &target_url))
+    }
+
+    pub(crate) fn allows_navigation_silent(
+        &self,
+        document_url: &str,
+        target_url: &str,
+        kind: NativeNavigationPolicyKind,
+    ) -> Result<bool, NativeEngineError> {
+        let (document_url, target_url, policy) =
+            self.navigation_policy(document_url, target_url)?;
+        Ok(policy.allows_navigation(kind, &document_url, &target_url))
+    }
+
+    fn navigation_policy(
+        &self,
+        document_url: &str,
+        target_url: &str,
+    ) -> Result<(Url, Url, NativeCspPolicy), NativeEngineError> {
         validate_url_text("CSP navigation owner URL", document_url)?;
         validate_url_text("CSP navigation target URL", target_url)?;
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
@@ -3069,7 +3129,7 @@ impl NativeResourceLoader {
         reject_credentials(&document_url)?;
         reject_credentials(&target_url)?;
         if !is_network_url(document_url.as_str()) {
-            return Ok(true);
+            return Ok((document_url, target_url, NativeCspPolicy::default()));
         }
         let policy = self
             .network
@@ -3077,8 +3137,7 @@ impl NativeResourceLoader {
             .get(&cache_key(&document_url))
             .cloned()
             .unwrap_or_default();
-        self.record_report_only_navigation_violations(&policy, kind, &document_url, &target_url);
-        Ok(policy.allows_navigation(kind, &document_url, &target_url))
+        Ok((document_url, target_url, policy))
     }
 
     pub(crate) fn report_service_worker_connect_policy(
@@ -5371,6 +5430,7 @@ fn parse_csp_directives(value: &str) -> NativeCspDirectives {
             "connect-src" => policy.connect_sources = Some(sources),
             "worker-src" => policy.worker_sources = Some(sources),
             "form-action" => policy.form_action_sources = Some(sources),
+            "navigate-to" => policy.navigate_to_sources = Some(sources),
             "default-src" => policy.default_sources = Some(sources),
             "report-uri" => {
                 policy.report_uris = sources
@@ -7815,6 +7875,24 @@ mod tests {
         let unrestricted = content_security_policy(&unrestricted_headers);
         assert!(unrestricted.allows_navigation(
             NativeNavigationPolicyKind::FormAction,
+            &document,
+            &first,
+        ));
+
+        let mut navigation_headers = HeaderMap::new();
+        navigation_headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src *; navigate-to https://destination.test"),
+        );
+        let navigation_policy = content_security_policy(&navigation_headers);
+        let destination = Url::parse("https://destination.test/result").unwrap();
+        assert!(navigation_policy.allows_navigation(
+            NativeNavigationPolicyKind::NavigateTo,
+            &document,
+            &destination,
+        ));
+        assert!(!navigation_policy.allows_navigation(
+            NativeNavigationPolicyKind::NavigateTo,
             &document,
             &first,
         ));

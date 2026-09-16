@@ -1,17 +1,29 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-410` slice. The native runtime is now the primary
+`native-engine-browser-411` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 411 closes the Glass-owned explicit `navigate-to` navigation-policy
+extension. This is intentionally documented as a Glass policy extension, not
+a normative CSP Level 3 directive; the current
+[CSP Level 3 reference](https://www.w3.org/TR/CSP3/) remains the standards
+context. Response and initial head-meta navigation source groups are bounded,
+intersected, and carried from the content process to the parent navigation
+owner. Direct navigation, same-document and page-script handoffs, links,
+downloads, popups, history traversal, and final content-process URLs check the
+owner policy before they issue or commit a navigation. A denied request leaves
+the current document in place. Dynamic policy mutation and report-only
+delivery through every navigation path remain separate issue #40 gates.
 
 Slice 410 closes the explicit CSP `form-action` boundary. Validated GET/POST
 form submissions from local documents and the HTTP content process now check
 the shared document policy after submit handling and before a navigation
 request is issued; enforced policies intersect, and an omitted `form-action`
 does not inherit `default-src`. The shared loader records report-only
-observations, while delivery through every form-event path and the custom
-`navigate-to` policy remain separate issue #40 gates.
+observations, while delivery through every form-event path remains a separate
+issue #40 gate.
 
 Slice 409 closes external-resource Subresource Integrity. External scripts and
 stylesheet links now carry `integrity` and `crossorigin` through DOM discovery,
@@ -34,8 +46,8 @@ the host-source path ignored. Scheme, host, port, mixed-content, credentials,
 and script nonce/strict-dynamic checks remain enforced, and report-only
 redirect observations use the same rule. Frame navigation carries the last
 requested URL so an HTTP redirect is distinct from a later page-script
-navigation handoff. Dynamic CSP grammar, `navigate-to`, report-only meta
-policy, and broader conformance remain separate issue #40 gates.
+navigation handoff. Dynamic CSP grammar, report-only meta policy, and broader
+conformance remain separate issue #40 gates.
 
 Slice 404 closes the bounded CSP source-expression matcher used by the native
 network and frame owners. Scheme sources honor the CSP secure-upgrade

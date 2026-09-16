@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-410` locally. Native is now the default runtime for
+`native-engine-browser-411` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -537,8 +537,8 @@ only the host-source path through the shared matcher. Scheme, host, port,
 mixed-content, credentials, and script nonce/strict-dynamic checks remain
 enforced; report-only redirect observations use the same rule. Frame loading
 retains the requested URL so an HTTP redirect is distinguished from a later
-page-navigation handoff. Dynamic CSP grammar, `navigate-to`, report-only meta
-policy, and broader conformance remain issue #40 promotion gates.
+page-navigation handoff. Dynamic CSP grammar, report-only meta policy, and
+broader conformance remain issue #40 promotion gates.
 
 The completed Subresource Integrity slice is
 [native-engine-browser-409](tasks/native-engine-browser-409.md): external
@@ -557,8 +557,19 @@ GET/POST form submissions from local documents and the HTTP content process
 now consult the shared `form-action` policy after submit handling and before a
 navigation request is issued. Enforced policies intersect, and an omitted
 `form-action` does not inherit `default-src`. The shared loader records
-report-only observations; delivery through every form-event path, custom
-`navigate-to`, and broader browser conformance remain issue #40 gates.
+report-only observations; delivery through every form-event path and broader
+browser conformance remain issue #40 gates.
+
+The completed Glass `navigate-to` extension slice is
+[native-engine-browser-411](tasks/native-engine-browser-411.md): bounded
+response and initial head-meta navigation source groups cross the content
+process boundary and are intersected by the parent navigation owner. Direct,
+same-document, page-script, link, download, popup, history, and final
+content-process navigation decisions consult the active policy before issuing
+or committing a request. This is a Glass-owned extension rather than a
+normative CSP Level 3 directive; dynamic policy mutation, report-only delivery
+through every navigation path, and broader browser conformance remain issue
+#40 gates.
 
 The completed CSP source-expression matching slice is
 [native-engine-browser-404](tasks/native-engine-browser-404.md): the shared

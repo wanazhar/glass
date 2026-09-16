@@ -1,8 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-428`, following
-completed `native-engine-browser-427`, following completed
+expansion checkpoint is completed `native-engine-browser-429`, following
+completed `native-engine-browser-428`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and
 `native-engine-browser-420`, with
@@ -78,6 +78,10 @@ non-empty response chunk during `LOADING`, preserves split UTF-8 text, and
 cancels the reader on abort. Worker XHR remains buffered through its separate
 whole-response Fetch host path; worker streaming, streaming upload, synchronous
 XHR, and complete XHR/Streams Web IDL parity remain open.
+Slice 429 closes the page XHR reopen-cancellation hole: `open()` cancels any
+active response reader before replacing request state, and stream continuations
+verify request ownership before publishing progress or terminal work. Worker
+XHR streaming and the remaining XHR/Streams Web IDL parity remain open.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

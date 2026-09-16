@@ -142,6 +142,13 @@ Fetch host path still resolves whole responses; worker streaming, streaming
 upload, synchronous XHR, and complete XHR/Streams Web IDL parity remain issue
 #40 gates.
 
+Slice 429 closes the page-XHR reopen cancellation hole exposed by streaming.
+`open()` cancels any active response reader before replacing request state, and
+stream continuations verify request ownership before publishing progress or
+terminal work. Reopening a live XHR therefore cannot let the old response
+mutate the reused object; worker-XHR streaming and the remaining XHR/Streams
+Web IDL gates stay open.
+
 Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
 `navigate-to` navigation-policy extension. After each content-process
 document mutation, the child recomputes its bounded effective source groups

@@ -27190,15 +27190,17 @@ fn document_bootstrap(
     if (safeLength > 0) xhr._responseText += utf8TextFromBytes(pending.slice(0, safeLength));
     xhr._responseUtf8Pending = pending.slice(safeLength);
   }};
-  const nativeXhrReadResponse = (xhr, response, responseType) => {{
+  const nativeXhrReadResponse = (xhr, response, responseType, controller) => {{
     const stream = response && response.body;
     if (!stream || typeof stream.getReader !== "function") {{
+      if (xhr._controller !== controller || xhr._aborted) return Promise.resolve(null);
       const bytes = response && response.__glassPayload
         ? responseBodyBytes(response.__glassPayload)
         : [];
       nativeXhrAppendResponseText(xhr, responseType, bytes, true);
       xhr.readyState = 3;
       xhr._notifyReadyState();
+      if (xhr._controller !== controller || xhr._aborted) return Promise.resolve(null);
       nativeXhrResponseProgress(xhr, null, bytes.length);
       return Promise.resolve(bytes);
     }}
@@ -27211,7 +27213,12 @@ fn document_bootstrap(
       if (xhr._responseReader === reader) xhr._responseReader = null;
       reader.releaseLock();
     }};
-    const readNext = () => reader.read().then(
+    const readNext = () => {{
+      if (xhr._controller !== controller || xhr._aborted) {{
+        release();
+        return Promise.resolve(null);
+      }}
+      return reader.read().then(
       result => {{
         if (result.done) {{
           nativeXhrAppendResponseText(xhr, responseType, [], true);
@@ -27231,11 +27238,16 @@ fn document_bootstrap(
         nativeXhrAppendResponseText(xhr, responseType, chunk, false);
         xhr.readyState = 3;
         xhr._notifyReadyState();
+        if (xhr._controller !== controller || xhr._aborted) {{
+          release();
+          return null;
+        }}
         nativeXhrResponseProgress(xhr, null, bytes.length);
         return readNext();
       }},
       error => {{ release(); throw error; }},
-    );
+      );
+    }};
     return readNext();
   }};
   const XMLHttpRequestNative = function() {{
@@ -27329,6 +27341,12 @@ fn document_bootstrap(
   }});
   XMLHttpRequestNative.prototype.open = function(method, url, async) {{
     if (async === false) throw new TypeError("native XMLHttpRequest requires async mode");
+    const previousController = this._controller;
+    const previousReader = this._responseReader;
+    this._controller = null;
+    this._responseReader = null;
+    if (previousController) previousController.abort();
+    if (previousReader) {{ try {{ previousReader.cancel(); }} catch (_) {{}} }}
     const normalizedMethod = String(method).toUpperCase();
     if (!nativeRequestMethods.includes(normalizedMethod))
       throw new TypeError("native XMLHttpRequest method is unsupported");
@@ -27422,7 +27440,7 @@ fn document_bootstrap(
       this._responseHeaders = response.headers;
       this.readyState = 2;
       this._notifyReadyState();
-      return nativeXhrReadResponse(this, response, responseType);
+      return nativeXhrReadResponse(this, response, responseType, controller);
     }}).then(bytes => {{
       if (bytes === null || this._controller !== controller || this._aborted) return;
       this._controller = null;

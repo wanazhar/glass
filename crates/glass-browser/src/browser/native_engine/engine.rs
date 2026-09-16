@@ -947,6 +947,81 @@ impl NativeEngine {
         Self::navigation_sources_allow(&document_url, target_url, sources.as_deref())
     }
 
+    async fn allows_top_level_navigation_async(
+        &mut self,
+        target_url: &str,
+        report: bool,
+    ) -> Result<bool, NativeEngineError> {
+        let document_url = self.url.clone();
+        let sources = self.document_navigate_to_sources.clone();
+        self.allows_top_level_navigation_for_owner_async(
+            &document_url,
+            target_url,
+            sources.as_deref(),
+            report,
+        )
+        .await
+    }
+
+    async fn allows_top_level_navigation_for_owner_async(
+        &mut self,
+        document_url: &str,
+        target_url: &str,
+        sources: Option<&[Vec<String>]>,
+        report: bool,
+    ) -> Result<bool, NativeEngineError> {
+        // The process-backed document is the authority for response CSP. The
+        // parent keeps the bounded source snapshot for enforced decisions, but
+        // only the child can observe report-only violations for this document.
+        // Copy it before the event bridge can mutate the engine state.
+        let sources = sources.map(|groups| groups.to_vec());
+        let child_ready = report
+            && is_network_url(without_fragment(document_url))
+            && self
+                .content_process
+                .as_mut()
+                .is_some_and(|process| process.refresh_health() && process.has_current_document());
+        let loader_allowed = if child_ready {
+            let policy = {
+                let process =
+                    self.content_process
+                        .as_mut()
+                        .ok_or_else(|| NativeEngineError::Worker {
+                            operation: "content process navigation policy".into(),
+                            reason: "native content process is not running".into(),
+                        })?;
+                process
+                    .check_navigation_policy(document_url, target_url, true)
+                    .await?
+            };
+            if !policy.csp_violations.is_empty() {
+                let page_events = NativePageEventBatch {
+                    csp_violations: policy.csp_violations,
+                    ..NativePageEventBatch::default()
+                };
+                Box::pin(self.evaluate_page_with_events_async("undefined;".into(), page_events))
+                    .await?;
+            }
+            policy.allowed
+        } else if report {
+            self.loader.allows_navigation(
+                document_url,
+                target_url,
+                NativeNavigationPolicyKind::NavigateTo,
+            )?
+        } else {
+            self.loader.allows_navigation_silent(
+                document_url,
+                target_url,
+                NativeNavigationPolicyKind::NavigateTo,
+            )?
+        };
+        if !loader_allowed {
+            return Ok(false);
+        }
+        Self::navigation_sources_allow(document_url, target_url, sources.as_deref())
+    }
+
     fn allows_top_level_navigation_for_owner(
         &mut self,
         document_url: &str,
@@ -1335,11 +1410,9 @@ impl NativeEngine {
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
         let same_document = self.is_same_document_navigation(&navigation.url);
-        let allowed = if !same_document && is_network_url(&navigation.url) {
-            self.allows_top_level_navigation_silent(&navigation.url)?
-        } else {
-            self.allows_top_level_navigation(&navigation.url)?
-        };
+        let allowed = self
+            .allows_top_level_navigation_async(&navigation.url, true)
+            .await?;
         if !allowed {
             return Ok(self.snapshot_unchecked());
         }
@@ -1519,16 +1592,22 @@ impl NativeEngine {
         }
         let mut policy_owner_url = self.url.clone();
         let mut policy_sources = self.document_navigate_to_sources.clone();
+        let mut first_content_load = true;
         loop {
             let initial_url = navigation.url.clone();
-            if !self.allows_top_level_navigation_for_owner(
-                &policy_owner_url,
-                &initial_url,
-                policy_sources.as_deref(),
-                true,
-            )? {
+            let report = !first_content_load;
+            if !self
+                .allows_top_level_navigation_for_owner_async(
+                    &policy_owner_url,
+                    &initial_url,
+                    policy_sources.as_deref(),
+                    report,
+                )
+                .await?
+            {
                 return Ok(None);
             }
+            first_content_load = false;
             self.request_ledger.begin()?;
             let client_id = self.service_worker_client_id();
             let service_worker_clients = self.service_worker_clients.clone();
@@ -3645,7 +3724,13 @@ impl NativeEngine {
                 }
                 if click_allowed && let Some(href) = link_href {
                     let target_url = self.resolve_link_href(&href)?;
-                    if !self.allows_top_level_navigation(&target_url)? {
+                    let opens_new_target = self.document.link_opens_new_target(id);
+                    let special_navigation = download_attribute.is_some() || opens_new_target;
+                    if special_navigation
+                        && !self
+                            .allows_top_level_navigation_async(&target_url, true)
+                            .await?
+                    {
                         return Ok(NativeActionResult {
                             revision: self.revision,
                             accepted: outcome.accepted,
@@ -3658,7 +3743,7 @@ impl NativeEngine {
                             accepted: outcome.accepted,
                         });
                     }
-                    if self.document.link_opens_new_target(id) {
+                    if opens_new_target {
                         self.queue_popup(target_url)?;
                         return Ok(NativeActionResult {
                             revision: self.revision,
@@ -4474,11 +4559,6 @@ impl NativeEngine {
         }
         if navigation.location {
             let target_url = self.resolve_link_href(&navigation.href)?;
-            if self.is_same_document_navigation(&target_url)
-                && !self.allows_top_level_navigation(&target_url)?
-            {
-                return Ok(());
-            }
             let mut request = NativeNavigationRequest::get(target_url);
             request.replace_history = navigation.replace_history;
             Box::pin(self.navigate_request_async(request, page_navigation_handoffs))
@@ -4507,7 +4587,9 @@ impl NativeEngine {
         let same_document = self.is_same_document_navigation(&target_url);
         let opens_new_target = self.document.link_opens_new_target(id);
         if (same_document || download_attribute.is_some() || opens_new_target)
-            && !self.allows_top_level_navigation(&target_url)?
+            && !self
+                .allows_top_level_navigation_async(&target_url, true)
+                .await?
         {
             return Ok(());
         }
@@ -6972,11 +7054,9 @@ impl NativeEngine {
             .clone();
         let same_document_target = self.history.is_same_document(history_index)
             || self.is_same_document_navigation(&target_url);
-        let allowed = if !same_document_target && is_network_url(&target_url) {
-            self.allows_top_level_navigation_silent(&target_url)?
-        } else {
-            self.allows_top_level_navigation(&target_url)?
-        };
+        let allowed = self
+            .allows_top_level_navigation_async(&target_url, true)
+            .await?;
         if !allowed {
             return Ok(Some(self.snapshot_unchecked()));
         }

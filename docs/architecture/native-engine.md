@@ -1,9 +1,20 @@
 # Native browser engine
 
-Status: Browser-complete expansion is active through the completed
-`native-engine-browser-412` slice. The native runtime is now the primary
+Status: Browser-complete expansion is active through completed
+`native-engine-browser-413` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 413 closes report-only navigation preflight across the content-process
+boundary. The child remains the owner of its live HTTP(S) navigation policy
+container and returns a bounded enforced result plus report-only violation
+records before the parent-owned top-level decision. The parent dispatches
+those records through the normal page event turn, while the first load check
+avoids duplicating the outgoing observation and later handoffs use the new
+child owner. Links, location changes, downloads, popups, history traversal,
+and direct async navigations now share this preflight. The `navigate-to`
+vocabulary remains a Glass-owned extension, not a normative CSP Level 3
+directive; broader report and CSP conformance remain issue #40 gates.
 
 Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
 `navigate-to` navigation-policy extension. After each content-process

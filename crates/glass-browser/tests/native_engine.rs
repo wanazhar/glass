@@ -6223,7 +6223,7 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for _ in 0..3 {
+        for _ in 0..5 {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request_bytes(&mut stream).await;
             let header_end = request
@@ -6235,7 +6235,7 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
             let path = request_text.split_whitespace().nth(1).unwrap();
             match path {
                 "/worker-binary-page" => {
-                    let body = "<script>globalThis.workerMessages = []; globalThis.worker = new Worker('/worker-binary.js'); worker.onmessage = event => workerMessages.push(event.data);</script>";
+                    let body = "<script>globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('/worker-binary.js'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message);</script>";
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
@@ -6281,6 +6281,29 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
     const responseObject = new Response(new Uint8Array([9, 8, 7]), { status: 201, headers: { 'X-Worker-Response': 'yes' } });
     const responseClone = responseObject.clone();
     const responseObjectBytes = await responseClone.bytes();
+    const makeStream = () => new ReadableStream({
+      start(controller) {
+        controller.enqueue('worker-');
+      },
+      async pull(controller) {
+        await Promise.resolve();
+        controller.enqueue('stream');
+        controller.close();
+      }
+    });
+    const streamRequest = new Request('/worker-local-stream', { method: 'POST', body: makeStream() });
+    const streamRequestClone = streamRequest.clone();
+    const streamRequestInitial = [streamRequest.bodyUsed, streamRequestClone.bodyUsed];
+    const streamRequestText = await streamRequest.text();
+    const streamRequestCloneText = await streamRequestClone.text();
+    const constructedResponse = new Response(makeStream(), { status: 202 });
+    const constructedResponseClone = constructedResponse.clone();
+    const constructedResponseInitial = [constructedResponse.bodyUsed, constructedResponseClone.bodyUsed];
+    const constructedResponseText = await constructedResponse.text();
+    const constructedResponseCloneText = await constructedResponseClone.text();
+    const streamedFetchRequest = new Request('/worker-stream-echo', { method: 'POST', body: makeStream() });
+    const streamedFetchResponse = await fetch(streamedFetchRequest);
+    const streamedOptionsResponse = await fetch('/worker-stream-echo', { method: 'POST', body: makeStream() });
     postMessage({
       kind: 'binary',
       requestBytes: Array.from(bytes),
@@ -6308,6 +6331,9 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
       iteratorBodyUsed: iteratorResponse.bodyUsed,
       requestIdentity: [request instanceof Request, request.headers instanceof Headers, request.method, request.headers.get('content-type'), request.bodyUsed, Array.from(requestCloneBytes), requestClone.bodyUsed],
       responseIdentity: [responseObject instanceof Response, responseObject.headers instanceof Headers, responseObject.status, responseObject.headers.get('x-worker-response'), Array.from(responseObjectBytes), responseObject.bodyUsed, responseClone.bodyUsed],
+      streamRequest: [streamRequestInitial, streamRequestText, streamRequestCloneText, streamRequest.bodyUsed, streamRequestClone.bodyUsed],
+      streamResponse: [constructedResponseInitial, constructedResponseText, constructedResponseCloneText, constructedResponse.bodyUsed, constructedResponseClone.bodyUsed],
+      streamFetch: [await streamedFetchResponse.text(), await streamedOptionsResponse.text(), streamedFetchRequest.bodyUsed],
       bodyUsed: response.bodyUsed,
       bufferBodyUsed: bufferResponse.bodyUsed,
       blobBodyUsed: blobResponse.bodyUsed,
@@ -6332,6 +6358,16 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
                     stream.write_all(response.as_bytes()).await.unwrap();
                     stream.write_all(&body).await.unwrap();
                 }
+                "/worker-stream-echo" => {
+                    assert_eq!(&request[header_end..], b"worker-stream");
+                    let body = b"worker-stream";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.write_all(body).await.unwrap();
+                }
                 path => panic!("unexpected native Worker binary request path: {path}"),
             }
         }
@@ -6343,6 +6379,8 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
+    let worker_errors = engine.evaluate_async("workerErrors").await.unwrap();
+    assert_eq!(worker_errors, serde_json::json!([]));
     assert_eq!(
         engine.evaluate_async("workerMessages").await.unwrap(),
         serde_json::json!([{
@@ -6372,6 +6410,9 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
             "iteratorBodyUsed": true,
             "requestIdentity": [true, true, "POST", "application/octet-stream", true, [0, 255, 1, 254], true],
             "responseIdentity": [true, true, 201, "yes", [9, 8, 7], false, true],
+            "streamRequest": [[false, false], "worker-stream", "worker-stream", true, true],
+            "streamResponse": [[false, false], "worker-stream", "worker-stream", true, true],
+            "streamFetch": ["worker-stream", "worker-stream", true],
             "bodyUsed": true,
             "bufferBodyUsed": true,
             "blobBodyUsed": true,

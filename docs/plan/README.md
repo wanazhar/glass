@@ -104,7 +104,7 @@ The completed page XHR response-lifecycle slice is
 [native-engine-browser-419](tasks/native-engine-browser-419.md): successful
 page XMLHttpRequest responses now publish `HEADERS_RECEIVED` and `LOADING`
 between `OPENED` and `DONE`, with metadata available before bounded body
-consumption. Incremental network chunks, synchronous XHR, responseXML, and
+consumption. Incremental network chunks, synchronous XHR, streaming XML, and
 full XHR/Web IDL parity remain separate issue #40 gates.
 
 The completed Service Worker request-body replay slice is
@@ -119,8 +119,8 @@ The completed XHR JSON response-type slice is
 [native-engine-browser-421](tasks/native-engine-browser-421.md): page and
 worker asynchronous XMLHttpRequests accept `responseType = "json"` and expose
 bounded parsed values through `response` while retaining an empty text
-projection. Synchronous XHR, XML documents, streaming JSON, and complete
-XHR/Web IDL parity remain separate issue #40 gates.
+projection. Synchronous XHR, streaming JSON, and complete XHR/Web IDL parity
+remain separate issue #40 gates.
 
 The completed XHR ProgressEvent identity slice is
 [native-engine-browser-422](tasks/native-engine-browser-422.md): page and
@@ -129,12 +129,13 @@ retaining bounded progress fields and upload-target identity. Socket-level
 progress, complete event/Web IDL parity, and streaming upload remain separate
 issue #40 gates.
 
-The in-progress XHR XML-document response slice is
-[native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR is
-being extended with bounded detached XML `responseXML` and
-`responseType = "document"` behavior. HTML document responses, synchronous
-XHR, streaming XML, and complete XML/Web IDL parity remain separate issue #40
-gates.
+The completed XHR XML-document response slice is
+[native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR
+recognizes XML MIME responses, exposes strict bounded detached XML
+`responseXML` and `responseType = "document"` behavior, and preserves XML
+namespaces, node types, lookup, ownership, immutability, and serialization.
+HTML document responses, non-UTF encodings, synchronous XHR, streaming XML,
+and complete XML/Web IDL parity remain separate issue #40 gates.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI

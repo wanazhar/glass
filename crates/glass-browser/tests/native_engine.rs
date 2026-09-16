@@ -17507,6 +17507,110 @@ async fn native_local_canvas_2d_script_and_raster_pipeline() {
 }
 
 #[tokio::test]
+async fn native_image_bitmap_transfer_preserves_pixels_across_worker_realm() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 8,
+            height: 4,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://image-bitmap-transfer-page",
+            "<html><body><canvas id='canvas' width='2' height='1' style='display:block;width:2px;height:1px'></canvas></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://image-bitmap-transfer-worker",
+            r#"self.onmessage = event => {
+                const bitmap = event.data.bitmap;
+                postMessage({
+                    bitmap,
+                    identity: [bitmap instanceof ImageBitmap, bitmap.width, bitmap.height],
+                }, [bitmap]);
+            }"#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://image-bitmap-transfer-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const canvas = document.getElementById('canvas');
+                    const context = canvas.getContext('2d');
+                    context.fillStyle = '#ff0000';
+                    context.fillRect(0, 0, 1, 1);
+                    context.fillStyle = '#0000ff';
+                    context.fillRect(1, 0, 1, 1);
+                    const localBitmap = await createImageBitmap(canvas);
+                    const localClone = structuredClone(localBitmap, { transfer: [localBitmap] });
+                    globalThis.localBitmapTransfer = [
+                        localBitmap.width,
+                        localClone instanceof ImageBitmap,
+                        localClone.width,
+                        localClone.height,
+                    ];
+                    const closedBitmap = await createImageBitmap(canvas);
+                    closedBitmap.close();
+                    let closedTransferError = '';
+                    try { structuredClone(closedBitmap, { transfer: [closedBitmap] }); }
+                    catch (error) { closedTransferError = error.name; }
+                    globalThis.bitmap = await createImageBitmap(canvas);
+                    globalThis.workerMessages = [];
+                    globalThis.worker = new Worker('fixture://image-bitmap-transfer-worker');
+                    worker.onmessage = event => {
+                        const output = document.createElement('canvas');
+                        output.width = 2;
+                        output.height = 1;
+                        document.body.appendChild(output);
+                        const outputContext = output.getContext('2d');
+                        outputContext.drawImage(event.data.bitmap, 0, 0);
+                        workerMessages.push({
+                            identity: event.data.identity,
+                            pixels: Array.from(outputContext.getImageData(0, 0, 2, 1).data),
+                        });
+                    };
+                    globalThis.closedTransferError = closedTransferError;
+                    globalThis.senderBitmap = null;
+                    return true;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "worker.postMessage({ bitmap }, [bitmap]); senderBitmap = [bitmap.width, bitmap.height]; true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ localBitmapTransfer, closedTransferError, senderBitmap, workerMessages })"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "localBitmapTransfer": [0, true, 2, 1],
+            "closedTransferError": "DataCloneError",
+            "senderBitmap": [0, 0],
+            "workerMessages": [{
+                "identity": [true, 2, 1],
+                "pixels": [255, 0, 0, 255, 0, 0, 255, 255],
+            }],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_canvas_image_source_preserves_animated_frames() {
     let source = format!(
         "data:image/gif;base64,{}",

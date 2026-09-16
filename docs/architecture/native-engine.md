@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-388` slice. The native runtime is now the primary
+`native-engine-browser-389` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -722,6 +722,17 @@ bounds remain enforced. Transferability for other platform objects,
 browser-wide task-source conformance, and the remaining Core Web Profile and
 production certification gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-388.md`.
+
+Slice 389 completes bounded `ImageBitmap` transfer across native realms. The
+shared structured-clone owner now serializes validated pixel descriptors,
+reconstructs realm-local `ImageBitmap` instances, and closes the source only
+after successful clone admission. Same-realm `structuredClone()`, page and
+worker `postMessage()`, and the existing popup/content-process bridge preserve
+dimensions, origin-clean state, and pixel readback while retaining the
+message-size and canvas bounds. Other transferable platform objects,
+browser-wide task-source conformance, and the remaining Core Web Profile and
+production certification gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-389.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

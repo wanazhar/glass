@@ -7407,6 +7407,46 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
     });
     return bitmap;
   };
+  const nativeCanvasImageBitmapSurface = (value) => {
+    try {
+      return value instanceof ImageBitmapNative
+        ? value.__glassImageBitmapSurface || null
+        : null;
+    } catch (_error) {
+      return null;
+    }
+  };
+  globalThis.__glassNativeImageBitmapIsImageBitmap = (value) => {
+    try { return value instanceof ImageBitmapNative; }
+    catch (_error) { return false; }
+  };
+  globalThis.__glassNativeImageBitmapTransferDescriptor = (value) => {
+    const surface = nativeCanvasImageBitmapSurface(value);
+    if (!surface) throw new TypeError("ImageBitmap is closed");
+    return {
+      type: "imagebitmap",
+      width: surface.width,
+      height: surface.height,
+      pixels: Array.isArray(surface.pixels) ? surface.pixels.slice() : [],
+      originClean: surface.originClean !== false,
+    };
+  };
+  globalThis.__glassNativeImageBitmapDetach = (value) => {
+    const surface = nativeCanvasImageBitmapSurface(value);
+    if (!surface) return false;
+    value.__glassImageBitmapSurface = null;
+    return true;
+  };
+  globalThis.__glassNativeImageBitmapFromTransfer = (descriptor) => {
+    if (!descriptor || typeof descriptor !== "object")
+      throw new TypeError("ImageBitmap transfer descriptor is invalid");
+    return nativeCanvasImageBitmap({
+      width: Number(descriptor.width),
+      height: Number(descriptor.height),
+      pixels: Array.isArray(descriptor.pixels) ? descriptor.pixels.slice() : [],
+      originClean: descriptor.originClean !== false,
+    });
+  };
   Object.defineProperties(ImageBitmapNative.prototype, {
     width: {
       configurable: true,
@@ -17462,6 +17502,68 @@ fn is_ready_state_comparison(source: &str) -> bool {
 const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
   const glassMessagePortQueueLimit = __GLASS_MESSAGE_PORT_QUEUE_LIMIT__;
   const glassMessageChannelNameLimit = __GLASS_MESSAGE_CHANNEL_NAME_LIMIT__;
+  if (typeof globalThis.__glassNativeImageBitmapIsImageBitmap !== "function") {
+    const GlassImageBitmapNative = globalThis.__glassImageBitmapConstructor
+      || function ImageBitmap() { throw new TypeError("ImageBitmap cannot be constructed directly"); };
+    globalThis.__glassImageBitmapConstructor = GlassImageBitmapNative;
+    globalThis.ImageBitmap = GlassImageBitmapNative;
+    const makeImageBitmap = (surface) => {
+      const bitmap = Object.create(GlassImageBitmapNative.prototype);
+      Object.defineProperty(bitmap, "__glassImageBitmapSurface", {
+        configurable: false,
+        enumerable: false,
+        writable: true,
+        value: surface,
+      });
+      return bitmap;
+    };
+    Object.defineProperties(GlassImageBitmapNative.prototype, {
+      width: {
+        configurable: true,
+        enumerable: true,
+        get() { return this.__glassImageBitmapSurface ? this.__glassImageBitmapSurface.width : 0; },
+      },
+      height: {
+        configurable: true,
+        enumerable: true,
+        get() { return this.__glassImageBitmapSurface ? this.__glassImageBitmapSurface.height : 0; },
+      },
+      close: {
+        configurable: true,
+        value() { this.__glassImageBitmapSurface = null; },
+      },
+    });
+    globalThis.__glassNativeImageBitmapIsImageBitmap = (value) => {
+      try { return value instanceof GlassImageBitmapNative; }
+      catch (_error) { return false; }
+    };
+    globalThis.__glassNativeImageBitmapTransferDescriptor = (value) => {
+      const surface = value && value.__glassImageBitmapSurface;
+      if (!surface) throw new TypeError("ImageBitmap is closed");
+      return {
+        type: "imagebitmap",
+        width: surface.width,
+        height: surface.height,
+        pixels: Array.isArray(surface.pixels) ? surface.pixels.slice() : [],
+        originClean: surface.originClean !== false,
+      };
+    };
+    globalThis.__glassNativeImageBitmapDetach = (value) => {
+      if (!value || !value.__glassImageBitmapSurface) return false;
+      value.__glassImageBitmapSurface = null;
+      return true;
+    };
+    globalThis.__glassNativeImageBitmapFromTransfer = (descriptor) => makeImageBitmap({
+      width: Number(descriptor.width),
+      height: Number(descriptor.height),
+      pixels: Array.isArray(descriptor.pixels) ? descriptor.pixels.slice() : [],
+      originClean: descriptor.originClean !== false,
+    });
+  }
+  const glassMessageImageBitmapIsImageBitmap = globalThis.__glassNativeImageBitmapIsImageBitmap;
+  const glassMessageImageBitmapTransferDescriptor = globalThis.__glassNativeImageBitmapTransferDescriptor;
+  const glassMessageImageBitmapDetach = globalThis.__glassNativeImageBitmapDetach;
+  const glassMessageImageBitmapFromTransfer = globalThis.__glassNativeImageBitmapFromTransfer;
   const glassMessageArrayBufferIsAttached = globalThis.__glassNativeArrayBufferIsAttached;
   const glassMessageDetachArrayBuffer = globalThis.__glassNativeDetachArrayBuffer;
   const glassMessagePortRegistry = globalThis.__glassMessagePortRegistry instanceof Map
@@ -17543,6 +17645,14 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       return false;
     }
   };
+  const glassMessageImageBitmapValue = (value) => {
+    try {
+      return typeof glassMessageImageBitmapIsImageBitmap === "function"
+        && glassMessageImageBitmapIsImageBitmap(value) === true;
+    } catch (_error) {
+      return false;
+    }
+  };
   const glassMessageNumberDescriptor = (value) => {
     if (Number.isNaN(value)) return { type: "number", value: "nan" };
     if (value === Infinity) return { type: "number", value: "infinity" };
@@ -17576,7 +17686,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     return Number.isInteger(index) && index >= 0 && index < length
       && String(index) === key;
   };
-  const glassMessageEncodeGraph = (value, transfers) => {
+  const glassMessageEncodeGraph = (value, transfers, transferValues) => {
     const nodes = [];
     const seen = new Map();
     const state = { binaryBytes: 0 };
@@ -17611,10 +17721,18 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
         throw glassMessageException("message could not be cloned", "DataCloneError");
       if (kind !== "object")
         throw glassMessageException("message could not be cloned", "DataCloneError");
-      if (transfers && transfers.has(current))
-        return { type: "port", index: transfers.get(current) };
+      if (transfers && transfers.has(current)) {
+        const transfer = transfers.get(current);
+        if (typeof transfer === "number") return { type: "port", index: transfer };
+        if (transfer && transfer.kind === "imageBitmap"
+            && Number.isSafeInteger(transfer.index))
+          return { type: "transfer", index: transfer.index };
+        throw glassMessageException("message transfer reference is invalid", "DataCloneError");
+      }
       if (glassMessagePortValue(current))
         throw glassMessageException("MessagePort is not in the transfer list", "DataCloneError");
+      if (glassMessageImageBitmapValue(current))
+        throw glassMessageException("ImageBitmap is not in the transfer list", "DataCloneError");
       if (seen.has(current)) return { ref: seen.get(current) };
 
       const id = reserve();
@@ -17744,10 +17862,11 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       __glassMessageClone: glassMessageCloneMarker,
       root: encode(value),
       nodes,
+      transfer_values: Array.isArray(transferValues) ? transferValues : [],
     };
   };
-  const glassMessageEncodeMessage = (value, transfers) => {
-    const graph = glassMessageEncodeGraph(value, transfers || new Map());
+  const glassMessageEncodeMessage = (value, transfers, transferValues) => {
+    const graph = glassMessageEncodeGraph(value, transfers || new Map(), transferValues);
     let encoded;
     try { encoded = JSON.stringify(graph); }
     catch (_error) { throw glassMessageException("message could not be cloned", "DataCloneError"); }
@@ -17781,6 +17900,62 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
         || typeof glassMessageArrayBufferIsAttached !== "function"
         || glassMessageArrayBufferIsAttached(value) !== true)
       throw glassMessageException("ArrayBuffer is not transferable", "DataCloneError");
+  };
+  const glassMessageValidateImageBitmapDescriptor = (descriptor) => {
+    if (!descriptor || typeof descriptor !== "object" || descriptor.type !== "imagebitmap")
+      throw glassMessageException("ImageBitmap transfer descriptor is invalid", "DataCloneError");
+    const width = Number(descriptor.width);
+    const height = Number(descriptor.height);
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+        || width < 1 || height < 1 || width > 4096 || height > 4096
+        || width * height > glassMessageCloneNodeLimit)
+      throw glassMessageException("ImageBitmap dimensions are invalid", "DataCloneError");
+    if (!Array.isArray(descriptor.pixels)
+        || descriptor.pixels.length !== width * height * 4
+        || descriptor.pixels.length > glassMessageCloneNodeLimit)
+      throw glassMessageException("ImageBitmap pixels are invalid", "DataCloneError");
+    for (const byte of descriptor.pixels) {
+      if (!Number.isInteger(byte) || byte < 0 || byte > 255)
+        throw glassMessageException("ImageBitmap pixels are invalid", "DataCloneError");
+    }
+    return {
+      type: "imagebitmap",
+      width,
+      height,
+      pixels: descriptor.pixels.slice(),
+      originClean: descriptor.originClean !== false,
+    };
+  };
+  const glassMessageImageBitmapTransfer = (value) => {
+    if (!glassMessageImageBitmapValue(value)) return null;
+    if (typeof glassMessageImageBitmapTransferDescriptor !== "function")
+      throw glassMessageException("ImageBitmap transfer is unavailable", "DataCloneError");
+    let descriptor;
+    try { descriptor = glassMessageImageBitmapTransferDescriptor(value); }
+    catch (_error) { throw glassMessageException("ImageBitmap is not transferable", "DataCloneError"); }
+    return glassMessageValidateImageBitmapDescriptor(descriptor);
+  };
+  const glassMessageCommitImageBitmapTransfers = (bitmaps) => {
+    for (const bitmap of bitmaps) {
+      let detached = false;
+      try {
+        detached = typeof glassMessageImageBitmapDetach === "function"
+          && glassMessageImageBitmapDetach(bitmap) === true;
+      } catch (_error) {}
+      if (!detached)
+        throw glassMessageException("ImageBitmap could not be detached", "DataCloneError");
+    }
+  };
+  const glassMessageDecodeImageBitmapTransfer = (descriptor) => {
+    const normalized = glassMessageValidateImageBitmapDescriptor(descriptor);
+    if (typeof glassMessageImageBitmapFromTransfer !== "function")
+      throw glassMessageException("ImageBitmap transfer is unavailable", "DataCloneError");
+    let result;
+    try { result = glassMessageImageBitmapFromTransfer(normalized); }
+    catch (_error) { throw glassMessageException("ImageBitmap transfer is invalid", "DataCloneError"); }
+    if (!glassMessageImageBitmapValue(result))
+      throw glassMessageException("ImageBitmap transfer result is invalid", "DataCloneError");
+    return result;
   };
   const glassMessageCommitArrayBufferTransfers = (buffers) => {
     for (const buffer of buffers) {
@@ -17833,7 +18008,9 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
   const glassMessageCloneWithTransfers = (value, transfer) => {
     const prepared = [];
     const buffers = [];
+    const bitmaps = [];
     const members = new Map();
+    const transferValues = [];
     const transferMembers = new Set();
     for (const member of transfer) {
       if (transferMembers.has(member))
@@ -17847,6 +18024,14 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
         buffers.push(member);
         continue;
       }
+      const bitmap = glassMessageImageBitmapTransfer(member);
+      if (bitmap) {
+        const index = transferValues.length;
+        transferValues.push(bitmap);
+        bitmaps.push(member);
+        members.set(member, { kind: "imageBitmap", index });
+        continue;
+      }
       if (members.has(member))
         throw glassMessageException("MessagePort appears more than once in the transfer list", "DataCloneError");
       const descriptor = glassMessageTransferDescriptor(member);
@@ -17855,8 +18040,9 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       members.set(member, prepared.length);
       prepared.push(descriptor);
     }
-    const data = glassMessageEncodeMessage(value, members);
+    const data = glassMessageEncodeMessage(value, members, transferValues);
     glassMessageCommitArrayBufferTransfers(buffers);
+    glassMessageCommitImageBitmapTransfers(bitmaps);
     for (const descriptor of prepared) glassMessageCommitTransfer(descriptor);
     return {
       data,
@@ -17897,7 +18083,9 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
   const glassMessageCloneWithLocalTransfers = (value, transfer) => {
     const prepared = [];
     const buffers = [];
+    const bitmaps = [];
     const members = new Map();
+    const transferValues = [];
     const transferMembers = new Set();
     for (const member of transfer) {
       if (transferMembers.has(member))
@@ -17911,16 +18099,25 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
         buffers.push(member);
         continue;
       }
+      const bitmap = glassMessageImageBitmapTransfer(member);
+      if (bitmap) {
+        const index = transferValues.length;
+        transferValues.push(bitmap);
+        bitmaps.push(member);
+        members.set(member, { kind: "imageBitmap", index });
+        continue;
+      }
       const descriptor = glassMessageTransferDescriptor(member);
       if (members.has(descriptor.peer))
         throw glassMessageException("both endpoints of a MessageChannel cannot be transferred together", "DataCloneError");
       members.set(member, prepared.length);
       prepared.push(descriptor);
     }
-    const data = glassMessageEncodeMessage(value, members);
+    const data = glassMessageEncodeMessage(value, members, transferValues);
     const ports = prepared.map(() => glassMakeMessagePort());
     const result = glassMessageDecodeClone(data, ports);
     glassMessageCommitArrayBufferTransfers(buffers);
+    glassMessageCommitImageBitmapTransfers(bitmaps);
     for (let index = 0; index < prepared.length; index += 1)
       glassMessageCommitLocalPortTransfer(prepared[index], ports[index]);
     return { data: result, ports };
@@ -17997,6 +18194,18 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       return glassMessageReviveValue(payload, ports || []);
     const nodes = payload.nodes;
     const cache = new Map();
+    const transferValues = Array.isArray(payload.transfer_values)
+      ? payload.transfer_values
+      : [];
+    const transferCache = new Map();
+    const decodeTransfer = (index) => {
+      if (!Number.isSafeInteger(index) || index < 0 || index >= transferValues.length)
+        throw glassMessageException("message transfer reference is invalid", "DataCloneError");
+      if (transferCache.has(index)) return transferCache.get(index);
+      const result = glassMessageDecodeImageBitmapTransfer(transferValues[index]);
+      transferCache.set(index, result);
+      return result;
+    };
     const decodeNumber = (value) => {
       if (value === "nan") return NaN;
       if (value === "infinity") return Infinity;
@@ -18041,6 +18250,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
           if (!Number.isSafeInteger(descriptor.index) || !ports || !ports[descriptor.index])
             throw glassMessageException("MessagePort clone reference is invalid", "DataCloneError");
           return ports[descriptor.index];
+        case "transfer": return decodeTransfer(descriptor.index);
         case "hole": return undefined;
         default:
           throw glassMessageException("message clone descriptor is invalid", "DataCloneError");

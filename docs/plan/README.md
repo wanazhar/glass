@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-426`, following completed
+`native-engine-browser-427`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and `native-engine-browser-420`. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
@@ -161,6 +161,13 @@ response types reject `responseText` access, valid text responses remain
 readable during buffered `LOADING`/`DONE`, and reopen/abort/terminal paths
 clear stale text. Streaming XHR and complete Web IDL parity remain separate
 issue #40 gates.
+
+The completed XHR download-progress slice is
+[native-engine-browser-427](tasks/native-engine-browser-427.md): page and
+worker XHR now dispatch one buffered response `ProgressEvent` while `LOADING`,
+with truthful bounded byte counts, target identity, and validated
+`Content-Length` handling before terminal delivery. Socket-level progress and
+streaming XHR remain separate issue #40 gates.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI

@@ -18450,7 +18450,7 @@ fn worker_bootstrap(
     this.responseText = "";
     this.responseURL = "";
     this.response = "";
-    this.responseType = "";
+    this._responseType = "";
     this.responseXML = null;
     this.withCredentials = false;
     this.onreadystatechange = null;
@@ -18497,6 +18497,18 @@ fn worker_bootstrap(
       if (!Number.isFinite(numeric) || numeric < 0 || numeric > {max_native_xhr_timeout_ms})
         throw new RangeError("native Worker XMLHttpRequest timeout is outside the bounded range");
       this._timeout = Math.trunc(numeric);
+    }},
+  }});
+  Object.defineProperty(WorkerXMLHttpRequestNative.prototype, "responseType", {{
+    configurable: true,
+    get() {{ return this._responseType; }},
+    set(value) {{
+      if (this.readyState === 3 || this.readyState === 4)
+        throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest responseType cannot change after loading", "InvalidStateError");
+      const normalized = String(value).toLowerCase();
+      if (!["", "text", "json", "arraybuffer", "blob"].includes(normalized))
+        throw new TypeError("native Worker XMLHttpRequest responseType is unsupported");
+      this._responseType = normalized;
     }},
   }});
   WorkerXMLHttpRequestNative.prototype.open = function(method, url, async) {{
@@ -26772,7 +26784,7 @@ fn document_bootstrap(
     this.responseURL = "";
     this.response = "";
     this._responseXML = null;
-    this.responseType = "";
+    this._responseType = "";
     this.withCredentials = false;
     this.onreadystatechange = null;
     this.onload = null;
@@ -26819,6 +26831,18 @@ fn document_bootstrap(
       if (!Number.isFinite(numeric) || numeric < 0 || numeric > {max_native_xhr_timeout_ms})
         throw new RangeError("native XMLHttpRequest timeout is outside the bounded range");
       this._timeout = Math.trunc(numeric);
+    }},
+  }});
+  Object.defineProperty(XMLHttpRequestNative.prototype, "responseType", {{
+    configurable: true,
+    get() {{ return this._responseType; }},
+    set(value) {{
+      if (this.readyState === 3 || this.readyState === 4)
+        throw new DOMExceptionNative("native XMLHttpRequest responseType cannot change after loading", "InvalidStateError");
+      const normalized = String(value).toLowerCase();
+      if (!["", "text", "json", "arraybuffer", "blob", "document"].includes(normalized))
+        throw new TypeError("native XMLHttpRequest responseType is unsupported");
+      this._responseType = normalized;
     }},
   }});
   Object.defineProperty(XMLHttpRequestNative.prototype, "responseXML", {{

@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-423`, following completed
+`native-engine-browser-424`, following completed
+`native-engine-browser-423`,
 `native-engine-browser-422` and `native-engine-browser-420`. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
@@ -136,6 +137,13 @@ recognizes XML MIME responses, exposes strict bounded detached XML
 namespaces, node types, lookup, ownership, immutability, and serialization.
 HTML document responses, non-UTF encodings, synchronous XHR, streaming XML,
 and complete XML/Web IDL parity remain separate issue #40 gates.
+
+The completed XHR response-type state slice is
+[native-engine-browser-424](tasks/native-engine-browser-424.md): page and
+worker XHR response types use canonical case-insensitive bounded setters, with
+invalid values rejected at assignment and response-type changes rejected after
+loading begins. Response projections, XML behavior, and lifecycle ordering
+remain owned by the completed slices above.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI

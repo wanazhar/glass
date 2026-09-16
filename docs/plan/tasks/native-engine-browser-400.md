@@ -90,7 +90,7 @@ into a global history store.
 - `cargo check --quiet -p glass-browser --tests --locked`
 - `cargo test -p glass-browser --test native_engine native_content_process_delivers_report_only --locked -- --nocapture` (4 passed)
 - `cargo test -p glass-browser --test native_engine event_source --locked -- --nocapture` (5 passed)
-- `cargo test --quiet -p glass-browser --lib --locked`
+- `RUST_MIN_STACK=33554432 cargo test --quiet -p glass-browser --lib --locked --no-fail-fast` (1,117 passed, 1 ignored)
 - `cargo fmt --all -- --check`
 - `git diff --check`
 - `python3 scripts/check-release-documentation.py --require-previous-version --report /tmp/glass-release-documentation-400.json`

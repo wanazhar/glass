@@ -1807,6 +1807,87 @@ async fn native_array_buffer_transfer_detaches_sender_and_preserves_views() {
 }
 
 #[tokio::test]
+async fn native_local_message_ports_support_transfer_lists_and_structured_clone() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://local-message-port-transfer",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://local-message-port-transfer");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    globalThis.received = null;
+                    globalThis.reply = null;
+                    globalThis.cloneReceived = null;
+                    globalThis.bufferReceived = null;
+                    const receiving = new MessageChannel();
+                    receiving.port2.onmessage = event => {
+                        received = [event.data.kind, event.ports.length,
+                            event.data.port === event.ports[0],
+                            event.ports[0] instanceof MessagePort];
+                        event.ports[0].postMessage({ kind: 'reply' });
+                    };
+                    receiving.port2.start();
+                    const offered = new MessageChannel();
+                    offered.port2.onmessage = event => { reply = event.data.kind; };
+                    offered.port2.start();
+                    receiving.port1.postMessage({ kind: 'port', port: offered.port1 }, [offered.port1]);
+                    let sourceError = '';
+                    try { offered.port1.postMessage({ kind: 'invalid' }); }
+                    catch (error) { sourceError = error.name; }
+                    const bufferChannel = new MessageChannel();
+                    bufferChannel.port2.onmessage = event => {
+                        const buffer = event.data.buffer;
+                        bufferReceived = [buffer instanceof ArrayBuffer,
+                            Array.from(new Uint8Array(buffer))];
+                    };
+                    bufferChannel.port2.start();
+                    const buffer = new ArrayBuffer(3);
+                    new Uint8Array(buffer).set([6, 7, 8]);
+                    bufferChannel.port1.postMessage({ buffer }, [buffer]);
+                    globalThis.bufferSource = buffer.byteLength;
+                    const cloned = new MessageChannel();
+                    cloned.port2.onmessage = event => { cloneReceived = event.data.kind; };
+                    cloned.port2.start();
+                    const clonedPort = structuredClone(cloned.port1, { transfer: [cloned.port1] });
+                    clonedPort.postMessage({ kind: 'clone' });
+                    let cloneSourceError = '';
+                    try { cloned.port1.postMessage({ kind: 'invalid' }); }
+                    catch (error) { cloneSourceError = error.name; }
+                    globalThis.transferState = [sourceError, cloneSourceError];
+                    return true;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ received, reply, bufferReceived, bufferSource, cloneReceived, transferState })"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "received": ["port", 1, true, true],
+            "reply": "reply",
+            "bufferReceived": [true, [6, 7, 8]],
+            "bufferSource": 0,
+            "cloneReceived": "clone",
+            "transferState": ["InvalidStateError", "InvalidStateError"],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_message_ports_transfer_between_page_and_worker_realms() {
     let config = NativeEngineConfig::default()
         .with_fixture(

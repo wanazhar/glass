@@ -17878,6 +17878,53 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     glassMessageCommitArrayBufferTransfers(buffers);
     return result;
   };
+  const glassMessageCommitLocalPortTransfer = ({ port, peer, id }, replacement) => {
+    const queued = Array.isArray(port.__glassMessageQueue)
+      ? port.__glassMessageQueue.splice(0)
+      : [];
+    const started = port.__glassMessageStarted === true;
+    port.__glassMessagePortTransferred = true;
+    port.__glassMessageClosed = true;
+    port.__glassMessageQueue.length = 0;
+    port.__glassMessagePortPeer = null;
+    glassMessagePortRegistry.delete(id);
+    peer.__glassMessagePortPeer = replacement;
+    replacement.__glassMessagePortPeer = peer;
+    replacement.__glassMessageQueue.push(...queued);
+    replacement.__glassMessageStarted = started;
+    if (started) glassMessageSchedule(replacement);
+  };
+  const glassMessageCloneWithLocalTransfers = (value, transfer) => {
+    const prepared = [];
+    const buffers = [];
+    const members = new Map();
+    const transferMembers = new Set();
+    for (const member of transfer) {
+      if (transferMembers.has(member))
+        throw glassMessageException("transfer list member appears more than once", "DataCloneError");
+      transferMembers.add(member);
+      let tag;
+      try { tag = Object.prototype.toString.call(member); }
+      catch (_error) { tag = ""; }
+      if (tag === "[object ArrayBuffer]") {
+        glassMessageValidateArrayBufferTransfer(member);
+        buffers.push(member);
+        continue;
+      }
+      const descriptor = glassMessageTransferDescriptor(member);
+      if (members.has(descriptor.peer))
+        throw glassMessageException("both endpoints of a MessageChannel cannot be transferred together", "DataCloneError");
+      members.set(member, prepared.length);
+      prepared.push(descriptor);
+    }
+    const data = glassMessageEncodeMessage(value, members);
+    const ports = prepared.map(() => glassMakeMessagePort());
+    const result = glassMessageDecodeClone(data, ports);
+    glassMessageCommitArrayBufferTransfers(buffers);
+    for (let index = 0; index < prepared.length; index += 1)
+      glassMessageCommitLocalPortTransfer(prepared[index], ports[index]);
+    return { data: result, ports };
+  };
   const glassMessageStructuredClone = (value, options) => {
     let transfer = [];
     if (options !== undefined) {
@@ -17888,7 +17935,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     }
     return transfer.length === 0
       ? glassMessageClone(value)
-      : glassMessageCloneWithArrayBufferTransfers(value, transfer);
+      : glassMessageCloneWithLocalTransfers(value, transfer).data;
   };
   const glassMessageMakeBridgePort = (descriptor) => {
     const bridgeKey = String(descriptor && descriptor.bridge_key || "");
@@ -18297,10 +18344,8 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     if (this.__glassMessageClosed)
       throw glassMessageException("message port is closed", "InvalidStateError");
     const transfer = glassMessageTransferList(options);
-    if (!this.__glassMessagePortBridgeKey && transfer.length > 0)
-      throw glassMessageException("local MessagePort transfer requires a receiving realm", "DataCloneError");
-    const envelope = glassMessageCloneWithTransfers(message, transfer);
     if (this.__glassMessagePortBridgeKey) {
+      const envelope = glassMessageCloneWithTransfers(message, transfer);
       const workerId = Number.isSafeInteger(globalThis.__glassWorkerId)
         ? globalThis.__glassWorkerId
         : null;
@@ -18315,7 +18360,10 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     }
     const peer = this.__glassMessagePortPeer;
     if (!peer || peer.__glassMessageClosed) return;
-    glassMessageEnqueue(peer, glassMessageDecodeClone(envelope.data, []), []);
+    const envelope = transfer.length === 0
+      ? { data: glassMessageDecodeClone(glassMessageEncodeMessage(message, new Map()), []), ports: [] }
+      : glassMessageCloneWithLocalTransfers(message, transfer);
+    glassMessageEnqueue(peer, envelope.data, envelope.ports);
   };
   globalThis.__glassMessagePortConstructor = MessagePortNative;
   globalThis.MessagePort = MessagePortNative;

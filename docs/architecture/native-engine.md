@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-387` slice. The native runtime is now the primary
+`native-engine-browser-388` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -709,6 +709,19 @@ JSON-safe wire contract. Complete transferability for other platform objects,
 browser-wide task-source conformance, and the remaining Core Web Profile and
 production certification gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-387.md`.
+
+Slice 388 completes same-realm transferable-port ownership. Local
+`MessagePort.postMessage()` now transfers bounded ArrayBuffer and MessagePort
+members by decoding a fresh local endpoint, moving any queued records, and
+re-entangling that endpoint with the original peer only after clone success.
+`structuredClone(value, { transfer })` uses the same local port transfer path;
+source endpoints become invalid while `event.ports` and data/port identity
+remain intact. Cross-target MessagePort routing continues to use the
+browser-owned bridge, and the existing transfer, queue, payload, and origin
+bounds remain enforced. Transferability for other platform objects,
+browser-wide task-source conformance, and the remaining Core Web Profile and
+production certification gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-388.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

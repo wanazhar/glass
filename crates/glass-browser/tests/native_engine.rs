@@ -14415,6 +14415,65 @@ async fn native_content_process_runs_inline_page_scripts_in_persistent_realm() {
 }
 
 #[tokio::test]
+async fn native_content_process_enforces_inline_csp_for_initial_and_dynamic_content() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/csp"));
+        let body = "<body><style nonce='style-ok'>#allowed { color: red; }</style><style>#blocked { color: blue; }</style><div id='allowed'>Allowed</div><div id='blocked'>Blocked</div><div id='attribute' style='color: green'>Attribute</div><script nonce='script-ok'>globalThis.cspEvents = ['allowed']; document.getElementsByTagName('script')[1].addEventListener('error', () => cspEvents.push('error'));</script><script>globalThis.cspEvents.push('blocked');</script></body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none'; script-src 'nonce-script-ok'; style-src 'none'; style-src-elem 'nonce-style-ok'; style-src-attr 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/csp")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ events: globalThis.cspEvents, allowed: getComputedStyle(document.getElementById('allowed')).color, blocked: getComputedStyle(document.getElementById('blocked')).color, attribute: getComputedStyle(document.getElementById('attribute')).color })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": ["allowed", "error"],
+            "allowed": "rgb(255, 0, 0)",
+            "blocked": "rgb(0, 0, 0)",
+            "attribute": "rgb(0, 0, 0)",
+        })
+    );
+    engine
+        .evaluate_async(
+            "(() => { const script = document.createElement('script'); script.addEventListener('error', () => cspEvents.push('error')); script.textContent = \"globalThis.cspEvents.push('dynamic-blocked')\"; document.body.appendChild(script); const element = document.createElement('div'); element.id = 'dynamic-attribute'; element.setAttribute('style', 'color: purple'); document.body.appendChild(element); return true; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ events: globalThis.cspEvents, source: document.getElementById('dynamic-attribute').getAttribute('style'), color: getComputedStyle(document.getElementById('dynamic-attribute')).color })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": ["allowed", "error", "error"],
+            "source": "color: purple",
+            "color": "rgb(0, 0, 0)",
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_orders_navigation_lifecycle_events() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

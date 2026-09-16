@@ -27,8 +27,8 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion is now active through the completed
-`native-engine-browser-394` locally. Native is now the default runtime for
+the browser-complete expansion is now complete through
+`native-engine-browser-395` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -469,6 +469,14 @@ worker `WritableStream` and `TransformStream` surfaces and wires worker
 lock, lifecycle, abort, cancel, and transformer ownership. Host streaming
 backpressure, browser-wide task-source ordering, full Web IDL descriptors, and
 final Core Web Profile certification remain separate issue #40 gates.
+
+The completed native inline-content CSP slice is
+[native-engine-browser-395](tasks/native-engine-browser-395.md): it moves
+nonce/hash-preserving policy evaluation into the Rust owner for inline
+classic/module scripts, `<style>` elements, and `style="..."` attributes,
+including dynamic DOM mutation rechecks. The existing external resource policy
+continues to use the shared URL matcher; broader CSP grammar and reporting
+remain explicit issue #40 security gates.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

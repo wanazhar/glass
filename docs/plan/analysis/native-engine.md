@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is the completed `native-engine-browser-394`, with native-first product
+expansion checkpoint is the completed `native-engine-browser-395`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -428,7 +428,12 @@ does not claim host streaming backpressure, a resident event loop, full Web IDL
 descriptor parity, or final Core Web Profile and production certification. Its
 contract and evidence are recorded in
 `docs/plan/tasks/native-engine-browser-394.md`. The
-completed 234 slice carries bounded
+in-progress Slice 395 closes the HTTP(S) inline-content CSP bypass: the Rust
+policy preserves nonce/hash bytes, applies element-specific script/style
+directive fallback, gates style attributes, and rechecks dynamically mutated
+documents before script execution or computed-style/background-image
+projection. The task contract is recorded in
+`docs/plan/tasks/native-engine-browser-395.md`. The
 completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,

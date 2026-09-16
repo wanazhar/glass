@@ -14,13 +14,14 @@ use super::native_engine::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeAction, NativeEffect, NativeEngine,
     NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFile, NativeFrameScriptBinding,
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
-    NativeHistoryDirection, NativeInspectionSnapshot, NativeLayoutSnapshot, NativeOrigin,
-    NativePageMessagePortCommand, NativePoint, NativePopupRequest, NativePostMessageRequest,
-    NativePreflightAction, NativeScriptCommand, NativeServiceWorkerClientMessage,
-    NativeServiceWorkerOpenWindowRequest, NativeSurface, NativeTargetPreflight,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate, Viewport,
-    parse_point_target, synchronize_service_worker_client_leases, validate_message_port_transfers,
-    validate_page_message_port_command,
+    NativeHistoryDirection, NativeInspectionSnapshot, NativeLayoutSnapshot, NativeNavigationMethod,
+    NativeNavigationRequest, NativeOrigin, NativePageMessagePortCommand, NativePoint,
+    NativePopupRequest, NativePostMessageRequest, NativePreflightAction, NativeRequestBody,
+    NativeScriptCommand, NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
+    NativeSurface, NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, Viewport, parse_point_target,
+    synchronize_service_worker_client_leases, validate_message_port_transfers,
+    validate_page_message_port_command, validate_target_navigation_payload,
 };
 use crate::browser::session::{
     FrameInfo, GeoLocation, NavigationControlOutcome, NetworkConditions, PageTargetInfo,
@@ -2155,14 +2156,15 @@ impl NativeEngineBackend {
     /// Create and initialize a new independent native page target. The new
     /// target is intentionally not selected, matching the public target API.
     pub async fn create_target(&self, url: &str) -> Result<PageTargetInfo, BrowserBackendError> {
-        self.create_target_named(url, None, None)
+        let navigation = NativeNavigationRequest::get(url);
+        self.create_target_named(&navigation, None, None)
             .await
             .map(|(target, _, _, _, _, _, _, _)| target)
     }
 
     async fn create_target_named(
         &self,
-        url: &str,
+        navigation: &NativeNavigationRequest,
         name: Option<String>,
         opener_id: Option<String>,
     ) -> Result<
@@ -2225,12 +2227,17 @@ impl NativeEngineBackend {
             (target_id, opener_id, opener_window_name, opener_url)
         };
         let initial_window_name = name.clone().unwrap_or_default();
+        let initial_url = if navigation.method == NativeNavigationMethod::Post {
+            "about:blank"
+        } else {
+            navigation.url.as_str()
+        };
         let config = base_config
             .with_context_id(target_id.clone())
             .with_opener_window_name(opener_window_name)
             .with_opener_url(opener_url)
             .with_window_name(initial_window_name)
-            .with_initial_url(url.to_owned());
+            .with_initial_url(initial_url.to_owned());
         let config = if let Some(opener_id) = opener_id.as_deref() {
             config.with_opener_context_id(opener_id.to_owned())
         } else {
@@ -2240,6 +2247,12 @@ impl NativeEngineBackend {
         if let Err(error) = engine.initialize_async().await {
             let _ = engine.close_async().await;
             return Err(native_error(error));
+        }
+        if navigation.method == NativeNavigationMethod::Post {
+            if let Err(error) = engine.navigate_request_async(navigation.clone(), 0).await {
+                let _ = engine.close_async().await;
+                return Err(native_error(error));
+            }
         }
         let nested = engine.take_pending_popups();
         let nested_messages = engine.take_pending_post_messages();
@@ -2429,6 +2442,7 @@ impl NativeEngineBackend {
                     let request = pending_popups
                         .pop_front()
                         .expect("popup queue is non-empty after source selection");
+                    let navigation = native_navigation_request_from_popup(&request)?;
                     let name = native_popup_name(&request.target);
                     if let Some(name) = name.as_deref()
                         && let Some((target_id, active)) = self.target_named(name)?
@@ -2443,7 +2457,7 @@ impl NativeEngineBackend {
                             nested_service_worker_client_messages,
                             nested_page_message_port_commands,
                         ) = self
-                            .navigate_named_target(&target_id, active, &request.url, false)
+                            .navigate_named_target(&target_id, active, &navigation)
                             .await?;
                         self.bind_window_handle(&request, &target_id)?;
                         pending_popups.extend(nested);
@@ -2460,7 +2474,7 @@ impl NativeEngineBackend {
                     }
                     match self
                         .create_target_named(
-                            &request.url,
+                            &navigation,
                             name,
                             Some(request.source_context_id.clone()),
                         )
@@ -2523,6 +2537,7 @@ impl NativeEngineBackend {
                     let navigation = pending_window_navigations
                         .pop_front()
                         .expect("navigation queue is non-empty after source selection");
+                    let navigation_request = native_navigation_request_from_window(&navigation)?;
                     if let Some(frame_id) = navigation.target_context_id.as_deref()
                         && let Some(route) = self.frame_route(frame_id)?
                     {
@@ -2538,8 +2553,7 @@ impl NativeEngineBackend {
                             route,
                             frame_id,
                             &navigation.source_context_id,
-                            &navigation.href,
-                            navigation.replace,
+                            &navigation_request,
                         ))
                         .await?;
                         pending_popups.extend(nested_popups);
@@ -2568,12 +2582,7 @@ impl NativeEngineBackend {
                         nested_service_worker_client_messages,
                         nested_page_message_port_commands,
                     ) = self
-                        .navigate_named_target(
-                            &target_id,
-                            active,
-                            &navigation.href,
-                            navigation.replace,
-                        )
+                        .navigate_named_target(&target_id, active, &navigation_request)
                         .await?;
                     pending_popups.extend(nested);
                     pending_messages.extend(nested_messages);
@@ -2608,7 +2617,7 @@ impl NativeEngineBackend {
                         nested_page_message_port_commands,
                     ) = self
                         .create_target_named(
-                            &request.url,
+                            &NativeNavigationRequest::get(request.url.clone()),
                             None,
                             Some(request.source_context_id.clone()),
                         )
@@ -3572,17 +3581,14 @@ impl NativeEngineBackend {
         route: NativeFrameRoute,
         frame_id: &str,
         source_context_id: &str,
-        url: &str,
-        replace_history: bool,
+        navigation: &NativeNavigationRequest,
     ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
         let proxy_updates = self.window_proxy_updates(source_context_id)?;
         let (runtime_effects, owner_id) = match route {
             NativeFrameRoute::ActiveSelected => {
                 let mut targets = self.lock_targets(BackendOperation::Navigate)?;
                 let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
-                let result =
-                    navigate_native_frame(&mut engine, url, replace_history, &proxy_updates)
-                        .await?;
+                let result = navigate_native_frame(&mut engine, navigation, &proxy_updates).await?;
                 close_native_frame_descendants(&mut targets.active_frames, frame_id).await?;
                 let owner_id = engine.config().context_id.clone();
                 (result, owner_id)
@@ -3602,8 +3608,7 @@ impl NativeEngineBackend {
                         reason: "native frame disappeared during navigation".into(),
                     })?;
                 let result =
-                    navigate_native_frame(&mut frame.engine, url, replace_history, &proxy_updates)
-                        .await?;
+                    navigate_native_frame(&mut frame.engine, navigation, &proxy_updates).await?;
                 let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
                 activate_navigated_frame_if_ancestor(
                     &mut targets.active_frames,
@@ -3621,8 +3626,7 @@ impl NativeEngineBackend {
                     }
                 })?;
                 let result =
-                    navigate_native_frame(&mut target.engine, url, replace_history, &proxy_updates)
-                        .await?;
+                    navigate_native_frame(&mut target.engine, navigation, &proxy_updates).await?;
                 close_native_frame_descendants(&mut target.frames, frame_id).await?;
                 (result, target_id)
             }
@@ -3639,8 +3643,7 @@ impl NativeEngineBackend {
                     }
                 })?;
                 let result =
-                    navigate_native_frame(&mut frame.engine, url, replace_history, &proxy_updates)
-                        .await?;
+                    navigate_native_frame(&mut frame.engine, navigation, &proxy_updates).await?;
                 activate_navigated_frame_if_ancestor(
                     &mut target.frames,
                     &mut target.engine,
@@ -3663,8 +3666,7 @@ impl NativeEngineBackend {
         &self,
         target_id: &str,
         active: bool,
-        url: &str,
-        replace_history: bool,
+        navigation: &NativeNavigationRequest,
     ) -> Result<
         (
             PageTargetInfo,
@@ -3701,7 +3703,7 @@ impl NativeEngineBackend {
                     .await
                     .map_err(native_error)?;
                 engine
-                    .navigate_async_with_history(url, replace_history)
+                    .navigate_request_async(navigation.clone(), 0)
                     .await
                     .map_err(native_error)?;
                 let nested = engine.take_pending_popups();
@@ -3761,9 +3763,7 @@ impl NativeEngineBackend {
                 .sync_window_proxies(&proxy_updates)
                 .await
                 .map_err(native_error)?;
-            let result = engine
-                .navigate_async_with_history(url, replace_history)
-                .await;
+            let result = engine.navigate_request_async(navigation.clone(), 0).await;
             let nested = engine.take_pending_popups();
             let nested_messages = engine.take_pending_post_messages();
             let nested_window_closes = engine.take_pending_window_closes();
@@ -4013,6 +4013,8 @@ impl NativeEngineBackend {
                 let url = engine.context().map_err(native_error)?.url;
                 (target_id, url, engine.revision())
             };
+        let mut navigation = NativeNavigationRequest::get(url);
+        navigation.replace_history = true;
         let (
             _,
             popups,
@@ -4023,7 +4025,7 @@ impl NativeEngineBackend {
             service_worker_client_messages,
             page_message_port_commands,
         ) = self
-            .navigate_named_target(&target_id, true, &url, true)
+            .navigate_named_target(&target_id, true, &navigation)
             .await?;
         self.process_pending_browser_effects(
             popups,
@@ -5411,8 +5413,7 @@ async fn dispatch_page_message_port_to_native_frame(
 
 async fn navigate_native_frame(
     engine: &mut NativeEngine,
-    url: &str,
-    replace_history: bool,
+    navigation: &NativeNavigationRequest,
     proxy_updates: &[NativeWindowProxyUpdate],
 ) -> Result<NativeFrameRuntimeEffects, BrowserBackendError> {
     let previous_revision = engine.revision();
@@ -5421,10 +5422,61 @@ async fn navigate_native_frame(
         .await
         .map_err(native_error)?;
     engine
-        .navigate_async_with_history(url, replace_history)
+        .navigate_request_async(navigation.clone(), 0)
         .await
         .map_err(native_error)?;
     take_native_frame_runtime_effects(engine, previous_revision)
+}
+
+fn native_navigation_request_from_parts(
+    url: &str,
+    method: NativeNavigationMethod,
+    body: Option<NativeRequestBody>,
+    body_content_type: Option<String>,
+    replace_history: bool,
+    operation: &str,
+) -> Result<NativeNavigationRequest, BrowserBackendError> {
+    validate_target_navigation_payload(
+        method,
+        body.as_ref(),
+        body_content_type.as_deref(),
+        operation,
+    )
+    .map_err(native_error)?;
+    Ok(NativeNavigationRequest {
+        method,
+        url: url.to_owned(),
+        body,
+        body_content_type,
+        replace_history,
+        target: None,
+    })
+}
+
+fn native_navigation_request_from_popup(
+    request: &NativePopupRequest,
+) -> Result<NativeNavigationRequest, BrowserBackendError> {
+    native_navigation_request_from_parts(
+        &request.url,
+        request.method,
+        request.body.clone(),
+        request.body_content_type.clone(),
+        false,
+        "popup navigation payload",
+    )
+}
+
+fn native_navigation_request_from_window(
+    request: &NativeWindowNavigationRequest,
+) -> Result<NativeNavigationRequest, BrowserBackendError> {
+    native_navigation_request_from_parts(
+        &request.href,
+        request.method,
+        request.body.clone(),
+        request.body_content_type.clone(),
+        request.replace,
+        "window navigation payload",
+    )
 }
 
 fn project_native_frame(

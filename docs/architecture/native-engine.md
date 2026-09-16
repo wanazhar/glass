@@ -1,8 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through completed
-`native-engine-browser-414` slice, following completed
-`native-engine-browser-413`. The native runtime is now the primary
+`native-engine-browser-416` slice, following completed
+`native-engine-browser-415`. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -37,10 +37,19 @@ the content-process mutation envelope. The browser owner materializes new or
 named targets through the existing effect scheduler, routes nested ancestor
 targets through frame navigation, promotes the navigated ancestor when it was
 selected through a child, and preserves the opener selection. Non-current
-POST forms return a typed unsupported-operation error rather than silently
-turning the request into a GET. Local and HTTP witnesses cover popup creation,
-named reuse, nested `_top`, and the no-downgrade rule; broader HTML browsing
-context and POST-body conformance remain issue #40 gates.
+POST payload transfer remained a separate gate at that checkpoint. Local and
+HTTP witnesses cover popup creation, named reuse, and nested `_top`; broader
+HTML browsing-context conformance remains issue #40-owned.
+
+Slice 416 carries bounded form POST method/body/content-type payloads through
+the same local and content-process target navigation effects. Parent/top frame
+navigation, `_blank` popup creation, and named-target reuse now preserve the
+original POST request; a new POST target starts from `about:blank` so it does
+not issue a duplicate GET before the form request. The parent compares the
+transferred payload with its document-owned form reconstruction and rejects
+malformed or mismatched records before dispatch. Ordinary Window navigation
+remains GET-only, and multipart streaming, upload progress, service-worker
+body replay, and broader form conformance remain separate issue #40 gates.
 
 Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
 `navigate-to` navigation-policy extension. After each content-process

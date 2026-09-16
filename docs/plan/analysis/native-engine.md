@@ -1,15 +1,21 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-415`, following
-completed `native-engine-browser-414`, with
+expansion checkpoint is completed `native-engine-browser-416`, following
+completed `native-engine-browser-415`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
 batching, Service Worker client enumeration, and Service Worker client
 messaging covered by the native owner across local and
-HTTP(S) paths. Slice 346 closes bounded document-navigation HTTP cache
+HTTP(S) paths. Slice 416 carries bounded form POST method/body/content-type
+payloads through local and content-process frame, popup, and named-target
+navigation effects. New POST targets avoid a duplicate GET by bootstrapping
+from `about:blank`; the parent validates the transferred request against its
+document-owned form reconstruction before dispatch. Multipart streaming,
+upload progress, service-worker body replay, and broader form conformance
+remain separate issue #40 gates. Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-
 safe eviction are implemented without changing the existing no-header

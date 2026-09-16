@@ -53,7 +53,7 @@ use super::resource_loader::{
     NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeFetchResponseStream,
     NativeNavigationMethod, NativeNavigationPolicyKind, NativeNavigationRequest, NativeRequestBody,
     NativeResource, NativeResourceLoader, NativeWebSocketTarget,
-    schedule_native_csp_report_deliveries,
+    schedule_native_csp_report_deliveries, validate_target_navigation_payload,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -1054,8 +1054,25 @@ pub(crate) struct NativeContentNavigation {
     pub(crate) href: String,
     pub(crate) submitter_node_index: Option<u32>,
     pub(crate) target: String,
+    pub(crate) method: NativeNavigationMethod,
+    pub(crate) body: Option<NativeRequestBody>,
+    pub(crate) body_content_type: Option<String>,
     pub(crate) location: bool,
     pub(crate) replace_history: bool,
+}
+
+fn content_navigation_json(navigation: &NativeContentNavigation) -> Value {
+    json!({
+        "node_index": navigation.node_index,
+        "href": navigation.href,
+        "submitter_node_index": navigation.submitter_node_index,
+        "target": navigation.target,
+        "method": navigation.method,
+        "body": navigation.body,
+        "body_content_type": navigation.body_content_type,
+        "location": navigation.location,
+        "replace_history": navigation.replace_history,
+    })
 }
 
 pub(crate) struct NativeContentMutation {
@@ -3219,6 +3236,12 @@ fn decode_popup_requests(
         } else {
             validate_url_text("content-process popup target", &popup.target)?;
         }
+        validate_target_navigation_payload(
+            popup.method,
+            popup.body.as_ref(),
+            popup.body_content_type.as_deref(),
+            "content-process popup navigation payload",
+        )?;
     }
     Ok(popups)
 }
@@ -3358,6 +3381,42 @@ fn decode_content_navigation(
             _ => raw_target.to_owned(),
         }
     };
+    let raw_method = value.get("method").and_then(Value::as_str).unwrap_or("GET");
+    let method = NativeNavigationMethod::from_fetch_method(raw_method).map_err(|_| {
+        NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned an unsupported navigation method".into(),
+        }
+    })?;
+    let body = match value.get("body") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            serde_json::from_value::<NativeRequestBody>(value.clone()).map_err(|_| {
+                NativeEngineError::Worker {
+                    operation: operation.into(),
+                    reason: "content process returned a malformed navigation body".into(),
+                }
+            })?,
+        ),
+    };
+    let body_content_type = match value.get("body_content_type") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: operation.into(),
+                    reason: "content process returned a malformed navigation content type".into(),
+                })?
+                .to_owned(),
+        ),
+    };
+    validate_target_navigation_payload(
+        method,
+        body.as_ref(),
+        body_content_type.as_deref(),
+        "content process navigation payload",
+    )?;
     let location = match value.get("location") {
         None => false,
         Some(value) => value.as_bool().ok_or_else(|| NativeEngineError::Worker {
@@ -3378,6 +3437,12 @@ fn decode_content_navigation(
             reason: "location navigation carried a DOM target".into(),
         });
     }
+    if location && method != NativeNavigationMethod::Get {
+        return Err(NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "location navigation carried a non-GET method".into(),
+        });
+    }
     if replace_history && !location {
         return Err(NativeEngineError::Worker {
             operation: operation.into(),
@@ -3389,6 +3454,9 @@ fn decode_content_navigation(
         href: href.to_owned(),
         submitter_node_index,
         target,
+        method,
+        body,
+        body_content_type,
         location,
         replace_history,
     })
@@ -3793,6 +3861,12 @@ fn decode_window_navigation_requests(
         if let Some(target_context_id) = request.target_context_id.as_deref() {
             validate_context_id(target_context_id)?;
         }
+        validate_target_navigation_payload(
+            request.method,
+            request.body.as_ref(),
+            request.body_content_type.as_deref(),
+            "content-process window navigation payload",
+        )?;
     }
     Ok(requests)
 }
@@ -4902,6 +4976,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             href: navigation.href,
                                             submitter_node_index: None,
                                             target: "_self".into(),
+                                            method: NativeNavigationMethod::Get,
+                                            body: None,
+                                            body_content_type: None,
                                             location: true,
                                             replace_history: navigation.replace_history,
                                         }
@@ -5081,14 +5158,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         "kind": "loaded",
                                         "id": id,
                                         "url": resource.url,
-                                        "navigation": navigation.as_ref().map(|navigation| json!({
-                                            "node_index": navigation.node_index,
-                                            "href": navigation.href,
-                                            "submitter_node_index": navigation.submitter_node_index,
-                                            "target": navigation.target,
-                                            "location": navigation.location,
-                                            "replace_history": navigation.replace_history,
-                                        })),
+                                        "navigation": navigation.as_ref().map(content_navigation_json),
                                         "dialogs": dialogs,
                                         "events": events.iter().map(|(node_index, kind)| json!({
                                             "node_index": node_index,
@@ -5649,14 +5719,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         "kind": event_kind_text(event.kind),
                                     })).collect::<Vec<_>>(),
                                     "dialogs": mutation.dialogs,
-                                    "navigation": mutation.navigation.as_ref().map(|navigation| json!({
-                                        "node_index": navigation.node_index,
-                                        "href": navigation.href,
-                                        "submitter_node_index": navigation.submitter_node_index,
-                                        "target": navigation.target,
-                                        "location": navigation.location,
-                                        "replace_history": navigation.replace_history,
-                                    })),
+                                    "navigation": mutation.navigation.as_ref().map(content_navigation_json),
                                 })
                             }
                             Err(error) => content_error_response(id, error),
@@ -5760,14 +5823,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
                             })).collect::<Vec<_>>(),
-                            "navigation": mutation.navigation.as_ref().map(|navigation| json!({
-                            "node_index": navigation.node_index,
-                            "href": navigation.href,
-                            "submitter_node_index": navigation.submitter_node_index,
-                            "target": navigation.target,
-                            "location": navigation.location,
-                            "replace_history": navigation.replace_history,
-                        })),
+                            "navigation": mutation.navigation.as_ref().map(content_navigation_json),
                         })
                     }
                     Err(error) => content_error_response(id, error),
@@ -6280,14 +6336,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
                             })).collect::<Vec<_>>(),
-                            "navigation": mutation.navigation.as_ref().map(|navigation| json!({
-                                "node_index": navigation.node_index,
-                                "href": navigation.href,
-                                "submitter_node_index": navigation.submitter_node_index,
-                                "target": navigation.target,
-                                "location": navigation.location,
-                                "replace_history": navigation.replace_history,
-                            })),
+                            "navigation": mutation.navigation.as_ref().map(content_navigation_json),
                         })
                     }
                     Err(error) => content_error_response(id, error),
@@ -6396,14 +6445,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
                             })).collect::<Vec<_>>(),
-                            "navigation": mutation.navigation.as_ref().map(|navigation| json!({
-                                "node_index": navigation.node_index,
-                                "href": navigation.href,
-                                "submitter_node_index": navigation.submitter_node_index,
-                                "target": navigation.target,
-                                "location": navigation.location,
-                                "replace_history": navigation.replace_history,
-                            })),
+                            "navigation": mutation.navigation.as_ref().map(content_navigation_json),
                         })
                     }
                     Err(error) => content_error_response(id, error),
@@ -6492,14 +6534,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
                             })).collect::<Vec<_>>(),
-                            "navigation": mutation.navigation.as_ref().map(|navigation| json!({
-                                "node_index": navigation.node_index,
-                                "href": navigation.href,
-                                "submitter_node_index": navigation.submitter_node_index,
-                                "target": navigation.target,
-                                "location": navigation.location,
-                                "replace_history": navigation.replace_history,
-                            })),
+                            "navigation": mutation.navigation.as_ref().map(content_navigation_json),
                         })
                     }
                     Err(error) => content_error_response(id, error),
@@ -8030,6 +8065,9 @@ fn mutate_click_with_event_preflight(
                             href: request.url,
                             submitter_node_index: Some(node_id.index()),
                             target: next.form_submission_target(form_id, Some(node_id))?,
+                            method: request.method,
+                            body: request.body,
+                            body_content_type: request.body_content_type,
                             location: false,
                             replace_history: false,
                         });
@@ -8834,6 +8872,9 @@ fn split_location_navigation(
                     href,
                     submitter_node_index: None,
                     target: "_self".into(),
+                    method: NativeNavigationMethod::Get,
+                    body: None,
+                    body_content_type: None,
                     location: true,
                     replace_history: replace,
                 });
@@ -9721,6 +9762,9 @@ async fn mutate_script_document(
                     href,
                     submitter_node_index: None,
                     target: "_self".into(),
+                    method: NativeNavigationMethod::Get,
+                    body: None,
+                    body_content_type: None,
                     location: false,
                     replace_history: false,
                 }),
@@ -9730,16 +9774,24 @@ async fn mutate_script_document(
                     submitter,
                     target,
                     ..
-                } => Ok(NativeContentNavigation {
-                    node_index,
-                    href: next
-                        .form_submission_request_with_submitter(form_id, &document_url, submitter)?
-                        .url,
-                    submitter_node_index: submitter.map(NativeNodeId::index),
-                    target,
-                    location: false,
-                    replace_history: false,
-                }),
+                } => {
+                    let request = next.form_submission_request_with_submitter(
+                        form_id,
+                        &document_url,
+                        submitter,
+                    )?;
+                    Ok(NativeContentNavigation {
+                        node_index,
+                        href: request.url,
+                        submitter_node_index: submitter.map(NativeNodeId::index),
+                        target,
+                        method: request.method,
+                        body: request.body,
+                        body_content_type: request.body_content_type,
+                        location: false,
+                        replace_history: false,
+                    })
+                }
                 ScriptNavigationTarget::Location {
                     href,
                     replace_history,
@@ -9748,6 +9800,9 @@ async fn mutate_script_document(
                     href,
                     submitter_node_index: None,
                     target: "_self".into(),
+                    method: NativeNavigationMethod::Get,
+                    body: None,
+                    body_content_type: None,
                     location: true,
                     replace_history,
                 }),

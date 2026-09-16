@@ -85,6 +85,10 @@ pub use raster::{
     NativeSurface,
 };
 pub use resource_loader::{NativeFetchResponse, NativeResource, NativeResourceLoader};
+pub(crate) use resource_loader::{
+    NativeNavigationMethod, NativeNavigationRequest, NativeRequestBody,
+    validate_target_navigation_payload,
+};
 pub use runtime::{
     MAX_NATIVE_MICROTASKS, MAX_NATIVE_RUNTIME_TRACE, NativeCancellationToken, NativeMicrotask,
     NativeRuntime, NativeRuntimeState, NativeRuntimeTraceEvent, NativeRuntimeTraceKind,

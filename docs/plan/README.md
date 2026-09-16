@@ -28,8 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through completed
-`native-engine-browser-415`, following completed
-`native-engine-browser-414` locally. Native is now the default runtime for
+`native-engine-browser-416`, following completed
+`native-engine-browser-415` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -64,9 +64,18 @@ HTTP(S) GET form submissions now preserve submitter `formtarget`/form
 `target`, route `_blank` and named targets through the browser-owned target
 effect queue, and route nested `_parent`/`_top` submissions to the correct
 ancestor frame. Ancestor navigation promotes the navigated frame and removes
-the replaced child selection; non-current POST forms fail with a typed error
-instead of being downgraded to GET. Broader HTML target semantics and POST
-body transfer remain issue #40 gates.
+the replaced child selection. The following 416 slice carries the original
+POST payload through those same effects instead of rejecting or downgrading
+it; broader HTML target semantics remain issue #40 gates.
+
+The completed form POST target payload slice is
+[native-engine-browser-416](tasks/native-engine-browser-416.md): method, body,
+and content type are carried through local and content-process frame,
+popup, and named-target navigation effects. New POST targets must avoid a
+duplicate GET, and the parent must validate the transferred payload against
+the document-owned form state before dispatch. Multipart streaming, upload
+progress, service-worker body replay, and broader form conformance remain
+separate issue #40 gates.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI

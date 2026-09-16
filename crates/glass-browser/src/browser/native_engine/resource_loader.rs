@@ -161,7 +161,8 @@ pub struct NativeResource {
     pub body: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub(crate) enum NativeNavigationMethod {
     Get,
     Head,
@@ -170,6 +171,12 @@ pub(crate) enum NativeNavigationMethod {
     Patch,
     Delete,
     Options,
+}
+
+impl Default for NativeNavigationMethod {
+    fn default() -> Self {
+        Self::Get
+    }
 }
 
 impl NativeNavigationMethod {
@@ -270,7 +277,8 @@ impl NativeNavigationRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub(crate) enum NativeRequestBody {
     Text(String),
     Bytes(Vec<u8>),
@@ -283,6 +291,54 @@ impl NativeRequestBody {
             Self::Bytes(body) => body.len(),
         }
     }
+}
+
+pub(crate) fn validate_target_navigation_payload(
+    method: NativeNavigationMethod,
+    body: Option<&NativeRequestBody>,
+    body_content_type: Option<&str>,
+    operation: &str,
+) -> Result<(), NativeEngineError> {
+    if method != NativeNavigationMethod::Get && method != NativeNavigationMethod::Post {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: format!("{operation} supports only GET and POST form navigations"),
+        });
+    }
+    if method == NativeNavigationMethod::Get {
+        if body.is_some() || body_content_type.is_some() {
+            return Err(NativeEngineError::invalid(
+                operation,
+                "GET target navigation must not carry a request body",
+            ));
+        }
+        return Ok(());
+    }
+    let Some(body) = body else {
+        return Err(NativeEngineError::invalid(
+            operation,
+            "POST target navigation must carry a request body",
+        ));
+    };
+    if body.len() > MAX_NATIVE_FORM_BODY_BYTES {
+        return Err(NativeEngineError::limit(
+            "target navigation request body",
+            MAX_NATIVE_FORM_BODY_BYTES,
+            body.len(),
+        ));
+    }
+    let Some(content_type) = body_content_type else {
+        return Err(NativeEngineError::invalid(
+            operation,
+            "POST target navigation must carry a content type",
+        ));
+    };
+    if content_type.is_empty() || content_type.len() > MAX_NATIVE_FORM_BODY_BYTES {
+        return Err(NativeEngineError::invalid(
+            operation,
+            "POST target navigation content type must be non-empty and bounded",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) struct NativeFetchRequest<'a> {

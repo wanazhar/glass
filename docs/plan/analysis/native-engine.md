@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-421`, following
+expansion checkpoint is completed `native-engine-browser-422`, following
 completed `native-engine-browser-420`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
@@ -39,6 +39,11 @@ asynchronous XMLHttpRequests select the existing bounded Response JSON decoder
 and expose parsed values through `response` while retaining an empty text
 projection. Synchronous XHR, XML documents, streaming JSON, and complete XHR
 Web IDL parity remain open.
+Slice 422 completes the XHR ProgressEvent identity follow-up: page and worker
+upload lifecycle notifications use each realm's ProgressEvent constructor while
+preserving bounded progress fields, target identity, and terminal ordering.
+Socket-level progress, complete event/Web IDL parity, and streaming upload
+remain open.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

@@ -6941,6 +6941,7 @@ async fn native_content_process_worker_xhr_upload_reports_buffered_progress() {
   const events = [];
   const record = event => events.push([
     event.type,
+    event instanceof ProgressEvent,
     event.target === xhr.upload,
     event.currentTarget === xhr.upload,
     event.lengthComputable,
@@ -6983,10 +6984,10 @@ async fn native_content_process_worker_xhr_upload_reports_buffered_progress() {
         serde_json::json!([{
             "uploadIdentity": true,
             "events": [
-                ["loadstart", true, true, true, 0, 4],
-                ["progress", true, true, true, 4, 4],
-                ["load", true, true, true, 4, 4],
-                ["loadend", true, true, true, 4, 4],
+                ["loadstart", true, true, true, true, 0, 4],
+                ["progress", true, true, true, true, 4, 4],
+                ["load", true, true, true, true, 4, 4],
+                ["loadend", true, true, true, true, 4, 4],
             ],
             "response": "worker-upload-response",
         }])
@@ -53659,6 +53660,7 @@ async fn native_content_process_xhr_upload_reports_buffered_progress() {
                     const xhrEvents = [];
                     const record = event => uploadEvents.push([
                         event.type,
+                        event instanceof ProgressEvent,
                         event.target === xhr.upload,
                         event.currentTarget === xhr.upload,
                         event.lengthComputable,
@@ -53691,10 +53693,10 @@ async fn native_content_process_xhr_upload_reports_buffered_progress() {
         serde_json::json!({
             "uploadIdentity": true,
             "uploadEvents": [
-                ["loadstart", true, true, true, 0, 4],
-                ["progress", true, true, true, 4, 4],
-                ["load", true, true, true, 4, 4],
-                ["loadend", true, true, true, 4, 4],
+                ["loadstart", true, true, true, true, 0, 4],
+                ["progress", true, true, true, true, 4, 4],
+                ["load", true, true, true, true, 4, 4],
+                ["loadend", true, true, true, true, 4, 4],
             ],
             "xhrEvents": ["load"],
             "response": "upload-response",

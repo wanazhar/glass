@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-435`, following completed
 `native-engine-browser-434`, following completed
 `native-engine-browser-433`, following completed
 `native-engine-browser-432`, following completed
@@ -48,6 +49,13 @@ state after the request completes. Existing buffered controlled-request
 replay remains available. Page-originated controlled streaming interception,
 fixture-owned bodyful requests, synchronous XHR, and complete XHR/Streams Web
 IDL parity remain issue #40 gates.
+
+Slice 435 admits bounded buffered body-bearing Fetch requests for registered
+fixture owners. The fixture response remains deterministic and does not
+pretend to inspect or echo the request body; streaming fixture bodies still
+fail closed until a fixture-side body consumer is defined. Page-originated
+controlled streaming interception, synchronous XHR, and complete
+XHR/Streams Web IDL parity remain issue #40 gates.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

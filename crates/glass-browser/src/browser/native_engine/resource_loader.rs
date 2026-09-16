@@ -4008,11 +4008,6 @@ impl NativeResourceLoader {
                     reason: "native fetch requires an HTTP(S) or fixture document owner".into(),
                 });
             }
-            if !method.is_bodyless() {
-                return Err(NativeEngineError::UnsupportedUrl {
-                    reason: "fixture fetch supports only bodyless GET and HEAD requests".into(),
-                });
-            }
             if request_body.is_some() {
                 return Err(NativeEngineError::UnsupportedUrl {
                     reason: "fixture fetch does not support streaming request bodies".into(),

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-434`, following
+expansion checkpoint is completed `native-engine-browser-435`, following
+completed `native-engine-browser-434`, following
 completed `native-engine-browser-433`, following
 completed `native-engine-browser-432`, following
 completed `native-engine-browser-431`, following
@@ -127,6 +128,13 @@ merge, and non-replayable redirects. Existing buffered controlled-request
 replay remains intact; page-originated controlled streaming interception,
 fixture-owned bodyful requests, synchronous XHR, and complete XHR/Streams Web
 IDL parity remain separate issue #40 gates.
+Slice 435 closes buffered body admission for registered fixture owners.
+Body-bearing methods now reach the deterministic fixture response path after
+the existing bounded body validation, while a streaming request body remains
+explicitly rejected because fixtures have no network-side body consumer. This
+adds useful Fetch request semantics without fabricating server behavior;
+page-originated controlled streaming interception, synchronous XHR, and
+complete XHR/Streams Web IDL parity remain separate issue #40 gates.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

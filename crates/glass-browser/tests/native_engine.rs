@@ -2343,6 +2343,43 @@ async fn native_local_worker_fetch_honors_abort_signal() {
 }
 
 #[tokio::test]
+async fn native_local_worker_fetch_accepts_buffered_fixture_request_bodies() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-body.test/page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-body.test/script",
+            "(async () => { const response = await fetch('/response', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: 'fixture-body' }); postMessage({ status: response.status, text: await response.text() }); })().catch(error => postMessage({ kind: 'error', name: error.name, message: error.message }));",
+        )
+        .unwrap()
+        .with_fixture("fixture://worker-body.test/response", "fixture response")
+        .unwrap()
+        .with_initial_url("fixture://worker-body.test/page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.worker = new Worker('fixture://worker-body.test/script'); worker.onmessage = event => workerMessages.push(event.data); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([{
+            "status": 200,
+            "text": "fixture response",
+        }])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_worker_fetch_streams_fixture_response_body() {
     let response_body = format!("{}💩-tail", "x".repeat(8190));
     let expected_length = response_body.len();

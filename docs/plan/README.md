@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-435`, following completed
 `native-engine-browser-434`, following completed
 `native-engine-browser-433`, following completed
 `native-engine-browser-432`, following completed
@@ -230,6 +231,15 @@ existing buffered controlled-request replay remains covered; page-originated
 controlled streaming interception, fixture-owned bodyful requests,
 synchronous XHR, and complete XHR/Streams Web IDL parity remain issue #40
 gates.
+
+The completed fixture buffered-body slice is
+[native-engine-browser-435](tasks/native-engine-browser-435.md): registered
+fixture owners now accept bounded buffered POST/other body-bearing Fetch
+requests while retaining the explicit fail-closed behavior for streaming
+fixture bodies. This keeps deterministic fixtures useful for request-body
+semantics without pretending they are a second network server; page-originated
+controlled streaming interception, synchronous XHR, and complete
+XHR/Streams Web IDL parity remain issue #40 gates.
 
 The completed page XHR reopen-cancellation slice is
 [native-engine-browser-429](tasks/native-engine-browser-429.md): reopening a

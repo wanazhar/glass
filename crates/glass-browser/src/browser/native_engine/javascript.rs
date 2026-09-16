@@ -1060,6 +1060,7 @@ enum NativeWorkerDispatch<'a> {
     WebSocket {
         socket_id: u32,
         payload: &'a serde_json::Value,
+        csp_violations: &'a [NativeCspViolation],
     },
     EventSource {
         source_id: u32,
@@ -1281,12 +1282,14 @@ impl NativeDedicatedWorker {
         worker_id: u32,
         socket_id: u32,
         event: &serde_json::Value,
+        csp_violations: &[NativeCspViolation],
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         self.evaluate_turn_with_event(
             worker_id,
             NativeWorkerDispatch::WebSocket {
                 socket_id,
                 payload: event,
+                csp_violations,
             },
         )
     }
@@ -2166,12 +2169,14 @@ impl NativeWorkerRegistry {
         worker_id: u32,
         socket_id: u32,
         event: &serde_json::Value,
+        csp_violations: &[NativeCspViolation],
         loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
         let Some(worker) = self.workers.get(&worker_id) else {
             return Ok(());
         };
-        let evaluation = worker.evaluate_websocket_event(worker_id, socket_id, event);
+        let evaluation =
+            worker.evaluate_websocket_event(worker_id, socket_id, event, csp_violations);
         match evaluation {
             Ok(evaluation) => {
                 self.collect_worker_evaluation(worker_id, evaluation, loader)
@@ -9435,12 +9440,16 @@ impl NativeJavaScriptRuntime {
         &self,
         socket_id: u32,
         event: &serde_json::Value,
+        csp_violations: &[NativeCspViolation],
         document: &NativeDocument,
         document_url: &str,
         origin: &NativeOrigin,
         viewport: Viewport,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        let page_events = NativePageEventBatch::default();
+        let page_events = NativePageEventBatch {
+            csp_violations: csp_violations.to_vec(),
+            ..NativePageEventBatch::default()
+        };
         self.evaluate_with_page_events_and_dispatch(
             "undefined;",
             document,
@@ -13785,7 +13794,12 @@ fn dispatch_worker_event(
             )?;
             true
         }
-        NativeWorkerDispatch::WebSocket { socket_id, payload } => {
+        NativeWorkerDispatch::WebSocket {
+            socket_id,
+            payload,
+            csp_violations,
+        } => {
+            dispatch_worker_csp_violations(&ctx, csp_violations)?;
             dispatch_worker_resolver(
                 &ctx,
                 "__glassDispatchWorkerWebSocketEvent",

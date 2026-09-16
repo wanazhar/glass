@@ -1,9 +1,20 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-401` slice. The native runtime is now the primary
+`native-engine-browser-402` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 402 closes the WebSocket report-only CSP owner boundary. Page and
+dedicated-worker WebSocket `connect-src` checks compute bounded structured
+records alongside the existing enforced decision, carry them over the
+asynchronous connection channel, and dispatch them before the first open or
+handshake-error observation. The actual `ws`/`wss` blocked URI is retained
+while the normalized HTTP(S) policy URL is accepted for source matching;
+report-only records never authorize, block, or duplicate a connection.
+Service Worker policy-container propagation, dynamic policy mutation,
+strict-dynamic trust, network report delivery, and the complete CSP
+source-expression grammar remain separate issue #40 gates.
 
 Slice 401 preserves successful HTTP(S) worker-script response CSP under the
 resolved worker URL. Dedicated and shared worker EventSource, Fetch, and
@@ -11,8 +22,8 @@ WebSocket owners now see that worker policy, while page `worker-src`
 authorization remains separate. A later worker load replaces stale policy
 state; report-only records remain bounded and never authorize or block a
 request. Service Worker policy-container propagation, dynamic policy mutation,
-strict-dynamic trust, network report delivery, WebSocket report delivery, and
-the complete CSP source-expression grammar remain separate issue #40 gates.
+strict-dynamic trust, network report delivery, and the complete CSP
+source-expression grammar remain separate issue #40 gates.
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
@@ -23,8 +34,8 @@ duplicate unchanged-node records while rechecking enforcement and pruning
 detached entries. Records remain bounded, structured, validated, and
 report-only: they never authorize or block a resource. Network `report-uri`/
 `report-to` delivery, strict-dynamic trust propagation, dynamic policy
-mutation, WebSocket reporting, and the complete CSP source-expression grammar
-remain separate issue #40 gates.
+mutation, and the complete CSP source-expression grammar remain separate issue
+#40 gates.
 
 Slice 399 adds bounded report-only CSP observation to the native HTTP(S)
 document path. Response `Content-Security-Policy-Report-Only` declarations

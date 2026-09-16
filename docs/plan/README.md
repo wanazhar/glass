@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-403` locally. Native is now the default runtime for
+`native-engine-browser-404` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -527,7 +527,21 @@ document; secure documents reject insecure endpoints, report requests carry no
 page cookies or redirects, and asynchronous delivery is capped so endpoint
 failures cannot change the protected operation. Service Worker
 policy-container propagation, dynamic policy mutation, strict-dynamic trust,
-and the complete CSP source grammar remain issue #40 promotion gates.
+and broader CSP conformance beyond the bounded source matcher remain issue #40
+promotion gates.
+
+The completed CSP source-expression matching slice is
+[native-engine-browser-404](tasks/native-engine-browser-404.md): the shared
+native matcher now parses scheme sources and host sources with optional
+schemes, exact or wildcard hosts, default/explicit/wildcard ports, and
+percent-decoded slash-segment paths. It applies CSP secure scheme upgrades,
+safe `'self'` upgrades, schemeless-host inheritance, and singleton-only
+`'none'` semantics while rejecting malformed credentials, hosts, ports,
+paths, and non-ASCII source syntax without widening access. Enforced and
+report-only page/worker resources, frames, EventSource, and WebSocket policy
+checks use the same owner. Service Worker policy-container propagation,
+dynamic policy mutation, strict-dynamic trust, redirect-aware path handling,
+and broader CSP conformance remain issue #40 promotion gates.
 
 The completed WebSocket report-delivery slice is
 [native-engine-browser-402](tasks/native-engine-browser-402.md): page and

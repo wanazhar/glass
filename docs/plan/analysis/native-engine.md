@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is the completed `native-engine-browser-403`, with
+expansion checkpoint is the completed `native-engine-browser-404`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -500,8 +500,20 @@ Secure-document mixed-content rejection, no-cookie/no-redirect reporting,
 and a process-wide concurrency cap keep delivery isolated from the protected
 operation. The contract and evidence are recorded in
 `docs/plan/tasks/native-engine-browser-403.md`. Remaining CSP promotion gates
-are dynamic policy mutation, strict-dynamic trust, and the complete
-source-expression grammar. The completed 234 slice carries
+are dynamic policy mutation, strict-dynamic trust, and broader CSP conformance
+beyond the bounded source-expression matcher. The completed
+`native-engine-browser-404` slice replaces the former exact-origin shortcut
+with bounded scheme and host-source parsing: secure scheme upgrades,
+schemeless host inheritance, exact and wildcard hosts, default/explicit/
+wildcard ports, and percent-decoded slash-segment paths are shared by
+enforced and report-only page/worker resources, frames, EventSource, and
+WebSocket policy checks. Malformed credentials, hosts, ports, paths, and
+non-ASCII source syntax fail closed, and mixed `'none'` lists follow the
+singleton-only rule. The contract and evidence are recorded in
+`docs/plan/tasks/native-engine-browser-404.md`. Remaining CSP promotion gates
+are dynamic policy mutation, strict-dynamic trust, Service Worker
+policy-container propagation, redirect-aware path handling, and broader
+conformance beyond this bounded grammar. The completed 234 slice carries
 bounded
 root-scroll sticky positioning through
 shared flow,

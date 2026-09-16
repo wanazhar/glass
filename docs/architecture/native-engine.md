@@ -1,9 +1,21 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-403` slice. The native runtime is now the primary
+`native-engine-browser-404` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 404 closes the bounded CSP source-expression matcher used by the native
+network and frame owners. Scheme sources honor the CSP secure-upgrade
+relation; host sources now parse optional schemes, exact or wildcard hosts,
+default/explicit/wildcard ports, and slash-segment paths with percent-decoded
+comparison. Schemeless hosts inherit the protected document scheme, `'self'`
+keeps its safe same-origin upgrade rules, and malformed credentials, hosts,
+ports, paths, and non-ASCII source syntax fail closed. The shared decision is
+used by enforced and report-only page/worker resource checks, frames,
+EventSource, and WebSocket policy matching. Strict-dynamic trust, dynamic
+policy mutation, Service Worker policy-container propagation, redirect-aware
+path handling, and broader CSP conformance remain separate issue #40 gates.
 
 Slice 403 closes report-only CSP network delivery for the current native
 HTTP(S) owners. `report-uri` declarations produce bounded legacy
@@ -15,8 +27,8 @@ rejected, redirects and cookies are not used, and delivery is asynchronous
 behind a bounded process-wide concurrency gate. Endpoint failures never alter
 the protected request or surface report payloads in logs. Service Worker
 policy-container propagation, dynamic policy mutation, strict-dynamic trust,
-and the complete CSP source-expression grammar remain separate issue #40
-gates.
+and broader CSP conformance beyond the bounded source matcher remain separate
+issue #40 gates.
 
 Slice 402 closes the WebSocket report-only CSP owner boundary. Page and
 dedicated-worker WebSocket `connect-src` checks compute bounded structured

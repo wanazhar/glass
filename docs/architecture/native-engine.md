@@ -1,7 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
-`native-engine-browser-431`, following completed
+`native-engine-browser-432`, following completed
+`native-engine-browser-431`,
 `native-engine-browser-423`,
 `native-engine-browser-422` and `native-engine-browser-420`. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
@@ -17,9 +18,19 @@ response projection. Slice 431 extends the same worker stream owner to the
 inline `NativeEngine` path for registered fixture responses: a bounded local
 transport is demand-driven in 8 KiB parts and pumped at each page boundary,
 so worker Fetch/clone readers no longer silently switch to a whole-response
-buffer in that owner. HTTP(S) worker streams remain content-process-owned;
-streaming uploads, synchronous XHR, and complete XHR/Streams Web IDL parity
-remain issue #40 gates.
+buffer in that owner. HTTP(S) worker streams remain content-process-owned.
+Slice 432 adds demand-driven page Fetch request-body streaming for HTTP(S): one
+bounded body chunk or terminal signal crosses the content-process boundary only
+when the HTTP client asks for it, and page work emitted by an upload `pull()`
+callback is committed through the ordinary event path. 301/302/303 redirects
+may switch to a bodyless GET; 307/308 redirects reject replay of the one-shot
+body. Fixture-owned bodyful requests remain explicitly unsupported, and worker
+upload and controlled Service Worker upload bridges remain separate issue #40
+gates; synchronous XHR and complete XHR/Streams Web IDL parity also remain open.
+
+At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
+XHR/Streams Web IDL parity remained separate gates; page upload streaming is
+now covered by slice 432.
 
 Slice 413 closes report-only navigation preflight across the content-process
 boundary. The child remains the owner of its live HTTP(S) navigation policy

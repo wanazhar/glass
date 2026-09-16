@@ -3948,7 +3948,11 @@ impl NativeDocument {
                 | NativeScriptCommand::EventSourceOpen { .. }
                 | NativeScriptCommand::EventSourceClose { .. }
                 | NativeScriptCommand::FetchStreamRead { .. }
-                | NativeScriptCommand::FetchStreamCancel { .. } => {}
+                | NativeScriptCommand::FetchStreamCancel { .. }
+                | NativeScriptCommand::FetchUploadChunk { .. }
+                | NativeScriptCommand::FetchUploadEnd { .. }
+                | NativeScriptCommand::FetchUploadError { .. }
+                | NativeScriptCommand::FetchUploadCancel { .. } => {}
                 NativeScriptCommand::Navigate { .. } => {
                     if !allow_script_navigation {
                         return Err(NativeEngineError::TargetNotActionable {

@@ -1680,6 +1680,26 @@ impl NativeServiceWorkerRegistry {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fetch_is_controlled(
+        &self,
+        document_url: &str,
+        href: &str,
+        destination: &str,
+    ) -> Result<bool, NativeEngineError> {
+        let owner = parse_network_url("service worker fetch owner URL", document_url)?;
+        let target =
+            resolve_same_origin_or_cross_origin_url(&owner, "service worker fetch URL", href)?;
+        let scope = if destination == "document" {
+            self.matching_scope(&target)?
+        } else if self.current_client_is_controlled(document_url) {
+            self.current_client_scope.clone()
+        } else {
+            None
+        };
+        Ok(scope.is_some())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn intercept_fetch(
         &mut self,
         loader: &mut NativeResourceLoader,
@@ -2222,6 +2242,7 @@ async fn resolve_service_worker_fetch_command(
         redirect,
         cache,
         timeout_ms,
+        upload_stream_id,
     } = command
     else {
         return Ok(false);
@@ -2236,6 +2257,12 @@ async fn resolve_service_worker_fetch_command(
         return Err(NativeEngineError::Worker {
             operation: "service worker fetch event".into(),
             reason: "service worker fetch command owner is invalid".into(),
+        });
+    }
+    if upload_stream_id.is_some() {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "streaming request bodies are not yet supported by the Service Worker bridge"
+                .into(),
         });
     }
     let request_body = match body_base64 {

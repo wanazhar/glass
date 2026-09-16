@@ -2324,6 +2324,38 @@ impl NativeResourceLoader {
         std::mem::take(&mut self.csp_violations)
     }
 
+    /// Merge state produced by an asynchronously-owned fetch back into the
+    /// live loader. The request task starts from a snapshot so the content
+    /// process can continue servicing upload demand; only fetch/preflight
+    /// caches and observable cookie/CSP side effects cross that boundary.
+    pub(crate) fn merge_fetch_task_state(
+        &mut self,
+        mut task_loader: NativeResourceLoader,
+    ) -> Result<(), NativeEngineError> {
+        self.network
+            .fetch_cache
+            .extend(std::mem::take(&mut task_loader.network.fetch_cache));
+        self.network
+            .preflight_cache
+            .extend(std::mem::take(&mut task_loader.network.preflight_cache));
+        let cookie_changes = task_loader.take_cookie_changes();
+        self.apply_cookie_changes(&cookie_changes)?;
+        let csp_violations = task_loader.take_csp_violations();
+        let next_len = self
+            .csp_violations
+            .len()
+            .saturating_add(csp_violations.len());
+        if next_len > MAX_NATIVE_CSP_VIOLATIONS {
+            return Err(NativeEngineError::limit(
+                "native CSP violations",
+                MAX_NATIVE_CSP_VIOLATIONS,
+                next_len,
+            ));
+        }
+        self.csp_violations.extend(csp_violations);
+        Ok(())
+    }
+
     fn csp_violation_record(
         document_url: &Url,
         blocked_uri: impl Into<String>,
@@ -3870,6 +3902,20 @@ impl NativeResourceLoader {
         &mut self,
         request: NativeFetchRequest<'_>,
     ) -> Result<NativeFetchResponseStream, NativeEngineError> {
+        self.open_fetch_response_stream_with_body_async(request, None)
+            .await
+    }
+
+    /// Open a fetch using a body that is already wired to a bounded native
+    /// request stream. The policy and redirect machinery remains shared with
+    /// buffered requests; only the first HTTP request may consume the stream.
+    /// A 301/302/303 can switch to GET, but a 307/308 cannot replay a one-shot
+    /// JavaScript ReadableStream and therefore fails explicitly.
+    pub(crate) async fn open_fetch_response_stream_with_body_async(
+        &mut self,
+        request: NativeFetchRequest<'_>,
+        request_body: Option<reqwest::Body>,
+    ) -> Result<NativeFetchResponseStream, NativeEngineError> {
         let NativeFetchRequest {
             document_url,
             href,
@@ -3884,6 +3930,7 @@ impl NativeResourceLoader {
             timeout,
             max_response_bytes,
         } = request;
+        let request_body = request_body;
         let max_response_bytes = max_response_bytes.unwrap_or(self.max_document_bytes);
         if max_response_bytes == 0 || max_response_bytes > MAX_NATIVE_DOWNLOAD_BYTES {
             return Err(NativeEngineError::invalid(
@@ -3901,7 +3948,10 @@ impl NativeResourceLoader {
             ));
         }
         match method {
-            method if method.is_bodyless() && (body.is_some() || content_type.is_some()) => {
+            method
+                if method.is_bodyless()
+                    && (body.is_some() || content_type.is_some() || request_body.is_some()) =>
+            {
                 return Err(NativeEngineError::invalid(
                     format!("{} fetch body", method.as_str()),
                     "must be absent",
@@ -3943,6 +3993,11 @@ impl NativeResourceLoader {
             if !method.is_bodyless() {
                 return Err(NativeEngineError::UnsupportedUrl {
                     reason: "fixture fetch supports only bodyless GET and HEAD requests".into(),
+                });
+            }
+            if request_body.is_some() {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "fixture fetch does not support streaming request bodies".into(),
                 });
             }
             let target_url = Url::parse(href)
@@ -4105,6 +4160,8 @@ impl NativeResourceLoader {
         let mut current_url = target_url;
         let mut current_method = method;
         let mut current_body = body;
+        let mut current_request_body = request_body;
+        let mut streaming_request_body_sent = current_request_body.is_some();
         let mut current_content_type = content_type;
         let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
         let mut redirects = 0;
@@ -4152,7 +4209,9 @@ impl NativeResourceLoader {
                     .request(current_method.reqwest_method(), request_url)
                     .header(reqwest::header::ACCEPT, "*/*"),
             );
-            if let Some(body) = current_body.as_ref() {
+            if let Some(body) = current_request_body.take() {
+                request = request.body(body);
+            } else if let Some(body) = current_body.as_ref() {
                 request = match body {
                     NativeRequestBody::Text(body) => request.body(body.clone()),
                     NativeRequestBody::Bytes(body) => request.body(body.clone()),
@@ -4308,7 +4367,15 @@ impl NativeResourceLoader {
             {
                 current_method = NativeNavigationMethod::Get;
                 current_body = None;
+                current_request_body = None;
+                streaming_request_body_sent = false;
                 current_content_type = None;
+            } else if streaming_request_body_sent {
+                return Err(NativeEngineError::Network {
+                    operation: "fetch redirect".into(),
+                    reason: "a streaming request body cannot be replayed across this redirect"
+                        .into(),
+                });
             }
             current_url = next_url;
             redirects += 1;

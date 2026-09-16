@@ -4598,6 +4598,46 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 &resource_events,
                                 &resource.csp_violations,
                             );
+                            let initial_dynamic_sources = page_scripts
+                                .as_mut()
+                                .map(|page_scripts| {
+                                    std::mem::take(&mut page_scripts.pending_script_sources)
+                                })
+                                .unwrap_or_default();
+                            if !initial_dynamic_sources.is_empty() {
+                                let dynamic_result =
+                                    match (script_runtime.as_ref(), resource_loader.as_mut()) {
+                                        (Some(runtime), Some(loader)) => {
+                                            execute_dynamic_page_scripts_with_loader(
+                                                &mut parsed,
+                                                runtime,
+                                                initial_dynamic_sources,
+                                                loader,
+                                                &resource.url,
+                                                &resource.origin,
+                                                loaded_viewport,
+                                            )
+                                            .await
+                                        }
+                                        _ => Err(NativeEngineError::Worker {
+                                            operation: "initial dynamic page script".into(),
+                                            reason:
+                                                "content process script loader state is unavailable"
+                                                    .into(),
+                                        }),
+                                    };
+                                match dynamic_result {
+                                    Ok(dynamic_result) => {
+                                        if let Ok(page_scripts) = page_scripts.as_mut() {
+                                            merge_dynamic_page_script_result(
+                                                page_scripts,
+                                                dynamic_result,
+                                            )?;
+                                        }
+                                    }
+                                    Err(error) => page_scripts = Err(error),
+                                }
+                            }
                             let mut post_script_csp_result = NativePageScriptResult::default();
                             let mut post_script_csp_events = Vec::new();
                             let mut post_script_csp_history = Vec::new();
@@ -7175,6 +7215,7 @@ async fn load_page_script_source_list(
                 timing,
                 node_index,
                 nonce,
+                parser_inserted: _,
             } => {
                 if !loader.allows_inline_script(document_url, &source, nonce.as_deref())? {
                     resource_events.push((node_index, NativeEventKind::Error));
@@ -7193,6 +7234,7 @@ async fn load_page_script_source_list(
                 timing,
                 node_index,
                 nonce,
+                parser_inserted: _,
             } => {
                 if !loader.allows_inline_script(document_url, &source, nonce.as_deref())? {
                     resource_events.push((node_index, NativeEventKind::Error));
@@ -7230,9 +7272,17 @@ async fn load_page_script_source_list(
                 href,
                 timing,
                 node_index,
+                nonce,
+                parser_inserted,
             } => {
                 match loader
-                    .load_script_async(document_url, &href, MAX_NATIVE_SCRIPT_BYTES)
+                    .load_script_async_with_metadata(
+                        document_url,
+                        &href,
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        parser_inserted,
+                        nonce.as_deref(),
+                    )
                     .await
                 {
                     Ok(resource) => match resource {
@@ -7255,9 +7305,17 @@ async fn load_page_script_source_list(
                 href,
                 timing,
                 node_index,
+                nonce,
+                parser_inserted,
             } => {
                 match loader
-                    .load_script_async(document_url, &href, MAX_NATIVE_SCRIPT_BYTES)
+                    .load_script_async_with_metadata(
+                        document_url,
+                        &href,
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        parser_inserted,
+                        nonce.as_deref(),
+                    )
                     .await
                 {
                     Ok(resource) => match resource {

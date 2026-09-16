@@ -925,6 +925,25 @@ impl NativeCspDirectives {
         csp_sources_allow(sources.map(Vec::as_slice), document_url, resource_url)
     }
 
+    fn allows_script(
+        &self,
+        document_url: &Url,
+        resource_url: &Url,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+    ) -> bool {
+        let sources = self
+            .sources_for(NativeSubresourceKind::Script)
+            .or(self.default_sources.as_ref());
+        csp_script_sources_allow(
+            sources.map(Vec::as_slice),
+            document_url,
+            resource_url,
+            parser_inserted,
+            nonce,
+        )
+    }
+
     fn directive_for(&self, kind: NativeSubresourceKind) -> Option<(&'static str, &Vec<String>)> {
         let specific = match kind {
             NativeSubresourceKind::Style => self
@@ -1086,6 +1105,10 @@ impl NativeCspDirectives {
                 kind,
                 NativeInlineCspKind::ScriptAttribute | NativeInlineCspKind::StyleAttribute
             ),
+            matches!(
+                kind,
+                NativeInlineCspKind::ScriptElement | NativeInlineCspKind::ScriptAttribute
+            ),
         )
     }
 }
@@ -1095,6 +1118,18 @@ impl NativeCspPolicy {
         self.policies
             .iter()
             .all(|policy| policy.allows(kind, document_url, resource_url))
+    }
+
+    fn allows_script(
+        &self,
+        document_url: &Url,
+        resource_url: &Url,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+    ) -> bool {
+        self.policies
+            .iter()
+            .all(|policy| policy.allows_script(document_url, resource_url, parser_inserted, nonce))
     }
 
     fn allows_inline(&self, kind: NativeInlineCspKind, source: &str, nonce: Option<&str>) -> bool {
@@ -1122,13 +1157,24 @@ impl NativeCspPolicy {
         kind: NativeSubresourceKind,
         document_url: &Url,
         resource_url: &Url,
+        parser_inserted: bool,
+        nonce: Option<&str>,
     ) -> Vec<(&NativeCspDeclaration, &'static str)> {
         self.report_only_policies
             .iter()
             .filter_map(|declaration| {
                 let (directive, sources) = declaration.directives.directive_for(kind)?;
-                (!csp_sources_allow(Some(sources.as_slice()), document_url, resource_url))
-                    .then_some((declaration, directive))
+                let allowed = if kind == NativeSubresourceKind::Script {
+                    declaration.directives.allows_script(
+                        document_url,
+                        resource_url,
+                        parser_inserted,
+                        nonce,
+                    )
+                } else {
+                    csp_sources_allow(Some(sources.as_slice()), document_url, resource_url)
+                };
+                (!allowed).then_some((declaration, directive))
             })
             .collect()
     }
@@ -1170,6 +1216,10 @@ impl NativeCspPolicy {
                     matches!(
                         kind,
                         NativeInlineCspKind::ScriptAttribute | NativeInlineCspKind::StyleAttribute
+                    ),
+                    matches!(
+                        kind,
+                        NativeInlineCspKind::ScriptElement | NativeInlineCspKind::ScriptAttribute
                     ),
                 ))
                 .then_some((declaration, directive))
@@ -1234,7 +1284,7 @@ impl NativeInlineScriptPolicy {
             else {
                 continue;
             };
-            if inline_csp_sources_allow(Some(sources.as_slice()), source, nonce, false) {
+            if inline_csp_sources_allow(Some(sources.as_slice()), source, nonce, false, true) {
                 continue;
             }
             if violations.len() >= MAX_NATIVE_CSP_VIOLATIONS {
@@ -1304,6 +1354,32 @@ pub(crate) fn csp_sources_allow(
         }
     }
     false
+}
+
+fn csp_script_sources_allow(
+    sources: Option<&[String]>,
+    document_url: &Url,
+    resource_url: &Url,
+    parser_inserted: bool,
+    nonce: Option<&str>,
+) -> bool {
+    let Some(sources) = sources else {
+        return true;
+    };
+    if nonce.is_some_and(|nonce| {
+        sources
+            .iter()
+            .any(|candidate| csp_nonce_matches(candidate, nonce))
+    }) {
+        return true;
+    }
+    if sources
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case("'strict-dynamic'"))
+    {
+        return !parser_inserted;
+    }
+    csp_sources_allow(Some(sources), document_url, resource_url)
 }
 
 fn csp_source_expression_matches(expression: &str, document_url: &Url, resource_url: &Url) -> bool {
@@ -1618,6 +1694,7 @@ fn inline_csp_sources_allow(
     source: &str,
     nonce: Option<&str>,
     style_attribute: bool,
+    strict_dynamic: bool,
 ) -> bool {
     let Some(sources) = sources else {
         return true;
@@ -1625,9 +1702,18 @@ fn inline_csp_sources_allow(
     if sources.is_empty() {
         return false;
     }
-    if sources
+    let has_nonce_or_hash = sources
         .iter()
-        .any(|candidate| candidate.eq_ignore_ascii_case("'unsafe-inline'"))
+        .any(|source| csp_nonce_or_hash_source(source));
+    let strict_dynamic = strict_dynamic
+        && sources
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case("'strict-dynamic'"));
+    if !has_nonce_or_hash
+        && !strict_dynamic
+        && sources
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case("'unsafe-inline'"))
     {
         return true;
     }
@@ -1649,6 +1735,14 @@ fn inline_csp_sources_allow(
     sources
         .iter()
         .any(|candidate| csp_hash_matches(candidate, source))
+}
+
+fn csp_nonce_or_hash_source(source: &str) -> bool {
+    let source = source.to_ascii_lowercase();
+    source.ends_with('\'')
+        && ["'nonce-", "'sha256-", "'sha384-", "'sha512-"]
+            .iter()
+            .any(|prefix| source.starts_with(prefix))
 }
 
 fn csp_nonce_matches(source: &str, nonce: &str) -> bool {
@@ -1830,10 +1924,33 @@ impl NativeResourceLoader {
         document_url: &Url,
         resource_url: &Url,
     ) {
+        self.record_report_only_url_violations_with_metadata(
+            policy,
+            kind,
+            document_url,
+            resource_url,
+            true,
+            None,
+        );
+    }
+
+    fn record_report_only_url_violations_with_metadata(
+        &mut self,
+        policy: &NativeCspPolicy,
+        kind: NativeSubresourceKind,
+        document_url: &Url,
+        resource_url: &Url,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+    ) {
         let blocked_uri = without_fragment(resource_url.as_str()).to_owned();
-        for (declaration, directive) in
-            policy.report_only_url_violations(kind, document_url, resource_url)
-        {
+        for (declaration, directive) in policy.report_only_url_violations(
+            kind,
+            document_url,
+            resource_url,
+            parser_inserted,
+            nonce,
+        ) {
             self.queue_csp_violation(
                 policy,
                 declaration,
@@ -4149,11 +4266,25 @@ impl NativeResourceLoader {
         href: &str,
         max_source_bytes: usize,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.load_script_async_with_metadata(document_url, href, max_source_bytes, true, None)
+            .await
+    }
+
+    pub(crate) async fn load_script_async_with_metadata(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         self.load_script_like_async(
             document_url,
             href,
             max_source_bytes,
             NativeSubresourceKind::Script,
+            parser_inserted,
+            nonce,
         )
         .await
     }
@@ -4169,6 +4300,8 @@ impl NativeResourceLoader {
             href,
             max_source_bytes,
             NativeSubresourceKind::Worker,
+            true,
+            None,
         )
         .await
     }
@@ -4179,6 +4312,8 @@ impl NativeResourceLoader {
         href: &str,
         max_source_bytes: usize,
         subresource_kind: NativeSubresourceKind,
+        parser_inserted: bool,
+        nonce: Option<&str>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text(
@@ -4243,13 +4378,20 @@ impl NativeResourceLoader {
             .get(&cache_key(&document_url))
             .cloned()
             .unwrap_or_default();
-        self.record_report_only_url_violations(
+        self.record_report_only_url_violations_with_metadata(
             &policy,
             subresource_kind,
             &document_url,
             &target_url,
+            parser_inserted,
+            nonce,
         );
-        if !policy.allows(subresource_kind, &document_url, &target_url) {
+        let allowed = if subresource_kind == NativeSubresourceKind::Script {
+            policy.allows_script(&document_url, &target_url, parser_inserted, nonce)
+        } else {
+            policy.allows(subresource_kind, &document_url, &target_url)
+        };
+        if !allowed {
             return Ok(None);
         }
         let requested_cache_key = cache_key(&target_url);
@@ -4348,15 +4490,22 @@ impl NativeResourceLoader {
                     reason: "script subresource redirect location is not valid URL syntax".into(),
                 })?;
             reject_credentials(&next_url)?;
-            self.record_report_only_url_violations(
+            self.record_report_only_url_violations_with_metadata(
                 &policy,
                 subresource_kind,
                 &document_url,
                 &next_url,
+                parser_inserted,
+                nonce,
             );
+            let allowed = if subresource_kind == NativeSubresourceKind::Script {
+                policy.allows_script(&document_url, &next_url, parser_inserted, nonce)
+            } else {
+                policy.allows(subresource_kind, &document_url, &next_url)
+            };
             if !is_network_url(without_fragment(next_url.as_str()))
                 || !mixed_content_allowed(&document_url, &next_url)
-                || !policy.allows(subresource_kind, &document_url, &next_url)
+                || !allowed
             {
                 return Ok(None);
             }
@@ -6525,6 +6674,79 @@ mod tests {
             &document,
             &Url::parse("https://example.test/path").unwrap()
         ));
+    }
+
+    #[test]
+    fn csp_strict_dynamic_uses_parser_metadata_and_external_nonces() {
+        let document = Url::parse("https://app.test/index.html").unwrap();
+        let target = Url::parse("https://unlisted.test/app.js").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'none'; script-src 'strict-dynamic' 'nonce-Boot123' https:",
+            ),
+        );
+        let policy = content_security_policy(&headers);
+
+        assert!(policy.allows_script(&document, &target, true, Some("Boot123")));
+        assert!(!policy.allows_script(&document, &target, true, Some("wrong")));
+        assert!(!policy.allows_script(&document, &target, true, None));
+        assert!(policy.allows_script(&document, &target, false, None));
+
+        let image = Url::parse("https://unlisted.test/logo.png").unwrap();
+        assert!(!policy.allows(NativeSubresourceKind::Image, &document, &image));
+    }
+
+    #[test]
+    fn csp_strict_dynamic_inline_precedence_and_report_only_match_enforcement() {
+        let source = "globalThis.boot = true;";
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "script-src 'unsafe-inline' 'strict-dynamic' 'nonce-Boot123'; style-src 'unsafe-inline'",
+            ),
+        );
+        headers.insert(
+            HeaderName::from_static("content-security-policy-report-only"),
+            HeaderValue::from_static("script-src 'strict-dynamic' https://listed.test"),
+        );
+        let policy = content_security_policy(&headers);
+        assert!(!policy.allows_inline(NativeInlineCspKind::ScriptElement, source, None));
+        assert!(policy.allows_inline(NativeInlineCspKind::ScriptElement, source, Some("Boot123")));
+        assert!(policy.allows_inline(
+            NativeInlineCspKind::StyleElement,
+            "body { color: red; }",
+            None
+        ));
+
+        let document = Url::parse("https://app.test/index.html").unwrap();
+        let target = Url::parse("https://unlisted.test/app.js").unwrap();
+        assert_eq!(
+            policy
+                .report_only_url_violations(
+                    NativeSubresourceKind::Script,
+                    &document,
+                    &target,
+                    false,
+                    None,
+                )
+                .len(),
+            0
+        );
+        assert_eq!(
+            policy
+                .report_only_url_violations(
+                    NativeSubresourceKind::Script,
+                    &document,
+                    &target,
+                    true,
+                    None,
+                )
+                .len(),
+            1
+        );
     }
 
     #[test]

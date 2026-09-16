@@ -26,8 +26,8 @@ completes the page-XHR lifecycle follow-up: successful page XMLHttpRequest
 responses now publish `HEADERS_RECEIVED` and `LOADING` between `OPENED` and
 `DONE`, after metadata admission and before bounded body completion, matching
 the worker sequence without claiming per-chunk transport progress. Response
-streaming,
-synchronous XHR, `responseXML`, and complete XHR/Web IDL parity remain open.
+streaming, synchronous XHR, streaming XML, and complete XHR/Web IDL parity
+remain open.
 Slice 420 completes the Service Worker request-body replay follow-up: a
 controlled POST clones its incoming Request, consumes the original, and
 replays the clone through worker `fetch(Request)` while preserving bounded
@@ -38,8 +38,8 @@ open.
 Slice 421 completes the XHR JSON response-type follow-up: page and worker
 asynchronous XMLHttpRequests select the existing bounded Response JSON decoder
 and expose parsed values through `response` while retaining an empty text
-projection. Synchronous XHR, XML documents, streaming JSON, and complete XHR
-Web IDL parity remain open.
+projection. Synchronous XHR, streaming JSON, and complete XHR Web IDL parity
+remain open.
 Slice 422 completes the XHR ProgressEvent identity follow-up: page and worker
 upload lifecycle notifications use each realm's ProgressEvent constructor while
 preserving bounded progress fields, target identity, and terminal ordering.

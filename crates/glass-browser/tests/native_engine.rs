@@ -17501,7 +17501,7 @@ async fn native_content_process_form_action_blocks_click_and_script_submit() {
         assert_eq!(request.split_whitespace().nth(1), Some("/form"));
         let body = "<form id='search' action='/result'><input name='query' value='hello'><button id='go' type='submit'>Go</button></form>";
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none'; form-action 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none'; form-action 'none'\r\nContent-Security-Policy-Report-Only: default-src *; form-action 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(response.as_bytes()).await.unwrap();
@@ -17515,17 +17515,102 @@ async fn native_content_process_form_action_blocks_click_and_script_submit() {
             .unwrap();
     engine.initialize_async().await.unwrap();
     engine
+        .evaluate_async(
+            "globalThis.formReports = []; addEventListener('securitypolicyviolation', event => formReports.push([event.effectiveDirective, event.blockedURI, event.disposition]))",
+        )
+        .await
+        .unwrap();
+    engine
         .action_async(NativeAction::Click {
             target: "id=go".into(),
         })
         .await
         .unwrap();
     assert_eq!(engine.snapshot().unwrap().url, initial_url);
+    let result_url = format!("http://{address}/result?query=hello");
+    assert_eq!(
+        engine.evaluate_async("formReports").await.unwrap(),
+        serde_json::json!([["form-action", result_url, "report"]])
+    );
     engine
         .evaluate_async("document.getElementById('search').submit()")
         .await
         .unwrap();
     assert_eq!(engine.snapshot().unwrap().url, initial_url);
+    assert_eq!(
+        engine.evaluate_async("formReports").await.unwrap(),
+        serde_json::json!([
+            [
+                "form-action",
+                format!("http://{address}/result?query=hello"),
+                "report"
+            ],
+            [
+                "form-action",
+                format!("http://{address}/result?query=hello"),
+                "report"
+            ]
+        ])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_reports_form_action_before_allowed_click_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let initial_url = format!("http://{address}/form");
+    let result_url = format!("http://{address}/result?query=hello");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/form"));
+        let body = "<form id='search' action='/result'><input name='query' value='hello'><button id='go' type='submit'>Go</button></form>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src *\r\nContent-Security-Policy-Report-Only: default-src *; form-action 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/result?query=hello")
+        );
+        let body = "<title>Submitted</title>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(initial_url)).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "sessionStorage.setItem('formReports', '[]'); addEventListener('securitypolicyviolation', event => { const reports = JSON.parse(sessionStorage.getItem('formReports') || '[]'); reports.push([event.effectiveDirective, event.blockedURI, event.disposition]); sessionStorage.setItem('formReports', JSON.stringify(reports)); })",
+        )
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Click {
+            target: "id=go".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().url, result_url);
+    assert_eq!(
+        engine
+            .evaluate_async("JSON.parse(sessionStorage.getItem('formReports'))")
+            .await
+            .unwrap(),
+        serde_json::json!([["form-action", result_url, "report"]])
+    );
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through completed
+`native-engine-browser-414`, following completed
 `native-engine-browser-413` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
@@ -46,6 +47,16 @@ typed preflight before parent-owned top-level decisions, and the parent
 dispatches them through the existing page event channel without duplicating
 the first load observation. Enforced parent source snapshots remain active;
 broader redirect and CSP certification remain open issue #40 gates.
+
+The completed form-action report-delivery slice is
+[native-engine-browser-414](tasks/native-engine-browser-414.md): the
+content-process submit turn transfers report-only `form-action` violations
+with its mutation envelope after submit handlers determine the final target;
+the parent commits the snapshot and dispatches them through the persistent
+page event bridge before navigation proceeds. Click and page-script submission
+share the same child-owned policy ordering; enforced blocks still issue no
+request, and report-only policy does not change authorization. Broader CSP and
+Core Web Profile certification remain open issue #40 gates.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI
@@ -577,7 +588,8 @@ content-process navigation decisions consult the active policy before issuing
 or committing a request. This is a Glass-owned extension rather than a
 normative CSP Level 3 directive; live policy mutation was completed in the
 following 412 transfer slice, while report-only delivery through every
-navigation path and broader browser conformance remain issue #40 gates.
+navigation path was completed in the following 413 slice; form-action delivery
+and broader browser conformance remain issue #40 gates.
 
 The completed live `navigate-to` transfer slice is
 [native-engine-browser-412](tasks/native-engine-browser-412.md): every
@@ -586,7 +598,8 @@ returns the child policy container's bounded effective source groups, and the
 parent commits them before applying navigation or lifecycle effects. A CSP
 meta policy inserted after load therefore governs the next link or
 `location` navigation without requiring a reload. Report-only delivery through
-every navigation path and broader browser conformance remain issue #40 gates.
+every navigation path was completed in the following 413 slice; form-action
+delivery and broader browser conformance remain issue #40 gates.
 
 The completed CSP source-expression matching slice is
 [native-engine-browser-404](tasks/native-engine-browser-404.md): the shared

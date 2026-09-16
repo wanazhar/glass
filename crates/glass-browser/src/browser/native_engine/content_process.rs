@@ -1061,6 +1061,7 @@ pub(crate) struct NativeContentMutation {
     pub(crate) document: NativeDocumentWire,
     pub(crate) navigate_to_sources: Option<Vec<Vec<String>>>,
     pub(crate) events: Vec<NativeContentEvent>,
+    pub(crate) csp_violations: Vec<NativeCspViolation>,
     pub(crate) navigation: Option<NativeContentNavigation>,
     pub(crate) allowed: bool,
     pub(crate) history: Vec<NativeScriptCommand>,
@@ -2955,6 +2956,7 @@ fn decode_mutation_payload(
     let document = decode_document_wire(&document_bytes, operation)?;
     let navigate_to_sources = decode_navigation_sources(response, operation)?;
     let events = decode_event_payload(response, operation)?;
+    let csp_violations = decode_csp_violations(response, operation)?;
     let navigation = response
         .get("navigation")
         .filter(|value| !value.is_null())
@@ -2974,6 +2976,7 @@ fn decode_mutation_payload(
         document,
         navigate_to_sources,
         events,
+        csp_violations,
         navigation,
         allowed: response
             .get("allowed")
@@ -2990,6 +2993,30 @@ fn decode_mutation_payload(
         window_navigations,
         window_name,
     })
+}
+
+fn decode_csp_violations(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativeCspViolation>, NativeEngineError> {
+    let Some(value) = response.get("csp_violations") else {
+        return Ok(Vec::new());
+    };
+    let violations =
+        serde_json::from_value::<Vec<NativeCspViolation>>(value.clone()).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned malformed CSP violation records".into(),
+            }
+        })?;
+    if violations.len() > MAX_NATIVE_CSP_VIOLATIONS {
+        return Err(NativeEngineError::limit(
+            "content-process CSP violation records",
+            MAX_NATIVE_CSP_VIOLATIONS,
+            violations.len(),
+        ));
+    }
+    Ok(violations)
 }
 
 fn decode_scroll_commands(
@@ -6511,6 +6538,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         reason: "navigation policy source groups were not serializable".into(),
                     }
                 })?;
+            let csp_violations = resource_loader
+                .as_mut()
+                .map(NativeResourceLoader::take_csp_violations)
+                .unwrap_or_default();
+            response["csp_violations"] =
+                serde_json::to_value(csp_violations).map_err(|_| NativeEngineError::Worker {
+                    operation: "content process CSP violation transfer".into(),
+                    reason: "CSP violation records were not serializable".into(),
+                })?;
         }
         let (
             storage_events,
@@ -8022,6 +8058,7 @@ fn mutate_click_with_event_preflight(
             })
             .collect(),
         navigation,
+        csp_violations: Vec::new(),
         allowed: click_allowed,
         history,
         scroll_commands,
@@ -8196,6 +8233,7 @@ fn mutate_type_with_event_bridge(
             })
             .collect(),
         navigation: None,
+        csp_violations: Vec::new(),
         allowed: true,
         history,
         scroll_commands,
@@ -8300,6 +8338,7 @@ fn mutate_form_action_with_event_bridge(
             })
             .collect(),
         navigation: None,
+        csp_violations: Vec::new(),
         allowed: true,
         history,
         scroll_commands,
@@ -8452,6 +8491,7 @@ fn mutate_key_with_event_bridge(
             })
             .collect(),
         navigation: None,
+        csp_violations: Vec::new(),
         allowed: true,
         history,
         scroll_commands,
@@ -8551,6 +8591,7 @@ fn mutate_key_event_with_event_bridge(
                 })
                 .collect(),
             navigation: None,
+            csp_violations: Vec::new(),
             allowed: true,
             history,
             scroll_commands,
@@ -8719,6 +8760,7 @@ fn mutate_key_shortcut_with_event_bridge(
                 })
                 .collect(),
             navigation: None,
+            csp_violations: Vec::new(),
             allowed: true,
             history,
             scroll_commands,
@@ -9106,6 +9148,7 @@ fn mutate_before_unload(
                 })
                 .collect(),
             navigation,
+            csp_violations: Vec::new(),
             allowed,
             history,
             scroll_commands,
@@ -9138,6 +9181,7 @@ fn mutate_lifecycle_events(
                 navigate_to_sources: None,
                 events: Vec::new(),
                 navigation: None,
+                csp_violations: Vec::new(),
                 allowed: true,
                 history: Vec::new(),
                 scroll_commands: Vec::new(),
@@ -9235,6 +9279,7 @@ fn mutate_lifecycle_events(
             navigate_to_sources: None,
             events,
             navigation,
+            csp_violations: Vec::new(),
             allowed: true,
             history,
             scroll_commands,
@@ -9335,6 +9380,7 @@ fn mutate_hash_change(
             navigate_to_sources: None,
             events,
             navigation,
+            csp_violations: Vec::new(),
             allowed: true,
             history,
             scroll_commands,
@@ -9676,6 +9722,7 @@ async fn mutate_script_document(
                 }),
             })
             .transpose()?,
+        csp_violations: Vec::new(),
         allowed: true,
         history,
         scroll_commands,

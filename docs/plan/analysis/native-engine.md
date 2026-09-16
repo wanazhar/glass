@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-413`, with
+expansion checkpoint is completed `native-engine-browser-414`, following
+completed `native-engine-browser-413`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -582,6 +583,19 @@ document snapshot, the child returns the bounded effective source groups from
 its append-only policy container, and the parent stores that snapshot before
 its lifecycle-only fast path. Dynamic CSP meta insertion therefore governs
 subsequent top-level link and `location` navigation without a reload. The
+completed `native-engine-browser-413` slice carries report-only `navigate-to`
+observations across the content-process boundary: the child returns its
+enforced decision and bounded violation records through a typed preflight, and
+the parent dispatches those records before direct async, link, location,
+download, popup, history, and page-navigation-handoff decisions. Initial load
+does not duplicate the outgoing observation. The `navigate-to` vocabulary is a
+Glass-owned extension rather than a normative CSP Level 3 directive. The
+completed `native-engine-browser-414` slice closes the remaining
+`form-action` report delivery in child-owned click and page-script submit
+turns. The child carries queued report records in the mutation envelope; the
+parent commits the child snapshot and dispatches the records through the
+existing page event bridge before an allowed form navigation continues, while
+enforced blocks still issue no request. The
 preceding `native-engine-browser-411` slice closes the Glass-owned explicit
 `navigate-to`
 navigation-policy extension: bounded response and initial head-meta source
@@ -589,8 +603,9 @@ groups cross the content-process boundary and are intersected by the parent
 navigation owner before direct, same-document, page-script, link, download,
 popup, history, or final content-process navigation is issued or committed.
 This is a Glass-owned extension rather than a normative CSP Level 3 directive;
-report-only delivery through every navigation path and broader browser
-conformance remain issue #40 gates. The completed 234 slice
+report-only delivery through async navigation paths was completed by slice
+413; form-action delivery remains the active follow-up in slice 414, and
+broader browser conformance remains an issue #40 gate. The completed 234 slice
 carries
 bounded
 root-scroll sticky positioning through
@@ -6525,9 +6540,10 @@ browser task;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed browser-expansion checkpoint is recorded for
-`docs/plan/tasks/native-engine-browser-400.md`; its implementation and focused
-verification are recorded in that task file. The preceding browser-expansion
-checkpoint is `docs/plan/tasks/native-engine-browser-399.md`. The CSS foundation checkpoint
+`docs/plan/tasks/native-engine-browser-413.md`; its implementation and focused
+verification are recorded in that task file. The active follow-up checkpoint
+is `docs/plan/tasks/native-engine-browser-414.md`. The preceding browser-
+expansion checkpoint is `docs/plan/tasks/native-engine-browser-412.md`. The CSS foundation checkpoint
 remains `docs/plan/tasks/native-engine-234.md`: implementation is `8a96f56b`
 (design `b2119e5f`). It accepts bounded standalone case-insensitive finite
 `overflow: visible|auto|scroll`, `overflow-x: visible|auto|scroll`, and

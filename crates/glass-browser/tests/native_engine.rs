@@ -8751,6 +8751,74 @@ async fn native_content_process_form_post_target_preserves_payload() {
 }
 
 #[tokio::test]
+async fn native_content_process_multipart_form_post_target_preserves_binary_body() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request_bytes(&mut stream).await;
+            let header_end = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4)
+                .unwrap();
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let body = &request[header_end..];
+            if headers.starts_with("GET /form HTTP/1.1") {
+                assert!(
+                    !headers
+                        .lines()
+                        .any(|line| line.to_ascii_lowercase().starts_with("content-type:"))
+                );
+            } else {
+                assert!(headers.starts_with("POST /upload HTTP/1.1"));
+                assert!(headers.lines().any(|line| {
+                    line.to_ascii_lowercase()
+                        .starts_with("content-type: multipart/form-data; boundary=")
+                }));
+                assert!(
+                    body.windows(b"name=\"query\"".len())
+                        .any(|window| { window == b"name=\"query\"" })
+                );
+                assert!(
+                    body.windows(b"\r\nhello\r\n".len())
+                        .any(|window| { window == b"\r\nhello\r\n" })
+                );
+                assert!(body.ends_with(b"--\r\n"));
+            }
+            let body = if headers.starts_with("GET /form HTTP/1.1") {
+                "<title>Multipart form opener</title><form id='form' action='/upload' method='post' enctype='multipart/form-data' target='_blank'><input name='query' value='hello'></form>"
+            } else {
+                "<title>Multipart form target</title><p>uploaded</p>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .await
+    .unwrap();
+    session
+        .script("document.getElementById('form').submit()")
+        .await
+        .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let popup = targets.iter().find(|target| !target.active).unwrap();
+    assert_eq!(popup.title, "Multipart form target");
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_external_blank_link_creates_popup_target() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -5739,6 +5739,10 @@ mod tests {
             all_ready(),
             Some(NativeBrowserEffectSource::ServiceWorkerClientMessage)
         );
+        assert_eq!(
+            all_ready(),
+            Some(NativeBrowserEffectSource::PageMessagePort)
+        );
         assert_eq!(all_ready(), Some(NativeBrowserEffectSource::Popup));
     }
 

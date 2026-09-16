@@ -8824,21 +8824,18 @@ mod tests {
             document.resolve_target("role=button[name=Save]"),
             Err(NativeEngineError::AmbiguousTarget { matches: 2 })
         ));
-        let reference = document
+        let name_node = document
             .semantic_nodes()
             .into_iter()
             .find(|node| node.role == "textbox")
-            .unwrap()
-            .reference;
+            .unwrap();
+        let reference = name_node.reference;
         assert!(document.resolve_target(&reference).is_ok());
         document.revision = 2;
         assert!(matches!(
             document.resolve_target(&reference),
             Err(NativeEngineError::DetachedTarget)
         ));
-        assert!(matches!(
-            document.resolve_target("css=#name"),
-            Err(NativeEngineError::InvalidConfiguration { field, .. }) if field == "action locator"
-        ));
+        assert_eq!(document.resolve_target("css=#name"), Ok(name_node.node_id));
     }
 }

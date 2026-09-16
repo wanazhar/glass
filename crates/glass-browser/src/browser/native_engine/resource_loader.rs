@@ -52,6 +52,7 @@ pub(crate) enum NativeSubresourceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeInlineCspKind {
     ScriptElement,
+    ScriptAttribute,
     StyleElement,
     StyleAttribute,
 }
@@ -690,6 +691,7 @@ struct NativeCspPolicy {
     style_attribute_sources: Option<Vec<String>>,
     script_sources: Option<Vec<String>>,
     script_element_sources: Option<Vec<String>>,
+    script_attribute_sources: Option<Vec<String>>,
     image_sources: Option<Vec<String>>,
     font_sources: Option<Vec<String>>,
     media_sources: Option<Vec<String>>,
@@ -734,6 +736,11 @@ impl NativeCspPolicy {
                 .as_ref()
                 .or(self.script_sources.as_ref())
                 .or(self.default_sources.as_ref()),
+            NativeInlineCspKind::ScriptAttribute => self
+                .script_attribute_sources
+                .as_ref()
+                .or(self.script_sources.as_ref())
+                .or(self.default_sources.as_ref()),
             NativeInlineCspKind::StyleElement => self
                 .style_element_sources
                 .as_ref()
@@ -752,19 +759,27 @@ impl NativeCspPolicy {
             self.inline_sources_for(kind).map(Vec::as_slice),
             source,
             nonce,
-            kind == NativeInlineCspKind::StyleAttribute,
+            matches!(
+                kind,
+                NativeInlineCspKind::ScriptAttribute | NativeInlineCspKind::StyleAttribute
+            ),
         )
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct NativeInlineScriptPolicy {
-    sources: Option<Vec<String>>,
+    element_sources: Option<Vec<String>>,
+    attribute_sources: Option<Vec<String>>,
 }
 
 impl NativeInlineScriptPolicy {
     pub(crate) fn allows(&self, source: &str, nonce: Option<&str>) -> bool {
-        inline_csp_sources_allow(self.sources.as_deref(), source, nonce, false)
+        inline_csp_sources_allow(self.element_sources.as_deref(), source, nonce, false)
+    }
+
+    pub(crate) fn allows_attribute(&self, source: &str) -> bool {
+        inline_csp_sources_allow(self.attribute_sources.as_deref(), source, None, true)
     }
 }
 
@@ -965,8 +980,11 @@ impl NativeResourceLoader {
         Ok(self
             .document_policy(document_url)?
             .map(|policy| NativeInlineScriptPolicy {
-                sources: policy
+                element_sources: policy
                     .inline_sources_for(NativeInlineCspKind::ScriptElement)
+                    .cloned(),
+                attribute_sources: policy
+                    .inline_sources_for(NativeInlineCspKind::ScriptAttribute)
                     .cloned(),
             })
             .unwrap_or_default())
@@ -3355,6 +3373,7 @@ fn content_security_policy(headers: &HeaderMap) -> NativeCspPolicy {
                 "style-src-attr" => policy.style_attribute_sources = Some(sources),
                 "script-src" => policy.script_sources = Some(sources),
                 "script-src-elem" => policy.script_element_sources = Some(sources),
+                "script-src-attr" => policy.script_attribute_sources = Some(sources),
                 "img-src" => policy.image_sources = Some(sources),
                 "font-src" => policy.font_sources = Some(sources),
                 "media-src" => policy.media_sources = Some(sources),
@@ -5099,15 +5118,18 @@ mod tests {
         let nonce_script = "globalThis.cspNonce = true;";
         let style_element = "body { color: red; }";
         let style_attribute = "color: blue";
+        let script_attribute = "globalThis.cspAttribute = true;";
         let script_hash =
             base64::engine::general_purpose::STANDARD.encode(Sha256::digest(script.as_bytes()));
         let style_element_hash = base64::engine::general_purpose::STANDARD
             .encode(Sha256::digest(style_element.as_bytes()));
         let style_attribute_hash = base64::engine::general_purpose::STANDARD
             .encode(Sha256::digest(style_attribute.as_bytes()));
+        let script_attribute_hash = base64::engine::general_purpose::STANDARD
+            .encode(Sha256::digest(script_attribute.as_bytes()));
         let mut headers = HeaderMap::new();
         let policy_header = format!(
-            "default-src 'none'; script-src 'nonce-Wrong'; script-src-elem 'nonce-AbC123' 'sha256-{script_hash}'; style-src 'none'; style-src-elem 'nonce-Style123' 'sha256-{style_element_hash}'; style-src-attr 'unsafe-hashes' 'sha256-{style_attribute_hash}'"
+            "default-src 'none'; script-src 'nonce-Wrong'; script-src-elem 'nonce-AbC123' 'sha256-{script_hash}'; script-src-attr 'unsafe-hashes' 'sha256-{script_attribute_hash}'; style-src 'none'; style-src-elem 'nonce-Style123' 'sha256-{style_element_hash}'; style-src-attr 'unsafe-hashes' 'sha256-{style_attribute_hash}'"
         );
         headers.insert(
             CONTENT_SECURITY_POLICY,
@@ -5122,6 +5144,14 @@ mod tests {
             Some("abc123"),
         ));
         assert!(policy.allows_inline(NativeInlineCspKind::ScriptElement, script, None));
+        assert!(
+            policy.allows_inline(NativeInlineCspKind::ScriptAttribute, script_attribute, None,)
+        );
+        assert!(!policy.allows_inline(
+            NativeInlineCspKind::ScriptAttribute,
+            "globalThis.cspAttribute = false;",
+            None,
+        ));
         assert!(policy.allows_inline(
             NativeInlineCspKind::StyleElement,
             style_element,

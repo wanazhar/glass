@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-395` locally. Native is now the default runtime for
+`native-engine-browser-396` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -477,6 +477,11 @@ classic/module scripts, `<style>` elements, and `style="..."` attributes,
 including dynamic DOM mutation rechecks. The existing external resource policy
 continues to use the shared URL matcher; broader CSP grammar and reporting
 remain explicit issue #40 security gates.
+
+The completed `script-src-attr` slice is
+[native-engine-browser-396](tasks/native-engine-browser-396.md): it applies
+the Rust-owned CSP fallback chain to inline `on*` content attributes and
+reconciles admitted handlers across initial and dynamic DOM projections.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

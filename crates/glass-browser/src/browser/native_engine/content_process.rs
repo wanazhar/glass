@@ -100,6 +100,7 @@ const MAX_CONTENT_STYLESHEETS: usize = 16;
 const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
 const MAX_CONTENT_IMAGES: usize = 64;
 const MAX_CONTENT_FRAME_SOURCES: usize = 64;
+const MAX_CONTENT_NAVIGATION_SOURCES: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeContentTaskSource {
@@ -127,6 +128,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) origin: NativeOrigin,
     pub(crate) document: NativeDocumentWire,
     pub(crate) frame_sources: Option<Vec<Vec<String>>>,
+    pub(crate) navigate_to_sources: Option<Vec<Vec<String>>>,
     pub(crate) events: Vec<NativeContentEvent>,
     pub(crate) csp_violations: Vec<NativeCspViolation>,
     pub(crate) scroll_commands: Vec<NativeScriptCommand>,
@@ -2526,11 +2528,13 @@ fn decode_load_response(
         decode_service_worker_open_window_requests(response, "decode content process load")?;
     let window_name = decode_window_name(response, "decode content process load")?;
     let frame_sources = decode_frame_sources(response, "decode content process load")?;
+    let navigate_to_sources = decode_navigation_sources(response, "decode content process load")?;
     Ok(NativeContentLoadResult::Loaded(NativeContentLoad {
         url: url.into(),
         origin,
         document,
         frame_sources,
+        navigate_to_sources,
         events,
         csp_violations: Vec::new(),
         scroll_commands,
@@ -2553,7 +2557,36 @@ fn decode_frame_sources(
     response: &Value,
     operation: &str,
 ) -> Result<Option<Vec<Vec<String>>>, NativeEngineError> {
-    let Some(value) = response.get("frame_sources") else {
+    decode_source_groups(
+        response,
+        "frame_sources",
+        operation,
+        "frame policy",
+        MAX_CONTENT_FRAME_SOURCES,
+    )
+}
+
+fn decode_navigation_sources(
+    response: &Value,
+    operation: &str,
+) -> Result<Option<Vec<Vec<String>>>, NativeEngineError> {
+    decode_source_groups(
+        response,
+        "navigate_to_sources",
+        operation,
+        "top-level navigation policy",
+        MAX_CONTENT_NAVIGATION_SOURCES,
+    )
+}
+
+fn decode_source_groups(
+    response: &Value,
+    field: &str,
+    operation: &str,
+    label: &str,
+    max_groups: usize,
+) -> Result<Option<Vec<Vec<String>>>, NativeEngineError> {
+    let Some(value) = response.get(field) else {
         return Ok(None);
     };
     if value.is_null() {
@@ -2561,12 +2594,12 @@ fn decode_frame_sources(
     }
     let sources = value.as_array().ok_or_else(|| NativeEngineError::Worker {
         operation: operation.into(),
-        reason: "content process returned invalid frame policy sources".into(),
+        reason: format!("content process returned invalid {label} sources"),
     })?;
-    if sources.len() > MAX_CONTENT_FRAME_SOURCES {
+    if sources.len() > max_groups {
         return Err(NativeEngineError::limit(
-            "content-process frame policy sources",
-            MAX_CONTENT_FRAME_SOURCES,
+            format!("content-process {label} sources"),
+            max_groups,
             sources.len(),
         ));
     }
@@ -2575,12 +2608,12 @@ fn decode_frame_sources(
     for group in sources {
         let group = group.as_array().ok_or_else(|| NativeEngineError::Worker {
             operation: operation.into(),
-            reason: "content process returned an invalid frame policy source group".into(),
+            reason: format!("content process returned an invalid {label} source group"),
         })?;
-        if group.len() > MAX_CONTENT_FRAME_SOURCES {
+        if group.len() > max_groups {
             return Err(NativeEngineError::limit(
-                "content-process frame policy source group",
-                MAX_CONTENT_FRAME_SOURCES,
+                format!("content-process {label} source group"),
+                max_groups,
                 group.len(),
             ));
         }
@@ -2588,17 +2621,17 @@ fn decode_frame_sources(
         for source in group {
             let source = source.as_str().ok_or_else(|| NativeEngineError::Worker {
                 operation: operation.into(),
-                reason: "content process returned a non-text frame policy source".into(),
+                reason: format!("content process returned a non-text {label} source"),
             })?;
             if source.is_empty() || source.bytes().any(|byte| byte.is_ascii_control()) {
                 return Err(NativeEngineError::Worker {
                     operation: operation.into(),
-                    reason: "content process returned an invalid frame policy source".into(),
+                    reason: format!("content process returned an invalid {label} source"),
                 });
             }
             if source.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES {
                 return Err(NativeEngineError::limit(
-                    "content-process frame policy source",
+                    format!("content-process {label} source"),
                     MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
                     source.len(),
                 ));
@@ -2606,7 +2639,7 @@ fn decode_frame_sources(
             let next_bytes = total_bytes.saturating_add(source.len());
             if next_bytes > MAX_NATIVE_RESPONSE_HEADER_BYTES {
                 return Err(NativeEngineError::limit(
-                    "content-process frame policy sources",
+                    format!("content-process {label} sources"),
                     MAX_NATIVE_RESPONSE_HEADER_BYTES,
                     next_bytes,
                 ));
@@ -4889,6 +4922,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         })).collect::<Vec<_>>(),
                                         "scroll_commands": scroll_commands,
                                         "frame_sources": resource.frame_sources,
+                                        "navigate_to_sources": resource.navigate_to_sources,
                                         "document_base64": base64::engine::general_purpose::STANDARD
                                             .encode(serde_json::to_vec(&document_wire).unwrap_or_default()),
                                     })
@@ -6940,6 +6974,8 @@ async fn load_content_resource(
         &discovery.content_security_policy_meta(),
     )?;
     let frame_sources = loader.frame_sources_for_document(&resource.url)?;
+    let navigate_to_sources = loader
+        .navigation_sources_for_document(&resource.url, NativeNavigationPolicyKind::NavigateTo)?;
     let allowed_inline_style_nodes =
         inline_style_policy_nodes(&mut discovery, loader, &resource.url)?;
     let mut external_stylesheets = Vec::new();
@@ -6999,6 +7035,7 @@ async fn load_content_resource(
             origin: resource.origin,
             document: wire,
             frame_sources,
+            navigate_to_sources,
             events: resource_events
                 .iter()
                 .map(|(node_index, kind)| NativeContentEvent {

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is the completed `native-engine-browser-410`, with
+expansion checkpoint is the completed `native-engine-browser-411`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -553,8 +553,8 @@ enforced; report-only redirect observations use the same rule. Frame loading
 retains the requested URL so HTTP redirects are distinct from later
 page-navigation handoffs. The contract and evidence are recorded in
 `docs/plan/tasks/native-engine-browser-408.md`. Dynamic CSP grammar,
-`navigate-to`, report-only meta policy, and broader conformance remain issue
-#40 gates. The completed `native-engine-browser-409` slice closes the
+report-only meta policy, and broader conformance remain issue #40 gates. The
+completed `native-engine-browser-409` slice closes the
 external-resource Subresource Integrity boundary: external scripts and
 stylesheet links preserve `integrity` and `crossorigin` through DOM discovery,
 parser loading, dynamic script insertion, and the content-process loader.
@@ -574,8 +574,16 @@ boundary: validated GET/POST form submissions from local documents and the
 HTTP content process consult the shared policy after submit handling and before
 issuing a navigation request; enforced policies intersect, and an omitted
 `form-action` does not inherit `default-src`. The shared loader records
-report-only observations, while delivery through every form-event path, custom
-`navigate-to`, and broader conformance remain issue #40 gates. The completed 234 slice
+report-only observations, while delivery through every form-event path and
+broader conformance remain issue #40 gates. The completed
+`native-engine-browser-411` slice closes the Glass-owned explicit `navigate-to`
+navigation-policy extension: bounded response and initial head-meta source
+groups cross the content-process boundary and are intersected by the parent
+navigation owner before direct, same-document, page-script, link, download,
+popup, history, or final content-process navigation is issued or committed.
+This is a Glass-owned extension rather than a normative CSP Level 3 directive;
+dynamic policy mutation, report-only delivery through every navigation path,
+and broader browser conformance remain issue #40 gates. The completed 234 slice
 carries
 bounded
 root-scroll sticky positioning through

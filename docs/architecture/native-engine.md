@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-433`, following completed
 `native-engine-browser-432`, following completed
 `native-engine-browser-431`,
 `native-engine-browser-423`,
@@ -24,9 +25,19 @@ bounded body chunk or terminal signal crosses the content-process boundary only
 when the HTTP client asks for it, and page work emitted by an upload `pull()`
 callback is committed through the ordinary event path. 301/302/303 redirects
 may switch to a bodyless GET; 307/308 redirects reject replay of the one-shot
-body. Fixture-owned bodyful requests remain explicitly unsupported, and worker
-upload and controlled Service Worker upload bridges remain separate issue #40
-gates; synchronous XHR and complete XHR/Streams Web IDL parity also remain open.
+body. Fixture-owned bodyful requests remain explicitly unsupported, and
+controlled Service Worker upload replay remains a separate issue #40 gate;
+synchronous XHR and complete XHR/Streams Web IDL parity also remain open.
+
+Slice 433 adds demand-driven Worker Fetch request-body streaming for
+HTTP(S). Dedicated and SharedWorker `ReadableStream` bodies remain owned by
+their worker realm and cross the content-process boundary as bounded,
+request-scoped chunks only when the HTTP body asks for them. Reader ownership,
+cancel/error propagation, worker teardown, task-local loader state merge, and
+non-replayable redirect behavior follow the page upload contract; buffered
+worker requests remain on their existing path. Controlled Service Worker
+upload replay, fixture-owned bodyful requests, synchronous XHR, and complete
+XHR/Streams Web IDL parity remain issue #40 gates.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

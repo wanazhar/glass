@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-436`, following
+expansion checkpoint is completed `native-engine-browser-437`, following
+completed `native-engine-browser-436`, following
 completed `native-engine-browser-435`, following
 completed `native-engine-browser-434`, following
 completed `native-engine-browser-433`, following
@@ -147,6 +148,13 @@ HTTP loader, and stream cancellation/errors reject the request without a
 content-process crash. This is an explicit bounded two-realm handoff, not a
 claim of zero-copy page-to-worker-to-network streaming; fixture stream bodies,
 synchronous XHR, and complete XHR/Streams Web IDL parity remain open.
+Slice 437 closes the inline fixture Worker's streamed request-body gate.
+Dedicated and SharedWorker realms now drive the same bounded upload source
+through the worker demand loop for fixture owners; the collected one-shot
+bytes then enter the ordinary deterministic fixture Fetch path as a validated
+buffered body. HTTP(S) Worker uploads retain their direct transport stream and
+loader-state merge; synchronous XHR and complete XHR/Streams Web IDL parity
+remain open.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

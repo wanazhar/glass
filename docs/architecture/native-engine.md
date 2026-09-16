@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-437`, following completed
 `native-engine-browser-436`, following completed
 `native-engine-browser-435`, following completed
 `native-engine-browser-434`, following completed
@@ -69,6 +70,14 @@ Cancellation and stream errors become Fetch rejection rather than a process
 failure. The copy is deliberate: this is a bounded two-realm handoff, not a
 zero-copy transport claim. Fixture stream bodies, synchronous XHR, and full
 XHR/Streams Web IDL parity remain issue #40 gates.
+
+Slice 437 closes the inline fixture Worker upload gate. Dedicated and
+SharedWorker `ReadableStream` request bodies now use the shared worker demand
+loop, preserving one-shot reader ownership and bounded terminal behavior
+before the fixture owner admits the bytes through its normal buffered request
+path. HTTP(S) uploads continue to use the direct `reqwest` stream transport;
+the fixture response remains deterministic and does not inspect request bytes.
+Synchronous XHR and full XHR/Streams Web IDL parity remain issue #40 gates.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

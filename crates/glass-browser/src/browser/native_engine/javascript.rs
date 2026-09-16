@@ -25897,6 +25897,24 @@ fn document_bootstrap(
     if (typeof callback !== "function") throw new TypeError("microtask callback must be callable");
     Promise.resolve().then(callback);
   }};
+  const reportScheduledCallbackError = (error) => {{
+    try {{
+      if (typeof globalThis.__glassDispatchScriptError !== "function") return;
+      const message = error && typeof error.message === "string"
+        ? error.message
+        : String(error);
+      globalThis.__glassDispatchScriptError({{
+        node_index: null,
+        message,
+        error,
+        filename: String(host.url || ""),
+        lineno: 0,
+        colno: 0,
+      }});
+    }} catch (_reportError) {{
+      // Reporting must not turn an uncaught page callback into a host failure.
+    }}
+  }};
   globalThis.__glassRunTimers = (currentNow) => {{
     const now = Number.isFinite(Number(currentNow)) ? Number(currentNow) : host.now_ms;
     const pending = Array.from(timers.entries())
@@ -25912,6 +25930,8 @@ fn document_bootstrap(
       runningTimers.set(id, timer);
       try {{
         timer.callback(...timer.args);
+      }} catch (error) {{
+        reportScheduledCallbackError(error);
       }} finally {{
         runningTimers.delete(id);
         if (timer.intervalMs > 0 && !timer.cancelled) {{
@@ -25930,7 +25950,11 @@ fn document_bootstrap(
     for (const [id, frame] of frames) {{
       if (!animationFrames.has(id)) continue;
       animationFrames.delete(id);
-      frame.callback.call(globalThis, now);
+      try {{
+        frame.callback.call(globalThis, now);
+      }} catch (error) {{
+        reportScheduledCallbackError(error);
+      }}
     }}
     const idles = Array.from(idleCallbacks.entries())
       .filter(([, idle]) => idle.timeoutAt === null || Number(idle.timeoutAt) <= now)
@@ -25950,7 +25974,11 @@ fn document_bootstrap(
           return Math.max(0, 50 - (performance.now() - startedAt));
         }},
       }};
-      idle.callback.call(globalThis, deadline);
+      try {{
+        idle.callback.call(globalThis, deadline);
+      }} catch (error) {{
+        reportScheduledCallbackError(error);
+      }}
     }}
   }};
   const listeners = globalThis.__glassHostListeners instanceof Map
@@ -30435,7 +30463,9 @@ fn document_bootstrap(
     const filename = String(descriptor.filename || "");
     const line = Number(descriptor.lineno) || 0;
     const column = Number(descriptor.colno) || 0;
-    const error = new Error(message);
+    const error = Object.prototype.hasOwnProperty.call(descriptor, "error")
+      ? descriptor.error
+      : new Error(message);
     const createErrorEvent = () => {{
       const constructor = globalThis.__glassErrorEventConstructor || globalThis.ErrorEvent;
       if (typeof constructor === "function") return new constructor("error", {{

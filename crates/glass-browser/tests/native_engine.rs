@@ -10394,6 +10394,64 @@ async fn native_local_idle_callbacks_honor_cancellation_and_deadline() {
 }
 
 #[tokio::test]
+async fn native_local_scheduled_callback_errors_do_not_abort_sibling_work() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://scheduled-callback-errors",
+            r#"
+                <script>
+                    globalThis.eventErrors = [];
+                    globalThis.handlerErrors = [];
+                    globalThis.callbackErrors = {};
+                    globalThis.timerSurvived = false;
+                    window.addEventListener('error', event => eventErrors.push([
+                        event.message,
+                        event.error instanceof Error,
+                        event.target === window,
+                        event.error === callbackErrors[event.message],
+                    ]));
+                    window.onerror = (message, filename, line, column, error) => handlerErrors.push([
+                        message,
+                        error instanceof Error,
+                        error === callbackErrors[message],
+                    ]);
+                    setTimeout(() => { const error = new Error('timer callback boom'); callbackErrors[error.message] = error; throw error; }, 0);
+                    setTimeout(() => { globalThis.timerSurvived = true; }, 0);
+                    requestIdleCallback(() => { const error = new Error('idle callback boom'); callbackErrors[error.message] = error; throw error; });
+                    requestAnimationFrame(() => { const error = new Error('frame callback boom'); callbackErrors[error.message] = error; throw error; });
+                </script>
+                <p>Scheduled callbacks remain isolated</p>
+            "#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://scheduled-callback-errors");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(
+        engine
+            .evaluate_async("({ eventErrors: eventErrors.slice().sort((left, right) => left[0].localeCompare(right[0])), handlerErrors: handlerErrors.slice().sort((left, right) => left[0].localeCompare(right[0])), timerSurvived })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "eventErrors": [
+                ["frame callback boom", true, true, true],
+                ["idle callback boom", true, true, true],
+                ["timer callback boom", true, true, true],
+            ],
+            "handlerErrors": [
+                ["frame callback boom", true, true],
+                ["idle callback boom", true, true],
+                ["timer callback boom", true, true],
+            ],
+            "timerSurvived": true,
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_mutation_observer_delivers_script_dom_changes() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -14692,7 +14750,7 @@ async fn native_content_process_delayed_timer_waits_for_due_host_turn() {
         let (mut stream, _) = listener.accept().await.unwrap();
         let request = read_http_request(&mut stream).await;
         assert_eq!(request.split_whitespace().nth(1), Some("/page"));
-        let body = "<script>globalThis.taskOrder = 'script'; setTimeout(() => { globalThis.taskOrder += '-timer'; }, 200);</script>";
+        let body = "<script>globalThis.taskOrder = 'script'; setTimeout(() => { globalThis.taskOrder += '-timer'; }, 2000);</script>";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -14709,10 +14767,79 @@ async fn native_content_process_delayed_timer_waits_for_due_host_turn() {
         engine.evaluate_async("globalThis.taskOrder").await.unwrap(),
         serde_json::json!("script")
     );
-    tokio::time::sleep(Duration::from_millis(220)).await;
+    tokio::time::sleep(Duration::from_millis(2020)).await;
     assert_eq!(
         engine.evaluate_async("globalThis.taskOrder").await.unwrap(),
         serde_json::json!("script-timer")
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_scheduled_callback_errors_do_not_abort_sibling_work() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = r#"
+            <script>
+                globalThis.eventErrors = [];
+                globalThis.handlerErrors = [];
+                globalThis.callbackErrors = {};
+                globalThis.timerSurvived = false;
+                window.addEventListener('error', event => eventErrors.push([
+                    event.message,
+                    event.error instanceof Error,
+                    event.target === window,
+                    event.error === callbackErrors[event.message],
+                ]));
+                window.onerror = (message, filename, line, column, error) => handlerErrors.push([
+                    message,
+                    error instanceof Error,
+                    error === callbackErrors[message],
+                ]);
+                setTimeout(() => { const error = new Error('content timer callback boom'); callbackErrors[error.message] = error; throw error; }, 0);
+                setTimeout(() => { globalThis.timerSurvived = true; }, 0);
+                requestIdleCallback(() => { const error = new Error('content idle callback boom'); callbackErrors[error.message] = error; throw error; });
+                requestAnimationFrame(() => { const error = new Error('content frame callback boom'); callbackErrors[error.message] = error; throw error; });
+            </script>
+            <p>Content callbacks remain isolated</p>
+        "#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(
+        engine
+            .evaluate_async("({ eventErrors: eventErrors.slice().sort((left, right) => left[0].localeCompare(right[0])), handlerErrors: handlerErrors.slice().sort((left, right) => left[0].localeCompare(right[0])), timerSurvived })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "eventErrors": [
+                ["content frame callback boom", true, true, true],
+                ["content idle callback boom", true, true, true],
+                ["content timer callback boom", true, true, true],
+            ],
+            "handlerErrors": [
+                ["content frame callback boom", true, true],
+                ["content idle callback boom", true, true],
+                ["content timer callback boom", true, true],
+            ],
+            "timerSurvived": true,
+        })
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

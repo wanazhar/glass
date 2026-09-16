@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-396` locally. Native is now the default runtime for
+`native-engine-browser-397` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -482,6 +482,14 @@ The completed `script-src-attr` slice is
 [native-engine-browser-396](tasks/native-engine-browser-396.md): it applies
 the Rust-owned CSP fallback chain to inline `on*` content attributes and
 reconciles admitted handlers across initial and dynamic DOM projections.
+
+The completed scheduled-callback resilience slice is
+[native-engine-browser-397](tasks/native-engine-browser-397.md): due timer,
+animation-frame, and idle callbacks now report uncaught exceptions through the
+existing page `error`/`onerror` surface and continue sibling callbacks in the
+same bounded host turn. Autonomous rendering, background-page scheduling,
+full task-source arbitration, and complete animation/idle Web IDL identity
+remain issue #40 promotion gates.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-435`, following
+expansion checkpoint is completed `native-engine-browser-436`, following
+completed `native-engine-browser-435`, following
 completed `native-engine-browser-434`, following
 completed `native-engine-browser-433`, following
 completed `native-engine-browser-432`, following
@@ -134,7 +135,18 @@ the existing bounded body validation, while a streaming request body remains
 explicitly rejected because fixtures have no network-side body consumer. This
 adds useful Fetch request semantics without fabricating server behavior;
 page-originated controlled streaming interception, synchronous XHR, and
-complete XHR/Streams Web IDL parity remain separate issue #40 gates.
+complete XHR/Streams Web IDL parity remained separate issue #40 gates at that
+checkpoint.
+Slice 436 closes the page-originated controlled Service Worker upload gap. A
+page `ReadableStream` remains owned and pulled by the page realm through the
+existing bounded FetchUpload event path; the content process materializes its
+one-shot bytes once, then dispatches the captured URL and request metadata to
+the active Service Worker FetchEvent. Handled responses use the ordinary page
+Fetch resolution, unhandled requests reuse the bounded body through the native
+HTTP loader, and stream cancellation/errors reject the request without a
+content-process crash. This is an explicit bounded two-realm handoff, not a
+claim of zero-copy page-to-worker-to-network streaming; fixture stream bodies,
+synchronous XHR, and complete XHR/Streams Web IDL parity remain open.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

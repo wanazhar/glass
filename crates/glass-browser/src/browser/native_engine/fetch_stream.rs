@@ -54,6 +54,106 @@ pub(crate) struct NativeFetchUploadConnection {
     pub(crate) total_bytes: usize,
 }
 
+/// The receiving half of a page- or worker-owned request-body stream.
+///
+/// A network request turns this source into a `reqwest::Body`; a controlled
+/// Service Worker request instead consumes it into one bounded replayable
+/// body before entering the worker's normal FetchEvent bridge. Keeping the
+/// source separate prevents either path from inventing a second producer
+/// protocol.
+pub(crate) struct NativeFetchUploadSource {
+    commands: mpsc::Receiver<NativeFetchUploadCommand>,
+    events: mpsc::Sender<NativeFetchUploadEvent>,
+}
+
+impl NativeFetchUploadSource {
+    pub(crate) fn into_body(self) -> reqwest::Body {
+        let stream =
+            futures_util::stream::unfold((self, false), |(mut source, terminated)| async move {
+                if terminated
+                    || source
+                        .events
+                        .send(NativeFetchUploadEvent::Demand)
+                        .await
+                        .is_err()
+                {
+                    return None;
+                }
+                let next = match source.commands.recv().await {
+                    Some(NativeFetchUploadCommand::Chunk { data }) => (Ok(data), false),
+                    Some(NativeFetchUploadCommand::End) | None => return None,
+                    Some(NativeFetchUploadCommand::Error { message }) => {
+                        (Err(std::io::Error::other(message)), true)
+                    }
+                    Some(NativeFetchUploadCommand::Cancel) => (
+                        Err(std::io::Error::other(
+                            "native fetch request body was cancelled",
+                        )),
+                        true,
+                    ),
+                };
+                Some((next.0, (source, next.1)))
+            });
+        reqwest::Body::wrap_stream(stream)
+    }
+
+    /// Consume a request body for a controlled Service Worker handoff.
+    ///
+    /// The content process already validates each command before forwarding
+    /// it here. These limits remain at the receiving boundary as a second
+    /// line of defense if another producer is added later.
+    pub(crate) async fn collect(mut self, max_bytes: usize) -> Result<Vec<u8>, String> {
+        let mut body = Vec::new();
+        let mut chunk_count = 0usize;
+        loop {
+            self.events
+                .send(NativeFetchUploadEvent::Demand)
+                .await
+                .map_err(|_| "native fetch request upload consumer is unavailable".to_owned())?;
+            match self.commands.recv().await {
+                Some(NativeFetchUploadCommand::Chunk { data }) => {
+                    chunk_count = chunk_count.saturating_add(1);
+                    if chunk_count > MAX_NATIVE_FETCH_UPLOAD_CHUNKS {
+                        return Err("native fetch request upload chunk limit exceeded".into());
+                    }
+                    let next_len = body.len().saturating_add(data.len());
+                    if next_len > max_bytes {
+                        return Err("native fetch request upload body exceeds its limit".into());
+                    }
+                    body.extend_from_slice(&data);
+                }
+                Some(NativeFetchUploadCommand::End) => return Ok(body),
+                Some(NativeFetchUploadCommand::Error { message }) => return Err(message),
+                Some(NativeFetchUploadCommand::Cancel) => {
+                    return Err("native fetch request body was cancelled".into());
+                }
+                None => {
+                    return Err("native fetch request upload producer closed unexpectedly".into());
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn spawn_native_fetch_upload_source()
+-> (NativeFetchUploadConnection, NativeFetchUploadSource) {
+    let (command_sender, command_receiver) = mpsc::channel(MAX_NATIVE_FETCH_STREAM_CONNECTIONS);
+    let (event_sender, event_receiver) = mpsc::channel(1);
+    (
+        NativeFetchUploadConnection {
+            commands: command_sender,
+            events: event_receiver,
+            demand_pending: false,
+            chunk_count: 0,
+            total_bytes: 0,
+        },
+        NativeFetchUploadSource {
+            commands: command_receiver,
+            events: event_sender,
+        },
+    )
+}
+
 pub(crate) fn spawn_native_fetch_stream(
     response: reqwest::Response,
     max_response_bytes: usize,
@@ -100,40 +200,8 @@ pub(crate) fn spawn_native_fetch_bytes_stream(
 /// content process. The body is intentionally an ordinary reqwest stream so
 /// redirects, timeouts, and transport errors remain owned by the HTTP client.
 pub(crate) fn spawn_native_fetch_upload_stream() -> (NativeFetchUploadConnection, reqwest::Body) {
-    let (command_sender, command_receiver) = mpsc::channel(MAX_NATIVE_FETCH_STREAM_CONNECTIONS);
-    let (event_sender, event_receiver) = mpsc::channel(1);
-    let stream = futures_util::stream::unfold(
-        (command_receiver, event_sender, false),
-        |(mut commands, events, terminated)| async move {
-            if terminated || events.send(NativeFetchUploadEvent::Demand).await.is_err() {
-                return None;
-            }
-            let next = match commands.recv().await {
-                Some(NativeFetchUploadCommand::Chunk { data }) => (Ok(data), false),
-                Some(NativeFetchUploadCommand::End) | None => return None,
-                Some(NativeFetchUploadCommand::Error { message }) => {
-                    (Err(std::io::Error::other(message)), true)
-                }
-                Some(NativeFetchUploadCommand::Cancel) => (
-                    Err(std::io::Error::other(
-                        "native fetch request body was cancelled",
-                    )),
-                    true,
-                ),
-            };
-            Some((next.0, (commands, events, next.1)))
-        },
-    );
-    (
-        NativeFetchUploadConnection {
-            commands: command_sender,
-            events: event_receiver,
-            demand_pending: false,
-            chunk_count: 0,
-            total_bytes: 0,
-        },
-        reqwest::Body::wrap_stream(stream),
-    )
+    let (connection, source) = spawn_native_fetch_upload_source();
+    (connection, source.into_body())
 }
 
 async fn run_native_fetch_stream(

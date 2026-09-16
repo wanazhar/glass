@@ -4865,7 +4865,7 @@ async fn native_content_process_service_worker_replays_cloned_request_body() {
             (
                 "/sw.js",
                 "application/javascript",
-                "self.addEventListener('install', event => event.waitUntil(self.skipWaiting())); self.addEventListener('activate', event => event.waitUntil(self.clients.claim())); self.addEventListener('fetch', event => { const path = new URL(event.request.url).pathname; if (path === '/echo') event.respondWith((async () => { const replay = event.request.clone(); const observed = await event.request.text(); const upstream = await fetch(replay); return new Response(JSON.stringify({ observed, upstream: await upstream.text(), replayUsed: replay.bodyUsed }), { headers: { 'Content-Type': 'application/json' } }); })()); if (path === '/stream-trigger') event.respondWith((async () => { const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([110, 97, 116, 105, 118, 101, 45])); controller.enqueue(new Uint8Array([115, 119, 45, 115, 116, 114, 101, 97, 109])); controller.close(); } }); const upstream = await fetch(new Request('/stream-echo', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: stream })); return new Response(await upstream.text(), { headers: { 'Content-Type': 'text/plain' } }); })()); });",
+                "self.addEventListener('install', event => event.waitUntil(self.skipWaiting())); self.addEventListener('activate', event => event.waitUntil(self.clients.claim())); self.addEventListener('fetch', event => { const path = new URL(event.request.url).pathname; if (path === '/echo') event.respondWith((async () => { const replay = event.request.clone(); const observed = await event.request.text(); const upstream = await fetch(replay); return new Response(JSON.stringify({ observed, upstream: await upstream.text(), replayUsed: replay.bodyUsed }), { headers: { 'Content-Type': 'application/json' } }); })()); if (path === '/stream-trigger') event.respondWith((async () => { const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([110, 97, 116, 105, 118, 101, 45])); controller.enqueue(new Uint8Array([115, 119, 45, 115, 116, 114, 101, 97, 109])); controller.close(); } }); const upstream = await fetch(new Request('/stream-echo', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: stream })); return new Response(await upstream.text(), { headers: { 'Content-Type': 'text/plain' } }); })()); if (path === '/controlled-stream') event.respondWith((async () => new Response(await event.request.text(), { headers: { 'Content-Type': 'text/plain' } }))()); });",
             ),
             ("/echo", "text/plain", "replayed"),
             ("/stream-echo", "text/plain", "native-sw-stream"),
@@ -4928,7 +4928,7 @@ async fn native_content_process_service_worker_replays_cloned_request_body() {
     assert_eq!(
         engine
             .evaluate_async(
-                "await registrationPromise.then(async () => ({ replay: await fetch('/echo', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: 'native-replay' }).then(response => response.json()), streamed: await fetch('/stream-trigger').then(response => response.text()) }))",
+                "await registrationPromise.then(async () => ({ replay: await fetch('/echo', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: 'native-replay' }).then(response => response.json()), streamed: await fetch('/stream-trigger').then(response => response.text()), controlled: await fetch('/controlled-stream', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([112, 97, 103, 101, 45])); controller.enqueue(new Uint8Array([115, 116, 114, 101, 97, 109])); controller.close(); } }) }).then(response => response.text()) }))",
             )
             .await
             .unwrap(),
@@ -4939,6 +4939,7 @@ async fn native_content_process_service_worker_replays_cloned_request_body() {
                     "replayUsed": true,
                 },
                 "streamed": "native-sw-stream",
+                "controlled": "page-stream",
             })
     );
     engine.close_async().await.unwrap();

@@ -53882,6 +53882,187 @@ xhr.send();"#,
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_exposes_bounded_xml_response_document() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/xml-default", "/xml-document", "/xml-invalid"] {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .expect("timed out waiting for the next XML XHR request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let (content_type, body) = match expected_path {
+                "/page" => ("text/html", "<p>XHR XML</p>"),
+                "/xml-default" | "/xml-document" => (
+                    "application/xml; charset=utf-8",
+                    r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE catalog SYSTEM "catalog.dtd"><catalog xmlns="urn:glass" xmlns:g="urn:glass:extra" id="root"><!--comment--><g:item id="item-1" g:kind="primary"><![CDATA[raw <value>]]></g:item><?glass done?></catalog>"#,
+                ),
+                "/xml-invalid" => ("application/xml", "<catalog><item></catalog>"),
+                other => panic!("unexpected XHR XML request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(() => {
+                globalThis.xmlResultPromise = new Promise(resolve => {
+                    const result = {};
+                    const fail = (stage, error) => resolve({
+                        error: stage,
+                        message: String(error && error.message || error),
+                    });
+                    const invalid = new XMLHttpRequest();
+                    invalid.open('GET', '/xml-invalid');
+                    invalid.onload = () => {
+                        try {
+                            result.invalid = {
+                                responseXML: invalid.responseXML,
+                                responseText: invalid.responseText,
+                            };
+                            const unsupported = new XMLHttpRequest();
+                            unsupported.responseType = 'json';
+                            try {
+                                unsupported.responseXML;
+                                result.unsupported = 'no-error';
+                            } catch (error) {
+                                result.unsupported = error.name;
+                            }
+                            resolve(result);
+                        } catch (error) {
+                            fail('invalid-callback', error);
+                        }
+                    };
+                    invalid.onerror = error => fail('invalid-xhr', error);
+
+                    const explicit = new XMLHttpRequest();
+                    explicit.responseType = 'document';
+                    explicit.open('GET', '/xml-document');
+                    explicit.onload = () => {
+                        try {
+                            const document = explicit.response;
+                            result.explicit = {
+                                identity: document instanceof Document && document === explicit.responseXML,
+                                responseText: explicit.responseText,
+                                root: document.documentElement.nodeName,
+                                namespace: document.documentElement.namespaceURI,
+                            };
+                            invalid.send();
+                        } catch (error) {
+                            fail('explicit-callback', error);
+                        }
+                    };
+                    explicit.onerror = error => fail('explicit-xhr', error);
+
+                    const request = new XMLHttpRequest();
+                    request.open('GET', '/xml-default');
+                    request.onload = () => {
+                        try {
+                            const document = request.responseXML;
+                            const root = document.documentElement;
+                            const item = document.getElementById('item-1');
+                            let appendError = '';
+                            try { root.appendChild(item); } catch (error) { appendError = error.name; }
+                            const serialized = new XMLSerializer().serializeToString(document);
+                            result.default = {
+                                document: document instanceof Document,
+                                responseIdentity: request.response === request.responseText,
+                                responseXmlIdentity: document === request.responseXML,
+                                root: root.nodeName,
+                                rootNamespace: root.namespaceURI,
+                                itemNamespace: item.namespaceURI,
+                                itemPrefix: item.prefix,
+                                itemText: item.textContent,
+                                itemParent: item.parentNode === root && item.parentElement === root,
+                                itemId: item.getAttribute('id'),
+                                itemKind: item.getAttributeNS('urn:glass:extra', 'kind'),
+                                namespaceAttribute: root.getAttributeNS('http://www.w3.org/2000/xmlns/', 'g'),
+                                tagMatches: document.getElementsByTagName('g:item').length,
+                                namespaceMatches: document.getElementsByTagNameNS('urn:glass:extra', 'item').length,
+                                childCount: root.childNodes.length,
+                                elementChildCount: root.children.length,
+                                comment: root.childNodes[0].nodeType === 8 && root.childNodes[0].nodeValue === 'comment',
+                                cdata: item.firstChild.nodeType === 4 && item.firstChild.nodeValue === 'raw <value>',
+                                processingInstruction: root.lastChild.nodeType === 7 && root.lastChild.target === 'glass' && root.lastChild.data === 'done',
+                                doctype: document.doctype.name === 'catalog' && document.doctype.systemId === 'catalog.dtd',
+                                serialized: serialized.includes('<!DOCTYPE catalog SYSTEM "catalog.dtd">')
+                                    && serialized.includes('<![CDATA[raw <value>]]>')
+                                    && serialized.includes('g:kind="primary"'),
+                                immutable: appendError === 'NoModificationAllowedError' && Object.isFrozen(document) && Object.isFrozen(root),
+                            };
+                            explicit.send();
+                        } catch (error) {
+                            fail('default-callback', error);
+                        }
+                    };
+                    request.onerror = error => fail('default-xhr', error);
+                    request.send();
+                });
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await xmlResultPromise")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "default": {
+                "document": true,
+                "responseIdentity": true,
+                "responseXmlIdentity": true,
+                "root": "catalog",
+                "rootNamespace": "urn:glass",
+                "itemNamespace": "urn:glass:extra",
+                "itemPrefix": "g",
+                "itemText": "raw <value>",
+                "itemParent": true,
+                "itemId": "item-1",
+                "itemKind": "primary",
+                "namespaceAttribute": "urn:glass:extra",
+                "tagMatches": 1,
+                "namespaceMatches": 1,
+                "childCount": 3,
+                "elementChildCount": 1,
+                "comment": true,
+                "cdata": true,
+                "processingInstruction": true,
+                "doctype": true,
+                "serialized": true,
+                "immutable": true,
+            },
+            "explicit": {
+                "identity": true,
+                "responseText": "",
+                "root": "catalog",
+                "namespace": "urn:glass",
+            },
+            "invalid": {
+                "responseXML": null,
+                "responseText": "<catalog><item></catalog>",
+            },
+            "unsupported": "InvalidStateError",
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_xhr_abort_is_observable_and_ignores_late_callbacks() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

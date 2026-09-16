@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-436`, following completed
 `native-engine-browser-435`, following completed
 `native-engine-browser-434`, following completed
 `native-engine-browser-433`, following completed
@@ -239,7 +240,17 @@ requests while retaining the explicit fail-closed behavior for streaming
 fixture bodies. This keeps deterministic fixtures useful for request-body
 semantics without pretending they are a second network server; page-originated
 controlled streaming interception, synchronous XHR, and complete
-XHR/Streams Web IDL parity remain issue #40 gates.
+XHR/Streams Web IDL parity remained issue #40 gates at that checkpoint.
+
+The completed controlled page stream-upload slice is
+[native-engine-browser-436](tasks/native-engine-browser-436.md): a page
+`ReadableStream` body now crosses the existing bounded FetchUpload demand
+path, is materialized once, and reaches the active Service Worker FetchEvent
+with its original request metadata. Handled responses resolve normally;
+unhandled requests reuse the bounded body through the native HTTP loader, and
+stream errors reject the page Fetch. Direct page/worker HTTP uploads remain
+transport-demand-driven; fixture streaming bodies, synchronous XHR, and
+complete XHR/Streams Web IDL parity remain issue #40 gates.
 
 The completed page XHR reopen-cancellation slice is
 [native-engine-browser-429](tasks/native-engine-browser-429.md): reopening a

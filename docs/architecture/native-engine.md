@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-436`, following completed
 `native-engine-browser-435`, following completed
 `native-engine-browser-434`, following completed
 `native-engine-browser-433`, following completed
@@ -55,6 +56,18 @@ fixture owners. The fixture response remains deterministic and does not
 pretend to inspect or echo the request body; streaming fixture bodies still
 fail closed until a fixture-side body consumer is defined. Page-originated
 controlled streaming interception, synchronous XHR, and complete
+XHR/Streams Web IDL parity remained issue #40 gates at that checkpoint.
+
+Slice 436 closes the page-originated controlled Service Worker upload gate. A
+page `ReadableStream` is still pulled only through the page FetchUpload task
+source and its bounded one-shot chunks are collected once by a reusable native
+upload source. The captured document URL and request metadata then enter the
+active Service Worker FetchEvent as the normal replayable request body;
+handled responses resolve through the existing page Fetch path, while an
+unhandled request reuses the same bounded bytes in the native HTTP loader.
+Cancellation and stream errors become Fetch rejection rather than a process
+failure. The copy is deliberate: this is a bounded two-realm handoff, not a
+zero-copy transport claim. Fixture stream bodies, synchronous XHR, and full
 XHR/Streams Web IDL parity remain issue #40 gates.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete

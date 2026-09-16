@@ -19,7 +19,7 @@ use super::fetch_stream::{
     MAX_NATIVE_FETCH_UPLOAD_CHUNKS, NativeFetchStreamCommand, NativeFetchStreamConnection,
     NativeFetchStreamEvent, NativeFetchUploadCommand, NativeFetchUploadConnection,
     NativeFetchUploadEvent, spawn_native_fetch_bytes_stream, spawn_native_fetch_stream,
-    spawn_native_fetch_upload_stream,
+    spawn_native_fetch_upload_source, spawn_native_fetch_upload_stream,
 };
 use super::interaction::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_FORM_BODY_BYTES, NativeEventKind, NativeFile,
@@ -135,6 +135,20 @@ struct NativePendingUploadFetch {
         Result<NativeFetchResponseStream, NativeEngineError>,
         NativeResourceLoader,
     )>,
+}
+
+struct NativePendingControlledUpload {
+    task: tokio::task::JoinHandle<Result<Vec<u8>, NativeEngineError>>,
+    document_url: String,
+    href: String,
+    method: NativeNavigationMethod,
+    headers: BTreeMap<String, String>,
+    content_type: Option<String>,
+    cors_mode: NativeCorsMode,
+    redirect_mode: NativeFetchRedirectMode,
+    cache_mode: NativeFetchCacheMode,
+    timeout: Option<Duration>,
+    credentials: bool,
 }
 
 type NativeScriptFetch = (
@@ -4106,6 +4120,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut fetch_stream_connections = BTreeMap::new();
     let mut fetch_upload_connections: BTreeMap<u32, NativeFetchUploadConnection> = BTreeMap::new();
     let mut pending_upload_fetches: BTreeMap<u32, NativePendingUploadFetch> = BTreeMap::new();
+    let mut pending_controlled_uploads: BTreeMap<u32, NativePendingControlledUpload> =
+        BTreeMap::new();
     let mut event_source_connections = BTreeMap::new();
     let mut worker_event_source_connections = BTreeMap::new();
     let mut storage_state = NativeWebStorageState::default();
@@ -4678,6 +4694,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         worker_websocket_connections.clear();
                         fetch_stream_connections.clear();
                         for (_, pending) in std::mem::take(&mut pending_upload_fetches) {
+                            pending.task.abort();
+                        }
+                        for (_, pending) in std::mem::take(&mut pending_controlled_uploads) {
                             pending.task.abort();
                         }
                         for (_, connection) in std::mem::take(&mut fetch_upload_connections) {
@@ -11042,6 +11061,8 @@ async fn resolve_script_fetches(
     let mut event_loop_turns = 0usize;
     let mut next_task_source = NativeContentTaskSource::Networking;
     let mut pending_upload_fetches: BTreeMap<u32, NativePendingUploadFetch> = BTreeMap::new();
+    let mut pending_controlled_uploads: BTreeMap<u32, NativePendingControlledUpload> =
+        BTreeMap::new();
     loop {
         if top_level_await_pending && resolved_value.is_some() {
             break;
@@ -11056,6 +11077,7 @@ async fn resolve_script_fetches(
                 .any(|connection| connection.read_pending);
         let mut selected_source = None;
         let mut selected_fetch = None;
+        let mut selected_controlled_upload_completion = None;
         let mut selected_upload_fetch_completion = None;
         let mut selected_websocket_event = None;
         let mut selected_fetch_stream_event = None;
@@ -11066,6 +11088,15 @@ async fn resolve_script_fetches(
             next_task_source = source.next();
             match source {
                 NativeContentTaskSource::Networking => {
+                    if let Some(request_id) = pending_controlled_uploads
+                        .iter()
+                        .find(|(_, fetch)| fetch.task.is_finished())
+                        .map(|(request_id, _)| *request_id)
+                    {
+                        selected_controlled_upload_completion = Some(request_id);
+                        selected_source = Some(source);
+                        break;
+                    }
                     if let Some(request_id) = pending_upload_fetches
                         .iter()
                         .find(|(_, fetch)| fetch.task.is_finished())
@@ -11164,46 +11195,62 @@ async fn resolve_script_fetches(
                         "streaming fetch requests must not also carry a buffered body",
                     ));
                 }
-                if is_network_url(&current_url)
-                    && service_workers.fetch_is_controlled(&current_url, &href, "fetch")?
-                {
-                    let payload = fetch_response_payload(Err(NativeEngineError::UnsupportedUrl {
-                        reason: "streaming fetch request bodies are not yet supported by the Service Worker bridge".into(),
-                    }));
-                    process_page_fetch_resolution(
-                        request_id,
-                        payload,
-                        runtime,
-                        service_workers,
-                        websocket_connections,
-                        fetch_stream_connections,
-                        fetch_upload_connections,
-                        event_source_connections,
-                        loader,
-                        &mut next,
-                        &mut mutation,
-                        &mut current_url,
-                        document_origin,
-                        viewport,
-                        top_level_await_pending,
-                        &mut resolved_value,
-                        &mut pump_background_events,
-                        &mut pending,
-                    )
-                    .await?;
-                    continue;
-                }
                 if fetch_upload_connections.contains_key(&upload_stream_id) {
                     return Err(NativeEngineError::Network {
                         operation: "fetch request upload stream".into(),
                         reason: "fetch request upload identifier is already active".into(),
                     });
                 }
-                if pending_upload_fetches.len() >= MAX_NATIVE_EFFECTS {
+                if is_network_url(&current_url)
+                    && service_workers.fetch_is_controlled(&current_url, &href, "fetch")?
+                {
+                    let pending_upload_count = pending_upload_fetches
+                        .len()
+                        .saturating_add(pending_controlled_uploads.len());
+                    if pending_upload_count >= MAX_NATIVE_EFFECTS {
+                        return Err(NativeEngineError::limit(
+                            "native pending fetch uploads",
+                            MAX_NATIVE_EFFECTS,
+                            pending_upload_count.saturating_add(1),
+                        ));
+                    }
+                    let (upload_connection, upload_source) = spawn_native_fetch_upload_source();
+                    fetch_upload_connections.insert(upload_stream_id, upload_connection);
+                    let task = tokio::spawn(async move {
+                        upload_source
+                            .collect(MAX_NATIVE_FORM_BODY_BYTES)
+                            .await
+                            .map_err(|reason| NativeEngineError::Network {
+                                operation: "controlled Service Worker fetch request upload".into(),
+                                reason,
+                            })
+                    });
+                    pending_controlled_uploads.insert(
+                        request_id,
+                        NativePendingControlledUpload {
+                            task,
+                            document_url: current_url.clone(),
+                            href,
+                            method,
+                            headers,
+                            content_type,
+                            cors_mode,
+                            redirect_mode,
+                            cache_mode,
+                            timeout,
+                            credentials,
+                        },
+                    );
+                    continue;
+                }
+                let pending_upload_count = pending_upload_fetches
+                    .len()
+                    .saturating_add(pending_controlled_uploads.len());
+                if pending_upload_count >= MAX_NATIVE_EFFECTS {
                     return Err(NativeEngineError::limit(
                         "native pending fetch uploads",
                         MAX_NATIVE_EFFECTS,
-                        pending_upload_fetches.len().saturating_add(1),
+                        pending_upload_count.saturating_add(1),
                     ));
                 }
                 let (upload_connection, request_body) = spawn_native_fetch_upload_stream();
@@ -11282,6 +11329,115 @@ async fn resolve_script_fetches(
                         operation: "content process script fetch".into(),
                         reason: "Service Worker fetch is awaiting a browser WindowClient".into(),
                     }))
+                }
+                Err(error) => fetch_response_payload(Err(error)),
+            };
+            process_page_fetch_resolution(
+                request_id,
+                payload,
+                runtime,
+                service_workers,
+                websocket_connections,
+                fetch_stream_connections,
+                fetch_upload_connections,
+                event_source_connections,
+                loader,
+                &mut next,
+                &mut mutation,
+                &mut current_url,
+                document_origin,
+                viewport,
+                top_level_await_pending,
+                &mut resolved_value,
+                &mut pump_background_events,
+                &mut pending,
+            )
+            .await?;
+            continue;
+        }
+        if let Some(request_id) = selected_controlled_upload_completion.take() {
+            let pending_fetch =
+                pending_controlled_uploads
+                    .remove(&request_id)
+                    .ok_or_else(|| NativeEngineError::Worker {
+                        operation: "controlled Service Worker fetch upload completion".into(),
+                        reason: "completed controlled fetch upload task was not active".into(),
+                    })?;
+            let body_result = match pending_fetch.task.await {
+                Ok(result) => result,
+                Err(_) => Err(NativeEngineError::worker_failure(
+                    "controlled Service Worker fetch upload task",
+                    NativeWorkerFailureKind::Transport,
+                    "native controlled fetch upload task terminated unexpectedly",
+                )),
+            };
+            if let Some(connection) = fetch_upload_connections.remove(&request_id) {
+                let _ = connection
+                    .commands
+                    .try_send(NativeFetchUploadCommand::Cancel);
+            }
+            let Some(loader) = loader.as_deref_mut() else {
+                return Err(NativeEngineError::Worker {
+                    operation: "controlled Service Worker fetch upload completion".into(),
+                    reason: "content process has no resource loader".into(),
+                });
+            };
+            let payload = match body_result {
+                Ok(body) => {
+                    let request_body = NativeRequestBody::Bytes(body);
+                    let intercepted = service_workers
+                        .intercept_fetch(
+                            loader,
+                            &pending_fetch.document_url,
+                            &pending_fetch.href,
+                            pending_fetch.method,
+                            pending_fetch.headers.clone(),
+                            Some(request_body.clone()),
+                            pending_fetch.content_type.clone(),
+                            pending_fetch.cors_mode,
+                            pending_fetch.redirect_mode,
+                            pending_fetch.timeout,
+                            pending_fetch.credentials,
+                            "fetch",
+                        )
+                        .await;
+                    match intercepted {
+                        Ok(NativeServiceWorkerFetchOutcome::Handled(response)) => {
+                            fetch_response_payload(Ok(response))
+                        }
+                        Ok(NativeServiceWorkerFetchOutcome::NotHandled) => {
+                            let opened = loader
+                                .open_fetch_response_stream_async(NativeFetchRequest {
+                                    document_url: &pending_fetch.document_url,
+                                    href: &pending_fetch.href,
+                                    method: pending_fetch.method,
+                                    body: Some(request_body),
+                                    content_type: pending_fetch.content_type,
+                                    request_headers: pending_fetch.headers,
+                                    credentials: pending_fetch.credentials,
+                                    cors_mode: pending_fetch.cors_mode,
+                                    redirect_mode: pending_fetch.redirect_mode,
+                                    cache_mode: pending_fetch.cache_mode,
+                                    timeout: pending_fetch.timeout,
+                                    max_response_bytes: None,
+                                })
+                                .await;
+                            fetch_opened_response_payload(
+                                opened,
+                                request_id,
+                                fetch_stream_connections,
+                            )
+                            .await
+                        }
+                        Ok(NativeServiceWorkerFetchOutcome::Suspended) => {
+                            fetch_response_payload(Err(NativeEngineError::Worker {
+                                operation: "content process script fetch".into(),
+                                reason: "Service Worker fetch is awaiting a browser WindowClient"
+                                    .into(),
+                            }))
+                        }
+                        Err(error) => fetch_response_payload(Err(error)),
+                    }
                 }
                 Err(error) => fetch_response_payload(Err(error)),
             };
@@ -11651,7 +11807,9 @@ async fn resolve_script_fetches(
             sleep(NATIVE_WEBSOCKET_POLL_INTERVAL).await;
             continue;
         }
-        if selected_source.is_none() && !pending_upload_fetches.is_empty() {
+        if selected_source.is_none()
+            && (!pending_upload_fetches.is_empty() || !pending_controlled_uploads.is_empty())
+        {
             sleep(NATIVE_WEBSOCKET_POLL_INTERVAL).await;
             continue;
         }

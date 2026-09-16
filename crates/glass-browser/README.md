@@ -467,10 +467,11 @@ Page scripts now also expose `window.open(url, target)`: `_blank` and named
 targets create or reuse initialized parked contexts, while reserved
 same-context names use normal navigation; local and HTTP(S) paths share the
 versioned native owner. WindowProxy `postMessage()` now crosses local and
-HTTP(S) realms, including the content-worker boundary, with bounded cloned
-data, serialized origins, source proxies, and explicit `targetOrigin`
-filtering. Direct cross-context property scripting, popup permissions/geometry,
-and full browser topology remain later issue #40 gates. Native browsing contexts
+HTTP(S) realms, including the content-worker boundary, with bounded structured-
+clone data, MessagePort transfer lists, browser-owned return routing, serialized
+origins, source proxies, and explicit `targetOrigin` filtering. Direct cross-
+context property scripting, popup permissions/geometry, and full browser
+topology remain later issue #40 gates. Native browsing contexts
 also expose bounded `window.name` and `window.opener` metadata across local and
 HTTP(S) page loads, and a renamed target can be reused by later named
 `window.open` calls. `WindowProxy.close()` now removes its target through the

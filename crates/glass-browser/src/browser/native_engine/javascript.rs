@@ -893,6 +893,22 @@ pub(crate) struct NativeMessagePortPageMessage {
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
 }
 
+/// A page-owned MessagePort command whose bridge is outside the current
+/// JavaScript owner. The browser backend fills the source metadata after the
+/// record leaves the page or content-process owner; keeping it out of the
+/// serialized payload makes the IPC format independent of host topology.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct NativePageMessagePortCommand {
+    pub(crate) bridge_key: String,
+    pub(crate) data: serde_json::Value,
+    #[serde(default)]
+    pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
+    #[serde(default, skip_serializing)]
+    pub(crate) source_context_id: String,
+    #[serde(default, skip_serializing)]
+    pub(crate) source_frame_id: String,
+}
+
 /// A bounded message emitted by a Service Worker for one browser-wide page
 /// client. The browser backend resolves the opaque client ID to its target and
 /// frame owner before dispatching the page event.
@@ -1290,6 +1306,7 @@ pub(crate) struct NativeWorkerRegistry {
     next_worker_timer_id: u32,
     pending_messages: VecDeque<NativeWorkerMessage>,
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
+    pending_page_message_port_commands: VecDeque<NativePageMessagePortCommand>,
     pending_websocket_commands: VecDeque<NativeWorkerWebSocketCommand>,
     pending_event_source_commands: VecDeque<NativeWorkerEventSourceCommand>,
     message_port_routes: BTreeMap<String, NativeMessagePortRoute>,
@@ -1303,6 +1320,7 @@ impl NativeWorkerRegistry {
             next_worker_timer_id: 0,
             pending_messages: VecDeque::new(),
             pending_message_port_messages: VecDeque::new(),
+            pending_page_message_port_commands: VecDeque::new(),
             pending_websocket_commands: VecDeque::new(),
             pending_event_source_commands: VecDeque::new(),
             message_port_routes: BTreeMap::new(),
@@ -1315,6 +1333,7 @@ impl NativeWorkerRegistry {
         self.next_worker_timer_id = 0;
         self.pending_messages.clear();
         self.pending_message_port_messages.clear();
+        self.pending_page_message_port_commands.clear();
         self.pending_websocket_commands.clear();
         self.pending_event_source_commands.clear();
         self.message_port_routes.clear();
@@ -1326,6 +1345,10 @@ impl NativeWorkerRegistry {
 
     pub(crate) fn take_message_port_messages(&mut self) -> Vec<NativeMessagePortPageMessage> {
         self.pending_message_port_messages.drain(..).collect()
+    }
+
+    pub(crate) fn take_page_message_port_commands(&mut self) -> Vec<NativePageMessagePortCommand> {
+        self.pending_page_message_port_commands.drain(..).collect()
     }
 
     pub(crate) fn take_websocket_commands(&mut self) -> Vec<NativeWorkerWebSocketCommand> {
@@ -1953,6 +1976,24 @@ impl NativeWorkerRegistry {
                 ));
             };
             let Some(route) = self.message_port_routes.get(&bridge_key).cloned() else {
+                let command = NativePageMessagePortCommand {
+                    bridge_key,
+                    data,
+                    transfer_ports,
+                    source_context_id: String::new(),
+                    source_frame_id: String::new(),
+                };
+                validate_page_message_port_command(&command)?;
+                if self.pending_page_message_port_commands.len() >= MAX_NATIVE_WORKER_MESSAGES {
+                    return Err(NativeEngineError::limit(
+                        "native pending page MessagePort commands",
+                        MAX_NATIVE_WORKER_MESSAGES,
+                        self.pending_page_message_port_commands
+                            .len()
+                            .saturating_add(1),
+                    ));
+                }
+                self.pending_page_message_port_commands.push_back(command);
                 continue;
             };
             self.register_page_transfers(route.worker_id, &transfer_ports)?;
@@ -13505,6 +13546,27 @@ pub(crate) fn validate_message_port_transfers(
         }
     }
     Ok(())
+}
+
+pub(crate) fn validate_page_message_port_command(
+    command: &NativePageMessagePortCommand,
+) -> Result<(), NativeEngineError> {
+    validate_url_text("native MessagePort bridge key", &command.bridge_key)?;
+    if command.bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+        return Err(NativeEngineError::limit(
+            "native MessagePort bridge key",
+            crate::browser_backend::MAX_BACKEND_ID_BYTES,
+            command.bridge_key.len(),
+        ));
+    }
+    validate_message_port_transfers(&command.transfer_ports)?;
+    validate_native_message_payload(
+        &serde_json::json!({
+            "data": &command.data,
+            "transfer_ports": &command.transfer_ports,
+        }),
+        "native page MessagePort command",
+    )
 }
 
 fn read_indexed_db_state<'js>(

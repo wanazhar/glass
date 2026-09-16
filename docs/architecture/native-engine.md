@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-385` slice. The native runtime is now the primary
+`native-engine-browser-386` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -679,9 +679,22 @@ transfer-list overload and the options-object overload use the shared bounded
 structured-clone owner; receiving `MessageEvent` instances decode their
 transferred ports and preserve the identity between `event.data` and
 `event.ports`. Source endpoints are detached only after the clone succeeds.
-The receiving bridge's return route and full browser-wide task-source
-arbitration remain issue #40 promotion work. Exact evidence is recorded in
+Full browser-wide task-source arbitration and the remaining Core Web Profile
+gates remain issue #40 promotion work. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-385.md`.
+
+Slice 386 completes the browser-owned return route for transferred page
+`MessagePort`s. Unrouted page commands now cross the local or content-process
+boundary as bounded typed records; the browser scheduler resolves each bridge
+key to its source target/frame and dispatches it to active or parked native
+pages, including nested transfer lists that return a new port to the sender.
+Route insertion is atomic and globally bounded, stale owners are pruned, and
+full target/frame navigation and close paths clear routes before a new
+JavaScript realm can reuse a port ID. The existing target-origin, structured-
+clone, descriptor, payload, and effect limits remain enforced. Browser-wide
+task-source conformance and the remaining Core Web Profile gates remain open.
+Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-386.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

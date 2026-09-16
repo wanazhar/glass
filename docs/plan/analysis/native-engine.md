@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-385`, with native-first product
+expansion checkpoint is `native-engine-browser-386`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -331,10 +331,19 @@ the page, frame, and content-process boundaries. The legacy third-argument
 form and the options-object form share the bounded structured-clone encoder;
 receiving page message events decode `MessagePort` descriptors and preserve
 the transferred port's identity when it is also present in `event.data`.
-Source endpoints remain committed only after cloning succeeds. Return routing
-from the receiving cross-window port, browser-wide task-source arbitration,
-and the remaining Core Web Profile gates remain open. Exact evidence is
-recorded in `docs/plan/tasks/native-engine-browser-385.md`. The
+Source endpoints remain committed only after cloning succeeds. Browser-wide
+task-source arbitration and the remaining Core Web Profile gates remain open.
+Exact evidence is recorded in `docs/plan/tasks/native-engine-browser-385.md`.
+The completed Slice 386 completes browser-owned return routing for transferred
+page `MessagePort`s. Unrouted page commands cross local and content-process
+boundaries as bounded typed records; the browser scheduler resolves each
+bridge key to its source target/frame and dispatches it to active or parked
+native pages, including nested transfer lists that return a new port to the
+sender. Route insertion is atomic and globally bounded, stale owners are
+pruned, and full target/frame navigation and close paths clear routes before
+a new JavaScript realm can reuse a port ID. Browser-wide task-source
+conformance and the remaining Core Web Profile gates remain open. Exact
+evidence is recorded in `docs/plan/tasks/native-engine-browser-386.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through
@@ -5940,8 +5949,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-385.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-386.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-385.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-384.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-383.md` is the preceding completed
@@ -6087,7 +6098,7 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain starts at `native-engine-browser-385`.
+The current browser-slice evidence chain starts at `native-engine-browser-386`.
 Slices 384 through 356 are summarized in the current checkpoint paragraphs
 above; the historical continuation below begins with `native-engine-browser-355`,
 `native-engine-browser-354`,
@@ -6265,8 +6276,9 @@ browser task;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed browser-expansion checkpoint is recorded for
-`docs/plan/tasks/native-engine-browser-385.md`; its implementation and focused
-verification are recorded in that task file. The CSS foundation checkpoint
+`docs/plan/tasks/native-engine-browser-386.md`; its implementation and focused
+verification are recorded in that task file. The preceding browser-expansion
+checkpoint is `docs/plan/tasks/native-engine-browser-385.md`. The CSS foundation checkpoint
 remains `docs/plan/tasks/native-engine-234.md`: implementation is `8a96f56b`
 (design `b2119e5f`). It accepts bounded standalone case-insensitive finite
 `overflow: visible|auto|scroll`, `overflow-x: visible|auto|scroll`, and

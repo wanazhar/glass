@@ -1,9 +1,22 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-402` slice. The native runtime is now the primary
+`native-engine-browser-403` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 403 closes report-only CSP network delivery for the current native
+HTTP(S) owners. `report-uri` declarations produce bounded legacy
+`application/csp-report` POSTs; `report-to` declarations use matching
+`Reporting-Endpoints` or legacy `Report-To` metadata and emit bounded
+`application/reports+json` POSTs. Endpoints are resolved against the protected
+document, credential-bearing and insecure endpoints from secure documents are
+rejected, redirects and cookies are not used, and delivery is asynchronous
+behind a bounded process-wide concurrency gate. Endpoint failures never alter
+the protected request or surface report payloads in logs. Service Worker
+policy-container propagation, dynamic policy mutation, strict-dynamic trust,
+and the complete CSP source-expression grammar remain separate issue #40
+gates.
 
 Slice 402 closes the WebSocket report-only CSP owner boundary. Page and
 dedicated-worker WebSocket `connect-src` checks compute bounded structured
@@ -13,7 +26,7 @@ handshake-error observation. The actual `ws`/`wss` blocked URI is retained
 while the normalized HTTP(S) policy URL is accepted for source matching;
 report-only records never authorize, block, or duplicate a connection.
 Service Worker policy-container propagation, dynamic policy mutation,
-strict-dynamic trust, network report delivery, and the complete CSP
+strict-dynamic trust, and the complete CSP
 source-expression grammar remain separate issue #40 gates.
 
 Slice 401 preserves successful HTTP(S) worker-script response CSP under the
@@ -22,7 +35,7 @@ WebSocket owners now see that worker policy, while page `worker-src`
 authorization remains separate. A later worker load replaces stale policy
 state; report-only records remain bounded and never authorize or block a
 request. Service Worker policy-container propagation, dynamic policy mutation,
-strict-dynamic trust, network report delivery, and the complete CSP
+strict-dynamic trust, and the complete CSP
 source-expression grammar remain separate issue #40 gates.
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current

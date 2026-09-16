@@ -17,7 +17,9 @@ use reqwest::header::HeaderMap;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::Semaphore;
 use url::Url;
 
 const MAX_NATIVE_NETWORK_REDIRECTS: usize = 8;
@@ -37,6 +39,11 @@ pub(crate) const MAX_NATIVE_RESPONSE_HEADER_BYTES: usize = 128 * 1024;
 pub(crate) const MAX_NATIVE_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_NATIVE_CSP_POLICIES: usize = 16;
 pub(crate) const MAX_NATIVE_CSP_VIOLATIONS: usize = 128;
+const MAX_NATIVE_CSP_REPORT_ENDPOINTS: usize = 8;
+const MAX_NATIVE_CSP_REPORT_ENDPOINT_BYTES: usize = 2048;
+const MAX_NATIVE_CSP_REPORT_PAYLOAD_BYTES: usize = 128 * 1024;
+const MAX_NATIVE_CSP_REPORT_TASKS: usize = 32;
+const NATIVE_CSP_REPORT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +285,7 @@ pub(crate) struct NativeWebSocketTarget {
     pub(crate) url: Url,
     pub(crate) cookie: Option<String>,
     pub(crate) csp_violations: Vec<NativeCspViolation>,
+    pub(crate) csp_report_deliveries: Vec<NativeCspReportDelivery>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,6 +311,175 @@ pub(crate) struct NativeCspViolation {
     pub(crate) status_code: u16,
     pub(crate) line_number: u32,
     pub(crate) column_number: u32,
+}
+
+/// One already-serialized CSP report that can be sent without retaining the
+/// owning loader or any page credentials. Keeping the payload here also makes
+/// the delivery task independent from later policy mutations or navigation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeCspReportDelivery {
+    pub(crate) endpoint: String,
+    pub(crate) content_type: &'static str,
+    pub(crate) body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeCspReportFormat {
+    Legacy,
+    ReportingApi,
+}
+
+fn csp_violation_json(violation: &NativeCspViolation) -> serde_json::Value {
+    serde_json::json!({
+        "document-uri": violation.document_uri,
+        "referrer": violation.referrer,
+        "blocked-uri": violation.blocked_uri,
+        "effective-directive": violation.effective_directive,
+        "violated-directive": violation.violated_directive,
+        "original-policy": violation.original_policy,
+        "source-file": violation.source_file,
+        "script-sample": violation.sample,
+        "disposition": violation.disposition,
+        "status-code": violation.status_code,
+        "line-number": violation.line_number,
+        "column-number": violation.column_number,
+    })
+}
+
+fn csp_report_delivery(
+    endpoint: String,
+    violation: &NativeCspViolation,
+    format: NativeCspReportFormat,
+) -> Option<NativeCspReportDelivery> {
+    let violation_json = csp_violation_json(violation);
+    let (content_type, payload) = match format {
+        NativeCspReportFormat::Legacy => (
+            "application/csp-report",
+            serde_json::json!({ "csp-report": violation_json }),
+        ),
+        NativeCspReportFormat::ReportingApi => (
+            "application/reports+json",
+            serde_json::json!([{
+                "age": 0,
+                "type": "csp-violation",
+                "url": violation.document_uri,
+                "user_agent": "",
+                "body": violation_json,
+            }]),
+        ),
+    };
+    let body = serde_json::to_vec(&payload).ok()?;
+    (body.len() <= MAX_NATIVE_CSP_REPORT_PAYLOAD_BYTES).then_some(NativeCspReportDelivery {
+        endpoint,
+        content_type,
+        body,
+    })
+}
+
+fn resolve_csp_report_endpoint(document_url: &Url, reference: &str) -> Option<String> {
+    let reference = reference.trim();
+    if reference.is_empty() || reference.len() > MAX_NATIVE_CSP_REPORT_ENDPOINT_BYTES {
+        return None;
+    }
+    let mut endpoint = document_url.join(reference).ok()?;
+    endpoint.set_fragment(None);
+    if !is_network_url(endpoint.as_str())
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || !mixed_content_allowed(document_url, &endpoint)
+    {
+        return None;
+    }
+    let endpoint = endpoint.as_str().to_owned();
+    (endpoint.len() <= MAX_NATIVE_CSP_REPORT_ENDPOINT_BYTES).then_some(endpoint)
+}
+
+fn csp_report_deliveries_for_declaration(
+    reporting_endpoints: &BTreeMap<String, Vec<String>>,
+    declaration: &NativeCspDeclaration,
+    document_url: &Url,
+    violation: &NativeCspViolation,
+) -> Vec<NativeCspReportDelivery> {
+    let (references, format) = if let Some(group) = declaration.directives.report_to.as_deref() {
+        (
+            reporting_endpoints
+                .get(group)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+            NativeCspReportFormat::ReportingApi,
+        )
+    } else {
+        (
+            declaration.directives.report_uris.as_slice(),
+            NativeCspReportFormat::Legacy,
+        )
+    };
+    let mut deliveries = Vec::new();
+    for reference in references.iter().take(MAX_NATIVE_CSP_REPORT_ENDPOINTS) {
+        let Some(endpoint) = resolve_csp_report_endpoint(document_url, reference) else {
+            continue;
+        };
+        if deliveries.iter().any(|delivery: &NativeCspReportDelivery| {
+            delivery.endpoint == endpoint
+                && delivery.content_type
+                    == match format {
+                        NativeCspReportFormat::Legacy => "application/csp-report",
+                        NativeCspReportFormat::ReportingApi => "application/reports+json",
+                    }
+        }) {
+            continue;
+        }
+        if let Some(delivery) = csp_report_delivery(endpoint, violation, format) {
+            deliveries.push(delivery);
+        }
+    }
+    deliveries
+}
+
+fn native_csp_report_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(NATIVE_CSP_REPORT_TIMEOUT)
+                .build()
+                .ok()
+        })
+        .as_ref()
+}
+
+/// Start bounded, best-effort report POSTs without retaining the resource
+/// loader or any page-owned credentials. Report delivery failures are not
+/// browser-visible and cannot change the triggering operation.
+pub(crate) fn schedule_native_csp_report_deliveries(deliveries: Vec<NativeCspReportDelivery>) {
+    if deliveries.is_empty() {
+        return;
+    }
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let Some(client) = native_csp_report_client().cloned() else {
+        return;
+    };
+    static PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    let permits =
+        Arc::clone(PERMITS.get_or_init(|| Arc::new(Semaphore::new(MAX_NATIVE_CSP_REPORT_TASKS))));
+    for delivery in deliveries {
+        let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
+            break;
+        };
+        let client = client.clone();
+        handle.spawn(async move {
+            let _permit = permit;
+            let _ = client
+                .post(delivery.endpoint)
+                .header(reqwest::header::CONTENT_TYPE, delivery.content_type)
+                .body(delivery.body)
+                .send()
+                .await;
+        });
+    }
 }
 
 /// A bounded response returned by the native GET/fetch primitive.
@@ -723,6 +900,8 @@ struct NativeCspDirectives {
     connect_sources: Option<Vec<String>>,
     worker_sources: Option<Vec<String>>,
     default_sources: Option<Vec<String>>,
+    report_uris: Vec<String>,
+    report_to: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -736,6 +915,7 @@ struct NativeCspPolicy {
     policies: Vec<NativeCspDirectives>,
     header_policy_count: usize,
     report_only_policies: Vec<NativeCspDeclaration>,
+    reporting_endpoints: BTreeMap<String, Vec<String>>,
 }
 
 impl NativeCspDirectives {
@@ -1015,6 +1195,7 @@ impl NativeCspPolicy {
 pub(crate) struct NativeInlineScriptPolicy {
     policies: Vec<NativeCspDirectives>,
     report_only_policies: Vec<NativeCspDeclaration>,
+    reporting_endpoints: BTreeMap<String, Vec<String>>,
 }
 
 impl NativeInlineScriptPolicy {
@@ -1043,30 +1224,45 @@ impl NativeInlineScriptPolicy {
             return Vec::new();
         }
         let sample = source.chars().take(40).collect::<String>();
-        self.report_only_policies
-            .iter()
-            .filter_map(|declaration| {
-                let (directive, sources) = declaration
-                    .directives
-                    .inline_directive_for(NativeInlineCspKind::ScriptElement)?;
-                (!inline_csp_sources_allow(Some(sources.as_slice()), source, nonce, false))
-                    .then_some(NativeCspViolation {
-                        document_uri: without_fragment(document_url.as_str()).to_owned(),
-                        referrer: String::new(),
-                        blocked_uri: "inline".into(),
-                        effective_directive: directive.into(),
-                        violated_directive: directive.into(),
-                        original_policy: declaration.original_policy.clone(),
-                        source_file: String::new(),
-                        sample: sample.clone(),
-                        disposition: "report".into(),
-                        status_code: 0,
-                        line_number: 0,
-                        column_number: 0,
-                    })
-            })
-            .take(MAX_NATIVE_CSP_VIOLATIONS)
-            .collect()
+        let mut violations = Vec::new();
+        let mut deliveries = Vec::new();
+        for declaration in &self.report_only_policies {
+            let Some((directive, sources)) = declaration
+                .directives
+                .inline_directive_for(NativeInlineCspKind::ScriptElement)
+            else {
+                continue;
+            };
+            if inline_csp_sources_allow(Some(sources.as_slice()), source, nonce, false) {
+                continue;
+            }
+            if violations.len() >= MAX_NATIVE_CSP_VIOLATIONS {
+                break;
+            }
+            let violation = NativeCspViolation {
+                document_uri: without_fragment(document_url.as_str()).to_owned(),
+                referrer: String::new(),
+                blocked_uri: "inline".into(),
+                effective_directive: directive.into(),
+                violated_directive: directive.into(),
+                original_policy: declaration.original_policy.clone(),
+                source_file: String::new(),
+                sample: sample.clone(),
+                disposition: "report".into(),
+                status_code: 0,
+                line_number: 0,
+                column_number: 0,
+            };
+            deliveries.extend(csp_report_deliveries_for_declaration(
+                &self.reporting_endpoints,
+                declaration,
+                &document_url,
+                &violation,
+            ));
+            violations.push(violation);
+        }
+        schedule_native_csp_report_deliveries(deliveries);
+        violations
     }
 }
 
@@ -1291,6 +1487,8 @@ impl NativeResourceLoader {
 
     fn queue_csp_violation(
         &mut self,
+        policy: &NativeCspPolicy,
+        declaration: &NativeCspDeclaration,
         document_url: &Url,
         blocked_uri: impl Into<String>,
         effective_directive: &str,
@@ -1300,13 +1498,20 @@ impl NativeResourceLoader {
         if self.csp_violations.len() >= MAX_NATIVE_CSP_VIOLATIONS {
             return;
         }
-        self.csp_violations.push(Self::csp_violation_record(
+        let violation = Self::csp_violation_record(
             document_url,
             blocked_uri,
             effective_directive,
             original_policy,
             sample,
+        );
+        schedule_native_csp_report_deliveries(csp_report_deliveries_for_declaration(
+            &policy.reporting_endpoints,
+            declaration,
+            document_url,
+            &violation,
         ));
+        self.csp_violations.push(violation);
     }
 
     fn record_report_only_url_violations(
@@ -1321,6 +1526,8 @@ impl NativeResourceLoader {
             policy.report_only_url_violations(kind, document_url, resource_url)
         {
             self.queue_csp_violation(
+                policy,
+                declaration,
                 document_url,
                 blocked_uri.clone(),
                 directive,
@@ -1341,6 +1548,8 @@ impl NativeResourceLoader {
         let sample = source.chars().take(40).collect::<String>();
         for (declaration, directive) in policy.report_only_inline_violations(kind, source, nonce) {
             self.queue_csp_violation(
+                policy,
+                declaration,
                 document_url,
                 "inline",
                 directive,
@@ -1359,6 +1568,7 @@ impl NativeResourceLoader {
             .map(|policy| NativeInlineScriptPolicy {
                 policies: policy.policies.clone(),
                 report_only_policies: policy.report_only_policies.clone(),
+                reporting_endpoints: policy.reporting_endpoints.clone(),
             })
             .unwrap_or_default())
     }
@@ -1571,20 +1781,28 @@ impl NativeResourceLoader {
                 reason: "WebSocket policy URL could not be normalized".into(),
             })?;
         let blocked_uri = without_fragment(target_url.as_str()).to_owned();
-        let csp_violations = policy
+        let mut csp_violations = Vec::new();
+        let mut csp_report_deliveries = Vec::new();
+        for (declaration, directive) in policy
             .report_only_websocket_violations(&document_url, &target_url, &policy_target)
             .into_iter()
             .take(MAX_NATIVE_CSP_VIOLATIONS)
-            .map(|(declaration, directive)| {
-                Self::csp_violation_record(
-                    &document_url,
-                    blocked_uri.clone(),
-                    directive,
-                    &declaration.original_policy,
-                    "",
-                )
-            })
-            .collect();
+        {
+            let violation = Self::csp_violation_record(
+                &document_url,
+                blocked_uri.clone(),
+                directive,
+                &declaration.original_policy,
+                "",
+            );
+            csp_report_deliveries.extend(csp_report_deliveries_for_declaration(
+                &policy.reporting_endpoints,
+                declaration,
+                &document_url,
+                &violation,
+            ));
+            csp_violations.push(violation);
+        }
         if !policy.allows(NativeSubresourceKind::Connect, &document_url, &target_url)
             && !policy.allows(
                 NativeSubresourceKind::Connect,
@@ -1616,6 +1834,7 @@ impl NativeResourceLoader {
                 NativeNavigationMethod::Get,
             ),
             csp_violations,
+            csp_report_deliveries,
         })
     }
 
@@ -1891,6 +2110,10 @@ impl NativeResourceLoader {
                     directives: parse_csp_directives(value),
                     original_policy: value.clone(),
                 });
+            } else if name.eq_ignore_ascii_case("reporting-endpoints")
+                || name.eq_ignore_ascii_case("report-to")
+            {
+                add_reporting_endpoint_header(&mut policy, name, value);
             }
         }
         policy.header_policy_count = policy.policies.len();
@@ -4008,6 +4231,16 @@ fn content_security_policy(headers: &HeaderMap) -> NativeCspPolicy {
             original_policy: value.to_owned(),
         });
     }
+    for value in headers.get_all("reporting-endpoints").iter() {
+        if let Ok(value) = value.to_str() {
+            add_reporting_endpoint_header(&mut policy, "reporting-endpoints", value);
+        }
+    }
+    for value in headers.get_all("report-to").iter() {
+        if let Ok(value) = value.to_str() {
+            add_reporting_endpoint_header(&mut policy, "report-to", value);
+        }
+    }
     policy.header_policy_count = policy.policies.len();
     policy
 }
@@ -4035,10 +4268,103 @@ fn parse_csp_directives(value: &str) -> NativeCspDirectives {
             "connect-src" => policy.connect_sources = Some(sources),
             "worker-src" => policy.worker_sources = Some(sources),
             "default-src" => policy.default_sources = Some(sources),
+            "report-uri" => {
+                policy.report_uris = sources
+                    .into_iter()
+                    .take(MAX_NATIVE_CSP_REPORT_ENDPOINTS)
+                    .collect()
+            }
+            "report-to" => policy.report_to = sources.into_iter().next(),
             _ => {}
         }
     }
     policy
+}
+
+fn add_reporting_endpoint_header(policy: &mut NativeCspPolicy, name: &str, value: &str) {
+    if value.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES {
+        return;
+    }
+    let entries = if name.eq_ignore_ascii_case("reporting-endpoints") {
+        parse_reporting_endpoints_header(value)
+    } else {
+        parse_legacy_report_to_header(value)
+    };
+    for (group, endpoint) in entries {
+        if group.is_empty()
+            || group.len() > MAX_NATIVE_CSP_REPORT_ENDPOINT_BYTES
+            || endpoint.len() > MAX_NATIVE_CSP_REPORT_ENDPOINT_BYTES
+        {
+            continue;
+        }
+        let endpoints = policy.reporting_endpoints.entry(group).or_default();
+        if endpoints.len() < MAX_NATIVE_CSP_REPORT_ENDPOINTS
+            && !endpoints.iter().any(|current| current == &endpoint)
+        {
+            endpoints.push(endpoint);
+        }
+    }
+}
+
+fn parse_reporting_endpoints_header(value: &str) -> Vec<(String, String)> {
+    value
+        .split(',')
+        .filter_map(|member| {
+            let (group, endpoint) = member.split_once('=')?;
+            let group = group.trim();
+            let endpoint = endpoint.trim();
+            let endpoint = endpoint
+                .strip_prefix('"')
+                .and_then(|endpoint| endpoint.strip_suffix('"'))
+                .unwrap_or(endpoint);
+            (!group.is_empty() && !endpoint.is_empty())
+                .then(|| (group.to_owned(), endpoint.to_owned()))
+        })
+        .take(MAX_NATIVE_CSP_REPORT_ENDPOINTS)
+        .collect()
+}
+
+fn parse_legacy_report_to_header(value: &str) -> Vec<(String, String)> {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value) else {
+        return Vec::new();
+    };
+    let objects: Vec<&serde_json::Value> = match &parsed {
+        serde_json::Value::Array(values) => values.iter().collect(),
+        serde_json::Value::Object(_) => vec![&parsed],
+        _ => Vec::new(),
+    };
+    let mut entries = Vec::new();
+    for object in objects {
+        if object
+            .get("max_age")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default()
+            == 0
+        {
+            continue;
+        }
+        let Some(group) = object.get("group").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(endpoints) = object
+            .get("endpoints")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for endpoint in endpoints.iter().take(MAX_NATIVE_CSP_REPORT_ENDPOINTS) {
+            let Some(url) = endpoint.get("url").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if !url.is_empty() {
+                entries.push((group.to_owned(), url.to_owned()));
+            }
+        }
+        if entries.len() >= MAX_NATIVE_CSP_REPORT_ENDPOINTS {
+            break;
+        }
+    }
+    entries
 }
 
 pub(crate) fn resolve_subresource_url(
@@ -5447,15 +5773,16 @@ mod tests {
         NativeInlineCspKind, NativeNavigationMethod, NativeNetworkState, NativeResource,
         NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
         cache_control_requires_revalidation, content_security_policy, cors_origin_header,
-        cors_preflight_response_allowed, cors_response_allowed, csp_sources_allow,
-        decode_html_body, document_cache_fresh_until, document_cache_storage_allowed,
-        mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
+        cors_preflight_response_allowed, cors_response_allowed,
+        csp_report_deliveries_for_declaration, csp_sources_allow, decode_html_body,
+        document_cache_fresh_until, document_cache_storage_allowed, mixed_content_allowed,
+        referrer_for_navigation, resolve_subresource_url,
     };
     use base64::Engine as _;
     use reqwest::header::{
         ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS,
         ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL,
-        CONTENT_SECURITY_POLICY, HeaderMap, HeaderValue, PRAGMA, VARY,
+        CONTENT_SECURITY_POLICY, HeaderMap, HeaderName, HeaderValue, PRAGMA, VARY,
     };
     use sha2::{Digest, Sha256};
     use std::fs;
@@ -5807,6 +6134,102 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|sources| csp_sources_allow(Some(sources), &document, &frame_two))
+        );
+    }
+
+    #[test]
+    fn csp_report_delivery_selects_endpoint_format_and_rejects_unsafe_targets() {
+        let document = Url::parse("https://app.test/index.html").unwrap();
+        let violation = NativeResourceLoader::csp_violation_record(
+            &document,
+            "https://api.test/data",
+            "connect-src",
+            "connect-src 'none'; report-uri /legacy; report-to modern",
+            "",
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("content-security-policy-report-only"),
+            HeaderValue::from_static("connect-src 'none'; report-uri /legacy; report-to modern"),
+        );
+        headers.insert(
+            HeaderName::from_static("reporting-endpoints"),
+            HeaderValue::from_static("modern=\"https://reports.test/csp\""),
+        );
+        let policy = content_security_policy(&headers);
+        let declaration = &policy.report_only_policies[0];
+        let deliveries = csp_report_deliveries_for_declaration(
+            &policy.reporting_endpoints,
+            declaration,
+            &document,
+            &violation,
+        );
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].endpoint, "https://reports.test/csp");
+        assert_eq!(deliveries[0].content_type, "application/reports+json");
+        let payload: serde_json::Value = serde_json::from_slice(&deliveries[0].body).unwrap();
+        assert_eq!(payload[0]["type"], "csp-violation");
+        assert_eq!(payload[0]["body"]["blocked-uri"], "https://api.test/data");
+
+        let mut legacy_headers = HeaderMap::new();
+        legacy_headers.insert(
+            HeaderName::from_static("content-security-policy-report-only"),
+            HeaderValue::from_static("connect-src 'none'; report-uri /legacy"),
+        );
+        let legacy_policy = content_security_policy(&legacy_headers);
+        let legacy_declaration = &legacy_policy.report_only_policies[0];
+        let legacy_deliveries = csp_report_deliveries_for_declaration(
+            &legacy_policy.reporting_endpoints,
+            legacy_declaration,
+            &document,
+            &violation,
+        );
+        assert_eq!(legacy_deliveries.len(), 1);
+        assert_eq!(legacy_deliveries[0].endpoint, "https://app.test/legacy");
+        assert_eq!(legacy_deliveries[0].content_type, "application/csp-report");
+
+        let mut unsafe_headers = HeaderMap::new();
+        unsafe_headers.insert(
+            HeaderName::from_static("content-security-policy-report-only"),
+            HeaderValue::from_static(
+                "connect-src 'none'; report-uri https://user:secret@reports.test/csp; report-to missing",
+            ),
+        );
+        let unsafe_policy = content_security_policy(&unsafe_headers);
+        let unsafe_declaration = &unsafe_policy.report_only_policies[0];
+        assert!(
+            csp_report_deliveries_for_declaration(
+                &unsafe_policy.reporting_endpoints,
+                unsafe_declaration,
+                &document,
+                &violation,
+            )
+            .is_empty()
+        );
+
+        let mut legacy_group_headers = HeaderMap::new();
+        legacy_group_headers.insert(
+            HeaderName::from_static("content-security-policy-report-only"),
+            HeaderValue::from_static("connect-src 'none'; report-to modern"),
+        );
+        legacy_group_headers.insert(
+            HeaderName::from_static("report-to"),
+            HeaderValue::from_static(
+                "[{\"group\":\"modern\",\"max_age\":60,\"endpoints\":[{\"url\":\"https://reports.test/legacy-group\"}]}]",
+            ),
+        );
+        let legacy_group_policy = content_security_policy(&legacy_group_headers);
+        let legacy_group_declaration = &legacy_group_policy.report_only_policies[0];
+        let legacy_group_deliveries = csp_report_deliveries_for_declaration(
+            &legacy_group_policy.reporting_endpoints,
+            legacy_group_declaration,
+            &document,
+            &violation,
+        );
+        assert_eq!(legacy_group_deliveries.len(), 1);
+        assert_eq!(
+            legacy_group_deliveries[0].endpoint,
+            "https://reports.test/legacy-group"
         );
     }
 

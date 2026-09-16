@@ -14752,6 +14752,148 @@ async fn native_content_process_delivers_report_only_connect_events_before_fetch
 }
 
 #[tokio::test]
+async fn native_content_process_delivers_report_only_csp_report_uri_network_reports() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let report_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let report_address = report_listener.local_addr().unwrap();
+    let page_server = tokio::spawn(async move {
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<body>Report URI</body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: session=secret; Path=/\r\nContent-Security-Policy: connect-src 'self'\r\nContent-Security-Policy-Report-Only: connect-src 'none'; report-uri http://{report_address}/csp\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/blocked"));
+        let body = "allowed";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let report_server = tokio::spawn(async move {
+        let (mut stream, _) =
+            tokio::time::timeout(Duration::from_secs(5), report_listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().next(), Some("POST"));
+        assert_eq!(request.split_whitespace().nth(1), Some("/csp"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("content-type: application/csp-report")
+        );
+        assert!(!request.to_ascii_lowercase().contains("cookie:"));
+        assert!(request.contains("\"csp-report\""));
+        assert!(request.contains(&format!(
+            "\"blocked-uri\":\"http://{page_address}/blocked\""
+        )));
+        assert!(request.contains("\"effective-directive\":\"connect-src\""));
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{page_address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/blocked').then(response => response.text())")
+            .await
+            .unwrap(),
+        serde_json::json!("allowed")
+    );
+    page_server.await.unwrap();
+    report_server.await.unwrap();
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_delivers_report_only_report_to_network_reports() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let report_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let report_address = report_listener.local_addr().unwrap();
+    let page_server = tokio::spawn(async move {
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<body>Report To</body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: session=secret; Path=/\r\nContent-Security-Policy: connect-src 'self'\r\nContent-Security-Policy-Report-Only: connect-src 'none'; report-to csp\r\nReporting-Endpoints: csp=\"http://{report_address}/csp\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/blocked"));
+        let body = "allowed";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let report_server = tokio::spawn(async move {
+        let (mut stream, _) =
+            tokio::time::timeout(Duration::from_secs(5), report_listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().next(), Some("POST"));
+        assert_eq!(request.split_whitespace().nth(1), Some("/csp"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("content-type: application/reports+json")
+        );
+        assert!(!request.to_ascii_lowercase().contains("cookie:"));
+        assert!(request.contains("\"type\":\"csp-violation\""));
+        assert!(request.contains("\"body\":{"));
+        assert!(request.contains(&format!(
+            "\"blocked-uri\":\"http://{page_address}/blocked\""
+        )));
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{page_address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/blocked').then(response => response.text())")
+            .await
+            .unwrap(),
+        serde_json::json!("allowed")
+    );
+    page_server.await.unwrap();
+    report_server.await.unwrap();
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_delivers_report_only_connect_events_for_event_source() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

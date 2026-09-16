@@ -28,8 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-422`, following completed
-`native-engine-browser-420`. Native is now the default runtime for
+`native-engine-browser-423`, following completed
+`native-engine-browser-422` and `native-engine-browser-420`. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -39,6 +39,15 @@ the authoritative epic is
 module decomposition, integration enumeration, and tradeoffs are in the
 [native-engine architecture](../architecture/native-engine.md) and
 [native-engine analysis](analysis/native-engine.md).
+
+The completed bounded XHR XML-document response slice is
+[native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR
+recognizes XML MIME responses, exposes a strict detached XML `Document` from
+`responseXML` and `responseType = "document"`, and preserves bounded
+namespaces, comments, CDATA, processing instructions, doctype metadata,
+lookup, ownership, read-only behavior, and serialization. HTML document
+responses, non-UTF encodings, external entities, streaming XML, and complete
+XML/Web IDL parity remain issue #40 gates.
 
 The completed report-only navigation preflight slice is
 [native-engine-browser-413](tasks/native-engine-browser-413.md): the
@@ -119,6 +128,13 @@ worker XHR upload lifecycle events are real `ProgressEvent` instances while
 retaining bounded progress fields and upload-target identity. Socket-level
 progress, complete event/Web IDL parity, and streaming upload remain separate
 issue #40 gates.
+
+The in-progress XHR XML-document response slice is
+[native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR is
+being extended with bounded detached XML `responseXML` and
+`responseType = "document"` behavior. HTML document responses, synchronous
+XHR, streaming XML, and complete XML/Web IDL parity remain separate issue #40
+gates.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI

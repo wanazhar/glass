@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-397` slice. The native runtime is now the primary
+`native-engine-browser-398` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -822,6 +822,16 @@ violation-event reporting, strict-dynamic trust, full CSP source grammar, and
 complete event-handler Web IDL descriptors remain separate issue #40 gates.
 The contract is recorded in
 `docs/plan/tasks/native-engine-browser-396.md`.
+
+The completed CSP meta-composition slice is
+[native-engine-browser-398](../plan/tasks/native-engine-browser-398.md):
+parser-time enforced policies in a document-head CSP meta element now
+intersect with response-header policies. The Rust loader applies that
+intersection to subresources, inline elements/attributes, and child-frame
+navigation; multiple frame source groups remain distinct across the typed
+content-process boundary. Report-only violation delivery,
+`SecurityPolicyViolationEvent`, strict-dynamic, dynamic policy mutation, and
+the complete CSP source grammar remain separate issue #40 security gates.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

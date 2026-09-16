@@ -14533,6 +14533,45 @@ async fn native_content_process_enforces_inline_csp_for_initial_and_dynamic_cont
 }
 
 #[tokio::test]
+async fn native_content_process_intersects_header_and_head_meta_csp() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/csp-meta"));
+        let body = r#"<head><meta http-equiv="Content-Security-Policy" content="script-src 'nonce-meta-ok'"><meta http-equiv="Content-Security-Policy" content="style-src-elem 'nonce-style-ok'"><meta http-equiv="Content-Security-Policy-Report-Only" content="script-src 'none'"><style nonce="style-ok">#allowed { color: red; }</style><style>#blocked { color: blue; }</style><script nonce="meta-ok">globalThis.metaEvents = ['allowed'];</script><script>globalThis.metaEvents.push('blocked');</script></head><body><div id="allowed">Allowed</div><div id="blocked">Blocked</div></body>"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/csp-meta")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ events: globalThis.metaEvents, allowed: getComputedStyle(document.getElementById('allowed')).color, blocked: getComputedStyle(document.getElementById('blocked')).color })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "events": ["allowed"],
+            "allowed": "rgb(255, 0, 0)",
+            "blocked": "rgb(0, 0, 0)",
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_enforces_script_src_attr_for_initial_and_dynamic_handlers() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -16928,6 +16967,39 @@ async fn native_content_process_blocks_csp_disallowed_frame_before_request() {
         session.evidence(EvidenceLevel::Compact).await.unwrap().url,
         "about:blank"
     );
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_blocks_frame_from_head_meta_csp() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<head><meta http-equiv='Content-Security-Policy' content=\"frame-src 'none'\"></head><body><iframe src='/child'>fallback</iframe><p>Parent page</p></body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: frame-src *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .await
+    .unwrap();
+    let frames = session.native_list_frames().await.unwrap();
+    assert_eq!(frames.len(), 2);
+    let child = frames
+        .iter()
+        .find(|frame| frame.id.ends_with(":frame-1"))
+        .unwrap();
+    assert_eq!(child.url, "about:blank");
     session.close().await.unwrap();
     server.await.unwrap();
 }

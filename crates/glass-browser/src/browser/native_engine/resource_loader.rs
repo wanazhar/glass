@@ -35,6 +35,7 @@ pub(crate) const MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES: usize = 128;
 pub(crate) const MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_NATIVE_RESPONSE_HEADER_BYTES: usize = 128 * 1024;
 pub(crate) const MAX_NATIVE_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_NATIVE_CSP_POLICIES: usize = 16;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -685,7 +686,7 @@ impl NativeCookie {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct NativeCspPolicy {
+struct NativeCspDirectives {
     style_sources: Option<Vec<String>>,
     style_element_sources: Option<Vec<String>>,
     style_attribute_sources: Option<Vec<String>>,
@@ -702,7 +703,13 @@ struct NativeCspPolicy {
     default_sources: Option<Vec<String>>,
 }
 
-impl NativeCspPolicy {
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct NativeCspPolicy {
+    policies: Vec<NativeCspDirectives>,
+    header_policy_count: usize,
+}
+
+impl NativeCspDirectives {
     fn allows(&self, kind: NativeSubresourceKind, document_url: &Url, resource_url: &Url) -> bool {
         let sources = self.sources_for(kind).or(self.default_sources.as_ref());
         csp_sources_allow(sources.map(Vec::as_slice), document_url, resource_url)
@@ -767,19 +774,64 @@ impl NativeCspPolicy {
     }
 }
 
+impl NativeCspPolicy {
+    fn allows(&self, kind: NativeSubresourceKind, document_url: &Url, resource_url: &Url) -> bool {
+        self.policies
+            .iter()
+            .all(|policy| policy.allows(kind, document_url, resource_url))
+    }
+
+    fn allows_inline(&self, kind: NativeInlineCspKind, source: &str, nonce: Option<&str>) -> bool {
+        self.policies
+            .iter()
+            .all(|policy| policy.allows_inline(kind, source, nonce))
+    }
+
+    fn frame_source_groups(&self) -> Option<Vec<Vec<String>>> {
+        let groups = self
+            .policies
+            .iter()
+            .filter_map(|policy| {
+                policy
+                    .sources_for(NativeSubresourceKind::Frame)
+                    .or(policy.default_sources.as_ref())
+                    .cloned()
+            })
+            .collect::<Vec<_>>();
+        (!groups.is_empty()).then_some(groups)
+    }
+
+    fn replace_meta_policies(&mut self, values: &[String]) -> Result<(), NativeEngineError> {
+        if values.len() > MAX_NATIVE_CSP_POLICIES {
+            return Err(NativeEngineError::limit(
+                "CSP meta policies",
+                MAX_NATIVE_CSP_POLICIES,
+                values.len(),
+            ));
+        }
+        self.policies.truncate(self.header_policy_count);
+        self.policies
+            .extend(values.iter().map(|value| parse_csp_directives(value)));
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct NativeInlineScriptPolicy {
-    element_sources: Option<Vec<String>>,
-    attribute_sources: Option<Vec<String>>,
+    policies: Vec<NativeCspDirectives>,
 }
 
 impl NativeInlineScriptPolicy {
     pub(crate) fn allows(&self, source: &str, nonce: Option<&str>) -> bool {
-        inline_csp_sources_allow(self.element_sources.as_deref(), source, nonce, false)
+        self.policies
+            .iter()
+            .all(|policy| policy.allows_inline(NativeInlineCspKind::ScriptElement, source, nonce))
     }
 
     pub(crate) fn allows_attribute(&self, source: &str) -> bool {
-        inline_csp_sources_allow(self.attribute_sources.as_deref(), source, None, true)
+        self.policies
+            .iter()
+            .all(|policy| policy.allows_inline(NativeInlineCspKind::ScriptAttribute, source, None))
     }
 }
 
@@ -980,12 +1032,7 @@ impl NativeResourceLoader {
         Ok(self
             .document_policy(document_url)?
             .map(|policy| NativeInlineScriptPolicy {
-                element_sources: policy
-                    .inline_sources_for(NativeInlineCspKind::ScriptElement)
-                    .cloned(),
-                attribute_sources: policy
-                    .inline_sources_for(NativeInlineCspKind::ScriptAttribute)
-                    .cloned(),
+                policies: policy.policies.clone(),
             })
             .unwrap_or_default())
     }
@@ -1309,7 +1356,7 @@ impl NativeResourceLoader {
     pub(crate) fn frame_sources_for_document(
         &self,
         document_url: &str,
-    ) -> Result<Option<Vec<String>>, NativeEngineError> {
+    ) -> Result<Option<Vec<Vec<String>>>, NativeEngineError> {
         validate_url_text("frame policy owner URL", document_url)?;
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
             NativeEngineError::UnsupportedUrl {
@@ -1324,12 +1371,69 @@ impl NativeResourceLoader {
             .network
             .document_policies
             .get(&cache_key(&document_url))
-            .and_then(|policy| {
-                policy
-                    .sources_for(NativeSubresourceKind::Frame)
-                    .or(policy.default_sources.as_ref())
-                    .cloned()
-            }))
+            .and_then(NativeCspPolicy::frame_source_groups))
+    }
+
+    pub(crate) fn apply_meta_content_security_policies(
+        &mut self,
+        document_url: &str,
+        policies: &[String],
+    ) -> Result<(), NativeEngineError> {
+        validate_url_text("CSP meta policy owner URL", document_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "CSP meta policy owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(());
+        }
+        reject_credentials(&document_url)?;
+        if policies.len() > MAX_NATIVE_CSP_POLICIES {
+            return Err(NativeEngineError::limit(
+                "CSP meta policies",
+                MAX_NATIVE_CSP_POLICIES,
+                policies.len(),
+            ));
+        }
+        let key = cache_key(&document_url);
+        let policy = self.network.document_policies.entry(key).or_default();
+        policy.replace_meta_policies(policies)
+    }
+
+    pub(crate) fn set_document_content_security_policy_from_pairs(
+        &mut self,
+        document_url: &str,
+        headers: &[(String, String)],
+    ) -> Result<(), NativeEngineError> {
+        validate_url_text("CSP response policy owner URL", document_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "CSP response policy owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(());
+        }
+        reject_credentials(&document_url)?;
+        let mut policy = NativeCspPolicy::default();
+        for (name, value) in headers {
+            if !name.eq_ignore_ascii_case("content-security-policy") {
+                continue;
+            }
+            if value.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES {
+                return Err(NativeEngineError::limit(
+                    "CSP response policy",
+                    MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
+                    value.len(),
+                ));
+            }
+            policy.policies.push(parse_csp_directives(value));
+        }
+        policy.header_policy_count = policy.policies.len();
+        self.network
+            .store_document_policy(cache_key(&document_url), policy);
+        Ok(())
     }
 
     pub(crate) fn cookie_profile(&self) -> Vec<NativeCookieProfileEntry> {
@@ -3358,32 +3462,44 @@ fn content_security_policy(headers: &HeaderMap) -> NativeCspPolicy {
         .iter()
     {
         let Ok(value) = value.to_str() else {
-            policy.style_sources = Some(Vec::new());
+            // Preserve the historical fail-closed treatment of an invalid
+            // header value without widening it into a new transport error.
+            policy.policies.push(NativeCspDirectives {
+                style_sources: Some(Vec::new()),
+                ..NativeCspDirectives::default()
+            });
             continue;
         };
-        for directive in value.split(';') {
-            let mut parts = directive.split_ascii_whitespace();
-            let Some(name) = parts.next() else {
-                continue;
-            };
-            let sources = parts.map(str::to_owned).collect::<Vec<_>>();
-            match name.to_ascii_lowercase().as_str() {
-                "style-src" => policy.style_sources = Some(sources),
-                "style-src-elem" => policy.style_element_sources = Some(sources),
-                "style-src-attr" => policy.style_attribute_sources = Some(sources),
-                "script-src" => policy.script_sources = Some(sources),
-                "script-src-elem" => policy.script_element_sources = Some(sources),
-                "script-src-attr" => policy.script_attribute_sources = Some(sources),
-                "img-src" => policy.image_sources = Some(sources),
-                "font-src" => policy.font_sources = Some(sources),
-                "media-src" => policy.media_sources = Some(sources),
-                "frame-src" => policy.frame_sources = Some(sources),
-                "child-src" => policy.child_sources = Some(sources),
-                "connect-src" => policy.connect_sources = Some(sources),
-                "worker-src" => policy.worker_sources = Some(sources),
-                "default-src" => policy.default_sources = Some(sources),
-                _ => {}
-            }
+        policy.policies.push(parse_csp_directives(value));
+    }
+    policy.header_policy_count = policy.policies.len();
+    policy
+}
+
+fn parse_csp_directives(value: &str) -> NativeCspDirectives {
+    let mut policy = NativeCspDirectives::default();
+    for directive in value.split(';') {
+        let mut parts = directive.split_ascii_whitespace();
+        let Some(name) = parts.next() else {
+            continue;
+        };
+        let sources = parts.map(str::to_owned).collect::<Vec<_>>();
+        match name.to_ascii_lowercase().as_str() {
+            "style-src" => policy.style_sources = Some(sources),
+            "style-src-elem" => policy.style_element_sources = Some(sources),
+            "style-src-attr" => policy.style_attribute_sources = Some(sources),
+            "script-src" => policy.script_sources = Some(sources),
+            "script-src-elem" => policy.script_element_sources = Some(sources),
+            "script-src-attr" => policy.script_attribute_sources = Some(sources),
+            "img-src" => policy.image_sources = Some(sources),
+            "font-src" => policy.font_sources = Some(sources),
+            "media-src" => policy.media_sources = Some(sources),
+            "frame-src" => policy.frame_sources = Some(sources),
+            "child-src" => policy.child_sources = Some(sources),
+            "connect-src" => policy.connect_sources = Some(sources),
+            "worker-src" => policy.worker_sources = Some(sources),
+            "default-src" => policy.default_sources = Some(sources),
+            _ => {}
         }
     }
     policy
@@ -4795,9 +4911,9 @@ mod tests {
         NativeInlineCspKind, NativeNavigationMethod, NativeNetworkState, NativeResource,
         NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
         cache_control_requires_revalidation, content_security_policy, cors_origin_header,
-        cors_preflight_response_allowed, cors_response_allowed, decode_html_body,
-        document_cache_fresh_until, document_cache_storage_allowed, mixed_content_allowed,
-        referrer_for_navigation, resolve_subresource_url,
+        cors_preflight_response_allowed, cors_response_allowed, csp_sources_allow,
+        decode_html_body, document_cache_fresh_until, document_cache_storage_allowed,
+        mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
     };
     use base64::Engine as _;
     use reqwest::header::{
@@ -5110,6 +5226,90 @@ mod tests {
         assert!(policy.allows(NativeSubresourceKind::Connect, &document, &document));
         assert!(!policy.allows(NativeSubresourceKind::Connect, &document, &socket));
         assert!(!policy.allows(NativeSubresourceKind::Font, &document, &document));
+    }
+
+    #[test]
+    fn csp_header_policies_are_intersected_and_frame_groups_are_preserved() {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "script-src https://scripts-one.test; frame-src https://frame-one.test",
+            ),
+        );
+        headers.append(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "script-src https://scripts-two.test; frame-src https://frame-two.test",
+            ),
+        );
+        let policy = content_security_policy(&headers);
+        let document = Url::parse("https://app.test/index.html").unwrap();
+        let script_one = Url::parse("https://scripts-one.test/app.js").unwrap();
+        let script_two = Url::parse("https://scripts-two.test/app.js").unwrap();
+        let frame_one = Url::parse("https://frame-one.test/child").unwrap();
+        let frame_two = Url::parse("https://frame-two.test/child").unwrap();
+        assert!(!policy.allows(NativeSubresourceKind::Script, &document, &script_one));
+        assert!(!policy.allows(NativeSubresourceKind::Script, &document, &script_two));
+        assert_eq!(
+            policy.frame_source_groups(),
+            Some(vec![
+                vec!["https://frame-one.test".into()],
+                vec!["https://frame-two.test".into()],
+            ])
+        );
+        assert!(
+            !policy
+                .frame_source_groups()
+                .unwrap()
+                .iter()
+                .all(|sources| csp_sources_allow(Some(sources), &document, &frame_one))
+        );
+        assert!(
+            !policy
+                .frame_source_groups()
+                .unwrap()
+                .iter()
+                .all(|sources| csp_sources_allow(Some(sources), &document, &frame_two))
+        );
+    }
+
+    #[test]
+    fn csp_meta_policies_replace_prior_document_meta_state() {
+        let mut loader = NativeResourceLoader::for_content_process(
+            NativeEngineConfig::default().limits.max_document_bytes,
+            None,
+        )
+        .unwrap();
+        let document_url = "http://app.test/page";
+        loader
+            .set_document_content_security_policy_from_pairs(
+                document_url,
+                &[(
+                    "Content-Security-Policy".into(),
+                    "script-src 'unsafe-inline'".into(),
+                )],
+            )
+            .unwrap();
+        loader
+            .apply_meta_content_security_policies(
+                document_url,
+                &["script-src 'nonce-first'".into()],
+            )
+            .unwrap();
+        let first = loader.inline_script_policy(document_url).unwrap();
+        assert!(first.allows("globalThis.value = 1", Some("first")));
+        assert!(!first.allows("globalThis.value = 1", None));
+
+        loader
+            .apply_meta_content_security_policies(
+                document_url,
+                &["script-src 'nonce-second'".into()],
+            )
+            .unwrap();
+        let second = loader.inline_script_policy(document_url).unwrap();
+        assert!(!second.allows("globalThis.value = 1", Some("first")));
+        assert!(second.allows("globalThis.value = 1", Some("second")));
     }
 
     #[test]

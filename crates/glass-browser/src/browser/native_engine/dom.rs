@@ -14,7 +14,7 @@ use super::javascript::NativeScriptCommand;
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
-use super::resource_loader::{NativeNavigationRequest, NativeRequestBody};
+use super::resource_loader::{MAX_NATIVE_CSP_POLICIES, NativeNavigationRequest, NativeRequestBody};
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES, TextFragmentTerms, Viewport},
     css::{
@@ -1009,6 +1009,31 @@ impl NativeDocument {
                 node.attribute("style")
                     .map(|source| (node.id().index(), source.to_owned()))
             })
+            .collect()
+    }
+
+    /// Return parser-time enforced CSP policies declared by `meta` elements
+    /// in the document head. Report-only values are intentionally excluded;
+    /// the loader owns enforcement and reporting is a separate contract.
+    /// Returning one extra value lets the loader reject an over-limit document
+    /// instead of silently weakening its policy surface.
+    pub(crate) fn content_security_policy_meta(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter(|node| {
+                self.is_attached(node.id())
+                    && node.element_name() == Some("meta")
+                    && self.is_descendant_of_element(node.id(), "head")
+                    && node.attribute("http-equiv").is_some_and(|value| {
+                        value.trim().eq_ignore_ascii_case("content-security-policy")
+                    })
+            })
+            .filter_map(|node| {
+                node.attribute("content")
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            })
+            .take(MAX_NATIVE_CSP_POLICIES.saturating_add(1))
             .collect()
     }
 
@@ -4946,6 +4971,23 @@ impl NativeDocument {
         false
     }
 
+    fn is_descendant_of_element(&self, id: NativeNodeId, wanted: &str) -> bool {
+        let mut current = self.raw_node(id).and_then(NativeNode::parent);
+        for _ in 0..=self.nodes.len() {
+            let Some(current_id) = current else {
+                return false;
+            };
+            let Some(node) = self.raw_node(current_id) else {
+                return false;
+            };
+            if node.element_name() == Some(wanted) {
+                return true;
+            }
+            current = node.parent();
+        }
+        false
+    }
+
     fn node_mut(&mut self, id: NativeNodeId) -> Option<&mut NativeNode> {
         self.is_attached(id)
             .then(|| self.raw_node_mut(id))
@@ -8155,6 +8197,20 @@ mod tests {
         assert_eq!(document.title(1024), ("Example".into(), false));
         assert_eq!(document.visible_text(1024), ("Hello & Glass".into(), false));
         assert!(document.node_count() > 1);
+    }
+
+    #[test]
+    fn discovers_only_enforced_csp_meta_policies_in_head() {
+        let limits = NativeEngineLimits::default();
+        let document = NativeDocument::parse(
+            "<html><head><meta http-equiv='Content-Security-Policy' content=\"script-src 'self'\"><meta http-equiv='Content-Security-Policy-Report-Only' content=\"script-src 'none'\"></head><body><meta http-equiv='Content-Security-Policy' content=\"script-src 'none'\"></body></html>",
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(
+            document.content_security_policy_meta(),
+            vec!["script-src 'self'".to_owned()]
+        );
     }
 
     #[test]

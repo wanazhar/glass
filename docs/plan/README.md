@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-397` locally. Native is now the default runtime for
+`native-engine-browser-398` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -489,6 +489,16 @@ animation-frame, and idle callbacks now report uncaught exceptions through the
 existing page `error`/`onerror` surface and continue sibling callbacks in the
 same bounded host turn. Autonomous rendering, background-page scheduling,
 full task-source arbitration, and complete animation/idle Web IDL identity
+remain issue #40 promotion gates.
+
+The completed CSP meta-composition slice is
+[native-engine-browser-398](tasks/native-engine-browser-398.md): parser-time
+enforced CSP policies in the document head now intersect with every response
+header policy, and the same bounded policy applies to subresources, inline
+elements/attributes, and child frames. Multiple frame source groups cross the
+content-process boundary without being flattened into a permissive union.
+Report-only violation delivery, `SecurityPolicyViolationEvent`,
+strict-dynamic, dynamic policy mutation, and the complete CSP source grammar
 remain issue #40 promotion gates.
 
 The completed native visual-encoder slice is

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-390` locally. Native is now the default runtime for
+`native-engine-browser-391` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -425,6 +425,18 @@ and its placeholder control after successful admission. Existing message,
 canvas, origin, and payload limits remain enforced. Other transferable
 platform objects, browser-wide task-source arbitration, and the remaining Core
 Web Profile gates remain active issue #40 work.
+
+The completed native `ReadableStream` transfer slice is
+[native-engine-browser-391](tasks/native-engine-browser-391.md): page and
+worker realms now transfer default and byte streams through a hidden,
+demand-driven bridge rather than an eager snapshot. Source locking occurs
+after clone admission, receiving reads issue bounded pull controls, and close,
+error, cancellation, ordered chunks, and hidden transport ports use the
+existing structured-clone/MessagePort owner. Local and page-to-worker
+witnesses cover the transfer and bounded multi-turn scheduler. Worker-created
+underlying-source parity, remote-stream tee parity, upload backpressure,
+browser-wide task-source ordering, and final Core Web Profile certification
+remain active issue #40 work.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

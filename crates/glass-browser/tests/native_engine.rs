@@ -17714,6 +17714,150 @@ async fn native_offscreen_canvas_transfer_preserves_worker_raster_and_detaches_s
 }
 
 #[tokio::test]
+async fn native_readable_stream_transfer_preserves_pull_order_and_hides_transport_port() {
+    let config = NativeEngineConfig::default()
+        .with_viewport(Viewport {
+            width: 8,
+            height: 4,
+            device_scale_factor_milli: 1000,
+        })
+        .with_fixture(
+            "fixture://readable-stream-transfer-page",
+            "<html><body>stream transfer</body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://readable-stream-transfer-worker",
+            r#"self.onmessage = event => {
+                const stream = event.data.stream;
+                const reader = stream.getReader();
+                reader.read().then(first => reader.read().then(second => reader.read().then(third => {
+                    postMessage({
+                        kind: event.data.kind,
+                        identity: [stream instanceof ReadableStream, stream.locked, event.ports.length],
+                        chunks: event.data.kind === 'bytes'
+                            ? [Array.from(first.value), Array.from(second.value)]
+                            : [first.value, second.value],
+                        done: third.done,
+                    });
+                }))).catch(error => postMessage({ error: error.name }));
+            }"#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://readable-stream-transfer-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const localSource = new ReadableStream({
+                        type: 'bytes',
+                        start(controller) {
+                            controller.enqueue(new Uint8Array([9, 8]));
+                            controller.enqueue(new Uint8Array([7, 6, 5]));
+                            controller.close();
+                        },
+                    });
+                    const localClone = structuredClone(localSource, { transfer: [localSource] });
+                    const localReader = localClone.getReader();
+                    const localFirst = await localReader.read();
+                    const localSecond = await localReader.read();
+                    const localDone = await localReader.read();
+                    globalThis.localReadableTransfer = {
+                        identity: [localSource.locked, localClone instanceof ReadableStream, localClone.locked],
+                        chunks: [Array.from(localFirst.value), Array.from(localSecond.value)],
+                        done: localDone.done,
+                    };
+                    globalThis.workerMessages = [];
+                    globalThis.worker = new Worker('fixture://readable-stream-transfer-worker');
+                    worker.onmessage = event => workerMessages.push(event.data);
+                    globalThis.workerSource = new ReadableStream({
+                        type: 'bytes',
+                        start(controller) {
+                            controller.enqueue(new Uint8Array([1, 2]));
+                            controller.enqueue(new Uint8Array([3, 4, 5]));
+                            controller.close();
+                        },
+                    });
+                    globalThis.workerDefaultSource = new ReadableStream({
+                        start(controller) {
+                            controller.enqueue({ kind: 'object', value: 42 });
+                            controller.enqueue('tail');
+                            controller.close();
+                        },
+                    });
+                    return localReadableTransfer;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "identity": [true, true, true],
+            "chunks": [[9, 8], [7, 6, 5]],
+            "done": true,
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "worker.postMessage({ kind: 'bytes', stream: workerSource }, [workerSource]); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let expected_worker_messages = serde_json::json!([{
+        "kind": "bytes",
+        "identity": [true, true, 0],
+        "chunks": [[1, 2], [3, 4, 5]],
+        "done": true,
+    }]);
+    let mut worker_messages = serde_json::Value::Array(Vec::new());
+    for _ in 0..16 {
+        worker_messages = engine.evaluate_async("workerMessages").await.unwrap();
+        if worker_messages == expected_worker_messages {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(worker_messages, expected_worker_messages);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "worker.postMessage({ kind: 'values', stream: workerDefaultSource }, [workerDefaultSource]); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let expected_worker_messages = serde_json::json!([
+        {
+            "kind": "bytes",
+            "identity": [true, true, 0],
+            "chunks": [[1, 2], [3, 4, 5]],
+            "done": true,
+        },
+        {
+            "kind": "values",
+            "identity": [true, true, 0],
+            "chunks": [{ "kind": "object", "value": 42 }, "tail"],
+            "done": true,
+        },
+    ]);
+    for _ in 0..16 {
+        worker_messages = engine.evaluate_async("workerMessages").await.unwrap();
+        if worker_messages == expected_worker_messages {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(worker_messages, expected_worker_messages);
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_canvas_image_source_preserves_animated_frames() {
     let source = format!(
         "data:image/gif;base64,{}",

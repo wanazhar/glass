@@ -62,6 +62,10 @@ fn default_classic_worker_type() -> String {
     "classic".into()
 }
 
+fn skip_if_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Maximum source accepted by the native script evaluator.
 pub(crate) const MAX_NATIVE_SCRIPT_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 /// Maximum JSON representation returned to the semantic backend.
@@ -584,6 +588,8 @@ pub(crate) struct NativeMessagePortTransfer {
     pub(crate) bridge_key: String,
     pub(crate) port_id: u32,
     pub(crate) peer_id: u32,
+    #[serde(default, skip_serializing_if = "skip_if_false")]
+    pub(crate) hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -16385,13 +16391,82 @@ fn worker_bootstrap(
     workerReadableStreamSetDone(state);
     return true;
   }};
+  const workerReadableStreamRemoteBytes = (value) => {{
+    if (value instanceof ArrayBuffer) return new Uint8Array(value).slice();
+    if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value))
+      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
+    throw new TypeError("native transferred Worker ReadableStream chunk is not binary");
+  }};
+  const workerReadableStreamEmptyByob = (view) => typeof view.subarray === "function"
+    ? view.subarray(0, 0)
+    : new Uint8Array(view.buffer, view.byteOffset, 0);
+  const workerReadableStreamRemoteResult = (state, pending, value) => {{
+    if (!state.byteMode) return {{ value, done: false }};
+    const bytes = workerReadableStreamRemoteBytes(value);
+    if (!pending.byobView) return {{ value: new Uint8Array(bytes), done: false }};
+    const view = pending.byobView;
+    const bytesPerElement = Number(view.BYTES_PER_ELEMENT) || 1;
+    const capacity = Math.floor(view.byteLength / bytesPerElement) * bytesPerElement;
+    if (capacity === 0) throw new TypeError("native Worker BYOB view is too small");
+    const count = Math.min(bytes.length, capacity);
+    new Uint8Array(view.buffer, view.byteOffset, count).set(bytes.subarray(0, count));
+    if (count < bytes.length) state.remoteQueue.unshift(bytes.slice(count));
+    const elements = Math.floor(count / bytesPerElement);
+    return {{
+      value: typeof view.subarray === "function"
+        ? view.subarray(0, elements)
+        : new Uint8Array(view.buffer, view.byteOffset, count),
+      done: false,
+    }};
+  }};
+  const workerReadableStreamRemoteDone = (state) => {{
+    state.remoteDone = true;
+    if (state.remotePendingRead) {{
+      const pending = state.remotePendingRead;
+      state.remotePendingRead = null;
+      pending.resolve(pending.byobView
+        ? {{ value: workerReadableStreamEmptyByob(pending.byobView), done: true }}
+        : {{ value: undefined, done: true }});
+    }}
+    workerReadableStreamSetDone(state);
+  }};
+  const workerReadableStreamRemoteFail = (state, message) => {{
+    state.error = String(message || "native transferred ReadableStream failed");
+    state.remoteDone = true;
+    if (state.remotePendingRead) {{
+      const pending = state.remotePendingRead;
+      state.remotePendingRead = null;
+      pending.reject(new Error(state.error));
+    }}
+    workerReadableStreamSetDone(state);
+  }};
+  const workerReadableStreamCancelRemote = (state, reason) => {{
+    if (state.remoteDone) return Promise.resolve(undefined);
+    state.remoteDone = true;
+    state.cancelled = true;
+    state.remoteQueue = [];
+    if (state.remotePendingRead) {{
+      const pending = state.remotePendingRead;
+      state.remotePendingRead = null;
+      pending.resolve(pending.byobView
+        ? {{ value: workerReadableStreamEmptyByob(pending.byobView), done: true }}
+        : {{ value: undefined, done: true }});
+    }}
+    try {{ state.remotePort.postMessage({{ __glassReadableStreamControl: "cancel", reason }}); }}
+    catch (_error) {{}}
+    workerReadableStreamSetDone(state);
+    return Promise.resolve(undefined);
+  }};
   const WorkerReadableStreamNative = typeof globalThis.__glassWorkerReadableStreamConstructor === "function"
     ? globalThis.__glassWorkerReadableStreamConstructor
     : function(bytes, onDisturb) {{
     if (!(this instanceof WorkerReadableStreamNative)) throw new TypeError("native Worker ReadableStream requires new");
-    if (bytes !== undefined && !Array.isArray(bytes))
+    const transfer = bytes && bytes.__glassWorkerReadableStreamTransfer === true ? bytes : null;
+    if (!transfer && bytes !== undefined && !Array.isArray(bytes))
       throw new TypeError("native Worker ReadableStream only accepts byte snapshots");
-    const values = bytes === undefined ? [] : bytes.slice();
+    if (transfer && (!transfer.port || typeof transfer.port.postMessage !== "function"))
+      throw new TypeError("native Worker ReadableStream transfer endpoint is invalid");
+    const values = transfer ? [] : bytes === undefined ? [] : bytes.slice();
     if (values.length > {fetch_body_limit})
       throw new RangeError("native Worker ReadableStream body exceeds its limit");
     for (const value of values) {{
@@ -16409,7 +16484,52 @@ fn worker_bootstrap(
       error: null,
       closedWaiters: [],
       onDisturb: typeof onDisturb === "function" ? onDisturb : null,
+      remotePort: transfer ? transfer.port : null,
+      byteMode: transfer ? transfer.byteMode === true : true,
+      remoteDone: transfer ? false : true,
+      remoteQueue: [],
+      remotePendingRead: null,
     }};
+    if (state.remotePort) {{
+      state.remotePort.onmessage = event => {{
+        const message = event && event.data;
+        if (!message || typeof message !== "object" || state.remoteDone) return;
+        const kind = String(message.__glassReadableStreamControl || "");
+        if (kind === "chunk") {{
+          let result;
+          try {{
+            result = state.remotePendingRead
+              ? workerReadableStreamRemoteResult(state, state.remotePendingRead, message.value)
+              : state.byteMode
+                ? {{ value: new Uint8Array(workerReadableStreamRemoteBytes(message.value)), done: false }}
+                : {{ value: message.value, done: false }};
+          }} catch (error) {{
+            workerReadableStreamRemoteFail(
+              state,
+              error instanceof Error ? error.message : String(error),
+            );
+            return;
+          }}
+          if (state.remotePendingRead) {{
+            const pending = state.remotePendingRead;
+            state.remotePendingRead = null;
+            pending.resolve(result);
+          }} else if (state.remoteQueue.length < {fetch_stream_queue_limit}) {{
+            state.remoteQueue.push(result.value);
+          }} else {{
+            workerReadableStreamRemoteFail(
+              state,
+              "native transferred Worker ReadableStream queue limit exceeded",
+            );
+          }}
+        }} else if (kind === "close") {{
+          workerReadableStreamRemoteDone(state);
+        }} else if (kind === "error") {{
+          workerReadableStreamRemoteFail(state, message.message);
+        }}
+      }};
+      state.remotePort.start();
+    }}
     Object.defineProperty(this, "__glassWorkerReadableStream", {{ value: true }});
     Object.defineProperty(this, "_state", {{ value: state }});
     Object.freeze(this);
@@ -16429,6 +16549,8 @@ fn worker_bootstrap(
     if (mode !== undefined && mode !== "byob")
       throw new TypeError("native Worker ReadableStream reader mode is unsupported");
     const byob = mode === "byob";
+    if (byob && !state.byteMode)
+      throw new TypeError("native Worker BYOB reader requires a byte stream");
     state.locked = true;
     let released = false;
     let resolveClosed;
@@ -16458,6 +16580,37 @@ fn worker_bootstrap(
         throw new TypeError("native Worker default reader read does not accept a view");
       }}
       workerReadableStreamDisturb(state);
+      if (state.remotePort) {{
+        if (state.remoteQueue.length > 0) {{
+          const value = state.remoteQueue.shift();
+          return Promise.resolve(byob
+            ? workerReadableStreamRemoteResult(state, {{ byobView: view }}, value)
+            : state.byteMode
+              ? {{ value: new Uint8Array(value), done: false }}
+              : {{ value, done: false }});
+        }}
+        if (state.error !== null) return Promise.reject(new Error(state.error));
+        if (state.remoteDone || state.done) {{
+          workerReadableStreamSetDone(state);
+          return Promise.resolve(byob
+            ? {{ value: workerReadableStreamEmptyByob(view), done: true }}
+            : {{ value: undefined, done: true }});
+        }}
+        if (state.remotePendingRead)
+          return Promise.reject(new TypeError("native transferred Worker ReadableStream read is already pending"));
+        const promise = new Promise((resolve, reject) => {{
+          state.remotePendingRead = {{ resolve, reject, byobView: byob ? view : null }};
+        }});
+        try {{ state.remotePort.postMessage({{ __glassReadableStreamControl: "pull" }}); }}
+        catch (error) {{
+          workerReadableStreamRemoteFail(
+            state,
+            error instanceof Error ? error.message : String(error),
+          );
+          return Promise.reject(error);
+        }}
+        return promise;
+      }}
       if (state.error !== null) return Promise.reject(new Error(state.error));
       if (state.cancelled || state.done || state.offset >= state.bytes.length) {{
         workerReadableStreamSetDone(state);
@@ -16485,6 +16638,7 @@ fn worker_bootstrap(
       state.cancelled = true;
       state.offset = state.bytes.length;
       workerReadableStreamDisturb(state);
+      if (state.remotePort) return workerReadableStreamCancelRemote(state, reason);
       workerReadableStreamSetDone(state);
       return Promise.resolve(undefined);
     }};
@@ -16504,6 +16658,7 @@ fn worker_bootstrap(
   WorkerReadableStreamNative.prototype.cancel = function(reason) {{
     const state = workerReadableStreamState(this);
     if (state.locked) return Promise.reject(new TypeError("native Worker ReadableStream is locked"));
+    if (state.remotePort) return workerReadableStreamCancelRemote(state, reason);
     state.cancelled = true;
     state.offset = state.bytes.length;
     workerReadableStreamDisturb(state);
@@ -16514,6 +16669,8 @@ fn worker_bootstrap(
     const state = workerReadableStreamState(this);
     if (state.locked || state.consumedByResponse)
       throw new TypeError("native Worker ReadableStream is unusable");
+    if (state.remotePort)
+      throw new TypeError("native transferred Worker ReadableStream tee is unsupported");
     workerReadableStreamDisturb(state);
     const remaining = state.bytes.slice(state.offset);
     workerReadableStreamSetDone(state);
@@ -16529,6 +16686,21 @@ fn worker_bootstrap(
   }};
   globalThis.__glassWorkerReadableStreamConstructor = WorkerReadableStreamNative;
   globalThis.ReadableStream = WorkerReadableStreamNative;
+  globalThis.__glassNativeReadableStreamIsReadableStream = value => {{
+    try {{ return workerReadableStreamState(value) !== null; }}
+    catch (_error) {{ return false; }}
+  }};
+  globalThis.__glassNativeReadableStreamIsByteStream = value => {{
+    try {{ return workerReadableStreamState(value).byteMode === true; }}
+    catch (_error) {{ return false; }}
+  }};
+  globalThis.__glassNativeReadableStreamFromTransfer = (descriptor, port) => {{
+    return new WorkerReadableStreamNative({{
+      __glassWorkerReadableStreamTransfer: true,
+      port,
+      byteMode: descriptor && descriptor.byte_mode === true,
+    }});
+  }};
   const workerRequestBodyPayload = (input) => {{
     if (input === undefined || input === null)
       return {{ bodyNull: true, bytes: [], contentType: null }};
@@ -17473,6 +17645,7 @@ fn worker_bootstrap(
         websocket_close_reason_limit = MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
         eventsource_message_limit = MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES,
         eventsource_field_limit = MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
+        fetch_stream_queue_limit = MAX_NATIVE_FETCH_STREAM_QUEUED_CHUNKS,
         worker_url_search_params_entries_limit = MAX_NATIVE_WORKER_URLSEARCHPARAMS_ENTRIES,
         worker_url_search_params_bytes_limit = MAX_NATIVE_WORKER_URLSEARCHPARAMS_BYTES,
         worker_crypto_pool_limit = MAX_NATIVE_WORKER_CRYPTO_POOL_BYTES,
@@ -17950,6 +18123,22 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       return false;
     }
   };
+  const glassMessageReadableStreamValue = (value) => {
+    try {
+      const hook = globalThis.__glassNativeReadableStreamIsReadableStream;
+      return typeof hook === "function" && hook(value) === true;
+    } catch (_error) {
+      return false;
+    }
+  };
+  const glassMessageReadableStreamByteMode = (value) => {
+    try {
+      const hook = globalThis.__glassNativeReadableStreamIsByteStream;
+      return typeof hook === "function" && hook(value) === true;
+    } catch (_error) {
+      return false;
+    }
+  };
   const glassMessageNumberDescriptor = (value) => {
     if (Number.isNaN(value)) return { type: "number", value: "nan" };
     if (value === Infinity) return { type: "number", value: "infinity" };
@@ -18021,7 +18210,9 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       if (transfers && transfers.has(current)) {
         const transfer = transfers.get(current);
         if (typeof transfer === "number") return { type: "port", index: transfer };
-        if (transfer && (transfer.kind === "imageBitmap" || transfer.kind === "offscreenCanvas")
+        if (transfer && (transfer.kind === "imageBitmap"
+              || transfer.kind === "offscreenCanvas"
+              || transfer.kind === "readableStream")
             && Number.isSafeInteger(transfer.index))
           return { type: "transfer", index: transfer.index };
         throw glassMessageException("message transfer reference is invalid", "DataCloneError");
@@ -18032,6 +18223,8 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
         throw glassMessageException("ImageBitmap is not in the transfer list", "DataCloneError");
       if (glassMessageOffscreenCanvasValue(current))
         throw glassMessageException("OffscreenCanvas is not in the transfer list", "DataCloneError");
+      if (glassMessageReadableStreamValue(current))
+        throw glassMessageException("ReadableStream is not in the transfer list", "DataCloneError");
       if (seen.has(current)) return { ref: seen.get(current) };
 
       const id = reserve();
@@ -18291,9 +18484,30 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       throw glassMessageException("OffscreenCanvas transfer result is invalid", "DataCloneError");
     return result;
   };
-  const glassMessageDecodeTransferValue = (descriptor) => {
+  const glassMessageDecodeReadableStreamTransfer = (descriptor, ports) => {
+    if (!descriptor || typeof descriptor !== "object"
+        || descriptor.type !== "readablestream"
+        || !Number.isSafeInteger(descriptor.port_index)
+        || descriptor.port_index < 0
+        || typeof descriptor.byte_mode !== "boolean"
+        || !ports || !ports[descriptor.port_index]
+        || typeof ports[descriptor.port_index].postMessage !== "function")
+      throw glassMessageException("ReadableStream transfer descriptor is invalid", "DataCloneError");
+    const factory = globalThis.__glassNativeReadableStreamFromTransfer;
+    if (typeof factory !== "function")
+      throw glassMessageException("ReadableStream transfer is unavailable", "DataCloneError");
+    let result;
+    try { result = factory(descriptor, ports[descriptor.port_index]); }
+    catch (_error) { throw glassMessageException("ReadableStream transfer is invalid", "DataCloneError"); }
+    if (!glassMessageReadableStreamValue(result))
+      throw glassMessageException("ReadableStream transfer result is invalid", "DataCloneError");
+    return result;
+  };
+  const glassMessageDecodeTransferValue = (descriptor, ports) => {
     if (descriptor && descriptor.type === "offscreencanvas")
       return glassMessageDecodeOffscreenCanvasTransfer(descriptor);
+    if (descriptor && descriptor.type === "readablestream")
+      return glassMessageDecodeReadableStreamTransfer(descriptor, ports);
     return glassMessageDecodeImageBitmapTransfer(descriptor);
   };
   const glassMessageCommitArrayBufferTransfers = (buffers) => {
@@ -18335,6 +18549,83 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       descriptor: { bridge_key: bridgeKey, port_id: id, peer_id: peerId },
     };
   };
+  const glassMessageReadableStreamTransfer = (value, prepared) => {
+    if (!glassMessageReadableStreamValue(value)) return null;
+    if (value.locked === true)
+      throw glassMessageException("ReadableStream is locked", "DataCloneError");
+    if (typeof globalThis.MessageChannel !== "function")
+      throw glassMessageException("ReadableStream transfer is unavailable", "DataCloneError");
+    let channel;
+    try { channel = new globalThis.MessageChannel(); }
+    catch (_error) { throw glassMessageException("ReadableStream transfer is unavailable", "DataCloneError"); }
+    let endpoint;
+    try { endpoint = glassMessageTransferDescriptor(channel.port2); }
+    catch (_error) { throw glassMessageException("ReadableStream transfer endpoint is invalid", "DataCloneError"); }
+    endpoint.descriptor.hidden = true;
+    const portIndex = prepared.length;
+    prepared.push(endpoint);
+    return {
+      stream: value,
+      port: channel.port1,
+      descriptor: {
+        type: "readablestream",
+        port_index: portIndex,
+        byte_mode: glassMessageReadableStreamByteMode(value),
+      },
+    };
+  };
+  const glassMessageCommitReadableStreamTransfers = (transfers) => {
+    for (const transfer of transfers) {
+      let reader;
+      try { reader = transfer.stream.getReader(); }
+      catch (_error) {
+        throw glassMessageException("ReadableStream could not be transferred", "DataCloneError");
+      }
+      let reading = false;
+      let closed = false;
+      const send = (message) => {
+        if (closed) return;
+        try { transfer.port.postMessage(message); }
+        catch (_error) { closed = true; }
+      };
+      transfer.port.onmessage = (event) => {
+        if (closed || !event || !event.data || typeof event.data !== "object") return;
+        const command = String(event.data.__glassReadableStreamControl || "");
+        if (command === "pull") {
+          if (reading) return;
+          reading = true;
+          Promise.resolve(reader.read()).then(
+            result => {
+              reading = false;
+              if (closed) return;
+              if (!result || result.done) {
+                closed = true;
+                try { transfer.port.postMessage({ __glassReadableStreamControl: "close" }); }
+                catch (_error) {}
+                return;
+              }
+              send({ __glassReadableStreamControl: "chunk", value: result.value });
+            },
+            error => {
+              reading = false;
+              if (closed) return;
+              closed = true;
+              try {
+                transfer.port.postMessage({
+                  __glassReadableStreamControl: "error",
+                  message: error && error.message ? String(error.message) : String(error),
+                });
+              } catch (_error) {}
+            },
+          );
+        } else if (command === "cancel") {
+          closed = true;
+          Promise.resolve(reader.cancel(event.data.reason)).catch(() => undefined);
+        }
+      };
+      transfer.port.start();
+    }
+  };
   const glassMessageCommitTransfer = ({ port, peer, id, bridgeKey }) => {
     port.__glassMessagePortTransferred = true;
     port.__glassMessageClosed = true;
@@ -18349,6 +18640,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     const buffers = [];
     const bitmaps = [];
     const offscreenCanvases = [];
+    const readableStreams = [];
     const members = new Map();
     const transferValues = [];
     const transferMembers = new Set();
@@ -18380,6 +18672,14 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
         members.set(member, { kind: "offscreenCanvas", index });
         continue;
       }
+      const readableStream = glassMessageReadableStreamTransfer(member, prepared);
+      if (readableStream) {
+        const index = transferValues.length;
+        transferValues.push(readableStream.descriptor);
+        readableStreams.push(readableStream);
+        members.set(member, { kind: "readableStream", index });
+        continue;
+      }
       if (members.has(member))
         throw glassMessageException("MessagePort appears more than once in the transfer list", "DataCloneError");
       const descriptor = glassMessageTransferDescriptor(member);
@@ -18393,6 +18693,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     glassMessageCommitImageBitmapTransfers(bitmaps);
     glassMessageCommitOffscreenCanvasTransfers(offscreenCanvases);
     for (const descriptor of prepared) glassMessageCommitTransfer(descriptor);
+    glassMessageCommitReadableStreamTransfers(readableStreams);
     return {
       data,
       transfer_ports: prepared.map(({ descriptor }) => descriptor),
@@ -18434,6 +18735,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     const buffers = [];
     const bitmaps = [];
     const offscreenCanvases = [];
+    const readableStreams = [];
     const members = new Map();
     const transferValues = [];
     const transferMembers = new Set();
@@ -18465,6 +18767,14 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
         members.set(member, { kind: "offscreenCanvas", index });
         continue;
       }
+      const readableStream = glassMessageReadableStreamTransfer(member, prepared);
+      if (readableStream) {
+        const index = transferValues.length;
+        transferValues.push(readableStream.descriptor);
+        readableStreams.push(readableStream);
+        members.set(member, { kind: "readableStream", index });
+        continue;
+      }
       const descriptor = glassMessageTransferDescriptor(member);
       if (members.has(descriptor.peer))
         throw glassMessageException("both endpoints of a MessageChannel cannot be transferred together", "DataCloneError");
@@ -18479,7 +18789,11 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     glassMessageCommitOffscreenCanvasTransfers(offscreenCanvases);
     for (let index = 0; index < prepared.length; index += 1)
       glassMessageCommitLocalPortTransfer(prepared[index], ports[index]);
-    return { data: result, ports };
+    glassMessageCommitReadableStreamTransfers(readableStreams);
+    return {
+      data: result,
+      ports: ports.filter((_, index) => prepared[index].descriptor.hidden !== true),
+    };
   };
   const glassMessageStructuredClone = (value, options) => {
     let transfer = [];
@@ -18561,7 +18875,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       if (!Number.isSafeInteger(index) || index < 0 || index >= transferValues.length)
         throw glassMessageException("message transfer reference is invalid", "DataCloneError");
       if (transferCache.has(index)) return transferCache.get(index);
-      const result = glassMessageDecodeTransferValue(transferValues[index]);
+      const result = glassMessageDecodeTransferValue(transferValues[index], ports);
       transferCache.set(index, result);
       return result;
     };
@@ -18740,7 +19054,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     const ports = descriptors.map(glassMessageMakeBridgePort);
     return {
       data: glassMessageDecodeClone(payload && payload.data, ports),
-      ports,
+      ports: ports.filter((_, index) => descriptors[index] && descriptors[index].hidden !== true),
     };
   };
   const glassMessageEventConstructor = typeof globalThis.__glassMessageEventConstructor === "function"
@@ -23783,6 +24097,90 @@ fn document_bootstrap(
   globalThis.__glassFetchStreamGroups = fetchStreamGroups;
   globalThis.__glassReadableStreamConstructor = ReadableStreamNative;
   globalThis.ReadableStream = ReadableStreamNative;
+  globalThis.__glassNativeReadableStreamIsReadableStream = value => {{
+    try {{ return readableStreamState(value) !== null; }}
+    catch (_error) {{ return false; }}
+  }};
+  globalThis.__glassNativeReadableStreamIsByteStream = value => {{
+    try {{ return readableStreamState(value).byteMode === true; }}
+    catch (_error) {{ return false; }}
+  }};
+  globalThis.__glassNativeReadableStreamFromTransfer = (descriptor, port) => {{
+    if (!descriptor || typeof descriptor !== "object"
+        || typeof port !== "object" || typeof port.postMessage !== "function")
+      throw new TypeError("native ReadableStream transfer endpoint is invalid");
+    let pending = null;
+    let remoteDone = false;
+    let remoteError = null;
+    const remoteQueue = [];
+    const source = {{
+      start(controller) {{
+        port.onmessage = event => {{
+          const message = event && event.data;
+          if (!message || typeof message !== "object" || remoteDone) return;
+          const kind = String(message.__glassReadableStreamControl || "");
+          if (kind === "chunk") {{
+            if (pending) {{
+              const current = pending;
+              pending = null;
+              try {{ controller.enqueue(message.value); current.resolve(); }}
+              catch (error) {{ current.reject(error); }}
+            }} else if (remoteQueue.length < {fetch_stream_queue_limit}) {{
+              remoteQueue.push(message.value);
+            }} else {{
+              remoteError = new Error("native transferred ReadableStream queue limit exceeded");
+              remoteDone = true;
+              controller.error(remoteError);
+            }}
+          }} else if (kind === "close") {{
+            remoteDone = true;
+            if (pending) {{
+              const current = pending;
+              pending = null;
+              try {{ controller.close(); current.resolve(); }}
+              catch (error) {{ current.reject(error); }}
+            }} else controller.close();
+          }} else if (kind === "error") {{
+            remoteError = new Error(String(message.message || "native transferred ReadableStream failed"));
+            remoteDone = true;
+            if (pending) {{
+              const current = pending;
+              pending = null;
+              controller.error(remoteError);
+              current.reject(remoteError);
+            }} else controller.error(remoteError);
+          }}
+        }};
+        port.start();
+      }},
+      pull(controller) {{
+        if (remoteQueue.length > 0) {{
+          controller.enqueue(remoteQueue.shift());
+          return Promise.resolve();
+        }}
+        if (remoteError !== null) {{ controller.error(remoteError); return Promise.reject(remoteError); }}
+        if (remoteDone) {{ controller.close(); return Promise.resolve(); }}
+        if (pending) return Promise.reject(new TypeError("native transferred ReadableStream read is already pending"));
+        return new Promise((resolve, reject) => {{
+          pending = {{ controller, resolve, reject }};
+          try {{ port.postMessage({{ __glassReadableStreamControl: "pull" }}); }}
+          catch (error) {{ pending = null; remoteDone = true; reject(error); }}
+        }});
+      }},
+      cancel(reason) {{
+        remoteDone = true;
+        const current = pending;
+        pending = null;
+        if (current) current.resolve();
+        try {{ port.postMessage({{ __glassReadableStreamControl: "cancel", reason }}); }}
+        catch (_error) {{}}
+        try {{ port.close(); }} catch (_error) {{}}
+        return Promise.resolve(undefined);
+      }},
+    }};
+    if (descriptor.byte_mode === true) source.type = "bytes";
+    return new ReadableStreamNative(source);
+  }};
   const responseBodyBytes = (payload) => typeof payload.bodyBase64 === "string"
     ? decodeBase64(payload.bodyBase64)
     : blobUtf8Bytes(String(payload.body || ""));

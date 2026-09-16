@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-390` slice. The native runtime is now the primary
+`native-engine-browser-391` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -745,6 +745,21 @@ transferable platform objects, browser-wide task-source conformance, and the
 remaining Core Web Profile and production certification gates remain open.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-390.md`.
+
+Slice 391 adds transferable `ReadableStream` ownership to the shared tagged
+structured-clone graph. Page and worker realms now exchange a hidden,
+bounded bridge endpoint and issue demand-driven `pull` controls; default
+streams preserve structured-cloneable chunk values, byte streams preserve
+byte mode, and source readers are installed only after clone admission
+succeeds. Hidden transport ports stay out of `MessageEvent.ports`, while
+ordinary user-transferred ports remain visible. The local and page-to-worker
+witnesses cover source locking, receiver identity, ordered chunks, close, and
+bounded multi-turn progress. Chunk transport remains a bounded copy through
+the existing JSON-framed owner; worker-created underlying-source parity,
+remote-stream `tee()`, upload backpressure, global task-source conformance,
+and the remaining Core Web Profile and production certification gates remain
+open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-391.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

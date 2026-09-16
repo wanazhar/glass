@@ -19,8 +19,8 @@ same Rust-owned CSP decision boundary as inline script elements.
 - Preserve `script-src-attr` source-expression bytes and apply its fallback
   chain to `script-src`, then `default-src`.
 - Admit an `on*` content attribute only for `unsafe-inline` or a matching
-  supported hash policy form; attributes have no nonce channel, so a
-  nonce-only policy must block them.
+  supported hash policy form with `unsafe-hashes`; attributes have no nonce
+  channel, so a nonce-only policy must block them.
 - Compile admitted handlers in the page realm with the element as `this` and
   the dispatched event as the `event` argument. A returned `false` must cancel
   a cancelable event.

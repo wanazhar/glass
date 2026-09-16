@@ -1,9 +1,18 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-400` slice. The native runtime is now the primary
+`native-engine-browser-401` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 401 preserves successful HTTP(S) worker-script response CSP under the
+resolved worker URL. Dedicated and shared worker EventSource, Fetch, and
+WebSocket owners now see that worker policy, while page `worker-src`
+authorization remains separate. A later worker load replaces stale policy
+state; report-only records remain bounded and never authorize or block a
+request. Service Worker policy-container propagation, dynamic policy mutation,
+strict-dynamic trust, network report delivery, WebSocket report delivery, and
+the complete CSP source-expression grammar remain separate issue #40 gates.
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader

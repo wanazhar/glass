@@ -60,6 +60,19 @@ pub(crate) enum NativeSubresourceKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeNavigationPolicyKind {
+    FormAction,
+}
+
+impl NativeNavigationPolicyKind {
+    const fn directive(self) -> &'static str {
+        match self {
+            Self::FormAction => "form-action",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeInlineCspKind {
     ScriptElement,
     ScriptAttribute,
@@ -900,6 +913,7 @@ struct NativeCspDirectives {
     child_sources: Option<Vec<String>>,
     connect_sources: Option<Vec<String>>,
     worker_sources: Option<Vec<String>>,
+    form_action_sources: Option<Vec<String>>,
     default_sources: Option<Vec<String>>,
     report_uris: Vec<String>,
     report_to: Option<String>,
@@ -971,6 +985,23 @@ impl NativeCspDirectives {
             parser_inserted,
             nonce,
         )
+    }
+
+    fn allows_navigation(
+        &self,
+        kind: NativeNavigationPolicyKind,
+        document_url: &Url,
+        target_url: &Url,
+    ) -> bool {
+        self.navigation_sources_for(kind).is_none_or(|sources| {
+            csp_sources_allow(Some(sources.as_slice()), document_url, target_url)
+        })
+    }
+
+    fn navigation_sources_for(&self, kind: NativeNavigationPolicyKind) -> Option<&Vec<String>> {
+        match kind {
+            NativeNavigationPolicyKind::FormAction => self.form_action_sources.as_ref(),
+        }
     }
 
     fn directive_for(&self, kind: NativeSubresourceKind) -> Option<(&'static str, &Vec<String>)> {
@@ -1182,6 +1213,33 @@ impl NativeCspPolicy {
         self.policies.iter().all(|policy| {
             policy.allows_script_redirect(document_url, resource_url, parser_inserted, nonce)
         })
+    }
+
+    fn allows_navigation(
+        &self,
+        kind: NativeNavigationPolicyKind,
+        document_url: &Url,
+        target_url: &Url,
+    ) -> bool {
+        self.policies
+            .iter()
+            .all(|policy| policy.allows_navigation(kind, document_url, target_url))
+    }
+
+    fn report_only_navigation_violations(
+        &self,
+        kind: NativeNavigationPolicyKind,
+        document_url: &Url,
+        target_url: &Url,
+    ) -> Vec<(&NativeCspDeclaration, &'static str)> {
+        self.report_only_policies
+            .iter()
+            .filter_map(|declaration| {
+                let sources = declaration.directives.navigation_sources_for(kind)?;
+                (!csp_sources_allow(Some(sources.as_slice()), document_url, target_url))
+                    .then_some((declaration, kind.directive()))
+            })
+            .collect()
     }
 
     fn allows_inline(&self, kind: NativeInlineCspKind, source: &str, nonce: Option<&str>) -> bool {
@@ -2320,6 +2378,29 @@ impl NativeResourceLoader {
         }
     }
 
+    fn record_report_only_navigation_violations(
+        &mut self,
+        policy: &NativeCspPolicy,
+        kind: NativeNavigationPolicyKind,
+        document_url: &Url,
+        target_url: &Url,
+    ) {
+        let blocked_uri = without_fragment(target_url.as_str()).to_owned();
+        for (declaration, directive) in
+            policy.report_only_navigation_violations(kind, document_url, target_url)
+        {
+            self.queue_csp_violation(
+                policy,
+                declaration,
+                document_url,
+                blocked_uri.clone(),
+                directive,
+                &declaration.original_policy,
+                "",
+            );
+        }
+    }
+
     fn record_report_only_inline_violations(
         &mut self,
         policy: &NativeCspPolicy,
@@ -2965,6 +3046,39 @@ impl NativeResourceLoader {
             });
         }
         Ok(())
+    }
+
+    pub(crate) fn allows_navigation(
+        &mut self,
+        document_url: &str,
+        target_url: &str,
+        kind: NativeNavigationPolicyKind,
+    ) -> Result<bool, NativeEngineError> {
+        validate_url_text("CSP navigation owner URL", document_url)?;
+        validate_url_text("CSP navigation target URL", target_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "CSP navigation owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        let target_url = Url::parse(without_fragment(target_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "CSP navigation target URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        reject_credentials(&target_url)?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(true);
+        }
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .cloned()
+            .unwrap_or_default();
+        self.record_report_only_navigation_violations(&policy, kind, &document_url, &target_url);
+        Ok(policy.allows_navigation(kind, &document_url, &target_url))
     }
 
     pub(crate) fn report_service_worker_connect_policy(
@@ -5256,6 +5370,7 @@ fn parse_csp_directives(value: &str) -> NativeCspDirectives {
             "child-src" => policy.child_sources = Some(sources),
             "connect-src" => policy.connect_sources = Some(sources),
             "worker-src" => policy.worker_sources = Some(sources),
+            "form-action" => policy.form_action_sources = Some(sources),
             "default-src" => policy.default_sources = Some(sources),
             "report-uri" => {
                 policy.report_uris = sources
@@ -6760,13 +6875,13 @@ mod tests {
     use super::{
         MAX_NATIVE_CACHE_ENTRIES, MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, NativeCookieProfileEntry,
         NativeCorsMode, NativeEngineConfig, NativeInlineCspKind, NativeNavigationMethod,
-        NativeNetworkState, NativeResource, NativeResourceLoader, NativeSubresourceKind,
-        cache_control_max_age, cache_control_requires_revalidation, content_security_policy,
-        cors_origin_header, cors_preflight_response_allowed, cors_response_allowed,
-        csp_report_deliveries_for_declaration, csp_sources_allow, csp_sources_allow_for_redirect,
-        decode_html_body, document_cache_fresh_until, document_cache_storage_allowed,
-        mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
-        subresource_integrity_matches,
+        NativeNavigationPolicyKind, NativeNetworkState, NativeResource, NativeResourceLoader,
+        NativeSubresourceKind, cache_control_max_age, cache_control_requires_revalidation,
+        content_security_policy, cors_origin_header, cors_preflight_response_allowed,
+        cors_response_allowed, csp_report_deliveries_for_declaration, csp_sources_allow,
+        csp_sources_allow_for_redirect, decode_html_body, document_cache_fresh_until,
+        document_cache_storage_allowed, mixed_content_allowed, referrer_for_navigation,
+        resolve_subresource_url, subresource_integrity_matches,
     };
     use base64::Engine as _;
     use reqwest::header::{
@@ -7664,6 +7779,45 @@ mod tests {
         let child_only_policy = content_security_policy(&child_only_headers);
         assert!(child_only_policy.allows(NativeSubresourceKind::Frame, &document, &child));
         assert!(!child_only_policy.allows(NativeSubresourceKind::Frame, &document, &frame));
+    }
+
+    #[test]
+    fn csp_form_action_is_explicit_and_intersected_across_headers() {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; form-action https://submit-one.test"),
+        );
+        headers.append(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("form-action https://submit-two.test"),
+        );
+        let policy = content_security_policy(&headers);
+        let document = Url::parse("https://app.test/form").unwrap();
+        let first = Url::parse("https://submit-one.test/receive").unwrap();
+        let second = Url::parse("https://submit-two.test/receive").unwrap();
+        assert!(!policy.allows_navigation(
+            NativeNavigationPolicyKind::FormAction,
+            &document,
+            &first,
+        ));
+        assert!(!policy.allows_navigation(
+            NativeNavigationPolicyKind::FormAction,
+            &document,
+            &second,
+        ));
+
+        let mut unrestricted_headers = HeaderMap::new();
+        unrestricted_headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'"),
+        );
+        let unrestricted = content_security_policy(&unrestricted_headers);
+        assert!(unrestricted.allows_navigation(
+            NativeNavigationPolicyKind::FormAction,
+            &document,
+            &first,
+        ));
     }
 
     #[test]

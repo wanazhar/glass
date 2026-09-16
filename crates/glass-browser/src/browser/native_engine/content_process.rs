@@ -51,8 +51,8 @@ use super::resource_loader::{
     MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES, MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode,
     NativeCspViolation, NativeFetchCacheMode, NativeFetchRedirectMode, NativeFetchRequest,
     NativeFetchResponse, NativeFetchResponseStream, NativeNavigationMethod,
-    NativeNavigationRequest, NativeRequestBody, NativeResource, NativeResourceLoader,
-    NativeWebSocketTarget, schedule_native_csp_report_deliveries,
+    NativeNavigationPolicyKind, NativeNavigationRequest, NativeRequestBody, NativeResource,
+    NativeResourceLoader, NativeWebSocketTarget, schedule_native_csp_report_deliveries,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -7567,6 +7567,21 @@ async fn load_module_dependencies(
     Ok(())
 }
 
+fn form_action_allows(
+    loader: Option<&mut NativeResourceLoader>,
+    document_url: &str,
+    target_url: &str,
+) -> Result<bool, NativeEngineError> {
+    match loader {
+        Some(loader) => loader.allows_navigation(
+            document_url,
+            target_url,
+            NativeNavigationPolicyKind::FormAction,
+        ),
+        None => Ok(true),
+    }
+}
+
 fn resolve_module_specifier(
     module_url: &str,
     specifier: &str,
@@ -7688,19 +7703,20 @@ fn mutate_click_with_event_preflight(
                     &mut history,
                     &mut scroll_commands,
                 )? {
-                    navigation = Some(NativeContentNavigation {
-                        node_index: form_id.index(),
-                        href: next
-                            .form_submission_request_with_submitter(
-                                form_id,
-                                document_url,
-                                Some(node_id),
-                            )?
-                            .url,
-                        submitter_node_index: Some(node_id.index()),
-                        location: false,
-                        replace_history: false,
-                    });
+                    let request = next.form_submission_request_with_submitter(
+                        form_id,
+                        document_url,
+                        Some(node_id),
+                    )?;
+                    if form_action_allows(loader.as_deref_mut(), document_url, &request.url)? {
+                        navigation = Some(NativeContentNavigation {
+                            node_index: form_id.index(),
+                            href: request.url,
+                            submitter_node_index: Some(node_id.index()),
+                            location: false,
+                            replace_history: false,
+                        });
+                    }
                 }
             } else {
                 dispatch_invalid_events(
@@ -9316,6 +9332,16 @@ async fn mutate_script_document(
                 &mut history,
                 &mut scroll_commands,
             )?;
+            navigation = None;
+        }
+    }
+    if let Some(ScriptNavigationTarget::Form {
+        form_id, submitter, ..
+    }) = navigation.as_ref()
+    {
+        let request =
+            next.form_submission_request_with_submitter(*form_id, &document_url, *submitter)?;
+        if !form_action_allows(loader.as_deref_mut(), &document_url, &request.url)? {
             navigation = None;
         }
     }

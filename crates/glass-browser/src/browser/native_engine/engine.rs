@@ -46,9 +46,9 @@ use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
-    NativeFetchResponse, NativeNavigationMethod, NativeNavigationRequest, NativeResource,
-    NativeResourceLoader, csp_sources_allow, csp_sources_allow_for_redirect,
-    referrer_for_navigation,
+    NativeFetchResponse, NativeNavigationMethod, NativeNavigationPolicyKind,
+    NativeNavigationRequest, NativeResource, NativeResourceLoader, csp_sources_allow,
+    csp_sources_allow_for_redirect, referrer_for_navigation,
 };
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
@@ -4140,10 +4140,18 @@ impl NativeEngine {
             }
             Some(ScriptNavigationTarget::Form {
                 form_id, submitter, ..
-            }) => Some(
-                self.document
-                    .form_submission_request_with_submitter(form_id, &self.url, submitter)?,
-            ),
+            }) => {
+                let request = self
+                    .document
+                    .form_submission_request_with_submitter(form_id, &self.url, submitter)?;
+                self.loader
+                    .allows_navigation(
+                        &self.url,
+                        &request.url,
+                        NativeNavigationPolicyKind::FormAction,
+                    )?
+                    .then_some(request)
+            }
             Some(ScriptNavigationTarget::Location {
                 href,
                 replace_history,
@@ -5108,6 +5116,16 @@ impl NativeEngine {
                 &self.url,
                 Some(submitter),
             )?;
+            if !self.loader.allows_navigation(
+                &self.url,
+                &request.url,
+                NativeNavigationPolicyKind::FormAction,
+            )? {
+                return Ok(NativeActionResult {
+                    revision: self.revision,
+                    accepted: true,
+                });
+            }
             let snapshot = self.navigate(request.url)?;
             return Ok(NativeActionResult {
                 revision: snapshot.revision,
@@ -5177,6 +5195,16 @@ impl NativeEngine {
         let request =
             self.document
                 .form_submission_request_with_submitter(form_id, &self.url, Some(id))?;
+        if !self.loader.allows_navigation(
+            &self.url,
+            &request.url,
+            NativeNavigationPolicyKind::FormAction,
+        )? {
+            return Ok(NativeActionResult {
+                revision: self.revision,
+                accepted: true,
+            });
+        }
         let snapshot = self.navigate(request.url)?;
         Ok(NativeActionResult {
             revision: snapshot.revision,

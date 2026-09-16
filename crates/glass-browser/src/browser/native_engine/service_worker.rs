@@ -1709,6 +1709,9 @@ impl NativeServiceWorkerRegistry {
         let Some(scope) = scope else {
             return Ok(NativeServiceWorkerFetchOutcome::NotHandled);
         };
+        if !is_navigation {
+            loader.enforce_service_worker_connect_policy(&owner, &target)?;
+        }
         let client_id = self.current_client_id_for(document_url);
         let controlled = self.current_client_is_controlled(document_url);
         let clients = self.client_states_for_worker(&scope)?;
@@ -1828,9 +1831,11 @@ impl NativeServiceWorkerRegistry {
                 operation: "decode service worker response".into(),
                 reason: "service worker returned no response envelope".into(),
             })?;
-        Ok(NativeServiceWorkerFetchOutcome::Handled(
-            decode_service_worker_response(response, target.as_str())?,
-        ))
+        let response = decode_service_worker_response(response, target.as_str())?;
+        if !is_navigation {
+            loader.report_service_worker_connect_policy(&owner, &target);
+        }
+        Ok(NativeServiceWorkerFetchOutcome::Handled(response))
     }
 
     fn matching_scope(&self, target: &Url) -> Result<Option<String>, NativeEngineError> {

@@ -27313,6 +27313,10 @@ fn document_bootstrap(
     if (["IMG", "SCRIPT", "IFRAME", "FRAME", "EMBED", "SOURCE", "TRACK", "AUDIO", "VIDEO"].includes(element.tagName))
       installUrlAttributeProperty(element, "src", "src", baseUrl,
         element.tagName === "IMG" ? state.imageReset : null);
+    if (["LINK", "SCRIPT"].includes(element.tagName)) {{
+      installStringAttributeProperty(element, "integrity", "integrity");
+      installStringAttributeProperty(element, "crossOrigin", "crossorigin");
+    }}
     if (element.tagName === "FORM")
       installUrlAttributeProperty(element, "action", "action", baseUrl);
     if (["IMG", "SOURCE"].includes(element.tagName)) {{

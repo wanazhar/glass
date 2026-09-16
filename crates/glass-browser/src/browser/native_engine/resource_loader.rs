@@ -1963,6 +1963,120 @@ fn csp_hash_matches(source: &str, value: &str) -> bool {
     base64::engine::general_purpose::STANDARD.encode(digest) == expected
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeIntegrityAlgorithm {
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+impl NativeIntegrityAlgorithm {
+    fn priority(self) -> u8 {
+        match self {
+            Self::Sha256 => 1,
+            Self::Sha384 => 2,
+            Self::Sha512 => 3,
+        }
+    }
+
+    fn digest(self, body: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Sha256 => Sha256::digest(body).to_vec(),
+            Self::Sha384 => Sha384::digest(body).to_vec(),
+            Self::Sha512 => Sha512::digest(body).to_vec(),
+        }
+    }
+
+    fn digest_len(self) -> usize {
+        match self {
+            Self::Sha256 => 32,
+            Self::Sha384 => 48,
+            Self::Sha512 => 64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeIntegrityMetadata {
+    algorithm: NativeIntegrityAlgorithm,
+    digest: Vec<u8>,
+}
+
+fn parse_integrity_metadata(value: &str) -> Vec<NativeIntegrityMetadata> {
+    value
+        .split_ascii_whitespace()
+        .filter_map(|token| {
+            let (hash_expression, options) = token.split_once('?').unwrap_or((token, ""));
+            if !options.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+                return None;
+            }
+            let (algorithm, digest) = hash_expression.split_once('-')?;
+            let algorithm = match algorithm.to_ascii_lowercase().as_str() {
+                "sha256" => NativeIntegrityAlgorithm::Sha256,
+                "sha384" => NativeIntegrityAlgorithm::Sha384,
+                "sha512" => NativeIntegrityAlgorithm::Sha512,
+                _ => return None,
+            };
+            let digest = base64::engine::general_purpose::STANDARD
+                .decode(digest)
+                .ok()?;
+            (digest.len() == algorithm.digest_len())
+                .then_some(NativeIntegrityMetadata { algorithm, digest })
+        })
+        .collect()
+}
+
+fn integrity_metadata_is_enforced(integrity: Option<&str>) -> bool {
+    integrity.is_some_and(|value| !parse_integrity_metadata(value).is_empty())
+}
+
+/// Verify an element's SRI metadata against the raw response representation.
+/// Unknown or malformed metadata is ignored as required for forward-compatible
+/// hash algorithm negotiation; a recognized hash turns a mismatch into a
+/// failed resource load.
+pub(crate) fn subresource_integrity_matches(integrity: Option<&str>, body: &[u8]) -> bool {
+    let Some(integrity) = integrity else {
+        return true;
+    };
+    let metadata = parse_integrity_metadata(integrity);
+    let Some(strongest_priority) = metadata
+        .iter()
+        .map(|entry| entry.algorithm.priority())
+        .max()
+    else {
+        return true;
+    };
+    metadata
+        .iter()
+        .filter(|entry| entry.algorithm.priority() == strongest_priority)
+        .any(|entry| entry.digest == entry.algorithm.digest(body))
+}
+
+fn subresource_credentials(crossorigin: Option<&str>) -> Option<bool> {
+    crossorigin.map(|value| value.trim().eq_ignore_ascii_case("use-credentials"))
+}
+
+fn subresource_response_allowed(
+    headers: &HeaderMap,
+    document_url: &Url,
+    resource_url: &Url,
+    integrity: Option<&str>,
+    crossorigin: Option<&str>,
+) -> bool {
+    if document_url.origin() == resource_url.origin() {
+        return true;
+    }
+    if integrity_metadata_is_enforced(integrity) && crossorigin.is_none() {
+        return false;
+    }
+    match subresource_credentials(crossorigin) {
+        Some(credentials) => {
+            cors_response_allowed(headers, document_url, resource_url, credentials)
+        }
+        None => true,
+    }
+}
+
 impl NativeResourceLoader {
     pub(crate) fn new(config: &NativeEngineConfig) -> Result<Self, NativeEngineError> {
         config.validate()?;
@@ -4131,6 +4245,8 @@ impl NativeResourceLoader {
         &mut self,
         document_url: &str,
         href: &str,
+        integrity: Option<&str>,
+        crossorigin: Option<&str>,
     ) -> Result<Option<String>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text("stylesheet URL", href)?;
@@ -4149,6 +4265,10 @@ impl NativeResourceLoader {
         if !mixed_content_allowed(&document_url, &target_url) {
             return Ok(None);
         }
+        let integrity_required = integrity_metadata_is_enforced(integrity);
+        let cross_origin_target = document_url.origin() != target_url.origin();
+        let can_reuse_cached_stylesheet =
+            !(cross_origin_target && (integrity_required || crossorigin.is_some()));
         let policy = self
             .network
             .document_policies
@@ -4170,11 +4290,15 @@ impl NativeResourceLoader {
             .stylesheet_cache
             .get(&requested_cache_key)
             .cloned()
-            .filter(|cached| !cached.is_fresh(Instant::now()));
+            .filter(|cached| can_reuse_cached_stylesheet && !cached.is_fresh(Instant::now()));
         if let Some(cached) = self.network.stylesheet_cache.get(&requested_cache_key)
+            && can_reuse_cached_stylesheet
             && cached.is_fresh(Instant::now())
         {
-            return Ok(Some(cached.body.clone()));
+            return Ok(
+                subresource_integrity_matches(integrity, cached.body.as_bytes())
+                    .then_some(cached.body.clone()),
+            );
         }
 
         let client = reqwest::Client::builder()
@@ -4197,6 +4321,12 @@ impl NativeResourceLoader {
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
+            if crossorigin.is_some()
+                && let Some(origin) =
+                    cors_origin_header(&document_url, &current_url, NativeCorsMode::Cors)
+            {
+                request = request.header(reqwest::header::ORIGIN, origin);
+            }
             if redirects == 0
                 && let Some(cached) = stale_cached_stylesheet.as_ref()
             {
@@ -4207,12 +4337,15 @@ impl NativeResourceLoader {
                     request = request.header(reqwest::header::IF_MODIFIED_SINCE, last_modified);
                 }
             }
-            if let Some(cookie) = self.network.cookie_header_for_request(
-                &current_url,
-                Some(&document_url),
-                false,
-                NativeNavigationMethod::Get,
-            ) {
+            let credentials = subresource_credentials(crossorigin).unwrap_or(false);
+            if (document_url.origin() == current_url.origin() || credentials)
+                && let Some(cookie) = self.network.cookie_header_for_request(
+                    &current_url,
+                    Some(&document_url),
+                    false,
+                    NativeNavigationMethod::Get,
+                )
+            {
                 request = request.header(reqwest::header::COOKIE, cookie);
             }
             self.before_request(0).await?;
@@ -4292,6 +4425,9 @@ impl NativeResourceLoader {
                     .extend(self.network.store_cookie(&cookie_url, &cookie));
             }
             let cached_body = cached.body.clone();
+            if !subresource_integrity_matches(integrity, cached_body.as_bytes()) {
+                return Ok(None);
+            }
             if has_set_cookie {
                 self.network.remove_stylesheet_cache(&requested_cache_key);
             } else if let Some(entry) =
@@ -4309,6 +4445,15 @@ impl NativeResourceLoader {
                 operation: "CSS subresource request".into(),
                 reason: format!("server returned HTTP {}", response.status().as_u16()),
             });
+        }
+        if !subresource_response_allowed(
+            &response_headers,
+            &document_url,
+            &current_url,
+            integrity,
+            crossorigin,
+        ) {
+            return Ok(None);
         }
         if !content_type_is(
             response.headers().get(reqwest::header::CONTENT_TYPE),
@@ -4346,6 +4491,9 @@ impl NativeResourceLoader {
                 ));
             }
             bytes.extend_from_slice(&chunk);
+        }
+        if !subresource_integrity_matches(integrity, &bytes) {
+            return Ok(None);
         }
         let body = String::from_utf8(bytes).map_err(|_| NativeEngineError::Network {
             operation: "CSS subresource decoding".into(),
@@ -4600,8 +4748,16 @@ impl NativeResourceLoader {
         href: &str,
         max_source_bytes: usize,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
-        self.load_script_async_with_metadata(document_url, href, max_source_bytes, true, None)
-            .await
+        self.load_script_async_with_metadata(
+            document_url,
+            href,
+            max_source_bytes,
+            true,
+            None,
+            None,
+            None,
+        )
+        .await
     }
 
     pub(crate) async fn load_script_async_with_metadata(
@@ -4611,6 +4767,8 @@ impl NativeResourceLoader {
         max_source_bytes: usize,
         parser_inserted: bool,
         nonce: Option<&str>,
+        integrity: Option<&str>,
+        crossorigin: Option<&str>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         self.load_script_like_async(
             document_url,
@@ -4619,6 +4777,8 @@ impl NativeResourceLoader {
             NativeSubresourceKind::Script,
             parser_inserted,
             nonce,
+            integrity,
+            crossorigin,
         )
         .await
     }
@@ -4636,6 +4796,8 @@ impl NativeResourceLoader {
             NativeSubresourceKind::Worker,
             true,
             None,
+            None,
+            None,
         )
         .await
     }
@@ -4648,6 +4810,8 @@ impl NativeResourceLoader {
         subresource_kind: NativeSubresourceKind,
         parser_inserted: bool,
         nonce: Option<&str>,
+        integrity: Option<&str>,
+        crossorigin: Option<&str>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text(
@@ -4706,6 +4870,10 @@ impl NativeResourceLoader {
         if !mixed_content_allowed(&document_url, &target_url) {
             return Ok(None);
         }
+        let integrity_required = integrity_metadata_is_enforced(integrity);
+        let cross_origin_target = document_url.origin() != target_url.origin();
+        let can_reuse_cached_script =
+            !(cross_origin_target && (integrity_required || crossorigin.is_some()));
         let policy = self
             .network
             .document_policies
@@ -4735,17 +4903,22 @@ impl NativeResourceLoader {
                     .script_cache
                     .get(&requested_cache_key)
                     .cloned()
-                    .filter(|cached| !cached.is_fresh(Instant::now()))
+                    .filter(|cached| can_reuse_cached_script && !cached.is_fresh(Instant::now()))
             })
             .flatten();
         if subresource_kind == NativeSubresourceKind::Script
+            && can_reuse_cached_script
             && let Some(cached) = self.network.script_cache.get(&requested_cache_key)
             && cached.is_fresh(Instant::now())
         {
-            return Ok(Some(NativeScriptResource {
-                url: cached.url.clone(),
-                body: cached.body.clone(),
-            }));
+            return if subresource_integrity_matches(integrity, cached.body.as_bytes()) {
+                Ok(Some(NativeScriptResource {
+                    url: cached.url.clone(),
+                    body: cached.body.clone(),
+                }))
+            } else {
+                Ok(None)
+            };
         }
 
         let client = reqwest::Client::builder()
@@ -4767,6 +4940,12 @@ impl NativeResourceLoader {
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
+            if crossorigin.is_some()
+                && let Some(origin) =
+                    cors_origin_header(&document_url, &current_url, NativeCorsMode::Cors)
+            {
+                request = request.header(reqwest::header::ORIGIN, origin);
+            }
             if redirects == 0
                 && let Some(cached) = stale_cached_script.as_ref()
             {
@@ -4777,12 +4956,15 @@ impl NativeResourceLoader {
                     request = request.header(reqwest::header::IF_MODIFIED_SINCE, last_modified);
                 }
             }
-            if let Some(cookie) = self.network.cookie_header_for_request(
-                &current_url,
-                Some(&document_url),
-                false,
-                NativeNavigationMethod::Get,
-            ) {
+            let credentials = subresource_credentials(crossorigin).unwrap_or(false);
+            if (document_url.origin() == current_url.origin() || credentials)
+                && let Some(cookie) = self.network.cookie_header_for_request(
+                    &current_url,
+                    Some(&document_url),
+                    false,
+                    NativeNavigationMethod::Get,
+                )
+            {
                 request = request.header(reqwest::header::COOKIE, cookie);
             }
             self.before_request(0).await?;
@@ -4870,6 +5052,9 @@ impl NativeResourceLoader {
                 url: cached.url.clone(),
                 body: cached.body.clone(),
             };
+            if !subresource_integrity_matches(integrity, cached_resource.body.as_bytes()) {
+                return Ok(None);
+            }
             if has_set_cookie {
                 self.network.remove_script_cache(&requested_cache_key);
             } else if let Some(entry) =
@@ -4886,6 +5071,15 @@ impl NativeResourceLoader {
                 operation: "script subresource request".into(),
                 reason: format!("server returned HTTP {}", response.status().as_u16()),
             });
+        }
+        if !subresource_response_allowed(
+            &response_headers,
+            &document_url,
+            &current_url,
+            integrity,
+            crossorigin,
+        ) {
+            return Ok(None);
         }
         if !script_content_type_allowed(response.headers().get(reqwest::header::CONTENT_TYPE))? {
             return Ok(None);
@@ -4918,6 +5112,9 @@ impl NativeResourceLoader {
                 ));
             }
             bytes.extend_from_slice(&chunk);
+        }
+        if !subresource_integrity_matches(integrity, &bytes) {
+            return Ok(None);
         }
         let body = String::from_utf8(bytes).map_err(|_| NativeEngineError::Network {
             operation: "script subresource decoding".into(),
@@ -6569,6 +6766,7 @@ mod tests {
         csp_report_deliveries_for_declaration, csp_sources_allow, csp_sources_allow_for_redirect,
         decode_html_body, document_cache_fresh_until, document_cache_storage_allowed,
         mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
+        subresource_integrity_matches,
     };
     use base64::Engine as _;
     use reqwest::header::{
@@ -6576,7 +6774,7 @@ mod tests {
         ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL,
         CONTENT_SECURITY_POLICY, HeaderMap, HeaderName, HeaderValue, PRAGMA, VARY,
     };
-    use sha2::{Digest, Sha256};
+    use sha2::{Digest, Sha256, Sha384, Sha512};
     use std::fs;
     use std::time::Instant;
     use url::Url;
@@ -6593,6 +6791,39 @@ mod tests {
         );
         assert!(decode_html_body(b"\xff", Some("us-ascii"), 32).is_err());
         assert!(decode_html_body(b"text", Some("x-unknown"), 32).is_err());
+    }
+
+    #[test]
+    fn subresource_integrity_uses_valid_strongest_hash_metadata() {
+        let body = b"globalThis.integrity = true;";
+        let sha256 = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(body));
+        let sha384 = base64::engine::general_purpose::STANDARD.encode(Sha384::digest(body));
+        let sha512 = base64::engine::general_purpose::STANDARD.encode(Sha512::digest(body));
+        let wrong_sha256 = base64::engine::general_purpose::STANDARD.encode([0_u8; 32]);
+        let wrong_sha512 = base64::engine::general_purpose::STANDARD.encode([0_u8; 64]);
+
+        assert!(subresource_integrity_matches(None, body));
+        assert!(subresource_integrity_matches(
+            Some(&format!("sha256-{sha256}")),
+            body
+        ));
+        assert!(subresource_integrity_matches(
+            Some(&format!("sha384-{sha384}?future-option sha256-{sha256}")),
+            body
+        ));
+        assert!(subresource_integrity_matches(
+            Some(&format!("sha512-{sha512} sha384-wrong")),
+            body
+        ));
+        assert!(!subresource_integrity_matches(
+            Some(&format!("sha512-{wrong_sha512} sha256-{sha256}")),
+            body
+        ));
+        assert!(subresource_integrity_matches(Some("sha999-unknown"), body));
+        assert!(!subresource_integrity_matches(
+            Some(&format!("sha256-{wrong_sha256}")),
+            body
+        ));
     }
 
     #[test]

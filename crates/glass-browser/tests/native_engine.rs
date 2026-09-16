@@ -15987,7 +15987,7 @@ async fn native_content_process_revalidates_stylesheet_and_script_subresources()
     let server = tokio::spawn(async move {
         let mut stylesheet_requests = 0;
         let mut script_requests = 0;
-        for _ in 0..4 {
+        for _ in 0..5 {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
             let path = request.split_whitespace().nth(1).unwrap_or_default();
@@ -16224,6 +16224,199 @@ async fn native_content_process_dispatches_resource_load_events_before_dom_conte
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_enforces_subresource_integrity_for_scripts_and_styles() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let good_style = "#good { display: block; width: 80px; height: 24px; }";
+    let bad_style = "#bad { display: block; width: 17px; height: 19px; }";
+    let good_script = "globalThis.sriGood = 'executed';";
+    let bad_script = "globalThis.sriBad = 'executed';";
+    let digest = |body: &str| {
+        base64::engine::general_purpose::STANDARD.encode(Sha256::digest(body.as_bytes()))
+    };
+    let good_style_hash = digest(good_style);
+    let good_script_hash = digest(good_script);
+    let wrong_hash = base64::engine::general_purpose::STANDARD.encode([0_u8; 32]);
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/good.css", "/bad.css", "/good.js", "/bad.js"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let (content_type, body) = match expected_path {
+                "/page" => (
+                    "text/html",
+                    format!(
+                        "<link rel='stylesheet' href='/good.css' integrity='sha256-{good_style_hash}'><link rel='stylesheet' href='/bad.css' integrity='sha256-{wrong_hash}'><script src='/good.js' integrity='sha256-{good_script_hash}'></script><script src='/bad.js' integrity='sha256-{wrong_hash}'></script><button id='good'>Good</button><button id='bad'>Bad</button>"
+                    ),
+                ),
+                "/good.css" => ("text/css", good_style.to_owned()),
+                "/bad.css" => ("text/css", bad_style.to_owned()),
+                "/good.js" => ("application/javascript", good_script.to_owned()),
+                "/bad.js" => ("application/javascript", bad_script.to_owned()),
+                _ => unreachable!(),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let good = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.name == "Good")
+        .unwrap();
+    let bad = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.name == "Bad")
+        .unwrap();
+    assert_eq!(
+        engine
+            .layout()
+            .unwrap()
+            .box_for(good.node_id)
+            .unwrap()
+            .width,
+        80
+    );
+    assert_ne!(
+        engine.layout().unwrap().box_for(bad.node_id).unwrap().width,
+        17
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("[globalThis.sriGood, typeof globalThis.sriBad]")
+            .await
+            .unwrap(),
+        serde_json::json!(["executed", "undefined"])
+    );
+    assert_eq!(
+        engine
+            .effects_since(0)
+            .unwrap()
+            .effects
+            .iter()
+            .filter(|effect| effect.kind == NativeEventKind::Error)
+            .count(),
+        2
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_requires_cors_for_cross_origin_integrity_resources() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let resource_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let resource_address = resource_listener.local_addr().unwrap();
+    let style = "#cross-good { display: block; width: 80px; height: 24px; }";
+    let good_script = "globalThis.crossGood = 'executed';";
+    let blocked_script = "globalThis.crossBlocked = 'executed';";
+    let digest = |body: &str| {
+        base64::engine::general_purpose::STANDARD.encode(Sha256::digest(body.as_bytes()))
+    };
+    let style_hash = digest(style);
+    let good_script_hash = digest(good_script);
+    let blocked_script_hash = digest(blocked_script);
+    let page_server = tokio::spawn(async move {
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = format!(
+            "<link rel='stylesheet' href='http://{resource_address}/cross.css' crossorigin='anonymous' integrity='sha256-{style_hash}'><script src='http://{resource_address}/cross.js' crossorigin='anonymous' integrity='sha256-{good_script_hash}'></script><script src='http://{resource_address}/blocked.js' integrity='sha256-{blocked_script_hash}'></script><button id='cross-good'>Cross origin</button>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let resource_server = tokio::spawn(async move {
+        for expected_path in ["/cross.css", "/cross.js", "/blocked.js"] {
+            let (mut stream, _) = resource_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let origin = request.lines().find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("origin")
+                        .then_some(value.trim().to_owned())
+                })
+            });
+            if expected_path == "/blocked.js" {
+                assert_eq!(origin, None);
+            } else {
+                assert_eq!(origin, Some(format!("http://{page_address}")));
+            }
+            let (content_type, body) = match expected_path {
+                "/cross.css" => ("text/css", style),
+                "/cross.js" => ("application/javascript", good_script),
+                "/blocked.js" => ("application/javascript", blocked_script),
+                _ => unreachable!(),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: http://{page_address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{page_address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let cross_good = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.name == "Cross origin")
+        .unwrap();
+    assert_eq!(
+        engine
+            .layout()
+            .unwrap()
+            .box_for(cross_good.node_id)
+            .unwrap()
+            .width,
+        80
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("[globalThis.crossGood, typeof globalThis.crossBlocked]")
+            .await
+            .unwrap(),
+        serde_json::json!(["executed", "undefined"])
+    );
+    assert_eq!(
+        engine
+            .effects_since(0)
+            .unwrap()
+            .effects
+            .iter()
+            .filter(|effect| effect.kind == NativeEventKind::Error)
+            .count(),
+        1
+    );
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    resource_server.await.unwrap();
 }
 
 #[tokio::test]

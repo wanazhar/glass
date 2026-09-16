@@ -6949,8 +6949,16 @@ async fn load_content_resource(
         .into_iter()
         .take(MAX_CONTENT_STYLESHEETS)
     {
-        let (node_index, href) = href;
-        let event_kind = match loader.load_stylesheet_async(&resource.url, &href).await {
+        let (node_index, href, integrity, crossorigin) = href;
+        let event_kind = match loader
+            .load_stylesheet_async(
+                &resource.url,
+                &href,
+                integrity.as_deref(),
+                crossorigin.as_deref(),
+            )
+            .await
+        {
             Ok(Some(stylesheet)) => {
                 let next_len = external_stylesheets
                     .iter()
@@ -7318,6 +7326,8 @@ async fn load_page_script_source_list(
                 timing,
                 node_index,
                 nonce,
+                integrity,
+                crossorigin,
                 parser_inserted,
             } => {
                 match loader
@@ -7327,6 +7337,8 @@ async fn load_page_script_source_list(
                         MAX_NATIVE_SCRIPT_BYTES,
                         parser_inserted,
                         nonce.as_deref(),
+                        integrity.as_deref(),
+                        crossorigin.as_deref(),
                     )
                     .await
                 {
@@ -7351,6 +7363,8 @@ async fn load_page_script_source_list(
                 timing,
                 node_index,
                 nonce,
+                integrity,
+                crossorigin,
                 parser_inserted,
             } => {
                 match loader
@@ -7360,6 +7374,8 @@ async fn load_page_script_source_list(
                         MAX_NATIVE_SCRIPT_BYTES,
                         parser_inserted,
                         nonce.as_deref(),
+                        integrity.as_deref(),
+                        crossorigin.as_deref(),
                     )
                     .await
                 {

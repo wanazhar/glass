@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-433`, following completed
 `native-engine-browser-432`, following completed
 `native-engine-browser-431`,
 `native-engine-browser-423`,
@@ -209,6 +210,15 @@ non-replayable redirect behavior. 301/302/303 method switches clear the body;
 307/308 replay attempts reject. Fixture-owned bodyful requests, worker upload
 bridges, controlled Service Worker upload replay, synchronous XHR, and complete
 XHR/Streams Web IDL parity remain issue #40 gates.
+
+The completed content-process worker Fetch request-upload streaming slice is
+[native-engine-browser-433](tasks/native-engine-browser-433.md): dedicated and
+SharedWorker `ReadableStream` request bodies now use the same one-shot,
+demand-driven HTTP transport as page Fetch, including bounded bytes/chunks,
+reader ownership, cancellation, worker teardown, and non-replayable redirect
+handling. The buffered worker Fetch path remains unchanged; controlled Service
+Worker upload replay, fixture-owned bodyful requests, synchronous XHR, and
+complete XHR/Streams Web IDL parity remain issue #40 gates.
 
 The completed page XHR reopen-cancellation slice is
 [native-engine-browser-429](tasks/native-engine-browser-429.md): reopening a

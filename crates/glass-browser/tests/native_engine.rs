@@ -6805,6 +6805,10 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
                     stream.write_all(&body).await.unwrap();
                 }
                 "/worker-stream-echo" => {
+                    assert!(request_text.lines().any(|line| {
+                        line.trim()
+                            .eq_ignore_ascii_case("transfer-encoding: chunked")
+                    }));
                     assert_eq!(&request[header_end..], b"worker-stream");
                     let body = b"worker-stream";
                     let response = format!(

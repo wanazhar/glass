@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-432`, following
+expansion checkpoint is completed `native-engine-browser-433`, following
+completed `native-engine-browser-432`, following
 completed `native-engine-browser-431`, following
 completed `native-engine-browser-428`, following completed
 `native-engine-browser-423`,
@@ -108,6 +109,14 @@ cache, and CSP state back into the live owner. Page work emitted by an upload
 switch to a bodyless GET; 307/308 reject replay of the non-replayable stream.
 Fixture-owned bodyful requests remain fail-closed, and Worker upload,
 controlled Service Worker upload replay, synchronous XHR, and complete
+XHR/Streams Web IDL parity remain separate issue #40 gates.
+Slice 433 closes the content-process Worker Fetch request-body streaming gap.
+Dedicated and SharedWorker realms now keep a one-shot `ReadableStream` in the
+worker owner, transfer only one bounded chunk or terminal signal per HTTP
+demand, and use the same upload transport, request/body limits, cancellation,
+worker teardown, and redirect replay rejection as page Fetch. The buffered
+worker path is preserved for non-stream bodies; controlled Service Worker
+upload replay, fixture-owned bodyful requests, synchronous XHR, and complete
 XHR/Streams Web IDL parity remain separate issue #40 gates.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,

@@ -13,10 +13,12 @@ use super::dom::{
     NativeScriptElementSnapshot,
 };
 use super::environment::NativeEnvironmentOverrides;
-use super::error::NativeEngineError;
+use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use super::fetch_stream::{
-    NativeFetchStreamCommand, NativeFetchStreamConnection, NativeFetchStreamEvent,
-    spawn_native_fetch_bytes_stream, spawn_native_fetch_stream,
+    MAX_NATIVE_FETCH_UPLOAD_CHUNKS, NativeFetchStreamCommand, NativeFetchStreamConnection,
+    NativeFetchStreamEvent, NativeFetchUploadCommand, NativeFetchUploadConnection,
+    NativeFetchUploadEvent, spawn_native_fetch_bytes_stream, spawn_native_fetch_stream,
+    spawn_native_fetch_upload_stream,
 };
 use super::interaction::{
     MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FORM_BODY_BYTES, MAX_NATIVE_SCRIPT_COMMAND_BYTES,
@@ -26,8 +28,9 @@ use super::layout::NativePoint;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
     MAX_NATIVE_CSP_VIOLATIONS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
-    NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeInlineScriptPolicy,
-    NativeNavigationMethod, NativeRequestBody, NativeResourceLoader, NativeScriptResource,
+    NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeFetchResponseStream,
+    NativeInlineScriptPolicy, NativeNavigationMethod, NativeRequestBody, NativeResourceLoader,
+    NativeScriptResource,
 };
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes192, Aes256};
@@ -89,6 +92,7 @@ pub(crate) const MAX_NATIVE_MODULE_IMPORTS: usize = 128;
 pub(crate) const MAX_NATIVE_WORKERS: usize = 32;
 pub(crate) const MAX_NATIVE_WORKER_MESSAGES: usize = 64;
 const MAX_NATIVE_WORKER_FETCH_STREAMS: usize = MAX_NATIVE_WORKER_MESSAGES;
+const MAX_NATIVE_WORKER_FETCH_UPLOADS: usize = MAX_NATIVE_WORKER_MESSAGES;
 pub(crate) const MAX_NATIVE_WORKER_TIMERS: usize = 64;
 pub(crate) const MAX_NATIVE_SERVICE_WORKERS: usize = 16;
 pub(crate) const MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES: usize = MAX_NATIVE_SCRIPT_BYTES;
@@ -1080,6 +1084,10 @@ enum NativeWorkerDispatch<'a> {
         stream_id: u32,
         payload: &'a serde_json::Value,
     },
+    FetchUpload {
+        stream_id: u32,
+        payload: &'a serde_json::Value,
+    },
     ServiceWorkerCache {
         request_id: u32,
         payload: &'a serde_json::Value,
@@ -1366,6 +1374,21 @@ impl NativeDedicatedWorker {
             },
         )
     }
+
+    fn evaluate_fetch_upload_event(
+        &self,
+        worker_id: u32,
+        stream_id: u32,
+        event: &serde_json::Value,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.evaluate_turn_with_event(
+            worker_id,
+            NativeWorkerDispatch::FetchUpload {
+                stream_id,
+                payload: event,
+            },
+        )
+    }
 }
 
 /// Owns dedicated-worker realms and the bounded messages waiting for their
@@ -1382,6 +1405,7 @@ pub(crate) struct NativeWorkerRegistry {
     pending_websocket_commands: VecDeque<NativeWorkerWebSocketCommand>,
     pending_event_source_commands: VecDeque<NativeWorkerEventSourceCommand>,
     worker_fetch_stream_connections: BTreeMap<(u32, u32), NativeFetchStreamConnection>,
+    worker_fetch_upload_connections: BTreeMap<(u32, u32), NativeFetchUploadConnection>,
     stream_worker_fetches: bool,
     message_port_routes: BTreeMap<String, NativeMessagePortRoute>,
 }
@@ -1410,6 +1434,7 @@ impl NativeWorkerRegistry {
             pending_websocket_commands: VecDeque::new(),
             pending_event_source_commands: VecDeque::new(),
             worker_fetch_stream_connections: BTreeMap::new(),
+            worker_fetch_upload_connections: BTreeMap::new(),
             stream_worker_fetches,
             message_port_routes: BTreeMap::new(),
         }
@@ -1428,6 +1453,11 @@ impl NativeWorkerRegistry {
             let _ = connection
                 .commands
                 .try_send(NativeFetchStreamCommand::Cancel);
+        }
+        for (_, connection) in std::mem::take(&mut self.worker_fetch_upload_connections) {
+            let _ = connection
+                .commands
+                .try_send(NativeFetchUploadCommand::Cancel);
         }
         self.message_port_routes.clear();
     }
@@ -2023,6 +2053,24 @@ impl NativeWorkerRegistry {
                             },
                         )?;
                     }
+                    command @ NativeScriptCommand::FetchUploadChunk {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | command @ NativeScriptCommand::FetchUploadEnd {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | command @ NativeScriptCommand::FetchUploadError {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | command @ NativeScriptCommand::FetchUploadCancel {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    } if command_worker_id == current_worker_id => {
+                        self.process_worker_fetch_upload_command(current_worker_id, command)?;
+                    }
                     command @ NativeScriptCommand::WebSocketOpen {
                         worker_id: Some(command_worker_id),
                         ..
@@ -2265,6 +2313,19 @@ impl NativeWorkerRegistry {
                     .try_send(NativeFetchStreamCommand::Cancel);
             }
         }
+        let upload_keys = self
+            .worker_fetch_upload_connections
+            .keys()
+            .copied()
+            .filter(|(upload_worker_id, _)| *upload_worker_id == worker_id)
+            .collect::<Vec<_>>();
+        for upload_key in upload_keys {
+            if let Some(connection) = self.worker_fetch_upload_connections.remove(&upload_key) {
+                let _ = connection
+                    .commands
+                    .try_send(NativeFetchUploadCommand::Cancel);
+            }
+        }
         self.message_port_routes
             .retain(|_, route| route.worker_id != worker_id);
         self.shared_worker_keys
@@ -2489,6 +2550,146 @@ impl NativeWorkerRegistry {
         }
     }
 
+    fn process_worker_fetch_upload_command(
+        &mut self,
+        worker_id: u32,
+        command: NativeScriptCommand,
+    ) -> Result<(), NativeEngineError> {
+        match command {
+            NativeScriptCommand::FetchUploadChunk {
+                stream_id,
+                data_base64,
+                worker_id: Some(command_worker_id),
+            } if command_worker_id == worker_id => {
+                let upload_key = (worker_id, stream_id);
+                let connection = self
+                    .worker_fetch_upload_connections
+                    .get_mut(&upload_key)
+                    .ok_or_else(|| NativeEngineError::Network {
+                        operation: "Worker fetch request upload chunk".into(),
+                        reason: "Worker fetch request upload identifier is not active".into(),
+                    })?;
+                if !connection.demand_pending {
+                    return Err(NativeEngineError::Network {
+                        operation: "Worker fetch request upload chunk".into(),
+                        reason: "Worker fetch request upload chunk arrived without demand".into(),
+                    });
+                }
+                let data = base64::engine::general_purpose::STANDARD
+                    .decode(data_base64)
+                    .map_err(|_| {
+                        NativeEngineError::invalid(
+                            "Worker fetch request upload chunk",
+                            "must be valid base64",
+                        )
+                    })?;
+                let next_total = connection.total_bytes.saturating_add(data.len());
+                let next_chunks = connection.chunk_count.saturating_add(1);
+                if next_total > MAX_NATIVE_FORM_BODY_BYTES
+                    || next_chunks > MAX_NATIVE_FETCH_UPLOAD_CHUNKS
+                {
+                    let connection = self
+                        .worker_fetch_upload_connections
+                        .remove(&upload_key)
+                        .expect("Worker fetch upload connection was checked above");
+                    let message = if next_total > MAX_NATIVE_FORM_BODY_BYTES {
+                        "native Worker fetch request upload body exceeds its limit"
+                    } else {
+                        "native Worker fetch request upload chunk limit exceeded"
+                    };
+                    let _ = connection
+                        .commands
+                        .try_send(NativeFetchUploadCommand::Error {
+                            message: message.into(),
+                        });
+                    return Ok(());
+                }
+                let connection = self
+                    .worker_fetch_upload_connections
+                    .get_mut(&upload_key)
+                    .expect("Worker fetch upload connection was checked above");
+                connection.total_bytes = next_total;
+                connection.chunk_count = next_chunks;
+                connection.demand_pending = false;
+                connection
+                    .commands
+                    .try_send(NativeFetchUploadCommand::Chunk { data })
+                    .map_err(|_| NativeEngineError::Network {
+                        operation: "Worker fetch request upload chunk".into(),
+                        reason: "Worker fetch request upload task is unavailable".into(),
+                    })?;
+                Ok(())
+            }
+            NativeScriptCommand::FetchUploadEnd {
+                stream_id,
+                worker_id: Some(command_worker_id),
+            } if command_worker_id == worker_id => {
+                let upload_key = (worker_id, stream_id);
+                let mut connection = self
+                    .worker_fetch_upload_connections
+                    .remove(&upload_key)
+                    .ok_or_else(|| NativeEngineError::Network {
+                        operation: "Worker fetch request upload end".into(),
+                        reason: "Worker fetch request upload identifier is not active".into(),
+                    })?;
+                if !connection.demand_pending {
+                    return Err(NativeEngineError::Network {
+                        operation: "Worker fetch request upload end".into(),
+                        reason: "Worker fetch request upload ended without demand".into(),
+                    });
+                }
+                connection.demand_pending = false;
+                connection
+                    .commands
+                    .try_send(NativeFetchUploadCommand::End)
+                    .map_err(|_| NativeEngineError::Network {
+                        operation: "Worker fetch request upload end".into(),
+                        reason: "Worker fetch request upload task is unavailable".into(),
+                    })?;
+                Ok(())
+            }
+            NativeScriptCommand::FetchUploadError {
+                stream_id,
+                message,
+                worker_id: Some(command_worker_id),
+            } if command_worker_id == worker_id => {
+                let connection = self
+                    .worker_fetch_upload_connections
+                    .remove(&(worker_id, stream_id))
+                    .ok_or_else(|| NativeEngineError::Network {
+                        operation: "Worker fetch request upload error".into(),
+                        reason: "Worker fetch request upload identifier is not active".into(),
+                    })?;
+                let message = message
+                    .chars()
+                    .take(crate::browser_backend::MAX_TEXT_BYTES)
+                    .collect();
+                let _ = connection
+                    .commands
+                    .try_send(NativeFetchUploadCommand::Error { message });
+                Ok(())
+            }
+            NativeScriptCommand::FetchUploadCancel {
+                stream_id,
+                worker_id: Some(command_worker_id),
+            } if command_worker_id == worker_id => {
+                if let Some(connection) = self
+                    .worker_fetch_upload_connections
+                    .remove(&(worker_id, stream_id))
+                {
+                    let _ = connection
+                        .commands
+                        .try_send(NativeFetchUploadCommand::Cancel);
+                }
+                Ok(())
+            }
+            _ => Err(NativeEngineError::invalid(
+                "native Worker fetch request upload command",
+                "worker id does not match the owning worker",
+            )),
+        }
+    }
+
     fn queue_websocket_command(
         &mut self,
         worker_id: u32,
@@ -2551,6 +2752,222 @@ impl NativeWorkerRegistry {
         Ok(())
     }
 
+    fn cancel_worker_fetch_upload_connection(&mut self, upload_key: (u32, u32)) {
+        if let Some(connection) = self.worker_fetch_upload_connections.remove(&upload_key) {
+            let _ = connection
+                .commands
+                .try_send(NativeFetchUploadCommand::Cancel);
+        }
+    }
+
+    /// Drive a worker-owned request body until the HTTP client either opens a
+    /// response or reports a network/policy error. The worker realm remains
+    /// the sole producer: every body read is admitted by one demand event,
+    /// then routed back through the normal serialized worker evaluation.
+    async fn open_worker_fetch_upload(
+        &mut self,
+        worker_id: u32,
+        request_id: u32,
+        worker_url: String,
+        href: String,
+        method: NativeNavigationMethod,
+        headers: BTreeMap<String, String>,
+        content_type: Option<String>,
+        credentials: bool,
+        cors_mode: NativeCorsMode,
+        redirect_mode: NativeFetchRedirectMode,
+        cache_mode: NativeFetchCacheMode,
+        timeout: Option<Duration>,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<Result<NativeFetchResponseStream, NativeEngineError>, NativeEngineError> {
+        let upload_key = (worker_id, request_id);
+        if self
+            .worker_fetch_upload_connections
+            .contains_key(&upload_key)
+        {
+            return Err(NativeEngineError::Network {
+                operation: "Worker fetch request upload".into(),
+                reason: "Worker fetch request upload identifier is already active".into(),
+            });
+        }
+        if self.worker_fetch_upload_connections.len() >= MAX_NATIVE_WORKER_FETCH_UPLOADS {
+            return Err(NativeEngineError::limit(
+                "native Worker fetch request uploads",
+                MAX_NATIVE_WORKER_FETCH_UPLOADS,
+                self.worker_fetch_upload_connections.len().saturating_add(1),
+            ));
+        }
+        let (upload_connection, request_body) = spawn_native_fetch_upload_stream();
+        self.worker_fetch_upload_connections
+            .insert(upload_key, upload_connection);
+        let task_loader = loader.clone();
+        let task = tokio::spawn(async move {
+            let mut task_loader = task_loader;
+            let result = task_loader
+                .open_fetch_response_stream_with_body_async(
+                    NativeFetchRequest {
+                        document_url: &worker_url,
+                        href: &href,
+                        method,
+                        body: None,
+                        content_type,
+                        request_headers: headers,
+                        credentials,
+                        cors_mode,
+                        redirect_mode,
+                        cache_mode,
+                        timeout,
+                        max_response_bytes: None,
+                    },
+                    Some(request_body),
+                )
+                .await;
+            (result, task_loader)
+        });
+        loop {
+            if task.is_finished() {
+                let (opened, task_loader) = task.await.map_err(|_| {
+                    NativeEngineError::worker_failure(
+                        "Worker fetch request upload task",
+                        NativeWorkerFailureKind::Transport,
+                        "native Worker fetch request upload task terminated unexpectedly",
+                    )
+                })?;
+                self.cancel_worker_fetch_upload_connection(upload_key);
+                loader.merge_fetch_task_state(task_loader)?;
+                return Ok(opened);
+            }
+            if !self.workers.contains_key(&worker_id) {
+                task.abort();
+                self.cancel_worker_fetch_upload_connection(upload_key);
+                return Err(NativeEngineError::Worker {
+                    operation: "Worker fetch request upload".into(),
+                    reason: "worker terminated while its request body was in flight".into(),
+                });
+            }
+
+            let mut disconnected = false;
+            let demand = if let Some(connection) =
+                self.worker_fetch_upload_connections.get_mut(&upload_key)
+            {
+                match connection.events.try_recv() {
+                    Ok(NativeFetchUploadEvent::Demand) => {
+                        connection.demand_pending = true;
+                        true
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => false,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            if disconnected {
+                task.abort();
+                self.cancel_worker_fetch_upload_connection(upload_key);
+                return Err(NativeEngineError::Network {
+                    operation: "Worker fetch request upload".into(),
+                    reason: "Worker fetch request upload task is unavailable".into(),
+                });
+            }
+            if demand {
+                let evaluation = self
+                    .workers
+                    .get(&worker_id)
+                    .ok_or_else(|| NativeEngineError::Worker {
+                        operation: "Worker fetch request upload".into(),
+                        reason: "worker terminated while its request body was in flight".into(),
+                    })
+                    .and_then(|worker| {
+                        worker.evaluate_fetch_upload_event(
+                            worker_id,
+                            request_id,
+                            &serde_json::json!({"type": "demand"}),
+                        )
+                    });
+                match evaluation {
+                    Ok(evaluation) => {
+                        if let Err(error) = Box::pin(
+                            self.collect_worker_evaluation(worker_id, evaluation, loader),
+                        )
+                        .await
+                        {
+                            task.abort();
+                            self.cancel_worker_fetch_upload_connection(upload_key);
+                            return Err(error);
+                        }
+                    }
+                    Err(error) => {
+                        task.abort();
+                        self.cancel_worker_fetch_upload_connection(upload_key);
+                        return Err(error);
+                    }
+                }
+            } else {
+                tokio::task::yield_now().await;
+            }
+        }
+    }
+
+    fn worker_fetch_opened_payload(
+        &mut self,
+        worker_id: u32,
+        request_id: u32,
+        opened: Result<NativeFetchResponseStream, NativeEngineError>,
+    ) -> serde_json::Value {
+        match opened {
+            Ok(mut opened)
+                if !opened.response.opaque
+                    && !opened.response.opaque_redirect
+                    && (opened.body.is_some() || opened.cached_body.is_some()) =>
+            {
+                let stream_key = (worker_id, request_id);
+                if self
+                    .worker_fetch_stream_connections
+                    .contains_key(&stream_key)
+                {
+                    worker_fetch_response_payload(Err(NativeEngineError::Network {
+                        operation: "native Worker fetch response stream".into(),
+                        reason: "fetch response stream identifier is already active".into(),
+                    }))
+                } else if self.worker_fetch_stream_connections.len()
+                    >= MAX_NATIVE_WORKER_FETCH_STREAMS
+                {
+                    worker_fetch_response_payload(Err(NativeEngineError::limit(
+                        "native Worker fetch response streams",
+                        MAX_NATIVE_WORKER_FETCH_STREAMS,
+                        self.worker_fetch_stream_connections.len().saturating_add(1),
+                    )))
+                } else {
+                    let response = opened.response;
+                    let stream = if let Some(body) = opened.body.take() {
+                        spawn_native_fetch_stream(body, opened.max_response_bytes)
+                    } else {
+                        spawn_native_fetch_bytes_stream(
+                            opened
+                                .cached_body
+                                .take()
+                                .expect("Worker fetch stream cached body is present"),
+                            opened.max_response_bytes,
+                        )
+                    };
+                    self.worker_fetch_stream_connections
+                        .insert(stream_key, stream);
+                    worker_fetch_response_stream_payload(response, request_id)
+                }
+            }
+            Ok(mut opened) => {
+                if let Some(body) = opened.cached_body.take() {
+                    opened.response.body = body;
+                }
+                worker_fetch_response_payload(Ok(opened.response))
+            }
+            Err(error) => worker_fetch_response_payload(Err(error)),
+        }
+    }
+
     async fn resolve_worker_fetch(
         &mut self,
         worker_id: u32,
@@ -2579,12 +2996,6 @@ impl NativeWorkerRegistry {
                 "command was not a worker fetch",
             ));
         };
-        if upload_stream_id.is_some() {
-            return Err(NativeEngineError::UnsupportedUrl {
-                reason: "streaming Worker request bodies are not wired into the worker host yet"
-                    .into(),
-            });
-        }
         if command_worker_id != worker_id {
             return Err(NativeEngineError::invalid(
                 "native Worker fetch command",
@@ -2627,18 +3038,34 @@ impl NativeWorkerRegistry {
             }
         };
         let cache_mode = NativeFetchCacheMode::from_option(cache.as_deref())?;
-        let body = match body_base64 {
-            Some(encoded) => Some(NativeRequestBody::Bytes(
-                base64::engine::general_purpose::STANDARD
-                    .decode(encoded)
-                    .map_err(|_| {
-                        NativeEngineError::invalid(
-                            "native Worker fetch binary body",
-                            "must be valid base64",
-                        )
-                    })?,
-            )),
-            None => body.map(NativeRequestBody::Text),
+        let body = if let Some(upload_stream_id) = upload_stream_id {
+            if upload_stream_id != request_id {
+                return Err(NativeEngineError::invalid(
+                    "Worker fetch request upload stream",
+                    "upload stream identifier must match its fetch request",
+                ));
+            }
+            if body.is_some() || body_base64.is_some() {
+                return Err(NativeEngineError::invalid(
+                    "Worker fetch request upload stream",
+                    "streaming fetch requests must not also carry a buffered body",
+                ));
+            }
+            None
+        } else {
+            match body_base64 {
+                Some(encoded) => Some(NativeRequestBody::Bytes(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .map_err(|_| {
+                            NativeEngineError::invalid(
+                                "native Worker fetch binary body",
+                                "must be valid base64",
+                            )
+                        })?,
+                )),
+                None => body.map(NativeRequestBody::Text),
+            }
         };
         let worker_url = {
             let worker = self.workers.get(&worker_id).ok_or_else(|| {
@@ -2646,72 +3073,62 @@ impl NativeWorkerRegistry {
             })?;
             worker.url.clone()
         };
-        let request = NativeFetchRequest {
-            document_url: &worker_url,
-            href: &href,
-            method,
-            body,
-            content_type,
-            request_headers: headers,
-            credentials,
-            cors_mode,
-            redirect_mode,
-            cache_mode,
-            timeout: timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
-            max_response_bytes: None,
-        };
-        let payload = if self.stream_worker_fetches {
-            match loader.open_fetch_response_stream_async(request).await {
-                Ok(mut opened)
-                    if !opened.response.opaque
-                        && !opened.response.opaque_redirect
-                        && (opened.body.is_some() || opened.cached_body.is_some()) =>
-                {
-                    let stream_key = (worker_id, request_id);
-                    if self
-                        .worker_fetch_stream_connections
-                        .contains_key(&stream_key)
-                    {
-                        worker_fetch_response_payload(Err(NativeEngineError::Network {
-                            operation: "native Worker fetch response stream".into(),
-                            reason: "fetch response stream identifier is already active".into(),
-                        }))
-                    } else if self.worker_fetch_stream_connections.len()
-                        >= MAX_NATIVE_WORKER_FETCH_STREAMS
-                    {
-                        worker_fetch_response_payload(Err(NativeEngineError::limit(
-                            "native Worker fetch response streams",
-                            MAX_NATIVE_WORKER_FETCH_STREAMS,
-                            self.worker_fetch_stream_connections.len().saturating_add(1),
-                        )))
-                    } else {
-                        let response = opened.response;
-                        let stream = if let Some(body) = opened.body.take() {
-                            spawn_native_fetch_stream(body, opened.max_response_bytes)
-                        } else {
-                            spawn_native_fetch_bytes_stream(
-                                opened
-                                    .cached_body
-                                    .take()
-                                    .expect("Worker fetch stream cached body is present"),
-                                opened.max_response_bytes,
-                            )
-                        };
-                        self.worker_fetch_stream_connections
-                            .insert(stream_key, stream);
-                        worker_fetch_response_stream_payload(response, request_id)
+        let payload = if let Some(upload_stream_id) = upload_stream_id {
+            if !self.stream_worker_fetches {
+                worker_fetch_response_payload(Err(NativeEngineError::UnsupportedUrl {
+                    reason: "streaming Worker request bodies require the native stream host".into(),
+                }))
+            } else {
+                let opened = self
+                    .open_worker_fetch_upload(
+                        worker_id,
+                        upload_stream_id,
+                        worker_url.clone(),
+                        href.clone(),
+                        method,
+                        headers,
+                        content_type,
+                        credentials,
+                        cors_mode,
+                        redirect_mode,
+                        cache_mode,
+                        timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
+                        loader,
+                    )
+                    .await?;
+                match opened {
+                    Ok(opened) => {
+                        self.worker_fetch_opened_payload(worker_id, request_id, Ok(opened))
                     }
+                    Err(error) => worker_fetch_response_payload(Err(error)),
                 }
-                Ok(mut opened) => {
-                    if let Some(body) = opened.cached_body.take() {
-                        opened.response.body = body;
-                    }
-                    worker_fetch_response_payload(Ok(opened.response))
-                }
-                Err(error) => worker_fetch_response_payload(Err(error)),
             }
         } else {
-            worker_fetch_response_payload(loader.fetch_request_with_headers_async(request).await)
+            let request = NativeFetchRequest {
+                document_url: &worker_url,
+                href: &href,
+                method,
+                body,
+                content_type,
+                request_headers: headers,
+                credentials,
+                cors_mode,
+                redirect_mode,
+                cache_mode,
+                timeout: timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
+                max_response_bytes: None,
+            };
+            if self.stream_worker_fetches {
+                self.worker_fetch_opened_payload(
+                    worker_id,
+                    request_id,
+                    loader.open_fetch_response_stream_async(request).await,
+                )
+            } else {
+                worker_fetch_response_payload(
+                    loader.fetch_request_with_headers_async(request).await,
+                )
+            }
         };
         let worker = self.workers.get(&worker_id).ok_or_else(|| {
             NativeEngineError::invalid(
@@ -11490,6 +11907,22 @@ impl NativeJavaScriptRuntime {
                         worker_id: Some(command_worker_id),
                         ..
                     } => *command_worker_id == worker_id,
+                    NativeScriptCommand::FetchUploadChunk {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | NativeScriptCommand::FetchUploadEnd {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | NativeScriptCommand::FetchUploadError {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | NativeScriptCommand::FetchUploadCancel {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    } => !service_worker && *command_worker_id == worker_id,
                     NativeScriptCommand::MessagePortPostMessage {
                         worker_id: Some(command_worker_id),
                         ..
@@ -14251,6 +14684,16 @@ fn dispatch_worker_event(
                 &ctx,
                 "__glassDispatchWorkerFetchStreamEvent",
                 "native Worker fetch response stream event",
+                stream_id,
+                payload,
+            )?;
+            false
+        }
+        NativeWorkerDispatch::FetchUpload { stream_id, payload } => {
+            dispatch_worker_resolver(
+                &ctx,
+                "__glassDispatchWorkerFetchUploadEvent",
+                "native Worker fetch request upload event",
                 stream_id,
                 payload,
             )?;
@@ -18535,6 +18978,134 @@ fn worker_bootstrap(
     return null;
   }};
   globalThis.__glassWorkerFetchStreamGroups = workerFetchStreamGroups;
+  const workerFetchUploadGroups = globalThis.__glassWorkerFetchUploadGroups instanceof Map
+    ? globalThis.__glassWorkerFetchUploadGroups
+    : new Map();
+  const workerFetchUploadGroup = (streamId) => {{
+    const id = Number(streamId);
+    if (!Number.isSafeInteger(id) || id <= 0)
+      throw new TypeError("native Worker fetch upload stream identifier is invalid");
+    let group = workerFetchUploadGroups.get(id);
+    if (!group) {{
+      group = {{
+        id,
+        reader: null,
+        streamState: null,
+        demandPending: false,
+        done: false,
+        cancelled: false,
+        error: null,
+        totalBytes: 0,
+      }};
+      workerFetchUploadGroups.set(id, group);
+    }}
+    return group;
+  }};
+  const releaseWorkerFetchUploadReader = (group) => {{
+    if (!group || !group.reader) return;
+    const reader = group.reader;
+    group.reader = null;
+    if (group.streamState) group.streamState.consumingRequestBody = false;
+    try {{ reader.releaseLock(); }} catch (_) {{}}
+  }};
+  const startWorkerFetchUpload = (stream, streamId) => {{
+    const state = workerReadableStreamState(stream);
+    if (state.locked) throw new TypeError("native Worker fetch request body stream is locked");
+    if (!state.consumedByRequest) {{
+      if (state.disturbed) throw new TypeError("native Worker fetch request body stream is unusable");
+      state.consumedByRequest = true;
+      workerReadableStreamDisturb(state);
+    }}
+    if (state.consumedByResponse)
+      throw new TypeError("native Worker fetch request body stream is unusable");
+    const group = workerFetchUploadGroup(streamId);
+    if (group.reader || group.done)
+      throw new TypeError("native Worker fetch upload stream is already active");
+    state.consumingRequestBody = true;
+    try {{ group.reader = stream.getReader(); }}
+    catch (error) {{ state.consumingRequestBody = false; throw error; }}
+    group.streamState = state;
+    return group;
+  }};
+  const cancelWorkerFetchUploadGroup = (group, reason) => {{
+    if (!group || group.done) return;
+    group.cancelled = true;
+    group.done = true;
+    group.error = reason === undefined ? "native Worker fetch request body was cancelled" : String(reason);
+    const reader = group.reader;
+    if (group.streamState) group.streamState.consumingRequestBody = false;
+    group.reader = null;
+    if (reader) {{
+      try {{ Promise.resolve(reader.cancel(reason)).catch(() => {{}}); }} catch (_) {{}}
+    }}
+    pushCommand({{
+      kind: "fetchUploadCancel",
+      worker_id: workerId,
+      stream_id: Number(group.id),
+    }});
+  }};
+  globalThis.__glassDispatchWorkerFetchUploadEvent = (streamId, payload) => {{
+    const group = workerFetchUploadGroup(streamId);
+    if (!payload || typeof payload !== "object" || group.done || !group.reader) return null;
+    if (String(payload.type || "") !== "demand" || group.demandPending) return null;
+    group.demandPending = true;
+    const fail = error => {{
+      if (group.done) return;
+      group.demandPending = false;
+      group.done = true;
+      group.error = String(error && error.message !== undefined ? error.message : error).slice(0, 4096);
+      releaseWorkerFetchUploadReader(group);
+      try {{
+        pushCommand({{
+          kind: "fetchUploadError",
+          worker_id: workerId,
+          stream_id: Number(group.id),
+          message: group.error,
+        }});
+      }} catch (_) {{}}
+    }};
+    let read;
+    try {{ read = group.reader.read(); }}
+    catch (error) {{ fail(error); return null; }}
+    Promise.resolve(read).then(
+      result => {{
+        if (group.done || group.cancelled) return;
+        group.demandPending = false;
+        if (!result || result.done) {{
+          group.done = true;
+          releaseWorkerFetchUploadReader(group);
+          try {{
+            pushCommand({{
+              kind: "fetchUploadEnd",
+              worker_id: workerId,
+              stream_id: Number(group.id),
+            }});
+          }} catch (error) {{ fail(error); }}
+          return;
+        }}
+        let bytes;
+        try {{ bytes = workerReadableStreamChunkBytes(result.value); }}
+        catch (error) {{ fail(error); return; }}
+        const nextTotal = group.totalBytes + bytes.length;
+        if (nextTotal > {fetch_body_limit}) {{
+          fail(new RangeError("native Worker fetch request body exceeds its limit"));
+          return;
+        }}
+        group.totalBytes = nextTotal;
+        try {{
+          pushCommand({{
+            kind: "fetchUploadChunk",
+            worker_id: workerId,
+            stream_id: Number(group.id),
+            data_base64: encodeWorkerBase64(bytes, {fetch_body_limit}),
+          }});
+        }} catch (error) {{ fail(error); }}
+      }},
+      fail,
+    );
+    return null;
+  }};
+  globalThis.__glassWorkerFetchUploadGroups = workerFetchUploadGroups;
   const workerRequestBodyPayload = (input) => {{
     if (input === undefined || input === null)
       return {{ bodyNull: true, bytes: [], stream: null, contentType: null }};
@@ -18944,26 +19515,35 @@ fn worker_bootstrap(
       delete requestHeaders["content-type"];
     }}
     if (contentType === null && payload.contentType) contentType = payload.contentType;
-    const dispatch = bytes => {{
+    const dispatchRequest = (bytes, streamedBody) => {{
       if (signal && signal.aborted)
         return Promise.reject(signal.reason === undefined ? nativeWorkerAbortError() : signal.reason);
-      const bodyBytes = payload.bodyNull ? [] : bytes;
+      const isStreamedBody = streamedBody !== null;
+      const bodyBytes = payload.bodyNull || isStreamedBody ? [] : bytes;
       if (["GET", "HEAD"].includes(method) && !payload.bodyNull)
         return Promise.reject(new TypeError(method + " Worker fetch requests must not have a body"));
-      if (bodyBytes.length > {fetch_body_limit})
+      if (!isStreamedBody && bodyBytes.length > {fetch_body_limit})
         return Promise.reject(new RangeError("native Worker fetch body exceeds its limit"));
-      const body = payload.bodyNull ? null : workerUtf8Text(bodyBytes);
-      const bodyBase64 = payload.bodyNull ? null : encodeWorkerBase64(bodyBytes, {fetch_body_limit});
+      const body = payload.bodyNull || isStreamedBody ? null : workerUtf8Text(bodyBytes);
+      const bodyBase64 = payload.bodyNull || isStreamedBody
+        ? null
+        : encodeWorkerBase64(bodyBytes, {fetch_body_limit});
       const requestId = nextWorkerFetchRequestId;
       nextWorkerFetchRequestId += 1;
       globalThis.__glassNextWorkerFetchRequestId = nextWorkerFetchRequestId;
+      if (isStreamedBody) {{
+        try {{ startWorkerFetchUpload(streamedBody, requestId); }}
+        catch (error) {{ return Promise.reject(error); }}
+      }}
       return new Promise((resolve, reject) => {{
-        const pending = {{ resolve, reject, signal, abortListener: null }};
+        const pending = {{ resolve, reject, signal, abortListener: null, uploadStreamId: isStreamedBody ? requestId : null }};
         const abort = () => {{
           if (workerFetchRequests.get(requestId) !== pending) return;
           workerFetchRequests.delete(requestId);
           if (pending.signal && pending.abortListener)
             pending.signal.removeEventListener("abort", pending.abortListener);
+          if (pending.uploadStreamId !== null)
+            cancelWorkerFetchUploadGroup(workerFetchUploadGroups.get(pending.uploadStreamId), "native Worker fetch was aborted");
           reject(pending.signal.reason === undefined ? nativeWorkerAbortError() : pending.signal.reason);
         }};
         pending.abortListener = abort;
@@ -18985,14 +19565,16 @@ fn worker_bootstrap(
           redirect,
           cache,
           timeout_ms: timeoutMs,
+          upload_stream_id: isStreamedBody ? requestId : null,
         }});
       }});
     }};
     if (payload.stream) {{
-      const claimed = sourceRequest && !hasBodyOverride;
-      return workerDrainReadableStream(payload.stream, claimed, false).then(dispatch);
+      if (["GET", "HEAD"].includes(method))
+        return Promise.reject(new TypeError(method + " Worker fetch requests must not have a body"));
+      return dispatchRequest(null, payload.stream);
     }}
-    return dispatch(payload.bodyNull ? [] : payload.bytes);
+    return dispatchRequest(payload.bodyNull ? [] : payload.bytes, null);
   }};
   const workerXhrDispatch = (xhr, type, extra) => {{
     const event = extra && Object.prototype.hasOwnProperty.call(extra, "loaded")
@@ -19422,6 +20004,11 @@ fn worker_bootstrap(
     workerFetchRequests.delete(Number(requestId));
     if (pending.signal && pending.abortListener)
       pending.signal.removeEventListener("abort", pending.abortListener);
+    if (pending.uploadStreamId !== null) {{
+      const uploadGroup = workerFetchUploadGroups.get(pending.uploadStreamId);
+      cancelWorkerFetchUploadGroup(uploadGroup, "native Worker fetch request completed");
+      workerFetchUploadGroups.delete(pending.uploadStreamId);
+    }}
     if (payload && payload.error) {{
       const error = new Error(String(payload.error));
       error.name = payload.timeout === true ? "TimeoutError" : "TypeError";

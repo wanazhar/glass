@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-434`, following completed
 `native-engine-browser-433`, following completed
 `native-engine-browser-432`, following completed
 `native-engine-browser-431`,
@@ -38,6 +39,15 @@ non-replayable redirect behavior follow the page upload contract; buffered
 worker requests remain on their existing path. Controlled Service Worker
 upload replay, fixture-owned bodyful requests, synchronous XHR, and complete
 XHR/Streams Web IDL parity remain issue #40 gates.
+
+Slice 434 adds the Service Worker-owned Fetch upload bridge. A Service
+Worker-created stream-backed `Request` is kept one-shot in the worker realm;
+the content owner drives one bounded chunk or terminal signal per HTTP
+demand, validates worker ownership and limits, and merges task-local loader
+state after the request completes. Existing buffered controlled-request
+replay remains available. Page-originated controlled streaming interception,
+fixture-owned bodyful requests, synchronous XHR, and complete XHR/Streams Web
+IDL parity remain issue #40 gates.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

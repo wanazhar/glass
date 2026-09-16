@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-427`, following completed
+`native-engine-browser-428`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and `native-engine-browser-420`. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
@@ -159,15 +159,24 @@ The completed XHR `responseText` state slice is
 worker XHR now use guarded internal projections so binary/JSON/document
 response types reject `responseText` access, valid text responses remain
 readable during buffered `LOADING`/`DONE`, and reopen/abort/terminal paths
-clear stale text. Streaming XHR and complete Web IDL parity remain separate
-issue #40 gates.
+clear stale text. Worker-XHR streaming and complete Web IDL parity remain
+separate issue #40 gates.
 
 The completed XHR download-progress slice is
 [native-engine-browser-427](tasks/native-engine-browser-427.md): page and
 worker XHR now dispatch one buffered response `ProgressEvent` while `LOADING`,
 with truthful bounded byte counts, target identity, and validated
 `Content-Length` handling before terminal delivery. Socket-level progress and
-streaming XHR remain separate issue #40 gates.
+worker-XHR streaming remain separate issue #40 gates.
+
+The completed page XHR streaming slice is
+[native-engine-browser-428](tasks/native-engine-browser-428.md): page XHR
+consumes the existing demand-driven native Fetch response stream and publishes
+per-chunk `LOADING`/`progress` records, preserves split UTF-8 text, and
+cancels the active reader on abort. Worker XHR remains buffered through its
+separate whole-response Fetch host path; worker streaming, streaming upload,
+synchronous XHR, and complete XHR/Streams Web IDL parity remain issue #40
+gates.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI

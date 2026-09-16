@@ -27153,22 +27153,90 @@ fn document_bootstrap(
       total: xhr._uploadTotal,
     }});
   }};
-  const nativeXhrResponseProgress = (xhr, value) => {{
+  const nativeXhrResponseProgress = (xhr, value, loadedOverride) => {{
     const header = xhr._responseHeaders.get("content-length");
     const total = header === null || header === undefined ? -1 : Number(header);
     const lengthComputable = Number.isSafeInteger(total) && total >= 0 && total <= nativeXmlMaxBytes;
-    const loaded = typeof value === "string"
-      ? blobUtf8Bytes(value).length
-      : value instanceof ArrayBuffer
-        ? value.byteLength
-        : value && typeof value.size === "number"
-          ? value.size
-          : lengthComputable ? total : 0;
+    const loaded = loadedOverride === undefined
+      ? (typeof value === "string"
+        ? blobUtf8Bytes(value).length
+        : value instanceof ArrayBuffer
+          ? value.byteLength
+          : value && typeof value.size === "number"
+            ? value.size
+            : lengthComputable ? total : 0)
+      : loadedOverride;
     nativeXhrDispatch(xhr, "progress", {{
       lengthComputable,
       loaded,
       total: lengthComputable ? total : 0,
     }});
+  }};
+  const nativeXhrUtf8SafePrefix = (bytes) => {{
+    let start = bytes.length - 1;
+    while (start >= 0 && bytes[start] >= 0x80 && bytes[start] <= 0xbf) start -= 1;
+    if (start < 0) return bytes.length;
+    const first = bytes[start];
+    let width = 1;
+    if (first >= 0xc2 && first <= 0xdf) width = 2;
+    else if (first >= 0xe0 && first <= 0xef) width = 3;
+    else if (first >= 0xf0 && first <= 0xf4) width = 4;
+    return width > bytes.length - start ? start : bytes.length;
+  }};
+  const nativeXhrAppendResponseText = (xhr, responseType, bytes, final) => {{
+    if (!["", "text"].includes(responseType)) return;
+    const pending = xhr._responseUtf8Pending.concat(bytes);
+    const safeLength = final ? pending.length : nativeXhrUtf8SafePrefix(pending);
+    if (safeLength > 0) xhr._responseText += utf8TextFromBytes(pending.slice(0, safeLength));
+    xhr._responseUtf8Pending = pending.slice(safeLength);
+  }};
+  const nativeXhrReadResponse = (xhr, response, responseType) => {{
+    const stream = response && response.body;
+    if (!stream || typeof stream.getReader !== "function") {{
+      const bytes = response && response.__glassPayload
+        ? responseBodyBytes(response.__glassPayload)
+        : [];
+      nativeXhrAppendResponseText(xhr, responseType, bytes, true);
+      xhr.readyState = 3;
+      xhr._notifyReadyState();
+      nativeXhrResponseProgress(xhr, null, bytes.length);
+      return Promise.resolve(bytes);
+    }}
+    let reader;
+    try {{ reader = stream.getReader(); }}
+    catch (error) {{ return Promise.reject(error); }}
+    xhr._responseReader = reader;
+    const bytes = [];
+    const release = () => {{
+      if (xhr._responseReader === reader) xhr._responseReader = null;
+      reader.releaseLock();
+    }};
+    const readNext = () => reader.read().then(
+      result => {{
+        if (result.done) {{
+          nativeXhrAppendResponseText(xhr, responseType, [], true);
+          if (bytes.length === 0) {{
+            xhr.readyState = 3;
+            xhr._notifyReadyState();
+            nativeXhrResponseProgress(xhr, null, 0);
+          }}
+          release();
+          return bytes;
+        }}
+        let chunk;
+        try {{ chunk = nativeReadableStreamChunkBytes(result.value); }}
+        catch (error) {{ release(); throw error; }}
+        if (chunk.length === 0) return readNext();
+        bytes.push(...chunk);
+        nativeXhrAppendResponseText(xhr, responseType, chunk, false);
+        xhr.readyState = 3;
+        xhr._notifyReadyState();
+        nativeXhrResponseProgress(xhr, null, bytes.length);
+        return readNext();
+      }},
+      error => {{ release(); throw error; }},
+    );
+    return readNext();
   }};
   const XMLHttpRequestNative = function() {{
     this.readyState = 0;
@@ -27194,6 +27262,8 @@ fn document_bootstrap(
     this._responseContentType = null;
     this._responseHeaders = responseHeaders([], null);
     this._controller = null;
+    this._responseReader = null;
+    this._responseUtf8Pending = [];
     this._aborted = false;
     this._timeout = 0;
     this._listeners = new Map();
@@ -27271,6 +27341,7 @@ fn document_bootstrap(
     this.status = 0;
     this.statusText = "";
     this._responseText = "";
+    this._responseUtf8Pending = [];
     this.responseURL = "";
     this.response = "";
     this._responseXML = null;
@@ -27291,14 +27362,18 @@ fn document_bootstrap(
   XMLHttpRequestNative.prototype.abort = function() {{
     const active = this.readyState !== 0 && this.readyState !== 4;
     const controller = this._controller;
+    const reader = this._responseReader;
     this._aborted = true;
     this._controller = null;
+    this._responseReader = null;
     if (controller) controller.abort();
+    if (reader) {{ try {{ reader.cancel(); }} catch (_) {{}} }}
     if (!active) return;
     this.readyState = 0;
     this.status = 0;
     this.statusText = "";
     this._responseText = "";
+    this._responseUtf8Pending = [];
     this.responseURL = "";
     this.response = "";
     this._responseXML = null;
@@ -27347,20 +27422,17 @@ fn document_bootstrap(
       this._responseHeaders = response.headers;
       this.readyState = 2;
       this._notifyReadyState();
-      const xmlContent = typeof globalThis.__glassIsXmlMime === "function"
-        && globalThis.__glassIsXmlMime(this._responseContentType);
-      if (responseType === "document" || (responseType === "" && xmlContent)) return response.text();
-      if (responseType === "json") return response.json();
-      if (responseType === "arraybuffer") return response.arrayBuffer();
-      if (responseType === "blob") return response.blob();
-      return response.text();
-    }}).then(value => {{
-      if (value === null || this._controller !== controller || this._aborted) return;
+      return nativeXhrReadResponse(this, response, responseType);
+    }}).then(bytes => {{
+      if (bytes === null || this._controller !== controller || this._aborted) return;
       this._controller = null;
-      this._responseText = typeof value === "string" ? value : "";
-      this.readyState = 3;
-      this._notifyReadyState();
-      nativeXhrResponseProgress(this, value);
+      const value = responseType === "json"
+        ? JSON.parse(utf8TextFromBytes(bytes))
+        : responseType === "arraybuffer"
+          ? new Uint8Array(bytes).buffer
+          : responseType === "blob"
+            ? responseBodyBlobFromBytes(bytes, this._responseContentType)
+            : utf8TextFromBytes(bytes);
       const xmlContent = typeof globalThis.__glassIsXmlMime === "function"
         && globalThis.__glassIsXmlMime(this._responseContentType);
       const htmlContent = typeof globalThis.__glassIsHtmlMime === "function"
@@ -27372,15 +27444,15 @@ fn document_bootstrap(
             ? globalThis.__glassParseHtmlDocument
             : null;
         this._responseXML = parseDocument
-          ? parseDocument(String(value), this.responseURL, this._responseContentType)
+          ? parseDocument(utf8TextFromBytes(bytes), this.responseURL, this._responseContentType)
           : null;
         this._responseText = "";
         this.response = this._responseXML;
       }} else if (responseType === "" && xmlContent) {{
         this._responseXML = typeof globalThis.__glassParseXmlDocument === "function"
-          ? globalThis.__glassParseXmlDocument(String(value), this.responseURL, this._responseContentType)
+          ? globalThis.__glassParseXmlDocument(utf8TextFromBytes(bytes), this.responseURL, this._responseContentType)
           : null;
-        this._responseText = typeof value === "string" ? value : "";
+        this._responseText = utf8TextFromBytes(bytes);
         this.response = value;
       }} else {{
         this._responseXML = null;
@@ -27396,10 +27468,11 @@ fn document_bootstrap(
       if (this._controller !== controller || this._aborted) return;
       this._controller = null;
       if (error && error.name === "TimeoutError") {{
-        this.status = 0;
-        this.statusText = "";
-        this._responseText = "";
-        this.responseURL = "";
+      this.status = 0;
+      this.statusText = "";
+      this._responseText = "";
+      this._responseUtf8Pending = [];
+      this.responseURL = "";
         this.response = "";
         this._responseXML = null;
         this._responseContentType = null;

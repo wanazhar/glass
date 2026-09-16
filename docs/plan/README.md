@@ -178,6 +178,13 @@ separate whole-response Fetch host path; worker streaming, streaming upload,
 synchronous XHR, and complete XHR/Streams Web IDL parity remain issue #40
 gates.
 
+The completed page XHR reopen-cancellation slice is
+[native-engine-browser-429](tasks/native-engine-browser-429.md): reopening a
+live page XHR cancels its active response reader and stale stream
+continuations cannot mutate the reused object or publish late progress and
+terminal callbacks. Worker-XHR streaming and the remaining XHR/Streams Web IDL
+gates remain open.
+
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI
 and TUI startup now share one configuration adapter: `--viewport` reaches the

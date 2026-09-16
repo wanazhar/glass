@@ -36,6 +36,7 @@ pub(crate) const MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_NATIVE_RESPONSE_HEADER_BYTES: usize = 128 * 1024;
 pub(crate) const MAX_NATIVE_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_NATIVE_CSP_POLICIES: usize = 16;
+pub(crate) const MAX_NATIVE_CSP_VIOLATIONS: usize = 128;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,6 +285,25 @@ pub(crate) struct NativeScriptResource {
     pub(crate) body: String,
 }
 
+/// A bounded report-only CSP violation waiting for delivery to the owning
+/// page realm. This is deliberately a data record: the JavaScript owner
+/// creates the platform event only after the record has crossed its boundary.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct NativeCspViolation {
+    pub(crate) document_uri: String,
+    pub(crate) referrer: String,
+    pub(crate) blocked_uri: String,
+    pub(crate) effective_directive: String,
+    pub(crate) violated_directive: String,
+    pub(crate) original_policy: String,
+    pub(crate) source_file: String,
+    pub(crate) sample: String,
+    pub(crate) disposition: String,
+    pub(crate) status_code: u16,
+    pub(crate) line_number: u32,
+    pub(crate) column_number: u32,
+}
+
 /// A bounded response returned by the native GET/fetch primitive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeFetchResponse {
@@ -312,6 +332,7 @@ pub struct NativeResourceLoader {
     network: NativeNetworkState,
     environment: NativeEnvironmentOverrides,
     cookie_changes: Vec<NativeCookieChange>,
+    csp_violations: Vec<NativeCspViolation>,
 }
 
 impl fmt::Debug for NativeResourceLoader {
@@ -703,16 +724,80 @@ struct NativeCspDirectives {
     default_sources: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeCspDeclaration {
+    directives: NativeCspDirectives,
+    original_policy: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct NativeCspPolicy {
     policies: Vec<NativeCspDirectives>,
     header_policy_count: usize,
+    report_only_policies: Vec<NativeCspDeclaration>,
 }
 
 impl NativeCspDirectives {
     fn allows(&self, kind: NativeSubresourceKind, document_url: &Url, resource_url: &Url) -> bool {
         let sources = self.sources_for(kind).or(self.default_sources.as_ref());
         csp_sources_allow(sources.map(Vec::as_slice), document_url, resource_url)
+    }
+
+    fn directive_for(&self, kind: NativeSubresourceKind) -> Option<(&'static str, &Vec<String>)> {
+        let specific = match kind {
+            NativeSubresourceKind::Style => self
+                .style_element_sources
+                .as_ref()
+                .map(|sources| ("style-src-elem", sources))
+                .or_else(|| {
+                    self.style_sources
+                        .as_ref()
+                        .map(|sources| ("style-src", sources))
+                }),
+            NativeSubresourceKind::Script => self
+                .script_element_sources
+                .as_ref()
+                .map(|sources| ("script-src-elem", sources))
+                .or_else(|| {
+                    self.script_sources
+                        .as_ref()
+                        .map(|sources| ("script-src", sources))
+                }),
+            NativeSubresourceKind::Image => self
+                .image_sources
+                .as_ref()
+                .map(|sources| ("img-src", sources)),
+            NativeSubresourceKind::Font => self
+                .font_sources
+                .as_ref()
+                .map(|sources| ("font-src", sources)),
+            NativeSubresourceKind::Media => self
+                .media_sources
+                .as_ref()
+                .map(|sources| ("media-src", sources)),
+            NativeSubresourceKind::Frame => self
+                .frame_sources
+                .as_ref()
+                .map(|sources| ("frame-src", sources))
+                .or_else(|| {
+                    self.child_sources
+                        .as_ref()
+                        .map(|sources| ("child-src", sources))
+                }),
+            NativeSubresourceKind::Connect => self
+                .connect_sources
+                .as_ref()
+                .map(|sources| ("connect-src", sources)),
+            NativeSubresourceKind::Worker => self
+                .worker_sources
+                .as_ref()
+                .map(|sources| ("worker-src", sources)),
+        };
+        specific.or_else(|| {
+            self.default_sources
+                .as_ref()
+                .map(|sources| ("default-src", sources))
+        })
     }
 
     fn sources_for(&self, kind: NativeSubresourceKind) -> Option<&Vec<String>> {
@@ -761,6 +846,55 @@ impl NativeCspDirectives {
         }
     }
 
+    fn inline_directive_for(
+        &self,
+        kind: NativeInlineCspKind,
+    ) -> Option<(&'static str, &Vec<String>)> {
+        let specific = match kind {
+            NativeInlineCspKind::ScriptElement => self
+                .script_element_sources
+                .as_ref()
+                .map(|sources| ("script-src-elem", sources))
+                .or_else(|| {
+                    self.script_sources
+                        .as_ref()
+                        .map(|sources| ("script-src", sources))
+                }),
+            NativeInlineCspKind::ScriptAttribute => self
+                .script_attribute_sources
+                .as_ref()
+                .map(|sources| ("script-src-attr", sources))
+                .or_else(|| {
+                    self.script_sources
+                        .as_ref()
+                        .map(|sources| ("script-src", sources))
+                }),
+            NativeInlineCspKind::StyleElement => self
+                .style_element_sources
+                .as_ref()
+                .map(|sources| ("style-src-elem", sources))
+                .or_else(|| {
+                    self.style_sources
+                        .as_ref()
+                        .map(|sources| ("style-src", sources))
+                }),
+            NativeInlineCspKind::StyleAttribute => self
+                .style_attribute_sources
+                .as_ref()
+                .map(|sources| ("style-src-attr", sources))
+                .or_else(|| {
+                    self.style_sources
+                        .as_ref()
+                        .map(|sources| ("style-src", sources))
+                }),
+        };
+        specific.or_else(|| {
+            self.default_sources
+                .as_ref()
+                .map(|sources| ("default-src", sources))
+        })
+    }
+
     fn allows_inline(&self, kind: NativeInlineCspKind, source: &str, nonce: Option<&str>) -> bool {
         inline_csp_sources_allow(
             self.inline_sources_for(kind).map(Vec::as_slice),
@@ -801,6 +935,46 @@ impl NativeCspPolicy {
         (!groups.is_empty()).then_some(groups)
     }
 
+    fn report_only_url_violations(
+        &self,
+        kind: NativeSubresourceKind,
+        document_url: &Url,
+        resource_url: &Url,
+    ) -> Vec<(&NativeCspDeclaration, &'static str)> {
+        self.report_only_policies
+            .iter()
+            .filter_map(|declaration| {
+                let (directive, sources) = declaration.directives.directive_for(kind)?;
+                (!csp_sources_allow(Some(sources.as_slice()), document_url, resource_url))
+                    .then_some((declaration, directive))
+            })
+            .collect()
+    }
+
+    fn report_only_inline_violations(
+        &self,
+        kind: NativeInlineCspKind,
+        source: &str,
+        nonce: Option<&str>,
+    ) -> Vec<(&NativeCspDeclaration, &'static str)> {
+        self.report_only_policies
+            .iter()
+            .filter_map(|declaration| {
+                let (directive, sources) = declaration.directives.inline_directive_for(kind)?;
+                (!inline_csp_sources_allow(
+                    Some(sources.as_slice()),
+                    source,
+                    nonce,
+                    matches!(
+                        kind,
+                        NativeInlineCspKind::ScriptAttribute | NativeInlineCspKind::StyleAttribute
+                    ),
+                ))
+                .then_some((declaration, directive))
+            })
+            .collect()
+    }
+
     fn replace_meta_policies(&mut self, values: &[String]) -> Result<(), NativeEngineError> {
         if values.len() > MAX_NATIVE_CSP_POLICIES {
             return Err(NativeEngineError::limit(
@@ -819,6 +993,7 @@ impl NativeCspPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct NativeInlineScriptPolicy {
     policies: Vec<NativeCspDirectives>,
+    report_only_policies: Vec<NativeCspDeclaration>,
 }
 
 impl NativeInlineScriptPolicy {
@@ -832,6 +1007,45 @@ impl NativeInlineScriptPolicy {
         self.policies
             .iter()
             .all(|policy| policy.allows_inline(NativeInlineCspKind::ScriptAttribute, source, None))
+    }
+
+    pub(crate) fn report_only_inline_script_violations(
+        &self,
+        document_url: &str,
+        source: &str,
+        nonce: Option<&str>,
+    ) -> Vec<NativeCspViolation> {
+        let Ok(document_url) = Url::parse(without_fragment(document_url)) else {
+            return Vec::new();
+        };
+        if !is_network_url(document_url.as_str()) {
+            return Vec::new();
+        }
+        let sample = source.chars().take(40).collect::<String>();
+        self.report_only_policies
+            .iter()
+            .filter_map(|declaration| {
+                let (directive, sources) = declaration
+                    .directives
+                    .inline_directive_for(NativeInlineCspKind::ScriptElement)?;
+                (!inline_csp_sources_allow(Some(sources.as_slice()), source, nonce, false))
+                    .then_some(NativeCspViolation {
+                        document_uri: without_fragment(document_url.as_str()).to_owned(),
+                        referrer: String::new(),
+                        blocked_uri: "inline".into(),
+                        effective_directive: directive.into(),
+                        violated_directive: directive.into(),
+                        original_policy: declaration.original_policy.clone(),
+                        source_file: String::new(),
+                        sample: sample.clone(),
+                        disposition: "report".into(),
+                        status_code: 0,
+                        line_number: 0,
+                        column_number: 0,
+                    })
+            })
+            .take(MAX_NATIVE_CSP_VIOLATIONS)
+            .collect()
     }
 }
 
@@ -953,6 +1167,7 @@ impl NativeResourceLoader {
             network: NativeNetworkState::from_profile(cookies)?,
             environment: NativeEnvironmentOverrides::default(),
             cookie_changes: Vec::new(),
+            csp_violations: Vec::new(),
         })
     }
 
@@ -973,6 +1188,7 @@ impl NativeResourceLoader {
             network: NativeNetworkState::from_profile(cookies)?,
             environment: NativeEnvironmentOverrides::default(),
             cookie_changes: Vec::new(),
+            csp_violations: Vec::new(),
         })
     }
 
@@ -1025,6 +1241,78 @@ impl NativeResourceLoader {
         self.max_document_bytes
     }
 
+    pub(crate) fn take_csp_violations(&mut self) -> Vec<NativeCspViolation> {
+        std::mem::take(&mut self.csp_violations)
+    }
+
+    fn queue_csp_violation(
+        &mut self,
+        document_url: &Url,
+        blocked_uri: impl Into<String>,
+        effective_directive: &str,
+        original_policy: &str,
+        sample: impl Into<String>,
+    ) {
+        if self.csp_violations.len() >= MAX_NATIVE_CSP_VIOLATIONS {
+            return;
+        }
+        self.csp_violations.push(NativeCspViolation {
+            document_uri: without_fragment(document_url.as_str()).to_owned(),
+            referrer: String::new(),
+            blocked_uri: blocked_uri.into(),
+            effective_directive: effective_directive.to_owned(),
+            violated_directive: effective_directive.to_owned(),
+            original_policy: original_policy.to_owned(),
+            source_file: String::new(),
+            sample: sample.into(),
+            disposition: "report".into(),
+            status_code: 0,
+            line_number: 0,
+            column_number: 0,
+        });
+    }
+
+    fn record_report_only_url_violations(
+        &mut self,
+        policy: &NativeCspPolicy,
+        kind: NativeSubresourceKind,
+        document_url: &Url,
+        resource_url: &Url,
+    ) {
+        let blocked_uri = without_fragment(resource_url.as_str()).to_owned();
+        for (declaration, directive) in
+            policy.report_only_url_violations(kind, document_url, resource_url)
+        {
+            self.queue_csp_violation(
+                document_url,
+                blocked_uri.clone(),
+                directive,
+                &declaration.original_policy,
+                "",
+            );
+        }
+    }
+
+    fn record_report_only_inline_violations(
+        &mut self,
+        policy: &NativeCspPolicy,
+        kind: NativeInlineCspKind,
+        document_url: &Url,
+        source: &str,
+        nonce: Option<&str>,
+    ) {
+        let sample = source.chars().take(40).collect::<String>();
+        for (declaration, directive) in policy.report_only_inline_violations(kind, source, nonce) {
+            self.queue_csp_violation(
+                document_url,
+                "inline",
+                directive,
+                &declaration.original_policy,
+                sample.clone(),
+            );
+        }
+    }
+
     pub(crate) fn inline_script_policy(
         &self,
         document_url: &str,
@@ -1033,40 +1321,104 @@ impl NativeResourceLoader {
             .document_policy(document_url)?
             .map(|policy| NativeInlineScriptPolicy {
                 policies: policy.policies.clone(),
+                report_only_policies: policy.report_only_policies.clone(),
             })
             .unwrap_or_default())
     }
 
     pub(crate) fn allows_inline_script(
-        &self,
+        &mut self,
         document_url: &str,
         source: &str,
         nonce: Option<&str>,
     ) -> Result<bool, NativeEngineError> {
-        Ok(self.document_policy(document_url)?.is_none_or(|policy| {
-            policy.allows_inline(NativeInlineCspKind::ScriptElement, source, nonce)
-        }))
+        validate_url_text("CSP document URL", document_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "CSP document URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(true);
+        }
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .cloned()
+            .unwrap_or_default();
+        self.record_report_only_inline_violations(
+            &policy,
+            NativeInlineCspKind::ScriptElement,
+            &document_url,
+            source,
+            nonce,
+        );
+        Ok(policy.allows_inline(NativeInlineCspKind::ScriptElement, source, nonce))
     }
 
     pub(crate) fn allows_inline_style_element(
-        &self,
+        &mut self,
         document_url: &str,
         source: &str,
         nonce: Option<&str>,
     ) -> Result<bool, NativeEngineError> {
-        Ok(self.document_policy(document_url)?.is_none_or(|policy| {
-            policy.allows_inline(NativeInlineCspKind::StyleElement, source, nonce)
-        }))
+        validate_url_text("CSP document URL", document_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "CSP document URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(true);
+        }
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .cloned()
+            .unwrap_or_default();
+        self.record_report_only_inline_violations(
+            &policy,
+            NativeInlineCspKind::StyleElement,
+            &document_url,
+            source,
+            nonce,
+        );
+        Ok(policy.allows_inline(NativeInlineCspKind::StyleElement, source, nonce))
     }
 
     pub(crate) fn allows_inline_style_attribute(
-        &self,
+        &mut self,
         document_url: &str,
         source: &str,
     ) -> Result<bool, NativeEngineError> {
-        Ok(self.document_policy(document_url)?.is_none_or(|policy| {
-            policy.allows_inline(NativeInlineCspKind::StyleAttribute, source, None)
-        }))
+        validate_url_text("CSP document URL", document_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "CSP document URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(true);
+        }
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .cloned()
+            .unwrap_or_default();
+        self.record_report_only_inline_violations(
+            &policy,
+            NativeInlineCspKind::StyleAttribute,
+            &document_url,
+            source,
+            None,
+        );
+        Ok(policy.allows_inline(NativeInlineCspKind::StyleAttribute, source, None))
     }
 
     fn document_policy(
@@ -1225,6 +1577,12 @@ impl NativeResourceLoader {
             .get(&cache_key(&document_url))
             .cloned()
             .unwrap_or_default();
+        self.record_report_only_url_violations(
+            &policy,
+            NativeSubresourceKind::Connect,
+            &document_url,
+            &target_url,
+        );
         if !policy.allows(NativeSubresourceKind::Connect, &document_url, &target_url) {
             return Err(NativeEngineError::Network {
                 operation: "EventSource policy".into(),
@@ -1303,7 +1661,15 @@ impl NativeResourceLoader {
             reject_credentials(&next_url)?;
             if !is_network_url(without_fragment(next_url.as_str()))
                 || !mixed_content_allowed(&document_url, &next_url)
-                || !policy.allows(NativeSubresourceKind::Connect, &document_url, &next_url)
+                || {
+                    self.record_report_only_url_violations(
+                        &policy,
+                        NativeSubresourceKind::Connect,
+                        &document_url,
+                        &next_url,
+                    );
+                    !policy.allows(NativeSubresourceKind::Connect, &document_url, &next_url)
+                }
             {
                 return Err(NativeEngineError::Network {
                     operation: "EventSource redirect policy".into(),
@@ -1418,9 +1784,6 @@ impl NativeResourceLoader {
         reject_credentials(&document_url)?;
         let mut policy = NativeCspPolicy::default();
         for (name, value) in headers {
-            if !name.eq_ignore_ascii_case("content-security-policy") {
-                continue;
-            }
             if value.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES {
                 return Err(NativeEngineError::limit(
                     "CSP response policy",
@@ -1428,7 +1791,14 @@ impl NativeResourceLoader {
                     value.len(),
                 ));
             }
-            policy.policies.push(parse_csp_directives(value));
+            if name.eq_ignore_ascii_case("content-security-policy") {
+                policy.policies.push(parse_csp_directives(value));
+            } else if name.eq_ignore_ascii_case("content-security-policy-report-only") {
+                policy.report_only_policies.push(NativeCspDeclaration {
+                    directives: parse_csp_directives(value),
+                    original_policy: value.clone(),
+                });
+            }
         }
         policy.header_policy_count = policy.policies.len();
         self.network
@@ -2161,6 +2531,14 @@ impl NativeResourceLoader {
             .get(&cache_key(&document_url))
             .cloned()
             .unwrap_or_default();
+        if cors_mode != NativeCorsMode::Navigation {
+            self.record_report_only_url_violations(
+                &policy,
+                NativeSubresourceKind::Connect,
+                &document_url,
+                &target_url,
+            );
+        }
         if cors_mode != NativeCorsMode::Navigation
             && !policy.allows(NativeSubresourceKind::Connect, &document_url, &target_url)
         {
@@ -2407,6 +2785,14 @@ impl NativeResourceLoader {
                     reason: "fetch redirect location is not valid URL syntax".into(),
                 })?;
             reject_credentials(&next_url)?;
+            if cors_mode != NativeCorsMode::Navigation {
+                self.record_report_only_url_violations(
+                    &policy,
+                    NativeSubresourceKind::Connect,
+                    &document_url,
+                    &next_url,
+                );
+            }
             if !is_network_url(without_fragment(next_url.as_str()))
                 || !mixed_content_allowed(&document_url, &next_url)
                 || (cors_mode != NativeCorsMode::Navigation
@@ -2697,6 +3083,12 @@ impl NativeResourceLoader {
             .get(&cache_key(&document_url))
             .cloned()
             .unwrap_or_default();
+        self.record_report_only_url_violations(
+            &policy,
+            NativeSubresourceKind::Style,
+            &document_url,
+            &target_url,
+        );
         if !policy.allows(NativeSubresourceKind::Style, &document_url, &target_url) {
             return Ok(None);
         }
@@ -2790,6 +3182,12 @@ impl NativeResourceLoader {
                     reason: "CSS subresource redirect location is not valid URL syntax".into(),
                 })?;
             reject_credentials(&next_url)?;
+            self.record_report_only_url_violations(
+                &policy,
+                NativeSubresourceKind::Style,
+                &document_url,
+                &next_url,
+            );
             if !is_network_url(without_fragment(next_url.as_str()))
                 || !mixed_content_allowed(&document_url, &next_url)
                 || !policy.allows(NativeSubresourceKind::Style, &document_url, &next_url)
@@ -2931,6 +3329,12 @@ impl NativeResourceLoader {
             .get(&cache_key(&document_url))
             .cloned()
             .unwrap_or_default();
+        self.record_report_only_url_violations(
+            &policy,
+            NativeSubresourceKind::Image,
+            &document_url,
+            &target_url,
+        );
         if !policy.allows(NativeSubresourceKind::Image, &document_url, &target_url) {
             return Ok(None);
         }
@@ -3019,6 +3423,12 @@ impl NativeResourceLoader {
                     reason: "image subresource redirect location is not valid URL syntax".into(),
                 })?;
             reject_credentials(&next_url)?;
+            self.record_report_only_url_violations(
+                &policy,
+                NativeSubresourceKind::Image,
+                &document_url,
+                &next_url,
+            );
             if !is_network_url(without_fragment(next_url.as_str()))
                 || !mixed_content_allowed(&document_url, &next_url)
                 || !policy.allows(NativeSubresourceKind::Image, &document_url, &next_url)
@@ -3208,6 +3618,12 @@ impl NativeResourceLoader {
             .get(&cache_key(&document_url))
             .cloned()
             .unwrap_or_default();
+        self.record_report_only_url_violations(
+            &policy,
+            subresource_kind,
+            &document_url,
+            &target_url,
+        );
         if !policy.allows(subresource_kind, &document_url, &target_url) {
             return Ok(None);
         }
@@ -3307,6 +3723,12 @@ impl NativeResourceLoader {
                     reason: "script subresource redirect location is not valid URL syntax".into(),
                 })?;
             reject_credentials(&next_url)?;
+            self.record_report_only_url_violations(
+                &policy,
+                subresource_kind,
+                &document_url,
+                &next_url,
+            );
             if !is_network_url(without_fragment(next_url.as_str()))
                 || !mixed_content_allowed(&document_url, &next_url)
                 || !policy.allows(subresource_kind, &document_url, &next_url)
@@ -3471,6 +3893,21 @@ fn content_security_policy(headers: &HeaderMap) -> NativeCspPolicy {
             continue;
         };
         policy.policies.push(parse_csp_directives(value));
+    }
+    for value in headers
+        .get_all("content-security-policy-report-only")
+        .iter()
+    {
+        let Ok(value) = value.to_str() else {
+            continue;
+        };
+        if value.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES {
+            continue;
+        }
+        policy.report_only_policies.push(NativeCspDeclaration {
+            directives: parse_csp_directives(value),
+            original_policy: value.to_owned(),
+        });
     }
     policy.header_policy_count = policy.policies.len();
     policy

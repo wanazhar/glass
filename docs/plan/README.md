@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-398` locally. Native is now the default runtime for
+`native-engine-browser-399` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -475,8 +475,8 @@ The completed native inline-content CSP slice is
 nonce/hash-preserving policy evaluation into the Rust owner for inline
 classic/module scripts, `<style>` elements, and `style="..."` attributes,
 including dynamic DOM mutation rechecks. The existing external resource policy
-continues to use the shared URL matcher; broader CSP grammar and reporting
-remain explicit issue #40 security gates.
+continues to use the shared URL matcher; broader CSP grammar and network
+report delivery remain explicit issue #40 security gates.
 
 The completed `script-src-attr` slice is
 [native-engine-browser-396](tasks/native-engine-browser-396.md): it applies
@@ -491,15 +491,20 @@ same bounded host turn. Autonomous rendering, background-page scheduling,
 full task-source arbitration, and complete animation/idle Web IDL identity
 remain issue #40 promotion gates.
 
-The completed CSP meta-composition slice is
+The completed CSP report-only observation slice is
+[native-engine-browser-399](tasks/native-engine-browser-399.md): response
+`Content-Security-Policy-Report-Only` declarations preserve their original
+policy text, bounded URL and inline checks deliver structured
+`securitypolicyviolation` records, and synchronously inserted classic inline
+scripts report through the persistent QuickJS page bridge without changing
+authorization. `report-uri`/`report-to`, strict-dynamic, dynamic policy
+mutation, and the complete CSP source grammar remain issue #40 promotion
+gates. The preceding CSP meta-composition slice is
 [native-engine-browser-398](tasks/native-engine-browser-398.md): parser-time
 enforced CSP policies in the document head now intersect with every response
 header policy, and the same bounded policy applies to subresources, inline
 elements/attributes, and child frames. Multiple frame source groups cross the
 content-process boundary without being flattened into a permissive union.
-Report-only violation delivery, `SecurityPolicyViolationEvent`,
-strict-dynamic, dynamic policy mutation, and the complete CSP source grammar
-remain issue #40 promotion gates.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

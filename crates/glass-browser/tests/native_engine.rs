@@ -14572,6 +14572,123 @@ async fn native_content_process_intersects_header_and_head_meta_csp() {
 }
 
 #[tokio::test]
+async fn native_content_process_delivers_report_only_csp_violation_events() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/csp-report-only"));
+        let body = r#"<head><script>globalThis.cspReports = []; document.addEventListener('securitypolicyviolation', event => cspReports.push({ type: event.type, directive: event.effectiveDirective, alias: event.violatedDirective, disposition: event.disposition, blocked: event.blockedURI, sample: event.sample, policy: event.originalPolicy, bubbles: event.bubbles }));</script><script>globalThis.reportOnlyScript = true;</script><style>body { color: red; }</style></head><body>Report only</body>"#;
+        let policy = "script-src 'none'; style-src 'none'";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: script-src 'unsafe-inline'; style-src 'unsafe-inline'\r\nContent-Security-Policy-Report-Only: {policy}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/csp-report-only")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({ script: reportOnlyScript, reports: cspReports })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "script": true,
+            "reports": [
+                {
+                    "type": "securitypolicyviolation",
+                    "directive": "style-src",
+                    "alias": "style-src",
+                    "disposition": "report",
+                    "blocked": "inline",
+                    "sample": "body { color: red; }",
+                    "policy": "script-src 'none'; style-src 'none'",
+                    "bubbles": true,
+                },
+                {
+                    "type": "securitypolicyviolation",
+                    "directive": "script-src",
+                    "alias": "script-src",
+                    "disposition": "report",
+                    "blocked": "inline",
+                    "sample": "globalThis.cspReports = []; document.add",
+                    "policy": "script-src 'none'; style-src 'none'",
+                    "bubbles": true,
+                },
+                {
+                    "type": "securitypolicyviolation",
+                    "directive": "script-src",
+                    "alias": "script-src",
+                    "disposition": "report",
+                    "blocked": "inline",
+                    "sample": "globalThis.reportOnlyScript = true;",
+                    "policy": "script-src 'none'; style-src 'none'",
+                    "bubbles": true,
+                },
+            ],
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_delivers_report_only_events_for_dynamic_scripts() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/csp-dynamic-report")
+        );
+        let body = r#"<script>globalThis.cspReports = []; addEventListener('securitypolicyviolation', event => cspReports.push([event.effectiveDirective, event.blockedURI, event.sample]));</script><body>Dynamic report only</body>"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: script-src 'unsafe-inline'\r\nContent-Security-Policy-Report-Only: script-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/csp-dynamic-report")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { const script = document.createElement('script'); script.textContent = 'globalThis.dynamicReportScript = true'; document.body.appendChild(script); return true; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({ ran: dynamicReportScript, reports: cspReports })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "ran": true,
+            "reports": [
+                ["script-src", "inline", "globalThis.cspReports = []; addEventList"],
+                ["script-src", "inline", "globalThis.dynamicReportScript = true"],
+            ],
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_enforces_script_src_attr_for_initial_and_dynamic_handlers() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -560,23 +560,49 @@ pub(crate) enum NativePageScriptSource {
         timing: NativePageScriptTiming,
         node_index: u32,
         nonce: Option<String>,
+        parser_inserted: bool,
     },
     External {
         href: String,
         timing: NativePageScriptTiming,
         node_index: u32,
+        nonce: Option<String>,
+        parser_inserted: bool,
     },
     ModuleInline {
         source: String,
         timing: NativePageScriptTiming,
         node_index: u32,
         nonce: Option<String>,
+        parser_inserted: bool,
     },
     ModuleExternal {
         href: String,
         timing: NativePageScriptTiming,
         node_index: u32,
+        nonce: Option<String>,
+        parser_inserted: bool,
     },
+}
+
+impl NativePageScriptSource {
+    fn as_dynamic(mut self) -> Self {
+        match &mut self {
+            Self::Inline {
+                parser_inserted, ..
+            }
+            | Self::External {
+                parser_inserted, ..
+            }
+            | Self::ModuleInline {
+                parser_inserted, ..
+            }
+            | Self::ModuleExternal {
+                parser_inserted, ..
+            } => *parser_inserted = false,
+        }
+        self
+    }
 }
 
 /// A parsed document owned by one engine generation.
@@ -2741,12 +2767,16 @@ impl NativeDocument {
                                 href: source.to_owned(),
                                 timing,
                                 node_index: node.id().index(),
+                                nonce: node.attribute("nonce").map(str::to_owned),
+                                parser_inserted: true,
                             }
                         } else {
                             NativePageScriptSource::External {
                                 href: source.to_owned(),
                                 timing,
                                 node_index: node.id().index(),
+                                nonce: node.attribute("nonce").map(str::to_owned),
+                                parser_inserted: true,
                             }
                         }
                     });
@@ -2759,6 +2789,7 @@ impl NativeDocument {
                         timing,
                         node_index: node.id().index(),
                         nonce: node.attribute("nonce").map(str::to_owned),
+                        parser_inserted: true,
                     }
                 } else {
                     NativePageScriptSource::Inline {
@@ -2766,6 +2797,7 @@ impl NativeDocument {
                         timing,
                         node_index: node.id().index(),
                         nonce: node.attribute("nonce").map(str::to_owned),
+                        parser_inserted: true,
                     }
                 })
             })
@@ -2853,6 +2885,7 @@ impl NativeDocument {
                     && !realm_started.contains(&node_index)
             })
             .take(max_scripts)
+            .map(NativePageScriptSource::as_dynamic)
             .collect::<Vec<_>>();
         self.started_script_nodes.extend(candidate_nodes);
         sources

@@ -5931,6 +5931,7 @@ pub(crate) fn execute_inline_scripts(
                 timing,
                 node_index,
                 nonce: _,
+                parser_inserted: _,
             } => Some((
                 timing,
                 NativePageScript::Classic {
@@ -5943,6 +5944,7 @@ pub(crate) fn execute_inline_scripts(
                 timing,
                 node_index,
                 nonce: _,
+                parser_inserted: _,
             } => Some((
                 timing,
                 NativePageScript::Module {
@@ -6032,6 +6034,10 @@ pub(crate) fn execute_page_scripts(
     let mut navigation = None;
     let mut events = Vec::new();
     let mut failed_script_nodes = BTreeSet::new();
+    let mut pending_dynamic_scripts = VecDeque::new();
+    let mut pending_script_sources = Vec::new();
+    let mut service_worker_commands = Vec::new();
+    let mut dialogs = Vec::new();
     for source in sources {
         let script_node_index = match source {
             NativePageScript::Classic { node_index, .. }
@@ -6077,6 +6083,7 @@ pub(crate) fn execute_page_scripts(
                             document_origin,
                             viewport,
                         )?;
+                    let commands = error_evaluation.commands.clone();
                     apply_page_script_evaluation(
                         document,
                         error_evaluation,
@@ -6086,12 +6093,20 @@ pub(crate) fn execute_page_scripts(
                         &mut scroll_commands,
                         &mut navigation,
                     )?;
+                    enqueue_dynamic_page_scripts(
+                        document,
+                        &commands,
+                        document_url,
+                        &mut pending_dynamic_scripts,
+                        &mut pending_script_sources,
+                    )?;
                     events.push((node_index, NativeEventKind::Error));
                 }
                 continue;
             }
             Err(error) => return Err(error),
         };
+        let commands = evaluation.commands.clone();
         apply_page_script_evaluation(
             document,
             evaluation,
@@ -6100,6 +6115,13 @@ pub(crate) fn execute_page_scripts(
             &mut event_source_commands,
             &mut scroll_commands,
             &mut navigation,
+        )?;
+        enqueue_dynamic_page_scripts(
+            document,
+            &commands,
+            document_url,
+            &mut pending_dynamic_scripts,
+            &mut pending_script_sources,
         )?;
     }
     if !csp_violations.is_empty() {
@@ -6118,6 +6140,7 @@ pub(crate) fn execute_page_scripts(
                 viewport,
                 &page_events,
             )?;
+        let commands = evaluation.commands.clone();
         apply_page_script_evaluation(
             document,
             evaluation,
@@ -6126,6 +6149,13 @@ pub(crate) fn execute_page_scripts(
             &mut event_source_commands,
             &mut scroll_commands,
             &mut navigation,
+        )?;
+        enqueue_dynamic_page_scripts(
+            document,
+            &commands,
+            document_url,
+            &mut pending_dynamic_scripts,
+            &mut pending_script_sources,
         )?;
     }
     for (node_index, event_kind) in resource_events {
@@ -6145,6 +6175,7 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
+        let commands = evaluation.commands.clone();
         apply_page_script_evaluation(
             document,
             evaluation,
@@ -6153,6 +6184,13 @@ pub(crate) fn execute_page_scripts(
             &mut event_source_commands,
             &mut scroll_commands,
             &mut navigation,
+        )?;
+        enqueue_dynamic_page_scripts(
+            document,
+            &commands,
+            document_url,
+            &mut pending_dynamic_scripts,
+            &mut pending_script_sources,
         )?;
         events.push((*node_index, *event_kind));
     }
@@ -6177,6 +6215,7 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
+        let commands = evaluation.commands.clone();
         apply_page_script_evaluation(
             document,
             evaluation,
@@ -6185,6 +6224,13 @@ pub(crate) fn execute_page_scripts(
             &mut event_source_commands,
             &mut scroll_commands,
             &mut navigation,
+        )?;
+        enqueue_dynamic_page_scripts(
+            document,
+            &commands,
+            document_url,
+            &mut pending_dynamic_scripts,
+            &mut pending_script_sources,
         )?;
         events.push((target, kind));
     }
@@ -6209,6 +6255,7 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
+        let commands = evaluation.commands.clone();
         apply_page_script_evaluation(
             document,
             evaluation,
@@ -6218,7 +6265,43 @@ pub(crate) fn execute_page_scripts(
             &mut scroll_commands,
             &mut navigation,
         )?;
+        enqueue_dynamic_page_scripts(
+            document,
+            &commands,
+            document_url,
+            &mut pending_dynamic_scripts,
+            &mut pending_script_sources,
+        )?;
         events.push((target, kind));
+    }
+    if !pending_dynamic_scripts.is_empty() {
+        let dynamic_result = execute_dynamic_page_scripts(
+            document,
+            runtime.as_ref().expect("page script runtime initialized"),
+            pending_dynamic_scripts.into_iter().collect(),
+            document_url,
+            document_origin,
+            viewport,
+            &[],
+            &[],
+        )?;
+        pending_fetches.extend(dynamic_result.pending_fetches);
+        websocket_commands.extend(dynamic_result.websocket_commands);
+        event_source_commands.extend(dynamic_result.event_source_commands);
+        pending_script_sources.extend(dynamic_result.pending_script_sources);
+        scroll_commands.extend(dynamic_result.scroll_commands);
+        service_worker_commands.extend(dynamic_result.service_worker_commands);
+        dialogs.extend(dynamic_result.dialogs);
+        events.extend(dynamic_result.events);
+        if let Some(dynamic_navigation) = dynamic_result.navigation {
+            if navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "one page-load script batch cannot activate multiple navigations"
+                        .into(),
+                });
+            }
+            navigation = Some(dynamic_navigation);
+        }
     }
     runtime
         .as_mut()
@@ -6243,19 +6326,29 @@ pub(crate) fn execute_page_scripts(
     )?;
     Ok(NativePageScriptResult {
         pending_fetches,
-        service_worker_commands: runtime
-            .as_ref()
-            .expect("page script runtime initialized")
-            .take_service_worker_commands(),
+        service_worker_commands: service_worker_commands
+            .into_iter()
+            .chain(
+                runtime
+                    .as_ref()
+                    .expect("page script runtime initialized")
+                    .take_service_worker_commands(),
+            )
+            .collect(),
         websocket_commands,
         event_source_commands,
-        pending_script_sources: Vec::new(),
+        pending_script_sources,
         scroll_commands,
         navigation,
-        dialogs: runtime
-            .as_ref()
-            .expect("page script runtime initialized")
-            .take_dialog_events(),
+        dialogs: dialogs
+            .into_iter()
+            .chain(
+                runtime
+                    .as_ref()
+                    .expect("page script runtime initialized")
+                    .take_dialog_events(),
+            )
+            .collect(),
         events,
     })
 }

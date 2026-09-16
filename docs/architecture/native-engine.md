@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-404` slice. The native runtime is now the primary
+`native-engine-browser-405` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -13,9 +13,22 @@ comparison. Schemeless hosts inherit the protected document scheme, `'self'`
 keeps its safe same-origin upgrade rules, and malformed credentials, hosts,
 ports, paths, and non-ASCII source syntax fail closed. The shared decision is
 used by enforced and report-only page/worker resource checks, frames,
-EventSource, and WebSocket policy matching. Strict-dynamic trust, dynamic
-policy mutation, Service Worker policy-container propagation, redirect-aware
-path handling, and broader CSP conformance remain separate issue #40 gates.
+EventSource, and WebSocket policy matching. Dynamic policy mutation, Service
+Worker policy-container propagation, redirect-aware path handling, and broader
+CSP conformance remain separate issue #40 gates.
+
+Slice 405 closes the bounded CSP `strict-dynamic` script boundary. External
+script nonces are retained from parser and mutation-created script elements;
+nonce-bearing parser scripts can bootstrap dependencies, parser-inserted
+scripts without a matching nonce are blocked before request, and
+non-parser-inserted external/module scripts are admitted by `strict-dynamic`
+without a host allowlist. Enforced and report-only URL checks share the same
+parser metadata, nonce, and redirect decisions, while inline script
+`unsafe-inline` cannot bypass a strict-dynamic source list. Initial
+DOMContentLoaded/load-time dynamic script sources now drain through the normal
+content-process loader instead of being dropped. Dynamic policy mutation,
+Service Worker policy-container propagation, redirect-aware path handling, and
+broader CSP conformance remain separate issue #40 gates.
 
 Slice 403 closes report-only CSP network delivery for the current native
 HTTP(S) owners. `report-uri` declarations produce bounded legacy

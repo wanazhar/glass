@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-404` locally. Native is now the default runtime for
+`native-engine-browser-405` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -497,8 +497,9 @@ The completed CSP report-only observation slice is
 policy text, bounded URL and inline checks deliver structured
 `securitypolicyviolation` records, and synchronously inserted classic inline
 scripts report through the persistent QuickJS page bridge without changing
-authorization. Strict-dynamic, dynamic policy
-The completed CSP report-delivery lifecycle slice is
+authorization. Strict-dynamic, dynamic policy mutation, and network report
+delivery remained explicit issue #40 security gates. The
+completed CSP report-delivery lifecycle slice is
 [native-engine-browser-400](tasks/native-engine-browser-400.md): Fetch drains
 connect-policy records after the loader operation, EventSource carries
 open/reconnect/error records to page and dedicated-worker owners, and
@@ -542,6 +543,19 @@ report-only page/worker resources, frames, EventSource, and WebSocket policy
 checks use the same owner. Service Worker policy-container propagation,
 dynamic policy mutation, strict-dynamic trust, redirect-aware path handling,
 and broader CSP conformance remain issue #40 promotion gates.
+
+The completed CSP strict-dynamic script slice is
+[native-engine-browser-405](tasks/native-engine-browser-405.md): parser and
+mutation-created page-script sources now preserve parser metadata and external
+nonces through the content-process loader. Matching nonces authorize external
+parser scripts; parser-inserted scripts without a matching nonce are blocked
+when `strict-dynamic` is present; and non-parser-inserted external/module
+scripts are admitted without a host allowlist. Enforced and report-only URL
+checks share those decisions, inline script `unsafe-inline` cannot override a
+strict-dynamic list, and initial lifecycle-created external scripts are no
+longer dropped before loader handoff. Dynamic policy mutation, Service Worker
+policy-container propagation, redirect-aware path handling, and broader CSP
+conformance remain issue #40 promotion gates.
 
 The completed WebSocket report-delivery slice is
 [native-engine-browser-402](tasks/native-engine-browser-402.md): page and

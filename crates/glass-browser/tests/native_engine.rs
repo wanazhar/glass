@@ -14533,6 +14533,76 @@ async fn native_content_process_enforces_inline_csp_for_initial_and_dynamic_cont
 }
 
 #[tokio::test]
+async fn native_content_process_applies_strict_dynamic_to_parser_and_dynamic_scripts() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let script_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let script_address = script_listener.local_addr().unwrap();
+    let script_server = tokio::spawn(async move {
+        let (mut stream, _) = script_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/bootstrap.js"));
+        let bootstrap = format!(
+            "globalThis.strictDynamicEvents = ['bootstrap']; document.addEventListener('DOMContentLoaded', () => {{ const script = document.createElement('script'); script.src = 'http://{script_address}/dynamic.js'; document.getElementById('anchor').appendChild(script); }});"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{bootstrap}",
+            bootstrap.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = script_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/dynamic.js"));
+        let body = "strictDynamicEvents.push('dynamic');";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        match tokio::time::timeout(Duration::from_millis(100), script_listener.accept()).await {
+            Err(_) => {}
+            Ok(Ok((_, peer))) => panic!("parser-blocked.js was unexpectedly requested by {peer}"),
+            Ok(Err(error)) => {
+                panic!("script listener failed while checking blocked parser script: {error}")
+            }
+        }
+    });
+
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let page_server = tokio::spawn(async move {
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/strict-dynamic"));
+        let body = format!(
+            "<html><body><div id='anchor'></div><script src='http://{script_address}/bootstrap.js' nonce='boot-ok'></script><script src='http://{script_address}/parser-blocked.js'></script></body></html>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none'; script-src 'strict-dynamic' 'nonce-boot-ok' https:\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{page_address}/strict-dynamic")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.strictDynamicEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["bootstrap", "dynamic"])
+    );
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    script_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_intersects_header_and_head_meta_csp() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

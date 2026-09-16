@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is the completed `native-engine-browser-404`, with
+expansion checkpoint is the completed `native-engine-browser-405`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -513,7 +513,20 @@ singleton-only rule. The contract and evidence are recorded in
 `docs/plan/tasks/native-engine-browser-404.md`. Remaining CSP promotion gates
 are dynamic policy mutation, strict-dynamic trust, Service Worker
 policy-container propagation, redirect-aware path handling, and broader
-conformance beyond this bounded grammar. The completed 234 slice carries
+conformance beyond this bounded grammar. The completed
+`native-engine-browser-405` slice adds CSP `strict-dynamic`
+script semantics to the same bounded owner. Parser metadata and external
+nonces now survive page-script discovery and content-process loading, so a
+matching nonce authorizes a parser script, an unnonceable parser script is
+blocked before request, and a non-parser-inserted external/module script can
+load without a host source when strict-dynamic is present. Report-only URL
+checks use the same decision, inline script `unsafe-inline` cannot override a
+strict-dynamic source list, and initial lifecycle-created external sources are
+drained instead of being dropped. The contract and evidence are recorded in
+`docs/plan/tasks/native-engine-browser-405.md`. Remaining CSP promotion gates
+are dynamic policy mutation, Service Worker policy-container propagation,
+redirect-aware path handling, and broader conformance beyond the bounded
+matcher. The completed 234 slice carries
 bounded
 root-scroll sticky positioning through
 shared flow,

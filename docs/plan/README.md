@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-428`, following completed
+`native-engine-browser-430`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and `native-engine-browser-420`. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
@@ -173,17 +173,29 @@ The completed page XHR streaming slice is
 [native-engine-browser-428](tasks/native-engine-browser-428.md): page XHR
 consumes the existing demand-driven native Fetch response stream and publishes
 per-chunk `LOADING`/`progress` records, preserves split UTF-8 text, and
-cancels the active reader on abort. Worker XHR remains buffered through its
-separate whole-response Fetch host path; worker streaming, streaming upload,
-synchronous XHR, and complete XHR/Streams Web IDL parity remain issue #40
-gates.
+cancels the active reader on abort. At that checkpoint worker XHR remained
+buffered through its separate whole-response Fetch host path; the
+content-process worker streaming follow-up is recorded in slice 430. Streaming
+upload, synchronous XHR, and complete XHR/Streams Web IDL parity remain issue
+#40 gates.
+
+The completed content-process worker XHR streaming slice is
+[native-engine-browser-430](tasks/native-engine-browser-430.md): worker Fetch
+responses now use the shared bounded demand-driven stream transport in the
+content owner, and worker XHR publishes `HEADERS_RECEIVED`, per-chunk
+`LOADING`/`ProgressEvent` updates, split-UTF-8-safe `responseText`, and
+abort/reopen-safe terminal delivery. The in-process `NativeEngine` owner stays
+buffered because it has no asynchronous worker-stream pump; all-owner streaming,
+streaming upload, synchronous XHR, and complete XHR/Streams Web IDL parity
+remain issue #40 gates.
 
 The completed page XHR reopen-cancellation slice is
 [native-engine-browser-429](tasks/native-engine-browser-429.md): reopening a
 live page XHR cancels its active response reader and stale stream
 continuations cannot mutate the reused object or publish late progress and
-terminal callbacks. Worker-XHR streaming and the remaining XHR/Streams Web IDL
-gates remain open.
+terminal callbacks. At that checkpoint worker-XHR streaming was still open;
+the content-process gate is now closed by slice 430, while the remaining
+XHR/Streams Web IDL gates remain open.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI

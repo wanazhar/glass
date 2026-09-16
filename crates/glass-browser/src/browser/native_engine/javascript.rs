@@ -14,6 +14,10 @@ use super::dom::{
 };
 use super::environment::NativeEnvironmentOverrides;
 use super::error::NativeEngineError;
+use super::fetch_stream::{
+    NativeFetchStreamCommand, NativeFetchStreamConnection, NativeFetchStreamEvent,
+    spawn_native_fetch_stream,
+};
 use super::interaction::{
     MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FORM_BODY_BYTES, MAX_NATIVE_SCRIPT_COMMAND_BYTES,
     NativeEventKind, validate_native_key,
@@ -84,6 +88,7 @@ pub(crate) const MAX_NATIVE_INLINE_SCRIPTS: usize = 32;
 pub(crate) const MAX_NATIVE_MODULE_IMPORTS: usize = 128;
 pub(crate) const MAX_NATIVE_WORKERS: usize = 32;
 pub(crate) const MAX_NATIVE_WORKER_MESSAGES: usize = 64;
+const MAX_NATIVE_WORKER_FETCH_STREAMS: usize = MAX_NATIVE_WORKER_MESSAGES;
 pub(crate) const MAX_NATIVE_WORKER_TIMERS: usize = 64;
 pub(crate) const MAX_NATIVE_SERVICE_WORKERS: usize = 16;
 pub(crate) const MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES: usize = MAX_NATIVE_SCRIPT_BYTES;
@@ -400,9 +405,13 @@ pub(crate) enum NativeScriptCommand {
     },
     FetchStreamRead {
         stream_id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
     },
     FetchStreamCancel {
         stream_id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
     },
     Dialog {
         dialog_type: String,
@@ -1043,6 +1052,10 @@ enum NativeWorkerDispatch<'a> {
         request_id: u32,
         payload: &'a serde_json::Value,
     },
+    FetchStream {
+        stream_id: u32,
+        payload: &'a serde_json::Value,
+    },
     ServiceWorkerCache {
         request_id: u32,
         payload: &'a serde_json::Value,
@@ -1310,6 +1323,21 @@ impl NativeDedicatedWorker {
             },
         )
     }
+
+    fn evaluate_fetch_stream_event(
+        &self,
+        worker_id: u32,
+        stream_id: u32,
+        event: &serde_json::Value,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.evaluate_turn_with_event(
+            worker_id,
+            NativeWorkerDispatch::FetchStream {
+                stream_id,
+                payload: event,
+            },
+        )
+    }
 }
 
 /// Owns dedicated-worker realms and the bounded messages waiting for their
@@ -1325,11 +1353,25 @@ pub(crate) struct NativeWorkerRegistry {
     pending_page_message_port_commands: VecDeque<NativePageMessagePortCommand>,
     pending_websocket_commands: VecDeque<NativeWorkerWebSocketCommand>,
     pending_event_source_commands: VecDeque<NativeWorkerEventSourceCommand>,
+    worker_fetch_stream_connections: BTreeMap<(u32, u32), NativeFetchStreamConnection>,
+    stream_worker_fetches: bool,
     message_port_routes: BTreeMap<String, NativeMessagePortRoute>,
 }
 
 impl NativeWorkerRegistry {
     pub(crate) fn new() -> Self {
+        Self::new_inner(false)
+    }
+
+    /// Construct a registry for the content owner, where worker response
+    /// bodies can use the same demand-driven stream transport as page fetches.
+    /// The in-process compatibility owner keeps its historical buffered path
+    /// because it has no event pump for asynchronous worker transport.
+    pub(crate) fn new_with_fetch_streams() -> Self {
+        Self::new_inner(true)
+    }
+
+    fn new_inner(stream_worker_fetches: bool) -> Self {
         Self {
             workers: BTreeMap::new(),
             shared_worker_keys: BTreeMap::new(),
@@ -1339,6 +1381,8 @@ impl NativeWorkerRegistry {
             pending_page_message_port_commands: VecDeque::new(),
             pending_websocket_commands: VecDeque::new(),
             pending_event_source_commands: VecDeque::new(),
+            worker_fetch_stream_connections: BTreeMap::new(),
+            stream_worker_fetches,
             message_port_routes: BTreeMap::new(),
         }
     }
@@ -1352,6 +1396,11 @@ impl NativeWorkerRegistry {
         self.pending_page_message_port_commands.clear();
         self.pending_websocket_commands.clear();
         self.pending_event_source_commands.clear();
+        for (_, connection) in std::mem::take(&mut self.worker_fetch_stream_connections) {
+            let _ = connection
+                .commands
+                .try_send(NativeFetchStreamCommand::Cancel);
+        }
         self.message_port_routes.clear();
     }
 
@@ -1922,6 +1971,30 @@ impl NativeWorkerRegistry {
                             .await?;
                         evaluations.push_back((current_worker_id, resolved));
                     }
+                    NativeScriptCommand::FetchStreamRead {
+                        stream_id,
+                        worker_id: Some(command_worker_id),
+                    } if command_worker_id == current_worker_id => {
+                        self.process_worker_fetch_stream_command(
+                            current_worker_id,
+                            NativeScriptCommand::FetchStreamRead {
+                                stream_id,
+                                worker_id: Some(command_worker_id),
+                            },
+                        )?;
+                    }
+                    NativeScriptCommand::FetchStreamCancel {
+                        stream_id,
+                        worker_id: Some(command_worker_id),
+                    } if command_worker_id == current_worker_id => {
+                        self.process_worker_fetch_stream_command(
+                            current_worker_id,
+                            NativeScriptCommand::FetchStreamCancel {
+                                stream_id,
+                                worker_id: Some(command_worker_id),
+                            },
+                        )?;
+                    }
                     command @ NativeScriptCommand::WebSocketOpen {
                         worker_id: Some(command_worker_id),
                         ..
@@ -2151,6 +2224,19 @@ impl NativeWorkerRegistry {
     }
 
     fn remove_worker_routes(&mut self, worker_id: u32) {
+        let stream_keys = self
+            .worker_fetch_stream_connections
+            .keys()
+            .copied()
+            .filter(|(stream_worker_id, _)| *stream_worker_id == worker_id)
+            .collect::<Vec<_>>();
+        for stream_key in stream_keys {
+            if let Some(connection) = self.worker_fetch_stream_connections.remove(&stream_key) {
+                let _ = connection
+                    .commands
+                    .try_send(NativeFetchStreamCommand::Cancel);
+            }
+        }
         self.message_port_routes
             .retain(|_, route| route.worker_id != worker_id);
         self.shared_worker_keys
@@ -2223,6 +2309,155 @@ impl NativeWorkerRegistry {
                 self.remove_worker_routes(worker_id);
                 self.queue_error(worker_id, &worker_url, &error.to_string())
             }
+        }
+    }
+
+    /// Deliver one host-owned worker Fetch response-stream event into its
+    /// persistent worker realm. Worker stream reads and cancellation commands
+    /// are collected by the same serialized owner as ordinary worker fetches.
+    pub(crate) async fn pump_fetch_stream_event(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<bool, NativeEngineError> {
+        let stream_keys = self
+            .worker_fetch_stream_connections
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for stream_key @ (worker_id, stream_id) in stream_keys {
+            let event = {
+                let Some(connection) = self.worker_fetch_stream_connections.get_mut(&stream_key)
+                else {
+                    continue;
+                };
+                match connection.events.try_recv() {
+                    Ok(event) => {
+                        connection.read_pending = false;
+                        Some(event)
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => None,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        self.worker_fetch_stream_connections.remove(&stream_key);
+                        None
+                    }
+                }
+            };
+            let Some(event) = event else {
+                continue;
+            };
+            let remove_after_dispatch = matches!(
+                &event,
+                NativeFetchStreamEvent::End | NativeFetchStreamEvent::Error { .. }
+            );
+            let payload = worker_fetch_stream_event_payload(&event);
+            let evaluation = self
+                .workers
+                .get(&worker_id)
+                .map(|worker| worker.evaluate_fetch_stream_event(worker_id, stream_id, &payload));
+            match evaluation {
+                Some(Ok(evaluation)) => {
+                    self.collect_worker_evaluation(worker_id, evaluation, loader)
+                        .await?;
+                }
+                Some(Err(error)) => {
+                    let worker_url = self
+                        .workers
+                        .get(&worker_id)
+                        .map(|worker| worker.url.clone())
+                        .unwrap_or_default();
+                    self.workers.remove(&worker_id);
+                    self.remove_worker_routes(worker_id);
+                    self.queue_error(worker_id, &worker_url, &error.to_string())?;
+                }
+                None => {
+                    if let Some(connection) =
+                        self.worker_fetch_stream_connections.remove(&stream_key)
+                    {
+                        let _ = connection
+                            .commands
+                            .try_send(NativeFetchStreamCommand::Cancel);
+                    }
+                }
+            }
+            if remove_after_dispatch
+                && let Some(connection) = self.worker_fetch_stream_connections.remove(&stream_key)
+            {
+                let _ = connection
+                    .commands
+                    .try_send(NativeFetchStreamCommand::Cancel);
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    pub(crate) async fn pump_fetch_stream_events(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<usize, NativeEngineError> {
+        let mut pumped = 0usize;
+        for _ in 0..MAX_NATIVE_WORKER_MESSAGES {
+            if !self.pump_fetch_stream_event(loader).await? {
+                break;
+            }
+            pumped = pumped.saturating_add(1);
+            tokio::task::yield_now().await;
+        }
+        Ok(pumped)
+    }
+
+    fn process_worker_fetch_stream_command(
+        &mut self,
+        worker_id: u32,
+        command: NativeScriptCommand,
+    ) -> Result<(), NativeEngineError> {
+        match command {
+            NativeScriptCommand::FetchStreamRead {
+                stream_id,
+                worker_id: Some(command_worker_id),
+            } if command_worker_id == worker_id => {
+                let stream_key = (worker_id, stream_id);
+                let connection = self
+                    .worker_fetch_stream_connections
+                    .get_mut(&stream_key)
+                    .ok_or_else(|| NativeEngineError::Network {
+                        operation: "worker fetch response stream read".into(),
+                        reason: "worker fetch response stream identifier is not active".into(),
+                    })?;
+                if connection.read_pending {
+                    return Err(NativeEngineError::Network {
+                        operation: "worker fetch response stream read".into(),
+                        reason: "worker fetch response stream already has a pending read".into(),
+                    });
+                }
+                connection.read_pending = true;
+                connection
+                    .commands
+                    .try_send(NativeFetchStreamCommand::Read)
+                    .map_err(|_| NativeEngineError::Network {
+                        operation: "worker fetch response stream read".into(),
+                        reason: "worker fetch response stream task is unavailable".into(),
+                    })?;
+                Ok(())
+            }
+            NativeScriptCommand::FetchStreamCancel {
+                stream_id,
+                worker_id: Some(command_worker_id),
+            } if command_worker_id == worker_id => {
+                if let Some(connection) = self
+                    .worker_fetch_stream_connections
+                    .remove(&(worker_id, stream_id))
+                {
+                    let _ = connection
+                        .commands
+                        .try_send(NativeFetchStreamCommand::Cancel);
+                }
+                Ok(())
+            }
+            _ => Err(NativeEngineError::invalid(
+                "native Worker fetch response stream command",
+                "worker id does not match the owning worker",
+            )),
         }
     }
 
@@ -2376,23 +2611,69 @@ impl NativeWorkerRegistry {
             })?;
             worker.url.clone()
         };
-        let result = loader
-            .fetch_request_with_headers_async(NativeFetchRequest {
-                document_url: &worker_url,
-                href: &href,
-                method,
-                body,
-                content_type,
-                request_headers: headers,
-                credentials,
-                cors_mode,
-                redirect_mode,
-                cache_mode,
-                timeout: timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
-                max_response_bytes: None,
-            })
-            .await;
-        let payload = worker_fetch_response_payload(result);
+        let request = NativeFetchRequest {
+            document_url: &worker_url,
+            href: &href,
+            method,
+            body,
+            content_type,
+            request_headers: headers,
+            credentials,
+            cors_mode,
+            redirect_mode,
+            cache_mode,
+            timeout: timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
+            max_response_bytes: None,
+        };
+        let payload = if self.stream_worker_fetches {
+            match loader.open_fetch_response_stream_async(request).await {
+                Ok(mut opened)
+                    if !opened.response.opaque
+                        && !opened.response.opaque_redirect
+                        && opened.body.is_some() =>
+                {
+                    let stream_key = (worker_id, request_id);
+                    if self
+                        .worker_fetch_stream_connections
+                        .contains_key(&stream_key)
+                    {
+                        worker_fetch_response_payload(Err(NativeEngineError::Network {
+                            operation: "native Worker fetch response stream".into(),
+                            reason: "fetch response stream identifier is already active".into(),
+                        }))
+                    } else if self.worker_fetch_stream_connections.len()
+                        >= MAX_NATIVE_WORKER_FETCH_STREAMS
+                    {
+                        worker_fetch_response_payload(Err(NativeEngineError::limit(
+                            "native Worker fetch response streams",
+                            MAX_NATIVE_WORKER_FETCH_STREAMS,
+                            self.worker_fetch_stream_connections.len().saturating_add(1),
+                        )))
+                    } else {
+                        let response = opened.response;
+                        let stream = spawn_native_fetch_stream(
+                            opened
+                                .body
+                                .take()
+                                .expect("Worker fetch stream body is present"),
+                            opened.max_response_bytes,
+                        );
+                        self.worker_fetch_stream_connections
+                            .insert(stream_key, stream);
+                        worker_fetch_response_stream_payload(response, request_id)
+                    }
+                }
+                Ok(mut opened) => {
+                    if let Some(body) = opened.cached_body.take() {
+                        opened.response.body = body;
+                    }
+                    worker_fetch_response_payload(Ok(opened.response))
+                }
+                Err(error) => worker_fetch_response_payload(Err(error)),
+            }
+        } else {
+            worker_fetch_response_payload(loader.fetch_request_with_headers_async(request).await)
+        };
         let worker = self.workers.get(&worker_id).ok_or_else(|| {
             NativeEngineError::invalid(
                 "native Worker fetch",
@@ -2702,6 +2983,30 @@ fn worker_fetch_response_payload(
                 NativeEngineError::Network { reason, .. } if reason == "request timed out"
             ),
         }),
+    }
+}
+
+fn worker_fetch_response_stream_payload(
+    response: NativeFetchResponse,
+    stream_id: u32,
+) -> serde_json::Value {
+    let mut payload = worker_fetch_response_payload(Ok(response));
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("bodyStreamId".into(), serde_json::Value::from(stream_id));
+    }
+    payload
+}
+
+fn worker_fetch_stream_event_payload(event: &NativeFetchStreamEvent) -> serde_json::Value {
+    match event {
+        NativeFetchStreamEvent::Chunk { data } => serde_json::json!({
+            "type": "chunk",
+            "dataBase64": base64::engine::general_purpose::STANDARD.encode(data),
+        }),
+        NativeFetchStreamEvent::End => serde_json::json!({"type": "end"}),
+        NativeFetchStreamEvent::Error { message } => {
+            serde_json::json!({"type": "error", "message": message})
+        }
     }
 }
 
@@ -11111,6 +11416,14 @@ impl NativeJavaScriptRuntime {
                         worker_id: Some(command_worker_id),
                         ..
                     } => *command_worker_id == worker_id,
+                    NativeScriptCommand::FetchStreamRead {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | NativeScriptCommand::FetchStreamCancel {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    } => *command_worker_id == worker_id,
                     NativeScriptCommand::MessagePortPostMessage {
                         worker_id: Some(command_worker_id),
                         ..
@@ -13856,6 +14169,16 @@ fn dispatch_worker_event(
                 "__glassResolveWorkerFetch",
                 "native Worker fetch response",
                 request_id,
+                payload,
+            )?;
+            false
+        }
+        NativeWorkerDispatch::FetchStream { stream_id, payload } => {
+            dispatch_worker_resolver(
+                &ctx,
+                "__glassDispatchWorkerFetchStreamEvent",
+                "native Worker fetch response stream event",
+                stream_id,
                 payload,
             )?;
             false
@@ -17011,6 +17334,12 @@ fn worker_bootstrap(
   }};
   const workerReadableStreamReadQueued = (state) => {{
     if (state.remotePort) return null;
+    if (state.fetchGroup) {{
+      if (state.queued.length === 0) return null;
+      const value = state.queued.shift();
+      state.queueSize = Math.max(0, state.queueSize - state.queueSizes.shift());
+      return {{ value: new Uint8Array(workerReadableStreamByteView(value)), done: false }};
+    }}
     if (state.underlyingSource === null) {{
       if (state.offset >= state.bytes.length) return null;
       const value = new Uint8Array(state.bytes.slice(state.offset));
@@ -17025,6 +17354,23 @@ fn worker_bootstrap(
   const workerReadableStreamReadByteQueued = (state, view) => {{
     const target = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
     if (state.remotePort) return null;
+    if (state.fetchGroup) {{
+      if (state.queued.length === 0) return null;
+      const value = workerReadableStreamByteView(state.queued[0]);
+      const count = Math.min(target.byteLength, value.byteLength);
+      target.set(value.subarray(0, count));
+      if (count === value.byteLength) {{
+        state.queued.shift();
+        state.queueSize = Math.max(0, state.queueSize - state.queueSizes.shift());
+      }} else {{
+        const remainder = value.slice(count);
+        state.queued[0] = remainder;
+        state.queueSize = Math.max(0, state.queueSize - state.queueSizes[0]);
+        state.queueSizes[0] = workerReadableStreamChunkSize(state, remainder);
+        state.queueSize += state.queueSizes[0];
+      }}
+      return {{ value: workerReadableStreamByobResult(view, count), done: false }};
+    }}
     if (state.underlyingSource === null) {{
       if (state.offset >= state.bytes.length) return null;
       const count = Math.min(target.byteLength, state.bytes.length - state.offset);
@@ -17176,26 +17522,94 @@ fn worker_bootstrap(
     else if (workerReadableStreamDone(state)) resolve();
     else state.closedWaiters.push({{ resolve, reject }});
   }};
+  const workerFetchStreamGroups = globalThis.__glassWorkerFetchStreamGroups instanceof Map
+    ? globalThis.__glassWorkerFetchStreamGroups
+    : new Map();
+  const workerFetchStreamGroup = (streamId) => {{
+    const id = Number(streamId);
+    if (!Number.isSafeInteger(id) || id <= 0)
+      throw new TypeError("native Worker fetch stream identifier is invalid");
+    let group = workerFetchStreamGroups.get(id);
+    if (!group) {{
+      group = {{
+        id,
+        chunks: [],
+        totalBytes: 0,
+        done: false,
+        error: null,
+        readRequested: false,
+        cancelRequested: false,
+        streams: [],
+      }};
+      workerFetchStreamGroups.set(id, group);
+    }}
+    return group;
+  }};
+  const requestWorkerFetchStreamRead = (group) => {{
+    if (!group || group.done || group.error !== null || group.cancelRequested || group.readRequested)
+      return;
+    group.readRequested = true;
+    pushCommand({{
+      kind: "fetchStreamRead",
+      worker_id: workerId,
+      stream_id: Number(group.id),
+    }});
+  }};
+  const cancelWorkerFetchStreamGroup = (group) => {{
+    if (!group || group.done || group.cancelRequested) return;
+    group.cancelRequested = true;
+    group.done = true;
+    for (const state of group.streams) {{
+      state.done = true;
+      if (state.pendingRead) {{
+        const pending = state.pendingRead;
+        state.pendingRead = null;
+        state.byobRequest = null;
+        pending.resolve(pending.byobView
+          ? {{ value: workerReadableStreamEmptyByob(pending.byobView), done: true }}
+          : {{ value: undefined, done: true }});
+      }}
+      workerReadableStreamSetDone(state);
+    }}
+    pushCommand({{
+      kind: "fetchStreamCancel",
+      worker_id: workerId,
+      stream_id: Number(group.id),
+    }});
+  }};
+  const maybeCancelWorkerFetchStreamGroup = (group) => {{
+    if (!group || group.streams.some(state => !state.cancelled)) return;
+    cancelWorkerFetchStreamGroup(group);
+  }};
   const WorkerReadableStreamNative = typeof globalThis.__glassWorkerReadableStreamConstructor === "function"
     ? globalThis.__glassWorkerReadableStreamConstructor
     : function(bytes, streamOptions, onDisturb) {{
     if (!(this instanceof WorkerReadableStreamNative)) throw new TypeError("native Worker ReadableStream requires new");
     const transfer = bytes && bytes.__glassWorkerReadableStreamTransfer === true ? bytes : null;
-    const underlyingSource = !transfer && bytes && typeof bytes === "object" && !Array.isArray(bytes)
+    const hostStreamId = !transfer && bytes && bytes.__glassWorkerFetchStreamId !== undefined
+      ? Number(bytes.__glassWorkerFetchStreamId)
+      : null;
+    if (hostStreamId !== null && (!Number.isSafeInteger(hostStreamId) || hostStreamId <= 0))
+      throw new TypeError("native Worker fetch stream identifier is invalid");
+    const underlyingSource = !transfer && hostStreamId === null
+      && bytes && typeof bytes === "object" && !Array.isArray(bytes)
       ? bytes
       : null;
     const sourceOptions = underlyingSource && streamOptions && typeof streamOptions === "object"
       ? streamOptions
       : {{}};
-    const staticBytes = !transfer && Array.isArray(bytes);
-    if (!transfer && bytes !== undefined && bytes !== null && !staticBytes && !underlyingSource)
+    const staticBytes = !transfer && hostStreamId === null && Array.isArray(bytes);
+    if (!transfer && hostStreamId === null && bytes !== undefined && bytes !== null
+        && !staticBytes && !underlyingSource)
       throw new TypeError("native Worker ReadableStream source is invalid");
     if (underlyingSource && underlyingSource.type !== undefined && underlyingSource.type !== "bytes")
       throw new TypeError("native Worker ReadableStream type is unsupported");
     if (transfer && (!transfer.port || typeof transfer.port.postMessage !== "function"))
       throw new TypeError("native Worker ReadableStream transfer endpoint is invalid");
-    const byteMode = transfer
-      ? transfer.byteMode === true
+    const byteMode = hostStreamId !== null
+      ? true
+      : transfer
+        ? transfer.byteMode === true
       : underlyingSource
         ? underlyingSource.type === "bytes"
         : staticBytes;
@@ -17210,12 +17624,17 @@ fn worker_bootstrap(
       if (!Number.isInteger(value) || value < 0 || value > 255)
         throw new TypeError("native Worker ReadableStream bytes are invalid");
     }}
+    const fetchGroup = hostStreamId === null ? null : workerFetchStreamGroup(hostStreamId);
+    const queued = fetchGroup
+      ? fetchGroup.chunks.map(chunk => new Uint8Array(chunk.slice()))
+      : [];
+    const queueSizes = queued.map(value => value.byteLength);
     const state = {{
       bytes: values,
       offset: 0,
-      queued: [],
-      queueSizes: [],
-      queueSize: 0,
+      queued,
+      queueSizes,
+      queueSize: queueSizes.reduce((total, size) => total + size, 0),
       strategy,
       underlyingSource,
       sourceController: null,
@@ -17229,8 +17648,8 @@ fn worker_bootstrap(
       consumedByRequest: false,
       consumingRequestBody: false,
       cancelled: false,
-      done: false,
-      error: null,
+      done: fetchGroup ? fetchGroup.done : false,
+      error: fetchGroup ? fetchGroup.error : null,
       closedWaiters: [],
       pendingRead: null,
       byobRequest: null,
@@ -17242,7 +17661,10 @@ fn worker_bootstrap(
       remoteDone: transfer ? false : true,
       remoteQueue: [],
       remotePendingRead: null,
+      fetchGroup,
+      fetchStreamId: hostStreamId,
     }};
+    if (fetchGroup) fetchGroup.streams.push(state);
     if (underlyingSource) {{
       state.sourceController = Object.freeze({{
         get desiredSize() {{ return state.strategy.highWaterMark - state.queueSize; }},
@@ -17375,6 +17797,28 @@ fn worker_bootstrap(
         }}
         return promise;
       }}
+      if (state.fetchGroup) {{
+        if (state.error !== null || state.fetchGroup.error !== null)
+          return Promise.reject(new Error(state.error || state.fetchGroup.error));
+        const queued = byob
+          ? workerReadableStreamReadByteQueued(state, view)
+          : workerReadableStreamReadQueued(state);
+        if (queued) return Promise.resolve(queued);
+        if (state.fetchGroup.done || state.done) {{
+          workerReadableStreamSetDone(state);
+          return Promise.resolve(byob
+            ? {{ value: workerReadableStreamEmptyByob(view), done: true }}
+            : {{ value: undefined, done: true }});
+        }}
+        if (state.pendingRead)
+          return Promise.reject(new TypeError("native Worker fetch stream read is already pending"));
+        const promise = new Promise((resolve, reject) => {{
+          state.pendingRead = {{ resolve, reject, byobView: byob ? view : null }};
+        }});
+        try {{ requestWorkerFetchStreamRead(state.fetchGroup); }}
+        catch (error) {{ state.pendingRead = null; return Promise.reject(error); }}
+        return promise;
+      }}
       if (state.error !== null) return Promise.reject(new Error(state.error));
       const queued = byob
         ? workerReadableStreamReadByteQueued(state, view)
@@ -17409,6 +17853,17 @@ fn worker_bootstrap(
       workerReadableStreamDisturb(state);
       if (state.remotePort) return workerReadableStreamCancelRemote(state, reason);
       if (state.underlyingSource) return workerReadableStreamCancelSource(state, reason);
+      if (state.fetchGroup) {{
+        state.cancelled = true;
+        state.done = true;
+        state.queued = [];
+        state.queueSizes = [];
+        state.queueSize = 0;
+        if (state.pendingRead) workerReadableStreamResolvePending(state, undefined, true);
+        workerReadableStreamSetDone(state);
+        maybeCancelWorkerFetchStreamGroup(state.fetchGroup);
+        return Promise.resolve(undefined);
+      }}
       state.cancelled = true;
       state.offset = state.bytes.length;
       workerReadableStreamSetDone(state);
@@ -17432,6 +17887,17 @@ fn worker_bootstrap(
     if (state.locked) return Promise.reject(new TypeError("native Worker ReadableStream is locked"));
     if (state.remotePort) return workerReadableStreamCancelRemote(state, reason);
     if (state.underlyingSource) return workerReadableStreamCancelSource(state, reason);
+    if (state.fetchGroup) {{
+      state.cancelled = true;
+      state.done = true;
+      state.queued = [];
+      state.queueSizes = [];
+      state.queueSize = 0;
+      workerReadableStreamDisturb(state);
+      workerReadableStreamSetDone(state);
+      maybeCancelWorkerFetchStreamGroup(state.fetchGroup);
+      return Promise.resolve(undefined);
+    }}
     state.cancelled = true;
     state.offset = state.bytes.length;
     workerReadableStreamDisturb(state);
@@ -17910,6 +18376,92 @@ fn worker_bootstrap(
     );
     return readNext();
   }};
+  globalThis.__glassDispatchWorkerFetchStreamEvent = (streamId, payload) => {{
+    const group = workerFetchStreamGroup(streamId);
+    if (!payload || typeof payload !== "object" || group.done) return null;
+    const type = String(payload.type || "");
+    group.readRequested = false;
+    if (type === "chunk") {{
+      let bytes;
+      try {{ bytes = decodeWorkerBase64(String(payload.dataBase64 || ""), {fetch_stream_chunk_limit}); }}
+      catch (_) {{
+        group.error = "native Worker fetch response stream chunk is invalid";
+        group.done = true;
+        for (const state of group.streams) {{
+          state.error = group.error;
+          state.done = true;
+          state.queued = [];
+          state.queueSizes = [];
+          state.queueSize = 0;
+          if (state.pendingRead) {{
+            const pending = workerReadableStreamClearPending(state);
+            pending.reject(new Error(group.error));
+          }}
+          workerReadableStreamSetDone(state);
+        }}
+        return null;
+      }}
+      if (group.totalBytes + bytes.length > {fetch_stream_body_limit}) {{
+        group.error = "native Worker fetch response stream exceeds its limit";
+        group.done = true;
+        for (const state of group.streams) {{
+          state.error = group.error;
+          state.done = true;
+          state.queued = [];
+          state.queueSizes = [];
+          state.queueSize = 0;
+          if (state.pendingRead) {{
+            const pending = workerReadableStreamClearPending(state);
+            pending.reject(new Error(group.error));
+          }}
+          workerReadableStreamSetDone(state);
+        }}
+        return null;
+      }}
+      const chunk = new Uint8Array(bytes);
+      group.chunks.push(chunk.slice());
+      group.totalBytes += bytes.length;
+      for (const state of group.streams) {{
+        if (state.cancelled || (state.consumedByResponse && !state.consumingResponseBody)) continue;
+        state.done = false;
+        if (state.pendingRead && workerReadableStreamResolvePending(state, chunk, false)) continue;
+        if (state.queued.length >= {fetch_stream_queue_limit}) {{
+          state.error = "native Worker fetch response stream queue limit exceeded";
+          state.done = true;
+          workerReadableStreamSetDone(state);
+          continue;
+        }}
+        const queued = chunk.slice();
+        state.queued.push(queued);
+        state.queueSizes.push(queued.byteLength);
+        state.queueSize += queued.byteLength;
+      }}
+    }} else if (type === "end") {{
+      group.done = true;
+      for (const state of group.streams) {{
+        state.done = true;
+        if (state.pendingRead) workerReadableStreamResolvePending(state, undefined, true);
+        workerReadableStreamSetDone(state);
+      }}
+    }} else if (type === "error") {{
+      group.error = String(payload.message || "native Worker fetch response stream failed");
+      group.done = true;
+      for (const state of group.streams) {{
+        state.error = group.error;
+        state.done = true;
+        state.queued = [];
+        state.queueSizes = [];
+        state.queueSize = 0;
+        if (state.pendingRead) {{
+          const pending = workerReadableStreamClearPending(state);
+          pending.reject(new Error(group.error));
+        }}
+        workerReadableStreamSetDone(state);
+      }}
+    }}
+    return null;
+  }};
+  globalThis.__glassWorkerFetchStreamGroups = workerFetchStreamGroups;
   const workerRequestBodyPayload = (input) => {{
     if (input === undefined || input === null)
       return {{ bodyNull: true, bytes: [], stream: null, contentType: null }};
@@ -18131,11 +18683,18 @@ fn worker_bootstrap(
       && payload.bodyStream.__glassWorkerReadableStream === true
       ? payload.bodyStream
       : null;
+    const hostStreamId = payload && Number.isSafeInteger(Number(payload.bodyStreamId))
+      ? Number(payload.bodyStreamId)
+      : null;
     const bytes = bodyStream ? null : workerResponseBytes(payload);
     let bodyUsed = false;
     const body = payload && payload.bodyNull === true
       ? null
-      : bodyStream || new WorkerReadableStreamNative(bytes, () => {{ bodyUsed = true; }});
+      : bodyStream
+        ? bodyStream
+        : hostStreamId === null
+          ? new WorkerReadableStreamNative(bytes, () => {{ bodyUsed = true; }})
+          : new WorkerReadableStreamNative({{ __glassWorkerFetchStreamId: hostStreamId }}, null, () => {{ bodyUsed = true; }});
     const responseBodyState = bodyStream ? {{ stream: bodyStream }} : null;
     const activeBody = () => responseBodyState ? responseBodyState.stream : body;
     const activeBodyState = () => {{
@@ -18148,7 +18707,7 @@ fn worker_bootstrap(
       const state = activeBodyState();
       if (responseIsUsed() || state && state.locked)
         return Promise.reject(new TypeError("native Worker Response body is unusable"));
-      if (bodyStream) {{
+      if (bodyStream || hostStreamId !== null) {{
         bodyUsed = true;
         return workerDrainReadableStream(stream, true, true).then(transform);
       }}
@@ -18168,6 +18727,7 @@ fn worker_bootstrap(
       url: payload && typeof payload.url === "string" ? payload.url : "",
       redirected: payload && payload.redirected === true,
       headers: workerResponseHeaders(payload && payload.headers, payload && payload.contentType),
+      __glassPayload: payload,
       body,
       get bodyUsed() {{ return responseIsUsed(); }},
       text() {{ return consume(value => workerUtf8Text(value)); }},
@@ -18439,11 +18999,13 @@ fn worker_bootstrap(
     workerXhrDispatch(xhr.upload, type, extra);
     workerXhrDispatch(xhr.upload, "loadend", extra);
   }};
-  const workerXhrResponseProgress = (xhr, value) => {{
+  const workerXhrResponseProgress = (xhr, value, loadedOverride) => {{
     const header = xhr._responseHeaders.get("content-length");
     const total = header === null || header === undefined ? -1 : Number(header);
     const lengthComputable = Number.isSafeInteger(total) && total >= 0 && total <= {fetch_body_limit};
-    const loaded = typeof value === "string"
+    const loaded = Number.isSafeInteger(loadedOverride) && loadedOverride >= 0
+      ? loadedOverride
+      : typeof value === "string"
       ? workerUtf8Bytes(value).length
       : value instanceof ArrayBuffer
         ? value.byteLength
@@ -18456,6 +19018,84 @@ fn worker_bootstrap(
       total: lengthComputable ? total : 0,
     }});
   }};
+  const workerXhrUtf8SafePrefix = (bytes) => {{
+    let start = bytes.length - 1;
+    while (start >= 0 && bytes[start] >= 0x80 && bytes[start] <= 0xbf) start -= 1;
+    if (start < 0) return bytes.length;
+    const first = bytes[start];
+    let width = 1;
+    if (first >= 0xc2 && first <= 0xdf) width = 2;
+    else if (first >= 0xe0 && first <= 0xef) width = 3;
+    else if (first >= 0xf0 && first <= 0xf4) width = 4;
+    return width > bytes.length - start ? start : bytes.length;
+  }};
+  const workerXhrAppendResponseText = (xhr, responseType, bytes, final) => {{
+    if (!["", "text"].includes(responseType)) return;
+    const pending = xhr._responseUtf8Pending.concat(bytes);
+    const safeLength = final ? pending.length : workerXhrUtf8SafePrefix(pending);
+    if (safeLength > 0) xhr._responseText += workerUtf8Text(pending.slice(0, safeLength));
+    xhr._responseUtf8Pending = pending.slice(safeLength);
+  }};
+  const workerXhrReadResponse = (xhr, response, responseType, controller) => {{
+    const stream = response && response.body;
+    if (!stream || typeof stream.getReader !== "function") {{
+      if (xhr._controller !== controller || xhr._aborted) return Promise.resolve(null);
+      const bytes = response && response.__glassPayload
+        ? workerResponseBytes(response.__glassPayload)
+        : [];
+      workerXhrAppendResponseText(xhr, responseType, bytes, true);
+      xhr.readyState = 3;
+      xhr._notifyReadyState();
+      if (xhr._controller !== controller || xhr._aborted) return Promise.resolve(null);
+      workerXhrResponseProgress(xhr, null, bytes.length);
+      return Promise.resolve(bytes);
+    }}
+    let reader;
+    try {{ reader = stream.getReader(); }}
+    catch (error) {{ return Promise.reject(error); }}
+    xhr._responseReader = reader;
+    const bytes = [];
+    const release = () => {{
+      if (xhr._responseReader === reader) xhr._responseReader = null;
+      reader.releaseLock();
+    }};
+    const readNext = () => {{
+      if (xhr._controller !== controller || xhr._aborted) {{
+        release();
+        return Promise.resolve(null);
+      }}
+      return reader.read().then(
+        result => {{
+          if (result.done) {{
+            workerXhrAppendResponseText(xhr, responseType, [], true);
+            if (bytes.length === 0) {{
+              xhr.readyState = 3;
+              xhr._notifyReadyState();
+              workerXhrResponseProgress(xhr, null, 0);
+            }}
+            release();
+            return bytes;
+          }}
+          let chunk;
+          try {{ chunk = workerReadableStreamChunkBytes(result.value); }}
+          catch (error) {{ release(); throw error; }}
+          if (chunk.length === 0) return readNext();
+          bytes.push(...chunk);
+          workerXhrAppendResponseText(xhr, responseType, chunk, false);
+          xhr.readyState = 3;
+          xhr._notifyReadyState();
+          if (xhr._controller !== controller || xhr._aborted) {{
+            release();
+            return null;
+          }}
+          workerXhrResponseProgress(xhr, null, bytes.length);
+          return readNext();
+        }},
+        error => {{ release(); throw error; }},
+      );
+    }};
+    return readNext();
+  }};
   const WorkerXMLHttpRequestNative = typeof globalThis.__glassWorkerXmlHttpRequestConstructor === "function"
     ? globalThis.__glassWorkerXmlHttpRequestConstructor
     : function() {{
@@ -18465,6 +19105,7 @@ fn worker_bootstrap(
     this.status = 0;
     this.statusText = "";
     this._responseText = "";
+    this._responseUtf8Pending = [];
     this.responseURL = "";
     this.response = "";
     this._responseType = "";
@@ -18483,6 +19124,8 @@ fn worker_bootstrap(
     this._responseHeaders = new WorkerHeadersNative();
     this._listeners = new Map();
     this._aborted = false;
+    this._controller = null;
+    this._responseReader = null;
     this._sent = false;
     this._token = 0;
     this._timeout = 0;
@@ -18540,6 +19183,12 @@ fn worker_bootstrap(
   }});
   WorkerXMLHttpRequestNative.prototype.open = function(method, url, async) {{
     if (async === false) throw new TypeError("native Worker XMLHttpRequest requires async mode");
+    const previousController = this._controller;
+    const previousReader = this._responseReader;
+    this._controller = null;
+    this._responseReader = null;
+    if (previousController) previousController.abort();
+    if (previousReader) {{ try {{ previousReader.cancel(); }} catch (_) {{}} }}
     const normalizedMethod = String(method).toUpperCase();
     if (!workerRequestMethods.includes(normalizedMethod))
       throw new TypeError("native Worker XMLHttpRequest method is unsupported");
@@ -18551,9 +19200,12 @@ fn worker_bootstrap(
     this._responseHeaders = new WorkerHeadersNative();
     this._aborted = false;
     this._sent = false;
+    this._controller = null;
+    this._responseReader = null;
     this.status = 0;
     this.statusText = "";
     this._responseText = "";
+    this._responseUtf8Pending = [];
     this.responseURL = "";
     this.response = "";
     this.responseXML = null;
@@ -18582,14 +19234,21 @@ fn worker_bootstrap(
   }};
   WorkerXMLHttpRequestNative.prototype.abort = function() {{
     const active = this._sent && this.readyState !== 0 && this.readyState !== 4;
+    const controller = this._controller;
+    const reader = this._responseReader;
     this._token += 1;
     this._aborted = true;
+    this._controller = null;
+    this._responseReader = null;
+    if (controller) controller.abort();
+    if (reader) {{ try {{ reader.cancel(); }} catch (_) {{}} }}
     if (!active) return;
     this._sent = false;
     this.readyState = 0;
     this.status = 0;
     this.statusText = "";
     this._responseText = "";
+    this._responseUtf8Pending = [];
     this.responseURL = "";
     this.response = "";
     this.responseXML = null;
@@ -18609,6 +19268,8 @@ fn worker_bootstrap(
     this._token = token;
     this._sent = true;
     this._aborted = false;
+    const controller = new AbortControllerNative();
+    this._controller = controller;
     const requestBody = body === undefined ? null : body;
     workerXhrStartUpload(this, requestBody);
     workerFetchNative(this._url, {{
@@ -18616,6 +19277,7 @@ fn worker_bootstrap(
       body: requestBody,
       headers: this._headers,
       credentials: this.withCredentials ? "include" : "omit",
+      signal: controller.signal,
       __glassTimeoutMs: this._timeout,
     }}).then(response => {{
       if (this._token !== token || this._aborted) return null;
@@ -18625,18 +19287,21 @@ fn worker_bootstrap(
       this._responseHeaders = response.headers;
       this.readyState = 2;
       this._notifyReadyState();
-      if (responseType === "json") return response.json();
-      if (responseType === "arraybuffer") return response.arrayBuffer();
-      if (responseType === "blob") return response.blob();
-      return response.text();
+      return workerXhrReadResponse(this, response, responseType, controller);
     }}).then(value => {{
       if (value === null || this._token !== token || this._aborted) return;
-      this._responseText = typeof value === "string" ? value : "";
-      this.readyState = 3;
-      this._notifyReadyState();
-      workerXhrResponseProgress(this, value);
-      this._responseText = typeof value === "string" ? value : "";
-      this.response = value;
+      workerXhrAppendResponseText(this, responseType, [], true);
+      const bytes = value;
+      const responseValue = responseType === "json"
+        ? JSON.parse(workerUtf8Text(bytes))
+        : responseType === "arraybuffer"
+          ? new Uint8Array(bytes).buffer
+          : responseType === "blob"
+            ? new WorkerBlob([new Uint8Array(bytes)], {{ type: this._responseHeaders.get("content-type") || "" }})
+            : workerUtf8Text(bytes);
+      this._controller = null;
+      this._responseText = typeof responseValue === "string" ? responseValue : this._responseText;
+      this.response = responseValue;
       this._sent = false;
       this.readyState = 4;
       this._notifyReadyState();
@@ -18645,10 +19310,13 @@ fn worker_bootstrap(
       workerXhrDispatch(this, "loadend", {{}});
     }}).catch(error => {{
       if (this._token !== token || this._aborted) return;
+      this._controller = null;
+      this._responseReader = null;
       this._sent = false;
       this.status = 0;
       this.statusText = "";
       this._responseText = "";
+      this._responseUtf8Pending = [];
       this.responseURL = "";
       this.response = "";
       this.responseXML = null;
@@ -19080,6 +19748,8 @@ fn worker_bootstrap(
         websocket_close_reason_limit = MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
         eventsource_message_limit = MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES,
         eventsource_field_limit = MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
+        fetch_stream_chunk_limit = MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES,
+        fetch_stream_body_limit = MAX_NATIVE_FETCH_STREAM_BODY_BYTES,
         fetch_stream_queue_limit = MAX_NATIVE_FETCH_STREAM_QUEUED_CHUNKS,
         worker_url_search_params_entries_limit = MAX_NATIVE_WORKER_URLSEARCHPARAMS_ENTRIES,
         worker_url_search_params_bytes_limit = MAX_NATIVE_WORKER_URLSEARCHPARAMS_BYTES,

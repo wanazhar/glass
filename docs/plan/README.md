@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-402` locally. Native is now the default runtime for
+`native-engine-browser-403` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -497,14 +497,14 @@ The completed CSP report-only observation slice is
 policy text, bounded URL and inline checks deliver structured
 `securitypolicyviolation` records, and synchronously inserted classic inline
 scripts report through the persistent QuickJS page bridge without changing
-authorization. `report-uri`/`report-to`, strict-dynamic, dynamic policy
+authorization. Strict-dynamic, dynamic policy
 The completed CSP report-delivery lifecycle slice is
 [native-engine-browser-400](tasks/native-engine-browser-400.md): Fetch drains
 connect-policy records after the loader operation, EventSource carries
 open/reconnect/error records to page and dedicated-worker owners, and
 document-local inline-style observation reports a changed or newly attached
 node once while rerunning enforced policy on every refresh. The records remain
-bounded and report-only; `report-uri`/`report-to`, strict-dynamic, dynamic
+bounded and report-only; strict-dynamic, dynamic
 policy mutation, and the complete CSP source grammar remain issue #40
 promotion gates.
 
@@ -514,8 +514,20 @@ HTTP(S) worker-script responses retain their enforced and report-only CSP under
 the resolved worker URL, so dedicated and shared worker EventSource, Fetch, and
 WebSocket owners use the worker policy while page `worker-src` authorization
 remains distinct. Service Worker policy-container propagation, dynamic policy
-mutation, strict-dynamic, network report delivery, and the complete CSP source
+mutation, strict-dynamic, and the complete CSP source
 grammar remain issue #40 promotion gates.
+
+The completed CSP network report-delivery slice is
+[native-engine-browser-403](tasks/native-engine-browser-403.md): report-only
+`report-uri` declarations now emit bounded legacy CSP POST envelopes, while
+`report-to` declarations resolve bounded groups from `Reporting-Endpoints` or
+legacy `Report-To` response metadata and emit Reporting API envelopes. Report
+endpoints are credential-free HTTP(S) targets resolved against the protected
+document; secure documents reject insecure endpoints, report requests carry no
+page cookies or redirects, and asynchronous delivery is capped so endpoint
+failures cannot change the protected operation. Service Worker
+policy-container propagation, dynamic policy mutation, strict-dynamic trust,
+and the complete CSP source grammar remain issue #40 promotion gates.
 
 The completed WebSocket report-delivery slice is
 [native-engine-browser-402](tasks/native-engine-browser-402.md): page and
@@ -524,8 +536,8 @@ records across the asynchronous owner boundary and dispatch them before the
 first open or handshake-error event. The actual `ws`/`wss` blocked URI remains
 observable, normalized HTTP(S) policy matching avoids false reports, and
 report-only records never alter enforced authorization. Service Worker
-policy-container propagation, dynamic policy mutation, strict-dynamic,
-network report delivery, and the complete CSP source grammar remain issue #40
+policy-container propagation, dynamic policy mutation, strict-dynamic, and the
+complete CSP source grammar remain issue #40
 promotion gates.
 
 The preceding CSP meta-composition slice is

@@ -52,7 +52,7 @@ use super::resource_loader::{
     NativeCspViolation, NativeFetchCacheMode, NativeFetchRedirectMode, NativeFetchRequest,
     NativeFetchResponse, NativeFetchResponseStream, NativeNavigationMethod,
     NativeNavigationRequest, NativeRequestBody, NativeResource, NativeResourceLoader,
-    NativeWebSocketTarget,
+    NativeWebSocketTarget, schedule_native_csp_report_deliveries,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -734,6 +734,7 @@ fn spawn_native_websocket(
 ) -> Result<NativeWebSocketConnection, NativeEngineError> {
     let request = native_websocket_request(&target, origin, protocols)?;
     let csp_violations = target.csp_violations;
+    schedule_native_csp_report_deliveries(target.csp_report_deliveries);
     let (command_sender, command_receiver) = mpsc::channel(MAX_NATIVE_WEBSOCKET_EVENTS);
     let (event_sender, event_receiver) = mpsc::channel(MAX_NATIVE_WEBSOCKET_EVENTS);
     tokio::spawn(run_native_websocket(

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-429`, following
+expansion checkpoint is completed `native-engine-browser-430`, following
 completed `native-engine-browser-428`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and
@@ -75,13 +75,24 @@ computability before terminal callbacks, without claiming network streaming.
 Slice 428 completes the page XHR response-streaming follow-up: page XHR now
 consumes the existing demand-driven native Fetch reader, reports each admitted
 non-empty response chunk during `LOADING`, preserves split UTF-8 text, and
-cancels the reader on abort. Worker XHR remains buffered through its separate
-whole-response Fetch host path; worker streaming, streaming upload, synchronous
-XHR, and complete XHR/Streams Web IDL parity remain open.
+cancels the reader on abort. At that checkpoint worker XHR remained buffered
+through its separate whole-response Fetch host path; content-process worker
+streaming is covered by slice 430, while streaming upload, synchronous XHR,
+and complete XHR/Streams Web IDL parity remain open.
 Slice 429 closes the page XHR reopen-cancellation hole: `open()` cancels any
 active response reader before replacing request state, and stream continuations
 verify request ownership before publishing progress or terminal work. Worker
-XHR streaming and the remaining XHR/Streams Web IDL parity remain open.
+XHR streaming was still a follow-up at that checkpoint; the content-process
+gate is covered by slice 430 and the remaining XHR/Streams Web IDL parity
+remains open.
+Slice 430 closes content-process worker XHR response streaming: worker Fetch
+responses use the shared bounded demand-driven transport, worker-owned stream
+read/cancel commands are validated at the registry boundary, and worker XHR
+publishes `HEADERS_RECEIVED`, per-chunk `LOADING`/`ProgressEvent` updates,
+split-UTF-8-safe `responseText`, and abort/reopen-safe terminal delivery. The
+in-process `NativeEngine` owner remains buffered because it has no asynchronous
+worker-stream event pump; all-owner streaming, streaming upload, synchronous
+XHR, and complete XHR/Streams Web IDL parity remain open.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

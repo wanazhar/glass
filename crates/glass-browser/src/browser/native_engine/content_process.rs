@@ -15,21 +15,24 @@ use super::dom::{
 };
 use super::environment::NativeEnvironmentOverrides;
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
+use super::fetch_stream::{
+    NativeFetchStreamCommand, NativeFetchStreamConnection, NativeFetchStreamEvent,
+    spawn_native_fetch_stream,
+};
 use super::interaction::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_FORM_BODY_BYTES, NativeEventKind, NativeFile,
     validate_native_edit_key, validate_native_key,
 };
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
-    MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES, MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES,
-    MAX_NATIVE_HISTORY_STATE_BYTES, MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS,
-    MAX_NATIVE_POST_MESSAGE_BYTES, MAX_NATIVE_SCRIPT_BYTES,
-    MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES, MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
-    MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES, MAX_NATIVE_WEBSOCKET_PROTOCOLS,
-    MAX_NATIVE_WORKER_MESSAGES, MAX_NATIVE_XHR_TIMEOUT_MS, NativeCookieChange,
-    NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHashChangeEvent,
-    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
+    MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES, MAX_NATIVE_HISTORY_STATE_BYTES,
+    MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_POST_MESSAGE_BYTES,
+    MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
+    MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES, MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES,
+    MAX_NATIVE_WEBSOCKET_PROTOCOLS, MAX_NATIVE_WORKER_MESSAGES, MAX_NATIVE_XHR_TIMEOUT_MS,
+    NativeCookieChange, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
+    NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
+    NativeHashChangeEvent, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
     NativeMessagePortPageMessage, NativePageEventBatch, NativePageMessagePortCommand,
     NativePageScript, NativePageScriptResult, NativePopupRequest, NativePostMessageRequest,
     NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerClientMessage,
@@ -96,7 +99,6 @@ const NATIVE_EVENTSOURCE_INITIAL_RETRY: Duration = Duration::from_secs(3);
 const NATIVE_EVENTSOURCE_MAX_RETRY: Duration = Duration::from_secs(30);
 const MAX_NATIVE_EVENTSOURCE_RECONNECTS: usize = MAX_NATIVE_EFFECTS;
 const MAX_NATIVE_EVENTSOURCE_CONNECTIONS: usize = MAX_NATIVE_EFFECTS;
-const MAX_NATIVE_FETCH_STREAM_CONNECTIONS: usize = MAX_NATIVE_EFFECTS;
 const MAX_CONTENT_STYLESHEETS: usize = 16;
 const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
 const MAX_CONTENT_IMAGES: usize = 64;
@@ -198,23 +200,6 @@ enum NativeWebSocketEvent {
 struct NativeWebSocketConnection {
     commands: mpsc::Sender<NativeWebSocketCommand>,
     events: mpsc::Receiver<NativeWebSocketEvent>,
-}
-
-enum NativeFetchStreamCommand {
-    Read,
-    Cancel,
-}
-
-enum NativeFetchStreamEvent {
-    Chunk { data: Vec<u8> },
-    End,
-    Error { message: String },
-}
-
-struct NativeFetchStreamConnection {
-    commands: mpsc::Sender<NativeFetchStreamCommand>,
-    events: mpsc::Receiver<NativeFetchStreamEvent>,
-    read_pending: bool,
 }
 
 enum NativeEventSourceCommand {
@@ -759,114 +744,6 @@ fn spawn_native_websocket(
         commands: command_sender,
         events: event_receiver,
     })
-}
-
-async fn run_native_fetch_stream(
-    response: reqwest::Response,
-    max_response_bytes: usize,
-    mut commands: mpsc::Receiver<NativeFetchStreamCommand>,
-    events: mpsc::Sender<NativeFetchStreamEvent>,
-) {
-    let mut stream = response.bytes_stream();
-    let mut total_bytes = 0usize;
-    let mut pending_parts = VecDeque::new();
-    let mut read_requested = false;
-    loop {
-        if !read_requested {
-            match commands.recv().await {
-                Some(NativeFetchStreamCommand::Read) => read_requested = true,
-                Some(NativeFetchStreamCommand::Cancel) | None => return,
-            }
-        }
-        if let Some(part) = pending_parts.pop_front() {
-            read_requested = false;
-            if events
-                .send(NativeFetchStreamEvent::Chunk { data: part })
-                .await
-                .is_err()
-            {
-                return;
-            }
-            continue;
-        }
-        tokio::select! {
-            command = commands.recv() => {
-                match command {
-                    Some(NativeFetchStreamCommand::Read) => {}
-                    Some(NativeFetchStreamCommand::Cancel) | None => return,
-                }
-            }
-            chunk = stream.next() => {
-                match chunk {
-                    Some(Ok(chunk)) => {
-                        let next_total = total_bytes.saturating_add(chunk.len());
-                        if next_total > max_response_bytes {
-                            let _ = events.send(NativeFetchStreamEvent::Error {
-                                message: "native fetch response stream exceeds its limit".into(),
-                            }).await;
-                            return;
-                        }
-                        total_bytes = next_total;
-                        pending_parts.extend(
-                            chunk
-                                .chunks(MAX_NATIVE_FETCH_STREAM_CHUNK_BYTES)
-                                .map(|part| part.to_vec()),
-                        );
-                    }
-                    Some(Err(error)) => {
-                        if events
-                            .send(NativeFetchStreamEvent::Error {
-                                message: bounded_websocket_text(
-                                    error.to_string(),
-                                    MAX_NATIVE_SCRIPT_BYTES,
-                                ),
-                            })
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                        while let Some(command) = commands.recv().await {
-                            if matches!(command, NativeFetchStreamCommand::Cancel) {
-                                return;
-                            }
-                        }
-                        return;
-                    }
-                    None => {
-                        if events.send(NativeFetchStreamEvent::End).await.is_err() {
-                            return;
-                        }
-                        while let Some(command) = commands.recv().await {
-                            if matches!(command, NativeFetchStreamCommand::Cancel) {
-                                return;
-                            }
-                        }
-                        return;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn spawn_native_fetch_stream(
-    response: reqwest::Response,
-    max_response_bytes: usize,
-) -> NativeFetchStreamConnection {
-    let (command_sender, command_receiver) = mpsc::channel(MAX_NATIVE_FETCH_STREAM_CONNECTIONS);
-    let (event_sender, event_receiver) = mpsc::channel(MAX_NATIVE_FETCH_STREAM_CONNECTIONS);
-    tokio::spawn(run_native_fetch_stream(
-        response,
-        max_response_bytes,
-        command_receiver,
-        event_sender,
-    ));
-    NativeFetchStreamConnection {
-        commands: command_sender,
-        events: event_receiver,
-        read_pending: false,
-    }
 }
 
 async fn wait_event_source_retry(
@@ -4190,7 +4067,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut environment = NativeEnvironmentOverrides::default();
     let mut resource_loader = None;
     let mut javascript_runtime: Option<NativeJavaScriptRuntime> = None;
-    let mut workers = NativeWorkerRegistry::new();
+    let mut workers = NativeWorkerRegistry::new_with_fetch_streams();
     let mut service_workers = NativeServiceWorkerRegistry::default();
     let mut pending_worker_messages: VecDeque<NativeWorkerMessage> = VecDeque::new();
     let mut pending_message_port_messages: VecDeque<NativeMessagePortPageMessage> = VecDeque::new();
@@ -5462,6 +5339,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     loader,
                 )
                 .await?;
+                workers.pump_fetch_stream_events(loader).await?;
                 page_events
                     .worker_messages
                     .extend(pending_worker_messages.drain(..));
@@ -5537,6 +5415,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     &mut worker_event_source_connections,
                     Some(&*loader),
                 )?;
+                workers.pump_fetch_stream_events(loader).await?;
                 pending_worker_messages.extend(workers.take_messages());
                 pending_message_port_messages.extend(workers.take_message_port_messages());
                 pending_page_message_port_commands
@@ -10204,7 +10083,10 @@ fn process_fetch_stream_commands(
     let mut retained = Vec::with_capacity(commands.len());
     for command in commands {
         match command {
-            NativeScriptCommand::FetchStreamRead { stream_id } => {
+            NativeScriptCommand::FetchStreamRead {
+                stream_id,
+                worker_id: None,
+            } => {
                 let Some(connection) = connections.get_mut(&stream_id) else {
                     return Err(NativeEngineError::Network {
                         operation: "fetch response stream read".into(),
@@ -10220,7 +10102,10 @@ fn process_fetch_stream_commands(
                         reason: "fetch response stream task is unavailable".into(),
                     })?;
             }
-            NativeScriptCommand::FetchStreamCancel { stream_id } => {
+            NativeScriptCommand::FetchStreamCancel {
+                stream_id,
+                worker_id: None,
+            } => {
                 if let Some(connection) = connections.remove(&stream_id) {
                     let _ = connection
                         .commands

@@ -15,6 +15,7 @@ mod dom;
 mod engine;
 mod environment;
 mod error;
+mod fetch_stream;
 mod history;
 mod image;
 mod interaction;

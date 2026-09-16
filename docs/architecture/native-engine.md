@@ -1,11 +1,21 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
-`native-engine-browser-428`, following completed
+`native-engine-browser-430`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and `native-engine-browser-420`. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 430 closes the content-process worker-XHR response-streaming gate. The
+content owner now shares the bounded demand-driven response transport between
+page and worker Fetch, validates worker-owned read/cancel commands, and
+dispatches admitted byte chunks into each worker realm. Worker XHR exposes
+`HEADERS_RECEIVED`, per-chunk `LOADING`/`ProgressEvent` updates, split-UTF-8
+safe `responseText`, and abort/reopen ownership checks before its final
+response projection. The in-process `NativeEngine` owner remains intentionally
+buffered because it has no asynchronous worker-stream event pump; complete
+all-owner streaming and XHR/Streams Web IDL parity remain issue #40 gates.
 
 Slice 413 closes report-only navigation preflight across the content-process
 boundary. The child remains the owner of its live HTTP(S) navigation policy
@@ -137,17 +147,18 @@ XHR consumes the existing demand-driven native Fetch response reader and
 publishes `LOADING`/`progress` records for each admitted non-empty body chunk,
 preserving split UTF-8 text and canceling the reader when the request is
 aborted. Final JSON, binary, Blob, and detached document projections still
-use the existing bounded decoders. Worker XHR remains buffered because its
-Fetch host path still resolves whole responses; worker streaming, streaming
-upload, synchronous XHR, and complete XHR/Streams Web IDL parity remain issue
-#40 gates.
+use the existing bounded decoders. At the 428 checkpoint, worker XHR was still
+buffered because its Fetch host path resolved whole responses; content-process
+worker streaming is now covered by slice 430, while streaming upload,
+synchronous XHR, and complete XHR/Streams Web IDL parity remain issue #40
+gates.
 
 Slice 429 closes the page-XHR reopen cancellation hole exposed by streaming.
 `open()` cancels any active response reader before replacing request state, and
 stream continuations verify request ownership before publishing progress or
 terminal work. Reopening a live XHR therefore cannot let the old response
-mutate the reused object; worker-XHR streaming and the remaining XHR/Streams
-Web IDL gates stay open.
+mutate the reused object; content-process worker-XHR streaming is covered by
+slice 430 and the remaining XHR/Streams Web IDL gates stay open.
 
 Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
 `navigate-to` navigation-policy extension. After each content-process

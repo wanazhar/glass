@@ -1,9 +1,19 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-398` slice. The native runtime is now the primary
+`native-engine-browser-399` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 399 adds bounded report-only CSP observation to the native HTTP(S)
+document path. Response `Content-Security-Policy-Report-Only` declarations
+preserve their original policy text, URL and inline checks produce structured
+records, and the persistent QuickJS DOM bridge reports synchronously inserted
+classic inline-script violations through `SecurityPolicyViolationEvent`.
+Report-only records never alter authorization; network `report-uri`/
+`report-to` delivery, strict-dynamic trust propagation, dynamic policy
+mutation, and the complete CSP source-expression grammar remain separate
+issue #40 gates.
 
 Slice 397 hardens scheduled page callbacks. Exceptions from due timers,
 animation frames, and idle callbacks are reported through the existing
@@ -808,30 +818,32 @@ external element resources, and applies `style-src-attr`/fallback policy to
 bounded `unsafe-inline`, exact nonce, and SHA-256/SHA-384/SHA-512 hash
 admission forms; style attributes require `unsafe-inline` or a matching hash
 with `unsafe-hashes`. Dynamic script/style mutations are rechecked before
-they can execute or enter computed style. The broader CSP grammar, reporting,
-and strict-dynamic behavior remain explicit issue #40 security gates. The
-contract and evidence are recorded in
+they can execute or enter computed style. The broader CSP grammar, network
+report delivery, and strict-dynamic behavior remain explicit issue #40
+security gates. The contract and evidence are recorded in
 `docs/plan/tasks/native-engine-browser-395.md`.
 
 Slice 396 extends inline CSP enforcement to `script-src-attr`. Inline `on*`
 content attributes use the Rust-owned `script-src-attr`/`script-src`/
 `default-src` fallback chain, admitted handlers execute through the existing
 native event propagation path, and initial/dynamic attribute replacement and
-removal reconcile the handler registry. Meta policies, report-only delivery,
-violation-event reporting, strict-dynamic trust, full CSP source grammar, and
-complete event-handler Web IDL descriptors remain separate issue #40 gates.
+removal reconcile the handler registry. Meta-policy composition is covered by
+398 and response-header report-only delivery plus violation events by 399;
+strict-dynamic trust, full CSP source grammar, and complete event-handler Web
+IDL descriptors remain separate issue #40 gates.
 The contract is recorded in
 `docs/plan/tasks/native-engine-browser-396.md`.
 
-The completed CSP meta-composition slice is
+The preceding CSP meta-composition slice is
 [native-engine-browser-398](../plan/tasks/native-engine-browser-398.md):
 parser-time enforced policies in a document-head CSP meta element now
 intersect with response-header policies. The Rust loader applies that
 intersection to subresources, inline elements/attributes, and child-frame
 navigation; multiple frame source groups remain distinct across the typed
-content-process boundary. Report-only violation delivery,
-`SecurityPolicyViolationEvent`, strict-dynamic, dynamic policy mutation, and
-the complete CSP source grammar remain separate issue #40 security gates.
+content-process boundary. Report-only violation delivery is now covered by
+the following `native-engine-browser-399` slice; strict-dynamic, dynamic
+policy mutation, and the complete CSP source grammar remain separate issue
+#40 security gates.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

@@ -49,9 +49,10 @@ use super::origin::NativeOrigin;
 use super::resource_loader::{
     MAX_NATIVE_RESPONSE_HEADER_BYTES, MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
     MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES, MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode,
-    NativeFetchCacheMode, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
-    NativeFetchResponseStream, NativeNavigationMethod, NativeNavigationRequest, NativeRequestBody,
-    NativeResource, NativeResourceLoader, NativeWebSocketTarget,
+    NativeCspViolation, NativeFetchCacheMode, NativeFetchRedirectMode, NativeFetchRequest,
+    NativeFetchResponse, NativeFetchResponseStream, NativeNavigationMethod,
+    NativeNavigationRequest, NativeRequestBody, NativeResource, NativeResourceLoader,
+    NativeWebSocketTarget,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -127,6 +128,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) document: NativeDocumentWire,
     pub(crate) frame_sources: Option<Vec<Vec<String>>>,
     pub(crate) events: Vec<NativeContentEvent>,
+    pub(crate) csp_violations: Vec<NativeCspViolation>,
     pub(crate) scroll_commands: Vec<NativeScriptCommand>,
     pub(crate) navigation: Option<NativeContentNavigation>,
     pub(crate) storage_events: Vec<NativeStorageEvent>,
@@ -2473,6 +2475,7 @@ fn decode_load_response(
         document,
         frame_sources,
         events,
+        csp_violations: Vec::new(),
         scroll_commands,
         navigation,
         storage_events,
@@ -4536,8 +4539,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 &indexed_db_state,
                                 &document_cookie,
                                 &resource_events,
+                                &resource.csp_violations,
                             );
-                            if let Some(loader) = resource_loader.as_ref() {
+                            if let Some(loader) = resource_loader.as_mut() {
                                 refresh_inline_style_policy(&mut parsed, loader, &resource.url)?;
                             }
                             let prepared = match page_scripts {
@@ -6840,6 +6844,7 @@ async fn load_content_resource(
                     kind: *kind,
                 })
                 .collect(),
+            csp_violations: loader.take_csp_violations(),
             scroll_commands: Vec::new(),
             navigation: None,
             storage_events: Vec::new(),
@@ -6883,7 +6888,7 @@ fn service_worker_fetch_resource(
 
 fn inline_style_policy_nodes(
     document: &NativeDocument,
-    loader: &NativeResourceLoader,
+    loader: &mut NativeResourceLoader,
     document_url: &str,
 ) -> Result<BTreeSet<u32>, NativeEngineError> {
     let mut allowed = BTreeSet::new();
@@ -6902,7 +6907,7 @@ fn inline_style_policy_nodes(
 
 fn refresh_inline_style_policy(
     document: &mut NativeDocument,
-    loader: &NativeResourceLoader,
+    loader: &mut NativeResourceLoader,
     document_url: &str,
 ) -> Result<(), NativeEngineError> {
     let allowed = inline_style_policy_nodes(document, loader, document_url)?;
@@ -7160,6 +7165,7 @@ async fn execute_dynamic_page_scripts_with_loader(
         }
         let (scripts, resource_events) =
             load_dynamic_page_script_sources(sources, loader, document_url).await?;
+        let csp_violations = loader.take_csp_violations();
         let mut result = execute_dynamic_page_scripts(
             document,
             runtime,
@@ -7168,6 +7174,7 @@ async fn execute_dynamic_page_scripts_with_loader(
             document_origin,
             viewport,
             &resource_events,
+            &csp_violations,
         )?;
         let next_sources = std::mem::take(&mut result.pending_script_sources);
         merge_dynamic_page_script_result(&mut aggregate, result)?;
@@ -8794,6 +8801,7 @@ async fn mutate_script_document(
                 &document_url,
                 document_origin,
                 viewport,
+                &[],
                 &[],
             )?
         };

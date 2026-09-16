@@ -21,9 +21,9 @@ use super::interaction::{
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
-    NativeCorsMode, NativeFetchCacheMode, NativeFetchRedirectMode, NativeFetchRequest,
-    NativeFetchResponse, NativeInlineScriptPolicy, NativeNavigationMethod, NativeRequestBody,
-    NativeResourceLoader, NativeScriptResource,
+    MAX_NATIVE_CSP_VIOLATIONS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
+    NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeInlineScriptPolicy,
+    NativeNavigationMethod, NativeRequestBody, NativeResourceLoader, NativeScriptResource,
 };
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes192, Aes256};
@@ -1022,6 +1022,8 @@ pub(crate) struct NativePageEventBatch {
     pub(crate) hash_change_events: Vec<NativeHashChangeEvent>,
     #[serde(default)]
     pub(crate) host_events: Vec<NativeHostEvent>,
+    #[serde(default)]
+    pub(crate) csp_violations: Vec<NativeCspViolation>,
 }
 
 enum NativeWorkerDispatch<'a> {
@@ -5956,6 +5958,7 @@ pub(crate) fn execute_inline_scripts(
         indexed_db_state,
         cookie,
         &[],
+        &[],
     )
 }
 
@@ -5972,6 +5975,7 @@ pub(crate) fn execute_page_scripts(
     indexed_db_state: &NativeIndexedDbState,
     cookie: &str,
     resource_events: &[(u32, NativeEventKind)],
+    csp_violations: &[NativeCspViolation],
 ) -> Result<NativePageScriptResult, NativeEngineError> {
     document.mark_attached_scripts_started();
     if runtime.is_none() {
@@ -6078,6 +6082,32 @@ pub(crate) fn execute_page_scripts(
             }
             Err(error) => return Err(error),
         };
+        apply_page_script_evaluation(
+            document,
+            evaluation,
+            &mut pending_fetches,
+            &mut websocket_commands,
+            &mut event_source_commands,
+            &mut scroll_commands,
+            &mut navigation,
+        )?;
+    }
+    if !csp_violations.is_empty() {
+        let page_events = NativePageEventBatch {
+            csp_violations: csp_violations.to_vec(),
+            ..NativePageEventBatch::default()
+        };
+        let evaluation = runtime
+            .as_ref()
+            .expect("page script runtime initialized")
+            .evaluate_with_page_events(
+                "undefined;",
+                document,
+                document_url,
+                document_origin,
+                viewport,
+                &page_events,
+            )?;
         apply_page_script_evaluation(
             document,
             evaluation,
@@ -6233,6 +6263,7 @@ pub(crate) fn execute_dynamic_page_scripts(
     document_origin: &NativeOrigin,
     viewport: Viewport,
     resource_events: &[(u32, NativeEventKind)],
+    csp_violations: &[NativeCspViolation],
 ) -> Result<NativePageScriptResult, NativeEngineError> {
     let module_sources = sources
         .iter()
@@ -6256,6 +6287,30 @@ pub(crate) fn execute_dynamic_page_scripts(
     let mut events = Vec::new();
     let mut failed_script_nodes = BTreeSet::new();
     let mut executed = 0usize;
+
+    if !csp_violations.is_empty() {
+        let page_events = NativePageEventBatch {
+            csp_violations: csp_violations.to_vec(),
+            ..NativePageEventBatch::default()
+        };
+        let evaluation = runtime.evaluate_with_page_events(
+            "undefined;",
+            document,
+            document_url,
+            document_origin,
+            viewport,
+            &page_events,
+        )?;
+        apply_page_script_evaluation(
+            document,
+            evaluation,
+            &mut pending_fetches,
+            &mut websocket_commands,
+            &mut event_source_commands,
+            &mut scroll_commands,
+            &mut navigation,
+        )?;
+    }
 
     while let Some(source) = pending.pop_front() {
         if matches!(&source, NativePageScript::ModuleDependency { .. }) {
@@ -10270,6 +10325,7 @@ impl NativeJavaScriptRuntime {
             install_native_inline_script_policy(
                 ctx.clone(),
                 Arc::clone(&self.inline_script_policy),
+                document_url,
             )?;
             ctx.eval::<(), _>(bootstrap.as_str())
                 .map_err(|error| NativeEngineError::Worker {
@@ -12233,6 +12289,7 @@ mod native_ed25519_tests {
 fn install_native_inline_script_policy<'js>(
     ctx: rquickjs::Ctx<'js>,
     policy: Arc<Mutex<NativeInlineScriptPolicy>>,
+    document_url: &str,
 ) -> Result<(), NativeEngineError> {
     let allows = Function::new(ctx.clone(), {
         let policy = Arc::clone(&policy);
@@ -12247,6 +12304,29 @@ fn install_native_inline_script_policy<'js>(
     .map_err(|_| NativeEngineError::Worker {
         operation: "install inline script policy".into(),
         reason: "native inline script policy could not be installed".into(),
+    })?;
+    let report_only = Function::new(ctx.clone(), {
+        let policy = Arc::clone(&policy);
+        let document_url = document_url.to_owned();
+        move |source: String, nonce: String| -> String {
+            let nonce = (!nonce.is_empty()).then_some(nonce.as_str());
+            policy
+                .lock()
+                .ok()
+                .and_then(|policy| {
+                    serde_json::to_string(&policy.report_only_inline_script_violations(
+                        &document_url,
+                        &source,
+                        nonce,
+                    ))
+                    .ok()
+                })
+                .unwrap_or_else(|| "[]".into())
+        }
+    })
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install report-only inline script policy".into(),
+        reason: "native report-only inline script policy could not be installed".into(),
     })?;
     let allows_attribute = Function::new(ctx.clone(), move |source: String| -> bool {
         policy
@@ -12263,6 +12343,12 @@ fn install_native_inline_script_policy<'js>(
         .map_err(|_| NativeEngineError::Worker {
             operation: "publish inline script policy".into(),
             reason: "native inline script policy could not be published".into(),
+        })?;
+    ctx.globals()
+        .set("__glassReportOnlyInlineScript", report_only)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "publish report-only inline script policy".into(),
+            reason: "native report-only inline script policy could not be published".into(),
         })?;
     ctx.globals()
         .set("__glassAllowsInlineEventHandler", allows_attribute)
@@ -12824,6 +12910,13 @@ fn dispatch_promise_rejections(
 }
 
 fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), NativeEngineError> {
+    if events.csp_violations.len() > MAX_NATIVE_CSP_VIOLATIONS {
+        return Err(NativeEngineError::limit(
+            "native CSP violation event batch",
+            MAX_NATIVE_CSP_VIOLATIONS,
+            events.csp_violations.len(),
+        ));
+    }
     for (operation, count) in [
         ("native Worker event batch", events.worker_messages.len()),
         (
@@ -12848,6 +12941,10 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
             events.hash_change_events.len(),
         ),
         ("native host event batch", events.host_events.len()),
+        (
+            "native CSP violation event batch",
+            events.csp_violations.len(),
+        ),
     ] {
         if count > MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
@@ -13077,6 +13174,45 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
             ));
         }
     }
+    for violation in &events.csp_violations {
+        validate_url_text("native CSP violation document URL", &violation.document_uri)?;
+        if !violation.blocked_uri.is_empty() && violation.blocked_uri != "inline" {
+            validate_url_text("native CSP violation blocked URL", &violation.blocked_uri)?;
+        }
+        if violation.document_uri.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES
+            || violation.blocked_uri.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES
+            || violation.original_policy.len()
+                > super::resource_loader::MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES
+            || violation.source_file.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES
+            || violation.sample.len() > 160
+        {
+            return Err(NativeEngineError::limit(
+                "native CSP violation metadata",
+                crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                violation
+                    .document_uri
+                    .len()
+                    .max(violation.blocked_uri.len())
+                    .max(violation.original_policy.len())
+                    .max(violation.source_file.len())
+                    .max(violation.sample.len()),
+            ));
+        }
+        if !matches!(violation.disposition.as_str(), "enforce" | "report") {
+            return Err(NativeEngineError::invalid(
+                "native CSP violation disposition",
+                "must be enforce or report",
+            ));
+        }
+        if violation.effective_directive.is_empty()
+            || violation.effective_directive != violation.violated_directive
+        {
+            return Err(NativeEngineError::invalid(
+                "native CSP violation directive",
+                "effective and violated directives must be equal and non-empty",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -13085,6 +13221,35 @@ fn dispatch_page_event_batch(
     events: &NativePageEventBatch,
 ) -> Result<(), NativeEngineError> {
     validate_page_event_batch(events)?;
+
+    if !events.csp_violations.is_empty() {
+        let payload = serde_json::to_value(&events.csp_violations).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: "serialize native CSP violations".into(),
+                reason: "native CSP violation metadata could not be serialized".into(),
+            }
+        })?;
+        let payload = native_structured_payload(&ctx, &payload, "native CSP violations")?;
+        let dispatch: Function =
+            ctx.globals()
+                .get("__glassDispatchCspViolations")
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native CSP violations".into(),
+                    reason: format!(
+                        "native CSP violation dispatcher was unavailable: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+        dispatch
+            .call::<_, Value>((payload,))
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "dispatch native CSP violations".into(),
+                reason: format!(
+                    "native CSP violation dispatch failed: {}",
+                    CaughtError::from_error(&ctx, error)
+                ),
+            })?;
+    }
 
     if !events.host_events.is_empty() {
         let payload =
@@ -28294,6 +28459,21 @@ fn document_bootstrap(
       const classic = type === "" || type === "text/javascript" || type === "application/javascript";
       if (!node.getAttribute("src") && classic && source) {{
         pushCommand({{ kind: "startScript", node_index: node.nodeIndex }});
+        if (typeof globalThis.__glassReportOnlyInlineScript === "function") {{
+          try {{
+            const encodedViolations = globalThis.__glassReportOnlyInlineScript(
+              source,
+              String(node.getAttribute("nonce") || ""),
+            );
+            if (encodedViolations) {{
+              const violations = JSON.parse(String(encodedViolations));
+              if (violations.length > 0
+                  && typeof globalThis.__glassDispatchCspViolations === "function") {{
+                globalThis.__glassDispatchCspViolations(violations);
+              }}
+            }}
+          }} catch (_error) {{}}
+        }}
         let allowed = true;
         if (typeof globalThis.__glassAllowsInlineScript === "function") {{
           try {{
@@ -30510,6 +30690,29 @@ fn document_bootstrap(
       if (event.reason === undefined) event.reason = reason;
       if (event.promise === undefined) event.promise = null;
       return dispatchTarget(globalThis, event);
+    }});
+  }};
+  globalThis.__glassDispatchCspViolations = (violations) => {{
+    if (!Array.isArray(violations)) throw new TypeError("native CSP violations are invalid");
+    return violations.map((descriptor) => {{
+      if (!descriptor || typeof descriptor !== "object") throw new TypeError("native CSP violation is invalid");
+      const event = new SecurityPolicyViolationEventNative("securitypolicyviolation", {{
+        documentURI: descriptor.document_uri,
+        referrer: descriptor.referrer,
+        blockedURI: descriptor.blocked_uri,
+        effectiveDirective: descriptor.effective_directive,
+        violatedDirective: descriptor.violated_directive,
+        originalPolicy: descriptor.original_policy,
+        sourceFile: descriptor.source_file,
+        sample: descriptor.sample,
+        disposition: descriptor.disposition,
+        statusCode: descriptor.status_code,
+        lineNumber: descriptor.line_number,
+        columnNumber: descriptor.column_number,
+        bubbles: true,
+        cancelable: false,
+      }});
+      return dispatchTarget(document, event);
     }});
   }};
   globalThis.window = globalThis;
@@ -34869,17 +35072,39 @@ fn document_bootstrap(
     try {{ Object.setPrototypeOf(event, PromiseRejectionEventNative.prototype); }} catch (_error) {{}}
     return event;
   }};
+  const SecurityPolicyViolationEventNative = globalThis.__glassSecurityPolicyViolationEventConstructor || function SecurityPolicyViolationEvent(type, options) {{
+    const event = globalThis.__glassCreateEvent(type, options);
+    const settings = options && typeof options === "object" ? options : {{}};
+    event.documentURI = settings.documentURI === undefined ? "" : String(settings.documentURI);
+    event.referrer = settings.referrer === undefined ? "" : String(settings.referrer);
+    event.blockedURI = settings.blockedURI === undefined ? "" : String(settings.blockedURI);
+    event.effectiveDirective = settings.effectiveDirective === undefined ? "" : String(settings.effectiveDirective);
+    event.violatedDirective = settings.violatedDirective === undefined
+      ? event.effectiveDirective
+      : String(settings.violatedDirective);
+    event.originalPolicy = settings.originalPolicy === undefined ? "" : String(settings.originalPolicy);
+    event.sourceFile = settings.sourceFile === undefined ? "" : String(settings.sourceFile);
+    event.sample = settings.sample === undefined ? "" : String(settings.sample);
+    event.disposition = settings.disposition === undefined ? "enforce" : String(settings.disposition);
+    event.statusCode = Number(settings.statusCode) || 0;
+    event.lineNumber = Number(settings.lineNumber) || 0;
+    event.columnNumber = Number(settings.columnNumber) || 0;
+    try {{ Object.setPrototypeOf(event, SecurityPolicyViolationEventNative.prototype); }} catch (_error) {{}}
+    return event;
+  }};
   globalThis.__glassEventConstructor = EventNative;
   globalThis.__glassCustomEventConstructor = CustomEventNative;
   globalThis.__glassStorageEventConstructor = StorageEventNative;
   globalThis.__glassErrorEventConstructor = ErrorEventNative;
   globalThis.__glassPromiseRejectionEventConstructor = PromiseRejectionEventNative;
+  globalThis.__glassSecurityPolicyViolationEventConstructor = SecurityPolicyViolationEventNative;
   globalThis.__glassCreateEvent = createEvent;
   globalThis.Event = EventNative;
   globalThis.CustomEvent = CustomEventNative;
   globalThis.StorageEvent = StorageEventNative;
   globalThis.ErrorEvent = ErrorEventNative;
   globalThis.PromiseRejectionEvent = PromiseRejectionEventNative;
+  globalThis.SecurityPolicyViolationEvent = SecurityPolicyViolationEventNative;
   {message_channel_script}
   try {{ delete globalThis.__glassNativeArrayBufferIsAttached; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeDetachArrayBuffer; }} catch (_error) {{}}
@@ -34888,6 +35113,7 @@ fn document_bootstrap(
   try {{ Object.setPrototypeOf(StorageEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(ErrorEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(PromiseRejectionEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
+  try {{ Object.setPrototypeOf(SecurityPolicyViolationEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(document, DocumentNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(location, LocationNative.prototype); }} catch (_error) {{}}
   for (const element of elements) {{

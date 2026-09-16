@@ -3940,6 +3940,7 @@ impl NativeEngine {
                     &self.origin,
                     self.config.viewport,
                     &[],
+                    &[],
                 )?;
                 if !dynamic_result.pending_script_sources.is_empty() {
                     return Err(NativeEngineError::UnsupportedUrl {

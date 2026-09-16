@@ -2,7 +2,7 @@ use super::browsing_context::NativeBrowsingContext;
 use super::config::{
     NativeEngineConfig, Viewport, decode_percent_encoded_fragment, decode_text_fragment_terms,
     is_network_url, resolve_fixture_relative_url, validate_context_id, validate_url_text,
-    without_fragment,
+    validate_window_name, without_fragment,
 };
 use super::content_process::{
     NativeContentLoad, NativeContentLoadResult, NativeContentMutation, NativeContentNavigation,
@@ -1398,9 +1398,33 @@ impl NativeEngine {
 
     async fn navigate_request_async(
         &mut self,
-        navigation: NativeNavigationRequest,
+        mut navigation: NativeNavigationRequest,
         page_navigation_handoffs: usize,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        if let Some(target) = navigation.target.take() {
+            let target_kind = target.to_ascii_lowercase();
+            if !matches!(
+                target_kind.as_str(),
+                "_self" | "_parent" | "_top" | "_unfencedtop"
+            ) || (target_kind != "_self" && self.frame_script_context.is_some())
+            {
+                if navigation.method != NativeNavigationMethod::Get {
+                    return Err(NativeEngineError::UnsupportedUrl {
+                        reason: "native non-current form targets support only GET submissions"
+                            .into(),
+                    });
+                }
+                if !self
+                    .allows_top_level_navigation_async(&navigation.url, true)
+                    .await?
+                {
+                    return Ok(self.snapshot_unchecked());
+                }
+                if self.queue_form_target_navigation(&target, &navigation)? {
+                    return Ok(self.snapshot_unchecked());
+                }
+            }
+        }
         self.navigate_request_async_with_lifecycle(navigation, page_navigation_handoffs, true)
             .await
     }
@@ -2971,6 +2995,86 @@ impl NativeEngine {
         Ok(())
     }
 
+    fn queue_form_target_navigation(
+        &mut self,
+        target: &str,
+        navigation: &NativeNavigationRequest,
+    ) -> Result<bool, NativeEngineError> {
+        validate_window_name(target)?;
+        let target_kind = target.to_ascii_lowercase();
+        let target_context = match target_kind.as_str() {
+            "_parent" => self
+                .frame_script_context
+                .as_ref()
+                .and_then(|context| context.parent.as_ref()),
+            "_top" | "_unfencedtop" => self
+                .frame_script_context
+                .as_ref()
+                .and_then(|context| context.top.as_ref()),
+            "_self" => None,
+            _ => {
+                self.queue_popup_request(NativePopupRequest {
+                    url: navigation.url.clone(),
+                    target: target.to_owned(),
+                    handle: None,
+                    source_context_id: String::new(),
+                })?;
+                return Ok(true);
+            }
+        };
+        let Some(target_context) = target_context else {
+            return Ok(false);
+        };
+        if target_context.context_id == self.config.context_id {
+            return Ok(false);
+        }
+        self.queue_window_navigation_request(NativeWindowNavigationRequest {
+            target: String::new(),
+            target_context_id: Some(target_context.context_id.clone()),
+            href: navigation.url.clone(),
+            replace: navigation.replace_history,
+            source_context_id: String::new(),
+        })?;
+        Ok(true)
+    }
+
+    fn navigate_local_form_request(
+        &mut self,
+        mut request: NativeNavigationRequest,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let target = request.target.take().unwrap_or_else(|| "_self".into());
+        let target_kind = target.to_ascii_lowercase();
+        let targets_current_document = match target_kind.as_str() {
+            "_self" => true,
+            "_parent" | "_top" | "_unfencedtop" => self.frame_script_context.is_none(),
+            _ => false,
+        };
+        if !targets_current_document {
+            if request.method != NativeNavigationMethod::Get {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "native non-current form targets support only GET submissions".into(),
+                });
+            }
+            if !self.allows_top_level_navigation(&request.url)? {
+                return Ok(NativeActionResult {
+                    revision: self.revision,
+                    accepted: true,
+                });
+            }
+            if self.queue_form_target_navigation(&target, &request)? {
+                return Ok(NativeActionResult {
+                    revision: self.revision,
+                    accepted: true,
+                });
+            }
+        }
+        let snapshot = self.navigate(request.url)?;
+        Ok(NativeActionResult {
+            revision: snapshot.revision,
+            accepted: true,
+        })
+    }
+
     fn queue_service_worker_open_window_request(
         &mut self,
         mut request: NativeServiceWorkerOpenWindowRequest,
@@ -4299,6 +4403,7 @@ impl NativeEngine {
             form_id,
             dispatch_submit: true,
             submitter,
+            ..
         }) = navigation.as_ref()
         {
             let invalid = document.invalid_form_controls(*form_id, *submitter)?;
@@ -4372,11 +4477,15 @@ impl NativeEngine {
                 }
             }
             Some(ScriptNavigationTarget::Form {
-                form_id, submitter, ..
+                form_id,
+                submitter,
+                target,
+                ..
             }) => {
-                let request = self
+                let mut request = self
                     .document
                     .form_submission_request_with_submitter(form_id, &self.url, submitter)?;
+                request.target = Some(target);
                 self.loader
                     .allows_navigation(
                         &self.url,
@@ -4477,6 +4586,7 @@ impl NativeEngine {
                             popup: document.link_opens_new_target(id),
                         })
                     } else if let Some(form_id) = document.submit_control_form(id) {
+                        let target = document.form_submission_target(form_id, Some(id))?;
                         document.form_submission_request_with_submitter(
                             form_id,
                             &self.url,
@@ -4486,6 +4596,7 @@ impl NativeEngine {
                             form_id,
                             dispatch_submit: true,
                             submitter: Some(id),
+                            target,
                         })
                     } else {
                         None
@@ -4493,11 +4604,13 @@ impl NativeEngine {
                 }
                 super::javascript::NativeScriptCommand::SubmitForm { node_index } => {
                     let id = NativeNodeId::from_parts(document.generation(), *node_index);
+                    let target = document.form_submission_target(id, None)?;
                     document.form_submission_request(id, &self.url)?;
                     Some(ScriptNavigationTarget::Form {
                         form_id: id,
                         dispatch_submit: false,
                         submitter: None,
+                        target,
                     })
                 }
                 super::javascript::NativeScriptCommand::RequestSubmitForm {
@@ -4515,11 +4628,13 @@ impl NativeEngine {
                                 .into(),
                         });
                     }
+                    let target = document.form_submission_target(id, submitter)?;
                     document.form_submission_request_with_submitter(id, &self.url, submitter)?;
                     Some(ScriptNavigationTarget::Form {
                         form_id: id,
                         dispatch_submit: true,
                         submitter,
+                        target,
                     })
                 }
                 super::javascript::NativeScriptCommand::Navigate { href, replace } => {
@@ -4604,8 +4719,20 @@ impl NativeEngine {
                 reason: "script navigation target changed during transfer".into(),
             });
         }
+        let request_target = request.target.as_deref().unwrap_or("_self");
+        if !request_target.eq_ignore_ascii_case(&navigation.target) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "script form target changed during transfer".into(),
+            });
+        }
         let target_url = self.resolve_link_href(&request.url)?;
         let same_document = self.is_same_document_navigation(&target_url);
+        let target_kind = request_target.to_ascii_lowercase();
+        let targets_current_document = match target_kind.as_str() {
+            "_self" => true,
+            "_parent" | "_top" | "_unfencedtop" => self.frame_script_context.is_none(),
+            _ => false,
+        };
         let opens_new_target = self.document.link_opens_new_target(id);
         if (same_document || download_attribute.is_some() || opens_new_target)
             && !self
@@ -4624,7 +4751,10 @@ impl NativeEngine {
         }
         request.url = target_url.clone();
         request.replace_history = navigation.replace_history;
-        if request.method == NativeNavigationMethod::Get && same_document {
+        if request.method == NativeNavigationMethod::Get
+            && same_document
+            && targets_current_document
+        {
             let history_commit = if request.replace_history {
                 HistoryCommit::Replace
             } else {
@@ -5366,11 +5496,7 @@ impl NativeEngine {
                     accepted: true,
                 });
             }
-            let snapshot = self.navigate(request.url)?;
-            return Ok(NativeActionResult {
-                revision: snapshot.revision,
-                accepted: true,
-            });
+            return self.navigate_local_form_request(request);
         }
         if let Some(delta) = history_traversal
             && delta != 0
@@ -5448,11 +5574,7 @@ impl NativeEngine {
                 accepted: true,
             });
         }
-        let snapshot = self.navigate(request.url)?;
-        Ok(NativeActionResult {
-            revision: snapshot.revision,
-            accepted: true,
-        })
+        self.navigate_local_form_request(request)
     }
 
     fn action_local_type_with_event_transaction(
@@ -6878,6 +7000,7 @@ impl NativeEngine {
                     node_index: 0,
                     href: navigation.url,
                     submitter_node_index: None,
+                    target: "_self".into(),
                     location: true,
                     replace_history: navigation.replace_history,
                 },
@@ -7624,6 +7747,7 @@ enum ScriptNavigationTarget {
         form_id: NativeNodeId,
         dispatch_submit: bool,
         submitter: Option<NativeNodeId>,
+        target: String,
     },
     Location {
         href: String,

@@ -28,8 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through completed
-`native-engine-browser-414`, following completed
-`native-engine-browser-413` locally. Native is now the default runtime for
+`native-engine-browser-415`, following completed
+`native-engine-browser-414` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -57,6 +57,16 @@ page event bridge before navigation proceeds. Click and page-script submission
 share the same child-owned policy ordering; enforced blocks still issue no
 request, and report-only policy does not change authorization. Broader CSP and
 Core Web Profile certification remain open issue #40 gates.
+
+The completed form-target browsing-context slice is
+[native-engine-browser-415](tasks/native-engine-browser-415.md): local and
+HTTP(S) GET form submissions now preserve submitter `formtarget`/form
+`target`, route `_blank` and named targets through the browser-owned target
+effect queue, and route nested `_parent`/`_top` submissions to the correct
+ancestor frame. Ancestor navigation promotes the navigated frame and removes
+the replaced child selection; non-current POST forms fail with a typed error
+instead of being downgraded to GET. Broader HTML target semantics and POST
+body transfer remain issue #40 gates.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI

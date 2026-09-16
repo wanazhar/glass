@@ -226,6 +226,7 @@ pub(crate) struct NativeNavigationRequest {
     pub(crate) body: Option<NativeRequestBody>,
     pub(crate) body_content_type: Option<String>,
     pub(crate) replace_history: bool,
+    pub(crate) target: Option<String>,
 }
 
 impl NativeNavigationRequest {
@@ -236,6 +237,7 @@ impl NativeNavigationRequest {
             body: None,
             body_content_type: None,
             replace_history: false,
+            target: None,
         }
     }
 
@@ -263,6 +265,7 @@ impl NativeNavigationRequest {
             body: Some(body),
             body_content_type: Some(content_type),
             replace_history: false,
+            target: None,
         })
     }
 }

@@ -1053,6 +1053,7 @@ pub(crate) struct NativeContentNavigation {
     pub(crate) node_index: u32,
     pub(crate) href: String,
     pub(crate) submitter_node_index: Option<u32>,
+    pub(crate) target: String,
     pub(crate) location: bool,
     pub(crate) replace_history: bool,
 }
@@ -3341,6 +3342,22 @@ fn decode_content_navigation(
                 })?,
         ),
     };
+    let raw_target = value
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or("_self")
+        .trim();
+    let target = if raw_target.is_empty() {
+        "_self".to_owned()
+    } else {
+        validate_url_text("content process navigation target", raw_target)?;
+        validate_window_name(raw_target)?;
+        let lower = raw_target.to_ascii_lowercase();
+        match lower.as_str() {
+            "_self" | "_parent" | "_top" | "_blank" | "_unfencedtop" => lower,
+            _ => raw_target.to_owned(),
+        }
+    };
     let location = match value.get("location") {
         None => false,
         Some(value) => value.as_bool().ok_or_else(|| NativeEngineError::Worker {
@@ -3371,6 +3388,7 @@ fn decode_content_navigation(
         node_index,
         href: href.to_owned(),
         submitter_node_index,
+        target,
         location,
         replace_history,
     })
@@ -4883,6 +4901,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             node_index: 0,
                                             href: navigation.href,
                                             submitter_node_index: None,
+                                            target: "_self".into(),
                                             location: true,
                                             replace_history: navigation.replace_history,
                                         }
@@ -5066,6 +5085,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             "node_index": navigation.node_index,
                                             "href": navigation.href,
                                             "submitter_node_index": navigation.submitter_node_index,
+                                            "target": navigation.target,
                                             "location": navigation.location,
                                             "replace_history": navigation.replace_history,
                                         })),
@@ -5633,6 +5653,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         "node_index": navigation.node_index,
                                         "href": navigation.href,
                                         "submitter_node_index": navigation.submitter_node_index,
+                                        "target": navigation.target,
                                         "location": navigation.location,
                                         "replace_history": navigation.replace_history,
                                     })),
@@ -5743,6 +5764,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "node_index": navigation.node_index,
                             "href": navigation.href,
                             "submitter_node_index": navigation.submitter_node_index,
+                            "target": navigation.target,
                             "location": navigation.location,
                             "replace_history": navigation.replace_history,
                         })),
@@ -6262,6 +6284,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 "node_index": navigation.node_index,
                                 "href": navigation.href,
                                 "submitter_node_index": navigation.submitter_node_index,
+                                "target": navigation.target,
                                 "location": navigation.location,
                                 "replace_history": navigation.replace_history,
                             })),
@@ -6377,6 +6400,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 "node_index": navigation.node_index,
                                 "href": navigation.href,
                                 "submitter_node_index": navigation.submitter_node_index,
+                                "target": navigation.target,
                                 "location": navigation.location,
                                 "replace_history": navigation.replace_history,
                             })),
@@ -6472,6 +6496,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 "node_index": navigation.node_index,
                                 "href": navigation.href,
                                 "submitter_node_index": navigation.submitter_node_index,
+                                "target": navigation.target,
                                 "location": navigation.location,
                                 "replace_history": navigation.replace_history,
                             })),
@@ -8004,6 +8029,7 @@ fn mutate_click_with_event_preflight(
                             node_index: form_id.index(),
                             href: request.url,
                             submitter_node_index: Some(node_id.index()),
+                            target: next.form_submission_target(form_id, Some(node_id))?,
                             location: false,
                             replace_history: false,
                         });
@@ -8807,6 +8833,7 @@ fn split_location_navigation(
                     node_index: 0,
                     href,
                     submitter_node_index: None,
+                    target: "_self".into(),
                     location: true,
                     replace_history: replace,
                 });
@@ -9693,6 +9720,7 @@ async fn mutate_script_document(
                     node_index,
                     href,
                     submitter_node_index: None,
+                    target: "_self".into(),
                     location: false,
                     replace_history: false,
                 }),
@@ -9700,6 +9728,7 @@ async fn mutate_script_document(
                     form_id,
                     node_index,
                     submitter,
+                    target,
                     ..
                 } => Ok(NativeContentNavigation {
                     node_index,
@@ -9707,6 +9736,7 @@ async fn mutate_script_document(
                         .form_submission_request_with_submitter(form_id, &document_url, submitter)?
                         .url,
                     submitter_node_index: submitter.map(NativeNodeId::index),
+                    target,
                     location: false,
                     replace_history: false,
                 }),
@@ -9717,6 +9747,7 @@ async fn mutate_script_document(
                     node_index: 0,
                     href,
                     submitter_node_index: None,
+                    target: "_self".into(),
                     location: true,
                     replace_history,
                 }),
@@ -11460,6 +11491,7 @@ enum ScriptNavigationTarget {
         form_id: NativeNodeId,
         dispatch_submit: bool,
         submitter: Option<NativeNodeId>,
+        target: String,
     },
     Location {
         href: String,
@@ -11483,6 +11515,7 @@ fn script_navigation_target(
                         href: href.to_owned(),
                     })
                 } else if let Some(form_id) = document.submit_control_form(node_id) {
+                    let target = document.form_submission_target(form_id, Some(node_id))?;
                     document.form_submission_request_with_submitter(
                         form_id,
                         document_url,
@@ -11493,6 +11526,7 @@ fn script_navigation_target(
                         form_id,
                         dispatch_submit: true,
                         submitter: Some(node_id),
+                        target,
                     })
                 } else {
                     None
@@ -11500,12 +11534,14 @@ fn script_navigation_target(
             }
             NativeScriptCommand::SubmitForm { node_index } => {
                 let node_id = NativeNodeId::from_parts(document.generation(), *node_index);
+                let target = document.form_submission_target(node_id, None)?;
                 document.form_submission_request(node_id, document_url)?;
                 Some(ScriptNavigationTarget::Form {
                     node_index: *node_index,
                     form_id: node_id,
                     dispatch_submit: false,
                     submitter: None,
+                    target,
                 })
             }
             NativeScriptCommand::RequestSubmitForm {
@@ -11523,6 +11559,7 @@ fn script_navigation_target(
                             .into(),
                     });
                 }
+                let target = document.form_submission_target(node_id, submitter)?;
                 document.form_submission_request_with_submitter(
                     node_id,
                     document_url,
@@ -11533,6 +11570,7 @@ fn script_navigation_target(
                     form_id: node_id,
                     dispatch_submit: true,
                     submitter,
+                    target,
                 })
             }
             NativeScriptCommand::Navigate { href, replace } => {

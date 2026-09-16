@@ -1,4 +1,6 @@
-use super::config::{NativeEngineLimits, validate_url_text, without_fragment};
+use super::config::{
+    NativeEngineLimits, validate_url_text, validate_window_name, without_fragment,
+};
 use super::css::{NativeStylesheet, collect_background_image_sources};
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
@@ -5808,6 +5810,37 @@ impl NativeDocument {
                 .is_some_and(|target| target.trim().eq_ignore_ascii_case("_blank"))
     }
 
+    pub(crate) fn form_submission_target(
+        &self,
+        form_id: NativeNodeId,
+        submitter: Option<NativeNodeId>,
+    ) -> Result<String, NativeEngineError> {
+        let form = self
+            .node(form_id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if form.element_name() != Some("form") {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "form submission target is not a form".into(),
+            });
+        }
+        let submitter_node = submitter.and_then(|id| self.node(id));
+        let raw_target = submitter_node
+            .and_then(|node| node.attribute("formtarget"))
+            .or_else(|| form.attribute("target"))
+            .unwrap_or("_self")
+            .trim();
+        if raw_target.is_empty() {
+            return Ok("_self".into());
+        }
+        validate_url_text("form target", raw_target)?;
+        validate_window_name(raw_target)?;
+        let lower = raw_target.to_ascii_lowercase();
+        Ok(match lower.as_str() {
+            "_self" | "_parent" | "_top" | "_blank" | "_unfencedtop" => lower,
+            _ => raw_target.to_owned(),
+        })
+    }
+
     pub(crate) fn form_submission_request(
         &self,
         id: NativeNodeId,
@@ -5846,6 +5879,7 @@ impl NativeDocument {
                 reason: "form submitter must be a submit control for the form".into(),
             });
         }
+        let form_target = self.form_submission_target(form_id, submitter)?;
         let submitter_node = submitter.and_then(|id| self.node(id));
         let method = submitter_node
             .and_then(|node| node.attribute("formmethod"))
@@ -5905,7 +5939,7 @@ impl NativeDocument {
         }
         let mut pairs = Vec::new();
         self.collect_form_data(form_id, &mut pairs, submitter)?;
-        match method {
+        let mut request = match method {
             super::resource_loader::NativeNavigationMethod::Get => {
                 let query = encode_urlencoded_form_data(&pairs)?;
                 if query.is_empty() {
@@ -5924,7 +5958,9 @@ impl NativeDocument {
                 NativeNavigationRequest::post_with_body(target, body, content_type)
             }
             _ => unreachable!("form method was validated above"),
-        }
+        }?;
+        request.target = Some(form_target);
+        Ok(request)
     }
 
     pub(crate) fn submit_control_form(&self, id: NativeNodeId) -> Option<NativeNodeId> {

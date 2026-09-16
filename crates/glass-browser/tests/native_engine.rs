@@ -1709,6 +1709,104 @@ async fn native_message_transport_preserves_structured_clone_values() {
 }
 
 #[tokio::test]
+async fn native_array_buffer_transfer_detaches_sender_and_preserves_views() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://array-buffer-transfer-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://array-buffer-transfer-worker",
+            r#"self.onmessage = event => {
+                const buffer = event.data.buffer;
+                const view = event.data.view;
+                postMessage({
+                    buffer: [buffer instanceof ArrayBuffer, buffer.byteLength, Array.from(new Uint8Array(buffer))],
+                    view: [view instanceof Uint8Array, view.byteLength, Array.from(view)],
+                    shared: view.buffer === buffer,
+                });
+            }"#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://array-buffer-transfer-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    globalThis.workerMessages = [];
+                    globalThis.worker = new Worker('fixture://array-buffer-transfer-worker');
+                    worker.onmessage = event => workerMessages.push(event.data);
+                    const buffer = new ArrayBuffer(5);
+                    new Uint8Array(buffer).set([10, 20, 30, 40, 50]);
+                    const view = new Uint8Array(buffer, 1, 2);
+                    worker.postMessage({ buffer, view }, [buffer]);
+                    globalThis.senderTransfer = [buffer.byteLength, view.byteLength];
+                    let invalidTransferError = '';
+                    const untouched = new ArrayBuffer(2);
+                    try { worker.postMessage({ value: 1 }, [new Uint8Array(untouched)]); }
+                    catch (error) { invalidTransferError = error.name; }
+                    const structuredSource = new ArrayBuffer(3);
+                    new Uint8Array(structuredSource).set([9, 8, 7]);
+                    const structuredResult = structuredClone(
+                        { buffer: structuredSource },
+                        { transfer: [structuredSource] },
+                    );
+                    globalThis.structuredCloneTransfer = {
+                        source: structuredSource.byteLength,
+                        clone: [structuredResult.buffer instanceof ArrayBuffer,
+                            Array.from(new Uint8Array(structuredResult.buffer))],
+                    };
+                    const emptySource = new ArrayBuffer(0);
+                    const emptyClone = structuredClone(
+                        emptySource,
+                        { transfer: [emptySource] },
+                    );
+                    globalThis.emptyTransfer = [emptySource.byteLength, emptyClone.byteLength];
+                    let detachedTransferError = '';
+                    try { worker.postMessage({}, [buffer]); }
+                    catch (error) { detachedTransferError = error.name; }
+                    globalThis.transferErrors = [
+                        invalidTransferError,
+                        untouched.byteLength,
+                        detachedTransferError,
+                    ];
+                    return true;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ senderTransfer, structuredCloneTransfer, emptyTransfer, transferErrors, workerMessages })"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "senderTransfer": [0, 0],
+            "structuredCloneTransfer": {
+                "source": 0,
+                "clone": [true, [9, 8, 7]],
+            },
+            "emptyTransfer": [0, 0],
+            "transferErrors": ["DataCloneError", 2, "DataCloneError"],
+            "workerMessages": [{
+                "buffer": [true, 5, [10, 20, 30, 40, 50]],
+                "view": [true, 2, [20, 30]],
+                "shared": true,
+            }],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_message_ports_transfer_between_page_and_worker_realms() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -3861,6 +3959,59 @@ async fn native_content_process_transfers_message_ports_between_page_and_worker_
                 {"kind": "worker-port-received", "value": 8},
                 {"kind": "worker-received", "value": 4},
             ],
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_transfers_array_buffers_between_page_and_worker_realms() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            (
+                "/array-buffer-transfer-page",
+                "text/html",
+                "<script>globalThis.senderState = []; globalThis.workerMessages = []; globalThis.worker = new Worker('/array-buffer-transfer-worker.js'); worker.onmessage = event => workerMessages.push(event.data); const buffer = new ArrayBuffer(4); new Uint8Array(buffer).set([4, 5, 6, 7]); const view = new Uint8Array(buffer, 1, 2); worker.postMessage({ buffer, view }, [buffer]); senderState = [buffer.byteLength, view.byteLength];</script><main>Native</main>",
+            ),
+            (
+                "/array-buffer-transfer-worker.js",
+                "text/javascript",
+                "self.onmessage = event => { const buffer = event.data.buffer; const view = event.data.view; postMessage({ buffer: [buffer instanceof ArrayBuffer, buffer.byteLength, Array.from(new Uint8Array(buffer))], view: [view instanceof Uint8Array, view.byteLength, Array.from(view)], shared: view.buffer === buffer }); };",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/array-buffer-transfer-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({ senderState, workerMessages })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "senderState": [0, 0],
+            "workerMessages": [{
+                "buffer": [true, 4, [4, 5, 6, 7]],
+                "view": [true, 2, [5, 6]],
+                "shared": true,
+            }],
         })
     );
     engine.close_async().await.unwrap();
@@ -8560,6 +8711,54 @@ async fn native_window_proxy_post_message_transfers_message_ports() {
             .unwrap()
             .value,
         serde_json::json!(["InvalidStateError", "InvalidStateError"])
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_window_proxy_array_buffer_transfer_detaches_sender() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://window-array-buffer-transfer-parent",
+            "<title>ArrayBuffer transfer parent</title><script>globalThis.senderBufferState = []; const child = window.open('fixture://window-array-buffer-transfer-child', 'array-buffer-transfer-child'); const buffer = new ArrayBuffer(4); new Uint8Array(buffer).set([1, 2, 3, 4]); const view = new Uint8Array(buffer, 1, 2); child.postMessage({ buffer, view }, '*', [buffer]); senderBufferState = [buffer.byteLength, view.byteLength];</script><p>parent</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://window-array-buffer-transfer-child",
+            "<title>ArrayBuffer transfer child</title><script>globalThis.receivedBuffers = []; addEventListener('message', event => { const buffer = event.data.buffer; const view = event.data.view; receivedBuffers.push([buffer instanceof ArrayBuffer, buffer.byteLength, Array.from(new Uint8Array(buffer)), view instanceof Uint8Array, view.byteLength, Array.from(view), view.buffer === buffer, event.origin]); });</script><p>child</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://window-array-buffer-transfer-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let child_id = targets
+        .iter()
+        .find(|target| !target.active)
+        .unwrap()
+        .id
+        .clone();
+    session.native_select_target(&child_id).await.unwrap();
+    assert_eq!(
+        session
+            .script("globalThis.receivedBuffers")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([[true, 4, [1, 2, 3, 4], true, 2, [2, 3], true, "null"]])
+    );
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("globalThis.senderBufferState")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([0, 0])
     );
     session.close().await.unwrap();
 }

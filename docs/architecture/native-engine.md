@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-386` slice. The native runtime is now the primary
+`native-engine-browser-387` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -667,10 +667,10 @@ RegExp, Map, Set, cycles, shared object identity, ArrayBuffer, typed-array and
 DataView views, Blob/File metadata and bytes, and Error values across the
 native JSON-framed boundary. Local deliveries decode a fresh graph per
 recipient, while transferred MessagePort descriptors retain their existing
-owner-routed bridge. Functions, symbols, Promise-like objects,
-SharedArrayBuffer, and ArrayBuffer transfer/detachment remain explicit
+owner-routed bridge. At that checkpoint, functions, symbols, Promise-like objects,
+SharedArrayBuffer, and ArrayBuffer transfer/detachment remained explicit
 DataCloneError or follow-up gates; browser-wide task-source arbitration and
-final Core Web Profile certification remain open. Exact evidence is recorded
+final Core Web Profile certification remained open. Exact evidence is recorded
 in `docs/plan/tasks/native-engine-browser-384.md`.
 
 Slice 385 carries WindowProxy `postMessage` transfer lists through the native
@@ -695,6 +695,20 @@ clone, descriptor, payload, and effect limits remain enforced. Browser-wide
 task-source conformance and the remaining Core Web Profile gates remain open.
 Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-386.md`.
+
+Slice 387 completes bounded ArrayBuffer transfer and detachment for the shared
+native structured-clone owner. Page, worker, Service Worker, bridged
+MessagePort, and WindowProxy transfer preparation now validates attached
+ArrayBuffer members, encodes bytes and view aliasing before commit, and
+detaches the sender only after the bounded clone succeeds; detached sources,
+duplicate members, typed-array/DataView transfer members, and SharedArrayBuffer
+fail closed. `structuredClone(value, { transfer: [buffer] })` now returns a
+fresh clone while detaching the listed source. The same behavior is covered by
+page-to-worker, popup, and HTTP content-process witnesses without changing the
+JSON-safe wire contract. Complete transferability for other platform objects,
+browser-wide task-source conformance, and the remaining Core Web Profile and
+production certification gates remain open. Exact evidence is recorded in
+`docs/plan/tasks/native-engine-browser-387.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

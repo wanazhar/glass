@@ -39,7 +39,9 @@ use fs2::FileExt;
 use hmac::{Hmac, Mac};
 use rquickjs::function::This;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
-use rquickjs::{CaughtError, Coerced, Context, Error, FromJs, Function, Module, Runtime, Value};
+use rquickjs::{
+    ArrayBuffer, CaughtError, Coerced, Context, Error, FromJs, Function, Module, Runtime, Value,
+};
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
@@ -12095,6 +12097,24 @@ fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), Nat
         operation: "install native random source".into(),
         reason: "native random source could not be installed".into(),
     })?;
+    let array_buffer_is_attached = Function::new(ctx.clone(), |value: Value<'_>| {
+        ArrayBuffer::from_value(value).is_some()
+    })
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install native ArrayBuffer state source".into(),
+        reason: "native ArrayBuffer state source could not be installed".into(),
+    })?;
+    let array_buffer_detach = Function::new(ctx.clone(), |value: Value<'_>| {
+        let Some(mut buffer) = ArrayBuffer::from_value(value) else {
+            return false;
+        };
+        buffer.detach();
+        true
+    })
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install native ArrayBuffer detach source".into(),
+        reason: "native ArrayBuffer detach source could not be installed".into(),
+    })?;
     let digest_source = Function::new(
         ctx.clone(),
         |algorithm: String, encoded: String| -> std::result::Result<String, Error> {
@@ -12363,6 +12383,21 @@ fn install_native_crypto_sources<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), Nat
         .map_err(|_| NativeEngineError::Worker {
             operation: "install native random source".into(),
             reason: "native random source could not be published".into(),
+        })?;
+    ctx.globals()
+        .set(
+            "__glassNativeArrayBufferIsAttached",
+            array_buffer_is_attached,
+        )
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "install native ArrayBuffer state source".into(),
+            reason: "native ArrayBuffer state source could not be published".into(),
+        })?;
+    ctx.globals()
+        .set("__glassNativeDetachArrayBuffer", array_buffer_detach)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "install native ArrayBuffer detach source".into(),
+            reason: "native ArrayBuffer detach source could not be published".into(),
         })?;
     ctx.globals()
         .set("__glassNativeCryptoDigest", digest_source)
@@ -14225,7 +14260,7 @@ fn worker_bootstrap(
     if (target.length >= {max_commands}) throw new RangeError("native Worker command limit exceeded");
     target.push(command);
   }};
-  const cloneMessageData = (value) => glassMessageClone(value);
+  const cloneMessageData = (value, options) => glassMessageStructuredClone(value, options);
   const timers = globalThis.__glassWorkerTimers instanceof Map
     ? globalThis.__glassWorkerTimers
     : new Map();
@@ -14881,7 +14916,7 @@ fn worker_bootstrap(
     }}
     return encodeWorkerBase64(bytes, {fetch_body_limit});
   }};
-  globalThis.structuredClone = (value) => value === undefined ? undefined : cloneMessageData(value);
+  globalThis.structuredClone = (value, options) => cloneMessageData(value, options);
   globalThis.queueMicrotask = (callback) => {{
     if (typeof callback !== "function") throw new TypeError("native Worker queueMicrotask callback must be callable");
     Promise.resolve().then(callback);
@@ -16008,6 +16043,8 @@ fn worker_bootstrap(
   try {{ delete globalThis.__glassNativeCryptoAesCbc; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoAesCtr; }} catch (_error) {{}}
   try {{ delete globalThis.__glassNativeCryptoDerive; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeArrayBufferIsAttached; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeDetachArrayBuffer; }} catch (_error) {{}}
   const workerBlobBytes = (part) => {{
     if (part && part.__glassWorkerBlob === true) return part._bytes.slice();
     if (typeof part === "string") return workerUtf8Bytes(part);
@@ -17425,6 +17462,8 @@ fn is_ready_state_comparison(source: &str) -> bool {
 const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
   const glassMessagePortQueueLimit = __GLASS_MESSAGE_PORT_QUEUE_LIMIT__;
   const glassMessageChannelNameLimit = __GLASS_MESSAGE_CHANNEL_NAME_LIMIT__;
+  const glassMessageArrayBufferIsAttached = globalThis.__glassNativeArrayBufferIsAttached;
+  const glassMessageDetachArrayBuffer = globalThis.__glassNativeDetachArrayBuffer;
   const glassMessagePortRegistry = globalThis.__glassMessagePortRegistry instanceof Map
     ? globalThis.__glassMessagePortRegistry
     : new Map();
@@ -17587,6 +17626,9 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       if (tag === "[object SharedArrayBuffer]")
         throw glassMessageException("SharedArrayBuffer is not supported by the native message bridge", "DataCloneError");
       if (tag === "[object ArrayBuffer]") {
+        if (typeof glassMessageArrayBufferIsAttached !== "function"
+            || glassMessageArrayBufferIsAttached(current) !== true)
+          throw glassMessageException("ArrayBuffer is detached", "DataCloneError");
         let bytes;
         try { bytes = Array.from(new Uint8Array(current)); }
         catch (_error) { throw glassMessageException("ArrayBuffer could not be cloned", "DataCloneError"); }
@@ -17731,6 +17773,26 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       throw new RangeError("native message transfer list exceeds its limit");
     return transfer;
   };
+  const glassMessageValidateArrayBufferTransfer = (value) => {
+    let tag;
+    try { tag = Object.prototype.toString.call(value); }
+    catch (_error) { tag = ""; }
+    if (tag !== "[object ArrayBuffer]"
+        || typeof glassMessageArrayBufferIsAttached !== "function"
+        || glassMessageArrayBufferIsAttached(value) !== true)
+      throw glassMessageException("ArrayBuffer is not transferable", "DataCloneError");
+  };
+  const glassMessageCommitArrayBufferTransfers = (buffers) => {
+    for (const buffer of buffers) {
+      let detached = false;
+      try {
+        detached = typeof glassMessageDetachArrayBuffer === "function"
+          && glassMessageDetachArrayBuffer(buffer) === true;
+      } catch (_error) {}
+      if (!detached)
+        throw glassMessageException("ArrayBuffer could not be detached", "DataCloneError");
+    }
+  };
   const glassMessageTransferDescriptor = (port) => {
     if (!port || typeof port !== "object")
       throw glassMessageException("transfer list member is not a MessagePort", "DataCloneError");
@@ -17770,22 +17832,63 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
   };
   const glassMessageCloneWithTransfers = (value, transfer) => {
     const prepared = [];
+    const buffers = [];
     const members = new Map();
-    for (const port of transfer) {
-      if (members.has(port))
+    const transferMembers = new Set();
+    for (const member of transfer) {
+      if (transferMembers.has(member))
+        throw glassMessageException("transfer list member appears more than once", "DataCloneError");
+      transferMembers.add(member);
+      let tag;
+      try { tag = Object.prototype.toString.call(member); }
+      catch (_error) { tag = ""; }
+      if (tag === "[object ArrayBuffer]") {
+        glassMessageValidateArrayBufferTransfer(member);
+        buffers.push(member);
+        continue;
+      }
+      if (members.has(member))
         throw glassMessageException("MessagePort appears more than once in the transfer list", "DataCloneError");
-      const descriptor = glassMessageTransferDescriptor(port);
+      const descriptor = glassMessageTransferDescriptor(member);
       if (members.has(descriptor.peer))
         throw glassMessageException("both endpoints of a MessageChannel cannot be transferred together", "DataCloneError");
-      members.set(port, prepared.length);
+      members.set(member, prepared.length);
       prepared.push(descriptor);
     }
     const data = glassMessageEncodeMessage(value, members);
+    glassMessageCommitArrayBufferTransfers(buffers);
     for (const descriptor of prepared) glassMessageCommitTransfer(descriptor);
     return {
       data,
       transfer_ports: prepared.map(({ descriptor }) => descriptor),
     };
+  };
+  const glassMessageCloneWithArrayBufferTransfers = (value, transfer) => {
+    const buffers = [];
+    const seen = new Set();
+    for (const member of transfer) {
+      if (seen.has(member))
+        throw glassMessageException("transfer list member appears more than once", "DataCloneError");
+      seen.add(member);
+      glassMessageValidateArrayBufferTransfer(member);
+      buffers.push(member);
+    }
+    const data = glassMessageEncodeMessage(value, new Map());
+    const result = glassMessageDecodeClone(data, []);
+    glassMessageCommitArrayBufferTransfers(buffers);
+    return result;
+  };
+  const glassMessageStructuredClone = (value, options) => {
+    let transfer = [];
+    if (options !== undefined) {
+      if (options === null || typeof options !== "object")
+        throw glassMessageException("structuredClone options must be an object", "TypeError");
+      if (options.transfer !== undefined)
+        transfer = glassMessageTransferList(options);
+    }
+    return transfer.length === 0
+      ? glassMessageClone(value)
+      : glassMessageCloneWithArrayBufferTransfers(value, transfer);
   };
   const glassMessageMakeBridgePort = (descriptor) => {
     const bridgeKey = String(descriptor && descriptor.bridge_key || "");
@@ -24226,7 +24329,7 @@ fn document_bootstrap(
     }}
     return encodeBase64(bytes, {native_form_body_bytes});
   }};
-  globalThis.structuredClone = (value) => value === undefined ? undefined : cloneMessageData(value);
+  globalThis.structuredClone = (value, options) => cloneMessageData(value, options);
   let nextEventTargetId = Number.isSafeInteger(globalThis.__glassNextEventTargetId)
     ? globalThis.__glassNextEventTargetId
     : 1;
@@ -28574,7 +28677,7 @@ fn document_bootstrap(
     ? globalThis.__glassWindowProxyStates
     : new Map();
   globalThis.__glassWindowProxyStates = windowProxyStates;
-  const cloneMessageData = (value) => glassMessageClone(value);
+  const cloneMessageData = (value, options) => glassMessageStructuredClone(value, options);
   const windowMessageOptions = (targetOrigin, transfer) => {{
     let origin = targetOrigin;
     let options = transfer;
@@ -32791,6 +32894,8 @@ fn document_bootstrap(
   globalThis.ErrorEvent = ErrorEventNative;
   globalThis.PromiseRejectionEvent = PromiseRejectionEventNative;
   {message_channel_script}
+  try {{ delete globalThis.__glassNativeArrayBufferIsAttached; }} catch (_error) {{}}
+  try {{ delete globalThis.__glassNativeDetachArrayBuffer; }} catch (_error) {{}}
   {service_worker_page_script}
   try {{ Object.setPrototypeOf(CustomEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}
   try {{ Object.setPrototypeOf(StorageEventNative.prototype, EventNative.prototype); }} catch (_error) {{}}

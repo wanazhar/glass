@@ -196,6 +196,30 @@ impl NativeFrameState {
         }
         descendants
     }
+
+    fn is_descendant(&self, frame_id: &str, ancestor_id: &str) -> bool {
+        if frame_id == ancestor_id {
+            return false;
+        }
+        let mut current = frame_id.to_owned();
+        for _ in 0..NATIVE_MAX_FRAMES {
+            let parent = if current == self.active_frame_id {
+                self.active_parent_id.clone()
+            } else {
+                self.parked
+                    .get(&current)
+                    .and_then(|frame| frame.parent_id.clone())
+            };
+            let Some(parent) = parent else {
+                return false;
+            };
+            if parent == ancestor_id {
+                return true;
+            }
+            current = parent;
+        }
+        false
+    }
 }
 
 struct NativeParkedTarget {
@@ -845,9 +869,19 @@ impl NativeEngineBackend {
         action: NativeAction,
         proxy_updates: &[NativeWindowProxyUpdate],
     ) -> Result<(u64, bool, NativeFrameRuntimeEffects, String), BrowserBackendError> {
+        let frame_script_context = if matches!(
+            &route,
+            NativeFrameRoute::ActiveSelected | NativeFrameRoute::ActiveParked
+        ) {
+            self.frame_script_context_for_active_target_frame(frame_id)
+                .await?
+        } else {
+            None
+        };
         match route {
             NativeFrameRoute::ActiveSelected => {
                 let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
+                engine.set_frame_script_context(frame_script_context);
                 engine
                     .sync_window_proxies(proxy_updates)
                     .await
@@ -874,6 +908,7 @@ impl NativeEngineBackend {
                         reason: "native point target frame disappeared during action dispatch"
                             .into(),
                     })?;
+                frame.engine.set_frame_script_context(frame_script_context);
                 frame
                     .engine
                     .sync_window_proxies(proxy_updates)
@@ -1430,6 +1465,84 @@ impl NativeEngineBackend {
             });
         Ok(Some(NativeFrameScriptContext {
             current_frame_id: targets.active_frames.active_frame_id.clone(),
+            parent: Some(parent_window),
+            top: Some(top_window),
+            frame_element,
+        }))
+    }
+
+    async fn frame_script_context_for_active_target_frame(
+        &self,
+        frame_id: &str,
+    ) -> Result<Option<NativeFrameScriptContext>, BrowserBackendError> {
+        let mut targets = self.lock_targets(BackendOperation::Action)?;
+        let Some(target_id) = targets.active_target_id.clone() else {
+            return Ok(None);
+        };
+        let engine = self.lock_engine_raw(BackendOperation::Action)?;
+        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        let (parent_id, owner_node_index) = if targets.active_frames.active_frame_id == frame_id {
+            (
+                targets.active_frames.active_parent_id.clone(),
+                targets.active_frames.active_owner_node_index,
+            )
+        } else if let Some(frame) = targets.active_frames.parked.get(frame_id) {
+            (frame.parent_id.clone(), frame.owner_node_index)
+        } else {
+            return Ok(None);
+        };
+        let Some(parent_id) = parent_id else {
+            return Ok(None);
+        };
+        let current_engine = native_frame_engine(&targets.active_frames, &engine, frame_id)
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "native frame disappeared during action context projection".into(),
+            })?;
+        let current_snapshot = current_engine.snapshot().map_err(native_error)?;
+        let parent_engine = native_frame_engine(&targets.active_frames, &engine, &parent_id)
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "native frame parent disappeared during action context projection".into(),
+            })?;
+        let parent_snapshot = parent_engine.snapshot().map_err(native_error)?;
+        let parent_same_origin = current_snapshot.origin != NativeOrigin::Opaque
+            && current_snapshot.origin == parent_snapshot.origin;
+        let parent_window = native_frame_script_window(
+            &targets.active_frames,
+            &engine,
+            &parent_id,
+            parent_engine,
+            parent_same_origin,
+        )?;
+        let top_id = native_main_frame_id(&target_id);
+        let top_engine =
+            native_frame_engine(&targets.active_frames, &engine, &top_id).ok_or_else(|| {
+                BrowserBackendError::SelectionFailed {
+                    reason: "native top frame disappeared during action context projection".into(),
+                }
+            })?;
+        let top_snapshot = top_engine.snapshot().map_err(native_error)?;
+        let top_same_origin = current_snapshot.origin != NativeOrigin::Opaque
+            && current_snapshot.origin == top_snapshot.origin;
+        let top_window = native_frame_script_window(
+            &targets.active_frames,
+            &engine,
+            &top_id,
+            top_engine,
+            top_same_origin,
+        )?;
+        let frame_element = owner_node_index.and_then(|node_index| {
+            parent_engine
+                .script_document_snapshot()
+                .ok()
+                .and_then(|document| {
+                    document
+                        .elements
+                        .into_iter()
+                        .find(|element| element.node_index == node_index)
+                })
+        });
+        Ok(Some(NativeFrameScriptContext {
+            current_frame_id: frame_id.to_owned(),
             parent: Some(parent_window),
             top: Some(top_window),
             frame_element,
@@ -2421,15 +2534,14 @@ impl NativeEngineBackend {
                             nested_service_worker_open_windows,
                             nested_service_worker_client_messages,
                             nested_page_message_port_commands,
-                        ) = self
-                            .navigate_frame_target(
-                                route,
-                                frame_id,
-                                &navigation.source_context_id,
-                                &navigation.href,
-                                navigation.replace,
-                            )
-                            .await?;
+                        ) = Box::pin(self.navigate_frame_target(
+                            route,
+                            frame_id,
+                            &navigation.source_context_id,
+                            &navigation.href,
+                            navigation.replace,
+                        ))
+                        .await?;
                         pending_popups.extend(nested_popups);
                         pending_messages.extend(nested_messages);
                         pending_window_closes.extend(nested_window_closes);
@@ -3492,7 +3604,13 @@ impl NativeEngineBackend {
                 let result =
                     navigate_native_frame(&mut frame.engine, url, replace_history, &proxy_updates)
                         .await?;
-                close_native_frame_descendants(&mut targets.active_frames, frame_id).await?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+                activate_navigated_frame_if_ancestor(
+                    &mut targets.active_frames,
+                    &mut engine,
+                    frame_id,
+                )
+                .await?;
                 (result, owner_id)
             }
             NativeFrameRoute::ParkedSelected { target_id } => {
@@ -3523,7 +3641,12 @@ impl NativeEngineBackend {
                 let result =
                     navigate_native_frame(&mut frame.engine, url, replace_history, &proxy_updates)
                         .await?;
-                close_native_frame_descendants(&mut target.frames, frame_id).await?;
+                activate_navigated_frame_if_ancestor(
+                    &mut target.frames,
+                    &mut target.engine,
+                    frame_id,
+                )
+                .await?;
                 (result, target_id)
             }
         };
@@ -4326,7 +4449,10 @@ impl BrowserBackend for NativeEngineBackend {
             } else {
                 None
             };
-            let frame_script_context = if matches!(operation, BackendOperation::Script) {
+            let frame_script_context = if matches!(
+                operation,
+                BackendOperation::Script | BackendOperation::Action
+            ) {
                 Some(self.frame_script_context().await?)
             } else {
                 None
@@ -5123,6 +5249,49 @@ async fn close_native_frame_descendants(
             first_error.get_or_insert(error);
         }
     }
+    first_error.map_or(Ok(()), Err)
+}
+
+async fn activate_navigated_frame_if_ancestor(
+    frames: &mut NativeFrameState,
+    active_engine: &mut NativeEngine,
+    frame_id: &str,
+) -> Result<(), BrowserBackendError> {
+    if !frames.is_descendant(&frames.active_frame_id, frame_id) {
+        return close_native_frame_descendants(frames, frame_id).await;
+    }
+    let descendants = frames.descendant_ids(frame_id);
+    let parked =
+        frames
+            .parked
+            .remove(frame_id)
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "native navigated ancestor frame disappeared before activation".into(),
+            })?;
+    let NativeParkedFrame {
+        engine: navigated_engine,
+        parent_id,
+        owner_node_index,
+    } = parked;
+    let mut old_active_engine = std::mem::replace(active_engine, navigated_engine);
+    let mut first_error = old_active_engine
+        .close_async()
+        .await
+        .err()
+        .map(native_error);
+    for descendant in descendants {
+        if let Some(mut frame) = frames.parked.remove(&descendant)
+            && frame.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
+            && let Err(error) = frame.engine.close_async().await.map_err(native_error)
+        {
+            first_error.get_or_insert(error);
+        }
+    }
+    frames.active_frame_id = frame_id.to_owned();
+    frames.active_parent_id = parent_id;
+    frames.active_owner_node_index = owner_node_index;
+    frames.focused_frame_id = Some(frame_id.to_owned());
+    frames.discovered_generation = None;
     first_error.map_or(Ok(()), Err)
 }
 

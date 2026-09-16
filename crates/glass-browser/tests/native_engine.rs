@@ -8601,6 +8601,130 @@ async fn native_runtime_opener_links_create_routable_popup_targets() {
 }
 
 #[tokio::test]
+async fn native_form_targets_keep_opener_and_reuse_named_targets() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://form-target-parent",
+            "<title>Form opener</title><form action='fixture://form-target-child' target='report'><input name='query' value='hello'><button id='blank' type='submit' formtarget='_blank'>Blank</button><button id='named' type='submit'>Named</button></form>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://form-target-child?query=hello",
+            "<title>Form target</title><p>submitted</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://form-target-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    session
+        .action(SemanticAction::Click {
+            target: "id=blank".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+        "fixture://form-target-parent"
+    );
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets.iter().filter(|target| !target.active).count(), 1);
+    assert_eq!(
+        targets.iter().find(|target| !target.active).unwrap().title,
+        "Form target"
+    );
+
+    session
+        .action(SemanticAction::Click {
+            target: "id=named".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 3);
+    session
+        .action(SemanticAction::Click {
+            target: "id=named".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 3);
+    assert_eq!(
+        session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+        "fixture://form-target-parent"
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_nested_form_top_target_navigates_parent_context() {
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://form-top-parent",
+                "<title>Parent</title><iframe src='fixture://form-top-child'></iframe>",
+            )
+            .unwrap()
+            .with_fixture(
+                "fixture://form-top-child",
+                "<title>Child</title><form action='fixture://form-top-result' target='_top'><button id='go' type='submit'>Navigate top</button></form>",
+            )
+            .unwrap()
+            .with_fixture(
+                "fixture://form-top-result",
+                "<title>Top result</title><p>parent navigated</p>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://form-top-parent"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(session.native_list_frames().await.unwrap().len(), 2);
+    session
+        .action(SemanticAction::Click {
+            target: "id=go".into(),
+        })
+        .await
+        .unwrap();
+    let evidence = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    assert_eq!(evidence.url, "fixture://form-top-result");
+    assert_eq!(evidence.title, "Top result");
+    assert_eq!(session.native_list_frames().await.unwrap().len(), 1);
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_form_post_target_is_rejected_without_get_downgrade() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://form-post-target-parent",
+            "<form id='form' action='fixture://form-post-target-child' method='post' target='_blank'><input name='query' value='hello'></form>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://form-post-target-child",
+            "<title>Should not load</title>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://form-post-target-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+    let error = session
+        .script("document.getElementById('form').submit()")
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("native non-current form targets support only GET submissions")
+    );
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 1);
+    assert_eq!(
+        session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+        "fixture://form-post-target-parent"
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_external_blank_link_creates_popup_target() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -8649,6 +8773,57 @@ async fn native_external_blank_link_creates_popup_target() {
     assert_eq!(targets.len(), 2);
     let popup = targets.iter().find(|target| !target.active).unwrap();
     assert_eq!(popup.title, "HTTP popup");
+    assert_eq!(popup.opener_id.as_deref(), Some("native-context"));
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_form_target_creates_popup_and_keeps_opener() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/form", "/result?query=hello"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let body = if expected_path == "/form" {
+                "<title>HTTP form opener</title><form action='/result' target='_blank'><input name='query' value='hello'><button id='go' type='submit'>Submit</button></form>"
+            } else {
+                "<title>HTTP form target</title><p>submitted</p>"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .await
+    .unwrap();
+    session
+        .action(SemanticAction::Click {
+            target: "id=go".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .evidence(EvidenceLevel::Compact)
+            .await
+            .unwrap()
+            .title,
+        "HTTP form opener"
+    );
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let popup = targets.iter().find(|target| !target.active).unwrap();
+    assert_eq!(popup.title, "HTTP form target");
     assert_eq!(popup.opener_id.as_deref(), Some("native-context"));
     session.close().await.unwrap();
     server.await.unwrap();

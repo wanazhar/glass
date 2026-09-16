@@ -1,8 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-414`, following
-completed `native-engine-browser-413`, with
+expansion checkpoint is completed `native-engine-browser-415`, following
+completed `native-engine-browser-414`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -596,6 +596,17 @@ turns. The child carries queued report records in the mutation envelope; the
 parent commits the child snapshot and dispatches the records through the
 existing page event bridge before an allowed form navigation continues, while
 enforced blocks still issue no request. The
+completed `native-engine-browser-415` slice routes bounded GET form
+submissions to their resolved browsing contexts. Submitter `formtarget`
+overrides form `target`; reserved targets are normalized, `_blank` and named
+targets use the browser-owned effect scheduler, and nested `_parent`/`_top`
+navigation promotes the navigated ancestor when a child was selected. The
+content-process mutation envelope carries the target without exposing DOM
+state, and non-current POST forms return a typed error rather than being
+downgraded to GET. Local and HTTP witnesses cover popup creation, named
+reuse, nested ancestor navigation, submitter override, and the no-downgrade
+rule. Broader HTML browsing-context semantics and POST-body transfer remain
+issue #40 gates. The
 preceding `native-engine-browser-411` slice closes the Glass-owned explicit
 `navigate-to`
 navigation-policy extension: bounded response and initial head-meta source
@@ -604,7 +615,7 @@ navigation owner before direct, same-document, page-script, link, download,
 popup, history, or final content-process navigation is issued or committed.
 This is a Glass-owned extension rather than a normative CSP Level 3 directive;
 report-only delivery through async navigation paths was completed by slice
-413; form-action delivery remains the active follow-up in slice 414, and
+413; form-target context routing remains bounded to GET in slice 415, and
 broader browser conformance remains an issue #40 gate. The completed 234 slice
 carries
 bounded

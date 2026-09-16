@@ -29,6 +29,19 @@ vocabulary remains a Glass-owned extension rather than a normative CSP Level 3
 directive; broader CSP and Core Web Profile conformance remain issue #40
 gates.
 
+Slice 415 routes bounded GET form submissions to their resolved browsing
+context instead of always replacing the submitting document. Submitter
+`formtarget` overrides form `target`; `_self`, `_parent`, `_top`,
+`_unfencedtop`, `_blank`, and named targets are normalized and carried through
+the content-process mutation envelope. The browser owner materializes new or
+named targets through the existing effect scheduler, routes nested ancestor
+targets through frame navigation, promotes the navigated ancestor when it was
+selected through a child, and preserves the opener selection. Non-current
+POST forms return a typed unsupported-operation error rather than silently
+turning the request into a GET. Local and HTTP witnesses cover popup creation,
+named reuse, nested `_top`, and the no-downgrade rule; broader HTML browsing
+context and POST-body conformance remain issue #40 gates.
+
 Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
 `navigate-to` navigation-policy extension. After each content-process
 document mutation, the child recomputes its bounded effective source groups

@@ -28,8 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-419`, following completed
-`native-engine-browser-418`. Native is now the default runtime for
+`native-engine-browser-420`, following completed
+`native-engine-browser-419`. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -73,9 +73,9 @@ The completed form POST target payload slice is
 and content type are carried through local and content-process frame,
 popup, and named-target navigation effects. New POST targets must avoid a
 duplicate GET, and the parent must validate the transferred payload against
-the document-owned form state before dispatch. Multipart streaming, upload
-progress, service-worker body replay, and broader form conformance remain
-separate issue #40 gates.
+the document-owned form state before dispatch. Multipart streaming and
+broader form conformance remain separate issue #40 gates. Upload progress and
+Service Worker body replay were completed by later 418 and 420 slices.
 
 The completed compact binary form-body slice is
 [native-engine-browser-417](tasks/native-engine-browser-417.md): multipart and
@@ -97,6 +97,14 @@ page XMLHttpRequest responses now publish `HEADERS_RECEIVED` and `LOADING`
 between `OPENED` and `DONE`, with metadata available before bounded body
 consumption. Incremental network chunks, synchronous XHR, responseXML, and
 full XHR/Web IDL parity remain separate issue #40 gates.
+
+The completed Service Worker request-body replay slice is
+[native-engine-browser-420](tasks/native-engine-browser-420.md): a controlled
+POST is clonable, consumable through the original request, and replayable
+through worker `fetch(Request)` with exact method, headers, content type, and
+body bytes. The native dispatch restores the separately transferred content
+type when constructing `event.request`; streaming replay and complete
+Request/Streams Web IDL parity remain separate issue #40 gates.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI

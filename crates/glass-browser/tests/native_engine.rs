@@ -4718,6 +4718,84 @@ async fn native_content_process_service_worker_dispatches_large_fetch_request_as
 }
 
 #[tokio::test]
+async fn native_content_process_service_worker_replays_cloned_request_body() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (expected_path, content_type, body) in [
+            (
+                "/register",
+                "text/html",
+                "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>replay</main>",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                "self.addEventListener('install', event => event.waitUntil(self.skipWaiting())); self.addEventListener('activate', event => event.waitUntil(self.clients.claim())); self.addEventListener('fetch', event => { if (new URL(event.request.url).pathname === '/echo') event.respondWith((async () => { const replay = event.request.clone(); const observed = await event.request.text(); const upstream = await fetch(replay); return new Response(JSON.stringify({ observed, upstream: await upstream.text(), replayUsed: replay.bodyUsed }), { headers: { 'Content-Type': 'application/json' } }); })()); });",
+            ),
+            ("/echo", "text/plain", "replayed"),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request_bytes(&mut stream).await;
+            let header_end = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4)
+                .unwrap();
+            let request_path = request[..header_end]
+                .split(|byte| *byte == b' ')
+                .nth(1)
+                .unwrap();
+            assert_eq!(request_path, expected_path.as_bytes());
+            if expected_path == "/echo" {
+                assert_eq!(
+                    request[..header_end].split(|byte| *byte == b' ').next(),
+                    Some(&b"POST"[..])
+                );
+                assert!(
+                    String::from_utf8_lossy(&request[..header_end])
+                        .lines()
+                        .any(|line| {
+                            line.split_once(':').is_some_and(|(name, value)| {
+                                name.eq_ignore_ascii_case("content-type")
+                                    && value.trim() == "text/plain"
+                            })
+                        })
+                );
+                assert_eq!(&request[header_end..], b"native-replay");
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/register")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(() => fetch('/echo', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: 'native-replay' }).then(response => response.json()))",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "observed": "native-replay",
+            "upstream": "replayed",
+            "replayUsed": true,
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_does_not_intercept_uncontrolled_client_fetch() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

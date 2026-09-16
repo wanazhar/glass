@@ -429,7 +429,7 @@ does not claim host streaming backpressure, a resident event loop, full Web IDL
 descriptor parity, or final Core Web Profile and production certification. Its
 contract and evidence are recorded in
 `docs/plan/tasks/native-engine-browser-394.md`. The
-in-progress Slice 395 closes the HTTP(S) inline-content CSP bypass: the Rust
+completed Slice 395 closes the HTTP(S) inline-content CSP bypass: the Rust
 policy preserves nonce/hash bytes, applies element-specific script/style
 directive fallback, gates style attributes, and rechecks dynamically mutated
 documents before script execution or computed-style/background-image

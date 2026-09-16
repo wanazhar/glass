@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now active through the completed
-`native-engine-browser-393` locally. Native is now the default runtime for
+`native-engine-browser-394` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -461,6 +461,14 @@ buffers one bounded body payload, so chunked upload backpressure, worker
 pipe/TransformStream parity, browser-wide task-source ordering, broader
 transferables, and final Core Web Profile certification remain issue #40
 gates.
+
+The completed worker stream-composition slice is
+[native-engine-browser-394](tasks/native-engine-browser-394.md): it adds the
+worker `WritableStream` and `TransformStream` surfaces and wires worker
+`ReadableStream.pipeTo()` and `pipeThrough()` through bounded in-realm queue,
+lock, lifecycle, abort, cancel, and transformer ownership. Host streaming
+backpressure, browser-wide task-source ordering, full Web IDL descriptors, and
+final Core Web Profile certification remain separate issue #40 gates.
 
 The completed native visual-encoder slice is
 [native-engine-browser-332](tasks/native-engine-browser-332.md): the native

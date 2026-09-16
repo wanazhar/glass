@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-393`, with native-first product
+expansion checkpoint is the completed `native-engine-browser-394`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -419,7 +419,15 @@ existing host boundary, so chunked upload backpressure, worker
 piping/TransformStream parity, global task-source arbitration, broader
 transferables, and the remaining Core Web Profile and production
 certification gates remain open. Exact evidence is recorded in
-`docs/plan/tasks/native-engine-browser-393.md`. The
+`docs/plan/tasks/native-engine-browser-393.md`. The completed Slice 394 ports
+the bounded page composition owner into dedicated workers: native worker
+`WritableStream` and `TransformStream` constructors, `ReadableStream.pipeTo()`
+and `pipeThrough()`, lock/lifecycle ownership, prevent-flag cancellation, and
+transformer error propagation. The task is scoped to in-realm composition and
+does not claim host streaming backpressure, a resident event loop, full Web IDL
+descriptor parity, or final Core Web Profile and production certification. Its
+contract and evidence are recorded in
+`docs/plan/tasks/native-engine-browser-394.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

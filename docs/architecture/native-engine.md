@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-393` slice. The native runtime is now the primary
+`native-engine-browser-394` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -780,6 +780,18 @@ so chunked upload backpressure, worker piping/TransformStream parity, global
 task-source conformance, broader transferables, and final Core Web Profile and
 production certification gates remain open. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-393.md`.
+
+Slice 394 extends the worker stream owner with bounded `WritableStream` and
+`TransformStream` constructors plus `ReadableStream.prototype.pipeTo()` and
+`pipeThrough()`. The worker composition path preserves constructor identity,
+source/destination locks, ordered writes, transformer lifecycle, abort/cancel
+prevent flags, and terminal lock release using the existing worker queue
+limits. This is deterministic in-realm composition rather than true host
+upload backpressure or a resident event loop; complete Web IDL descriptors,
+cross-source task ordering, and final Core Web Profile and production
+certification remain issue #40 gates. The exact contract and evidence are
+recorded in
+`docs/plan/tasks/native-engine-browser-394.md`.
 
 Slice 318 makes native startup configuration a shared product boundary. CLI
 and TUI sessions use the same profile and viewport adapter; a named non-

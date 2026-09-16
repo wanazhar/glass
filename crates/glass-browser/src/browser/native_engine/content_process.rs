@@ -83,7 +83,7 @@ use url::Url;
 // the base64 envelope and the rest of the document state.
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 11;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 12;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1050,6 +1050,7 @@ pub(crate) struct NativeContentNavigation {
 
 pub(crate) struct NativeContentMutation {
     pub(crate) document: NativeDocumentWire,
+    pub(crate) navigate_to_sources: Option<Vec<Vec<String>>>,
     pub(crate) events: Vec<NativeContentEvent>,
     pub(crate) navigation: Option<NativeContentNavigation>,
     pub(crate) allowed: bool,
@@ -2828,6 +2829,7 @@ fn decode_mutation_payload(
             reason: "content process returned an invalid document snapshot".into(),
         })?;
     let document = decode_document_wire(&document_bytes, operation)?;
+    let navigate_to_sources = decode_navigation_sources(response, operation)?;
     let events = decode_event_payload(response, operation)?;
     let navigation = response
         .get("navigation")
@@ -2846,6 +2848,7 @@ fn decode_mutation_payload(
     let scroll_commands = decode_scroll_commands(response, operation)?;
     Ok(NativeContentMutation {
         document,
+        navigate_to_sources,
         events,
         navigation,
         allowed: response
@@ -6294,6 +6297,27 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 },
             ),
         };
+        let is_document_mutation = response.get("document_base64").is_some()
+            && matches!(
+                response.get("kind").and_then(Value::as_str),
+                Some("mutated") | Some("evaluated")
+            );
+        if is_document_mutation {
+            let navigate_to_sources = match (resource_loader.as_ref(), document_url.as_deref()) {
+                (Some(loader), Some(document_url)) => loader.navigation_sources_for_document(
+                    document_url,
+                    NativeNavigationPolicyKind::NavigateTo,
+                )?,
+                _ => None,
+            };
+            response["navigate_to_sources"] =
+                serde_json::to_value(navigate_to_sources).map_err(|_| {
+                    NativeEngineError::Worker {
+                        operation: "content process navigation policy transfer".into(),
+                        reason: "navigation policy source groups were not serializable".into(),
+                    }
+                })?;
+        }
         let (
             storage_events,
             indexed_db_changes,
@@ -7795,6 +7819,7 @@ fn mutate_click_with_event_preflight(
     }
     let mutation = NativeContentMutation {
         document: next.to_content_wire(),
+        navigate_to_sources: None,
         events: events
             .into_iter()
             .map(|(node, kind)| NativeContentEvent {
@@ -7968,6 +7993,7 @@ fn mutate_type_with_event_bridge(
     }
     let mutation = NativeContentMutation {
         document: next.to_content_wire(),
+        navigate_to_sources: None,
         events: events
             .into_iter()
             .map(|(node, kind)| NativeContentEvent {
@@ -8071,6 +8097,7 @@ fn mutate_form_action_with_event_bridge(
     }
     let mutation = NativeContentMutation {
         document: next.to_content_wire(),
+        navigate_to_sources: None,
         events: events
             .into_iter()
             .map(|(node, kind)| NativeContentEvent {
@@ -8222,6 +8249,7 @@ fn mutate_key_with_event_bridge(
     }
     let mutation = NativeContentMutation {
         document: next.to_content_wire(),
+        navigate_to_sources: None,
         events: events
             .into_iter()
             .map(|(node, kind)| NativeContentEvent {
@@ -8320,6 +8348,7 @@ fn mutate_key_event_with_event_bridge(
         next.clone(),
         NativeContentMutation {
             document: next.to_content_wire(),
+            navigate_to_sources: None,
             events: events
                 .into_iter()
                 .map(|(node, kind)| NativeContentEvent {
@@ -8487,6 +8516,7 @@ fn mutate_key_shortcut_with_event_bridge(
         next.clone(),
         NativeContentMutation {
             document: next.to_content_wire(),
+            navigate_to_sources: None,
             events: events
                 .into_iter()
                 .map(|(node, kind)| NativeContentEvent {
@@ -8873,6 +8903,7 @@ fn mutate_before_unload(
         next.clone(),
         NativeContentMutation {
             document: next.to_content_wire(),
+            navigate_to_sources: None,
             events: events
                 .into_iter()
                 .map(|(node, kind)| NativeContentEvent {
@@ -8910,6 +8941,7 @@ fn mutate_lifecycle_events(
             current.clone(),
             NativeContentMutation {
                 document: current.to_content_wire(),
+                navigate_to_sources: None,
                 events: Vec::new(),
                 navigation: None,
                 allowed: true,
@@ -9006,6 +9038,7 @@ fn mutate_lifecycle_events(
         next.clone(),
         NativeContentMutation {
             document: next.to_content_wire(),
+            navigate_to_sources: None,
             events,
             navigation,
             allowed: true,
@@ -9105,6 +9138,7 @@ fn mutate_hash_change(
         next.clone(),
         NativeContentMutation {
             document: next.to_content_wire(),
+            navigate_to_sources: None,
             events,
             navigation,
             allowed: true,
@@ -9405,6 +9439,7 @@ async fn mutate_script_document(
     }
     let mutation = NativeContentMutation {
         document: next.to_content_wire(),
+        navigate_to_sources: None,
         events: events
             .into_iter()
             .map(|(node, kind)| NativeContentEvent {

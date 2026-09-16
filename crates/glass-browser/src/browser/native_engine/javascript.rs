@@ -16372,11 +16372,15 @@ fn worker_bootstrap(
     return stream._state;
   }};
   const workerReadableStreamSetDone = (state) => {{
-    if (state.done) return;
-    state.done = true;
+    if (!state.done) state.done = true;
     if (state.closedWaiters.length === 0) return;
     const waiters = state.closedWaiters.splice(0);
-    for (const resolve of waiters) resolve();
+    for (const waiter of waiters) {{
+      if (state.error !== null && waiter && typeof waiter.reject === "function")
+        waiter.reject(new Error(state.error));
+      else if (waiter && typeof waiter.resolve === "function") waiter.resolve();
+      else if (typeof waiter === "function") waiter();
+    }}
   }};
   const workerReadableStreamDisturb = (state) => {{
     if (state.disturbed) return;
@@ -16457,16 +16461,289 @@ fn worker_bootstrap(
     workerReadableStreamSetDone(state);
     return Promise.resolve(undefined);
   }};
+  const workerReadableStreamDone = (state) => state.cancelled || state.done || state.error !== null;
+  const workerReadableStreamByteView = (value) => {{
+    if (value instanceof ArrayBuffer) return new Uint8Array(value.slice(0));
+    if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value))
+      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
+    throw new TypeError("native Worker byte stream chunks must be ArrayBuffer or views");
+  }};
+  const workerReadableStreamValueByteLength = (value) => value instanceof ArrayBuffer
+    ? value.byteLength
+    : typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value)
+      ? value.byteLength
+      : 1;
+  const workerReadableStreamStrategy = (strategy, byteMode) => {{
+    const value = strategy === undefined || strategy === null ? {{}} : strategy;
+    if (typeof value !== "object" && typeof value !== "function")
+      throw new TypeError("native Worker ReadableStream strategy is invalid");
+    let highWaterMark = value.highWaterMark === undefined
+      ? {fetch_stream_queue_limit}
+      : Number(value.highWaterMark);
+    if (!Number.isFinite(highWaterMark) || highWaterMark < 0)
+      throw new RangeError("native Worker ReadableStream highWaterMark is invalid");
+    highWaterMark = Math.min(highWaterMark, {fetch_stream_queue_limit});
+    const size = value.size === undefined
+      ? (chunk => byteMode ? workerReadableStreamValueByteLength(chunk) : 1)
+      : value.size;
+    if (typeof size !== "function")
+      throw new TypeError("native Worker ReadableStream size algorithm is invalid");
+    return {{ highWaterMark, size }};
+  }};
+  const workerReadableStreamChunkSize = (state, value) => {{
+    const size = Number(state.strategy.size(value));
+    if (!Number.isFinite(size) || size < 0)
+      throw new RangeError("native Worker ReadableStream chunk size is invalid");
+    return size;
+  }};
+  const workerReadableStreamByobResult = (view, byteLength) => {{
+    const bytesPerElement = Number(view.BYTES_PER_ELEMENT) || 1;
+    const elements = Math.floor(byteLength / bytesPerElement);
+    return typeof view.subarray === "function"
+      ? view.subarray(0, elements)
+      : new Uint8Array(view.buffer, view.byteOffset, elements * bytesPerElement);
+  }};
+  const workerReadableStreamClearPending = (state) => {{
+    const pending = state.pendingRead;
+    state.pendingRead = null;
+    state.byobRequest = null;
+    return pending;
+  }};
+  const workerReadableStreamResolvePending = (state, value, done) => {{
+    const pending = state.pendingRead;
+    if (!pending) return false;
+    if (pending.byobView) {{
+      if (done) {{
+        const current = workerReadableStreamClearPending(state);
+        current.resolve({{ value: workerReadableStreamByobResult(current.byobView, 0), done: true }});
+        return true;
+      }}
+      let bytes;
+      try {{ bytes = workerReadableStreamByteView(value); }}
+      catch (error) {{
+        const current = workerReadableStreamClearPending(state);
+        current.reject(error);
+        return true;
+      }}
+      const bytesPerElement = Number(pending.byobView.BYTES_PER_ELEMENT) || 1;
+      const capacity = Math.floor(pending.byobView.byteLength / bytesPerElement) * bytesPerElement;
+      const count = Math.min(bytes.length, capacity);
+      if (count === 0) return false;
+      new Uint8Array(pending.byobView.buffer, pending.byobView.byteOffset, count)
+        .set(bytes.subarray(0, count));
+      if (count < bytes.length) {{
+        const remainder = bytes.slice(count);
+        state.queued.unshift(remainder);
+        const remainderSize = workerReadableStreamChunkSize(state, remainder);
+        state.queueSizes.unshift(remainderSize);
+        state.queueSize += remainderSize;
+      }}
+      const current = workerReadableStreamClearPending(state);
+      current.resolve({{ value: workerReadableStreamByobResult(current.byobView, count), done: false }});
+      return true;
+    }}
+    const current = workerReadableStreamClearPending(state);
+    current.resolve({{
+      value: value === undefined ? undefined : state.byteMode ? new Uint8Array(workerReadableStreamByteView(value)) : value,
+      done: Boolean(done),
+    }});
+    return true;
+  }};
+  const workerReadableStreamReadQueued = (state) => {{
+    if (state.remotePort) return null;
+    if (state.underlyingSource === null) {{
+      if (state.offset >= state.bytes.length) return null;
+      const value = new Uint8Array(state.bytes.slice(state.offset));
+      state.offset = state.bytes.length;
+      return {{ value, done: false }};
+    }}
+    if (state.queued.length === 0) return null;
+    const value = state.queued.shift();
+    state.queueSize = Math.max(0, state.queueSize - state.queueSizes.shift());
+    return {{ value: state.byteMode ? new Uint8Array(workerReadableStreamByteView(value)) : value, done: false }};
+  }};
+  const workerReadableStreamReadByteQueued = (state, view) => {{
+    const target = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    if (state.remotePort) return null;
+    if (state.underlyingSource === null) {{
+      if (state.offset >= state.bytes.length) return null;
+      const count = Math.min(target.byteLength, state.bytes.length - state.offset);
+      target.set(state.bytes.slice(state.offset, state.offset + count));
+      state.offset += count;
+      return {{ value: workerReadableStreamByobResult(view, count), done: false }};
+    }}
+    if (state.queued.length === 0) return null;
+    const value = workerReadableStreamByteView(state.queued[0]);
+    const count = Math.min(target.byteLength, value.byteLength);
+    target.set(value.subarray(0, count));
+    if (count === value.byteLength) {{
+      state.queued.shift();
+      state.queueSize = Math.max(0, state.queueSize - state.queueSizes.shift());
+    }} else {{
+      const remainder = value.slice(count);
+      state.queued[0] = remainder;
+      state.queueSize = Math.max(0, state.queueSize - state.queueSizes[0]);
+      state.queueSizes[0] = workerReadableStreamChunkSize(state, remainder);
+      state.queueSize += state.queueSizes[0];
+    }}
+    return {{ value: workerReadableStreamByobResult(view, count), done: false }};
+  }};
+  const workerReadableStreamFail = (state, error) => {{
+    if (state.error !== null || state.cancelled) return;
+    state.error = error instanceof Error ? error.message : String(error);
+    state.done = true;
+    if (state.pendingRead) {{
+      const pending = workerReadableStreamClearPending(state);
+      pending.reject(new Error(state.error));
+    }}
+    workerReadableStreamSetDone(state);
+  }};
+  const workerReadableStreamClose = (state) => {{
+    if (state.done || state.cancelled || state.error !== null) return;
+    state.done = true;
+    if (state.pendingRead) workerReadableStreamResolvePending(state, undefined, true);
+    workerReadableStreamSetDone(state);
+  }};
+  const workerReadableStreamEnqueue = (state, value) => {{
+    if (state.done || state.cancelled || state.error !== null)
+      throw new TypeError("native Worker ReadableStream controller is closed");
+    state.sourceProduced = true;
+    const queuedValue = state.byteMode ? workerReadableStreamByteView(value) : value;
+    if (workerReadableStreamValueByteLength(queuedValue) > {fetch_body_limit})
+      throw new RangeError("native Worker ReadableStream chunk exceeds its limit");
+    const size = workerReadableStreamChunkSize(state, queuedValue);
+    if (size > {fetch_body_limit})
+      throw new RangeError("native Worker ReadableStream chunk exceeds its limit");
+    if (state.pendingRead) {{
+      if (workerReadableStreamResolvePending(state, queuedValue, false)) return;
+    }}
+    if (state.queued.length >= {fetch_stream_queue_limit})
+      throw new RangeError("native Worker ReadableStream queue limit exceeded");
+    state.queued.push(queuedValue);
+    state.queueSizes.push(size);
+    state.queueSize += size;
+  }};
+  const workerReadableStreamByobRequest = (state) => {{
+    const pending = state.pendingRead;
+    if (!pending || !pending.byobView || state.done || state.cancelled || state.error !== null)
+      return null;
+    if (state.byobRequest) return state.byobRequest;
+    const request = {{
+      get view() {{ return pending.byobView; }},
+      respond(bytesWritten) {{
+        const count = Number(bytesWritten);
+        if (!Number.isInteger(count) || count < 0 || count > pending.byobView.byteLength)
+          throw new RangeError("native Worker BYOB response is invalid");
+        if (count === 0 && !state.done)
+          throw new TypeError("native Worker BYOB response is empty");
+        const current = workerReadableStreamClearPending(state);
+        current.resolve({{ value: workerReadableStreamByobResult(current.byobView, count), done: false }});
+      }},
+      respondWithNewView(view) {{
+        if (!view || typeof ArrayBuffer.isView !== "function" || !ArrayBuffer.isView(view))
+          throw new TypeError("native Worker BYOB view is invalid");
+        const bytes = workerReadableStreamByteView(view);
+        if (bytes.byteLength > pending.byobView.byteLength)
+          throw new RangeError("native Worker BYOB view exceeds its request");
+        new Uint8Array(pending.byobView.buffer, pending.byobView.byteOffset, bytes.byteLength).set(bytes);
+        const current = workerReadableStreamClearPending(state);
+        current.resolve({{ value: workerReadableStreamByobResult(current.byobView, bytes.byteLength), done: false }});
+      }},
+    }};
+    state.byobRequest = Object.freeze(request);
+    return state.byobRequest;
+  }};
+  const workerReadableStreamPullSource = (state) => {{
+    const source = state.underlyingSource;
+    if (!source || state.sourceStarting || state.sourcePulling || state.done || state.cancelled || state.error !== null)
+      return;
+    if (typeof source.pull !== "function") return;
+    state.sourceProduced = false;
+    state.sourcePulling = true;
+    let result;
+    try {{ result = source.pull(state.sourceController); }}
+    catch (error) {{
+      state.sourcePulling = false;
+      workerReadableStreamFail(state, error);
+      return;
+    }}
+    Promise.resolve(result).then(
+      () => {{
+        const produced = state.sourceProduced;
+        state.sourceProduced = false;
+        state.sourcePulling = false;
+        if (produced && state.pendingRead && !state.done && !state.cancelled && state.error === null)
+          workerReadableStreamPullSource(state);
+      }},
+      error => {{ state.sourcePulling = false; workerReadableStreamFail(state, error); }},
+    );
+  }};
+  const workerReadableStreamStartSource = (state) => {{
+    const source = state.underlyingSource;
+    if (!source || typeof source.start !== "function") {{
+      state.sourceStarting = false;
+      return;
+    }}
+    let result;
+    try {{ result = source.start(state.sourceController); }}
+    catch (error) {{
+      state.sourceStarting = false;
+      workerReadableStreamFail(state, error);
+      return;
+    }}
+    Promise.resolve(result).then(
+      () => {{ state.sourceStarting = false; workerReadableStreamPullSource(state); }},
+      error => {{ state.sourceStarting = false; workerReadableStreamFail(state, error); }},
+    );
+  }};
+  const workerReadableStreamCancelSource = (state, reason) => {{
+    if (state.cancelled) return Promise.resolve(undefined);
+    workerReadableStreamDisturb(state);
+    state.cancelled = true;
+    state.done = true;
+    state.queued = [];
+    state.queueSizes = [];
+    state.queueSize = 0;
+    if (state.pendingRead) workerReadableStreamResolvePending(state, undefined, true);
+    workerReadableStreamSetDone(state);
+    if (!state.underlyingSource || typeof state.underlyingSource.cancel !== "function")
+      return Promise.resolve(undefined);
+    try {{ return Promise.resolve(state.underlyingSource.cancel(reason)); }}
+    catch (error) {{ return Promise.reject(error); }}
+  }};
+  const workerReadableStreamWatchClosed = (state, resolve, reject) => {{
+    if (state.error !== null) reject(new Error(state.error));
+    else if (workerReadableStreamDone(state)) resolve();
+    else state.closedWaiters.push({{ resolve, reject }});
+  }};
   const WorkerReadableStreamNative = typeof globalThis.__glassWorkerReadableStreamConstructor === "function"
     ? globalThis.__glassWorkerReadableStreamConstructor
-    : function(bytes, onDisturb) {{
+    : function(bytes, streamOptions, onDisturb) {{
     if (!(this instanceof WorkerReadableStreamNative)) throw new TypeError("native Worker ReadableStream requires new");
     const transfer = bytes && bytes.__glassWorkerReadableStreamTransfer === true ? bytes : null;
-    if (!transfer && bytes !== undefined && !Array.isArray(bytes))
-      throw new TypeError("native Worker ReadableStream only accepts byte snapshots");
+    const underlyingSource = !transfer && bytes && typeof bytes === "object" && !Array.isArray(bytes)
+      ? bytes
+      : null;
+    const sourceOptions = underlyingSource && streamOptions && typeof streamOptions === "object"
+      ? streamOptions
+      : {{}};
+    const staticBytes = !transfer && Array.isArray(bytes);
+    if (!transfer && bytes !== undefined && bytes !== null && !staticBytes && !underlyingSource)
+      throw new TypeError("native Worker ReadableStream source is invalid");
+    if (underlyingSource && underlyingSource.type !== undefined && underlyingSource.type !== "bytes")
+      throw new TypeError("native Worker ReadableStream type is unsupported");
     if (transfer && (!transfer.port || typeof transfer.port.postMessage !== "function"))
       throw new TypeError("native Worker ReadableStream transfer endpoint is invalid");
-    const values = transfer ? [] : bytes === undefined ? [] : bytes.slice();
+    const byteMode = transfer
+      ? transfer.byteMode === true
+      : underlyingSource
+        ? underlyingSource.type === "bytes"
+        : staticBytes;
+    const strategy = workerReadableStreamStrategy(
+      transfer ? undefined : underlyingSource ? sourceOptions : undefined,
+      byteMode,
+    );
+    const values = transfer ? [] : staticBytes ? bytes.slice() : [];
     if (values.length > {fetch_body_limit})
       throw new RangeError("native Worker ReadableStream body exceeds its limit");
     for (const value of values) {{
@@ -16476,20 +16753,43 @@ fn worker_bootstrap(
     const state = {{
       bytes: values,
       offset: 0,
+      queued: [],
+      queueSizes: [],
+      queueSize: 0,
+      strategy,
+      underlyingSource,
+      sourceController: null,
+      sourceStarting: Boolean(underlyingSource && typeof underlyingSource.start === "function"),
+      sourcePulling: false,
+      sourceProduced: false,
       locked: false,
       disturbed: false,
       consumedByResponse: false,
+      consumedByRequest: false,
       cancelled: false,
       done: false,
       error: null,
       closedWaiters: [],
-      onDisturb: typeof onDisturb === "function" ? onDisturb : null,
+      pendingRead: null,
+      byobRequest: null,
+      onDisturb: typeof streamOptions === "function"
+        ? streamOptions
+        : typeof onDisturb === "function" ? onDisturb : null,
       remotePort: transfer ? transfer.port : null,
-      byteMode: transfer ? transfer.byteMode === true : true,
+      byteMode,
       remoteDone: transfer ? false : true,
       remoteQueue: [],
       remotePendingRead: null,
     }};
+    if (underlyingSource) {{
+      state.sourceController = Object.freeze({{
+        get desiredSize() {{ return state.strategy.highWaterMark - state.queueSize; }},
+        get byobRequest() {{ return workerReadableStreamByobRequest(state); }},
+        enqueue(value) {{ workerReadableStreamEnqueue(state, value); }},
+        close() {{ workerReadableStreamClose(state); }},
+        error(error) {{ workerReadableStreamFail(state, error); }},
+      }});
+    }}
     if (state.remotePort) {{
       state.remotePort.onmessage = event => {{
         const message = event && event.data;
@@ -16532,6 +16832,7 @@ fn worker_bootstrap(
     }}
     Object.defineProperty(this, "__glassWorkerReadableStream", {{ value: true }});
     Object.defineProperty(this, "_state", {{ value: state }});
+    if (underlyingSource) workerReadableStreamStartSource(state);
     Object.freeze(this);
   }};
   Object.defineProperty(WorkerReadableStreamNative.prototype, "locked", {{
@@ -16554,20 +16855,16 @@ fn worker_bootstrap(
     state.locked = true;
     let released = false;
     let resolveClosed;
-    const closed = new Promise(resolve => {{ resolveClosed = resolve; }});
-    if (state.done || state.cancelled) resolveClosed();
-    else state.closedWaiters.push(resolveClosed);
+    let rejectClosed;
+    const closed = new Promise((resolve, reject) => {{
+      resolveClosed = resolve;
+      rejectClosed = reject;
+    }});
+    workerReadableStreamWatchClosed(state, resolveClosed, rejectClosed);
     const release = () => {{
       if (released) return;
       released = true;
       state.locked = false;
-    }};
-    const byobResult = (view, count) => {{
-      const bytesPerElement = Number(view.BYTES_PER_ELEMENT) || 1;
-      const elements = Math.floor(count / bytesPerElement);
-      return typeof view.subarray === "function"
-        ? view.subarray(0, elements)
-        : new Uint8Array(view.buffer, view.byteOffset, elements * bytesPerElement);
     }};
     const read = (view) => {{
       if (released) return Promise.reject(new TypeError("native Worker ReadableStream reader is released"));
@@ -16586,7 +16883,7 @@ fn worker_bootstrap(
           return Promise.resolve(byob
             ? workerReadableStreamRemoteResult(state, {{ byobView: view }}, value)
             : state.byteMode
-              ? {{ value: new Uint8Array(value), done: false }}
+              ? {{ value: new Uint8Array(workerReadableStreamByteView(value)), done: false }}
               : {{ value, done: false }});
         }}
         if (state.error !== null) return Promise.reject(new Error(state.error));
@@ -16612,33 +16909,41 @@ fn worker_bootstrap(
         return promise;
       }}
       if (state.error !== null) return Promise.reject(new Error(state.error));
-      if (state.cancelled || state.done || state.offset >= state.bytes.length) {{
+      const queued = byob
+        ? workerReadableStreamReadByteQueued(state, view)
+        : workerReadableStreamReadQueued(state);
+      if (queued) {{
+        if (state.underlyingSource && state.queued.length < state.strategy.highWaterMark)
+          workerReadableStreamPullSource(state);
+        return Promise.resolve(queued);
+      }}
+      if (workerReadableStreamDone(state) || state.underlyingSource === null && state.offset >= state.bytes.length) {{
         workerReadableStreamSetDone(state);
         return Promise.resolve(byob
-          ? {{ value: byobResult(view, 0), done: true }}
+          ? {{ value: workerReadableStreamEmptyByob(view), done: true }}
           : {{ value: undefined, done: true }});
       }}
-      const remaining = state.bytes.length - state.offset;
-      const bytesPerElement = byob ? Number(view.BYTES_PER_ELEMENT) || 1 : 1;
-      const capacity = byob
-        ? Math.floor(view.byteLength / bytesPerElement) * bytesPerElement
-        : Math.min(remaining, 8192);
-      if (capacity === 0) throw new TypeError("native Worker BYOB view is too small");
-      const count = Math.min(remaining, capacity);
-      const bytes = state.bytes.slice(state.offset, state.offset + count);
-      state.offset += count;
-      if (byob) {{
-        new Uint8Array(view.buffer, view.byteOffset, count).set(bytes);
-        return Promise.resolve({{ value: byobResult(view, count), done: false }});
+      if (state.pendingRead)
+        return Promise.reject(new TypeError("native Worker ReadableStream read is already pending"));
+      const promise = new Promise((resolve, reject) => {{
+        state.pendingRead = {{ resolve, reject, byobView: byob ? view : null }};
+      }});
+      try {{
+        if (state.underlyingSource) workerReadableStreamPullSource(state);
       }}
-      return Promise.resolve({{ value: new Uint8Array(bytes), done: false }});
+      catch (error) {{
+        state.pendingRead = null;
+        return Promise.reject(error);
+      }}
+      return promise;
     }};
     const cancel = reason => {{
       if (released) return Promise.reject(new TypeError("native Worker ReadableStream reader is released"));
-      state.cancelled = true;
-      state.offset = state.bytes.length;
       workerReadableStreamDisturb(state);
       if (state.remotePort) return workerReadableStreamCancelRemote(state, reason);
+      if (state.underlyingSource) return workerReadableStreamCancelSource(state, reason);
+      state.cancelled = true;
+      state.offset = state.bytes.length;
       workerReadableStreamSetDone(state);
       return Promise.resolve(undefined);
     }};
@@ -16659,6 +16964,7 @@ fn worker_bootstrap(
     const state = workerReadableStreamState(this);
     if (state.locked) return Promise.reject(new TypeError("native Worker ReadableStream is locked"));
     if (state.remotePort) return workerReadableStreamCancelRemote(state, reason);
+    if (state.underlyingSource) return workerReadableStreamCancelSource(state, reason);
     state.cancelled = true;
     state.offset = state.bytes.length;
     workerReadableStreamDisturb(state);
@@ -16666,15 +16972,96 @@ fn worker_bootstrap(
     return Promise.resolve(undefined);
   }};
   WorkerReadableStreamNative.prototype.tee = function() {{
-    const state = workerReadableStreamState(this);
-    if (state.locked || state.consumedByResponse)
+    const sourceState = workerReadableStreamState(this);
+    if (sourceState.locked || sourceState.consumedByResponse || sourceState.consumedByRequest)
       throw new TypeError("native Worker ReadableStream is unusable");
-    if (state.remotePort)
-      throw new TypeError("native transferred Worker ReadableStream tee is unsupported");
-    workerReadableStreamDisturb(state);
-    const remaining = state.bytes.slice(state.offset);
-    workerReadableStreamSetDone(state);
-    return [new WorkerReadableStreamNative(remaining), new WorkerReadableStreamNative(remaining)];
+    workerReadableStreamDisturb(sourceState);
+    const upstreamReader = this.getReader();
+    const tee = {{
+      upstreamReader,
+      reading: false,
+      done: false,
+      error: null,
+      upstreamReleased: false,
+      branches: [],
+    }};
+    const releaseUpstream = () => {{
+      if (tee.upstreamReleased) return;
+      tee.upstreamReleased = true;
+      tee.upstreamReader.releaseLock();
+    }};
+    const cancelUpstream = reason => {{
+      if (tee.upstreamReleased) return Promise.resolve(undefined);
+      tee.done = true;
+      return Promise.resolve(tee.upstreamReader.cancel(reason)).then(
+        () => {{ releaseUpstream(); }},
+        error => {{ releaseUpstream(); throw error; }},
+      );
+    }};
+    const failTee = error => {{
+      if (tee.error !== null) return Promise.resolve(undefined);
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      tee.error = normalized.message;
+      tee.done = true;
+      for (const branch of tee.branches) {{
+        if (!branch.cancelled && branch.controller) branch.controller.error(normalized);
+      }}
+      return cancelUpstream(normalized).catch(() => undefined);
+    }};
+    const finishTee = () => {{
+      if (tee.done) return;
+      tee.done = true;
+      for (const branch of tee.branches) {{
+        if (!branch.cancelled && branch.controller) branch.controller.close();
+      }}
+      releaseUpstream();
+    }};
+    const maybePullTee = () => {{
+      if (tee.reading || tee.done || tee.error !== null) return Promise.resolve(undefined);
+      const activeBranches = tee.branches.filter(branch => !branch.cancelled);
+      if (activeBranches.length === 0) return cancelUpstream();
+      if (activeBranches.some(branch => branch.state && branch.state.queued.length >= {fetch_stream_queue_limit}))
+        return Promise.resolve(undefined);
+      tee.reading = true;
+      return tee.upstreamReader.read().then(
+        result => {{
+          tee.reading = false;
+          if (result.done) {{
+            finishTee();
+            return;
+          }}
+          for (const branch of tee.branches) {{
+            if (branch.cancelled || !branch.controller) continue;
+            try {{ branch.controller.enqueue(result.value); }}
+            catch (error) {{ return failTee(error); }}
+          }}
+        }},
+        error => {{
+          tee.reading = false;
+          return failTee(error);
+        }},
+      );
+    }};
+    const cancelBranch = (branch, reason) => {{
+      if (branch.cancelled) return Promise.resolve(undefined);
+      branch.cancelled = true;
+      if (tee.branches.every(candidate => candidate.cancelled)) return cancelUpstream(reason);
+      return Promise.resolve(undefined);
+    }};
+    const createBranch = () => {{
+      const branch = {{ controller: null, stream: null, state: null, cancelled: false }};
+      const branchSource = {{
+        start(controller) {{ branch.controller = controller; }},
+        pull() {{ return maybePullTee(); }},
+        cancel(reason) {{ return cancelBranch(branch, reason); }},
+      }};
+      if (sourceState.byteMode) branchSource.type = "bytes";
+      branch.stream = new WorkerReadableStreamNative(branchSource);
+      branch.state = workerReadableStreamState(branch.stream);
+      tee.branches.push(branch);
+      return branch.stream;
+    }};
+    return [createBranch(), createBranch()];
   }};
   WorkerReadableStreamNative.prototype[Symbol.asyncIterator] = function() {{
     const reader = this.getReader();
@@ -16708,6 +17095,8 @@ fn worker_bootstrap(
       const state = workerReadableStreamState(input);
       if (state.locked || state.disturbed || state.consumedByResponse || state.consumedByRequest)
         throw new TypeError("native Worker body stream is unusable");
+      if (state.underlyingSource || state.remotePort)
+        throw new TypeError("native Worker streaming request bodies are unsupported");
       const bytes = state.bytes.slice(state.offset);
       workerReadableStreamDisturb(state);
       state.consumedByRequest = true;
@@ -16732,6 +17121,8 @@ fn worker_bootstrap(
     request.__glassWorkerRequestBodyState.used = true;
     if (body) {{
       const state = workerReadableStreamState(body);
+      if (state.underlyingSource || state.remotePort)
+        throw new TypeError("native Worker streaming request bodies are unsupported");
       state.consumedByRequest = true;
       workerReadableStreamDisturb(state);
       state.offset = state.bytes.length;
@@ -16861,6 +17252,8 @@ fn worker_bootstrap(
       const state = workerReadableStreamState(body);
       if (state.locked || state.disturbed || state.consumedByResponse || state.consumedByRequest)
         throw new TypeError("native Worker Response body stream is unusable");
+      if (state.underlyingSource || state.remotePort)
+        throw new TypeError("native Worker streaming response bodies are unsupported");
       const bytes = state.bytes.slice(state.offset);
       workerReadableStreamDisturb(state);
       state.offset = state.bytes.length;

@@ -17728,8 +17728,73 @@ async fn native_readable_stream_transfer_preserves_pull_order_and_hides_transpor
         .unwrap()
         .with_fixture(
             "fixture://readable-stream-transfer-worker",
-            r#"self.onmessage = event => {
+            r#"self.onmessage = async event => {
+                if (event.data.kind === 'create') {
+                    const events = [];
+                    let pulls = 0;
+                    const stream = new ReadableStream({
+                        start(controller) {
+                            events.push('start');
+                            controller.enqueue('first');
+                        },
+                        pull(controller) {
+                            events.push('pull');
+                            if (pulls++ === 0) {
+                                controller.enqueue('second');
+                                controller.close();
+                            }
+                        },
+                        cancel(reason) {
+                            events.push('cancel:' + reason);
+                        },
+                    });
+                    const reader = stream.getReader();
+                    Promise.resolve((async () => {
+                        const first = await reader.read();
+                        const second = await reader.read();
+                        const done = await reader.read();
+                        const locked = stream.locked;
+                        reader.releaseLock();
+                        postMessage({
+                            kind: 'created',
+                            identity: [stream instanceof ReadableStream, locked, stream.locked],
+                            events,
+                            values: [first.value, second.value],
+                            done: done.done,
+                        });
+                    })()).catch(error => postMessage({ error: error.name }));
+                    return;
+                }
                 const stream = event.data.stream;
+                if (event.data.kind === 'tee') {
+                    try {
+                        const [left, right] = stream.tee();
+                        const leftReader = left.getReader();
+                        const rightReader = right.getReader();
+                        const leftFirst = await leftReader.read();
+                        const rightFirst = await rightReader.read();
+                        const leftSecond = await leftReader.read();
+                        const rightSecond = await rightReader.read();
+                        const leftDone = await leftReader.read();
+                        const rightDone = await rightReader.read();
+                        leftReader.releaseLock();
+                        rightReader.releaseLock();
+                        postMessage({
+                            kind: 'tee',
+                            values: [
+                                Array.from(leftFirst.value),
+                                Array.from(leftSecond.value),
+                                leftDone.done,
+                                Array.from(rightFirst.value),
+                                Array.from(rightSecond.value),
+                                rightDone.done,
+                            ],
+                        });
+                    } catch (error) {
+                        postMessage({ error: error.name });
+                    }
+                    return;
+                }
                 const reader = stream.getReader();
                 reader.read().then(first => reader.read().then(second => reader.read().then(third => {
                     postMessage({
@@ -17788,6 +17853,14 @@ async fn native_readable_stream_transfer_preserves_pull_order_and_hides_transpor
                             controller.close();
                         },
                     });
+                    globalThis.teeSource = new ReadableStream({
+                        type: 'bytes',
+                        start(controller) {
+                            controller.enqueue(new Uint8Array([6, 5]));
+                            controller.enqueue(new Uint8Array([4, 3]));
+                            controller.close();
+                        },
+                    });
                     return localReadableTransfer;
                 })()"#,
             )
@@ -17801,6 +17874,29 @@ async fn native_readable_stream_transfer_preserves_pull_order_and_hides_transpor
     );
     assert_eq!(
         engine
+            .evaluate_async("worker.postMessage({ kind: 'create' }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let expected_created = serde_json::json!([{
+        "kind": "created",
+        "identity": [true, true, false],
+        "events": ["start", "pull"],
+        "values": ["first", "second"],
+        "done": true,
+    }]);
+    let mut worker_messages = serde_json::json!([]);
+    for _ in 0..16 {
+        worker_messages = engine.evaluate_async("workerMessages").await.unwrap();
+        if worker_messages == expected_created {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(worker_messages, expected_created);
+    assert_eq!(
+        engine
             .evaluate_async(
                 "worker.postMessage({ kind: 'bytes', stream: workerSource }, [workerSource]); true",
             )
@@ -17809,12 +17905,17 @@ async fn native_readable_stream_transfer_preserves_pull_order_and_hides_transpor
         serde_json::json!(true)
     );
     let expected_worker_messages = serde_json::json!([{
+        "kind": "created",
+        "identity": [true, true, false],
+        "events": ["start", "pull"],
+        "values": ["first", "second"],
+        "done": true,
+    }, {
         "kind": "bytes",
         "identity": [true, true, 0],
         "chunks": [[1, 2], [3, 4, 5]],
         "done": true,
     }]);
-    let mut worker_messages = serde_json::Value::Array(Vec::new());
     for _ in 0..16 {
         worker_messages = engine.evaluate_async("workerMessages").await.unwrap();
         if worker_messages == expected_worker_messages {
@@ -17833,6 +17934,13 @@ async fn native_readable_stream_transfer_preserves_pull_order_and_hides_transpor
         serde_json::json!(true)
     );
     let expected_worker_messages = serde_json::json!([
+        {
+            "kind": "created",
+            "identity": [true, true, false],
+            "events": ["start", "pull"],
+            "values": ["first", "second"],
+            "done": true,
+        },
         {
             "kind": "bytes",
             "identity": [true, true, 0],
@@ -17854,6 +17962,43 @@ async fn native_readable_stream_transfer_preserves_pull_order_and_hides_transpor
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(worker_messages, expected_worker_messages);
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "worker.postMessage({ kind: 'tee', stream: teeSource }, [teeSource]); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let expected_tee = serde_json::json!([{
+        "kind": "created",
+        "identity": [true, true, false],
+        "events": ["start", "pull"],
+        "values": ["first", "second"],
+        "done": true,
+    }, {
+        "kind": "bytes",
+        "identity": [true, true, 0],
+        "chunks": [[1, 2], [3, 4, 5]],
+        "done": true,
+    }, {
+        "kind": "values",
+        "identity": [true, true, 0],
+        "chunks": [{ "kind": "object", "value": 42 }, "tail"],
+        "done": true,
+    }, {
+        "kind": "tee",
+        "values": [[6, 5], [4, 3], true, [6, 5], [4, 3], true],
+    }]);
+    for _ in 0..16 {
+        worker_messages = engine.evaluate_async("workerMessages").await.unwrap();
+        if worker_messages == expected_tee {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(worker_messages, expected_tee);
     engine.close_async().await.unwrap();
 }
 

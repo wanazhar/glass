@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-425`, following
+expansion checkpoint is completed `native-engine-browser-426`, following
 completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and
@@ -63,6 +63,11 @@ document responses now select a bounded detached HTML document or the strict
 XML owner by MIME, with head/body/title projections, case-insensitive lookup,
 basic recovery, void/raw-text/RCDATA handling, ownership, and serialization;
 the live page DOM and worker XHR remain isolated.
+Slice 426 completes the XHR `responseText` state follow-up: page and worker
+realms now use guarded internal text projections, with valid empty/text reads
+during buffered `LOADING`/`DONE`, `InvalidStateError` for binary/JSON/document
+reads, and lifecycle reset coverage across reopen, abort, timeout, and terminal
+error paths.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

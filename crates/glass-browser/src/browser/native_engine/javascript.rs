@@ -18447,7 +18447,7 @@ fn worker_bootstrap(
     this.readyState = 0;
     this.status = 0;
     this.statusText = "";
-    this.responseText = "";
+    this._responseText = "";
     this.responseURL = "";
     this.response = "";
     this._responseType = "";
@@ -18499,6 +18499,15 @@ fn worker_bootstrap(
       this._timeout = Math.trunc(numeric);
     }},
   }});
+  Object.defineProperty(WorkerXMLHttpRequestNative.prototype, "responseText", {{
+    configurable: true,
+    get() {{
+      const responseType = String(this.responseType || "").toLowerCase();
+      if (!["", "text"].includes(responseType))
+        throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest responseText is unavailable for this response type", "InvalidStateError");
+      return this._responseText;
+    }},
+  }});
   Object.defineProperty(WorkerXMLHttpRequestNative.prototype, "responseType", {{
     configurable: true,
     get() {{ return this._responseType; }},
@@ -18524,6 +18533,12 @@ fn worker_bootstrap(
     this._responseHeaders = new WorkerHeadersNative();
     this._aborted = false;
     this._sent = false;
+    this.status = 0;
+    this.statusText = "";
+    this._responseText = "";
+    this.responseURL = "";
+    this.response = "";
+    this.responseXML = null;
     this._token += 1;
     this._uploadStarted = false;
     this._uploadFinished = false;
@@ -18556,7 +18571,7 @@ fn worker_bootstrap(
     this.readyState = 0;
     this.status = 0;
     this.statusText = "";
-    this.responseText = "";
+    this._responseText = "";
     this.responseURL = "";
     this.response = "";
     this.responseXML = null;
@@ -18598,9 +18613,10 @@ fn worker_bootstrap(
       return response.text();
     }}).then(value => {{
       if (value === null || this._token !== token || this._aborted) return;
+      this._responseText = typeof value === "string" ? value : "";
       this.readyState = 3;
       this._notifyReadyState();
-      this.responseText = typeof value === "string" ? value : "";
+      this._responseText = typeof value === "string" ? value : "";
       this.response = value;
       this._sent = false;
       this.readyState = 4;
@@ -18613,7 +18629,7 @@ fn worker_bootstrap(
       this._sent = false;
       this.status = 0;
       this.statusText = "";
-      this.responseText = "";
+      this._responseText = "";
       this.responseURL = "";
       this.response = "";
       this.responseXML = null;
@@ -27122,7 +27138,7 @@ fn document_bootstrap(
     this.readyState = 0;
     this.status = 0;
     this.statusText = "";
-    this.responseText = "";
+    this._responseText = "";
     this.responseURL = "";
     this.response = "";
     this._responseXML = null;
@@ -27175,6 +27191,15 @@ fn document_bootstrap(
       this._timeout = Math.trunc(numeric);
     }},
   }});
+  Object.defineProperty(XMLHttpRequestNative.prototype, "responseText", {{
+    configurable: true,
+    get() {{
+      const responseType = String(this.responseType || "").toLowerCase();
+      if (!["", "text"].includes(responseType))
+        throw new DOMExceptionNative("native XMLHttpRequest responseText is unavailable for this response type", "InvalidStateError");
+      return this._responseText;
+    }},
+  }});
   Object.defineProperty(XMLHttpRequestNative.prototype, "responseType", {{
     configurable: true,
     get() {{ return this._responseType; }},
@@ -27207,7 +27232,14 @@ fn document_bootstrap(
     this._headers = {{}};
     this._controller = null;
     this._aborted = false;
+    this.status = 0;
+    this.statusText = "";
+    this._responseText = "";
+    this.responseURL = "";
+    this.response = "";
     this._responseXML = null;
+    this._responseContentType = null;
+    this._responseHeaders = responseHeaders([], null);
     this._uploadStarted = false;
     this._uploadFinished = false;
     this._uploadTotal = 0;
@@ -27230,7 +27262,7 @@ fn document_bootstrap(
     this.readyState = 0;
     this.status = 0;
     this.statusText = "";
-    this.responseText = "";
+    this._responseText = "";
     this.responseURL = "";
     this.response = "";
     this._responseXML = null;
@@ -27289,6 +27321,7 @@ fn document_bootstrap(
     }}).then(value => {{
       if (value === null || this._controller !== controller || this._aborted) return;
       this._controller = null;
+      this._responseText = typeof value === "string" ? value : "";
       this.readyState = 3;
       this._notifyReadyState();
       const xmlContent = typeof globalThis.__glassIsXmlMime === "function"
@@ -27304,17 +27337,17 @@ fn document_bootstrap(
         this._responseXML = parseDocument
           ? parseDocument(String(value), this.responseURL, this._responseContentType)
           : null;
-        this.responseText = "";
+        this._responseText = "";
         this.response = this._responseXML;
       }} else if (responseType === "" && xmlContent) {{
         this._responseXML = typeof globalThis.__glassParseXmlDocument === "function"
           ? globalThis.__glassParseXmlDocument(String(value), this.responseURL, this._responseContentType)
           : null;
-        this.responseText = typeof value === "string" ? value : "";
+        this._responseText = typeof value === "string" ? value : "";
         this.response = value;
       }} else {{
         this._responseXML = null;
-        this.responseText = typeof value === "string" ? value : "";
+        this._responseText = typeof value === "string" ? value : "";
         this.response = value;
       }}
       this.readyState = 4;
@@ -27328,7 +27361,7 @@ fn document_bootstrap(
       if (error && error.name === "TimeoutError") {{
         this.status = 0;
         this.statusText = "";
-        this.responseText = "";
+        this._responseText = "";
         this.responseURL = "";
         this.response = "";
         this._responseXML = null;

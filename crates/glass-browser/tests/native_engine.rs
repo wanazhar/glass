@@ -53549,12 +53549,16 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
                     binaryXhr.responseType = 'arraybuffer';
                     binaryXhr.setRequestHeader('Content-Type', 'application/octet-stream');
                     binaryXhr.onload = async () => {
-                        globalThis.xhrBinaryResult = [binaryXhr.status, binaryXhr.response instanceof ArrayBuffer, Array.from(new Uint8Array(binaryXhr.response)), binaryXhr.responseText, binaryXhr.responseURL];
+                        let responseTextError = '';
+                        try { binaryXhr.responseText; } catch (error) { responseTextError = error.name; }
+                        globalThis.xhrBinaryResult = [binaryXhr.status, binaryXhr.response instanceof ArrayBuffer, Array.from(new Uint8Array(binaryXhr.response)), responseTextError, binaryXhr.responseURL];
                         const blobXhr = new XMLHttpRequest();
                         blobXhr.open('GET', '/xhr-blob');
                         blobXhr.responseType = 'blob';
                         blobXhr.onload = async () => {
-                            globalThis.xhrBlobResult = [blobXhr.status, blobXhr.response instanceof Blob, blobXhr.response.size, Array.from(await blobXhr.response.bytes()), blobXhr.responseText, blobXhr.responseURL];
+                            let responseTextError = '';
+                            try { blobXhr.responseText; } catch (error) { responseTextError = error.name; }
+                            globalThis.xhrBlobResult = [blobXhr.status, blobXhr.response instanceof Blob, blobXhr.response.size, Array.from(await blobXhr.response.bytes()), responseTextError, blobXhr.responseURL];
                         };
                         blobXhr.send();
                     };
@@ -53585,7 +53589,7 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
             200,
             true,
             [0, 255, 128, 65],
-            "",
+            "InvalidStateError",
             format!("http://{address}/xhr-binary")
         ])
     );
@@ -53599,7 +53603,7 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
             true,
             4,
             [0, 255, 128, 65],
-            "",
+            "InvalidStateError",
             format!("http://{address}/xhr-blob")
         ])
     );
@@ -53786,7 +53790,7 @@ async fn native_content_process_xhr_publishes_response_state_lifecycle() {
                     "statusText": "200",
                     "url": format!("http://{address}/state"),
                     "header": "ready",
-                    "responseText": ""
+                    "responseText": "state-response"
                 },
                 {
                     "readyState": 4,
@@ -53821,7 +53825,11 @@ async fn native_content_process_xhr_supports_json_response_type_in_page_and_work
 globalThis.pageJsonPromise = new Promise(resolve => {
   const xhr = new XMLHttpRequest();
   xhr.responseType = 'json';
-  xhr.onload = () => resolve({ identity: xhr.response instanceof Object, data: xhr.response, text: xhr.responseText });
+  xhr.onload = () => {
+    let textError = '';
+    try { xhr.responseText; } catch (error) { textError = error.name; }
+    resolve({ identity: xhr.response instanceof Object, data: xhr.response, text: textError });
+  };
   xhr.onerror = () => resolve({ error: 'page-xhr' });
   xhr.open('GET', '/json');
   xhr.send();
@@ -53837,7 +53845,11 @@ globalThis.workerPromise = new Promise(resolve => {
                     "text/javascript",
                     r#"const xhr = new XMLHttpRequest();
 xhr.responseType = 'json';
-xhr.onload = () => postMessage({ identity: xhr.response instanceof Object, data: xhr.response, text: xhr.responseText });
+xhr.onload = () => {
+  let textError = '';
+  try { xhr.responseText; } catch (error) { textError = error.name; }
+  postMessage({ identity: xhr.response instanceof Object, data: xhr.response, text: textError });
+};
 xhr.onerror = () => postMessage({ error: 'worker-xhr' });
 xhr.open('GET', '/worker-json');
 xhr.send();"#,
@@ -53868,12 +53880,12 @@ xhr.send();"#,
             {
                 "identity": true,
                 "data": {"page": true, "value": 7},
-                "text": ""
+                "text": "InvalidStateError"
             },
             {
                 "identity": true,
                 "data": {"worker": true, "value": 9},
-                "text": ""
+                "text": "InvalidStateError"
             }
         ])
     );
@@ -53954,9 +53966,11 @@ async fn native_content_process_xhr_exposes_bounded_xml_response_document() {
                     explicit.onload = () => {
                         try {
                             const document = explicit.response;
+                            let responseTextError = '';
+                            try { explicit.responseText; } catch (error) { responseTextError = error.name; }
                             result.explicit = {
                                 identity: document instanceof Document && document === explicit.responseXML,
-                                responseText: explicit.responseText,
+                                responseTextError,
                                 root: document.documentElement.nodeName,
                                 namespace: document.documentElement.namespaceURI,
                             };
@@ -54047,7 +54061,7 @@ async fn native_content_process_xhr_exposes_bounded_xml_response_document() {
             },
             "explicit": {
                 "identity": true,
-                "responseText": "",
+                "responseTextError": "InvalidStateError",
                 "root": "catalog",
                 "namespace": "urn:glass",
             },
@@ -54222,10 +54236,12 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                     invalid.open('GET', '/html-invalid');
                     invalid.onload = () => {
                         try {
+                            let responseTextError = '';
+                            try { invalid.responseText; } catch (error) { responseTextError = error.name; }
                             result.invalid = {
                                 response: invalid.response,
                                 responseXML: invalid.responseXML,
-                                responseText: invalid.responseText,
+                                responseTextError,
                             };
                             resolve(result);
                         } catch (error) {
@@ -54256,6 +54272,8 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                     explicit.onload = () => {
                         try {
                             const document = explicit.response;
+                            let responseTextError = '';
+                            try { explicit.responseText; } catch (error) { responseTextError = error.name; }
                             const root = document.documentElement;
                             const head = document.head;
                             const body = document.body;
@@ -54270,7 +54288,7 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                                 identity: document instanceof Document
                                     && document === explicit.responseXML,
                                 contentType: document.contentType,
-                                responseText: explicit.responseText,
+                                responseTextError,
                                 root: [root.nodeName, root.localName, root.tagName],
                                 title: document.title,
                                 head: head.nodeName,
@@ -54319,7 +54337,7 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
             "explicit": {
                 "identity": true,
                 "contentType": "text/html",
-                "responseText": "",
+                "responseTextError": "InvalidStateError",
                 "root": ["HTML", "html", "HTML"],
                 "title": "Native & HTML",
                 "head": "HEAD",
@@ -54345,7 +54363,130 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
             "invalid": {
                 "response": null,
                 "responseXML": null,
-                "responseText": "",
+                "responseTextError": "InvalidStateError",
+            },
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_xhr_guards_response_text_by_type_and_resets_it() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..5 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .expect("timed out waiting for the responseText request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let (content_type, body) = match path {
+                "/page" => (
+                    "text/html",
+                    r#"<script>
+globalThis.responseTextResultPromise = new Promise(resolve => {
+  const result = {};
+  const json = new XMLHttpRequest();
+  json.responseType = 'JSON';
+  json.open('GET', '/json');
+  json.onload = () => {
+    let jsonGuard = '';
+    try { json.responseText; } catch (error) { jsonGuard = error.name; }
+    result.json = { guard: jsonGuard, response: json.response };
+
+    const text = new XMLHttpRequest();
+    text.open('GET', '/text');
+    let openedText = text.responseText;
+    let loadingText = '';
+    text.onreadystatechange = () => {
+      if (text.readyState === 3) loadingText = text.responseText;
+    };
+    text.onload = () => {
+      result.text = {
+        opened: openedText,
+        loading: loadingText,
+        done: text.responseText,
+      };
+      text.open('GET', '/text');
+      result.reopened = [text.readyState, text.responseText, text.response];
+
+      const abort = new XMLHttpRequest();
+      abort.open('GET', 'data:text/plain,stale');
+      abort.send();
+      abort.abort();
+      result.abort = [abort.readyState, abort.responseText, abort.response];
+
+      const worker = new Worker('/worker-response-text.js');
+      worker.onmessage = event => {
+        result.worker = event.data;
+        resolve(result);
+      };
+      worker.onerror = () => resolve({ error: 'worker-script' });
+    };
+    text.onerror = () => resolve({ error: 'text-xhr' });
+    text.send();
+  };
+  json.onerror = () => resolve({ error: 'json-xhr' });
+  json.send();
+});
+</script><main>XHR responseText</main>"#,
+                ),
+                "/worker-response-text.js" => (
+                    "text/javascript",
+                    r#"const xhr = new XMLHttpRequest();
+xhr.responseType = 'ARRAYBUFFER';
+xhr.open('GET', '/worker-binary');
+xhr.onload = () => {
+  let guard = '';
+  try { xhr.responseText; } catch (error) { guard = error.name; }
+  postMessage({ guard, binary: xhr.response instanceof ArrayBuffer, bytes: xhr.response.byteLength });
+};
+xhr.onerror = () => postMessage({ error: 'worker-xhr' });
+xhr.send();"#,
+                ),
+                "/json" => ("application/json", r#"{"page":true}"#),
+                "/text" => ("text/plain", "text-response"),
+                "/worker-binary" => ("application/octet-stream", "0123456789"),
+                other => panic!("unexpected responseText request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await responseTextResultPromise")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "json": {
+                "guard": "InvalidStateError",
+                "response": {"page": true},
+            },
+            "text": {
+                "opened": "",
+                "loading": "text-response",
+                "done": "text-response",
+            },
+            "reopened": [1, "", ""],
+            "abort": [0, "", ""],
+            "worker": {
+                "guard": "InvalidStateError",
+                "binary": true,
+                "bytes": 10,
             },
         })
     );

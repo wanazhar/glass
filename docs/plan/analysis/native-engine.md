@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is `native-engine-browser-390`, with native-first product
+expansion checkpoint is `native-engine-browser-391`, with native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -387,6 +387,18 @@ page-to-worker-to-page paint and raster witness. Other transferable platform
 objects, browser-wide task-source conformance, and the remaining Core Web
 Profile and production certification gates remain open. Exact evidence is
 recorded in `docs/plan/tasks/native-engine-browser-390.md`. The
+completed Slice 391 adds transferable `ReadableStream` ownership to the shared
+tagged structured-clone graph. Page and worker realms now exchange a hidden,
+bounded bridge endpoint rather than an eager whole-stream snapshot; default
+streams preserve structured-cloneable chunks, byte streams preserve byte mode,
+and source readers are installed only after clone admission succeeds. Local
+structured cloning and page-to-worker witnesses cover source locking, receiver
+identity, hidden transport ports, ordered pull delivery, close, and bounded
+multi-turn progress. Remote chunks remain bounded copies through the existing
+JSON-framed owner, so worker-created underlying-source parity, remote-stream
+`tee()`, upload backpressure, global task-source arbitration, and the remaining
+Core Web Profile and production certification gates remain open. Exact evidence
+is recorded in `docs/plan/tasks/native-engine-browser-391.md`. The
 completed 234 slice carries bounded
 completed 234 slice carries bounded
 root-scroll sticky positioning through

@@ -620,6 +620,8 @@ pub struct NativeDocument {
     diagnostics_truncated: bool,
     script_node_ids: BTreeMap<u32, NativeNodeId>,
     started_script_nodes: BTreeSet<u32>,
+    processed_csp_meta_nodes: BTreeSet<u32>,
+    pending_csp_meta_policies: BTreeMap<u32, String>,
     image_resources: BTreeMap<u32, NativeImageResource>,
     image_loads: BTreeMap<u32, String>,
     background_image_sources: BTreeMap<u32, String>,
@@ -836,6 +838,8 @@ impl NativeDocument {
             diagnostics_truncated: false,
             script_node_ids: BTreeMap::new(),
             started_script_nodes: BTreeSet::new(),
+            processed_csp_meta_nodes: BTreeSet::new(),
+            pending_csp_meta_policies: BTreeMap::new(),
             image_resources: BTreeMap::new(),
             image_loads: BTreeMap::new(),
             background_image_sources: BTreeMap::new(),
@@ -1106,6 +1110,14 @@ impl NativeDocument {
     /// Returning one extra value lets the loader reject an over-limit document
     /// instead of silently weakening its policy surface.
     pub(crate) fn content_security_policy_meta(&self) -> Vec<String> {
+        self.content_security_policy_meta_entries()
+            .into_iter()
+            .take(MAX_NATIVE_CSP_POLICIES.saturating_add(1))
+            .map(|(_, value)| value)
+            .collect()
+    }
+
+    fn content_security_policy_meta_entries(&self) -> Vec<(u32, String)> {
         self.nodes
             .iter()
             .filter(|node| {
@@ -1119,10 +1131,66 @@ impl NativeDocument {
             .filter_map(|node| {
                 node.attribute("content")
                     .filter(|value| !value.is_empty())
-                    .map(str::to_owned)
+                    .map(|value| (node.id().index(), value.to_owned()))
             })
+            .collect()
+    }
+
+    /// Mark the parser-discovered CSP meta elements as processed by the
+    /// document policy container. Meta policies are additive and remain
+    /// active after their element is removed; this ledger also makes later
+    /// content attribute edits inert as required by CSP.
+    pub(crate) fn mark_content_security_policy_meta_processed(&mut self) {
+        self.processed_csp_meta_nodes.extend(
+            self.content_security_policy_meta_entries()
+                .into_iter()
+                .map(|(node_index, _)| node_index),
+        );
+    }
+
+    /// Return head meta policies that have not yet been handed to the policy
+    /// container. Policies captured at insertion remain pending even if the
+    /// node is later detached or edited. The caller commits the node indexes
+    /// only after the loader accepts the append, preserving atomic failure.
+    pub(crate) fn unprocessed_content_security_policy_meta(&self) -> Vec<(u32, String)> {
+        let mut entries = self
+            .pending_csp_meta_policies
+            .iter()
+            .map(|(node_index, value)| (*node_index, value.clone()))
+            .collect::<Vec<_>>();
+        entries.extend(
+            self.content_security_policy_meta_entries()
+                .into_iter()
+                .filter(|(node_index, _)| {
+                    !self.processed_csp_meta_nodes.contains(node_index)
+                        && !self.pending_csp_meta_policies.contains_key(node_index)
+                }),
+        );
+        entries.sort_by_key(|(node_index, _)| *node_index);
+        entries
+            .into_iter()
             .take(MAX_NATIVE_CSP_POLICIES.saturating_add(1))
             .collect()
+    }
+
+    pub(crate) fn mark_content_security_policy_meta_nodes_processed(
+        &mut self,
+        node_indexes: impl IntoIterator<Item = u32>,
+    ) {
+        for node_index in node_indexes {
+            self.processed_csp_meta_nodes.insert(node_index);
+            self.pending_csp_meta_policies.remove(&node_index);
+        }
+    }
+
+    fn capture_attached_content_security_policy_meta(&mut self) {
+        for (node_index, policy) in self.content_security_policy_meta_entries() {
+            if !self.processed_csp_meta_nodes.contains(&node_index) {
+                self.pending_csp_meta_policies
+                    .entry(node_index)
+                    .or_insert(policy);
+            }
+        }
     }
 
     pub(crate) fn set_inline_style_policy(&mut self, allowed_nodes: &BTreeSet<u32>) {
@@ -2249,6 +2317,8 @@ impl NativeDocument {
             diagnostics_truncated,
             script_node_ids,
             started_script_nodes,
+            processed_csp_meta_nodes: BTreeSet::new(),
+            pending_csp_meta_policies: BTreeMap::new(),
             image_resources,
             image_loads,
             background_image_sources,
@@ -2259,6 +2329,7 @@ impl NativeDocument {
         };
         document.normalize_select_defaults();
         document.mark_inline_style_reports_seen();
+        document.mark_content_security_policy_meta_processed();
         Ok(document)
     }
 
@@ -2325,6 +2396,8 @@ impl NativeDocument {
             diagnostics_truncated: false,
             script_node_ids: BTreeMap::new(),
             started_script_nodes: BTreeSet::new(),
+            processed_csp_meta_nodes: BTreeSet::new(),
+            pending_csp_meta_policies: BTreeMap::new(),
             image_resources: BTreeMap::new(),
             image_loads: BTreeMap::new(),
             background_image_sources: BTreeMap::new(),
@@ -4775,6 +4848,7 @@ impl NativeDocument {
                 HtmlToken::Doctype { .. } => {}
             }
         }
+        self.capture_attached_content_security_policy_meta();
         Ok(())
     }
 
@@ -5269,6 +5343,7 @@ impl NativeDocument {
             .and_then(|before| parent_node.children.iter().position(|id| *id == before))
             .unwrap_or(parent_node.children.len());
         parent_node.children.insert(insertion_index, child);
+        self.capture_attached_content_security_policy_meta();
         Ok(())
     }
 
@@ -8310,6 +8385,26 @@ mod tests {
         assert_eq!(
             document.content_security_policy_meta(),
             vec!["script-src 'self'".to_owned()]
+        );
+    }
+
+    #[test]
+    fn csp_meta_policy_ledger_only_processes_each_node_once() {
+        let limits = NativeEngineLimits::default();
+        let mut document = NativeDocument::parse(
+            "<html><head><meta http-equiv='Content-Security-Policy' content=\"script-src 'self'\"></head><body></body></html>",
+            &limits,
+        )
+        .unwrap();
+
+        let pending = document.unprocessed_content_security_policy_meta();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1, "script-src 'self'");
+        document.mark_content_security_policy_meta_processed();
+        assert!(
+            document
+                .unprocessed_content_security_policy_meta()
+                .is_empty()
         );
     }
 

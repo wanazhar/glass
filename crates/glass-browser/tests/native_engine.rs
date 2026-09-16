@@ -14642,6 +14642,95 @@ async fn native_content_process_intersects_header_and_head_meta_csp() {
 }
 
 #[tokio::test]
+async fn native_content_process_appends_dynamically_inserted_head_meta_csp() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let script_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let script_address = script_listener.local_addr().unwrap();
+    let script_server = tokio::spawn(async move {
+        match tokio::time::timeout(Duration::from_millis(250), script_listener.accept()).await {
+            Err(_) => false,
+            Ok(Ok((mut stream, _))) => {
+                let request = read_http_request(&mut stream).await;
+                assert_eq!(request.split_whitespace().nth(1), Some("/dynamic.js"));
+                true
+            }
+            Ok(Err(error)) => panic!("dynamic script listener failed: {error}"),
+        }
+    });
+
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let page_server = tokio::spawn(async move {
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/dynamic-meta"));
+        let body = format!(
+            "<html><head><script>const meta = document.createElement('meta'); meta.setAttribute('http-equiv', 'Content-Security-Policy'); meta.setAttribute('content', \"script-src 'none'\"); document.head.appendChild(meta); meta.setAttribute('content', \"script-src 'unsafe-inline'\"); meta.remove(); const script = document.createElement('script'); script.src = 'http://{script_address}/dynamic.js'; document.head.appendChild(script); globalThis.metaAppendRan = true;</script></head><body></body></html>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: script-src 'unsafe-inline'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{page_address}/dynamic-meta")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.metaAppendRan")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    assert!(!script_server.await.unwrap());
+}
+
+#[tokio::test]
+async fn native_content_process_ignores_post_parse_csp_meta_content_edits() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/edited-meta"));
+        let body = r#"<html><head><meta http-equiv="Content-Security-Policy" content="script-src 'unsafe-inline'"><script>const meta = document.querySelector('meta[http-equiv="Content-Security-Policy"]'); meta.setAttribute('content', "script-src 'none'"); const script = document.createElement('script'); script.textContent = 'globalThis.metaEditRan = true;'; document.head.appendChild(script);</script></head><body></body></html>"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: script-src 'unsafe-inline'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/edited-meta")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ ran: globalThis.metaEditRan, content: document.querySelector('meta[http-equiv=\"Content-Security-Policy\"]').getAttribute('content') })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "ran": true,
+            "content": "script-src 'none'",
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_delivers_report_only_csp_violation_events() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

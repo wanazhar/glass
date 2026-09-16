@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is the completed `native-engine-browser-405`, with
+expansion checkpoint is the completed `native-engine-browser-406`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -526,7 +526,18 @@ drained instead of being dropped. The contract and evidence are recorded in
 `docs/plan/tasks/native-engine-browser-405.md`. Remaining CSP promotion gates
 are dynamic policy mutation, Service Worker policy-container propagation,
 redirect-aware path handling, and broader conformance beyond the bounded
-matcher. The completed 234 slice carries
+matcher. The completed `native-engine-browser-406` slice closes dynamic
+enforced CSP meta-policy ownership: parser-discovered head policies are
+committed once, newly inserted head policies append in document order, and
+processed-node removal or `content` edits cannot relax the policy container.
+The content-process script, input-event, lifecycle, hash-change, and scroll
+paths all commit new meta nodes before later resource or inline-style checks;
+the shared bounded loader and report-only separation remain unchanged. The
+contract and evidence are recorded in
+`docs/plan/tasks/native-engine-browser-406.md`. Remaining CSP promotion gates
+are Service Worker policy-container propagation, redirect-aware path handling,
+and broader conformance beyond the bounded matcher. The completed 234 slice
+carries
 bounded
 root-scroll sticky positioning through
 shared flow,

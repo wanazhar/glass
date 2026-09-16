@@ -4598,6 +4598,16 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 &resource_events,
                                 &resource.csp_violations,
                             );
+                            if page_scripts.is_ok()
+                                && let Some(loader) = resource_loader.as_mut()
+                                && let Err(error) = apply_pending_meta_content_security_policies(
+                                    &mut parsed,
+                                    loader,
+                                    &resource.url,
+                                )
+                            {
+                                page_scripts = Err(error);
+                            }
                             let initial_dynamic_sources = page_scripts
                                 .as_mut()
                                 .map(|page_scripts| {
@@ -5454,6 +5464,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     document_origin,
                     viewport,
                     node_index,
+                    resource_loader.as_mut(),
                 ) {
                     Ok((next, mutation)) => {
                         document = Some(next);
@@ -5566,6 +5577,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     viewport,
                     node_index,
                     text,
+                    resource_loader.as_mut(),
                 ) {
                     Ok((next, mutation)) => {
                         document = Some(next);
@@ -5725,6 +5737,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     viewport,
                     node_index,
                     form_action,
+                    resource_loader.as_mut(),
                 ) {
                     Ok((next, mutation)) => {
                         document = Some(next);
@@ -5862,6 +5875,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             key,
                             kind,
                             modifiers,
+                            resource_loader.as_mut(),
                         )
                     }
                     ("mutate_key_shortcut", "shortcut") => mutate_key_shortcut_with_event_bridge(
@@ -5877,6 +5891,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             .get("apply_default")
                             .and_then(Value::as_bool)
                             .unwrap_or(false),
+                        resource_loader.as_mut(),
                     ),
                     ("mutate_key_events", "") => mutate_key_with_event_bridge(
                         current,
@@ -5886,6 +5901,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         viewport,
                         node_index,
                         key,
+                        resource_loader.as_mut(),
                     ),
                     _ => Err(NativeEngineError::invalid(
                         "content-process key action",
@@ -5966,6 +5982,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     &mut committed_url,
                     document_origin,
                     viewport,
+                    resource_loader.as_mut(),
                 ) {
                     Ok((next, mutation)) => {
                         let allowed = mutation.allowed;
@@ -6082,6 +6099,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     document_origin,
                     viewport,
                     &events,
+                    resource_loader.as_mut(),
                 ) {
                     Ok((next, mutation)) => {
                         document = Some(next);
@@ -6176,6 +6194,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     &mut committed_url,
                     document_origin,
                     viewport,
+                    resource_loader.as_mut(),
                 ) {
                     Ok((next, mutation)) => {
                         document = Some(next);
@@ -6957,6 +6976,7 @@ async fn load_content_resource(
         Some(&allowed_inline_style_nodes),
     )?;
     document.mark_inline_style_reports_seen();
+    document.mark_content_security_policy_meta_processed();
     resource_events
         .extend(load_external_images(&mut document, loader, &resource.url, viewport).await?);
     let (script_sources, script_resource_events) =
@@ -7070,6 +7090,31 @@ fn refresh_inline_style_policy(
 ) -> Result<(), NativeEngineError> {
     let allowed = inline_style_policy_nodes(document, loader, document_url)?;
     document.set_inline_style_policy(&allowed);
+    Ok(())
+}
+
+/// Apply CSP meta policies which were inserted into the live document after
+/// parser processing. The document ledger makes this append-only: removing a
+/// processed meta element or editing its content cannot relax the policy.
+fn apply_pending_meta_content_security_policies(
+    document: &mut NativeDocument,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+) -> Result<(), NativeEngineError> {
+    let pending = document.unprocessed_content_security_policy_meta();
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let node_indexes = pending
+        .iter()
+        .map(|(node_index, _)| *node_index)
+        .collect::<Vec<_>>();
+    let policies = pending
+        .into_iter()
+        .map(|(_, policy)| policy)
+        .collect::<Vec<_>>();
+    loader.append_meta_content_security_policies(document_url, &policies)?;
+    document.mark_content_security_policy_meta_nodes_processed(node_indexes);
     Ok(())
 }
 
@@ -7547,6 +7592,7 @@ fn mutate_click_with_event_preflight(
     document_origin: &NativeOrigin,
     viewport: Viewport,
     node_index: u32,
+    mut loader: Option<&mut NativeResourceLoader>,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
     let mut next = current.clone();
@@ -7667,6 +7713,10 @@ fn mutate_click_with_event_preflight(
         &mut events,
         &mut history,
     )?;
+    if let Some(loader) = loader.as_deref_mut() {
+        apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
+        refresh_inline_style_policy(&mut next, loader, document_url)?;
+    }
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process click event effects",
@@ -7796,6 +7846,7 @@ fn mutate_type_with_event_bridge(
     viewport: Viewport,
     node_index: u32,
     text: &str,
+    mut loader: Option<&mut NativeResourceLoader>,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
     let mut next = current.clone();
@@ -7842,6 +7893,10 @@ fn mutate_type_with_event_bridge(
         &mut events,
         &mut history,
     )?;
+    if let Some(loader) = loader.as_deref_mut() {
+        apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
+        refresh_inline_style_policy(&mut next, loader, document_url)?;
+    }
     let mutation = NativeContentMutation {
         document: next.to_content_wire(),
         events: events
@@ -7883,6 +7938,7 @@ fn mutate_form_action_with_event_bridge(
     viewport: Viewport,
     node_index: u32,
     action: NativeFormAction,
+    mut loader: Option<&mut NativeResourceLoader>,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
     let mut next = current.clone();
@@ -7940,6 +7996,10 @@ fn mutate_form_action_with_event_bridge(
         &mut events,
         &mut history,
     )?;
+    if let Some(loader) = loader.as_deref_mut() {
+        apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
+        refresh_inline_style_policy(&mut next, loader, document_url)?;
+    }
     let mutation = NativeContentMutation {
         document: next.to_content_wire(),
         events: events
@@ -7973,6 +8033,7 @@ fn mutate_key_with_event_bridge(
     viewport: Viewport,
     node_index: u32,
     key: &str,
+    mut loader: Option<&mut NativeResourceLoader>,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     validate_native_edit_key(key)?;
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
@@ -8079,6 +8140,10 @@ fn mutate_key_with_event_bridge(
         &mut events,
         &mut history,
     )?;
+    if let Some(loader) = loader.as_deref_mut() {
+        apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
+        refresh_inline_style_policy(&mut next, loader, document_url)?;
+    }
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process key press effects",
@@ -8121,6 +8186,7 @@ fn mutate_key_event_with_event_bridge(
     key: &str,
     kind: NativeEventKind,
     modifiers: i64,
+    mut loader: Option<&mut NativeResourceLoader>,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     validate_native_key(key)?;
     if !matches!(kind, NativeEventKind::KeyDown | NativeEventKind::KeyUp) {
@@ -8170,6 +8236,10 @@ fn mutate_key_event_with_event_bridge(
         &mut events,
         &mut history,
     )?;
+    if let Some(loader) = loader.as_deref_mut() {
+        apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
+        refresh_inline_style_policy(&mut next, loader, document_url)?;
+    }
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process key event effects",
@@ -8214,6 +8284,7 @@ fn mutate_key_shortcut_with_event_bridge(
     key: &str,
     modifiers: i64,
     apply_default: bool,
+    mut loader: Option<&mut NativeResourceLoader>,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     validate_native_key(key)?;
     if !(0..=15).contains(&modifiers) {
@@ -8332,6 +8403,10 @@ fn mutate_key_shortcut_with_event_bridge(
         &mut events,
         &mut history,
     )?;
+    if let Some(loader) = loader.as_deref_mut() {
+        apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
+        refresh_inline_style_policy(&mut next, loader, document_url)?;
+    }
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process shortcut effects",
@@ -8663,6 +8738,7 @@ fn mutate_before_unload(
     document_url: &mut String,
     document_origin: &NativeOrigin,
     viewport: Viewport,
+    mut loader: Option<&mut NativeResourceLoader>,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let event_batch =
         host_event_batch(&[(u32::MAX, NativeEventKind::BeforeUnload)])?.ok_or_else(|| {
@@ -8713,6 +8789,10 @@ fn mutate_before_unload(
         &mut events,
         &mut history,
     )?;
+    if let Some(loader) = loader.as_deref_mut() {
+        apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
+        refresh_inline_style_policy(&mut next, loader, document_url)?;
+    }
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "native beforeunload effects",
@@ -8754,6 +8834,7 @@ fn mutate_lifecycle_events(
     document_origin: &NativeOrigin,
     viewport: Viewport,
     kinds: &[NativeEventKind],
+    mut loader: Option<&mut NativeResourceLoader>,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     if kinds.is_empty() {
         return Ok((
@@ -8834,6 +8915,10 @@ fn mutate_lifecycle_events(
         &mut event_effects,
         &mut history,
     )?;
+    if let Some(loader) = loader.as_deref_mut() {
+        apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
+        refresh_inline_style_policy(&mut next, loader, document_url)?;
+    }
     events = event_effects
         .into_iter()
         .map(|(node, kind)| NativeContentEvent {
@@ -8876,6 +8961,7 @@ fn mutate_hash_change(
     new_url: &mut String,
     document_origin: &NativeOrigin,
     viewport: Viewport,
+    mut loader: Option<&mut NativeResourceLoader>,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let page_events = NativePageEventBatch {
         hash_change_events: vec![NativeHashChangeEvent {
@@ -8928,6 +9014,10 @@ fn mutate_hash_change(
         &mut event_effects,
         &mut history,
     )?;
+    if let Some(loader) = loader.as_deref_mut() {
+        apply_pending_meta_content_security_policies(&mut next, loader, new_url)?;
+        refresh_inline_style_policy(&mut next, loader, new_url)?;
+    }
     events = event_effects
         .into_iter()
         .map(|(node, kind)| NativeContentEvent {
@@ -8988,6 +9078,7 @@ async fn mutate_script_document(
     let mut next = current.clone();
     let mut events = next.apply_script_commands_allowing_links(commands)?;
     if let Some(loader) = loader.as_deref_mut() {
+        apply_pending_meta_content_security_policies(&mut next, loader, &document_url)?;
         refresh_inline_style_policy(&mut next, loader, &document_url)?;
         dispatch_pending_csp_violations(
             &mut next,
@@ -9071,6 +9162,7 @@ async fn mutate_script_document(
             });
         }
         if let Some(loader) = loader.as_deref_mut() {
+            apply_pending_meta_content_security_policies(&mut next, loader, &document_url)?;
             refresh_inline_style_policy(&mut next, loader, &document_url)?;
             dispatch_pending_csp_violations(
                 &mut next,
@@ -9148,6 +9240,7 @@ async fn mutate_script_document(
     }
     next.refresh_image_loads(viewport);
     if let Some(loader) = loader.as_deref_mut() {
+        apply_pending_meta_content_security_policies(&mut next, loader, &document_url)?;
         refresh_inline_style_policy(&mut next, loader, &document_url)?;
         dispatch_pending_csp_violations(
             &mut next,
@@ -9220,6 +9313,10 @@ async fn mutate_script_document(
         &mut events,
         &mut history,
     )?;
+    if let Some(loader) = loader.as_deref_mut() {
+        apply_pending_meta_content_security_policies(&mut next, loader, &document_url)?;
+        refresh_inline_style_policy(&mut next, loader, &document_url)?;
+    }
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process script mutation effects",

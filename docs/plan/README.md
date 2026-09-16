@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-405` locally. Native is now the default runtime for
+`native-engine-browser-406` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -554,6 +554,18 @@ scripts are admitted without a host allowlist. Enforced and report-only URL
 checks share those decisions, inline script `unsafe-inline` cannot override a
 strict-dynamic list, and initial lifecycle-created external scripts are no
 longer dropped before loader handoff. Dynamic policy mutation, Service Worker
+policy-container propagation, redirect-aware path handling, and broader CSP
+conformance remain issue #40 promotion gates.
+
+The completed CSP meta-policy mutation slice is
+[native-engine-browser-406](tasks/native-engine-browser-406.md): the native
+document now records parser-processed enforced CSP meta elements and appends
+new enforced CSP meta policies inserted into the live document head. The
+policy container is additive, so removing a processed element or editing its
+`content` attribute cannot relax earlier policy; every click, type, form, key,
+lifecycle, hash-change, scroll, and script-mutation bridge commits newly
+inserted policies before the next resource or inline-style decision. The
+bounded policy cap and shared loader remain authoritative. Service Worker
 policy-container propagation, redirect-aware path handling, and broader CSP
 conformance remain issue #40 promotion gates.
 

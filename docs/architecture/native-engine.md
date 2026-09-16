@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-405` slice. The native runtime is now the primary
+`native-engine-browser-406` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -29,6 +29,18 @@ DOMContentLoaded/load-time dynamic script sources now drain through the normal
 content-process loader instead of being dropped. Dynamic policy mutation,
 Service Worker policy-container propagation, redirect-aware path handling, and
 broader CSP conformance remain separate issue #40 gates.
+
+Slice 406 closes the live-document CSP meta-policy boundary. Parser-discovered
+enforced head policies are committed once to the document policy container;
+new enforced `Content-Security-Policy` meta elements inserted into the head
+append policies in document order and therefore intersect with response
+headers and earlier meta policies. A processed node's removal or `content`
+attribute edit cannot relax the container, while each normal content-process
+script, input-event, lifecycle, hash-change, and scroll turn commits newly
+inserted nodes before later resource and inline-style decisions. The bounded
+policy cap, URL validation, report-only separation, and shared Rust loader
+remain in force. Service Worker policy-container propagation, redirect-aware
+path handling, and broader CSP conformance remain separate issue #40 gates.
 
 Slice 403 closes report-only CSP network delivery for the current native
 HTTP(S) owners. `report-uri` declarations produce bounded legacy

@@ -5,7 +5,7 @@
 //! capability has an explicit resource and security contract.
 
 use super::config::{
-    MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, validate_context_id, validate_url_text,
+    MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, is_network_url, validate_context_id, validate_url_text,
     validate_window_name, without_fragment,
 };
 use super::dom::{
@@ -18,7 +18,7 @@ use super::fetch_stream::{
     MAX_NATIVE_FETCH_UPLOAD_CHUNKS, NativeFetchStreamCommand, NativeFetchStreamConnection,
     NativeFetchStreamEvent, NativeFetchUploadCommand, NativeFetchUploadConnection,
     NativeFetchUploadEvent, spawn_native_fetch_bytes_stream, spawn_native_fetch_stream,
-    spawn_native_fetch_upload_stream,
+    spawn_native_fetch_upload_source,
 };
 use super::interaction::{
     MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FORM_BODY_BYTES, MAX_NATIVE_SCRIPT_COMMAND_BYTES,
@@ -2760,10 +2760,107 @@ impl NativeWorkerRegistry {
         }
     }
 
-    /// Drive a worker-owned request body until the HTTP client either opens a
-    /// response or reports a network/policy error. The worker realm remains
-    /// the sole producer: every body read is admitted by one demand event,
-    /// then routed back through the normal serialized worker evaluation.
+    /// Drive a worker-owned request-body task until it completes. The worker
+    /// realm remains the sole producer: every body read is admitted by one
+    /// demand event, then routed back through the normal serialized worker
+    /// evaluation. HTTP and fixture owners share this loop so their
+    /// cancellation and teardown behavior cannot drift.
+    async fn drive_worker_fetch_upload_task<T>(
+        &mut self,
+        worker_id: u32,
+        request_id: u32,
+        task: tokio::task::JoinHandle<T>,
+        loader: &mut NativeResourceLoader,
+        task_operation: &str,
+    ) -> Result<T, NativeEngineError>
+    where
+        T: Send + 'static,
+    {
+        loop {
+            if task.is_finished() {
+                return task.await.map_err(|_| {
+                    NativeEngineError::worker_failure(
+                        task_operation,
+                        NativeWorkerFailureKind::Transport,
+                        "native Worker fetch request upload task terminated unexpectedly",
+                    )
+                });
+            }
+            if !self.workers.contains_key(&worker_id) {
+                task.abort();
+                self.cancel_worker_fetch_upload_connection((worker_id, request_id));
+                return Err(NativeEngineError::Worker {
+                    operation: "Worker fetch request upload".into(),
+                    reason: "worker terminated while its request body was in flight".into(),
+                });
+            }
+
+            let mut disconnected = false;
+            let demand = if let Some(connection) = self
+                .worker_fetch_upload_connections
+                .get_mut(&(worker_id, request_id))
+            {
+                match connection.events.try_recv() {
+                    Ok(NativeFetchUploadEvent::Demand) => {
+                        connection.demand_pending = true;
+                        true
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => false,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            if disconnected {
+                task.abort();
+                self.cancel_worker_fetch_upload_connection((worker_id, request_id));
+                return Err(NativeEngineError::Network {
+                    operation: "Worker fetch request upload".into(),
+                    reason: "Worker fetch request upload task is unavailable".into(),
+                });
+            }
+            if demand {
+                let evaluation = match self.workers.get(&worker_id) {
+                    Some(worker) => worker.evaluate_fetch_upload_event(
+                        worker_id,
+                        request_id,
+                        &serde_json::json!({"type": "demand"}),
+                    ),
+                    None => {
+                        task.abort();
+                        self.cancel_worker_fetch_upload_connection((worker_id, request_id));
+                        return Err(NativeEngineError::Worker {
+                            operation: "Worker fetch request upload".into(),
+                            reason: "worker terminated while its request body was in flight".into(),
+                        });
+                    }
+                };
+                match evaluation {
+                    Ok(evaluation) => {
+                        if let Err(error) =
+                            Box::pin(self.collect_worker_evaluation(worker_id, evaluation, loader))
+                                .await
+                        {
+                            task.abort();
+                            self.cancel_worker_fetch_upload_connection((worker_id, request_id));
+                            return Err(error);
+                        }
+                    }
+                    Err(error) => {
+                        task.abort();
+                        self.cancel_worker_fetch_upload_connection((worker_id, request_id));
+                        return Err(error);
+                    }
+                }
+            } else {
+                tokio::task::yield_now().await;
+            }
+        }
+    }
+
     async fn open_worker_fetch_upload(
         &mut self,
         worker_id: u32,
@@ -2797,117 +2894,85 @@ impl NativeWorkerRegistry {
                 self.worker_fetch_upload_connections.len().saturating_add(1),
             ));
         }
-        let (upload_connection, request_body) = spawn_native_fetch_upload_stream();
+        let (upload_connection, upload_source) = spawn_native_fetch_upload_source();
         self.worker_fetch_upload_connections
             .insert(upload_key, upload_connection);
-        let task_loader = loader.clone();
-        let task = tokio::spawn(async move {
-            let mut task_loader = task_loader;
-            let result = task_loader
-                .open_fetch_response_stream_with_body_async(
-                    NativeFetchRequest {
-                        document_url: &worker_url,
-                        href: &href,
-                        method,
-                        body: None,
-                        content_type,
-                        request_headers: headers,
-                        credentials,
-                        cors_mode,
-                        redirect_mode,
-                        cache_mode,
-                        timeout,
-                        max_response_bytes: None,
-                    },
-                    Some(request_body),
-                )
-                .await;
-            (result, task_loader)
-        });
-        loop {
-            if task.is_finished() {
-                let (opened, task_loader) = task.await.map_err(|_| {
-                    NativeEngineError::worker_failure(
-                        "Worker fetch request upload task",
-                        NativeWorkerFailureKind::Transport,
-                        "native Worker fetch request upload task terminated unexpectedly",
+        if is_network_url(&worker_url) {
+            let request_body = upload_source.into_body();
+            let task_loader = loader.clone();
+            let task = tokio::spawn(async move {
+                let mut task_loader = task_loader;
+                let result = task_loader
+                    .open_fetch_response_stream_with_body_async(
+                        NativeFetchRequest {
+                            document_url: &worker_url,
+                            href: &href,
+                            method,
+                            body: None,
+                            content_type,
+                            request_headers: headers,
+                            credentials,
+                            cors_mode,
+                            redirect_mode,
+                            cache_mode,
+                            timeout,
+                            max_response_bytes: None,
+                        },
+                        Some(request_body),
                     )
-                })?;
-                self.cancel_worker_fetch_upload_connection(upload_key);
-                loader.merge_fetch_task_state(task_loader)?;
-                return Ok(opened);
-            }
-            if !self.workers.contains_key(&worker_id) {
-                task.abort();
-                self.cancel_worker_fetch_upload_connection(upload_key);
-                return Err(NativeEngineError::Worker {
-                    operation: "Worker fetch request upload".into(),
-                    reason: "worker terminated while its request body was in flight".into(),
-                });
-            }
-
-            let mut disconnected = false;
-            let demand = if let Some(connection) =
-                self.worker_fetch_upload_connections.get_mut(&upload_key)
-            {
-                match connection.events.try_recv() {
-                    Ok(NativeFetchUploadEvent::Demand) => {
-                        connection.demand_pending = true;
-                        true
-                    }
-                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => false,
-                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        false
-                    }
-                }
-            } else {
-                false
-            };
-            if disconnected {
-                task.abort();
-                self.cancel_worker_fetch_upload_connection(upload_key);
-                return Err(NativeEngineError::Network {
-                    operation: "Worker fetch request upload".into(),
-                    reason: "Worker fetch request upload task is unavailable".into(),
-                });
-            }
-            if demand {
-                let evaluation = self
-                    .workers
-                    .get(&worker_id)
-                    .ok_or_else(|| NativeEngineError::Worker {
-                        operation: "Worker fetch request upload".into(),
-                        reason: "worker terminated while its request body was in flight".into(),
-                    })
-                    .and_then(|worker| {
-                        worker.evaluate_fetch_upload_event(
-                            worker_id,
-                            request_id,
-                            &serde_json::json!({"type": "demand"}),
-                        )
-                    });
-                match evaluation {
-                    Ok(evaluation) => {
-                        if let Err(error) =
-                            Box::pin(self.collect_worker_evaluation(worker_id, evaluation, loader))
-                                .await
-                        {
-                            task.abort();
-                            self.cancel_worker_fetch_upload_connection(upload_key);
-                            return Err(error);
-                        }
-                    }
-                    Err(error) => {
-                        task.abort();
-                        self.cancel_worker_fetch_upload_connection(upload_key);
-                        return Err(error);
-                    }
-                }
-            } else {
-                tokio::task::yield_now().await;
-            }
+                    .await;
+                (result, task_loader)
+            });
+            let (opened, task_loader) = self
+                .drive_worker_fetch_upload_task(
+                    worker_id,
+                    request_id,
+                    task,
+                    loader,
+                    "Worker fetch request upload task",
+                )
+                .await?;
+            self.cancel_worker_fetch_upload_connection(upload_key);
+            loader.merge_fetch_task_state(task_loader)?;
+            return Ok(opened);
         }
+
+        let task = tokio::spawn(async move {
+            upload_source
+                .collect(MAX_NATIVE_FORM_BODY_BYTES)
+                .await
+                .map_err(|reason| NativeEngineError::Network {
+                    operation: "fixture Worker fetch request upload".into(),
+                    reason,
+                })
+        });
+        let body = self
+            .drive_worker_fetch_upload_task(
+                worker_id,
+                request_id,
+                task,
+                loader,
+                "fixture Worker fetch request upload task",
+            )
+            .await??;
+        self.cancel_worker_fetch_upload_connection(upload_key);
+        let opened = loader
+            .open_fetch_response_stream_async(NativeFetchRequest {
+                document_url: &worker_url,
+                href: &href,
+                method,
+                body: Some(NativeRequestBody::Bytes(body)),
+                content_type,
+                request_headers: headers,
+                credentials,
+                cors_mode,
+                redirect_mode,
+                cache_mode,
+                timeout,
+                max_response_bytes: None,
+            })
+            .await;
+        Ok(opened)
     }
 
     fn worker_fetch_opened_payload(

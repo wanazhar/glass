@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is the completed `native-engine-browser-400`, with
+expansion checkpoint is the completed `native-engine-browser-401`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -475,6 +475,14 @@ and dedicated-worker realms, and inline-style refreshes use a document-local
 ledger so unchanged nodes do not report repeatedly while policy enforcement is
 still reevaluated. The contract and evidence are recorded in
 `docs/plan/tasks/native-engine-browser-400.md`. The
+completed `native-engine-browser-401` slice preserves successful HTTP(S)
+worker-script response CSP under the resolved worker URL, allowing dedicated
+and shared worker EventSource, Fetch, and WebSocket owners to use that policy
+without changing page `worker-src` authorization. A later worker response
+replaces stale policy state; the existing bounded page/worker report transport
+then delivers report-only records in the owning worker realm. The contract and
+evidence are recorded in
+`docs/plan/tasks/native-engine-browser-401.md`. The
 completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,

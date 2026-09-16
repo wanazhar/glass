@@ -3855,6 +3855,12 @@ impl NativeResourceLoader {
             operation: "script subresource decoding".into(),
             reason: "script subresource is not valid UTF-8".into(),
         })?;
+        if subresource_kind == NativeSubresourceKind::Worker {
+            self.network.store_document_policy(
+                cache_key(&current_url),
+                content_security_policy(&response_headers),
+            );
+        }
         for (cookie_url, cookie) in pending_cookies {
             self.cookie_changes
                 .extend(self.network.store_cookie(&cookie_url, &cookie));

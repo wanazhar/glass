@@ -1,8 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through completed
-`native-engine-browser-418` slice, following completed
-`native-engine-browser-417`. The native runtime is now the primary
+`native-engine-browser-419` slice, following completed
+`native-engine-browser-418`. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -64,6 +64,13 @@ buffered bytes used by Fetch and XHR, including raw binary bodies, while stale
 continuations cannot publish a second terminal sequence. This is buffered
 handoff observability, not fabricated socket-level progress; streaming upload
 backpressure and complete ProgressEvent/Web IDL parity remain issue #40 gates.
+
+Slice 419 completes the page-XHR lifecycle follow-up. The page realm now
+publishes `HEADERS_RECEIVED` and `LOADING` after response metadata admission
+and before final buffered body completion, matching the already-present worker
+state sequence. This preserves truthful lifecycle boundaries without claiming
+per-chunk transport progress; response streaming, synchronous XHR,
+`responseXML`, and complete XHR/Web IDL parity remain open.
 
 Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
 `navigate-to` navigation-policy extension. After each content-process

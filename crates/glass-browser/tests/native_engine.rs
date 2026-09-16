@@ -53627,6 +53627,104 @@ async fn native_content_process_xhr_upload_reports_buffered_progress() {
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_publishes_response_state_lifecycle() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/state"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let (content_type, body) = if expected_path == "/page" {
+                ("text/html", "<p>XHR states</p>")
+            } else {
+                ("text/plain", "state-response")
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nX-State: ready\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(() => {
+                globalThis.xhrStatePromise = new Promise(resolve => {
+                    const xhr = new XMLHttpRequest();
+                    const states = [];
+                    const record = () => states.push({
+                        readyState: xhr.readyState,
+                        status: xhr.status,
+                        statusText: xhr.statusText,
+                        url: xhr.responseURL,
+                        header: xhr.getResponseHeader('x-state'),
+                        responseText: xhr.responseText,
+                    });
+                    xhr.onreadystatechange = record;
+                    xhr.onload = () => resolve({ states, response: xhr.responseText });
+                    xhr.open('GET', '/state');
+                    xhr.send();
+                });
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await xhrStatePromise")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "states": [
+                {
+                    "readyState": 1,
+                    "status": 0,
+                    "statusText": "",
+                    "url": "",
+                    "header": null,
+                    "responseText": ""
+                },
+                {
+                    "readyState": 2,
+                    "status": 200,
+                    "statusText": "200",
+                    "url": format!("http://{address}/state"),
+                    "header": "ready",
+                    "responseText": ""
+                },
+                {
+                    "readyState": 3,
+                    "status": 200,
+                    "statusText": "200",
+                    "url": format!("http://{address}/state"),
+                    "header": "ready",
+                    "responseText": ""
+                },
+                {
+                    "readyState": 4,
+                    "status": 200,
+                    "statusText": "200",
+                    "url": format!("http://{address}/state"),
+                    "header": "ready",
+                    "responseText": "state-response"
+                }
+            ],
+            "response": "state-response"
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_xhr_abort_is_observable_and_ignores_late_callbacks() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

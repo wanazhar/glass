@@ -26185,12 +26185,16 @@ fn document_bootstrap(
       this.responseURL = response.url;
       this._responseContentType = response.headers.get("content-type");
       this._responseHeaders = response.headers;
+      this.readyState = 2;
+      this._notifyReadyState();
       if (responseType === "arraybuffer") return response.arrayBuffer();
       if (responseType === "blob") return response.blob();
       return response.text();
     }}).then(value => {{
       if (value === null || this._controller !== controller || this._aborted) return;
       this._controller = null;
+      this.readyState = 3;
+      this._notifyReadyState();
       this.responseText = typeof value === "string" ? value : "";
       this.response = value;
       this.readyState = 4;

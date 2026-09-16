@@ -48,7 +48,7 @@ use super::raster::NativeSurface;
 use super::resource_loader::{
     NativeCspViolation, NativeFetchResponse, NativeNavigationMethod, NativeNavigationPolicyKind,
     NativeNavigationRequest, NativeResource, NativeResourceLoader, csp_sources_allow,
-    csp_sources_allow_for_redirect, referrer_for_navigation,
+    csp_sources_allow_for_redirect, referrer_for_navigation, validate_target_navigation_payload,
 };
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
@@ -1363,16 +1363,6 @@ impl NativeEngine {
             .await
     }
 
-    pub(crate) async fn navigate_async_with_history(
-        &mut self,
-        url: impl Into<String>,
-        replace_history: bool,
-    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
-        let mut request = NativeNavigationRequest::get(url);
-        request.replace_history = replace_history;
-        self.navigate_request_async(request, 0).await
-    }
-
     /// Rebuild the current document owner and reload the active URL without
     /// replaying the operation that may have killed the content worker.
     ///
@@ -1396,7 +1386,7 @@ impl NativeEngine {
             .await
     }
 
-    async fn navigate_request_async(
+    pub(crate) async fn navigate_request_async(
         &mut self,
         mut navigation: NativeNavigationRequest,
         page_navigation_handoffs: usize,
@@ -1408,12 +1398,6 @@ impl NativeEngine {
                 "_self" | "_parent" | "_top" | "_unfencedtop"
             ) || (target_kind != "_self" && self.frame_script_context.is_some())
             {
-                if navigation.method != NativeNavigationMethod::Get {
-                    return Err(NativeEngineError::UnsupportedUrl {
-                        reason: "native non-current form targets support only GET submissions"
-                            .into(),
-                    });
-                }
                 if !self
                     .allows_top_level_navigation_async(&navigation.url, true)
                     .await?
@@ -2764,6 +2748,9 @@ impl NativeEngine {
         self.queue_popup_request(NativePopupRequest {
             url,
             target: "_blank".into(),
+            method: NativeNavigationMethod::Get,
+            body: None,
+            body_content_type: None,
             handle: None,
             source_context_id: String::new(),
         })
@@ -2782,6 +2769,12 @@ impl NativeEngine {
         }
         validate_url_text("popup target URL", &popup.url)?;
         validate_url_text("popup target name", &popup.target)?;
+        validate_target_navigation_payload(
+            popup.method,
+            popup.body.as_ref(),
+            popup.body_content_type.as_deref(),
+            "popup navigation payload",
+        )?;
         if let Some(handle) = popup.handle.as_deref() {
             validate_url_text("popup window handle", handle)?;
         }
@@ -2973,6 +2966,12 @@ impl NativeEngine {
             validate_url_text("window navigation target", &request.target)?;
         }
         validate_url_text("window navigation href", &request.href)?;
+        validate_target_navigation_payload(
+            request.method,
+            request.body.as_ref(),
+            request.body_content_type.as_deref(),
+            "window navigation payload",
+        )?;
         if let Some(target_context_id) = request.target_context_id.as_deref() {
             super::config::validate_context_id(target_context_id)?;
         }
@@ -3016,6 +3015,9 @@ impl NativeEngine {
                 self.queue_popup_request(NativePopupRequest {
                     url: navigation.url.clone(),
                     target: target.to_owned(),
+                    method: navigation.method,
+                    body: navigation.body.clone(),
+                    body_content_type: navigation.body_content_type.clone(),
                     handle: None,
                     source_context_id: String::new(),
                 })?;
@@ -3032,6 +3034,9 @@ impl NativeEngine {
             target: String::new(),
             target_context_id: Some(target_context.context_id.clone()),
             href: navigation.url.clone(),
+            method: navigation.method,
+            body: navigation.body.clone(),
+            body_content_type: navigation.body_content_type.clone(),
             replace: navigation.replace_history,
             source_context_id: String::new(),
         })?;
@@ -3050,11 +3055,6 @@ impl NativeEngine {
             _ => false,
         };
         if !targets_current_document {
-            if request.method != NativeNavigationMethod::Get {
-                return Err(NativeEngineError::UnsupportedUrl {
-                    reason: "native non-current form targets support only GET submissions".into(),
-                });
-            }
             if !self.allows_top_level_navigation(&request.url)? {
                 return Ok(NativeActionResult {
                     revision: self.revision,
@@ -4717,6 +4717,14 @@ impl NativeEngine {
         if request.url != navigation.href {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "script navigation target changed during transfer".into(),
+            });
+        }
+        if request.method != navigation.method
+            || request.body != navigation.body
+            || request.body_content_type != navigation.body_content_type
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "script form request payload changed during transfer".into(),
             });
         }
         let request_target = request.target.as_deref().unwrap_or("_self");
@@ -7001,6 +7009,9 @@ impl NativeEngine {
                     href: navigation.url,
                     submitter_node_index: None,
                     target: "_self".into(),
+                    method: NativeNavigationMethod::Get,
+                    body: None,
+                    body_content_type: None,
                     location: true,
                     replace_history: navigation.replace_history,
                 },

@@ -2716,6 +2716,12 @@ pub(crate) struct NativePopupRequest {
     pub(crate) url: String,
     pub(crate) target: String,
     #[serde(default)]
+    pub(crate) method: NativeNavigationMethod,
+    #[serde(default)]
+    pub(crate) body: Option<NativeRequestBody>,
+    #[serde(default)]
+    pub(crate) body_content_type: Option<String>,
+    #[serde(default)]
     pub(crate) handle: Option<String>,
     #[serde(default, skip_serializing)]
     pub(crate) source_context_id: String,
@@ -2756,6 +2762,12 @@ pub(crate) struct NativeWindowNavigationRequest {
     #[serde(default)]
     pub(crate) target_context_id: Option<String>,
     pub(crate) href: String,
+    #[serde(default)]
+    pub(crate) method: NativeNavigationMethod,
+    #[serde(default)]
+    pub(crate) body: Option<NativeRequestBody>,
+    #[serde(default)]
+    pub(crate) body_content_type: Option<String>,
     #[serde(default)]
     pub(crate) replace: bool,
     #[serde(default, skip_serializing)]
@@ -9356,6 +9368,9 @@ impl NativeJavaScriptRuntime {
             target: target.clone(),
             target_context_id: target_context_id.clone(),
             href: href.clone(),
+            method: NativeNavigationMethod::Get,
+            body: None,
+            body_content_type: None,
             replace: *replace,
             source_context_id: String::new(),
         });
@@ -9914,6 +9929,9 @@ impl NativeJavaScriptRuntime {
         popups.push(NativePopupRequest {
             url: href.clone(),
             target: target.clone(),
+            method: NativeNavigationMethod::Get,
+            body: None,
+            body_content_type: None,
             handle: handle.clone(),
             source_context_id: String::new(),
         });

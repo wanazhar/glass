@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-407` locally. Native is now the default runtime for
+`native-engine-browser-408` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -529,6 +529,17 @@ failures cannot change the protected operation. Dynamic policy mutation,
 strict-dynamic trust, and broader CSP conformance beyond the bounded source
 matcher remain issue #40 promotion gates.
 
+The completed CSP redirect path-matching slice is
+[native-engine-browser-408](tasks/native-engine-browser-408.md): initial
+Fetch, EventSource, stylesheet, image, script, worker, and embedded-frame
+URLs remain path-aware, while each manually followed HTTP redirect ignores
+only the host-source path through the shared matcher. Scheme, host, port,
+mixed-content, credentials, and script nonce/strict-dynamic checks remain
+enforced; report-only redirect observations use the same rule. Frame loading
+retains the requested URL so an HTTP redirect is distinguished from a later
+page-navigation handoff. Dynamic CSP grammar, `navigate-to`, report-only meta
+policy, and broader conformance remain issue #40 promotion gates.
+
 The completed CSP source-expression matching slice is
 [native-engine-browser-404](tasks/native-engine-browser-404.md): the shared
 native matcher now parses scheme sources and host sources with optional
@@ -538,9 +549,8 @@ safe `'self'` upgrades, schemeless-host inheritance, and singleton-only
 `'none'` semantics while rejecting malformed credentials, hosts, ports,
 paths, and non-ASCII source syntax without widening access. Enforced and
 report-only page/worker resources, frames, EventSource, and WebSocket policy
-checks use the same owner. Dynamic policy mutation, strict-dynamic trust,
-redirect-aware path handling,
-and broader CSP conformance remain issue #40 promotion gates.
+checks use the same owner. Dynamic policy mutation, strict-dynamic trust, and
+broader CSP conformance remain issue #40 promotion gates.
 
 The completed CSP strict-dynamic script slice is
 [native-engine-browser-405](tasks/native-engine-browser-405.md): parser and
@@ -551,9 +561,8 @@ when `strict-dynamic` is present; and non-parser-inserted external/module
 scripts are admitted without a host allowlist. Enforced and report-only URL
 checks share those decisions, inline script `unsafe-inline` cannot override a
 strict-dynamic list, and initial lifecycle-created external scripts are no
-longer dropped before loader handoff. Dynamic policy mutation,
-redirect-aware path handling, and broader CSP conformance remain issue #40
-promotion gates.
+longer dropped before loader handoff. Dynamic policy mutation and broader CSP
+conformance remain issue #40 promotion gates.
 
 The completed Service Worker document policy-container slice is
 [native-engine-browser-407](tasks/native-engine-browser-407.md): controlled
@@ -562,8 +571,8 @@ mixed-content preflight before Service Worker evaluation, so a worker cannot
 return a synthetic response around page policy. Handled requests retain
 report-only ownership without duplicating unhandled fallback reports, and a
 worker-served navigation's final-URL CSP is proven to govern the first page
-Fetch. Dynamic policy mutation, redirect-aware path handling, and broader CSP
-conformance remain issue #40 promotion gates.
+Fetch. Dynamic policy mutation and broader CSP conformance remain issue #40
+promotion gates.
 
 The completed CSP meta-policy mutation slice is
 [native-engine-browser-406](tasks/native-engine-browser-406.md): the native
@@ -573,8 +582,8 @@ policy container is additive, so removing a processed element or editing its
 `content` attribute cannot relax earlier policy; every click, type, form, key,
 lifecycle, hash-change, scroll, and script-mutation bridge commits newly
 inserted policies before the next resource or inline-style decision. The
-bounded policy cap and shared loader remain authoritative. Redirect-aware path
-handling and broader CSP conformance remain issue #40 promotion gates.
+bounded policy cap and shared loader remain authoritative. Broader CSP
+conformance remains a separate issue #40 promotion gate.
 
 The completed WebSocket report-delivery slice is
 [native-engine-browser-402](tasks/native-engine-browser-402.md): page and

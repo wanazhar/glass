@@ -47,7 +47,8 @@ use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
     NativeFetchResponse, NativeNavigationMethod, NativeNavigationRequest, NativeResource,
-    NativeResourceLoader, csp_sources_allow, referrer_for_navigation,
+    NativeResourceLoader, csp_sources_allow, csp_sources_allow_for_redirect,
+    referrer_for_navigation,
 };
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
@@ -90,6 +91,7 @@ struct NativePendingDownload {
 
 #[derive(Debug, Clone)]
 struct NativePendingServiceWorkerNavigation {
+    initial_url: String,
     history_commit: HistoryCommit,
     page_navigation_handoffs: usize,
 }
@@ -916,6 +918,51 @@ impl NativeEngine {
             }))
     }
 
+    fn allows_frame_navigation_after_redirect(
+        &self,
+        initial_url: &str,
+        target_url: &str,
+    ) -> Result<bool, NativeEngineError> {
+        let Some(document_url) = self.embedding_document_url.as_deref() else {
+            return Ok(true);
+        };
+        validate_url_text("initial frame navigation URL", initial_url)?;
+        validate_url_text("frame navigation URL", target_url)?;
+        let document_url = url::Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "the frame policy owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        let initial_url = url::Url::parse(without_fragment(initial_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "initial frame navigation URL is not valid URL syntax".into(),
+            }
+        })?;
+        let target_url = url::Url::parse(without_fragment(target_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "frame navigation URL is not valid URL syntax".into(),
+            }
+        })?;
+        let redirected = initial_url != target_url;
+        Ok(self
+            .embedding_frame_sources
+            .as_deref()
+            .is_none_or(|groups| {
+                groups.iter().all(|sources| {
+                    csp_sources_allow(Some(sources), &document_url, &initial_url)
+                        && if redirected {
+                            csp_sources_allow_for_redirect(
+                                Some(sources),
+                                &document_url,
+                                &target_url,
+                            )
+                        } else {
+                            csp_sources_allow(Some(sources), &document_url, &target_url)
+                        }
+                })
+            }))
+    }
+
     pub const fn lifecycle(&self) -> NativeLifecycleState {
         self.lifecycle
     }
@@ -991,7 +1038,7 @@ impl NativeEngine {
         self.content_process = content_process;
         let mut use_content_process = has_content_process;
         let (prepared, history_commit, page_navigation_handoffs) = if has_content_process {
-            let Some((content, history_commit, page_navigation_handoffs)) = self
+            let Some((content, history_commit, page_navigation_handoffs, initial_url)) = self
                 .load_content_with_page_navigation(
                     NativeNavigationRequest::get(initial_url.clone()),
                     None,
@@ -1007,7 +1054,7 @@ impl NativeEngine {
                 return Ok(());
             };
             if !self.is_same_document_navigation(&content.url)
-                && !self.allows_frame_navigation(&content.url)?
+                && !self.allows_frame_navigation_after_redirect(&initial_url, &content.url)?
             {
                 self.content_process.take();
                 use_content_process = false;
@@ -1209,7 +1256,8 @@ impl NativeEngine {
         }
         self.sync_external_storage_events()?;
         self.deliver_pending_external_storage_events().await?;
-        let url = navigation.url.as_str();
+        let navigation_url = navigation.url.clone();
+        let url = navigation_url.as_str();
         let history_commit = if navigation.replace_history {
             HistoryCommit::Replace
         } else {
@@ -1263,7 +1311,7 @@ impl NativeEngine {
         if is_network_url(url) {
             let referrer = referrer_for_navigation(&self.url, url)?;
             self.ensure_content_process().await?;
-            let Some((content, history_commit, page_navigation_handoffs)) = self
+            let Some((content, history_commit, page_navigation_handoffs, initial_url)) = self
                 .load_content_with_page_navigation(
                     navigation,
                     referrer,
@@ -1275,7 +1323,7 @@ impl NativeEngine {
                 return Ok(self.snapshot_unchecked());
             };
             if !self.is_same_document_navigation(&content.url)
-                && !self.allows_frame_navigation(&content.url)?
+                && !self.allows_frame_navigation_after_redirect(&initial_url, &content.url)?
             {
                 return Ok(self.snapshot_unchecked());
             }
@@ -1287,10 +1335,11 @@ impl NativeEngine {
                         &worker,
                         history_commit,
                         page_navigation_handoffs,
+                        &initial_url,
                     )
                     .await;
             }
-            return self.navigate_content(content, history_commit);
+            return self.navigate_content(content, &initial_url, history_commit);
         }
         self.content_process.take();
         let resource = self
@@ -1369,7 +1418,7 @@ impl NativeEngine {
         mut referrer: Option<String>,
         mut history_commit: HistoryCommit,
         mut page_navigation_handoffs: usize,
-    ) -> Result<Option<(NativeContentLoad, HistoryCommit, usize)>, NativeEngineError> {
+    ) -> Result<Option<(NativeContentLoad, HistoryCommit, usize, String)>, NativeEngineError> {
         if page_navigation_handoffs > MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS {
             return Err(NativeEngineError::limit(
                 "page navigation handoffs",
@@ -1378,6 +1427,7 @@ impl NativeEngine {
             ));
         }
         loop {
+            let initial_url = navigation.url.clone();
             self.request_ledger.begin()?;
             let client_id = self.service_worker_client_id();
             let service_worker_clients = self.service_worker_clients.clone();
@@ -1412,6 +1462,7 @@ impl NativeEngine {
                     self.queue_service_worker_open_window_requests(open_windows)?;
                     self.pending_service_worker_navigation =
                         Some(NativePendingServiceWorkerNavigation {
+                            initial_url,
                             history_commit,
                             page_navigation_handoffs,
                         });
@@ -1420,7 +1471,12 @@ impl NativeEngine {
             };
             self.apply_content_load_effects(&mut content)?;
             let Some(page_navigation) = content.navigation.clone() else {
-                return Ok(Some((content, history_commit, page_navigation_handoffs)));
+                return Ok(Some((
+                    content,
+                    history_commit,
+                    page_navigation_handoffs,
+                    initial_url,
+                )));
             };
             if page_navigation_handoffs == MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS {
                 return Err(NativeEngineError::limit(
@@ -1509,7 +1565,7 @@ impl NativeEngine {
             })?;
         self.apply_content_load_effects(&mut content)?;
         if !self.is_same_document_navigation(&content.url)
-            && !self.allows_frame_navigation(&content.url)?
+            && !self.allows_frame_navigation_after_redirect(&pending.initial_url, &content.url)?
         {
             return Ok(());
         }
@@ -1526,6 +1582,7 @@ impl NativeEngine {
             &worker,
             pending.history_commit,
             pending.page_navigation_handoffs,
+            &pending.initial_url,
         )
         .await
         .map(|_| ())
@@ -1586,6 +1643,7 @@ impl NativeEngine {
     fn navigate_content(
         &mut self,
         content: NativeContentLoad,
+        initial_url: &str,
         history_commit: HistoryCommit,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         if self.is_same_document_navigation(&content.url) {
@@ -1594,7 +1652,7 @@ impl NativeEngine {
             {
                 self.navigate_page_script_sync(navigation, 1)?;
             }
-        } else if !self.allows_frame_navigation(&content.url)? {
+        } else if !self.allows_frame_navigation_after_redirect(initial_url, &content.url)? {
             return Ok(self.snapshot_unchecked());
         } else {
             let prepared = self.prepare_navigation_content(content)?;
@@ -1609,9 +1667,12 @@ impl NativeEngine {
         worker: &NativeRuntimeWorker,
         history_commit: HistoryCommit,
         page_navigation_handoffs: usize,
+        initial_url: &str,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         let same_document = self.is_same_document_navigation(&content.url);
-        if !same_document && !self.allows_frame_navigation(&content.url)? {
+        if !same_document
+            && !self.allows_frame_navigation_after_redirect(initial_url, &content.url)?
+        {
             return Ok(self.snapshot_unchecked());
         }
         if same_document {
@@ -6735,7 +6796,7 @@ impl NativeEngine {
         if is_network_url(&target_url) {
             let referrer = referrer_for_navigation(&self.url, &target_url)?;
             self.ensure_content_process().await?;
-            let Some((content, history_commit, page_navigation_handoffs)) = self
+            let Some((content, history_commit, page_navigation_handoffs, initial_url)) = self
                 .load_content_with_page_navigation(
                     NativeNavigationRequest::get(target_url),
                     referrer,
@@ -6747,7 +6808,7 @@ impl NativeEngine {
                 return Ok(Some(self.snapshot_unchecked()));
             };
             if !self.is_same_document_navigation(&content.url)
-                && !self.allows_frame_navigation(&content.url)?
+                && !self.allows_frame_navigation_after_redirect(&initial_url, &content.url)?
             {
                 return Ok(Some(self.snapshot_unchecked()));
             }
@@ -6759,11 +6820,16 @@ impl NativeEngine {
                         &worker,
                         history_commit,
                         page_navigation_handoffs,
+                        &initial_url,
                     )
                     .await?,
                 ));
             }
-            return Ok(Some(self.navigate_content(content, history_commit)?));
+            return Ok(Some(self.navigate_content(
+                content,
+                &initial_url,
+                history_commit,
+            )?));
         }
 
         self.content_process.take();

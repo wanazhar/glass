@@ -925,6 +925,16 @@ impl NativeCspDirectives {
         csp_sources_allow(sources.map(Vec::as_slice), document_url, resource_url)
     }
 
+    fn allows_redirect(
+        &self,
+        kind: NativeSubresourceKind,
+        document_url: &Url,
+        resource_url: &Url,
+    ) -> bool {
+        let sources = self.sources_for(kind).or(self.default_sources.as_ref());
+        csp_sources_allow_for_redirect(sources.map(Vec::as_slice), document_url, resource_url)
+    }
+
     fn allows_script(
         &self,
         document_url: &Url,
@@ -936,6 +946,25 @@ impl NativeCspDirectives {
             .sources_for(NativeSubresourceKind::Script)
             .or(self.default_sources.as_ref());
         csp_script_sources_allow(
+            sources.map(Vec::as_slice),
+            document_url,
+            resource_url,
+            parser_inserted,
+            nonce,
+        )
+    }
+
+    fn allows_script_redirect(
+        &self,
+        document_url: &Url,
+        resource_url: &Url,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+    ) -> bool {
+        let sources = self
+            .sources_for(NativeSubresourceKind::Script)
+            .or(self.default_sources.as_ref());
+        csp_script_sources_allow_for_redirect(
             sources.map(Vec::as_slice),
             document_url,
             resource_url,
@@ -1120,6 +1149,17 @@ impl NativeCspPolicy {
             .all(|policy| policy.allows(kind, document_url, resource_url))
     }
 
+    fn allows_redirect(
+        &self,
+        kind: NativeSubresourceKind,
+        document_url: &Url,
+        resource_url: &Url,
+    ) -> bool {
+        self.policies
+            .iter()
+            .all(|policy| policy.allows_redirect(kind, document_url, resource_url))
+    }
+
     fn allows_script(
         &self,
         document_url: &Url,
@@ -1130,6 +1170,18 @@ impl NativeCspPolicy {
         self.policies
             .iter()
             .all(|policy| policy.allows_script(document_url, resource_url, parser_inserted, nonce))
+    }
+
+    fn allows_script_redirect(
+        &self,
+        document_url: &Url,
+        resource_url: &Url,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+    ) -> bool {
+        self.policies.iter().all(|policy| {
+            policy.allows_script_redirect(document_url, resource_url, parser_inserted, nonce)
+        })
     }
 
     fn allows_inline(&self, kind: NativeInlineCspKind, source: &str, nonce: Option<&str>) -> bool {
@@ -1160,19 +1212,70 @@ impl NativeCspPolicy {
         parser_inserted: bool,
         nonce: Option<&str>,
     ) -> Vec<(&NativeCspDeclaration, &'static str)> {
+        self.report_only_url_violations_with_path(
+            kind,
+            document_url,
+            resource_url,
+            parser_inserted,
+            nonce,
+            false,
+        )
+    }
+
+    fn report_only_url_violations_for_redirect(
+        &self,
+        kind: NativeSubresourceKind,
+        document_url: &Url,
+        resource_url: &Url,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+    ) -> Vec<(&NativeCspDeclaration, &'static str)> {
+        self.report_only_url_violations_with_path(
+            kind,
+            document_url,
+            resource_url,
+            parser_inserted,
+            nonce,
+            true,
+        )
+    }
+
+    fn report_only_url_violations_with_path(
+        &self,
+        kind: NativeSubresourceKind,
+        document_url: &Url,
+        resource_url: &Url,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+        ignore_path: bool,
+    ) -> Vec<(&NativeCspDeclaration, &'static str)> {
         self.report_only_policies
             .iter()
             .filter_map(|declaration| {
                 let (directive, sources) = declaration.directives.directive_for(kind)?;
                 let allowed = if kind == NativeSubresourceKind::Script {
-                    declaration.directives.allows_script(
-                        document_url,
-                        resource_url,
-                        parser_inserted,
-                        nonce,
-                    )
+                    if ignore_path {
+                        declaration.directives.allows_script_redirect(
+                            document_url,
+                            resource_url,
+                            parser_inserted,
+                            nonce,
+                        )
+                    } else {
+                        declaration.directives.allows_script(
+                            document_url,
+                            resource_url,
+                            parser_inserted,
+                            nonce,
+                        )
+                    }
                 } else {
-                    csp_sources_allow(Some(sources.as_slice()), document_url, resource_url)
+                    let sources = Some(sources.as_slice());
+                    if ignore_path {
+                        csp_sources_allow_for_redirect(sources, document_url, resource_url)
+                    } else {
+                        csp_sources_allow(sources, document_url, resource_url)
+                    }
                 };
                 (!allowed).then_some((declaration, directive))
             })
@@ -1362,6 +1465,26 @@ pub(crate) fn csp_sources_allow(
     document_url: &Url,
     resource_url: &Url,
 ) -> bool {
+    csp_sources_allow_with_path(sources, document_url, resource_url, false)
+}
+
+/// Evaluate a CSP URL source expression for an HTTP redirect. CSP ignores a
+/// host-source path on redirect hops to avoid leaking path information while
+/// retaining scheme, host, and port authorization.
+pub(crate) fn csp_sources_allow_for_redirect(
+    sources: Option<&[String]>,
+    document_url: &Url,
+    resource_url: &Url,
+) -> bool {
+    csp_sources_allow_with_path(sources, document_url, resource_url, true)
+}
+
+fn csp_sources_allow_with_path(
+    sources: Option<&[String]>,
+    document_url: &Url,
+    resource_url: &Url,
+    ignore_path: bool,
+) -> bool {
     let Some(sources) = sources else {
         return true;
     };
@@ -1377,7 +1500,7 @@ pub(crate) fn csp_sources_allow(
         if source.eq_ignore_ascii_case("'none'") {
             continue;
         }
-        if csp_source_expression_matches(source, document_url, resource_url) {
+        if csp_source_expression_matches(source, document_url, resource_url, ignore_path) {
             return true;
         }
     }
@@ -1390,6 +1513,41 @@ fn csp_script_sources_allow(
     resource_url: &Url,
     parser_inserted: bool,
     nonce: Option<&str>,
+) -> bool {
+    csp_script_sources_allow_with_path(
+        sources,
+        document_url,
+        resource_url,
+        parser_inserted,
+        nonce,
+        false,
+    )
+}
+
+fn csp_script_sources_allow_for_redirect(
+    sources: Option<&[String]>,
+    document_url: &Url,
+    resource_url: &Url,
+    parser_inserted: bool,
+    nonce: Option<&str>,
+) -> bool {
+    csp_script_sources_allow_with_path(
+        sources,
+        document_url,
+        resource_url,
+        parser_inserted,
+        nonce,
+        true,
+    )
+}
+
+fn csp_script_sources_allow_with_path(
+    sources: Option<&[String]>,
+    document_url: &Url,
+    resource_url: &Url,
+    parser_inserted: bool,
+    nonce: Option<&str>,
+    ignore_path: bool,
 ) -> bool {
     let Some(sources) = sources else {
         return true;
@@ -1407,10 +1565,15 @@ fn csp_script_sources_allow(
     {
         return !parser_inserted;
     }
-    csp_sources_allow(Some(sources), document_url, resource_url)
+    csp_sources_allow_with_path(Some(sources), document_url, resource_url, ignore_path)
 }
 
-fn csp_source_expression_matches(expression: &str, document_url: &Url, resource_url: &Url) -> bool {
+fn csp_source_expression_matches(
+    expression: &str,
+    document_url: &Url,
+    resource_url: &Url,
+    ignore_path: bool,
+) -> bool {
     if expression.is_empty() || expression.len() > MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES {
         return false;
     }
@@ -1448,7 +1611,7 @@ fn csp_source_expression_matches(expression: &str, document_url: &Url, resource_
 
     source
         .path
-        .is_none_or(|path| csp_path_part_matches(path, resource_url.path()))
+        .is_none_or(|path| ignore_path || csp_path_part_matches(path, resource_url.path()))
 }
 
 fn parse_csp_host_source(expression: &str) -> Option<NativeCspHostSource<'_>> {
@@ -1962,6 +2125,26 @@ impl NativeResourceLoader {
         );
     }
 
+    fn record_report_only_url_violations_for_redirect(
+        &mut self,
+        policy: &NativeCspPolicy,
+        kind: NativeSubresourceKind,
+        document_url: &Url,
+        resource_url: &Url,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+    ) {
+        self.record_report_only_url_violations_with_metadata_and_path(
+            policy,
+            kind,
+            document_url,
+            resource_url,
+            parser_inserted,
+            nonce,
+            true,
+        );
+    }
+
     fn record_report_only_url_violations_with_metadata(
         &mut self,
         policy: &NativeCspPolicy,
@@ -1971,14 +2154,46 @@ impl NativeResourceLoader {
         parser_inserted: bool,
         nonce: Option<&str>,
     ) {
-        let blocked_uri = without_fragment(resource_url.as_str()).to_owned();
-        for (declaration, directive) in policy.report_only_url_violations(
+        self.record_report_only_url_violations_with_metadata_and_path(
+            policy,
             kind,
             document_url,
             resource_url,
             parser_inserted,
             nonce,
-        ) {
+            false,
+        );
+    }
+
+    fn record_report_only_url_violations_with_metadata_and_path(
+        &mut self,
+        policy: &NativeCspPolicy,
+        kind: NativeSubresourceKind,
+        document_url: &Url,
+        resource_url: &Url,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+        ignore_path: bool,
+    ) {
+        let blocked_uri = without_fragment(resource_url.as_str()).to_owned();
+        let violations = if ignore_path {
+            policy.report_only_url_violations_for_redirect(
+                kind,
+                document_url,
+                resource_url,
+                parser_inserted,
+                nonce,
+            )
+        } else {
+            policy.report_only_url_violations(
+                kind,
+                document_url,
+                resource_url,
+                parser_inserted,
+                nonce,
+            )
+        };
+        for (declaration, directive) in violations {
             self.queue_csp_violation(
                 policy,
                 declaration,
@@ -2428,13 +2643,19 @@ impl NativeResourceLoader {
             if !is_network_url(without_fragment(next_url.as_str()))
                 || !mixed_content_allowed(&document_url, &next_url)
                 || {
-                    self.record_report_only_url_violations(
+                    self.record_report_only_url_violations_for_redirect(
                         &policy,
                         NativeSubresourceKind::Connect,
                         &document_url,
                         &next_url,
+                        true,
+                        None,
                     );
-                    !policy.allows(NativeSubresourceKind::Connect, &document_url, &next_url)
+                    !policy.allows_redirect(
+                        NativeSubresourceKind::Connect,
+                        &document_url,
+                        &next_url,
+                    )
                 }
             {
                 return Err(NativeEngineError::Network {
@@ -3631,17 +3852,23 @@ impl NativeResourceLoader {
                 })?;
             reject_credentials(&next_url)?;
             if cors_mode != NativeCorsMode::Navigation {
-                self.record_report_only_url_violations(
+                self.record_report_only_url_violations_for_redirect(
                     &policy,
                     NativeSubresourceKind::Connect,
                     &document_url,
                     &next_url,
+                    true,
+                    None,
                 );
             }
             if !is_network_url(without_fragment(next_url.as_str()))
                 || !mixed_content_allowed(&document_url, &next_url)
                 || (cors_mode != NativeCorsMode::Navigation
-                    && !policy.allows(NativeSubresourceKind::Connect, &document_url, &next_url))
+                    && !policy.allows_redirect(
+                        NativeSubresourceKind::Connect,
+                        &document_url,
+                        &next_url,
+                    ))
             {
                 return Err(NativeEngineError::Network {
                     operation: "fetch redirect policy".into(),
@@ -4027,15 +4254,17 @@ impl NativeResourceLoader {
                     reason: "CSS subresource redirect location is not valid URL syntax".into(),
                 })?;
             reject_credentials(&next_url)?;
-            self.record_report_only_url_violations(
+            self.record_report_only_url_violations_for_redirect(
                 &policy,
                 NativeSubresourceKind::Style,
                 &document_url,
                 &next_url,
+                true,
+                None,
             );
             if !is_network_url(without_fragment(next_url.as_str()))
                 || !mixed_content_allowed(&document_url, &next_url)
-                || !policy.allows(NativeSubresourceKind::Style, &document_url, &next_url)
+                || !policy.allows_redirect(NativeSubresourceKind::Style, &document_url, &next_url)
             {
                 return Ok(None);
             }
@@ -4268,15 +4497,17 @@ impl NativeResourceLoader {
                     reason: "image subresource redirect location is not valid URL syntax".into(),
                 })?;
             reject_credentials(&next_url)?;
-            self.record_report_only_url_violations(
+            self.record_report_only_url_violations_for_redirect(
                 &policy,
                 NativeSubresourceKind::Image,
                 &document_url,
                 &next_url,
+                true,
+                None,
             );
             if !is_network_url(without_fragment(next_url.as_str()))
                 || !mixed_content_allowed(&document_url, &next_url)
-                || !policy.allows(NativeSubresourceKind::Image, &document_url, &next_url)
+                || !policy.allows_redirect(NativeSubresourceKind::Image, &document_url, &next_url)
             {
                 return Ok(None);
             }
@@ -4593,7 +4824,7 @@ impl NativeResourceLoader {
                     reason: "script subresource redirect location is not valid URL syntax".into(),
                 })?;
             reject_credentials(&next_url)?;
-            self.record_report_only_url_violations_with_metadata(
+            self.record_report_only_url_violations_for_redirect(
                 &policy,
                 subresource_kind,
                 &document_url,
@@ -4602,9 +4833,9 @@ impl NativeResourceLoader {
                 nonce,
             );
             let allowed = if subresource_kind == NativeSubresourceKind::Script {
-                policy.allows_script(&document_url, &next_url, parser_inserted, nonce)
+                policy.allows_script_redirect(&document_url, &next_url, parser_inserted, nonce)
             } else {
-                policy.allows(subresource_kind, &document_url, &next_url)
+                policy.allows_redirect(subresource_kind, &document_url, &next_url)
             };
             if !is_network_url(without_fragment(next_url.as_str()))
                 || !mixed_content_allowed(&document_url, &next_url)
@@ -6335,9 +6566,9 @@ mod tests {
         NativeNetworkState, NativeResource, NativeResourceLoader, NativeSubresourceKind,
         cache_control_max_age, cache_control_requires_revalidation, content_security_policy,
         cors_origin_header, cors_preflight_response_allowed, cors_response_allowed,
-        csp_report_deliveries_for_declaration, csp_sources_allow, decode_html_body,
-        document_cache_fresh_until, document_cache_storage_allowed, mixed_content_allowed,
-        referrer_for_navigation, resolve_subresource_url,
+        csp_report_deliveries_for_declaration, csp_sources_allow, csp_sources_allow_for_redirect,
+        decode_html_body, document_cache_fresh_until, document_cache_storage_allowed,
+        mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
     };
     use base64::Engine as _;
     use reqwest::header::{
@@ -6693,6 +6924,21 @@ mod tests {
             Some(&exact_path),
             &document,
             &Url::parse("https://cdn.example.test/assets/app.js/extra").unwrap()
+        ));
+        assert!(!csp_sources_allow(
+            Some(&exact_path),
+            &document,
+            &Url::parse("https://cdn.example.test/redirected.js").unwrap()
+        ));
+        assert!(csp_sources_allow_for_redirect(
+            Some(&exact_path),
+            &document,
+            &Url::parse("https://cdn.example.test/redirected.js").unwrap()
+        ));
+        assert!(!csp_sources_allow_for_redirect(
+            Some(&exact_path),
+            &document,
+            &Url::parse("https://other.example.test/redirected.js").unwrap()
         ));
 
         let default_port = vec!["https://api.test".to_owned()];

@@ -1,9 +1,19 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-407` slice. The native runtime is now the primary
+`native-engine-browser-408` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 408 closes CSP redirect path matching. Initial Fetch, EventSource,
+stylesheet, image, script, worker, and embedded-frame URLs remain path-aware;
+manually followed HTTP redirects use the same shared source matcher with only
+the host-source path ignored. Scheme, host, port, mixed-content, credentials,
+and script nonce/strict-dynamic checks remain enforced, and report-only
+redirect observations use the same rule. Frame navigation carries the last
+requested URL so an HTTP redirect is distinct from a later page-script
+navigation handoff. Dynamic CSP grammar, `navigate-to`, report-only meta
+policy, and broader conformance remain separate issue #40 gates.
 
 Slice 404 closes the bounded CSP source-expression matcher used by the native
 network and frame owners. Scheme sources honor the CSP secure-upgrade
@@ -13,9 +23,8 @@ comparison. Schemeless hosts inherit the protected document scheme, `'self'`
 keeps its safe same-origin upgrade rules, and malformed credentials, hosts,
 ports, paths, and non-ASCII source syntax fail closed. The shared decision is
 used by enforced and report-only page/worker resource checks, frames,
-EventSource, and WebSocket policy matching. Dynamic policy mutation,
-redirect-aware path handling, and broader CSP conformance remain separate
-issue #40 gates.
+EventSource, and WebSocket policy matching. Dynamic policy mutation and
+broader CSP conformance remain separate issue #40 gates.
 
 Slice 405 closes the bounded CSP `strict-dynamic` script boundary. External
 script nonces are retained from parser and mutation-created script elements;
@@ -26,9 +35,8 @@ without a host allowlist. Enforced and report-only URL checks share the same
 parser metadata, nonce, and redirect decisions, while inline script
 `unsafe-inline` cannot bypass a strict-dynamic source list. Initial
 DOMContentLoaded/load-time dynamic script sources now drain through the normal
-content-process loader instead of being dropped. Dynamic policy mutation,
-redirect-aware path handling, and broader CSP conformance remain separate
-issue #40 gates.
+content-process loader instead of being dropped. Dynamic policy mutation and
+broader CSP conformance remain separate issue #40 gates.
 
 Slice 407 closes the Service Worker document policy-container boundary.
 Controlled page Fetch/XHR requests now pass the document's enforced
@@ -37,8 +45,7 @@ fetch event, while handled report-only records remain exactly once and
 unhandled requests retain normal loader ownership. Worker-served navigations
 install their final-URL CSP response headers before parsing; an integration
 witness confirms that policy governs the first page Fetch. Dynamic policy
-mutation, redirect-aware path handling, and broader CSP conformance remain
-separate issue #40 gates.
+mutation and broader CSP conformance remain separate issue #40 gates.
 
 Slice 406 closes the live-document CSP meta-policy boundary. Parser-discovered
 enforced head policies are committed once to the document policy container;
@@ -49,8 +56,7 @@ attribute edit cannot relax the container, while each normal content-process
 script, input-event, lifecycle, hash-change, and scroll turn commits newly
 inserted nodes before later resource and inline-style decisions. The bounded
 policy cap, URL validation, report-only separation, and shared Rust loader
-remain in force. Redirect-aware path handling and broader CSP conformance
-remain separate issue #40 gates.
+remain in force. Broader CSP conformance remains a separate issue #40 gate.
 
 Slice 403 closes report-only CSP network delivery for the current native
 HTTP(S) owners. `report-uri` declarations produce bounded legacy

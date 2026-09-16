@@ -14727,6 +14727,56 @@ async fn native_content_process_applies_strict_dynamic_to_parser_and_dynamic_scr
 }
 
 #[tokio::test]
+async fn native_content_process_ignores_csp_path_on_script_redirect() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/start.js", "/other.js"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = match expected_path {
+                "/page" => {
+                    let body = "<script nonce='bootstrap'>globalThis.redirectReports = []; addEventListener('securitypolicyviolation', event => redirectReports.push([event.effectiveDirective, event.blockedURI]));</script><script src='/start.js'></script>";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none'; script-src 'nonce-bootstrap' http://{address}/start.js\r\nContent-Security-Policy-Report-Only: default-src 'none'; script-src 'nonce-bootstrap' http://{address}/start.js\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "/start.js" => "HTTP/1.1 302 Found\r\nLocation: /other.js\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
+                "/other.js" => {
+                    let body = "globalThis.redirectedScript = true;";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                _ => unreachable!(),
+            };
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ ran: globalThis.redirectedScript === true, reports: redirectReports })"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"ran": true, "reports": []})
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_intersects_header_and_head_meta_csp() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -17900,6 +17950,54 @@ async fn native_content_process_allows_csp_same_origin_frame() {
             .title,
         "Child"
     );
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_ignores_csp_path_on_frame_redirect() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/frame-start", "/frame-final"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = match expected_path {
+                "/page" => {
+                    let body = "<title>Parent</title><iframe src='/frame-start'>fallback</iframe>";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: frame-src http://{address}/frame-start\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "/frame-start" => "HTTP/1.1 302 Found\r\nLocation: /frame-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
+                "/frame-final" => {
+                    let body = "<title>Redirected frame</title><p>Frame content</p>";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                _ => unreachable!(),
+            };
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .await
+    .unwrap();
+    let frames = session.native_list_frames().await.unwrap();
+    assert_eq!(frames.len(), 2);
+    let child = frames
+        .iter()
+        .find(|frame| frame.id.ends_with(":frame-1"))
+        .unwrap();
+    assert_eq!(child.url, format!("http://{address}/frame-final"));
     session.close().await.unwrap();
     server.await.unwrap();
 }

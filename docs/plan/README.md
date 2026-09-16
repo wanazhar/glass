@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion is now complete through
-`native-engine-browser-408` locally. Native is now the default runtime for
+`native-engine-browser-409` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -539,6 +539,17 @@ enforced; report-only redirect observations use the same rule. Frame loading
 retains the requested URL so an HTTP redirect is distinguished from a later
 page-navigation handoff. Dynamic CSP grammar, `navigate-to`, report-only meta
 policy, and broader conformance remain issue #40 promotion gates.
+
+The completed Subresource Integrity slice is
+[native-engine-browser-409](tasks/native-engine-browser-409.md): external
+scripts and stylesheet links now parse strongest recognized SHA-256/384/512
+metadata and verify raw response bytes before decoding, execution, or CSS
+application. Fresh and `304` cache reuse are rechecked, parser and dynamic
+scripts preserve `integrity`/`crossorigin`, and cross-origin integrity loads
+require explicit CORS while bypassing URL-only cache reuse. Mismatches use the
+existing resource-error path and leave the document alive. SRI for Fetch,
+images, frames, media, Integrity-Policy headers, and future metadata options
+remain separate issue #40 gates.
 
 The completed CSP source-expression matching slice is
 [native-engine-browser-404](tasks/native-engine-browser-404.md): the shared

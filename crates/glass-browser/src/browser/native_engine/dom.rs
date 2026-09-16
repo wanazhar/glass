@@ -567,6 +567,8 @@ pub(crate) enum NativePageScriptSource {
         timing: NativePageScriptTiming,
         node_index: u32,
         nonce: Option<String>,
+        integrity: Option<String>,
+        crossorigin: Option<String>,
         parser_inserted: bool,
     },
     ModuleInline {
@@ -581,6 +583,8 @@ pub(crate) enum NativePageScriptSource {
         timing: NativePageScriptTiming,
         node_index: u32,
         nonce: Option<String>,
+        integrity: Option<String>,
+        crossorigin: Option<String>,
         parser_inserted: bool,
     },
 }
@@ -1202,7 +1206,9 @@ impl NativeDocument {
         self.computed_styles = None;
     }
 
-    pub(crate) fn external_stylesheet_links(&self) -> Vec<(u32, String)> {
+    pub(crate) fn external_stylesheet_links(
+        &self,
+    ) -> Vec<(u32, String, Option<String>, Option<String>)> {
         self.nodes
             .iter()
             .filter_map(|node| {
@@ -1213,8 +1219,14 @@ impl NativeDocument {
                             .any(|token| token.eq_ignore_ascii_case("stylesheet"))
                     }))
                 .then(|| {
-                    node.attribute("href")
-                        .map(|href| (node.id().index(), href.to_owned()))
+                    node.attribute("href").map(|href| {
+                        (
+                            node.id().index(),
+                            href.to_owned(),
+                            node.attribute("integrity").map(str::to_owned),
+                            node.attribute("crossorigin").map(str::to_owned),
+                        )
+                    })
                 })
                 .flatten()
             })
@@ -2841,6 +2853,8 @@ impl NativeDocument {
                                 timing,
                                 node_index: node.id().index(),
                                 nonce: node.attribute("nonce").map(str::to_owned),
+                                integrity: node.attribute("integrity").map(str::to_owned),
+                                crossorigin: node.attribute("crossorigin").map(str::to_owned),
                                 parser_inserted: true,
                             }
                         } else {
@@ -2849,6 +2863,8 @@ impl NativeDocument {
                                 timing,
                                 node_index: node.id().index(),
                                 nonce: node.attribute("nonce").map(str::to_owned),
+                                integrity: node.attribute("integrity").map(str::to_owned),
+                                crossorigin: node.attribute("crossorigin").map(str::to_owned),
                                 parser_inserted: true,
                             }
                         }

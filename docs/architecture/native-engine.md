@@ -1,9 +1,23 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through the completed
-`native-engine-browser-408` slice. The native runtime is now the primary
+`native-engine-browser-409` slice. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 409 closes external-resource Subresource Integrity. External scripts and
+stylesheet links now carry `integrity` and `crossorigin` through DOM discovery,
+dynamic script insertion, the content-process loader, and reflected
+`crossOrigin` properties. The shared loader parses strongest recognized
+SHA-256/384/512 metadata, hashes raw response bytes before decoding or
+execution, rechecks fresh and `304` cache reuse, and emits the existing
+resource error without applying or executing a mismatch. Same-origin
+integrity loads work without CORS; cross-origin integrity loads require
+explicit CORS and do not reuse URL-only cache entries without response-header
+authorization. Unknown or malformed metadata is ignored as unspecified by the
+bounded supported algorithm set. SRI remains limited to external script and
+stylesheet elements; Fetch, images, frames, media, Integrity-Policy headers,
+and future metadata options remain separate issue #40 gates.
 
 Slice 408 closes CSP redirect path matching. Initial Fetch, EventSource,
 stylesheet, image, script, worker, and embedded-frame URLs remain path-aware;

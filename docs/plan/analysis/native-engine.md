@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is the completed `native-engine-browser-397`, with
+expansion checkpoint is the completed `native-engine-browser-398`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -449,6 +449,15 @@ on both local and content-process owners; autonomous rendering, background
 page scheduling, complete task-source arbitration, and full animation/idle
 Web IDL identity remain promotion work. The contract and evidence are recorded
 in `docs/plan/tasks/native-engine-browser-397.md`. The
+completed `native-engine-browser-398` slice composes parser-time enforced CSP
+meta policies with every response-header policy. Head-only
+`Content-Security-Policy` meta values now constrain the existing Rust-owned
+subresource, inline-element/attribute, and child-frame decisions; multiple
+frame source groups remain an intersection across the typed content-process
+wire. Report-only violation delivery, `SecurityPolicyViolationEvent`,
+strict-dynamic, dynamic policy mutation, and the complete CSP source grammar
+remain separate issue #40 security gates. The contract and evidence are
+recorded in `docs/plan/tasks/native-engine-browser-398.md`. The
 completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,

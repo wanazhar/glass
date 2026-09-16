@@ -1669,6 +1669,7 @@ impl NativeServiceWorkerRegistry {
             response.url.clone()
         };
         let parsed = parse_network_url("service worker navigation response URL", &url)?;
+        loader.set_document_content_security_policy_from_pairs(&url, &response.headers)?;
         Ok(NativeServiceWorkerNavigationOutcome::Handled(
             NativeResource {
                 url,

@@ -387,11 +387,11 @@ pub struct NativeEngine {
     document: NativeDocument,
     url: String,
     origin: NativeOrigin,
-    document_frame_sources: Option<Vec<String>>,
+    document_frame_sources: Option<Vec<Vec<String>>>,
     frame_script_bindings: Vec<NativeFrameScriptBinding>,
     frame_script_context: Option<NativeFrameScriptContext>,
     embedding_document_url: Option<String>,
-    embedding_frame_sources: Option<Vec<String>>,
+    embedding_frame_sources: Option<Vec<Vec<String>>>,
     revision: u64,
     scroll_offset: NativePoint,
     nested_scroll_offsets: BTreeMap<u32, NativePoint>,
@@ -873,21 +873,19 @@ impl NativeEngine {
                 reason: "embedded frame URL is not valid URL syntax".into(),
             }
         })?;
-        Ok(csp_sources_allow(
-            Some(frame_sources),
-            &document_url,
-            &target_url,
-        ))
+        Ok(frame_sources
+            .iter()
+            .all(|sources| csp_sources_allow(Some(sources), &document_url, &target_url)))
     }
 
-    pub(crate) fn frame_navigation_policy(&self) -> (String, Option<Vec<String>>) {
+    pub(crate) fn frame_navigation_policy(&self) -> (String, Option<Vec<Vec<String>>>) {
         (self.url.clone(), self.document_frame_sources.clone())
     }
 
     pub(crate) fn set_embedding_frame_policy(
         &mut self,
         document_url: String,
-        frame_sources: Option<Vec<String>>,
+        frame_sources: Option<Vec<Vec<String>>>,
     ) {
         self.embedding_document_url = Some(document_url);
         self.embedding_frame_sources = frame_sources;
@@ -908,11 +906,14 @@ impl NativeEngine {
                 reason: "frame navigation URL is not valid URL syntax".into(),
             }
         })?;
-        Ok(csp_sources_allow(
-            self.embedding_frame_sources.as_deref(),
-            &document_url,
-            &target_url,
-        ))
+        Ok(self
+            .embedding_frame_sources
+            .as_deref()
+            .is_none_or(|groups| {
+                groups
+                    .iter()
+                    .all(|sources| csp_sources_allow(Some(sources), &document_url, &target_url))
+            }))
     }
 
     pub const fn lifecycle(&self) -> NativeLifecycleState {
@@ -7128,7 +7129,7 @@ fn scroll_axis_into_view(
 struct PreparedNavigation {
     resource: NativeResource,
     document: NativeDocument,
-    frame_sources: Option<Vec<String>>,
+    frame_sources: Option<Vec<Vec<String>>>,
     dialogs: Vec<NativeDialog>,
     initial_events: Vec<(u32, NativeEventKind)>,
     initial_scroll_commands: Vec<NativeScriptCommand>,

@@ -47,12 +47,13 @@ use super::javascript::{
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
-    MAX_NATIVE_RESPONSE_HEADER_BYTES, MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
-    MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES, MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode,
-    NativeCspViolation, NativeFetchCacheMode, NativeFetchRedirectMode, NativeFetchRequest,
-    NativeFetchResponse, NativeFetchResponseStream, NativeNavigationMethod,
-    NativeNavigationPolicyKind, NativeNavigationRequest, NativeRequestBody, NativeResource,
-    NativeResourceLoader, NativeWebSocketTarget, schedule_native_csp_report_deliveries,
+    MAX_NATIVE_CSP_VIOLATIONS, MAX_NATIVE_RESPONSE_HEADER_BYTES,
+    MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES, MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
+    MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
+    NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeFetchResponseStream,
+    NativeNavigationMethod, NativeNavigationPolicyKind, NativeNavigationRequest, NativeRequestBody,
+    NativeResource, NativeResourceLoader, NativeWebSocketTarget,
+    schedule_native_csp_report_deliveries,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -149,6 +150,14 @@ pub(crate) struct NativeContentLoad {
 pub(crate) enum NativeContentLoadResult {
     Loaded(NativeContentLoad),
     Suspended(Vec<NativeServiceWorkerOpenWindowRequest>),
+}
+
+/// The child-owned result of a top-level `navigate-to` policy preflight.
+/// Report-only records are returned separately from authorization so the
+/// parent can deliver them without allowing them to change the decision.
+pub(crate) struct NativeContentNavigationPolicy {
+    pub(crate) allowed: bool,
+    pub(crate) csp_violations: Vec<NativeCspViolation>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1096,6 +1105,7 @@ pub(crate) struct NativeContentProcess {
     failure_kind: Option<NativeWorkerFailureKind>,
     scroll_offset: NativePoint,
     nested_scroll_offsets: BTreeMap<u32, NativePoint>,
+    current_document_url: Option<String>,
     #[cfg(windows)]
     sandbox: NativeContentSandbox,
 }
@@ -1157,6 +1167,7 @@ impl NativeContentProcess {
             failure_kind: None,
             scroll_offset: NativePoint { x: 0, y: 0 },
             nested_scroll_offsets: BTreeMap::new(),
+            current_document_url: None,
             #[cfg(windows)]
             sandbox,
         };
@@ -1178,6 +1189,10 @@ impl NativeContentProcess {
             ));
         }
         Ok(process)
+    }
+
+    pub(crate) fn has_current_document(&self) -> bool {
+        self.current_document_url.is_some()
     }
 
     pub(crate) async fn start(
@@ -1465,6 +1480,9 @@ impl NativeContentProcess {
             });
         }
         let result = decode_load_response(&response, id);
+        if let Ok(NativeContentLoadResult::Loaded(content)) = &result {
+            self.current_document_url = Some(content.url.clone());
+        }
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
             let _ = self.child.start_kill();
@@ -1509,6 +1527,64 @@ impl NativeContentProcess {
             });
         }
         let result = decode_load_response(&response, id);
+        if let Ok(NativeContentLoadResult::Loaded(content)) = &result {
+            self.current_document_url = Some(content.url.clone());
+        }
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+            let _ = self.child.start_kill();
+        }
+        result
+    }
+
+    /// Ask the process-backed document owner for its enforced and report-only
+    /// top-level navigation result. The caller separately applies the
+    /// returned report records through the normal page event channel.
+    pub(crate) async fn check_navigation_policy(
+        &mut self,
+        document_url: &str,
+        target_url: &str,
+        report: bool,
+    ) -> Result<NativeContentNavigationPolicy, NativeEngineError> {
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_MUTATION_TIMEOUT,
+            self.exchange(json!({
+                "kind": "navigation_policy",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "policy": "navigate-to",
+                "document_url": document_url,
+                "target_url": target_url,
+                "report": report,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process navigation policy",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process navigation policy exceeded its deadline",
+                ));
+            }
+        };
+        if response.get("kind").and_then(Value::as_str) == Some("error") {
+            self.mark_failed(NativeWorkerFailureKind::Rejected);
+            let _ = self.child.start_kill();
+            return Err(NativeEngineError::worker_failure(
+                "content process navigation policy",
+                NativeWorkerFailureKind::Rejected,
+                response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("content process rejected the navigation policy query"),
+            ));
+        }
+        let result = decode_navigation_policy_response(&response, id);
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
             let _ = self.child.start_kill();
@@ -2552,6 +2628,54 @@ fn decode_load_response(
         service_worker_open_windows,
         window_name,
     }))
+}
+
+fn decode_navigation_policy_response(
+    response: &Value,
+    id: u64,
+) -> Result<NativeContentNavigationPolicy, NativeEngineError> {
+    require_response_kind(
+        response,
+        "navigation_policy",
+        id,
+        "content process navigation policy",
+    )?;
+    if response.get("policy").and_then(Value::as_str) != Some("navigate-to") {
+        return Err(NativeEngineError::worker_failure(
+            "decode content process navigation policy",
+            NativeWorkerFailureKind::Protocol,
+            "content process returned an unexpected navigation policy kind",
+        ));
+    }
+    let allowed = response
+        .get("allowed")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "decode content process navigation policy".into(),
+            reason: "content process omitted the navigation policy decision".into(),
+        })?;
+    let value = response
+        .get("csp_violations")
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "decode content process navigation policy".into(),
+            reason: "content process omitted navigation policy observations".into(),
+        })?;
+    let csp_violations: Vec<NativeCspViolation> =
+        serde_json::from_value(value.clone()).map_err(|_| NativeEngineError::Worker {
+            operation: "decode content process navigation policy".into(),
+            reason: "content process returned invalid navigation policy observations".into(),
+        })?;
+    if csp_violations.len() > MAX_NATIVE_CSP_VIOLATIONS {
+        return Err(NativeEngineError::limit(
+            "content-process navigation policy observations",
+            MAX_NATIVE_CSP_VIOLATIONS,
+            csp_violations.len(),
+        ));
+    }
+    Ok(NativeContentNavigationPolicy {
+        allowed,
+        csp_violations,
+    })
 }
 
 fn decode_frame_sources(
@@ -5035,6 +5159,76 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         })
                     }
                     Err(error) => content_error_response(id, error),
+                }
+            }
+            "navigation_policy" if protocol_matches(&request) && running => {
+                let document_url = request
+                    .get("document_url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process navigation policy owner URL",
+                            "must be text",
+                        )
+                    })?;
+                let target_url = request
+                    .get("target_url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process navigation policy target URL",
+                            "must be text",
+                        )
+                    })?;
+                if request.get("policy").and_then(Value::as_str) != Some("navigate-to") {
+                    content_error_response(
+                        id,
+                        NativeEngineError::invalid(
+                            "content-process navigation policy",
+                            "must use the navigate-to policy kind",
+                        ),
+                    )
+                } else {
+                    match resource_loader.as_mut() {
+                        None => content_error_response(
+                            id,
+                            NativeEngineError::Worker {
+                                operation: "content process navigation policy".into(),
+                                reason: "content process has no committed document".into(),
+                            },
+                        ),
+                        Some(loader) => {
+                            let report = request
+                                .get("report")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false);
+                            let allowed = if report {
+                                loader.allows_navigation(
+                                    document_url,
+                                    target_url,
+                                    NativeNavigationPolicyKind::NavigateTo,
+                                )?
+                            } else {
+                                loader.allows_navigation_silent(
+                                    document_url,
+                                    target_url,
+                                    NativeNavigationPolicyKind::NavigateTo,
+                                )?
+                            };
+                            let csp_violations = if report {
+                                loader.take_csp_violations()
+                            } else {
+                                Vec::new()
+                            };
+                            json!({
+                                "kind": "navigation_policy",
+                                "id": id,
+                                "policy": "navigate-to",
+                                "allowed": allowed,
+                                "csp_violations": csp_violations,
+                            })
+                        }
+                    }
                 }
             }
             "script" if protocol_matches(&request) && running => {

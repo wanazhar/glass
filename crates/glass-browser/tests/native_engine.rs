@@ -17614,6 +17614,52 @@ async fn native_content_process_propagates_dynamic_navigate_to_to_parent_navigat
 }
 
 #[tokio::test]
+async fn native_content_process_reports_navigate_to_preflight_before_blocking_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let initial_url = format!("http://{address}/start");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/start"));
+        let body = r#"<a id='go' href='/blocked'>Blocked</a>"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src *; navigate-to 'none'\r\nContent-Security-Policy-Report-Only: default-src *; navigate-to 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        tokio::time::timeout(Duration::from_millis(300), listener.accept())
+            .await
+            .expect_err("blocked navigate-to preflight must not issue a second request");
+    });
+
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(initial_url.clone()))
+            .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "globalThis.navigationReports = []; addEventListener('securitypolicyviolation', event => navigationReports.push([event.effectiveDirective, event.blockedURI, event.disposition]))",
+        )
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Click {
+            target: "id=go".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(engine.snapshot().unwrap().url, initial_url);
+    assert_eq!(
+        engine.evaluate_async("navigationReports").await.unwrap(),
+        serde_json::json!([["navigate-to", format!("http://{address}/blocked"), "report"]])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_form_validation_covers_common_constraints() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

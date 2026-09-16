@@ -27,8 +27,8 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion is now complete through
-`native-engine-browser-412` locally. Native is now the default runtime for
+the browser-complete expansion is now active through completed
+`native-engine-browser-413` locally. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -38,6 +38,14 @@ the authoritative epic is
 module decomposition, integration enumeration, and tradeoffs are in the
 [native-engine architecture](../architecture/native-engine.md) and
 [native-engine analysis](analysis/native-engine.md).
+
+The completed report-only navigation preflight slice is
+[native-engine-browser-413](tasks/native-engine-browser-413.md): the
+process-backed child reports its live `navigate-to` observations through a
+typed preflight before parent-owned top-level decisions, and the parent
+dispatches them through the existing page event channel without duplicating
+the first load observation. Enforced parent source snapshots remain active;
+broader redirect and CSP certification remain open issue #40 gates.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI

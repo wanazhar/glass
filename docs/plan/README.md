@@ -28,8 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-417`, following completed
-`native-engine-browser-416`. Native is now the default runtime for
+`native-engine-browser-418`, following completed
+`native-engine-browser-417`. Native is now the default runtime for
 feature-enabled CLI, MCP, and TUI browser entrypoints; Chromium/CDP is an
 explicit migration backend and is never selected as a silent fallback. The
 versioned
@@ -83,6 +83,13 @@ file-backed `Bytes` request bodies use compact base64 transport across the
 content-process navigation envelope instead of a JSON number array. The
 existing bounded body limit remains authoritative; upload streaming and
 progress remain separate issue #40 gates.
+
+The completed bounded XHR upload lifecycle slice is
+[native-engine-browser-418](tasks/native-engine-browser-418.md): page and
+worker XMLHttpRequest instances expose an upload event target and byte-accurate
+buffered `loadstart`/`progress`/terminal/`loadend` delivery. Socket-level
+chunk progress, streaming backpressure, and full ProgressEvent/Web IDL parity
+remain separate issue #40 gates.
 
 The completed profile and viewport ownership slice is
 [native-engine-browser-318](tasks/native-engine-browser-318.md). Native CLI

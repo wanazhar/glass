@@ -1,8 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active through completed
-`native-engine-browser-417` slice, following completed
-`native-engine-browser-416`. The native runtime is now the primary
+`native-engine-browser-418` slice, following completed
+`native-engine-browser-417`. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -56,6 +56,14 @@ compact: multipart and file-backed `Bytes` bodies cross the content-process
 boundary as standard base64 strings and are decoded and size-validated before
 effect dispatch. This keeps the existing form-body limit usable without
 claiming upload streaming or progress semantics.
+
+Slice 418 completes the bounded upload event-target contract for the existing
+asynchronous XHR bridge. Page and worker realms publish byte-accurate
+`loadstart`/`progress`/terminal/`loadend` records for the same normalized
+buffered bytes used by Fetch and XHR, including raw binary bodies, while stale
+continuations cannot publish a second terminal sequence. This is buffered
+handoff observability, not fabricated socket-level progress; streaming upload
+backpressure and complete ProgressEvent/Web IDL parity remain issue #40 gates.
 
 Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
 `navigate-to` navigation-policy extension. After each content-process

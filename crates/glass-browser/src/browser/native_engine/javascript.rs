@@ -18357,6 +18357,65 @@ fn worker_bootstrap(
       }} catch (_) {{}}
     }}
   }};
+  const workerXhrEventTypes = ["loadstart", "progress", "load", "error", "timeout", "abort", "loadend"];
+  const WorkerXMLHttpRequestUpload = typeof globalThis.__glassWorkerXmlHttpRequestUploadConstructor === "function"
+    ? globalThis.__glassWorkerXmlHttpRequestUploadConstructor
+    : function() {{
+      this._listeners = new Map();
+      for (const type of workerXhrEventTypes) this["on" + type] = null;
+    }};
+  WorkerXMLHttpRequestUpload.prototype.addEventListener = function(type, callback) {{
+    if (typeof callback !== "function" && !(callback && typeof callback.handleEvent === "function")) return;
+    const name = String(type);
+    const callbacks = this._listeners.get(name) || [];
+    if (!callbacks.includes(callback)) callbacks.push(callback);
+    this._listeners.set(name, callbacks);
+  }};
+  WorkerXMLHttpRequestUpload.prototype.removeEventListener = function(type, callback) {{
+    const name = String(type);
+    const callbacks = this._listeners.get(name) || [];
+    this._listeners.set(name, callbacks.filter(candidate => candidate !== callback));
+  }};
+  globalThis.__glassWorkerXmlHttpRequestUploadConstructor = WorkerXMLHttpRequestUpload;
+  globalThis.XMLHttpRequestUpload = WorkerXMLHttpRequestUpload;
+  const workerXhrBodyLength = (body) => {{
+    const payload = workerRequestBodyPayload(body);
+    return payload.bodyNull ? 0 : payload.stream ? null : payload.bytes.length;
+  }};
+  const workerXhrStartUpload = (xhr, body) => {{
+    const total = workerXhrBodyLength(body);
+    xhr._uploadStarted = true;
+    xhr._uploadFinished = false;
+    xhr._uploadTotal = total;
+    xhr._uploadLoaded = 0;
+    const lengthComputable = total !== null;
+    workerXhrDispatch(xhr.upload, "loadstart", {{
+      lengthComputable,
+      loaded: 0,
+      total: total === null ? 0 : total,
+    }});
+    if (total !== null) {{
+      xhr._uploadLoaded = total;
+      workerXhrDispatch(xhr.upload, "progress", {{
+        lengthComputable: true,
+        loaded: total,
+        total,
+      }});
+    }}
+  }};
+  const workerXhrFinishUpload = (xhr, type) => {{
+    if (!xhr._uploadStarted || xhr._uploadFinished) return;
+    xhr._uploadFinished = true;
+    const lengthComputable = xhr._uploadTotal !== null;
+    const loaded = type === "load" && lengthComputable ? xhr._uploadTotal : xhr._uploadLoaded;
+    const extra = {{
+      lengthComputable,
+      loaded,
+      total: lengthComputable ? xhr._uploadTotal : 0,
+    }};
+    workerXhrDispatch(xhr.upload, type, extra);
+    workerXhrDispatch(xhr.upload, "loadend", extra);
+  }};
   const WorkerXMLHttpRequestNative = typeof globalThis.__glassWorkerXmlHttpRequestConstructor === "function"
     ? globalThis.__glassWorkerXmlHttpRequestConstructor
     : function() {{
@@ -18386,6 +18445,11 @@ fn worker_bootstrap(
     this._sent = false;
     this._token = 0;
     this._timeout = 0;
+    this.upload = new WorkerXMLHttpRequestUpload();
+    this._uploadStarted = false;
+    this._uploadFinished = false;
+    this._uploadTotal = null;
+    this._uploadLoaded = 0;
   }};
   WorkerXMLHttpRequestNative.prototype._notifyReadyState = function() {{
     workerXhrDispatch(this, "readystatechange", {{}});
@@ -18426,6 +18490,10 @@ fn worker_bootstrap(
     this._aborted = false;
     this._sent = false;
     this._token += 1;
+    this._uploadStarted = false;
+    this._uploadFinished = false;
+    this._uploadTotal = null;
+    this._uploadLoaded = 0;
     this.readyState = 1;
     this._notifyReadyState();
   }};
@@ -18459,6 +18527,7 @@ fn worker_bootstrap(
     this.responseXML = null;
     this._responseHeaders = new WorkerHeadersNative();
     this._notifyReadyState();
+    workerXhrFinishUpload(this, "abort");
     workerXhrDispatch(this, "abort", {{}});
     workerXhrDispatch(this, "loadend", {{}});
   }};
@@ -18473,6 +18542,7 @@ fn worker_bootstrap(
     this._sent = true;
     this._aborted = false;
     const requestBody = body === undefined ? null : body;
+    workerXhrStartUpload(this, requestBody);
     workerFetchNative(this._url, {{
       method: this._method,
       body: requestBody,
@@ -18499,6 +18569,7 @@ fn worker_bootstrap(
       this._sent = false;
       this.readyState = 4;
       this._notifyReadyState();
+      workerXhrFinishUpload(this, "load");
       workerXhrDispatch(this, "load", {{}});
       workerXhrDispatch(this, "loadend", {{}});
     }}).catch(error => {{
@@ -18513,8 +18584,13 @@ fn worker_bootstrap(
       this._responseHeaders = new WorkerHeadersNative();
       this.readyState = 4;
       this._notifyReadyState();
-      if (error && error.name === "TimeoutError") workerXhrDispatch(this, "timeout", {{}});
-      else workerXhrDispatch(this, "error", {{ error }});
+      if (error && error.name === "TimeoutError") {{
+        workerXhrFinishUpload(this, "timeout");
+        workerXhrDispatch(this, "timeout", {{}});
+      }} else {{
+        workerXhrFinishUpload(this, "error");
+        workerXhrDispatch(this, "error", {{ error }});
+      }}
       workerXhrDispatch(this, "loadend", {{}});
     }});
   }};
@@ -25899,6 +25975,81 @@ fn document_bootstrap(
     }}
     return Object.freeze(response);
   }};
+  const nativeXhrEventTypes = ["readystatechange", "loadstart", "progress", "load", "error", "timeout", "abort", "loadend"];
+  const nativeXhrDispatch = (target, type, extra) => {{
+    const event = Object.assign({{ type, target, currentTarget: target }}, extra || {{}});
+    const handler = target["on" + type];
+    if (typeof handler === "function") {{
+      try {{ handler.call(target, event); }} catch (_error) {{}}
+    }}
+    const callbacks = target._listeners instanceof Map ? (target._listeners.get(type) || []) : [];
+    for (const callback of callbacks.slice()) {{
+      try {{
+        if (typeof callback === "function") callback.call(target, event);
+        else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
+      }} catch (_error) {{}}
+    }}
+  }};
+  const NativeXMLHttpRequestUpload = typeof globalThis.__glassXmlHttpRequestUploadConstructor === "function"
+    ? globalThis.__glassXmlHttpRequestUploadConstructor
+    : function() {{
+      this._listeners = new Map();
+      for (const type of nativeXhrEventTypes) this["on" + type] = null;
+    }};
+  NativeXMLHttpRequestUpload.prototype.addEventListener = function(type, callback) {{
+    if (typeof callback !== "function" && !(callback && typeof callback.handleEvent === "function")) return;
+    const name = String(type);
+    const callbacks = this._listeners.get(name) || [];
+    if (!callbacks.includes(callback)) callbacks.push(callback);
+    this._listeners.set(name, callbacks);
+  }};
+  NativeXMLHttpRequestUpload.prototype.removeEventListener = function(type, callback) {{
+    const name = String(type);
+    const callbacks = this._listeners.get(name) || [];
+    this._listeners.set(name, callbacks.filter(candidate => candidate !== callback));
+  }};
+  globalThis.__glassXmlHttpRequestUploadConstructor = NativeXMLHttpRequestUpload;
+  globalThis.XMLHttpRequestUpload = NativeXMLHttpRequestUpload;
+  const nativeXhrBodyLength = (body) => {{
+    if (body === undefined || body === null) return 0;
+    if (body.__glassFormData === true) {{
+      const serialized = serializeFormData(body, nextFetchRequestId);
+      return serialized.bodyBase64 === null
+        ? blobUtf8Bytes(serialized.body).length
+        : decodeBase64(serialized.bodyBase64, nativeFormBodyLimit).length;
+    }}
+    if (body.__glassUrlSearchParams === true) return blobUtf8Bytes(body.toString()).length;
+    if (body.__glassNativeBlob === true) return blobBytes(body).length;
+    if (body instanceof ArrayBuffer) return body.byteLength;
+    if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(body)) return body.byteLength;
+    return blobUtf8Bytes(String(body)).length;
+  }};
+  const nativeXhrStartUpload = (xhr, body) => {{
+    const total = nativeXhrBodyLength(body);
+    xhr._uploadStarted = true;
+    xhr._uploadFinished = false;
+    xhr._uploadTotal = total;
+    xhr._uploadLoaded = 0;
+    const progress = {{ lengthComputable: true, loaded: 0, total }};
+    nativeXhrDispatch(xhr.upload, "loadstart", progress);
+    xhr._uploadLoaded = total;
+    nativeXhrDispatch(xhr.upload, "progress", {{ lengthComputable: true, loaded: total, total }});
+  }};
+  const nativeXhrFinishUpload = (xhr, type) => {{
+    if (!xhr._uploadStarted || xhr._uploadFinished) return;
+    xhr._uploadFinished = true;
+    const loaded = type === "load" ? xhr._uploadTotal : xhr._uploadLoaded;
+    nativeXhrDispatch(xhr.upload, type, {{
+      lengthComputable: true,
+      loaded,
+      total: xhr._uploadTotal,
+    }});
+    nativeXhrDispatch(xhr.upload, "loadend", {{
+      lengthComputable: true,
+      loaded,
+      total: xhr._uploadTotal,
+    }});
+  }};
   const XMLHttpRequestNative = function() {{
     this.readyState = 0;
     this.status = 0;
@@ -25913,6 +26064,9 @@ fn document_bootstrap(
     this.onerror = null;
     this.onabort = null;
     this.ontimeout = null;
+    this.onloadstart = null;
+    this.onprogress = null;
+    this.onloadend = null;
     this._method = "GET";
     this._url = "";
     this._headers = {{}};
@@ -25921,9 +26075,27 @@ fn document_bootstrap(
     this._controller = null;
     this._aborted = false;
     this._timeout = 0;
+    this._listeners = new Map();
+    this.upload = new NativeXMLHttpRequestUpload();
+    this._uploadStarted = false;
+    this._uploadFinished = false;
+    this._uploadTotal = 0;
+    this._uploadLoaded = 0;
   }};
   XMLHttpRequestNative.prototype._notifyReadyState = function() {{
-    if (typeof this.onreadystatechange === "function") this.onreadystatechange.call(this);
+    nativeXhrDispatch(this, "readystatechange");
+  }};
+  XMLHttpRequestNative.prototype.addEventListener = function(type, callback) {{
+    if (typeof callback !== "function" && !(callback && typeof callback.handleEvent === "function")) return;
+    const name = String(type);
+    const callbacks = this._listeners.get(name) || [];
+    if (!callbacks.includes(callback)) callbacks.push(callback);
+    this._listeners.set(name, callbacks);
+  }};
+  XMLHttpRequestNative.prototype.removeEventListener = function(type, callback) {{
+    const name = String(type);
+    const callbacks = this._listeners.get(name) || [];
+    this._listeners.set(name, callbacks.filter(candidate => candidate !== callback));
   }};
   Object.defineProperty(XMLHttpRequestNative.prototype, "timeout", {{
     get() {{ return this._timeout; }},
@@ -25945,6 +26117,10 @@ fn document_bootstrap(
     this._headers = {{}};
     this._controller = null;
     this._aborted = false;
+    this._uploadStarted = false;
+    this._uploadFinished = false;
+    this._uploadTotal = 0;
+    this._uploadLoaded = 0;
     this.readyState = 1;
     this._notifyReadyState();
   }};
@@ -25969,7 +26145,9 @@ fn document_bootstrap(
     this._responseContentType = null;
     this._responseHeaders = responseHeaders([], null);
     this._notifyReadyState();
-    if (typeof this.onabort === "function") this.onabort.call(this, {{ type: "abort", target: this }});
+    nativeXhrFinishUpload(this, "abort");
+    nativeXhrDispatch(this, "abort");
+    nativeXhrDispatch(this, "loadend");
   }};
   XMLHttpRequestNative.prototype.getResponseHeader = function(name) {{
     return this._responseHeaders.get(name);
@@ -25988,6 +26166,7 @@ fn document_bootstrap(
       : body instanceof ArrayBuffer || (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(body))
         ? body
         : body === undefined || body === null ? null : String(body);
+    nativeXhrStartUpload(this, requestBody);
     const controller = new AbortControllerNative();
     this._controller = controller;
     this._aborted = false;
@@ -26016,7 +26195,9 @@ fn document_bootstrap(
       this.response = value;
       this.readyState = 4;
       this._notifyReadyState();
-      if (typeof this.onload === "function") this.onload.call(this, {{ type: "load", target: this }});
+      nativeXhrFinishUpload(this, "load");
+      nativeXhrDispatch(this, "load");
+      nativeXhrDispatch(this, "loadend");
     }}).catch(error => {{
       if (this._controller !== controller || this._aborted) return;
       this._controller = null;
@@ -26030,12 +26211,16 @@ fn document_bootstrap(
         this._responseHeaders = responseHeaders([], null);
         this.readyState = 4;
         this._notifyReadyState();
-        if (typeof this.ontimeout === "function") this.ontimeout.call(this, {{ type: "timeout", target: this }});
+        nativeXhrFinishUpload(this, "timeout");
+        nativeXhrDispatch(this, "timeout");
+        nativeXhrDispatch(this, "loadend");
         return;
       }}
       this.readyState = 4;
       this._notifyReadyState();
-      if (typeof this.onerror === "function") this.onerror.call(this, {{ type: "error", target: this, error }});
+      nativeXhrFinishUpload(this, "error");
+      nativeXhrDispatch(this, "error", {{ error }});
+      nativeXhrDispatch(this, "loadend");
     }});
   }};
   globalThis.XMLHttpRequest = XMLHttpRequestNative;

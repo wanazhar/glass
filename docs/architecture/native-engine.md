@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
-`native-engine-browser-424`, following completed
+`native-engine-browser-425`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and `native-engine-browser-420`. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
@@ -109,6 +109,15 @@ admission and `InvalidStateError` rejection after loading begins. The existing
 response projections, XML document owner, and lifecycle ordering stay
 unchanged; the real witness covers early invalid-value failure and mutation
 rejection during `LOADING`/`DONE`.
+
+Slice 425 completes the XHR HTML-document response follow-up. The page realm
+now selects the strict XML owner or a bounded detached read-only HTML document
+for explicit `responseType = "document"` based on the final MIME type. HTML
+documents provide `head`/`body`/`title`, case-insensitive names and attributes,
+basic paragraph/list recovery, void/raw-text/RCDATA handling, lookup,
+ownership, and HTML serialization; malformed input fails closed and returned
+scripts never execute or send live-DOM commands. Full HTML tree-builder,
+encoding, and HTML/Web IDL parity remain issue #40 gates.
 
 Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
 `navigate-to` navigation-policy extension. After each content-process
@@ -6497,6 +6506,11 @@ The native profile is `partial` and declares:
 | storage | partial | process-owned cookies with bounded `document.cookie` synchronization and semantic current-origin writes, bounded document cache, origin-keyed page local/session storage with opt-in revisioned localStorage/cookie/IndexedDB profiles, stale-snapshot key-level merge for Web Storage and cookies, profile-journal local/session events across live local and process-backed documents, bounded reader-lease retention, acknowledged-prefix compaction, profile-snapshot recovery, a bounded StorageManager estimate against the fixed 4 MiB profile quota, and a bounded tagged JSON/structured-clone IndexedDB subset with text-backed Blob/File values plus byte-vector ArrayBuffer/typed-array/DataView values, bounded Blob/File `arrayBuffer()`/`bytes()` reads, version upgrades, same-realm version-change/deletion coordination, serialized atomic ordinary transactions, object stores, indexes, key ranges, cursors, and CRUD; no full cookie policy or IndexedDB parity |
 | prompts | partial | bounded alert/confirm/prompt metadata, FIFO pending state, `dialogOpen`, and accept/dismiss resolution; suspended modal continuation and response injection remain open |
 | downloads | available | bounded HTTP(S) anchor `download` attributes queue a parent-owned transfer; runtime, CLI, and MCP complete the oldest queued download for the selected target into an existing directory with sanitized collision-free file creation, SHA-256 evidence, stable completion IDs, and bounded cancellation/listing; chooser UI, programmatic/object-URL downloads, streaming/progress, service-worker interception, and cross-target/frame parity remain open |
+
+The page XHR document branch also recognizes `text/html` alongside XML MIME
+responses and returns a bounded detached HTML document with head/body/title
+projections, read-only lookup, and HTML serialization; default-type HTML XHR
+remains a text response and worker XHR remains unchanged in this slice.
 
 Within the available script profile, classic and module dedicated `Worker`
 creation is available for local fixtures and HTTP(S) pages. Worker source uses

@@ -21549,6 +21549,307 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
     return ["text/xml", "application/xml", "application/xhtml+xml", "image/svg+xml"].includes(mime)
       || mime.endsWith("+xml");
   };
+  const nativeHtmlNamespaceUri = "http://www.w3.org/1999/xhtml";
+  const nativeHtmlVoidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+  const nativeHtmlRawTextElements = new Set(["script", "style"]);
+  const nativeHtmlRcdataElements = new Set(["textarea", "title"]);
+  const nativeHtmlHeadElements = new Set(["base", "link", "meta", "title", "style", "noscript", "template"]);
+  const nativeHtmlShouldAutoClose = (current, next) =>
+    (current === "li" && next === "li")
+    || (current === "p" && [
+      "address", "article", "aside", "blockquote", "details", "div", "dl",
+      "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2",
+      "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "main", "menu",
+      "nav", "ol", "p", "pre", "section", "table", "ul",
+    ].includes(next))
+    || ((current === "dt" || current === "dd") && (next === "dt" || next === "dd"))
+    || (current === "rt" && next === "rt")
+    || (current === "rp" && next === "rp")
+    || (current === "option" && ["option", "optgroup"].includes(next))
+    || (current === "optgroup" && next === "optgroup")
+    || (current === "tr" && ["tr", "tbody", "thead", "tfoot"].includes(next))
+    || (["td", "th"].includes(current) && ["td", "th", "tr", "tbody", "thead", "tfoot"].includes(next))
+    || (current === "thead" && ["tbody", "tfoot"].includes(next))
+    || (current === "tbody" && ["tbody", "tfoot"].includes(next))
+    || (current === "tfoot" && next === "tbody")
+    || (current === "colgroup" && ["colgroup", "tbody", "thead", "tfoot"].includes(next));
+  const nativeHtmlValidateCharacters = (value) => {
+    for (let cursor = 0; cursor < value.length; cursor += 1) {
+      const code = value.charCodeAt(cursor);
+      if (code >= 0xd800 && code <= 0xdbff) {
+        if (cursor + 1 >= value.length) throw new Error("native HTML contains an unpaired surrogate");
+        const next = value.charCodeAt(cursor + 1);
+        if (next < 0xdc00 || next > 0xdfff) throw new Error("native HTML contains an unpaired surrogate");
+        cursor += 1;
+      } else if (code >= 0xdc00 && code <= 0xdfff || code === 0 || code === 0xfffe || code === 0xffff) {
+        throw new Error("native HTML contains an invalid character");
+      }
+    }
+  };
+  const nativeHtmlDecodeEntities = (value) => String(value).replace(
+    /&(?:amp|lt|gt|quot|apos|nbsp);|&#x[0-9A-Fa-f]+;|&#[0-9]+;/gi,
+    (entity) => {
+      const lower = entity.toLowerCase();
+      if (lower === "&amp;") return "&";
+      if (lower === "&lt;") return "<";
+      if (lower === "&gt;") return ">";
+      if (lower === "&quot;") return '"';
+      if (lower === "&apos;") return "'";
+      if (lower === "&nbsp;") return "\u00a0";
+      const hexadecimal = lower.startsWith("&#x")
+        ? Number.parseInt(lower.slice(3, -1), 16)
+        : Number.parseInt(lower.slice(2, -1), 10);
+      return Number.isFinite(hexadecimal) && hexadecimal > 0 && hexadecimal <= 0x10ffff
+        && !(hexadecimal >= 0xd800 && hexadecimal <= 0xdfff)
+        ? String.fromCodePoint(hexadecimal)
+        : "\ufffd";
+    },
+  );
+  const nativeHtmlMarkupEnd = (value, offset) => {
+    let quote = null;
+    for (let cursor = offset; cursor < value.length; cursor += 1) {
+      const character = value[cursor];
+      if (quote) {
+        if (character === quote) quote = null;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === ">") {
+        return cursor;
+      }
+    }
+    return -1;
+  };
+  const nativeHtmlSpecialEnd = (value, offset, name) => {
+    const lower = value.toLowerCase();
+    const needle = "</" + name;
+    let candidate = lower.indexOf(needle, offset);
+    while (candidate >= 0) {
+      const boundary = value[candidate + needle.length];
+      if (boundary === undefined || /[\s>]/.test(boundary)) {
+        const end = nativeHtmlMarkupEnd(value, candidate + needle.length);
+        if (end >= 0) return { start: candidate, end: end + 1 };
+      }
+      candidate = lower.indexOf(needle, candidate + 1);
+    }
+    return null;
+  };
+  const nativeHtmlReadName = (value, offset) => {
+    const match = /^[A-Za-z][A-Za-z0-9:_-]*/.exec(value.slice(offset));
+    return match ? { value: match[0], next: offset + match[0].length } : null;
+  };
+  const nativeHtmlRawElement = (name, parent) => ({
+    type: "element",
+    html: true,
+    name,
+    prefix: null,
+    localName: name,
+    namespaceURI: nativeHtmlNamespaceUri,
+    attributes: [],
+    children: [],
+    parent,
+  });
+  const nativeHtmlParseDocument = (source, url, contentType) => {
+    try {
+      const input = String(source);
+      nativeHtmlValidateCharacters(input);
+      if (nativeXmlByteLength(input) > nativeXmlMaxBytes) throw new Error("native HTML response exceeds its limit");
+      const state = { input, cursor: 0, nodes: 1 };
+      const document = { type: "document", html: true, children: [] };
+      const append = (parent, node) => {
+        node.parent = parent;
+        parent.children.push(node);
+        return nativeXmlAddNode(state, node);
+      };
+      const appendElement = (parent, name) => append(parent, nativeHtmlRawElement(name, parent));
+      const parseAttributes = (element, rawTag, offset) => {
+        const seen = new Set();
+        let cursor = offset;
+        while (cursor < rawTag.length) {
+          while (cursor < rawTag.length && /\s/.test(rawTag[cursor])) cursor += 1;
+          if (cursor >= rawTag.length || rawTag[cursor] === "/") break;
+          const name = /^[A-Za-z_:][A-Za-z0-9:._-]*/.exec(rawTag.slice(cursor));
+          if (!name) {
+            cursor += 1;
+            continue;
+          }
+          const attributeName = name[0].toLowerCase();
+          cursor += name[0].length;
+          while (cursor < rawTag.length && /\s/.test(rawTag[cursor])) cursor += 1;
+          let value = "";
+          if (rawTag[cursor] === "=") {
+            cursor += 1;
+            while (cursor < rawTag.length && /\s/.test(rawTag[cursor])) cursor += 1;
+            const quote = rawTag[cursor];
+            if (quote === '"' || quote === "'") {
+              const end = rawTag.indexOf(quote, cursor + 1);
+              if (end < 0) throw new Error("native HTML attribute is unterminated");
+              value = rawTag.slice(cursor + 1, end);
+              cursor = end + 1;
+            } else {
+              const start = cursor;
+              while (cursor < rawTag.length && !/\s/.test(rawTag[cursor])) cursor += 1;
+              value = rawTag.slice(start, cursor).replace(/\/$/, "");
+            }
+          }
+          if (seen.has(attributeName)) continue;
+          seen.add(attributeName);
+          nativeXmlAddNode(state, { type: "attribute" });
+          element.attributes.push({
+            name: attributeName,
+            prefix: null,
+            localName: attributeName,
+            namespaceURI: null,
+            value: nativeHtmlDecodeEntities(value),
+            owner: element,
+          });
+        }
+      };
+      while (state.cursor < input.length) {
+        if (!state.stack) state.stack = [document];
+        const activeParent = state.stack[state.stack.length - 1];
+        if (input[state.cursor] !== "<") {
+          const end = input.indexOf("<", state.cursor);
+          const textEnd = end < 0 ? input.length : end;
+          if (textEnd > state.cursor) append(activeParent, {
+            type: "text",
+            html: true,
+            value: nativeHtmlDecodeEntities(input.slice(state.cursor, textEnd)),
+          });
+          state.cursor = textEnd;
+          continue;
+        }
+        if (input.startsWith("<!--", state.cursor)) {
+          const end = input.indexOf("-->", state.cursor + 4);
+          if (end < 0) throw new Error("native HTML comment is unterminated");
+          append(activeParent, { type: "comment", html: true, value: input.slice(state.cursor + 4, end) });
+          state.cursor = end + 3;
+          continue;
+        }
+        const end = nativeHtmlMarkupEnd(input, state.cursor + 2);
+        if (input.slice(state.cursor, state.cursor + 9).toLowerCase() === "<!doctype") {
+          if (end < 0) throw new Error("native HTML doctype is unterminated");
+          const declaration = input.slice(state.cursor + 2, end);
+          const doctype = /^doctype\s+([A-Za-z][A-Za-z0-9:_-]*)/i.exec(declaration);
+          if (!doctype) throw new Error("native HTML doctype is invalid");
+          append(document, {
+            type: "doctype",
+            html: true,
+            name: doctype[1].toLowerCase(),
+            publicId: "",
+            systemId: "",
+            internalSubset: "",
+            raw: "<!DOCTYPE " + doctype[1].toLowerCase() + ">",
+          });
+          state.cursor = end + 1;
+          continue;
+        }
+        if (input.startsWith("<!", state.cursor) || input.startsWith("<?", state.cursor)) {
+          if (end < 0) throw new Error("native HTML declaration is unterminated");
+          append(activeParent, { type: "comment", html: true, value: input.slice(state.cursor + 2, end) });
+          state.cursor = end + 1;
+          continue;
+        }
+        if (input.startsWith("</", state.cursor)) {
+          if (end < 0) throw new Error("native HTML closing tag is unterminated");
+          const closing = nativeHtmlReadName(input, state.cursor + 2);
+          if (closing) {
+            const name = closing.value.toLowerCase();
+            let found = -1;
+            for (let index = state.stack.length - 1; index > 0; index -= 1) {
+              if (state.stack[index].localName === name) {
+                found = index;
+                break;
+              }
+            }
+            if (found >= 0) state.stack.length = found;
+          }
+          state.cursor = end + 1;
+          continue;
+        }
+        if (end < 0) {
+          append(activeParent, { type: "text", html: true, value: nativeHtmlDecodeEntities(input.slice(state.cursor)) });
+          state.cursor = input.length;
+          continue;
+        }
+        const rawTag = input.slice(state.cursor + 1, end);
+        const opening = /^\s*([A-Za-z][A-Za-z0-9:_-]*)/.exec(rawTag);
+        if (!opening) {
+          append(activeParent, { type: "text", html: true, value: "<" });
+          state.cursor += 1;
+          continue;
+        }
+        const name = opening[1].toLowerCase();
+        while (state.stack.length > 1
+            && nativeHtmlShouldAutoClose(state.stack[state.stack.length - 1].localName, name)) state.stack.pop();
+        const parentForElement = state.stack[state.stack.length - 1];
+        const element = appendElement(parentForElement, name);
+        parseAttributes(element, rawTag, opening[0].length);
+        const selfClosing = /\/\s*$/.test(rawTag);
+        state.cursor = end + 1;
+        if (selfClosing || nativeHtmlVoidElements.has(name)) continue;
+        if (nativeHtmlRawTextElements.has(name) || nativeHtmlRcdataElements.has(name)) {
+          const special = nativeHtmlSpecialEnd(input, state.cursor, name);
+          const textEnd = special ? special.start : input.length;
+          if (textEnd > state.cursor) append(element, {
+            type: "text",
+            html: true,
+            value: nativeHtmlRawTextElements.has(name)
+              ? input.slice(state.cursor, textEnd)
+              : nativeHtmlDecodeEntities(input.slice(state.cursor, textEnd)),
+          });
+          state.cursor = special ? special.end : input.length;
+          continue;
+        }
+        if (state.stack.length >= nativeXmlMaxDepth) throw new Error("native HTML depth limit exceeded");
+        state.stack.push(element);
+      }
+      const makeImplicitElement = (name, parent) => {
+        const element = nativeHtmlRawElement(name, parent);
+        nativeXmlAddNode(state, element);
+        return element;
+      };
+      const setChildren = (parent, children) => {
+        parent.children = children;
+        for (const child of children) child.parent = parent;
+      };
+      let html = document.children.find((child) => child.type === "element" && child.name === "html") || null;
+      const preserved = document.children.filter((child) => child.type === "doctype" || child.type === "comment");
+      const topLevelContent = document.children.filter((child) => !preserved.includes(child) && child !== html);
+      if (!html) html = makeImplicitElement("html", document);
+      const htmlChildren = html.children.slice();
+      for (const child of topLevelContent) {
+        if (!htmlChildren.includes(child)) htmlChildren.push(child);
+        child.parent = html;
+      }
+      let head = htmlChildren.find((child) => child.type === "element" && child.name === "head") || null;
+      let body = htmlChildren.find((child) => child.type === "element" && child.name === "body") || null;
+      if (!head) head = makeImplicitElement("head", html);
+      if (!body) body = makeImplicitElement("body", html);
+      const headChildren = head.children.slice();
+      const bodyChildren = body.children.slice();
+      for (const child of htmlChildren) {
+        if (child === head || child === body) continue;
+        if (child.type === "element" && nativeHtmlHeadElements.has(child.name) && !bodyChildren.includes(child)) {
+          if (!headChildren.includes(child)) headChildren.push(child);
+          child.parent = head;
+        } else if (!bodyChildren.includes(child)) {
+          bodyChildren.push(child);
+          child.parent = body;
+        }
+      }
+      setChildren(head, headChildren);
+      setChildren(body, bodyChildren);
+      setChildren(html, [head, body]);
+      setChildren(document, [...preserved, html]);
+      document.doctype = preserved.find((child) => child.type === "doctype") || null;
+      document.url = String(url || "");
+      document.contentType = String(contentType || "text/html").split(";", 1)[0].trim().toLowerCase() || "text/html";
+      return nativeXmlMaterializeDocument(document);
+    } catch (_error) {
+      return null;
+    }
+  };
+  const nativeHtmlIsMime = (value) => String(value || "").split(";", 1)[0].trim().toLowerCase() === "text/html";
   const nativeXmlNodeList = (values) => {
     const list = Array.from(values || []);
     if (typeof NodeListNative === "function") {
@@ -21560,7 +21861,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
     }});
     return Object.freeze(list);
   };
-  const nativeXmlAttributeList = (values) => {
+  const nativeXmlAttributeList = (values, html = false) => {
     const list = Array.from(values || []);
     if (typeof NamedNodeMapNative === "function") {
       try { Object.setPrototypeOf(list, NamedNodeMapNative.prototype); } catch (_error) {}
@@ -21571,7 +21872,8 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         return Number.isInteger(numeric) && numeric >= 0 ? (list[numeric] || null) : null;
       }},
       getNamedItem: { configurable: true, value(name) {
-        return list.find((attribute) => attribute.name === String(name)) || null;
+        const requested = String(name);
+        return list.find((attribute) => attribute.name === (html ? requested.toLowerCase() : requested)) || null;
       }},
       getNamedItemNS: { configurable: true, value(namespaceURI, localName) {
         const namespace = namespaceURI === null || namespaceURI === undefined ? null : String(namespaceURI);
@@ -21594,6 +21896,14 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
     if (includeSelf) visit(node);
     else for (const child of node.children || []) visit(child);
     return result;
+  };
+  const nativeXmlElementNameMatches = (raw, requested) => {
+    const value = String(requested);
+    return value === "*" || raw.name === (raw.html ? value.toLowerCase() : value);
+  };
+  const nativeXmlAttributeNameMatches = (raw, requested) => {
+    const value = String(requested);
+    return raw.name === (raw.html ? value.toLowerCase() : value);
   };
   const nativeXmlMaterializeDocument = (rawDocument) => {
     const materialized = new Map();
@@ -21652,7 +21962,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
       if (materialized.has(raw)) return materialized.get(raw);
       let target;
       if (raw.type === "document") target = common({}, raw, 9, "#document", DocumentNative, ownerDocument);
-      else if (raw.type === "element") target = common({}, raw, 1, raw.name, ElementNative, ownerDocument);
+      else if (raw.type === "element") target = common({}, raw, 1, raw.html ? raw.name.toUpperCase() : raw.name, ElementNative, ownerDocument);
       else if (raw.type === "text") target = common({}, raw, 3, "#text", TextNative, ownerDocument);
       else if (raw.type === "cdata") target = common({}, raw, 4, "#cdata-section", CharacterDataNative, ownerDocument);
       else if (raw.type === "comment") target = common({}, raw, 8, "#comment", CommentNative, ownerDocument);
@@ -21669,16 +21979,16 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
       }
       if (raw.type === "element") {
         Object.defineProperties(target, {
-          tagName: { configurable: true, enumerable: true, value: raw.name },
+          tagName: { configurable: true, enumerable: true, value: raw.html ? raw.name.toUpperCase() : raw.name },
           localName: { configurable: true, enumerable: true, value: raw.localName },
           prefix: { configurable: true, enumerable: true, value: raw.prefix },
           namespaceURI: { configurable: true, enumerable: true, value: raw.namespaceURI },
-          attributes: { configurable: true, enumerable: true, value: nativeXmlAttributeList(raw.attributes.map((attribute) => materializeAttribute(attribute, ownerDocument, target))) },
+          attributes: { configurable: true, enumerable: true, value: nativeXmlAttributeList(raw.attributes.map((attribute) => materializeAttribute(attribute, ownerDocument, target)), raw.html === true) },
         });
         const attributes = target.attributes;
         Object.defineProperties(target, {
           getAttribute: { configurable: true, value(name) {
-            const attribute = Array.from(attributes).find((candidate) => candidate.name === String(name));
+            const attribute = Array.from(attributes).find((candidate) => nativeXmlAttributeNameMatches(raw.html ? { name: candidate.name, html: true } : { name: candidate.name, html: false }, name));
             return attribute ? attribute.value : null;
           }},
           getAttributeNS: { configurable: true, value(namespaceURI, localName) {
@@ -21686,20 +21996,21 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
             const attribute = Array.from(attributes).find((candidate) => candidate.namespaceURI === namespace && candidate.localName === String(localName));
             return attribute ? attribute.value : null;
           }},
-          hasAttribute: { configurable: true, value(name) { return Array.from(attributes).some((candidate) => candidate.name === String(name)); } },
+          hasAttribute: { configurable: true, value(name) {
+            return Array.from(attributes).some((candidate) => nativeXmlAttributeNameMatches(raw.html ? { name: candidate.name, html: true } : { name: candidate.name, html: false }, name));
+          } },
           hasAttributeNS: { configurable: true, value(namespaceURI, localName) {
             const namespace = namespaceURI === null || namespaceURI === undefined ? null : String(namespaceURI);
             return Array.from(attributes).some((candidate) => candidate.namespaceURI === namespace && candidate.localName === String(localName));
           }},
           getAttributeNames: { configurable: true, value() { return Array.from(attributes).map((attribute) => attribute.name); } },
           getElementsByTagName: { configurable: true, value(name) {
-            const requested = String(name);
-            return nativeXmlNodeList(nativeXmlDescendants(raw, false).filter((candidate) => requested === "*" || candidate.name === requested).map((candidate) => materialized.get(candidate)));
+            return nativeXmlNodeList(nativeXmlDescendants(raw, false).filter((candidate) => nativeXmlElementNameMatches(candidate, name)).map((candidate) => materialized.get(candidate)));
           }},
           getElementsByTagNameNS: { configurable: true, value(namespaceURI, localName) {
             const namespace = namespaceURI === null || namespaceURI === undefined ? null : String(namespaceURI);
             const requested = String(localName);
-            return nativeXmlNodeList(nativeXmlDescendants(raw, false).filter((candidate) => (namespace === "*" || candidate.namespaceURI === namespace) && (requested === "*" || candidate.localName === requested)).map((candidate) => materialized.get(candidate)));
+            return nativeXmlNodeList(nativeXmlDescendants(raw, false).filter((candidate) => (namespace === "*" || candidate.namespaceURI === namespace) && (requested === "*" || candidate.localName === (candidate.html ? requested.toLowerCase() : requested))).map((candidate) => materialized.get(candidate)));
           }},
           querySelector: { configurable: true, value(selector) { return nativeXmlQuery(this, selector, false)[0] || null; } },
           querySelectorAll: { configurable: true, value(selector) { return nativeXmlNodeList(nativeXmlQuery(this, selector, false)); } },
@@ -21726,18 +22037,33 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           xmlStandalone: { configurable: true, enumerable: true, value: false },
           xmlVersion: { configurable: true, enumerable: true, value: "1.0" },
           documentElement: { configurable: true, enumerable: true, get() { return this.__glassXmlChildren.find((child) => child.nodeType === 1) || null; } },
+          head: { configurable: true, enumerable: true, get() {
+            if (!raw.html) return undefined;
+            const root = this.__glassXmlChildren.find((child) => child.nodeType === 1);
+            return root ? root.__glassXmlChildren.find((child) => child.nodeType === 1 && child.__glassXmlRaw.name === "head") || null : null;
+          } },
+          body: { configurable: true, enumerable: true, get() {
+            if (!raw.html) return undefined;
+            const root = this.__glassXmlChildren.find((child) => child.nodeType === 1);
+            return root ? root.__glassXmlChildren.find((child) => child.nodeType === 1 && child.__glassXmlRaw.name === "body") || null : null;
+          } },
+          title: { configurable: true, enumerable: true, get() {
+            if (!raw.html) return undefined;
+            const head = this.head;
+            const title = head && head.__glassXmlChildren.find((child) => child.nodeType === 1 && child.__glassXmlRaw.name === "title");
+            return title ? title.textContent : "";
+          } },
           doctype: { configurable: true, enumerable: true, get() { return this.__glassXmlChildren.find((child) => child.nodeType === 10) || null; } },
           getElementById: { configurable: true, value(id) {
             return nativeXmlDescendants(raw, true).map((candidate) => materialized.get(candidate)).find((candidate) => candidate.getAttribute("id") === String(id)) || null;
           }},
           getElementsByTagName: { configurable: true, value(name) {
-            const requested = String(name);
-            return nativeXmlNodeList(nativeXmlDescendants(raw, true).filter((candidate) => requested === "*" || candidate.name === requested).map((candidate) => materialized.get(candidate)));
+            return nativeXmlNodeList(nativeXmlDescendants(raw, true).filter((candidate) => nativeXmlElementNameMatches(candidate, name)).map((candidate) => materialized.get(candidate)));
           }},
           getElementsByTagNameNS: { configurable: true, value(namespaceURI, localName) {
             const namespace = namespaceURI === null || namespaceURI === undefined ? null : String(namespaceURI);
             const requested = String(localName);
-            return nativeXmlNodeList(nativeXmlDescendants(raw, true).filter((candidate) => (namespace === "*" || candidate.namespaceURI === namespace) && (requested === "*" || candidate.localName === requested)).map((candidate) => materialized.get(candidate)));
+            return nativeXmlNodeList(nativeXmlDescendants(raw, true).filter((candidate) => (namespace === "*" || candidate.namespaceURI === namespace) && (requested === "*" || candidate.localName === (candidate.html ? requested.toLowerCase() : requested))).map((candidate) => materialized.get(candidate)));
           }},
           querySelector: { configurable: true, value(selector) { return nativeXmlQuery(this, selector, true)[0] || null; } },
           querySelectorAll: { configurable: true, value(selector) { return nativeXmlNodeList(nativeXmlQuery(this, selector, true)); } },
@@ -21784,11 +22110,14 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
       if (!value || /[\s>+~,]/.test(value)) return false;
       const attributeMatch = value.match(/^(.*)\[([^=\]]+)(?:=([^\]]+))?\]$/);
       const tag = attributeMatch ? attributeMatch[1] : value;
-      if (tag && tag !== "*" && !tag.startsWith("#") && !tag.startsWith(".") && node.nodeName !== tag) return false;
+      const raw = node.__glassXmlRaw;
+      const normalizedTag = raw && raw.html ? tag.toLowerCase() : tag;
+      if (normalizedTag && normalizedTag !== "*" && !normalizedTag.startsWith("#") && !normalizedTag.startsWith(".")
+          && (!raw || raw.name !== normalizedTag)) return false;
       if (tag.startsWith("#") && node.getAttribute("id") !== tag.slice(1)) return false;
       if (tag.startsWith(".") && !String(node.getAttribute("class") || "").split(/\s+/).includes(tag.slice(1))) return false;
       if (attributeMatch) {
-        const name = attributeMatch[2].trim();
+        const name = raw && raw.html ? attributeMatch[2].trim().toLowerCase() : attributeMatch[2].trim();
         const expected = attributeMatch[3] === undefined ? null : attributeMatch[3].trim().replace(/^(["'])(.*)\1$/, "$2");
         const actual = node.getAttribute(name);
         if (actual === null || (expected !== null && actual !== expected)) return false;
@@ -21804,15 +22133,26 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
       if (!node) return "";
       if (node.nodeType === 9) return node.childNodes.map((child) => nativeXmlSerialize(child)).join("");
       if (node.nodeType === 1) {
+        const raw = node.__glassXmlRaw;
         const attributes = Array.from(node.attributes).map((attribute) => " " + attribute.name + "=\"" + nativeXmlEscapeAttribute(attribute.value) + "\"").join("");
         const children = node.childNodes.map((child) => nativeXmlSerialize(child)).join("");
-        return children ? "<" + node.nodeName + attributes + ">" + children + "</" + node.nodeName + ">" : "<" + node.nodeName + attributes + "/>";
+        if (raw && raw.html && nativeHtmlVoidElements.has(raw.name)) return "<" + raw.name + attributes + ">";
+        const name = raw && raw.html ? raw.name : node.nodeName;
+        if (!raw || !raw.html) return children ? "<" + name + attributes + ">" + children + "</" + name + ">" : "<" + name + attributes + "/>";
+        return "<" + name + attributes + ">" + children + "</" + name + ">";
       }
-      if (node.nodeType === 3) return nativeXmlEscapeText(node.nodeValue || "");
+      if (node.nodeType === 3) {
+        const raw = node.__glassXmlRaw;
+        const parent = raw && raw.parent;
+        if (parent && parent.html && nativeHtmlRawTextElements.has(parent.name)) return String(node.nodeValue || "");
+        return nativeXmlEscapeText(node.nodeValue || "");
+      }
       if (node.nodeType === 4) return "<![CDATA[" + String(node.nodeValue || "") + "]]>";
       if (node.nodeType === 7) return "<?" + node.target + (node.data ? " " + node.data : "") + "?>";
       if (node.nodeType === 8) return "<!--" + String(node.nodeValue || "") + "-->";
-      if (node.nodeType === 10) return node.__glassXmlRaw.raw;
+      if (node.nodeType === 10) return node.__glassXmlRaw.html
+        ? "<!DOCTYPE " + node.__glassXmlRaw.name + ">"
+        : node.__glassXmlRaw.raw;
       return "";
     };
     globalThis.__glassSerializeXmlNode = nativeXmlSerialize;
@@ -21820,6 +22160,8 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
   };
   globalThis.__glassParseXmlDocument = nativeXmlParseDocument;
   globalThis.__glassIsXmlMime = nativeXmlIsMime;
+  globalThis.__glassParseHtmlDocument = nativeHtmlParseDocument;
+  globalThis.__glassIsHtmlMime = nativeHtmlIsMime;
   const NativeXMLSerializer = function XMLSerializer() {
     if (!(this instanceof NativeXMLSerializer)) throw new TypeError("XMLSerializer requires new");
   };
@@ -26951,9 +27293,16 @@ fn document_bootstrap(
       this._notifyReadyState();
       const xmlContent = typeof globalThis.__glassIsXmlMime === "function"
         && globalThis.__glassIsXmlMime(this._responseContentType);
+      const htmlContent = typeof globalThis.__glassIsHtmlMime === "function"
+        && globalThis.__glassIsHtmlMime(this._responseContentType);
       if (responseType === "document") {{
-        this._responseXML = xmlContent && typeof globalThis.__glassParseXmlDocument === "function"
-          ? globalThis.__glassParseXmlDocument(String(value), this.responseURL, this._responseContentType)
+        const parseDocument = xmlContent && typeof globalThis.__glassParseXmlDocument === "function"
+          ? globalThis.__glassParseXmlDocument
+          : htmlContent && typeof globalThis.__glassParseHtmlDocument === "function"
+            ? globalThis.__glassParseHtmlDocument
+            : null;
+        this._responseXML = parseDocument
+          ? parseDocument(String(value), this.responseURL, this._responseContentType)
           : null;
         this.responseText = "";
         this.response = this._responseXML;

@@ -1,8 +1,8 @@
 # Native browser engine
 
-Status: Browser-complete expansion is active through completed
-`native-engine-browser-419` slice, following completed
-`native-engine-browser-418`. The native runtime is now the primary
+Status: Browser-complete expansion has completed
+`native-engine-browser-420`, following completed
+`native-engine-browser-419`. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
 
@@ -48,8 +48,9 @@ original POST request; a new POST target starts from `about:blank` so it does
 not issue a duplicate GET before the form request. The parent compares the
 transferred payload with its document-owned form reconstruction and rejects
 malformed or mismatched records before dispatch. Ordinary Window navigation
-remains GET-only, and multipart streaming, upload progress, service-worker
-body replay, and broader form conformance remain separate issue #40 gates.
+remains GET-only; multipart streaming and broader form conformance remain
+separate issue #40 gates. Upload progress and Service Worker body replay were
+completed by later 418 and 420 slices.
 
 Slice 417 makes the binary branch of the bounded form-navigation envelope
 compact: multipart and file-backed `Bytes` bodies cross the content-process
@@ -71,6 +72,14 @@ and before final buffered body completion, matching the already-present worker
 state sequence. This preserves truthful lifecycle boundaries without claiming
 per-chunk transport progress; response streaming, synchronous XHR,
 `responseXML`, and complete XHR/Web IDL parity remain open.
+
+Slice 420 completes the Service Worker request-body replay follow-up. A
+controlled POST clones its incoming Worker Request, consumes the original, and
+replays the clone through worker `fetch(Request)` while preserving bounded
+bytes and request metadata at the native loader boundary. The dispatch also
+restores a separately transferred content type when constructing the event
+Request. Streaming replay and complete Request/Streams Web IDL parity remain
+issue #40 gates.
 
 Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
 `navigate-to` navigation-policy extension. After each content-process

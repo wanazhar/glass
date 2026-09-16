@@ -21464,9 +21464,16 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       : payload && typeof payload.bodyBase64 === "string"
         ? new Uint8Array(decodeWorkerBase64(payload.bodyBase64, __GLASS_SERVICE_WORKER_BODY_LIMIT__))
         : String(payload && payload.body || "");
+    const requestHeaders = Array.isArray(payload && payload.headers)
+      ? payload.headers.map(entry => Array.isArray(entry) ? [entry[0], entry[1]] : entry)
+      : [];
+    if (payload && payload.contentType !== undefined && payload.contentType !== null
+        && !requestHeaders.some(entry => Array.isArray(entry)
+          && String(entry[0]).toLowerCase() === "content-type"))
+      requestHeaders.push(["content-type", String(payload.contentType)]);
     const request = new WorkerRequestNative(String(payload && payload.url || workerUrl), {
       method: String(payload && payload.method || "GET"),
-      headers: Array.isArray(payload && payload.headers) ? payload.headers : [],
+      headers: requestHeaders,
       body,
       mode: String(payload && payload.mode || "same-origin"),
       redirect: String(payload && payload.redirect || "follow"),

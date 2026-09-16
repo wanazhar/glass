@@ -1,8 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-419`, following
-completed `native-engine-browser-418`, with
+expansion checkpoint is completed `native-engine-browser-420`, following
+completed `native-engine-browser-419`, with
 native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
@@ -13,9 +13,10 @@ HTTP(S) paths. Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
 navigation effects. New POST targets avoid a duplicate GET by bootstrapping
 from `about:blank`; the parent validates the transferred request against its
-document-owned form reconstruction before dispatch. Multipart streaming,
-upload progress, service-worker body replay, and broader form conformance
-remain separate issue #40 gates. Slice 418 completes the bounded XHR upload
+document-owned form reconstruction before dispatch. Multipart streaming and
+broader form conformance remain separate issue #40 gates; upload progress and
+Service Worker body replay are covered by later 418 and 420 slices. Slice 418
+completes the bounded XHR upload
 lifecycle: page and worker XMLHttpRequest realms expose an upload event target,
 byte-accurate buffered progress, and one terminal/loadend sequence from the
 same normalized request bytes; transport-level chunk progress, streaming
@@ -23,9 +24,16 @@ backpressure, and full ProgressEvent/Web IDL parity stay open. Slice 419
 completes the page-XHR lifecycle follow-up: successful page XMLHttpRequest
 responses now publish `HEADERS_RECEIVED` and `LOADING` between `OPENED` and
 `DONE`, after metadata admission and before bounded body completion, matching
-the worker
-sequence without claiming per-chunk transport progress. Response streaming,
+the worker sequence without claiming per-chunk transport progress. Response
+streaming,
 synchronous XHR, `responseXML`, and complete XHR/Web IDL parity remain open.
+Slice 420 completes the Service Worker request-body replay follow-up: a
+controlled POST clones its incoming Request, consumes the original, and
+replays the clone through worker `fetch(Request)` while preserving bounded
+bytes and request metadata at the native loader boundary. The dispatch also
+restores a separately transferred content type when constructing the event
+Request. Streaming replay and complete Request/Streams Web IDL parity remain
+open.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

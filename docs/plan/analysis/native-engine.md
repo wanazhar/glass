@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-424`, following
-completed `native-engine-browser-423`,
+expansion checkpoint is completed `native-engine-browser-425`, following
+completed
+`native-engine-browser-423`,
 `native-engine-browser-422` and
 `native-engine-browser-420`, with
 native-first product
@@ -57,6 +58,11 @@ Slice 424 completes the XHR response-type state follow-up: page and worker
 realms now use canonical case-insensitive response-type setters with bounded
 enum admission and state-aware mutation errors, while the existing buffered
 response, XML, upload, and lifecycle owners remain unchanged.
+Slice 425 completes the XHR HTML-document response follow-up: explicit page
+document responses now select a bounded detached HTML document or the strict
+XML owner by MIME, with head/body/title projections, case-insensitive lookup,
+basic recovery, void/raw-text/RCDATA handling, ownership, and serialization;
+the live page DOM and worker XHR remain isolated.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

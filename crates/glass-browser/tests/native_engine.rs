@@ -54173,6 +54173,187 @@ xhr.send();"#,
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_exposes_bounded_html_response_document() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/html-document", "/html-default", "/html-invalid"] {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .expect("timed out waiting for the next HTML XHR request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let (content_type, body) = match expected_path {
+                "/page" => ("text/html", "<p>XHR HTML</p>"),
+                "/html-document" => (
+                    "text/html; charset=UTF-8",
+                    r#"<!DOCTYPE HTML><HTML data-root='yes'><HEAD><TITLE>Native &amp; HTML</TITLE><META charset='utf-8'><SCRIPT id='raw'>if (a < b) rawValue();</SCRIPT></HEAD><BODY><P id='first' data-value='one &amp; two'>one<DIV id='second'>two<BR>three</DIV><INPUT disabled><TEXTAREA id='rc'>A &amp; B</TEXTAREA><!--comment--></BODY></HTML>"#,
+                ),
+                "/html-default" => ("text/html", "<p>default-html</p>"),
+                "/html-invalid" => ("text/html", "<html><body><!--unterminated"),
+                other => panic!("unexpected XHR HTML request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            r#"(() => {
+                globalThis.htmlResultPromise = new Promise(resolve => {
+                    const result = {};
+                    const fail = (stage, error) => resolve({
+                        error: stage,
+                        message: String(error && error.message || error),
+                    });
+                    const invalid = new XMLHttpRequest();
+                    invalid.responseType = 'DOCUMENT';
+                    invalid.open('GET', '/html-invalid');
+                    invalid.onload = () => {
+                        try {
+                            result.invalid = {
+                                response: invalid.response,
+                                responseXML: invalid.responseXML,
+                                responseText: invalid.responseText,
+                            };
+                            resolve(result);
+                        } catch (error) {
+                            fail('invalid-callback', error);
+                        }
+                    };
+                    invalid.onerror = error => fail('invalid-xhr', error);
+
+                    const defaultRequest = new XMLHttpRequest();
+                    defaultRequest.open('GET', '/html-default');
+                    defaultRequest.onload = () => {
+                        try {
+                            result.default = {
+                                response: defaultRequest.response,
+                                responseText: defaultRequest.responseText,
+                                responseXml: defaultRequest.responseXML,
+                            };
+                            invalid.send();
+                        } catch (error) {
+                            fail('default-callback', error);
+                        }
+                    };
+                    defaultRequest.onerror = error => fail('default-xhr', error);
+
+                    const explicit = new XMLHttpRequest();
+                    explicit.responseType = 'DOCUMENT';
+                    explicit.open('GET', '/html-document');
+                    explicit.onload = () => {
+                        try {
+                            const document = explicit.response;
+                            const root = document.documentElement;
+                            const head = document.head;
+                            const body = document.body;
+                            const first = document.getElementById('first');
+                            const second = document.querySelector('#second');
+                            const script = document.getElementById('raw');
+                            const textarea = document.getElementById('rc');
+                            let appendError = '';
+                            try { root.appendChild(first); } catch (error) { appendError = error.name; }
+                            const serialized = new XMLSerializer().serializeToString(document);
+                            result.explicit = {
+                                identity: document instanceof Document
+                                    && document === explicit.responseXML,
+                                contentType: document.contentType,
+                                responseText: explicit.responseText,
+                                root: [root.nodeName, root.localName, root.tagName],
+                                title: document.title,
+                                head: head.nodeName,
+                                body: body.nodeName,
+                                bodyText: body.textContent.includes('one')
+                                    && body.textContent.includes('A & B'),
+                                scriptText: script.textContent,
+                                textareaText: textarea.textContent,
+                                firstAttribute: first.getAttribute('DATA-VALUE'),
+                                firstParent: first.parentNode === body
+                                    && first.ownerDocument === document,
+                                secondIdentity: second === document.getElementsByTagName('DIV')[0],
+                                tagMatches: document.getElementsByTagName('div').length,
+                                namespaceMatches: document.getElementsByTagNameNS(
+                                    'http://www.w3.org/1999/xhtml', 'DIV',
+                                ).length,
+                                voids: body.querySelectorAll('br').length === 1
+                                    && body.querySelector('input').hasAttribute('DISABLED'),
+                                doctype: document.doctype.name,
+                                serialized: serialized.includes('<!DOCTYPE html>')
+                                    && serialized.includes('<br>')
+                                    && serialized.includes('if (a < b) rawValue();')
+                                    && !serialized.includes('<br/>'),
+                                immutable: appendError === 'NoModificationAllowedError'
+                                    && Object.isFrozen(document)
+                                    && Object.isFrozen(root),
+                            };
+                            defaultRequest.send();
+                        } catch (error) {
+                            fail('explicit-callback', error);
+                        }
+                    };
+                    explicit.onerror = error => fail('explicit-xhr', error);
+                    explicit.send();
+                });
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await htmlResultPromise")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "explicit": {
+                "identity": true,
+                "contentType": "text/html",
+                "responseText": "",
+                "root": ["HTML", "html", "HTML"],
+                "title": "Native & HTML",
+                "head": "HEAD",
+                "body": "BODY",
+                "bodyText": true,
+                "scriptText": "if (a < b) rawValue();",
+                "textareaText": "A & B",
+                "firstAttribute": "one & two",
+                "firstParent": true,
+                "secondIdentity": true,
+                "tagMatches": 1,
+                "namespaceMatches": 1,
+                "voids": true,
+                "doctype": "html",
+                "serialized": true,
+                "immutable": true,
+            },
+            "default": {
+                "response": "<p>default-html</p>",
+                "responseText": "<p>default-html</p>",
+                "responseXml": null,
+            },
+            "invalid": {
+                "response": null,
+                "responseXML": null,
+                "responseText": "",
+            },
+        })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_xhr_abort_is_observable_and_ignores_late_callbacks() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

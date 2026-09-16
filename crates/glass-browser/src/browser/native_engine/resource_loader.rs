@@ -44,6 +44,7 @@ const MAX_NATIVE_CSP_REPORT_ENDPOINT_BYTES: usize = 2048;
 const MAX_NATIVE_CSP_REPORT_PAYLOAD_BYTES: usize = 128 * 1024;
 const MAX_NATIVE_CSP_REPORT_TASKS: usize = 32;
 const NATIVE_CSP_REPORT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES: usize = 2048;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1266,7 +1267,15 @@ impl NativeInlineScriptPolicy {
     }
 }
 
-/// Evaluate the bounded source-expression subset shared by document
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeCspHostSource<'a> {
+    scheme: Option<&'a str>,
+    host: &'a str,
+    port: Option<&'a str>,
+    path: Option<&'a str>,
+}
+
+/// Evaluate the bounded CSP source-expression grammar shared by document
 /// subresources and parent-owned frame navigation. Keeping this matcher in
 /// the loader prevents the content worker and frame registry from drifting
 /// into different CSP decisions.
@@ -1281,27 +1290,327 @@ pub(crate) fn csp_sources_allow(
     if sources.is_empty() {
         return false;
     }
-    let document_origin = document_url.origin();
+
+    if sources.len() == 1 && sources[0].eq_ignore_ascii_case("'none'") {
+        return false;
+    }
+
     for source in sources {
         if source.eq_ignore_ascii_case("'none'") {
-            return false;
+            continue;
         }
-        if source == "*" {
-            return true;
-        }
-        if source.eq_ignore_ascii_case("'self'") && resource_url.origin() == document_origin {
-            return true;
-        }
-        if source.ends_with(':')
-            && source[..source.len().saturating_sub(1)].eq_ignore_ascii_case(resource_url.scheme())
-        {
-            return true;
-        }
-        if Url::parse(source).is_ok_and(|source_url| source_url.origin() == resource_url.origin()) {
+        if csp_source_expression_matches(source, document_url, resource_url) {
             return true;
         }
     }
     false
+}
+
+fn csp_source_expression_matches(expression: &str, document_url: &Url, resource_url: &Url) -> bool {
+    if expression.is_empty() || expression.len() > MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES {
+        return false;
+    }
+    if expression == "*" {
+        return matches!(resource_url.scheme(), "http" | "https")
+            || resource_url
+                .scheme()
+                .eq_ignore_ascii_case(document_url.scheme());
+    }
+
+    if expression.eq_ignore_ascii_case("'self'") {
+        return csp_self_source_matches(document_url, resource_url);
+    }
+
+    if let Some(scheme) = expression.strip_suffix(':')
+        && !expression.contains("://")
+        && csp_scheme_part_is_valid(scheme)
+    {
+        return csp_scheme_part_matches(scheme, resource_url.scheme());
+    }
+
+    let Some(source) = parse_csp_host_source(expression) else {
+        return false;
+    };
+    let Some(resource_host) = resource_url.host_str() else {
+        return false;
+    };
+    let required_scheme = source.scheme.unwrap_or(document_url.scheme());
+    if !csp_scheme_part_matches(required_scheme, resource_url.scheme())
+        || !csp_host_part_matches(source.host, resource_host)
+        || !csp_port_part_matches(source.port, resource_url)
+    {
+        return false;
+    }
+
+    source
+        .path
+        .is_none_or(|path| csp_path_part_matches(path, resource_url.path()))
+}
+
+fn parse_csp_host_source(expression: &str) -> Option<NativeCspHostSource<'_>> {
+    if expression.is_empty() || !expression.is_ascii() {
+        return None;
+    }
+
+    let (scheme, authority_and_path) = if let Some((scheme, rest)) = expression.split_once("://") {
+        (Some(scheme), rest)
+    } else {
+        (None, expression)
+    };
+    if scheme.is_some_and(|scheme| !csp_scheme_part_is_valid(scheme)) {
+        return None;
+    }
+
+    let (authority, path) =
+        authority_and_path
+            .find('/')
+            .map_or((authority_and_path, None), |path_start| {
+                (
+                    &authority_and_path[..path_start],
+                    Some(&authority_and_path[path_start..]),
+                )
+            });
+    if authority.is_empty() {
+        return None;
+    }
+
+    let (host, port) = match authority.rsplit_once(':') {
+        None => (authority, None),
+        Some((host, port)) => {
+            if port.is_empty()
+                || (port != "*"
+                    && (!port.bytes().all(|byte| byte.is_ascii_digit())
+                        || port.parse::<u16>().is_err()))
+            {
+                return None;
+            }
+            (host, Some(port))
+        }
+    };
+    if !csp_host_part_is_valid(host) {
+        return None;
+    }
+    if path.is_some_and(|path| !csp_path_part_is_valid(path)) {
+        return None;
+    }
+
+    Some(NativeCspHostSource {
+        scheme,
+        host,
+        port,
+        path,
+    })
+}
+
+fn csp_scheme_part_is_valid(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic())
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+}
+
+fn csp_scheme_part_matches(pattern: &str, resource_scheme: &str) -> bool {
+    pattern.eq_ignore_ascii_case(resource_scheme)
+        || (pattern.eq_ignore_ascii_case("http") && resource_scheme.eq_ignore_ascii_case("https"))
+        || (pattern.eq_ignore_ascii_case("ws")
+            && matches!(
+                resource_scheme.to_ascii_lowercase().as_str(),
+                "wss" | "http" | "https"
+            ))
+        || (pattern.eq_ignore_ascii_case("wss") && resource_scheme.eq_ignore_ascii_case("https"))
+}
+
+fn csp_host_part_is_valid(value: &str) -> bool {
+    if value == "*" {
+        return true;
+    }
+    let host = value.strip_prefix("*.").unwrap_or(value);
+    if host.is_empty() || host.contains('*') {
+        return false;
+    }
+    let host = host.strip_suffix('.').unwrap_or(host);
+    !host.is_empty()
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
+fn csp_host_part_matches(pattern: &str, resource_host: &str) -> bool {
+    let pattern = pattern.trim_end_matches('.').to_ascii_lowercase();
+    let resource_host = resource_host.trim_end_matches('.').to_ascii_lowercase();
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(suffix) = pattern.strip_prefix("*.") {
+        return resource_host.len() > suffix.len()
+            && resource_host
+                .strip_suffix(suffix)
+                .is_some_and(|prefix| prefix.ends_with('.'));
+    }
+    pattern.eq_ignore_ascii_case(&resource_host)
+}
+
+fn csp_default_port(scheme: &str) -> Option<u16> {
+    match scheme.to_ascii_lowercase().as_str() {
+        "http" | "ws" => Some(80),
+        "https" | "wss" => Some(443),
+        "ftp" => Some(21),
+        _ => None,
+    }
+}
+
+fn csp_port_part_matches(port: Option<&str>, resource_url: &Url) -> bool {
+    if port == Some("*") {
+        return true;
+    }
+
+    let resource_port = resource_url.port();
+    let default_port = csp_default_port(resource_url.scheme());
+    let effective_resource_port = resource_port.or(default_port);
+    match port {
+        None => resource_port.is_none() || resource_port == default_port,
+        Some(port) => port
+            .parse::<u16>()
+            .ok()
+            .is_some_and(|port| Some(port) == effective_resource_port),
+    }
+}
+
+fn csp_path_part_is_valid(path: &str) -> bool {
+    if !path.starts_with('/') || !path.is_ascii() {
+        return false;
+    }
+    let bytes = path.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'%' {
+            if index + 2 >= bytes.len()
+                || hex_value(bytes[index + 1]).is_none()
+                || hex_value(bytes[index + 2]).is_none()
+            {
+                return false;
+            }
+            index += 3;
+            continue;
+        }
+        if !(byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'-' | b'.'
+                    | b'_'
+                    | b'~'
+                    | b'!'
+                    | b'$'
+                    | b'&'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b'*'
+                    | b'+'
+                    | b'='
+                    | b':'
+                    | b'@'
+                    | b'/'
+            ))
+        {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+fn csp_percent_decode_path_piece(value: &str) -> Option<Vec<u8>> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        if index + 2 >= bytes.len() {
+            return None;
+        }
+        let high = hex_value(bytes[index + 1])?;
+        let low = hex_value(bytes[index + 2])?;
+        decoded.push((high << 4) | low);
+        index += 3;
+    }
+    Some(decoded)
+}
+
+fn csp_path_part_matches(pattern: &str, resource_path: &str) -> bool {
+    if pattern.is_empty() || (pattern == "/" && resource_path.is_empty()) {
+        return true;
+    }
+
+    let exact_match = !pattern.ends_with('/');
+    let mut pattern_pieces = pattern.split('/').collect::<Vec<_>>();
+    let resource_pieces = resource_path.split('/').collect::<Vec<_>>();
+    if pattern_pieces.len() > resource_pieces.len()
+        || (exact_match && pattern_pieces.len() != resource_pieces.len())
+    {
+        return false;
+    }
+    if !exact_match {
+        pattern_pieces.pop();
+    }
+
+    pattern_pieces
+        .iter()
+        .zip(resource_pieces.iter())
+        .all(|(pattern_piece, resource_piece)| {
+            csp_percent_decode_path_piece(pattern_piece)
+                == csp_percent_decode_path_piece(resource_piece)
+        })
+}
+
+fn csp_self_source_matches(document_url: &Url, resource_url: &Url) -> bool {
+    if resource_url.scheme().eq_ignore_ascii_case("blob") {
+        return false;
+    }
+    if document_url.origin() == resource_url.origin() {
+        return true;
+    }
+
+    let Some(document_host) = document_url.host_str() else {
+        return false;
+    };
+    let Some(resource_host) = resource_url.host_str() else {
+        return false;
+    };
+    if !document_host.eq_ignore_ascii_case(resource_host)
+        || !csp_upgrade_ports_compatible(document_url, resource_url)
+    {
+        return false;
+    }
+
+    match (
+        document_url.scheme().to_ascii_lowercase().as_str(),
+        resource_url.scheme().to_ascii_lowercase().as_str(),
+    ) {
+        ("http" | "https", "https" | "wss") | ("http", "ws") => true,
+        _ => false,
+    }
+}
+
+fn csp_upgrade_ports_compatible(document_url: &Url, resource_url: &Url) -> bool {
+    let document_default = csp_default_port(document_url.scheme());
+    let resource_default = csp_default_port(resource_url.scheme());
+    let document_effective = document_url.port().or(document_default);
+    let resource_effective = resource_url.port().or(resource_default);
+    document_effective == resource_effective
+        || (document_url
+            .port()
+            .is_none_or(|port| Some(port) == document_default)
+            && resource_url
+                .port()
+                .is_none_or(|port| Some(port) == resource_default))
 }
 
 fn inline_csp_sources_allow(
@@ -5769,11 +6078,11 @@ mod tests {
         NativeIndexedDbState, NativeWebStorageState, save_web_storage_profile,
     };
     use super::{
-        MAX_NATIVE_CACHE_ENTRIES, NativeCookieProfileEntry, NativeCorsMode, NativeEngineConfig,
-        NativeInlineCspKind, NativeNavigationMethod, NativeNetworkState, NativeResource,
-        NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
-        cache_control_requires_revalidation, content_security_policy, cors_origin_header,
-        cors_preflight_response_allowed, cors_response_allowed,
+        MAX_NATIVE_CACHE_ENTRIES, MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, NativeCookieProfileEntry,
+        NativeCorsMode, NativeEngineConfig, NativeInlineCspKind, NativeNavigationMethod,
+        NativeNetworkState, NativeResource, NativeResourceLoader, NativeSubresourceKind,
+        cache_control_max_age, cache_control_requires_revalidation, content_security_policy,
+        cors_origin_header, cors_preflight_response_allowed, cors_response_allowed,
         csp_report_deliveries_for_declaration, csp_sources_allow, decode_html_body,
         document_cache_fresh_until, document_cache_storage_allowed, mixed_content_allowed,
         referrer_for_navigation, resolve_subresource_url,
@@ -6089,6 +6398,133 @@ mod tests {
         assert!(policy.allows(NativeSubresourceKind::Connect, &document, &document));
         assert!(!policy.allows(NativeSubresourceKind::Connect, &document, &socket));
         assert!(!policy.allows(NativeSubresourceKind::Font, &document, &document));
+    }
+
+    #[test]
+    fn csp_source_expressions_match_scheme_host_port_path_and_upgrade_rules() {
+        let document = Url::parse("http://app.test/index.html").unwrap();
+        let wildcard = vec!["*.Example.test".to_owned()];
+        assert!(csp_sources_allow(
+            Some(&wildcard),
+            &document,
+            &Url::parse("https://cdn.example.test/assets/app.js").unwrap()
+        ));
+        assert!(!csp_sources_allow(
+            Some(&wildcard),
+            &document,
+            &Url::parse("https://example.test/assets/app.js").unwrap()
+        ));
+        assert!(!csp_sources_allow(
+            Some(&wildcard),
+            &document,
+            &Url::parse("https://badexample.test/assets/app.js").unwrap()
+        ));
+
+        let path = vec!["https://cdn.example.test/assets/".to_owned()];
+        assert!(csp_sources_allow(
+            Some(&path),
+            &document,
+            &Url::parse("https://cdn.example.test/assets/app.js?cache=1#fragment").unwrap()
+        ));
+        assert!(!csp_sources_allow(
+            Some(&path),
+            &document,
+            &Url::parse("https://cdn.example.test/asset/app.js").unwrap()
+        ));
+        let exact_path = vec!["https://cdn.example.test/assets/app%2Ejs".to_owned()];
+        assert!(csp_sources_allow(
+            Some(&exact_path),
+            &document,
+            &Url::parse("https://cdn.example.test/assets/app.js").unwrap()
+        ));
+        assert!(!csp_sources_allow(
+            Some(&exact_path),
+            &document,
+            &Url::parse("https://cdn.example.test/assets/app.js/extra").unwrap()
+        ));
+
+        let default_port = vec!["https://api.test".to_owned()];
+        assert!(csp_sources_allow(
+            Some(&default_port),
+            &document,
+            &Url::parse("https://api.test/").unwrap()
+        ));
+        assert!(!csp_sources_allow(
+            Some(&default_port),
+            &document,
+            &Url::parse("https://api.test:8443/").unwrap()
+        ));
+        let explicit_port = vec!["https://api.test:8443".to_owned()];
+        assert!(csp_sources_allow(
+            Some(&explicit_port),
+            &document,
+            &Url::parse("https://api.test:8443/").unwrap()
+        ));
+        let any_port = vec!["https://api.test:*".to_owned()];
+        assert!(csp_sources_allow(
+            Some(&any_port),
+            &document,
+            &Url::parse("https://api.test:8443/").unwrap()
+        ));
+
+        let http_scheme = vec!["http:".to_owned()];
+        assert!(csp_sources_allow(
+            Some(&http_scheme),
+            &document,
+            &Url::parse("https://cdn.test/app.js").unwrap()
+        ));
+        assert!(!csp_sources_allow(
+            Some(&http_scheme),
+            &document,
+            &Url::parse("ftp://cdn.test/app.js").unwrap()
+        ));
+        let https_scheme = vec!["https:".to_owned()];
+        assert!(!csp_sources_allow(
+            Some(&https_scheme),
+            &document,
+            &Url::parse("http://cdn.test/app.js").unwrap()
+        ));
+
+        let self_source = vec!["'self'".to_owned()];
+        assert!(csp_sources_allow(
+            Some(&self_source),
+            &document,
+            &Url::parse("https://app.test/secure").unwrap()
+        ));
+        assert!(!csp_sources_allow(
+            Some(&self_source),
+            &document,
+            &Url::parse("https://app.test:8443/secure").unwrap()
+        ));
+
+        let mixed_none = vec!["'none'".to_owned(), "https://cdn.test".to_owned()];
+        assert!(csp_sources_allow(
+            Some(&mixed_none),
+            &document,
+            &Url::parse("https://cdn.test/app.js").unwrap()
+        ));
+        let malformed = vec![
+            "https://user:pass@example.test".to_owned(),
+            "https://example.test:bad".to_owned(),
+            "https://example.test/path?query".to_owned(),
+            "https://example.test/path%ZZ".to_owned(),
+            "https://example.test/path;comma".to_owned(),
+            "https://example.test:70000".to_owned(),
+        ];
+        assert!(!csp_sources_allow(
+            Some(&malformed),
+            &document,
+            &Url::parse("https://example.test/path").unwrap()
+        ));
+        let oversized = vec![format!(
+            "https://{}.test",
+            "a".repeat(MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES)
+        )];
+        assert!(!csp_sources_allow(
+            Some(&oversized),
+            &document,
+            &Url::parse("https://example.test/path").unwrap()
+        ));
     }
 
     #[test]

@@ -31,6 +31,7 @@ use glass_browser::{
     EvidenceSource, ExtractionRequest, GlassTask, TaskAmbiguityPolicy, TaskKind, TaskLimits,
     TaskRevisionPolicy, TaskRiskClass, TaskScope, WebIrAction, WebIrEntityKind,
 };
+use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -14468,6 +14469,68 @@ async fn native_content_process_enforces_inline_csp_for_initial_and_dynamic_cont
             "source": "color: purple",
             "color": "rgb(0, 0, 0)",
         })
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_enforces_script_src_attr_for_initial_and_dynamic_handlers() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let allowed_source = "globalThis.attrEvents.push(this.id + ':' + event.type); return false;";
+    let allowed_hash =
+        base64::engine::general_purpose::STANDARD.encode(Sha256::digest(allowed_source.as_bytes()));
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/csp-attr"));
+        let body = format!(
+            "<body><button id='allowed' onclick=\"{allowed_source}\">Allowed</button><button id='blocked' onclick=\"globalThis.attrEvents.push('blocked')\">Blocked</button></body>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none'; script-src 'nonce-only'; script-src-attr 'unsafe-hashes' 'sha256-{allowed_hash}'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/csp-attr")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.attrEvents = []; const allowed = document.getElementById('allowed'); allowed.addEventListener('click', event => attrEvents.push('default:' + event.defaultPrevented)); allowed.click(); document.getElementById('blocked').click(); attrEvents",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["allowed:click", "default:true"])
+    );
+    engine
+        .evaluate_async(&format!(
+            "(() => {{ const button = document.createElement('button'); button.id = 'dynamic'; button.setAttribute('onclick', {allowed_source:?}); document.body.appendChild(button); return true; }})()"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('dynamic').click(); attrEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["allowed:click", "default:true", "dynamic:click"])
+    );
+    assert_eq!(
+        engine
+        .evaluate_async(
+            "(() => { const button = document.getElementById('dynamic'); button.setAttribute('onclick', \"globalThis.attrEvents.push('dynamic-blocked')\"); button.click(); button.removeAttribute('onclick'); button.click(); return attrEvents; })()",
+        )
+        .await
+        .unwrap(),
+        serde_json::json!(["allowed:click", "default:true", "dynamic:click"])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

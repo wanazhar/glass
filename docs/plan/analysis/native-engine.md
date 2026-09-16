@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is the completed `native-engine-browser-395`, with native-first product
+expansion checkpoint is the completed `native-engine-browser-396`, with
+native-first product
 ownership, persistent sessions, semantic/MCP surfaces, capture and recovery,
 cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
@@ -434,6 +435,12 @@ directive fallback, gates style attributes, and rechecks dynamically mutated
 documents before script execution or computed-style/background-image
 projection. The task contract is recorded in
 `docs/plan/tasks/native-engine-browser-395.md`. The
+completed Slice 396 extends the same Rust owner to `script-src-attr`: inline
+`on*` content attributes use the `script-src-attr`/`script-src`/`default-src`
+fallback chain, admitted handlers join the existing native event path, and
+attribute replacement/removal cannot leave stale blocked listeners. The task
+contract is recorded in
+`docs/plan/tasks/native-engine-browser-396.md`. The
 completed 234 slice carries bounded
 root-scroll sticky positioning through
 shared flow,

@@ -10272,9 +10272,12 @@ impl NativeJavaScriptRuntime {
                 Arc::clone(&self.inline_script_policy),
             )?;
             ctx.eval::<(), _>(bootstrap.as_str())
-                .map_err(|_| NativeEngineError::Worker {
+                .map_err(|error| NativeEngineError::Worker {
                     operation: "install JavaScript host view".into(),
-                    reason: "native JavaScript host view could not be installed".into(),
+                    reason: format!(
+                        "native JavaScript host view could not be installed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
                 })?;
             dispatch_window_proxy_updates(&ctx, &proxy_updates)?;
             dispatch_page_event_batch(ctx.clone(), page_events)?;
@@ -12231,22 +12234,41 @@ fn install_native_inline_script_policy<'js>(
     ctx: rquickjs::Ctx<'js>,
     policy: Arc<Mutex<NativeInlineScriptPolicy>>,
 ) -> Result<(), NativeEngineError> {
-    let allows = Function::new(ctx.clone(), move |source: String, nonce: String| -> bool {
-        let nonce = (!nonce.is_empty()).then_some(nonce.as_str());
-        policy
-            .lock()
-            .map(|policy| policy.allows(&source, nonce))
-            .unwrap_or(false)
+    let allows = Function::new(ctx.clone(), {
+        let policy = Arc::clone(&policy);
+        move |source: String, nonce: String| -> bool {
+            let nonce = (!nonce.is_empty()).then_some(nonce.as_str());
+            policy
+                .lock()
+                .map(|policy| policy.allows(&source, nonce))
+                .unwrap_or(false)
+        }
     })
     .map_err(|_| NativeEngineError::Worker {
         operation: "install inline script policy".into(),
         reason: "native inline script policy could not be installed".into(),
+    })?;
+    let allows_attribute = Function::new(ctx.clone(), move |source: String| -> bool {
+        policy
+            .lock()
+            .map(|policy| policy.allows_attribute(&source))
+            .unwrap_or(false)
+    })
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install inline event-handler policy".into(),
+        reason: "native inline event-handler policy could not be installed".into(),
     })?;
     ctx.globals()
         .set("__glassAllowsInlineScript", allows)
         .map_err(|_| NativeEngineError::Worker {
             operation: "publish inline script policy".into(),
             reason: "native inline script policy could not be published".into(),
+        })?;
+    ctx.globals()
+        .set("__glassAllowsInlineEventHandler", allows_attribute)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "publish inline event-handler policy".into(),
+            reason: "native inline event-handler policy could not be published".into(),
         })
 }
 
@@ -27339,6 +27361,7 @@ fn document_bootstrap(
     let imageNaturalHeight = Number(entry.imageNaturalHeight) || 0;
     let imageCurrentSrc = String(entry.imageCurrentSrc || "");
     let inlineStyleAllowed = entry.inlineStyleAllowed !== false;
+    const inlineAttributeHandlers = new Map();
     let computedStyle = entry.computedStyle && typeof entry.computedStyle === "object"
       ? entry.computedStyle
       : {{}};
@@ -27654,6 +27677,7 @@ fn document_bootstrap(
         const stringValue = String(value);
         entry.attributes[key] = stringValue;
         delete entry.attributeNamespaces[key];
+        installInlineAttributeHandler(key, stringValue);
         if (["src", "srcset", "sizes"].includes(key) && element.tagName === "IMG") resetImageState(stringValue === "" && key === "src");
         if (key === "disabled") disabled = true;
         if (key === "hidden") hidden = true;
@@ -27668,6 +27692,7 @@ fn document_bootstrap(
         const key = String(name).toLowerCase();
         delete entry.attributes[key];
         delete entry.attributeNamespaces[key];
+        removeInlineAttributeHandler(key);
         if (["src", "srcset", "sizes"].includes(key) && element.tagName === "IMG") resetImageState(key === "src");
         if (key === "disabled") disabled = false;
         if (key === "hidden") hidden = false;
@@ -27820,6 +27845,48 @@ fn document_bootstrap(
         element.append(...items);
       }}
     }};
+    const inlineEventType = (name) => {{
+      const value = String(name).toLowerCase();
+      if (!value.startsWith("on") || value.length <= 2 || !/^[a-z][a-z0-9]*$/.test(value.slice(2))) return null;
+      try {{ return normalizeEventType(value.slice(2)); }} catch (_error) {{ return null; }}
+    }};
+    const inlineAttributeOwner = () => "node:" + element.nodeIndex;
+    const removeInlineAttributeHandler = (name) => {{
+      const type = inlineEventType(name);
+      if (!type) return;
+      const registered = inlineAttributeHandlers.get(type);
+      if (registered) removeListener(inlineAttributeOwner(), type, registered, false);
+      inlineAttributeHandlers.delete(type);
+    }};
+    const installInlineAttributeHandler = (name, source) => {{
+      const type = inlineEventType(name);
+      if (!type) return;
+      removeInlineAttributeHandler(name);
+      const value = String(source || "");
+      if (!value) return;
+      let allowed = true;
+      if (typeof globalThis.__glassAllowsInlineEventHandler === "function") {{
+        try {{ allowed = Boolean(globalThis.__glassAllowsInlineEventHandler(value)); }} catch (_error) {{ allowed = false; }}
+      }}
+      if (!allowed) return;
+      let handler;
+      try {{ handler = Function("event", value); }} catch (_error) {{ return; }}
+      const registered = (event) => {{
+        try {{
+          if (handler.call(element, event) === false && event && typeof event.preventDefault === "function") event.preventDefault();
+        }} catch (_error) {{}}
+      }};
+      inlineAttributeHandlers.set(type, registered);
+      addListener(inlineAttributeOwner(), type, registered, false);
+    }};
+    const clearInlineAttributeHandlers = () => {{
+      for (const [type, registered] of inlineAttributeHandlers) removeListener(inlineAttributeOwner(), type, registered, false);
+      inlineAttributeHandlers.clear();
+    }};
+    const refreshInlineAttributeHandlers = () => {{
+      clearInlineAttributeHandlers();
+      for (const [name, value] of Object.entries(entry.attributes || {{}})) installInlineAttributeHandler(name, value);
+    }};
     Object.defineProperty(element, "__glassChildren", {{
       enumerable: false,
       configurable: false,
@@ -27927,6 +27994,7 @@ fn document_bootstrap(
       imageCurrentSrc: () => imageCurrentSrc,
       imageReset: resetImageState,
     }});
+    refreshInlineAttributeHandlers();
     nativeCanvasInstallElement(element, entry);
     Object.defineProperty(element, "__glassAttributeSource", {{
       enumerable: false,
@@ -28082,6 +28150,7 @@ fn document_bootstrap(
       enumerable: false,
       configurable: false,
       value(nextEntry) {{
+        clearInlineAttributeHandlers();
         entry = nextEntry;
         computedStyle = nextEntry.computedStyle && typeof nextEntry.computedStyle === "object"
           ? nextEntry.computedStyle
@@ -28118,6 +28187,7 @@ fn document_bootstrap(
         imageCurrentSrc = String(nextEntry.imageCurrentSrc || "");
         scrollLeft = Number(nextEntry.scrollX) || 0;
         scrollTop = Number(nextEntry.scrollY) || 0;
+        refreshInlineAttributeHandlers();
         if (typeof element.__glassSyncAttributeNodes === "function") element.__glassSyncAttributeNodes();
       }}
     }});

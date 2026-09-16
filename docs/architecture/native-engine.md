@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
-`native-engine-browser-425`, following completed
+`native-engine-browser-426`, following completed
 `native-engine-browser-423`,
 `native-engine-browser-422` and `native-engine-browser-420`. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
@@ -118,6 +118,13 @@ basic paragraph/list recovery, void/raw-text/RCDATA handling, lookup,
 ownership, and HTML serialization; malformed input fails closed and returned
 scripts never execute or send live-DOM commands. Full HTML tree-builder,
 encoding, and HTML/Web IDL parity remain issue #40 gates.
+
+Slice 426 completes the XHR `responseText` state follow-up. Page and worker
+XHR now keep response text in an internal bounded field, expose it only for
+the empty/`text` response types, reject binary/JSON/document reads with
+`InvalidStateError`, expose buffered text during `LOADING`, and clear it
+across `open()` and terminal lifecycle resets. Response-type decoding and the
+remaining XHR streaming/Web IDL gates stay unchanged.
 
 Slice 412 closes the live-policy transfer portion of the Glass-owned explicit
 `navigate-to` navigation-policy extension. After each content-process
@@ -6510,7 +6517,10 @@ The native profile is `partial` and declares:
 The page XHR document branch also recognizes `text/html` alongside XML MIME
 responses and returns a bounded detached HTML document with head/body/title
 projections, read-only lookup, and HTML serialization; default-type HTML XHR
-remains a text response and worker XHR remains unchanged in this slice.
+remains a text response and worker XHR remains unchanged in that slice. Page
+and worker `responseText` now use guarded internal projections: text is
+available during buffered `LOADING`/`DONE`, incompatible response types throw
+`InvalidStateError`, and `open()`/terminal resets cannot leak prior text.
 
 Within the available script profile, classic and module dedicated `Worker`
 creation is available for local fixtures and HTTP(S) pages. Worker source uses

@@ -43,6 +43,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, oneshot};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
+use url::Url;
 
 fn native_content_process_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -163,6 +164,29 @@ fn native_test_png_bytes() -> Vec<u8> {
             .unwrap();
     }
     encoded
+}
+
+fn native_test_wav_bytes() -> Vec<u8> {
+    let mut wav = vec![0_u8; 44 + 320];
+    wav[0..4].copy_from_slice(b"RIFF");
+    wav[4..8].copy_from_slice(&(356_u32).to_le_bytes());
+    wav[8..12].copy_from_slice(b"WAVE");
+    wav[12..16].copy_from_slice(b"fmt ");
+    wav[16..20].copy_from_slice(&(16_u32).to_le_bytes());
+    wav[20..22].copy_from_slice(&(1_u16).to_le_bytes());
+    wav[22..24].copy_from_slice(&(1_u16).to_le_bytes());
+    wav[24..28].copy_from_slice(&(8000_u32).to_le_bytes());
+    wav[28..32].copy_from_slice(&(8000_u32).to_le_bytes());
+    wav[32..34].copy_from_slice(&(1_u16).to_le_bytes());
+    wav[34..36].copy_from_slice(&(8_u16).to_le_bytes());
+    wav[36..40].copy_from_slice(b"data");
+    wav[40..44].copy_from_slice(&(320_u32).to_le_bytes());
+    wav[44..].fill(128);
+    wav
+}
+
+fn native_test_file_url(path: &std::path::Path) -> String {
+    Url::from_file_path(path).unwrap().to_string()
 }
 
 fn native_test_png_data_url() -> String {
@@ -1602,6 +1626,136 @@ async fn native_local_data_media_loads_during_navigation() {
         serde_json::json!([1, 1, data_url, 0.04, serde_json::Value::Null, "maybe"])
     );
     engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_file_document_loads_rooted_media_during_navigation() {
+    let root =
+        std::env::temp_dir().join(format!("glass-native-file-static-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let media_path = root.join("clip.wav");
+    let page_path = root.join("index.html");
+    fs::write(&media_path, native_test_wav_bytes()).unwrap();
+    fs::write(
+        &page_path,
+        "<html><body><audio id='audio' src='clip.wav'></audio></body></html>",
+    )
+    .unwrap();
+    let page_url = native_test_file_url(&page_path);
+    let media_url = native_test_file_url(&media_path);
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url)
+        .with_allowed_file_root(root.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const audio = document.getElementById('audio'); return [audio.readyState, audio.networkState, audio.currentSrc, audio.duration, audio.error, audio.canPlayType('audio/wav')]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([1, 1, media_url, 0.04, serde_json::Value::Null, "maybe"])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn native_file_document_loads_rooted_media_after_dynamic_attachment() {
+    let root =
+        std::env::temp_dir().join(format!("glass-native-file-dynamic-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let media_path = root.join("late.wav");
+    let page_path = root.join("index.html");
+    fs::write(&media_path, native_test_wav_bytes()).unwrap();
+    fs::write(
+        &page_path,
+        "<html><body><div id='host'></div></body></html>",
+    )
+    .unwrap();
+    let page_url = native_test_file_url(&page_path);
+    let media_url = native_test_file_url(&media_path);
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url)
+        .with_allowed_file_root(root.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let media_literal = serde_json::to_string(&media_url).unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(format!(
+                "(() => {{ globalThis.fileMediaLog = []; const audio = document.createElement('audio'); audio.addEventListener('load', () => fileMediaLog.push('load')); audio.addEventListener('error', () => fileMediaLog.push('error')); audio.src = {media_literal}; document.getElementById('host').appendChild(audio); globalThis.fileAudio = audio; return audio.src; }})()"
+            ))
+            .await
+            .unwrap(),
+        serde_json::json!(media_url)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[fileMediaLog, fileAudio.readyState, fileAudio.networkState, fileAudio.currentSrc, fileAudio.duration, fileAudio.error]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([["load"], 1, 1, media_url, 0.04, serde_json::Value::Null])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn native_file_media_rejects_paths_outside_configured_root() {
+    let root =
+        std::env::temp_dir().join(format!("glass-native-file-allowed-{}", std::process::id()));
+    let outside =
+        std::env::temp_dir().join(format!("glass-native-file-outside-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&outside);
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let page_path = root.join("index.html");
+    let media_path = outside.join("secret.wav");
+    fs::write(&media_path, native_test_wav_bytes()).unwrap();
+    fs::write(
+        &page_path,
+        "<html><body><div id='host'></div></body></html>",
+    )
+    .unwrap();
+    let page_url = native_test_file_url(&page_path);
+    let media_url = native_test_file_url(&media_path);
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url)
+        .with_allowed_file_root(root.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let media_literal = serde_json::to_string(&media_url).unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(format!(
+                "(() => {{ globalThis.fileMediaLog = []; const audio = document.createElement('audio'); audio.addEventListener('error', () => fileMediaLog.push('error')); audio.src = {media_literal}; document.getElementById('host').appendChild(audio); globalThis.fileAudio = audio; return audio.src; }})()"
+            ))
+            .await
+            .unwrap(),
+        serde_json::json!(media_url)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[fileMediaLog, fileAudio.readyState, fileAudio.networkState, fileAudio.error && fileAudio.error.code]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([["error"], 0, 3, 4])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
 }
 
 #[tokio::test]

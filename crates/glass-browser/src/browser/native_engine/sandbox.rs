@@ -1,6 +1,5 @@
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
 use std::path::Path;
-#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use tokio::process::{Child, Command};
 
@@ -42,23 +41,24 @@ impl NativeContentSandbox {
 pub(crate) fn prepare_worker_command(
     worker_path: &Path,
     storage_path: Option<&Path>,
+    allowed_file_roots: &[PathBuf],
 ) -> Result<(Command, NativeContentSandbox), NativeEngineError> {
     #[cfg(target_os = "linux")]
     {
-        prepare_linux(worker_path, storage_path)
+        prepare_linux(worker_path, storage_path, allowed_file_roots)
     }
     #[cfg(target_os = "macos")]
     {
-        return prepare_macos(worker_path, storage_path);
+        return prepare_macos(worker_path, storage_path, allowed_file_roots);
     }
     #[cfg(windows)]
     {
-        let _ = storage_path;
+        let _ = (storage_path, allowed_file_roots);
         return prepare_windows(worker_path);
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
-        let _ = (worker_path, storage_path);
+        let _ = (worker_path, storage_path, allowed_file_roots);
         Err(sandbox_error(
             "native content sandbox is not implemented for this operating system",
         ))
@@ -69,6 +69,7 @@ pub(crate) fn prepare_worker_command(
 fn prepare_linux(
     worker_path: &Path,
     storage_path: Option<&Path>,
+    allowed_file_roots: &[PathBuf],
 ) -> Result<(Command, NativeContentSandbox), NativeEngineError> {
     let Some(bwrap) = find_executable("bwrap") else {
         return Err(sandbox_error(
@@ -141,6 +142,9 @@ fn prepare_linux(
                 .arg(&storage_lock_path);
         }
     }
+    for root in allowed_file_roots {
+        command.arg("--ro-bind").arg(root).arg(root);
+    }
     command
         .arg("--")
         .arg(sandbox_worker)
@@ -160,6 +164,7 @@ fn prepare_linux(
 fn prepare_macos(
     worker_path: &Path,
     storage_path: Option<&Path>,
+    allowed_file_roots: &[PathBuf],
 ) -> Result<(Command, NativeContentSandbox), NativeEngineError> {
     let seatbelt = Path::new("/usr/bin/sandbox-exec");
     if !seatbelt.is_file() {
@@ -178,8 +183,15 @@ fn prepare_macos(
             )
         })
         .unwrap_or_default();
+    let file_root_rules = allowed_file_roots
+        .iter()
+        .map(|root| {
+            let root = quote_profile_path(root);
+            format!(" (allow file-read* (subpath \"{root}\"))")
+        })
+        .collect::<String>();
     let profile = format!(
-        "(version 1) (deny default) (allow process-exec (literal \"{worker}\")) (allow file-read* (subpath \"/System\") (subpath \"/usr\") (subpath \"/Library\") (literal \"{worker}\")) (allow network-outbound) (allow sysctl-read) (allow mach-lookup){storage_rules}"
+        "(version 1) (deny default) (allow process-exec (literal \"{worker}\")) (allow file-read* (subpath \"/System\") (subpath \"/usr\") (subpath \"/Library\") (literal \"{worker}\")) (allow network-outbound) (allow sysctl-read) (allow mach-lookup){storage_rules}{file_root_rules}"
     );
     let mut command = Command::new(seatbelt);
     command

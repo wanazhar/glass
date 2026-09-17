@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-473`, following completed
 `native-engine-browser-472`, following completed
 `native-engine-browser-471`, following completed
 `native-engine-browser-470`, following completed
@@ -195,6 +196,15 @@ validate bounded supported media payloads, expose WAV duration metadata, and
 deliver selected-source readiness/error state plus load/error events through
 the native DOM and event paths. Codec/decoder playback, static HTTP media
 loading, and complete media/Web IDL parity remain issue #40 gates.
+
+The completed allowed-file follow-up is
+[`native-engine-browser-473`](tasks/native-engine-browser-473.md): native file
+documents and media are available only below explicitly configured absolute
+roots, with bounded canonical reads, relative file resolution, local media
+metadata, and content-process root transfer/sandbox bindings. Network pages
+cannot use this path to read local files. File-backed scripts, stylesheets,
+images, fonts, workers, downloads, and complete file-origin/Web IDL parity
+remain issue #40 gates.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

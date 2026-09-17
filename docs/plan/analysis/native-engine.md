@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-472`, following
+expansion checkpoint is completed `native-engine-browser-473`, following
+completed `native-engine-browser-472`, following
 completed `native-engine-browser-471`, following
 completed `native-engine-browser-470`, following
 completed `native-engine-browser-469`, following
@@ -410,6 +411,14 @@ surface exposes media constants, source selection, time ranges, `load()`,
 `canPlayType()`, and the existing load/error event path. This is resource
 admission and metadata, not codec decoding or playback. Static HTTP media,
 decoder-backed playback, and complete media/Web IDL parity remain issue #40
+gates.
+
+Slice 473 closes the explicitly rooted file-resource boundary. Native file
+documents and local media now require configured absolute roots, use bounded
+canonical reads, preserve relative file resolution, and carry root policy into
+the sandboxed content-process start boundary. Network documents cannot read
+local files through this path. File-backed script/style/image/font/worker
+resources, downloads, and complete file-origin/Web IDL parity remain issue #40
 gates.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local

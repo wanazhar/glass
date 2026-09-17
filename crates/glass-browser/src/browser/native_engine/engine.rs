@@ -1,8 +1,8 @@
 use super::browsing_context::NativeBrowsingContext;
 use super::config::{
     NativeEngineConfig, Viewport, decode_percent_encoded_fragment, decode_text_fragment_terms,
-    is_network_url, resolve_fixture_relative_url, validate_context_id, validate_url_text,
-    validate_window_name, without_fragment,
+    is_file_url, is_network_url, resolve_fixture_relative_url, validate_context_id,
+    validate_url_text, validate_window_name, without_fragment,
 };
 use super::content_process::{
     NativeContentLoad, NativeContentLoadResult, NativeContentMutation, NativeContentNavigation,
@@ -1179,7 +1179,13 @@ impl NativeEngine {
         }
         let initial_url = self.config.initial_url.clone();
         let mut content_process = if is_network_url(&initial_url) {
-            Some(NativeContentProcess::spawn(self.config.storage_path.as_deref()).await?)
+            Some(
+                NativeContentProcess::spawn(
+                    self.config.storage_path.as_deref(),
+                    self.loader.allowed_file_roots(),
+                )
+                .await?,
+            )
         } else {
             None
         };
@@ -1187,6 +1193,7 @@ impl NativeEngine {
             process
                 .start(
                     self.config.storage_path.as_deref(),
+                    self.loader.allowed_file_roots(),
                     &self.config.context_id,
                     &self.frame_id,
                     &self.config.window_name,
@@ -1573,11 +1580,15 @@ impl NativeEngine {
             self.content_process.take();
         }
         if self.content_process.is_none() {
-            let mut process =
-                NativeContentProcess::spawn(self.config.storage_path.as_deref()).await?;
+            let mut process = NativeContentProcess::spawn(
+                self.config.storage_path.as_deref(),
+                self.loader.allowed_file_roots(),
+            )
+            .await?;
             process
                 .start(
                     self.config.storage_path.as_deref(),
+                    self.loader.allowed_file_roots(),
                     &self.config.context_id,
                     &self.frame_id,
                     &self.config.window_name,
@@ -6353,7 +6364,7 @@ impl NativeEngine {
             return Ok(href.to_owned());
         }
         if let Ok(base) = url::Url::parse(without_fragment(&self.url))
-            && is_network_url(base.as_str())
+            && (is_network_url(base.as_str()) || is_file_url(base.as_str()))
         {
             let resolved = base
                 .join(href)
@@ -6413,7 +6424,7 @@ impl NativeEngine {
             return Ok(href.to_owned());
         }
         if let Ok(base) = url::Url::parse(without_fragment(base_url))
-            && is_network_url(base.as_str())
+            && (is_network_url(base.as_str()) || is_file_url(base.as_str()))
         {
             let resolved = base
                 .join(href)
@@ -6635,8 +6646,7 @@ impl NativeEngine {
         })?;
         let mut document =
             NativeDocument::parse_with_generation(&resource.body, &self.config.limits, generation)?;
-        let initial_events =
-            load_local_initial_data_media(&mut document, &self.loader, &resource.url)?;
+        let initial_events = load_local_initial_media(&mut document, &self.loader, &resource.url)?;
         let frame_sources = self.loader.frame_sources_for_document(&resource.url)?;
         let navigate_to_sources = self.loader.navigation_sources_for_document(
             &resource.url,
@@ -8209,7 +8219,8 @@ fn load_local_dynamic_blob_media(
         let is_data = source
             .get(..5)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"));
-        if !is_blob && !is_data {
+        let is_file = is_file_media_source(document_url, &source);
+        if !is_blob && !is_data && !is_file {
             continue;
         }
         let node_id = NativeNodeId::from_parts(document.generation(), node_index);
@@ -8220,6 +8231,8 @@ fn load_local_dynamic_blob_media(
         let metadata = if is_blob {
             let object_url = runtime.object_url_resource(&source)?;
             loader.load_local_blob_media(document_url, &source, object_url.as_ref())?
+        } else if is_file {
+            loader.load_local_file_media(document_url, &source)?
         } else {
             loader.load_data_media(document_url, &source)?
         };
@@ -8239,21 +8252,27 @@ fn load_local_dynamic_blob_media(
     Ok(events)
 }
 
-fn load_local_initial_data_media(
+fn load_local_initial_media(
     document: &mut NativeDocument,
     loader: &NativeResourceLoader,
     document_url: &str,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
     let mut events = Vec::new();
     for (node_index, source) in document.external_media_links() {
-        if !source
+        let is_data = source
             .get(..5)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
-        {
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"));
+        let is_file = is_file_media_source(document_url, &source);
+        if !is_data && !is_file {
             continue;
         }
         document.mark_media_load(node_index, source.clone())?;
-        let event_kind = match loader.load_data_media(document_url, &source)? {
+        let metadata = if is_file {
+            loader.load_local_file_media(document_url, &source)?
+        } else {
+            loader.load_data_media(document_url, &source)?
+        };
+        let event_kind = match metadata {
             Some(metadata) => {
                 document.set_media_resource(node_index, source, metadata)?;
                 NativeEventKind::Load
@@ -8267,6 +8286,22 @@ fn load_local_initial_data_media(
     }
     document.refresh_media_loads();
     Ok(events)
+}
+
+fn is_file_media_source(document_url: &str, source: &str) -> bool {
+    if source
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"))
+    {
+        return true;
+    }
+    let Ok(base) = url::Url::parse(without_fragment(document_url)) else {
+        return false;
+    };
+    is_file_url(base.as_str())
+        && base
+            .join(source)
+            .is_ok_and(|target| target.scheme().eq_ignore_ascii_case("file"))
 }
 
 fn extract_local_scroll_commands(commands: &[NativeScriptCommand]) -> Vec<NativeScriptCommand> {

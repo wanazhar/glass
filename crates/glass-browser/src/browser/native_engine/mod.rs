@@ -34,9 +34,10 @@ mod worker;
 
 pub use browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};
 pub use config::{
-    MAX_NATIVE_DOCUMENT_BYTES, MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_FIXTURES,
-    MAX_NATIVE_HISTORY_ENTRIES, MAX_NATIVE_NODES, MAX_NATIVE_SCHEDULER_TASKS,
-    MAX_NATIVE_VIEWPORT_DIMENSION, NativeEngineConfig, NativeEngineLimits, NativeFixture, Viewport,
+    MAX_NATIVE_DOCUMENT_BYTES, MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_FILE_ROOT_BYTES,
+    MAX_NATIVE_FILE_ROOTS, MAX_NATIVE_FIXTURES, MAX_NATIVE_HISTORY_ENTRIES, MAX_NATIVE_NODES,
+    MAX_NATIVE_SCHEDULER_TASKS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeEngineConfig,
+    NativeEngineLimits, NativeFixture, Viewport,
 };
 #[doc(hidden)]
 pub use content_process::run_native_content_worker;

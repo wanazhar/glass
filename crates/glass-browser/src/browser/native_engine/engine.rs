@@ -35,10 +35,11 @@ use super::javascript::{
     apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
     execute_inline_scripts, frame_event_batch, host_event_batch,
     host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
-    load_service_worker_client_leases, load_web_storage_profile, new_storage_writer_id,
-    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
-    storage_event_cursor, storage_key, unregister_service_worker_client_lease,
-    unregister_storage_reader, validate_frame_script_command, validate_message_port_transfers,
+    load_local_file_module_graph, load_service_worker_client_leases, load_web_storage_profile,
+    new_storage_writer_id, read_storage_event_journal, register_storage_reader,
+    save_web_storage_profile, storage_event_cursor, storage_key,
+    unregister_service_worker_client_lease, unregister_storage_reader,
+    validate_frame_script_command, validate_message_port_transfers,
     validate_native_message_payload, validate_native_object_url_transfers,
     validate_page_message_port_command, validate_service_worker_client_states,
 };
@@ -8085,6 +8086,7 @@ fn load_local_dynamic_page_script_sources(
             }
             NativePageScriptSource::ModuleExternal {
                 href,
+                timing,
                 node_index,
                 integrity,
                 ..
@@ -8119,12 +8121,33 @@ fn load_local_dynamic_page_script_sources(
                 };
                 match resource {
                     Ok(Some(resource)) => {
-                        scripts.push(NativePageScript::Module {
-                            name: resource.url,
-                            source: resource.body,
-                            node_index: Some(node_index),
-                        });
-                        resource_events.push((node_index, NativeEventKind::Load));
+                        let graph = if is_file {
+                            load_local_file_module_graph(
+                                loader,
+                                document_url,
+                                resource,
+                                timing,
+                                node_index,
+                            )
+                        } else {
+                            Ok(vec![(
+                                timing,
+                                NativePageScript::Module {
+                                    name: resource.url,
+                                    source: resource.body,
+                                    node_index: Some(node_index),
+                                },
+                            )])
+                        };
+                        match graph {
+                            Ok(graph) => {
+                                scripts.extend(graph.into_iter().map(|(_, script)| script));
+                                resource_events.push((node_index, NativeEventKind::Load));
+                            }
+                            Err(_) => {
+                                resource_events.push((node_index, NativeEventKind::Error));
+                            }
+                        }
                     }
                     Ok(None) | Err(_) => resource_events.push((node_index, NativeEventKind::Error)),
                 }

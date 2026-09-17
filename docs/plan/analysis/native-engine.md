@@ -1,7 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-473`, following
+expansion checkpoint is completed `native-engine-browser-475`, following
+completed `native-engine-browser-474`, following
+completed `native-engine-browser-473`, following
 completed `native-engine-browser-472`, following
 completed `native-engine-browser-471`, following
 completed `native-engine-browser-470`, following
@@ -430,6 +432,18 @@ event, and paint owners. Network/data/blob targets remain outside this local
 path. File fonts, workers, downloads, CSS URL base parity, module dependency
 graphs, complete file-origin semantics, and full Web IDL parity remain issue
 #40 gates.
+
+Slice 475 closes the rooted file module-graph boundary. Static and dynamic
+file modules now discover bounded `import`, `export ... from`, and literal
+dynamic `import()` references, resolve them relative to the owning module,
+and prefetch each canonical dependency through the configured file roots and
+existing QuickJS module source map before evaluation. Duplicate modules are
+admitted once, graph entries and aggregate bytes are bounded, and bare,
+network/data/blob, credential-bearing, missing, oversized, and out-of-root
+dependencies fail closed with the owning module error event. Page and worker
+URL facades preserve canonical `file:///` authority markers. Import maps,
+non-literal dynamic imports, file fonts/workers/downloads, complete file-origin
+semantics, and full Web IDL parity remain issue #40 gates.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads

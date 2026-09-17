@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-475`, following completed
 `native-engine-browser-474`, following completed
 `native-engine-browser-473`, following completed
 `native-engine-browser-472`, following completed
@@ -391,6 +392,19 @@ integrity, UTF-8, size, event, and paint/resource state owners. Network,
 path. File fonts, workers, downloads, CSS URL base parity, module dependency
 graphs, complete file-origin semantics, and full Web IDL parity remain issue
 #40 work.
+
+Slice `native-engine-browser-475` closes the rooted file module-graph
+boundary. Static `import`/`export ... from` and literal dynamic `import()`
+references in file modules are resolved relative to their owning module,
+canonicalized through the configured roots, bounded by graph-entry and
+aggregate-byte limits, and installed in the existing QuickJS module source
+map before evaluation. Duplicate entries are admitted once; cycles remain
+finite; bare, network/data/blob, credential-bearing, missing, oversized, and
+out-of-root dependencies fail closed with the owning module's error event.
+Dynamic file module attachments use the same graph owner, and page/worker URL
+facades preserve canonical `file:///` authority markers. Import maps,
+non-literal dynamic imports, file fonts/workers/downloads, complete file-origin
+semantics, and full Web IDL parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

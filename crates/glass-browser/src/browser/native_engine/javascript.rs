@@ -298,6 +298,8 @@ pub(crate) enum NativeScriptCommand {
         data: serde_json::Value,
         #[serde(default)]
         transfer_ports: Vec<NativeMessagePortTransfer>,
+        #[serde(default)]
+        object_urls: Vec<NativeObjectUrlTransfer>,
     },
     ServiceWorkerOpenWindow {
         request_id: u32,
@@ -977,7 +979,10 @@ pub(crate) struct NativeServiceWorkerClientMessage {
     pub(crate) worker_id: u32,
     pub(crate) client_id: String,
     pub(crate) data: serde_json::Value,
+    #[serde(default)]
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
+    #[serde(default)]
+    pub(crate) object_urls: Vec<NativeObjectUrlTransfer>,
 }
 
 /// A bounded cross-window message waiting for delivery to a page realm.
@@ -9835,11 +9840,16 @@ impl NativeJavaScriptRuntime {
         ctx: &rquickjs::Ctx<'_>,
         mut command: NativeScriptCommand,
     ) -> Result<NativeScriptCommand, NativeEngineError> {
-        if let NativeScriptCommand::WorkerPostMessage {
-            data, object_urls, ..
-        } = &mut command
-        {
-            *object_urls = self.object_url_transfers_in_context(ctx, data)?;
+        match &mut command {
+            NativeScriptCommand::WorkerPostMessage {
+                data, object_urls, ..
+            }
+            | NativeScriptCommand::ServiceWorkerClientPostMessage {
+                data, object_urls, ..
+            } => {
+                *object_urls = self.object_url_transfers_in_context(ctx, data)?;
+            }
+            _ => {}
         }
         Ok(command)
     }
@@ -14710,11 +14720,13 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
             ));
         }
         validate_message_port_transfers(&message.transfer_ports)?;
+        validate_native_object_url_transfers(&message.object_urls)?;
         validate_native_message_payload(
             &serde_json::json!({
                 "worker_id": message.worker_id,
                 "data": &message.data,
                 "transfer_ports": &message.transfer_ports,
+                "object_urls": &message.object_urls,
             }),
             "native service-worker client event",
         )?;
@@ -14986,6 +14998,7 @@ fn dispatch_page_event_batch(
                 "worker_id": message.worker_id,
                 "data": &message.data,
                 "transfer_ports": &message.transfer_ports,
+                "object_urls": &message.object_urls,
             }),
             "native service-worker client event",
         )?;
@@ -23711,6 +23724,8 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   globalThis.__glassServiceWorkerRegistrations = serviceWorkerRegistrations;
   globalThis.__glassServiceWorkerPendingRequests = serviceWorkerPendingRequests;
   globalThis.__glassDispatchServiceWorkerClientMessage = (payload) => {
+    if (payload && Array.isArray(payload.object_urls))
+      globalThis.__glassInstallObjectUrlTransfers(payload.object_urls);
     const envelope = glassMessageDecodeEnvelope(payload || {});
     const registration = serviceWorkerFind(String(host.url));
     serviceWorkerContainer.dispatchEvent({

@@ -13,14 +13,13 @@ use super::fetch_stream::{
 };
 use super::interaction::{MAX_NATIVE_EFFECTS, MAX_NATIVE_FORM_BODY_BYTES};
 use super::javascript::{
-    MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_POST_MESSAGE_BYTES, MAX_NATIVE_SCRIPT_BYTES,
-    MAX_NATIVE_SERVICE_WORKER_CACHE_BODY_BYTES, MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES,
-    MAX_NATIVE_SERVICE_WORKER_CACHE_KEY_BYTES, MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES,
-    MAX_NATIVE_SERVICE_WORKER_CACHES, MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
-    MAX_NATIVE_SERVICE_WORKERS, MAX_NATIVE_WORKER_MESSAGES, NativeJavaScriptRuntime,
-    NativeMessagePortPageMessage, NativeMessagePortTransfer, NativeScriptCommand,
-    NativeScriptEvaluation, NativeServiceWorkerCacheBatchEntry, NativeServiceWorkerCacheEntry,
-    NativeServiceWorkerCacheState, NativeServiceWorkerClientMessage,
+    MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_SERVICE_WORKER_CACHE_BODY_BYTES,
+    MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES, MAX_NATIVE_SERVICE_WORKER_CACHE_KEY_BYTES,
+    MAX_NATIVE_SERVICE_WORKER_CACHE_NAME_BYTES, MAX_NATIVE_SERVICE_WORKER_CACHES,
+    MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES, MAX_NATIVE_SERVICE_WORKERS, MAX_NATIVE_WORKER_MESSAGES,
+    NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativeMessagePortTransfer,
+    NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerCacheBatchEntry,
+    NativeServiceWorkerCacheEntry, NativeServiceWorkerCacheState, NativeServiceWorkerClientMessage,
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
     NativeServiceWorkerRegistrationProfile, NativeServiceWorkerRegistrationState,
     NativeServiceWorkerWorkerProfile, NativeServiceWorkerWorkerState, load_service_worker_source,
@@ -2165,6 +2164,7 @@ fn service_worker_client_message_command(
         client_id,
         data,
         transfer_ports,
+        object_urls,
     } = command
     else {
         return Ok(None);
@@ -2189,22 +2189,21 @@ fn service_worker_client_message_command(
         ));
     }
     validate_message_port_transfers(&transfer_ports)?;
-    let encoded = serde_json::to_vec(&data).map_err(|_| NativeEngineError::Worker {
-        operation: "serialize native service worker client message".into(),
-        reason: "service worker client message data could not be serialized".into(),
-    })?;
-    if encoded.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
-        return Err(NativeEngineError::limit(
-            "native service worker client message",
-            MAX_NATIVE_POST_MESSAGE_BYTES,
-            encoded.len(),
-        ));
-    }
+    validate_native_object_url_transfers(&object_urls)?;
+    validate_native_message_payload(
+        &json!({
+            "data": &data,
+            "transfer_ports": &transfer_ports,
+            "object_urls": &object_urls,
+        }),
+        "native service worker client message",
+    )?;
     Ok(Some(NativeServiceWorkerClientMessage {
         worker_id,
         client_id,
         data,
         transfer_ports,
+        object_urls,
     }))
 }
 

@@ -5141,7 +5141,9 @@ self.addEventListener('fetch', event => {
       const nested = await fetch('/service-worker-large-data');
       const nestedLength = (await nested.text()).length;
       const channel = new MessageChannel();
-      client.postMessage({ kind: 'fetch-client', url: event.request.url }, {
+      const blob = new Blob(['service-worker-client-body'], { type: 'text/service-worker-client' });
+      const blobUrl = URL.createObjectURL(blob);
+      client.postMessage({ kind: 'fetch-client', url: event.request.url, blobUrl }, {
         transfer: [channel.port1],
       });
       return new Response(JSON.stringify({
@@ -5245,7 +5247,7 @@ self.addEventListener('fetch', event => {
     assert_eq!(
         engine
             .evaluate_async(
-                "await fetch('/api').then(async response => ({ status: response.status, worker: response.headers.get('x-native-worker'), body: await response.json(), messages: swClientMessages }))",
+                "await fetch('/api').then(async response => { const message = swClientMessages[0]; const blobResponse = await fetch(message.data.blobUrl); return { status: response.status, worker: response.headers.get('x-native-worker'), body: await response.json(), messages: swClientMessages, blob: { text: await blobResponse.text(), type: blobResponse.headers.get('content-type') } }; })",
             )
             .await
             .unwrap(),
@@ -5269,10 +5271,15 @@ self.addEventListener('fetch', event => {
                 "data": {
                     "kind": "fetch-client",
                     "url": format!("http://{address}/api"),
+                    "blobUrl": format!("blob:http://{address}/glass-worker-1"),
                 },
                 "ports": 1,
                 "source": format!("http://{address}/sw.js"),
             }],
+            "blob": {
+                "text": "service-worker-client-body",
+                "type": "text/service-worker-client",
+            },
         })
     );
     assert_eq!(

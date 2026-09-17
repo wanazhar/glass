@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-467`, following completed
 `native-engine-browser-466`, following completed
 `native-engine-browser-465`, following completed
 `native-engine-browser-464`, following completed
@@ -338,6 +339,16 @@ Blob registry lookup. MessagePort was subsequently closed by slice 466;
 Service Worker client message, media, and remaining browser/Web IDL
 conformance consumers remain separate issue #40 work.
 
+Slice `native-engine-browser-467` closes the Service Worker client-message Blob
+URL boundary. Service Worker `Client.postMessage()` now snapshots bounded Blob
+URLs in the worker realm, validates the typed envelope through the worker and
+content-process owners, and installs destination entries before the page
+`message` event structured clone runs. HTTP(S) coverage proves the delivered
+page can fetch the worker-owned Blob without network or cache fallback, while
+the source worker retains independent revocation ownership. MessagePort
+event-origin metadata, media, and remaining browser/Web IDL conformance
+consumers remain separate issue #40 work.
+
 Slice `native-engine-browser-466` closes the cross-realm Blob URL MessagePort
 boundary. Page, dedicated/shared-worker, popup/`WindowProxy`, and Service
 Worker port messages now carry bounded Blob snapshots through active,
@@ -346,7 +357,8 @@ the snapshot before structured-clone decoding. Inline and HTTP(S) tests cover
 both directions, including service-worker ports, with no network/cache
 fallback and independent source revocation. MessagePort event-origin metadata,
 Service Worker client-message Blob transfer, media, and remaining browser/Web
-IDL conformance consumers remain separate issue #40 work.
+IDL conformance consumers remained separate issue #40 work at that checkpoint;
+the client-message Blob transfer gate is now closed by slice 467.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

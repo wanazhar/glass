@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-493`, following
+expansion checkpoint is completed `native-engine-browser-494`, following
+completed `native-engine-browser-493`, following
 completed `native-engine-browser-492`, following
 completed `native-engine-browser-491`, following
 completed `native-engine-browser-490`, following
@@ -91,10 +92,20 @@ loaded/error status, settled `loaded` and `ready` promises, family-aware
 `check()`/`load()`, set mutation and iteration methods, and lifecycle events
 with their affected `fontfaces` list. Newly observed CSS faces trigger the
 bounded loading/error cycle; unknown families use the normal fallback result.
-Script-created `FontFace` sources still reject explicitly because no native
-loader command exists for that API yet. Installed-font discovery,
-font-display timing, variable/color fonts, cross-realm FontFace projection,
-and complete text/Web IDL parity remain issue #40 gates.
+
+Slice 494 adds the script-created `FontFace.load()` admission path. String
+sources are parsed as bounded `local()` or URL candidates; local candidates
+read matching bytes from the deterministic system font book, while `data:` and
+runtime Blob URLs are decoded in the realm and other URL candidates use the
+existing native Fetch event-loop transport. Successful sources emit a bounded
+`FontFaceInstall` command, and the native document validates the descriptor,
+base64 envelope, byte limit, and font parser before rebuilding its font book.
+The URL transport currently follows Fetch's `connect-src` policy, not the
+dedicated `font-src` policy used by CSS font loading, and the command has no
+host acknowledgement after the realm marks the face loaded. Those are explicit
+follow-up gates, along with installed-font discovery, font-display timing,
+variable/color fonts, cross-realm FontFace projection, and complete text/Web
+IDL parity.
 
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
@@ -6919,8 +6930,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-493.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-494.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-493.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-492.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-491.md` is the preceding completed

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-464`, following completed
 `native-engine-browser-463`, following completed
 `native-engine-browser-462`, following completed
 `native-engine-browser-461`, following completed
@@ -146,6 +147,15 @@ consumers remain issue #40 gates. The completed popup/window follow-up is
 through local and content-process browser-effect queues, bootstrap the target
 from `about:blank`, and commit the Blob document without network or HTTP-cache
 fallback. Media and cross-realm object-URL consumers remain issue #40 gates.
+The completed cross-realm message follow-up is
+[`native-engine-browser-464`](tasks/native-engine-browser-464.md): page-owned
+Blob URLs embedded in structured messages are snapshotted into a bounded
+typed envelope for dedicated/shared workers, and worker-owned Blob URLs use
+the same envelope on their way back to the page. Both inline fixture and
+HTTP(S) content-process paths install the destination registry before clone
+decoding, without network/cache fallback; source revocation remains
+independent. Page-window, MessagePort, Service Worker client messaging,
+media, and remaining browser/Web IDL conformance remain issue #40 gates.
 
 The completed report-only navigation preflight slice is
 [native-engine-browser-413](tasks/native-engine-browser-413.md): the

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-457`, following completed
 `native-engine-browser-456`, following completed
 `native-engine-browser-455`, following completed
 `native-engine-browser-454`, following completed
@@ -97,8 +98,14 @@ image follow-up is [native-engine-browser-456](tasks/native-engine-browser-456.m
 process-backed page mutations can load a runtime-verified Blob URL into
 `<img>` and CSS background image consumers through the existing bounded image
 decoder and event/paint path, without network fallback or HTTP cache reuse.
-Stylesheet, script, media, popup/window, and cross-realm object-URL consumers
-remain issue #40 gates.
+The completed script follow-up is
+[`native-engine-browser-457`](tasks/native-engine-browser-457.md):
+process-backed page mutations can load a runtime-verified Blob URL as a classic
+external script, enforce the document CSP, content-type, integrity, size, and
+UTF-8 gates, execute without network/cache fallback, and deliver the normal
+script-target `load`/`error` event through stable DOM ownership. Stylesheet,
+module dependency graphs, media, popup/window, and cross-realm object-URL
+consumers remain issue #40 gates.
 
 The completed report-only navigation preflight slice is
 [native-engine-browser-413](tasks/native-engine-browser-413.md): the

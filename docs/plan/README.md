@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-452`, following completed
 `native-engine-browser-451`, following completed
 `native-engine-browser-450`, following completed
 `native-engine-browser-449`, following completed
@@ -373,6 +374,14 @@ method tokens such as `REPORT` through one native owner, while CORS, body,
 redirect, cache, and cookie policy remains bounded and navigation/form/XHR
 method contracts stay separate. Complete Fetch Web IDL parity and the full
 browser scheme matrix remain issue #40 work.
+
+The completed general XHR-method slice is
+[native-engine-browser-452](tasks/native-engine-browser-452.md): page and
+worker XHR `open()` plus synchronous XHR now accept bounded valid HTTP method
+tokens such as `REPORT` through the native loader, while XHR error categories,
+body, timeout, and response-state rules remain explicit and navigation/form
+methods stay separate. Complete XHR Web IDL parity and the full browser scheme
+matrix remain issue #40 work.
 
 The completed XHR realm-state mutator slice is
 [native-engine-browser-445](tasks/native-engine-browser-445.md): page and

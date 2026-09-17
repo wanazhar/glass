@@ -13524,7 +13524,7 @@ fn run_native_sync_xhr(
     mut loader: NativeResourceLoader,
     request: NativeSyncXhrRequest,
 ) -> (NativeResourceLoader, serde_json::Value) {
-    let method = match NativeNavigationMethod::from_fetch_method(&request.method) {
+    let method = match NativeFetchMethod::from_fetch_method(&request.method) {
         Ok(method) => method,
         Err(error) => return (loader, sync_xhr_error_payload(&error)),
     };
@@ -13546,7 +13546,7 @@ fn run_native_sync_xhr(
     let fetch_request = NativeFetchRequest {
         document_url: &request.document_url,
         href: &request.href,
-        method: NativeFetchMethod::from_navigation_method(method),
+        method,
         body,
         content_type: request.content_type,
         request_headers: request.headers,
@@ -16534,7 +16534,6 @@ fn worker_bootstrap(
     ? globalThis.__glassNextWorkerFetchRequestId
     : 1;
   const workerRequestHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
-  const workerXhrMethods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
   const workerRequestMethod = (value) => {{
     const method = String(value).toUpperCase();
     if (!method || method.length > {fetch_method_limit} || !workerRequestHeaderName.test(method)
@@ -20268,7 +20267,7 @@ fn worker_bootstrap(
       throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest method is invalid", "SyntaxError");
     if (["CONNECT", "TRACE", "TRACK"].includes(normalized))
       throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest method is forbidden", "SecurityError");
-    if (!workerXhrMethods.includes(normalized))
+    if (normalized.length > {fetch_method_limit})
       throw new TypeError("native Worker XMLHttpRequest method is unsupported");
     return normalized;
   }};
@@ -26990,7 +26989,6 @@ fn document_bootstrap(
   URLNative.prototype.toJSON = function() {{ return this.href; }};
   globalThis.URL = URLNative;
   const requestHeaderNameNative = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
-  const nativeXhrMethods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
   const nativeFetchMethod = (value) => {{
     const method = String(value).toUpperCase();
     if (!method || method.length > {fetch_method_limit} || !requestHeaderNameNative.test(method)
@@ -29389,7 +29387,7 @@ fn document_bootstrap(
       throw new DOMExceptionNative("native XMLHttpRequest method is invalid", "SyntaxError");
     if (["CONNECT", "TRACE", "TRACK"].includes(normalized))
       throw new DOMExceptionNative("native XMLHttpRequest method is forbidden", "SecurityError");
-    if (!nativeXhrMethods.includes(normalized))
+    if (normalized.length > {fetch_method_limit})
       throw new TypeError("native XMLHttpRequest method is unsupported");
     return normalized;
   }};

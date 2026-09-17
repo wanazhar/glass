@@ -6993,7 +6993,7 @@ async fn native_local_sync_xhr_uses_fixture_loader() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const xhr = new XMLHttpRequest(); const states = []; xhr.onreadystatechange = () => states.push(xhr.readyState); xhr.open('GET', '/response', false); xhr.send(); return { status: xhr.status, statusText: xhr.statusText, responseText: xhr.responseText, response: xhr.response, responseURL: xhr.responseURL, states, readyState: xhr.readyState }; })()",
+                "(() => { const xhr = new XMLHttpRequest(); const states = []; xhr.onreadystatechange = () => states.push(xhr.readyState); xhr.open('REPORT', '/response', false); xhr.send(); return { status: xhr.status, statusText: xhr.statusText, responseText: xhr.responseText, response: xhr.response, responseURL: xhr.responseURL, states, readyState: xhr.readyState }; })()",
             )
             .await
             .unwrap(),
@@ -55180,9 +55180,12 @@ globalThis.pageResponseTypePromise = new Promise(resolve => {
   let credentialsDoneError = '';
   let forbiddenMethod = '';
   let invalidMethod = '';
+  let customMethod = '';
   const methodProbe = new XMLHttpRequest();
   try { methodProbe.open('TRACE', 'unused'); } catch (error) { forbiddenMethod = error.name; }
   try { methodProbe.open('GET\n', 'unused'); } catch (error) { invalidMethod = error.name; }
+  const customMethodProbe = new XMLHttpRequest();
+  try { customMethodProbe.open('rEpOrT', 'unused'); customMethod = customMethodProbe._method; } catch (error) { customMethod = error.name; }
   const credentials = new XMLHttpRequest();
   credentials.withCredentials = 'false';
   const credentialsBeforeOpen = credentials.withCredentials;
@@ -55227,7 +55230,7 @@ globalThis.pageResponseTypePromise = new Promise(resolve => {
       doneError,
       credentials: [credentialsBeforeOpen, credentialsAfterOpen, credentialsAfterSet],
       credentialsDoneError,
-      open: [forbiddenMethod, invalidMethod, urlObjectState, credentialUrl.includes('user%20name:p%40ss@')],
+      open: [forbiddenMethod, invalidMethod, customMethod, urlObjectState, credentialUrl.includes('user%20name:p%40ss@')],
       sync: [syncOpenError, syncTimeoutError, syncResponseTypeError],
     });
   };
@@ -55250,9 +55253,12 @@ let doneError = '';
 let credentialsDoneError = '';
 let forbiddenMethod = '';
 let invalidMethod = '';
+let customMethod = '';
 const methodProbe = new XMLHttpRequest();
 try { methodProbe.open('TRACE', 'unused'); } catch (error) { forbiddenMethod = error.name; }
 try { methodProbe.open('GET\n', 'unused'); } catch (error) { invalidMethod = error.name; }
+const customMethodProbe = new XMLHttpRequest();
+try { customMethodProbe.open('rEpOrT', 'unused'); customMethod = customMethodProbe._method; } catch (error) { customMethod = error.name; }
 const credentials = new XMLHttpRequest();
 credentials.withCredentials = 'false';
 const credentialsBeforeOpen = credentials.withCredentials;
@@ -55294,7 +55300,7 @@ xhr.onload = () => {
     doneError,
     credentials: [credentialsBeforeOpen, credentialsAfterOpen, credentialsAfterSet],
     credentialsDoneError,
-    open: [forbiddenMethod, invalidMethod, urlObjectState, credentialUrl.includes('worker%20name:p%40ss@')],
+    open: [forbiddenMethod, invalidMethod, customMethod, urlObjectState, credentialUrl.includes('worker%20name:p%40ss@')],
     sync: [sync.timeout, sync.responseType],
   });
 };
@@ -55334,7 +55340,7 @@ xhr.send();"#,
                 "doneError": "InvalidStateError",
                 "credentials": [true, true, false],
                 "credentialsDoneError": "InvalidStateError",
-                "open": ["SecurityError", "SyntaxError", 1, true],
+                "open": ["SecurityError", "SyntaxError", "REPORT", 1, true],
                 "sync": ["InvalidAccessError", "InvalidAccessError", "InvalidAccessError"],
             },
             {
@@ -55346,7 +55352,7 @@ xhr.send();"#,
                 "doneError": "InvalidStateError",
                 "credentials": [true, true, false],
                 "credentialsDoneError": "InvalidStateError",
-                "open": ["SecurityError", "SyntaxError", 1, true],
+                "open": ["SecurityError", "SyntaxError", "REPORT", 1, true],
                 "sync": [10, "json"],
             },
         ])

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-486`, following
+expansion checkpoint is completed `native-engine-browser-487`, following
+completed `native-engine-browser-486`, following
 completed `native-engine-browser-485`, following
 completed `native-engine-browser-484`, following
 completed `native-engine-browser-483`, following
@@ -557,7 +558,7 @@ relative/non-pixel size computation, variable-font selection, complex-script
 shaping, grapheme-safe line breaking, bidi, and browser text-rendering parity
 remained issue #40 work.
 
-Slice 486 adds the first shaped real-font path. HarfRust now supplies LTR
+Slice 486 added the first shaped real-font path. HarfRust now supplies LTR
 cluster order, glyph IDs, and fractional advances for explicit supported
 system faces; spacing is assigned at shaped cluster boundaries so ligatures
 and positioned marks do not receive accidental per-glyph breaks. Fontdue
@@ -568,6 +569,15 @@ writing mode, perform full bidi or language/script negotiation, select
 fallback faces for missing glyphs, load `@font-face` resources, select
 variable-font instances, or provide grapheme-safe line breaking and full
 browser text parity.
+
+Slice 487 threads the existing cascaded `direction:ltr|rtl` value into native
+text metrics. Horizontal RTL runs now use HarfRust's reverse cluster order and
+mirror glyph origins into the left-origin display coordinate system, including
+mirrored whitespace ranges for decoration and justification; LTR runs retain
+their prior geometry. The fixed-cell fallback keeps the direction value for
+the existing alignment owner. Mixed bidi segmentation, Unicode bidi
+reordering, vertical writing modes, language/script negotiation, missing-glyph
+font fallback, and complete browser text parity remain open.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads
@@ -6824,8 +6834,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-486.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-487.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-486.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-485.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-484.md` is the preceding completed

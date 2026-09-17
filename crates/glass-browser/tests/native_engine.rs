@@ -23744,6 +23744,62 @@ fn native_real_font_metrics_feed_layout_and_glyph_paint_when_available() {
 }
 
 #[test]
+fn native_css_direction_reaches_real_font_raster_coordinates() {
+    let limits = NativeEngineLimits::default();
+    let viewport = Viewport {
+        width: 320,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let ltr = NativeDocument::parse(
+        "<style>#text { font-family: sans-serif; direction: ltr; }</style><div id='text'>ABC</div>",
+        &limits,
+    )
+    .unwrap();
+    let rtl = NativeDocument::parse(
+        "<style>#text { font-family: sans-serif; direction: rtl; }</style><div id='text'>ABC</div>",
+        &limits,
+    )
+    .unwrap();
+    let glyph_run = |document: &NativeDocument| {
+        document
+            .display_list(viewport)
+            .unwrap()
+            .commands
+            .into_iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::GlyphRun { run, .. } => Some(run),
+                NativeDisplayCommand::TextRun { .. }
+                | NativeDisplayCommand::BeginOpacityGroup { .. }
+                | NativeDisplayCommand::Clear { .. }
+                | NativeDisplayCommand::EndOpacityGroup { .. }
+                | NativeDisplayCommand::FillRect { .. }
+                | NativeDisplayCommand::SetNestedScrollOffset { .. }
+                | NativeDisplayCommand::Image { .. }
+                | NativeDisplayCommand::SvgStroke { .. }
+                | NativeDisplayCommand::SvgPolygonFill { .. }
+                | NativeDisplayCommand::SvgPolyline { .. }
+                | NativeDisplayCommand::SvgPathFill { .. }
+                | NativeDisplayCommand::SvgPathStroke { .. }
+                | NativeDisplayCommand::BorderRect { .. } => None,
+            })
+    };
+    let Some(ltr) = glyph_run(&ltr) else {
+        return;
+    };
+    let Some(rtl) = glyph_run(&rtl) else {
+        return;
+    };
+    assert_eq!(ltr.width, rtl.width);
+    assert_eq!(ltr.glyphs.len(), rtl.glyphs.len());
+    assert!(
+        rtl.glyphs
+            .windows(2)
+            .all(|glyphs| glyphs[0].x >= glyphs[1].x)
+    );
+}
+
+#[test]
 fn native_display_visibility_revert_layer_preserves_hidden_subtree_owners() {
     let document = NativeDocument::parse(
         "<style>@layer base { #rolled { display:none;visibility:hidden;width:12px;height:8px;background-color:red; } #repeat { display:block;visibility:visible;width:12px;height:8px;background-color:red; } #contents { display:contents;visibility:visible; } #fallback { display:revert-layer;visibility:revert-layer;width:12px;height:8px;background-color:green; } #inline { display:block;visibility:hidden;width:12px;height:8px;background-color:yellow; } #child { display:block;width:12px;height:8px;background-color:blue; } } @layer theme { #rolled { display:block;visibility:visible; } #rolled { display:revert-layer;visibility:revert-layer; } #repeat { display:revert-layer;visibility:revert-layer; } #contents { display:block;visibility:hidden; } #contents { display:revert-layer;visibility:revert-layer; } } @layer top { #repeat { display:revert-layer;visibility:revert-layer; } } #rolled { display:revert-layer;visibility:revert-layer; } #repeat { display:revert-layer;visibility:revert-layer; } #contents { display:revert-layer;visibility:revert-layer; }</style><button id='rolled'>Rolled</button><button id='repeat'>Repeat</button><div id='contents'><button id='child'>Child</button></div><button id='fallback'>Fallback</button><button id='inline' style='display:ReVeRt-LaYeR;visibility:revert-layer'>Inline</button>",

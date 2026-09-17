@@ -1,5 +1,5 @@
 use super::css::{
-    FontStyleValue, FontWeightValue, NativeFontFamilyList, NativeFontFamilyValue,
+    DirectionValue, FontStyleValue, FontWeightValue, NativeFontFamilyList, NativeFontFamilyValue,
     NativeGenericFontFamily, font_family_hash,
 };
 use std::fmt;
@@ -35,11 +35,11 @@ pub(crate) struct NativeSpaceRange {
 
 /// A shaped font run consumed by the native display list.
 ///
-/// Explicit system faces use HarfRust's LTR glyph and cluster positions when
-/// the font can be parsed by both shaping and rasterization. The bounded
-/// character-by-character fontdue path remains available for fonts that the
-/// shaper rejects; RTL, bidi, and writing-mode selection are still outside this
-/// run's contract.
+/// Explicit system faces use HarfRust's horizontal LTR or RTL glyph and
+/// cluster positions when the font can be parsed by both shaping and
+/// rasterization. The bounded character-by-character fontdue path remains
+/// available for fonts that the shaper rejects; mixed bidi and writing-mode
+/// selection are still outside this run's contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeFontRun {
     pub glyphs: Vec<NativeGlyph>,
@@ -83,15 +83,17 @@ pub(crate) struct NativeTextMetrics {
     font_size: u32,
     ascent: u32,
     line_height: u32,
+    direction: DirectionValue,
 }
 
 impl NativeTextMetrics {
-    pub(crate) fn fallback(font_size: u32) -> Self {
+    pub(crate) fn fallback_with_direction(font_size: u32, direction: DirectionValue) -> Self {
         Self {
             face: None,
             font_size: font_size.clamp(1, MAX_NATIVE_FONT_SIZE),
             ascent: FALLBACK_LINE_HEIGHT.saturating_sub(5),
             line_height: FALLBACK_LINE_HEIGHT,
+            direction,
         }
     }
 
@@ -100,12 +102,13 @@ impl NativeTextMetrics {
         font_size: u32,
         weight: FontWeightValue,
         style: FontStyleValue,
+        direction: DirectionValue,
     ) -> Self {
         let font_size = font_size.clamp(1, MAX_NATIVE_FONT_SIZE);
         let book = system_font_book();
         let face = book.face_for(families, weight, style);
         let Some(face) = face else {
-            return Self::fallback(font_size);
+            return Self::fallback_with_direction(font_size, direction);
         };
         let line_metrics = face.font.horizontal_line_metrics(font_size as f32);
         let ascent = line_metrics
@@ -120,6 +123,7 @@ impl NativeTextMetrics {
             font_size,
             ascent,
             line_height,
+            direction,
         }
     }
 
@@ -202,9 +206,11 @@ impl NativeTextMetrics {
             harfrust::BufferFlags::BEGINNING_OF_TEXT | harfrust::BufferFlags::END_OF_TEXT,
         );
         buffer.guess_segment_properties();
-        if buffer.direction() != harfrust::Direction::LeftToRight {
-            return None;
-        }
+        let direction = match self.direction {
+            DirectionValue::Ltr => harfrust::Direction::LeftToRight,
+            DirectionValue::Rtl => harfrust::Direction::RightToLeft,
+        };
+        buffer.set_direction(direction);
         let scale = i32::try_from(self.font_size.saturating_mul(FONT_SHAPE_SCALE)).ok()?;
         let shaper = shaper_data.shaper(&font).build();
         let shaped = shaper.shape(buffer, harfrust::ShapeOptions::new().scale(Some(scale)));
@@ -216,31 +222,36 @@ impl NativeTextMetrics {
 
         let characters: Vec<char> = value.chars().collect();
         let character_count = characters.len();
+        let cluster_indices = infos
+            .iter()
+            .map(|info| cluster_index(value, info.cluster))
+            .collect::<Option<Vec<_>>>()?;
         let mut glyphs = Vec::with_capacity(infos.len());
         let mut pen_x = 0i64;
         let mut previous_cluster = None;
-        for (index, (info, position)) in infos.iter().zip(positions).enumerate() {
-            let cluster_byte = usize::try_from(info.cluster).ok()?;
-            if cluster_byte > value.len() || !value.is_char_boundary(cluster_byte) {
-                return None;
-            }
-            let cluster = value[..cluster_byte].chars().count();
+        for (index, ((info, position), &cluster)) in infos
+            .iter()
+            .zip(positions)
+            .zip(&cluster_indices)
+            .enumerate()
+        {
             if cluster >= character_count && character_count != 0 {
                 return None;
             }
-            if previous_cluster.is_some_and(|previous| cluster < previous) {
+            if previous_cluster.is_some_and(|previous| match self.direction {
+                DirectionValue::Ltr => cluster < previous,
+                DirectionValue::Rtl => cluster > previous,
+            }) {
                 return None;
             }
             let is_last_for_cluster = infos
                 .get(index + 1)
                 .is_none_or(|next| next.cluster != info.cluster);
-            let cluster_end = infos
-                .get(index + 1)
-                .and_then(|next| {
-                    let next = usize::try_from(next.cluster).ok()?;
-                    (next > cluster_byte && next <= value.len() && value.is_char_boundary(next))
-                        .then(|| value[..next].chars().count())
-                })
+            let cluster_end = cluster_indices
+                .iter()
+                .copied()
+                .filter(|next| *next > cluster)
+                .min()
                 .unwrap_or(character_count);
             let cluster_spacing = if is_last_for_cluster {
                 spacing_for_characters(
@@ -271,6 +282,7 @@ impl NativeTextMetrics {
         Some(NativeShapedRun {
             glyphs,
             width: round_fixed_nonnegative(pen_x),
+            width_fixed: pen_x,
         })
     }
 
@@ -282,6 +294,26 @@ impl NativeTextMetrics {
     ) -> Option<NativeFontRun> {
         let face = self.face.as_ref()?;
         let characters: Vec<char> = value.chars().collect();
+        let justify_unit = i64::from(justify_spacing).saturating_mul(i64::from(FONT_SHAPE_SCALE));
+        let justified_space_count = shaped
+            .glyphs
+            .iter()
+            .enumerate()
+            .filter(|(index, shaped_glyph)| {
+                shaped
+                    .glyphs
+                    .get(index.saturating_add(1))
+                    .is_none_or(|next| next.cluster != shaped_glyph.cluster)
+                    && characters
+                        .get(shaped_glyph.cluster)
+                        .is_some_and(|character| character.is_whitespace())
+            })
+            .count();
+        let total_width_fixed = shaped.width_fixed.saturating_add(
+            i64::try_from(justified_space_count)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(justify_unit),
+        );
         let mut glyphs = Vec::new();
         let mut space_ranges = Vec::new();
         let mut pen_x = 0i64;
@@ -300,7 +332,7 @@ impl NativeTextMetrics {
             let justify = if is_last_for_cluster
                 && character.is_some_and(|character| character.is_whitespace())
             {
-                i64::from(justify_spacing).saturating_mul(i64::from(FONT_SHAPE_SCALE))
+                justify_unit
             } else {
                 0
             };
@@ -309,19 +341,22 @@ impl NativeTextMetrics {
                 return None;
             }
             let (metrics, coverage) = face.font.rasterize_indexed(glyph_id, self.font_size as f32);
-            let advance = round_fixed_nonnegative(
-                i64::from(shaped_glyph.x_advance)
-                    .saturating_add(shaped_glyph.cluster_spacing)
-                    .saturating_add(justify),
-            );
+            let advance_fixed = i64::from(shaped_glyph.x_advance)
+                .saturating_add(shaped_glyph.cluster_spacing)
+                .saturating_add(justify);
+            let advance = round_fixed_nonnegative(advance_fixed);
             if is_last_for_cluster && character.is_some_and(|character| character.is_whitespace()) {
-                let range_end = pen_x
-                    .saturating_add(i64::from(shaped_glyph.x_advance))
-                    .saturating_add(shaped_glyph.cluster_spacing)
-                    .saturating_add(justify);
+                let range_end = pen_x.saturating_add(advance_fixed);
+                let (range_start, range_end) = match self.direction {
+                    DirectionValue::Ltr => (cluster_start, range_end),
+                    DirectionValue::Rtl => (
+                        total_width_fixed.saturating_sub(range_end),
+                        total_width_fixed.saturating_sub(cluster_start),
+                    ),
+                };
                 space_ranges.push(NativeSpaceRange {
-                    start: round_signed_fixed(cluster_start),
-                    end: round_signed_fixed(range_end).max(round_signed_fixed(cluster_start)),
+                    start: round_signed_fixed(range_start),
+                    end: round_signed_fixed(range_end).max(round_signed_fixed(range_start)),
                     char_index: shaped_glyph.cluster,
                 });
             }
@@ -336,9 +371,15 @@ impl NativeTextMetrics {
                             .saturating_add(metrics.ymin),
                     )
                     .saturating_sub(round_signed_fixed(i64::from(shaped_glyph.y_offset)));
+                let glyph_x = match self.direction {
+                    DirectionValue::Ltr => pen_x.saturating_add(i64::from(shaped_glyph.x_offset)),
+                    DirectionValue::Rtl => total_width_fixed
+                        .saturating_sub(pen_x)
+                        .saturating_sub(advance_fixed)
+                        .saturating_add(i64::from(shaped_glyph.x_offset)),
+                };
                 glyphs.push(NativeGlyph {
-                    x: round_signed_fixed(pen_x.saturating_add(i64::from(shaped_glyph.x_offset)))
-                        .saturating_add(metrics.xmin),
+                    x: round_signed_fixed(glyph_x).saturating_add(metrics.xmin),
                     y,
                     width,
                     height,
@@ -354,7 +395,7 @@ impl NativeTextMetrics {
         Some(NativeFontRun {
             glyphs,
             space_ranges,
-            width: round_fixed_nonnegative(pen_x),
+            width: round_fixed_nonnegative(total_width_fixed),
             ascent: self.ascent,
             line_height: self.line_height,
         })
@@ -435,6 +476,7 @@ struct NativeShapedGlyph {
 struct NativeShapedRun {
     glyphs: Vec<NativeShapedGlyph>,
     width: u32,
+    width_fixed: i64,
 }
 
 impl NativeFontBook {
@@ -554,6 +596,11 @@ fn round_fixed_nonnegative(value: i64) -> u32 {
     let rounded =
         value.saturating_add(i64::from(FONT_SHAPE_SCALE / 2)) / i64::from(FONT_SHAPE_SCALE);
     u32::try_from(rounded).unwrap_or(u32::MAX)
+}
+
+fn cluster_index(value: &str, cluster: u32) -> Option<usize> {
+    let byte = usize::try_from(cluster).ok()?;
+    (byte <= value.len() && value.is_char_boundary(byte)).then(|| value[..byte].chars().count())
 }
 
 fn spacing_for_characters(
@@ -752,6 +799,7 @@ mod tests {
             DEFAULT_NATIVE_FONT_SIZE,
             FontWeightValue::Normal,
             FontStyleValue::Normal,
+            DirectionValue::Ltr,
         );
         assert!(metrics.line_height() > 0);
         assert!(metrics.measure_text("Glass", 0, 0) > 0);
@@ -772,6 +820,7 @@ mod tests {
             DEFAULT_NATIVE_FONT_SIZE,
             FontWeightValue::Normal,
             FontStyleValue::Normal,
+            DirectionValue::Ltr,
         );
         let Some(face) = metrics.face.as_ref() else {
             return;
@@ -805,8 +854,49 @@ mod tests {
     }
 
     #[test]
+    fn shaped_rtl_runs_reverse_clusters_and_visual_coordinates() {
+        let families = NativeFontFamilyList::single(NativeFontFamilyValue::Generic(
+            NativeGenericFontFamily::SansSerif,
+        ));
+        let metrics = NativeTextMetrics::for_style(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            DirectionValue::Rtl,
+        );
+        let Some(face) = metrics.face.as_ref() else {
+            return;
+        };
+        if face.shaper_data.is_none() {
+            return;
+        }
+        let Some(shaped) = metrics.shape("ABC", 0, 0) else {
+            return;
+        };
+        assert!(shaped.width > 0);
+        assert!(
+            shaped
+                .glyphs
+                .windows(2)
+                .all(|glyphs| glyphs[0].cluster >= glyphs[1].cluster)
+        );
+        let run = metrics.rasterize("ABC", 0, 0, 0).unwrap();
+        assert_eq!(run.width, shaped.width);
+        assert!(!run.glyphs.is_empty());
+        assert!(
+            run.glyphs
+                .iter()
+                .all(|glyph| glyph.x < i32::try_from(run.width).unwrap_or(i32::MAX))
+        );
+    }
+
+    #[test]
     fn fallback_metrics_keep_the_legacy_cell_contract() {
-        let metrics = NativeTextMetrics::fallback(DEFAULT_NATIVE_FONT_SIZE);
+        let metrics = NativeTextMetrics::fallback_with_direction(
+            DEFAULT_NATIVE_FONT_SIZE,
+            DirectionValue::Ltr,
+        );
         assert_eq!(metrics.measure_text("A B", 0, 0), 24);
         assert_eq!(metrics.line_height(), FALLBACK_LINE_HEIGHT);
         assert!(metrics.rasterize("A", 0, 0, 0).is_none());

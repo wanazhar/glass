@@ -77,8 +77,8 @@ browser text/Web IDL parity remain issue #40 gates.
   asynchronous loader test
 - process/listener audit found no stale Glass, Cargo, rustc, Chromium,
   Firefox, or native-content-worker targets to terminate
-- documentation truth/depth/shortcut/coverage audits (pending final docs gate)
-- `git diff --check` (pending final docs gate)
+- documentation truth/depth/shortcut/coverage audits passed after the slice
+- `git diff --check` passed after the slice
 
 The implementation is local-only at this checkpoint: it is not pushed, run in
 remote CI, released, tagged, or published.

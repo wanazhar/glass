@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-490`, following
+expansion checkpoint is completed `native-engine-browser-491`, following
+completed `native-engine-browser-490`, following
 completed `native-engine-browser-489`, following
 completed `native-engine-browser-488`, following
 completed `native-engine-browser-487`, following
@@ -618,6 +619,17 @@ initial/dynamic stylesheet owners rebuild the document-local font book so
 valid custom faces precede system candidates. Font response caching,
 `local()` lookup, loading events, variable/color fonts, and complete browser
 text parity remain open.
+
+Slice 491 adds bounded HTTP(S) font response caching. The network font owner
+partitions entries by document origin, canonical requested URL, and the
+same-origin cookie header; it reuses fresh bytes only after current
+`font-src`, mixed-content, URL, and cached-final-URL checks. Stale entries
+carry validators and accept a 304 response as bounded body reuse while
+refreshing freshness metadata. Responses with `Set-Cookie`, `no-store`,
+cookie or wildcard `Vary`, partial status, missing cache metadata, empty
+bodies, invalid/oversized bytes, or failed policy checks are not retained.
+The cache is in-memory and process-local. `local()` lookup, loading events,
+variable/color fonts, and complete browser text parity remain open.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads
@@ -6874,6 +6886,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-browser-491.md` is the latest completed browser
+task;
 `docs/plan/tasks/native-engine-browser-490.md` is the latest completed browser
 task;
 `docs/plan/tasks/native-engine-browser-489.md` is the latest completed browser

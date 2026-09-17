@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-491`, following completed
 `native-engine-browser-490`, following completed
 `native-engine-browser-489`, following completed
 `native-engine-browser-488`, following completed
@@ -574,6 +575,17 @@ then places valid custom faces ahead of deterministic system candidates for
 HarfRust/fontdue metrics and rasterization. Font response caching,
 `local()` lookup, font-loading events, variable/color fonts, and complete
 text-rendering parity remain issue #40 work.
+
+Slice `native-engine-browser-491` adds bounded HTTP(S) font response reuse.
+Network font entries are keyed by document origin, canonical requested URL,
+and same-origin cookie state; fresh entries are reused only after current
+font policy and cached-final-URL checks. Stale entries revalidate with
+`If-None-Match`/`If-Modified-Since`, and a 304 reuses the bounded bytes while
+refreshing metadata. Responses with `Set-Cookie`, `no-store`, cookie or
+wildcard `Vary`, partial status, missing cache metadata, empty/oversized
+payloads, or failed policy checks are not retained. The cache is in-memory and
+process-local; `local()` lookup, loading events, variable/color fonts, and
+complete text-rendering parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

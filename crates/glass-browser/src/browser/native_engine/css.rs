@@ -8750,28 +8750,88 @@ fn css_url_function_open(bytes: &[u8], cursor: usize) -> Option<usize> {
 fn css_url_function_close(bytes: &[u8], start: usize) -> Option<usize> {
     let mut quote = None;
     let mut escaped = false;
-    for (offset, byte) in bytes.iter().enumerate().skip(start) {
+    let mut offset = start;
+    while offset < bytes.len() {
+        let byte = bytes[offset];
         if let Some(expected) = quote {
             if escaped {
                 escaped = false;
-            } else if *byte == b'\\' {
+            } else if byte == b'\\' {
                 escaped = true;
-            } else if *byte == expected {
+            } else if byte == expected {
                 quote = None;
             }
+            offset += 1;
             continue;
         }
-        match *byte {
-            b'\'' | b'"' => quote = Some(*byte),
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
             b')' => return Some(offset),
+            b'\\' => {
+                offset = offset.saturating_add(2);
+                continue;
+            }
             _ => {}
         }
+        offset += 1;
     }
     None
 }
 
 fn is_css_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+}
+
+/// Decode CSS escape sequences inside a URL token before handing the value to
+/// the URL parser. This is intentionally scoped to URL-like tokens: selector,
+/// declaration, and string parsing retain their existing owners. Invalid
+/// trailing escapes are rejected so a file capability cannot resolve a
+/// partially interpreted path.
+pub(crate) fn decode_css_url_value(value: &str) -> Option<String> {
+    let mut decoded = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character != '\\' {
+            decoded.push(character);
+            continue;
+        }
+        let Some(next) = chars.next() else {
+            return None;
+        };
+        if next == '\n' {
+            continue;
+        }
+        if next == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            continue;
+        }
+        if next.is_ascii_hexdigit() {
+            let mut digits = String::with_capacity(6);
+            digits.push(next);
+            while digits.len() < 6
+                && chars
+                    .peek()
+                    .is_some_and(|candidate| candidate.is_ascii_hexdigit())
+            {
+                digits.push(chars.next().expect("peeked CSS hex escape"));
+            }
+            if chars.peek().is_some_and(char::is_ascii_whitespace) {
+                chars.next();
+            }
+            let codepoint = u32::from_str_radix(&digits, 16).ok()?;
+            decoded.push(
+                (codepoint != 0)
+                    .then(|| char::from_u32(codepoint))
+                    .flatten()
+                    .unwrap_or('\u{fffd}'),
+            );
+        } else {
+            decoded.push(next);
+        }
+    }
+    Some(decoded)
 }
 
 fn resolve_file_css_url_token(token: &str, base_url: &Url) -> Option<String> {
@@ -8786,10 +8846,11 @@ fn resolve_file_css_url_token(token: &str, base_url: &Url) -> Option<String> {
     } else {
         (None, token)
     };
+    let value = decode_css_url_value(value)?;
     if value.is_empty() || value.starts_with('#') || value.bytes().any(|byte| byte == 0) {
         return None;
     }
-    let target = Url::parse(value).or_else(|_| base_url.join(value)).ok()?;
+    let target = Url::parse(&value).or_else(|_| base_url.join(&value)).ok()?;
     if !target.scheme().eq_ignore_ascii_case("file")
         || !target.username().is_empty()
         || target.password().is_some()
@@ -10961,6 +11022,27 @@ mod tests {
         assert!(static_css_imports("@import 'missing-semicolon.css'").is_err());
         assert!(static_css_imports("@import url(\"unterminated.css); ").is_err());
         assert!(static_css_imports("@import unsupported.css;").is_err());
+    }
+
+    #[test]
+    fn css_url_escape_decoder_handles_hex_simple_and_line_continuation_forms() {
+        assert_eq!(
+            decode_css_url_value(r"assets/theme\2e css"),
+            Some("assets/theme.css".into())
+        );
+        assert_eq!(
+            decode_css_url_value(r"space\20 name\)asset"),
+            Some("space name)asset".into())
+        );
+        let escaped_closing_parenthesis =
+            static_css_imports(r"@import url(foo\)bar.css);").unwrap();
+        assert_eq!(escaped_closing_parenthesis[0].2, r"foo\)bar.css");
+        assert_eq!(
+            decode_css_url_value("line\\\ncontinued"),
+            Some("linecontinued".into())
+        );
+        assert_eq!(decode_css_url_value(r"trailing\"), None);
+        assert_eq!(decode_css_url_value(r"nul\0"), Some("nul\u{fffd}".into()));
     }
 
     fn border_color_value(color: NativeColor) -> NativeBorderColorValue {

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-501`, following completed
 `native-engine-browser-500`, following completed
 `native-engine-browser-499`, following completed
 `native-engine-browser-498`, following completed
@@ -196,6 +197,15 @@ preventing unsupported color/variable technology from being admitted. The
 existing ordered fallback and transactional host acknowledgement remain in
 force; technology negotiation and complete FontFace/Web IDL parity remain
 issue #40 gates.
+
+The completed installed-font discovery follow-up is
+[`native-engine-browser-501`](tasks/native-engine-browser-501.md): the native
+font book searches bounded user and platform roots for TTF, OTF, TTC, and OTC
+files, reads collection metadata with `ttf-parser`, preserves static faces
+first, and admits deterministic family/style matches under explicit file,
+byte, collection, and face limits. Eager discovery cost, variable/color
+tables, WOFF/WOFF2, font-display timing, and complete FontFace/Web IDL parity
+remain issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

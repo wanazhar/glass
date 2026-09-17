@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-500`, following
+expansion checkpoint is completed `native-engine-browser-501`, following
+completed `native-engine-browser-500`, following
 completed `native-engine-browser-499`, following
 completed `native-engine-browser-498`, following
 completed `native-engine-browser-497`, following
@@ -181,6 +182,18 @@ later ordinary candidate can load. If all candidates are filtered, the page
 retains the bounded `NetworkError` failure; malformed descriptor tails remain
 syntax errors. No unsupported technology enters the 497 transactional install
 path, while technology negotiation and complete FontFace/Web IDL parity remain
+open.
+
+Slice 501 adds bounded installed-font discovery to the native font book. Sorted
+user and platform roots contribute TTF, OTF, TTC, and OTC files after the
+static candidates; `ttf-parser` identifies family, typographic-family,
+weight, and italic/oblique metadata for each admitted collection face. The
+book caps file count, total discovered bytes, collection faces, total faces,
+and the existing per-face size, while skipping malformed, unreadable,
+duplicate, symlinked, and unsupported entries. This makes ordinary host fonts
+available to local CSS and script-created FontFace candidates, at the cost of
+bounded eager startup I/O and retained font data. Variable/color tables,
+font-display timing, WOFF/WOFF2, and complete FontFace/Web IDL parity remain
 open.
 
 Slice 416 carries bounded form POST method/body/content-type
@@ -7006,7 +7019,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-500.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-501.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-500.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-499.md` is the preceding completed
 browser task;

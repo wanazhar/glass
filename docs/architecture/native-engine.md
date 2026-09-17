@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-501`, following completed
 `native-engine-browser-500`, following completed
 `native-engine-browser-499`, following completed
 `native-engine-browser-498`, following completed
@@ -178,6 +179,17 @@ functions remain syntax errors. No unsupported technology crosses the
 transactional `FontFaceInstall` admission boundary. Technology negotiation,
 variable/color tables, installed-font discovery, and complete FontFace/Web IDL
 parity remain issue #40 gates.
+
+Slice 501 adds bounded installed-font discovery. The native font book keeps
+the static candidates first, then walks sorted user and platform font roots for
+TTF, OTF, TTC, and OTC files. `ttf-parser` supplies family, generic-family,
+weight, and italic/oblique metadata for collection faces before the existing
+fontdue and HarfRust owners admit them. Discovery is capped at 512 files,
+64 MiB of file bytes, 64 faces, 32 collection faces, and the existing 4 MiB
+per-face limit; unreadable, malformed, duplicate, and unsupported entries are
+skipped without failing the book. Eager startup I/O, conservative metadata
+mapping, variable/color tables, WOFF/WOFF2, font-display timing, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between

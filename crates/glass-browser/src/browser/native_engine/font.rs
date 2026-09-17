@@ -3,7 +3,7 @@ use super::css::{
     NativeFontFamilyValue, NativeGenericFontFamily, font_family_hash,
 };
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 /// The CSS initial font size used by the bounded native text fallback.
@@ -21,6 +21,10 @@ const FONT_PARSE_SCALE: f32 = 40.0;
 const FONT_SHAPE_SCALE: u32 = 64;
 const FALLBACK_GLYPH_ADVANCE: u32 = 8;
 const FALLBACK_LINE_HEIGHT: u32 = 20;
+const MAX_NATIVE_SYSTEM_FONT_FILES: usize = 512;
+const MAX_NATIVE_SYSTEM_FONT_FACES: usize = 64;
+const MAX_NATIVE_SYSTEM_FONT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_NATIVE_SYSTEM_COLLECTION_FACES: u32 = 32;
 
 /// One coverage bitmap and placement produced by the selected font face.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -691,32 +695,266 @@ fn load_system_font_book() -> NativeFontBook {
         let Ok(bytes) = std::fs::read(path) else {
             continue;
         };
-        let Ok(font) = fontdue::Font::from_bytes(
-            bytes.clone(),
-            fontdue::FontSettings {
-                collection_index: 0,
-                scale: FONT_PARSE_SCALE,
-                load_substitutions: true,
-            },
-        ) else {
-            continue;
-        };
-        let font_data: Arc<[u8]> = Arc::from(bytes);
-        let shaper_data = harfrust::FontRef::new(font_data.as_ref())
-            .ok()
-            .map(|font| Arc::new(harfrust::ShaperData::new(&font)));
-        book.faces.push(NativeFontFace {
-            family: family.to_owned(),
-            family_key: font_family_hash(family),
-            generic_family: Some(generic_family),
+        insert_font_face(
+            &mut book,
+            family.to_owned(),
+            Some(generic_family),
             weight,
             style,
-            font: Arc::new(font),
-            font_data,
-            shaper_data,
-        });
+            bytes,
+            0,
+        );
+    }
+
+    let mut discovered_bytes = 0usize;
+    for path in discover_system_font_paths() {
+        if book.faces.len() >= MAX_NATIVE_SYSTEM_FONT_FACES {
+            break;
+        }
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let Ok(file_len) = usize::try_from(metadata.len()) else {
+            continue;
+        };
+        if file_len == 0 || file_len > MAX_NATIVE_FONT_BYTES {
+            continue;
+        }
+        if discovered_bytes.saturating_add(file_len) > MAX_NATIVE_SYSTEM_FONT_BYTES {
+            break;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        discovered_bytes = discovered_bytes.saturating_add(bytes.len());
+        let collection_faces = ttf_parser::fonts_in_collection(&bytes)
+            .unwrap_or(1)
+            .min(MAX_NATIVE_SYSTEM_COLLECTION_FACES);
+        for index in 0..collection_faces {
+            if book.faces.len() >= MAX_NATIVE_SYSTEM_FONT_FACES {
+                break;
+            }
+            let Some((family, generic_family, weight, style)) =
+                discovered_font_metadata(&bytes, index)
+            else {
+                continue;
+            };
+            if book.faces.iter().any(|face| {
+                face.family.eq_ignore_ascii_case(&family)
+                    && face.weight == weight
+                    && face.style == style
+            }) {
+                continue;
+            }
+            insert_font_face(
+                &mut book,
+                family,
+                generic_family,
+                weight,
+                style,
+                bytes.clone(),
+                index,
+            );
+        }
     }
     book
+}
+
+fn insert_font_face(
+    book: &mut NativeFontBook,
+    family: String,
+    generic_family: Option<NativeGenericFontFamily>,
+    weight: FontWeightValue,
+    style: FontStyleValue,
+    bytes: Vec<u8>,
+    collection_index: u32,
+) -> bool {
+    if book.faces.len() >= MAX_NATIVE_SYSTEM_FONT_FACES
+        || bytes.is_empty()
+        || bytes.len() > MAX_NATIVE_FONT_BYTES
+    {
+        return false;
+    }
+    let Ok(font) = fontdue::Font::from_bytes(
+        bytes.clone(),
+        fontdue::FontSettings {
+            collection_index,
+            scale: FONT_PARSE_SCALE,
+            load_substitutions: true,
+        },
+    ) else {
+        return false;
+    };
+    let font_data: Arc<[u8]> = Arc::from(bytes);
+    if book.faces.iter().any(|face| {
+        face.family.eq_ignore_ascii_case(&family)
+            && face.weight == weight
+            && face.style == style
+            && face.font_data == font_data
+    }) {
+        return false;
+    }
+    let shaper_data = harfrust::FontRef::new(font_data.as_ref())
+        .ok()
+        .map(|font| Arc::new(harfrust::ShaperData::new(&font)));
+    book.faces.push(NativeFontFace {
+        family: family.clone(),
+        family_key: font_family_hash(&family),
+        generic_family,
+        weight,
+        style,
+        font: Arc::new(font),
+        font_data,
+        shaper_data,
+    });
+    true
+}
+
+fn discovered_font_metadata(
+    bytes: &[u8],
+    collection_index: u32,
+) -> Option<(
+    String,
+    Option<NativeGenericFontFamily>,
+    FontWeightValue,
+    FontStyleValue,
+)> {
+    let face = ttf_parser::Face::parse(bytes, collection_index).ok()?;
+    let mut family_name: Option<(u8, String)> = None;
+    for name in face.names() {
+        if name.name_id != ttf_parser::name_id::FAMILY
+            && name.name_id != ttf_parser::name_id::TYPOGRAPHIC_FAMILY
+        {
+            continue;
+        }
+        let Some(value) = name.to_string() else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let preferred = u8::from(name.name_id == ttf_parser::name_id::TYPOGRAPHIC_FAMILY);
+        let english = u8::from(name.language().primary_language() == "English");
+        let score = preferred.saturating_mul(2).saturating_add(english);
+        if family_name
+            .as_ref()
+            .is_none_or(|(current_score, _)| score > *current_score)
+        {
+            family_name = Some((score, value.to_owned()));
+        }
+    }
+    let family = family_name?.1;
+    let generic_family = discovered_generic_family(&family);
+    let weight = if face.weight().to_number() >= 600 {
+        FontWeightValue::Bold
+    } else {
+        FontWeightValue::Normal
+    };
+    let style = if face.is_italic() || face.is_oblique() {
+        FontStyleValue::Italic
+    } else {
+        FontStyleValue::Normal
+    };
+    Some((family, generic_family, weight, style))
+}
+
+fn discovered_generic_family(family: &str) -> Option<NativeGenericFontFamily> {
+    let family = family.to_ascii_lowercase();
+    if family.contains("mono") || family.contains("courier") {
+        Some(NativeGenericFontFamily::Monospace)
+    } else if family.contains("serif") || family.contains("times") {
+        Some(NativeGenericFontFamily::Serif)
+    } else if family.contains("sans") || family.contains("arial") {
+        Some(NativeGenericFontFamily::SansSerif)
+    } else {
+        None
+    }
+}
+
+fn system_font_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut add = |path: PathBuf| {
+        if !roots.iter().any(|existing| existing == &path) {
+            roots.push(path);
+        }
+    };
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(home) = dirs::home_dir() {
+            add(home.join(".fonts"));
+            if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+                add(PathBuf::from(data_home).join("fonts"));
+            } else {
+                add(home.join(".local/share/fonts"));
+            }
+        }
+        add(PathBuf::from("/usr/local/share/fonts"));
+        add(PathBuf::from("/usr/share/fonts"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = dirs::home_dir() {
+            add(home.join("Library/Fonts"));
+        }
+        add(PathBuf::from("/Library/Fonts"));
+        add(PathBuf::from("/System/Library/Fonts"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            add(PathBuf::from(local_app_data).join("Microsoft/Windows/Fonts"));
+        }
+        add(PathBuf::from(r"C:\Windows\Fonts"));
+    }
+    roots
+}
+
+fn discover_system_font_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for root in system_font_roots() {
+        collect_system_font_paths(&root, &mut paths);
+    }
+    paths.sort_unstable();
+    paths.dedup();
+    paths.truncate(MAX_NATIVE_SYSTEM_FONT_FILES);
+    paths
+}
+
+fn collect_system_font_paths(root: &Path, paths: &mut Vec<PathBuf>) {
+    if paths.len() >= MAX_NATIVE_SYSTEM_FONT_FILES {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|entry| entry.path());
+    for entry in entries {
+        if paths.len() >= MAX_NATIVE_SYSTEM_FONT_FILES {
+            return;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_system_font_paths(&path, paths);
+        } else if file_type.is_file() && is_discoverable_font_path(&path) {
+            paths.push(path);
+        }
+    }
+}
+
+fn is_discoverable_font_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "ttf" | "otf" | "ttc" | "otc"
+            )
+        })
 }
 
 fn family_matches(family: NativeFontFamilyValue, face: &NativeFontFace) -> bool {
@@ -1023,6 +1261,44 @@ mod tests {
                 )
                 .is_none()
         );
+    }
+
+    #[test]
+    fn system_font_book_discovers_a_non_static_installed_face() {
+        let static_paths = system_font_candidates()
+            .iter()
+            .map(|candidate| Path::new(candidate.0))
+            .collect::<Vec<_>>();
+        let Some((bytes, family, weight, style)) = discover_system_font_paths()
+            .into_iter()
+            .filter(|path| !static_paths.iter().any(|candidate| *candidate == path))
+            .find_map(|path| {
+                let bytes = std::fs::read(path).ok()?;
+                if bytes.is_empty() || bytes.len() > MAX_NATIVE_FONT_BYTES {
+                    return None;
+                }
+                let (family, _, weight, style) = discovered_font_metadata(&bytes, 0)?;
+                let mut probe = NativeFontBook::default();
+                insert_font_face(
+                    &mut probe,
+                    family.clone(),
+                    None,
+                    weight,
+                    style,
+                    bytes.clone(),
+                    0,
+                )
+                .then_some((bytes, family, weight, style))
+            })
+        else {
+            return;
+        };
+        assert!(system_font_book().faces.iter().any(|face| {
+            face.family.eq_ignore_ascii_case(&family)
+                && face.weight == weight
+                && face.style == style
+                && face.font_data.as_ref() == bytes.as_slice()
+        }));
     }
 
     #[test]

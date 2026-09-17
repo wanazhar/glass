@@ -1027,6 +1027,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "ed25519-dalek",
+ "flate2",
  "fontdue",
  "fs2",
  "futures-util",

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-502`, following completed
 `native-engine-browser-501`, following completed
 `native-engine-browser-500`, following completed
 `native-engine-browser-499`, following completed
@@ -206,6 +207,15 @@ first, and admits deterministic family/style matches under explicit file,
 byte, collection, and face limits. Eager discovery cost, variable/color
 tables, WOFF/WOFF2, font-display timing, and complete FontFace/Web IDL parity
 remain issue #40 gates.
+
+The completed WOFF admission follow-up is
+[`native-engine-browser-502`](tasks/native-engine-browser-502.md): bounded WOFF
+1.0 resources are validated, zlib-decompressed when needed, reconstructed as
+SFNT bytes, checksum-repaired, and admitted through the existing raster and
+shaping owners. The page source filter now fails closed for WOFF2, variation,
+color, EOT, and SVG formats that the native renderer does not yet implement.
+Decoded-size limits, WOFF2, variable/color rendering, and complete font-format
+and FontFace/Web IDL parity remain issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

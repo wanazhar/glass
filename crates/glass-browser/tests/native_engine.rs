@@ -47888,7 +47888,7 @@ async fn native_content_process_loads_blob_object_url_image_subresources() {
         assert_eq!(request.split_whitespace().nth(1), Some("/page"));
         let body = "<img id='image' width='2' height='2'><div id='surface' style='width:2px;height:2px'></div><script>globalThis.imageLoaded = 0; document.getElementById('image').addEventListener('load', () => { globalThis.imageLoaded = 1; });</script>";
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: script-src 'unsafe-inline'; img-src blob:\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(response.as_bytes()).await.unwrap();
@@ -47932,6 +47932,56 @@ async fn native_content_process_loads_blob_object_url_image_subresources() {
             .filter(|command| matches!(command, NativeDisplayCommand::Image { .. }))
             .count(),
         2
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_blocks_csp_disallowed_blob_image_subresources() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<img id='image' width='2' height='2'><script>globalThis.imageError = 0; document.getElementById('image').addEventListener('error', () => { globalThis.imageError += 1; });</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: script-src 'unsafe-inline'; img-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { const image = document.getElementById('image'); const url = URL.createObjectURL(new Blob(['<svg xmlns=\\\"http://www.w3.org/2000/svg\\\" width=\\\"2\\\" height=\\\"2\\\"></svg>'], { type: 'image/svg+xml' })); image.src = url; return true; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [image.complete, image.naturalWidth, image.naturalHeight, imageError]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 0, 0, 1])
+    );
+    assert!(
+        !engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeDisplayCommand::Image { .. }))
     );
 
     engine.close_async().await.unwrap();

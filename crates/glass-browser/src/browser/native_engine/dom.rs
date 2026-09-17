@@ -6330,9 +6330,10 @@ impl NativeDocument {
                 style.font_size(),
                 style.font_weight(),
                 style.font_style(),
+                style.direction(),
             )
         } else {
-            NativeTextMetrics::fallback(style.font_size())
+            NativeTextMetrics::fallback_with_direction(style.font_size(), style.direction())
         }
     }
 

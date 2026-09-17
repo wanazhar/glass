@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-487`, following completed
 `native-engine-browser-486`, following completed
 `native-engine-browser-485`, following completed
 `native-engine-browser-484`, following completed
@@ -518,16 +519,26 @@ bidi, and complete text-rendering parity remained issue #40 work at that
 checkpoint.
 
 Slice `native-engine-browser-486` adds HarfRust shaping for explicit supported
-system faces. LTR runs now retain HarfRust's cluster order, glyph IDs, and
+system faces. Horizontal LTR runs now retain HarfRust's cluster order, glyph IDs, and
 fractional advances, apply spacing at shaped cluster boundaries, rasterize
 the selected IDs through fontdue's indexed path, and preserve whitespace
 ranges for justification and decoration. If either parser cannot safely
 admit a face or a run has unsupported directionality, the existing
 character-by-character fontdue path remains the bounded recovery path.
-Font fallback across missing glyphs, direction and writing-mode propagation,
-full bidi and language/script negotiation, `@font-face` resources, variable
-font selection, grapheme-safe line breaking, and complete text-rendering
-parity remain issue #40 work.
+Font fallback across missing glyphs, mixed bidi and language/script
+negotiation, `@font-face` resources, variable-font selection, grapheme-safe
+line breaking, and complete text-rendering parity remain issue #40 work.
+
+Slice `native-engine-browser-487` threads the already-cascaded CSS
+`direction:ltr|rtl` value into native text metrics. Horizontal RTL runs now
+shape with HarfRust's right-to-left cluster order, mirror glyph positions into
+the left-origin display-list coordinate system, and preserve mirrored
+whitespace ranges for decoration and justification; LTR behavior remains
+unchanged. The fixed-cell fallback also retains the direction value for the
+existing alignment owner. Mixed-direction bidi segmentation, Unicode bidi
+reordering, vertical writing modes, language/script negotiation, font fallback
+across missing glyphs, and complete text-rendering parity remain issue #40
+work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

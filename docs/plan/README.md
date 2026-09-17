@@ -353,6 +353,17 @@ glyphs, direction/writing-mode propagation, full bidi and language/script
 negotiation, `@font-face` resources, variable-font selection, grapheme-safe
 line breaking, and complete text-rendering parity remain issue #40 gates.
 
+The completed CSS-direction shaping follow-up is
+[`native-engine-browser-487`](tasks/native-engine-browser-487.md): the
+already-cascaded `direction:ltr|rtl` value now reaches native text metrics.
+Horizontal RTL runs use HarfRust's reverse cluster order and mirrored
+left-origin glyph coordinates, including mirrored whitespace ranges for
+decoration and justification; LTR runs remain unchanged. The fixed-cell
+fallback retains the direction for existing alignment behavior. Mixed bidi
+segmentation, Unicode bidi reordering, vertical writing modes,
+language/script negotiation, missing-glyph font fallback, and complete
+text-rendering parity remain issue #40 gates.
+
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and
 dynamic local media plus HTTP(S) content-process media now admit bounded

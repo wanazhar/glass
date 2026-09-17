@@ -1,4 +1,4 @@
-use super::config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_VIEWPORT_DIMENSION};
+use super::config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_VIEWPORT_DIMENSION, Viewport};
 use super::diagnostics::{NativeDiagnosticCode, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::dom::{NativeDocument, NativeNode, NativeNodeId};
 use super::error::NativeEngineError;
@@ -8581,15 +8581,23 @@ pub(crate) fn absolutize_file_stylesheet_urls(
     rewritten
 }
 
-/// Return literal CSS `@import` statements as `(start, end, specifier)`
-/// spans. The caller owns URL resolution and graph limits; this pass only
-/// discovers bounded quoted or `url(...)` targets outside comments/strings.
-/// A malformed import is rejected instead of being silently left for the
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeCssImport {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) specifier: String,
+    pub(crate) layer: Option<String>,
+    pub(crate) supports: Option<String>,
+    pub(crate) media: Option<String>,
+}
+
+/// Return literal CSS `@import` statements with their bounded conditional
+/// preludes. The caller owns URL resolution and graph limits; this pass only
+/// discovers quoted or `url(...)` targets outside comments/strings. A
+/// malformed import is rejected instead of being silently left for the
 /// ordinary CSS parser, so a rooted stylesheet cannot partially apply around
 /// a failed dependency.
-pub(crate) fn static_css_imports(
-    source: &str,
-) -> Result<Vec<(usize, usize, String)>, &'static str> {
+pub(crate) fn static_css_imports(source: &str) -> Result<Vec<NativeCssImport>, &'static str> {
     let bytes = source.as_bytes();
     let mut imports = Vec::new();
     let mut cursor = 0usize;
@@ -8610,9 +8618,17 @@ pub(crate) fn static_css_imports(
             && (keyword_end == bytes.len() || !is_css_identifier_byte(bytes[keyword_end]))
             && let Some(statement_end) = css_statement_end(bytes, keyword_end)
         {
-            let specifier = css_import_specifier(&source[keyword_end..statement_end])
-                .ok_or("CSS @import statement has no supported literal URL")?;
-            imports.push((cursor, statement_end + 1, specifier));
+            let (specifier, layer, supports, media) =
+                css_import_parts(&source[keyword_end..statement_end], cursor)
+                    .ok_or("CSS @import statement has no supported literal URL")?;
+            imports.push(NativeCssImport {
+                start: cursor,
+                end: statement_end + 1,
+                specifier,
+                layer,
+                supports,
+                media,
+            });
             cursor = statement_end + 1;
             continue;
         }
@@ -8677,42 +8693,501 @@ fn css_statement_end(bytes: &[u8], start: usize) -> Option<usize> {
     None
 }
 
-fn css_import_specifier(statement: &str) -> Option<String> {
-    let statement = statement.trim_start();
-    if statement.is_empty() {
+fn css_import_parts(
+    statement: &str,
+    import_start: usize,
+) -> Option<(String, Option<String>, Option<String>, Option<String>)> {
+    let bytes = statement.as_bytes();
+    let start = css_skip_whitespace_and_comments(bytes, 0)?;
+    if start >= bytes.len() {
         return None;
     }
-    if matches!(statement.as_bytes().first(), Some(b'\'' | b'"')) {
-        let end = css_quoted_end(statement.as_bytes(), 0);
-        if end <= 1
-            || statement.as_bytes().get(end.saturating_sub(1)) != statement.as_bytes().first()
-        {
+    let (specifier, tail_start) = if matches!(bytes[start], b'\'' | b'"') {
+        let quote = bytes[start];
+        let end = css_quoted_end(bytes, start);
+        if end <= start + 1 || bytes.get(end.saturating_sub(1)) != Some(&quote) {
             return None;
         }
-        return Some(statement[1..end - 1].to_owned());
-    }
-    let open = css_url_function_open(statement.as_bytes(), 0)?;
-    let close = css_url_function_close(statement.as_bytes(), open + 1)?;
-    let mut value_start = open + 1;
-    while value_start < close && statement.as_bytes()[value_start].is_ascii_whitespace() {
-        value_start += 1;
-    }
-    let mut value_end = close;
-    while value_end > value_start && statement.as_bytes()[value_end - 1].is_ascii_whitespace() {
-        value_end -= 1;
-    }
-    if value_start == value_end {
-        return None;
-    }
-    let token = &statement[value_start..value_end];
-    if matches!(token.as_bytes().first(), Some(b'\'' | b'"')) {
-        if token.len() < 2 || token.as_bytes().last() != token.as_bytes().first() {
-            return None;
-        }
-        Some(token[1..token.len() - 1].to_owned())
+        (statement[start + 1..end - 1].to_owned(), end)
     } else {
-        Some(token.to_owned())
+        let open = css_url_function_open(bytes, start)?;
+        let close = css_url_function_close(bytes, open + 1)?;
+        let mut value_start = open + 1;
+        while value_start < close && bytes[value_start].is_ascii_whitespace() {
+            value_start += 1;
+        }
+        let mut value_end = close;
+        while value_end > value_start && bytes[value_end - 1].is_ascii_whitespace() {
+            value_end -= 1;
+        }
+        if value_start == value_end {
+            return None;
+        }
+        let token = &statement[value_start..value_end];
+        let specifier = if matches!(token.as_bytes().first(), Some(b'\'' | b'"')) {
+            if token.len() < 2 || token.as_bytes().last() != token.as_bytes().first() {
+                return None;
+            }
+            token[1..token.len() - 1].to_owned()
+        } else {
+            token.to_owned()
+        };
+        (specifier, close + 1)
+    };
+    let mut cursor = css_skip_whitespace_and_comments(bytes, tail_start)?;
+    let mut layer = None;
+    if css_keyword_at(bytes, cursor, b"layer") {
+        cursor = cursor.saturating_add(b"layer".len());
+        let after_keyword = css_skip_whitespace_and_comments(bytes, cursor)?;
+        if bytes.get(after_keyword) == Some(&b'(') {
+            let close = css_parenthesized_end(bytes, after_keyword)?;
+            let name_source = statement[after_keyword + 1..close].trim();
+            let (name, next) = read_identifier(name_source, 0)?;
+            if next != name_source.len() {
+                return None;
+            }
+            layer = Some(name);
+            cursor = close + 1;
+        } else {
+            layer = Some(format!("__native_import_layer_{import_start}"));
+            cursor = after_keyword;
+        }
     }
+    cursor = css_skip_whitespace_and_comments(bytes, cursor)?;
+    let mut supports = None;
+    if css_keyword_at(bytes, cursor, b"supports") {
+        cursor = cursor.saturating_add(b"supports".len());
+        let open = css_skip_whitespace_and_comments(bytes, cursor)?;
+        if bytes.get(open) != Some(&b'(') {
+            return None;
+        }
+        let close = css_parenthesized_end(bytes, open)?;
+        let condition = statement[open + 1..close].trim();
+        if condition.is_empty() {
+            return None;
+        }
+        supports = Some(condition.to_owned());
+        cursor = close + 1;
+    }
+    cursor = css_skip_whitespace_and_comments(bytes, cursor)?;
+    let media = (cursor < bytes.len()).then(|| statement[cursor..].trim().to_owned());
+    Some((specifier, layer, supports, media))
+}
+
+fn css_skip_whitespace_and_comments(bytes: &[u8], mut cursor: usize) -> Option<usize> {
+    loop {
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if bytes.get(cursor..cursor.saturating_add(2)) != Some(b"/*") {
+            return Some(cursor);
+        }
+        let end = bytes[cursor + 2..]
+            .windows(2)
+            .position(|window| window == b"*/")?;
+        cursor = cursor + 2 + end + 2;
+    }
+}
+
+fn css_parenthesized_end(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut cursor = open;
+    while cursor < bytes.len() {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if bytes[cursor] == b'\\' {
+                escaped = true;
+            } else if bytes[cursor] == delimiter {
+                quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if bytes.get(cursor..cursor.saturating_add(2)) == Some(b"/*") {
+            let end = bytes[cursor + 2..]
+                .windows(2)
+                .position(|window| window == b"*/")?;
+            cursor = cursor + 2 + end + 2;
+            continue;
+        }
+        match bytes[cursor] {
+            b'\'' | b'"' => quote = Some(bytes[cursor]),
+            b'(' => depth = depth.checked_add(1)?,
+            b')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(cursor);
+                }
+            }
+            b'\\' => cursor = cursor.saturating_add(1),
+            _ => {}
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn css_keyword_at(bytes: &[u8], start: usize, keyword: &[u8]) -> bool {
+    let Some(end) = start.checked_add(keyword.len()) else {
+        return false;
+    };
+    end <= bytes.len()
+        && bytes[start..end].eq_ignore_ascii_case(keyword)
+        && (start == 0 || !is_css_identifier_byte(bytes[start - 1]))
+        && (end == bytes.len() || !is_css_identifier_byte(bytes[end]))
+}
+
+/// Return whether a parsed import's bounded media and feature conditions are
+/// active for the native viewport. Unknown media features or unsupported
+/// declarations remain inactive instead of granting an import capability.
+pub(crate) fn css_import_matches(import: &NativeCssImport, viewport: Viewport) -> bool {
+    import
+        .supports
+        .as_deref()
+        .is_none_or(css_supports_condition_matches)
+        && import
+            .media
+            .as_deref()
+            .is_none_or(|media| css_media_list_matches(media, viewport))
+}
+
+fn css_media_list_matches(source: &str, viewport: Viewport) -> bool {
+    let Some(queries) = css_top_level_segments(source, b',') else {
+        return false;
+    };
+    queries
+        .into_iter()
+        .any(|query| css_media_query_matches(query.trim(), viewport))
+}
+
+fn css_media_query_matches(source: &str, viewport: Viewport) -> bool {
+    let Some(words) = css_top_level_words(source) else {
+        return false;
+    };
+    if words.is_empty() {
+        return false;
+    }
+    let mut cursor = 0usize;
+    let mut invert = false;
+    if words[cursor].eq_ignore_ascii_case("not") {
+        invert = true;
+        cursor += 1;
+    } else if words[cursor].eq_ignore_ascii_case("only") {
+        cursor += 1;
+    }
+    if cursor >= words.len() {
+        return false;
+    }
+    let mut matches = true;
+    if !words[cursor].starts_with('(') {
+        matches = matches!(
+            words[cursor].to_ascii_lowercase().as_str(),
+            "all" | "screen"
+        );
+        cursor += 1;
+    }
+    while cursor < words.len() {
+        if !words[cursor].eq_ignore_ascii_case("and") {
+            return false;
+        }
+        cursor += 1;
+        let Some(feature) = words.get(cursor) else {
+            return false;
+        };
+        matches &= css_media_feature_matches(feature, viewport);
+        cursor += 1;
+    }
+    if invert { !matches } else { matches }
+}
+
+fn css_media_feature_matches(source: &str, viewport: Viewport) -> bool {
+    let Some(feature) = source
+        .strip_prefix('(')
+        .and_then(|source| source.strip_suffix(')'))
+    else {
+        return false;
+    };
+    let Some((name, value)) = feature.split_once(':') else {
+        return matches!(feature.trim().to_ascii_lowercase().as_str(), "color");
+    };
+    let name = name.trim().to_ascii_lowercase();
+    let value = value.trim().to_ascii_lowercase();
+    match name.as_str() {
+        "min-width" => css_media_length(&value).is_some_and(|value| viewport.width >= value),
+        "max-width" => css_media_length(&value).is_some_and(|value| viewport.width <= value),
+        "min-height" => css_media_length(&value).is_some_and(|value| viewport.height >= value),
+        "max-height" => css_media_length(&value).is_some_and(|value| viewport.height <= value),
+        "orientation" => match value.as_str() {
+            "landscape" => viewport.width >= viewport.height,
+            "portrait" => viewport.width < viewport.height,
+            _ => false,
+        },
+        "prefers-color-scheme" => value == "light",
+        _ => false,
+    }
+}
+
+fn css_media_length(value: &str) -> Option<u32> {
+    let value = value.strip_suffix("px").map_or(value, str::trim).trim();
+    value.parse().ok()
+}
+
+fn css_supports_condition_matches(source: &str) -> bool {
+    fn evaluate(source: &str, depth: usize) -> bool {
+        if depth > 32 {
+            return false;
+        }
+        let source = source.trim();
+        if source.is_empty() {
+            return false;
+        }
+        if let Some(parts) = css_split_top_level_keyword(source, "or") {
+            return parts.into_iter().any(|part| evaluate(part, depth + 1));
+        }
+        if let Some(parts) = css_split_top_level_keyword(source, "and") {
+            return parts.into_iter().all(|part| evaluate(part, depth + 1));
+        }
+        if source
+            .get(..3)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("not"))
+            && source
+                .as_bytes()
+                .get(3)
+                .is_some_and(u8::is_ascii_whitespace)
+        {
+            return !evaluate(&source[4..], depth + 1);
+        }
+        if let Some(inner) = css_outer_parentheses(source) {
+            return evaluate(inner, depth + 1);
+        }
+        supports_css_declaration(source)
+    }
+
+    evaluate(source, 0)
+}
+
+fn supports_css_declaration(source: &str) -> bool {
+    let declarations = split_css_declarations(source);
+    if declarations
+        .iter()
+        .filter(|(_, declaration)| !declaration.trim().is_empty())
+        .count()
+        != 1
+    {
+        return false;
+    }
+    let mut diagnostics = NativeDiagnosticSink::default();
+    let _ = parse_declarations_with_diagnostics(
+        source,
+        NativeDiagnosticSource::Stylesheet { index: 0 },
+        0,
+        &mut diagnostics,
+    );
+    let (diagnostics, truncated) = diagnostics.finish();
+    !truncated && diagnostics.is_empty()
+}
+
+fn css_outer_parentheses(source: &str) -> Option<&str> {
+    let source = source.trim();
+    if !source.starts_with('(') {
+        return None;
+    }
+    let close = css_parenthesized_end(source.as_bytes(), 0)?;
+    (close == source.len().saturating_sub(1)).then(|| source[1..close].trim())
+}
+
+fn css_split_top_level_keyword<'a>(source: &'a str, keyword: &str) -> Option<Vec<&'a str>> {
+    let bytes = source.as_bytes();
+    let keyword = keyword.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if bytes[cursor] == b'\\' {
+                escaped = true;
+            } else if bytes[cursor] == delimiter {
+                quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if bytes.get(cursor..cursor.saturating_add(2)) == Some(b"/*") {
+            let end = bytes[cursor + 2..]
+                .windows(2)
+                .position(|window| window == b"*/")?;
+            cursor = cursor + 2 + end + 2;
+            continue;
+        }
+        match bytes[cursor] {
+            b'\'' | b'"' => quote = Some(bytes[cursor]),
+            b'(' => depth = depth.checked_add(1)?,
+            b')' => depth = depth.checked_sub(1)?,
+            _ => {}
+        }
+        if depth == 0
+            && cursor + keyword.len() <= bytes.len()
+            && bytes[cursor..cursor + keyword.len()].eq_ignore_ascii_case(keyword)
+            && (cursor == 0 || bytes[cursor - 1].is_ascii_whitespace())
+            && (cursor + keyword.len() == bytes.len()
+                || bytes[cursor + keyword.len()].is_ascii_whitespace())
+        {
+            let part = source[start..cursor].trim();
+            if part.is_empty() {
+                return None;
+            }
+            parts.push(part);
+            cursor += keyword.len();
+            start = cursor;
+            continue;
+        }
+        if bytes[cursor] == b'\\' {
+            cursor = cursor.saturating_add(1);
+        } else {
+            cursor += 1;
+        }
+    }
+    if quote.is_some() || depth != 0 {
+        return None;
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let part = source[start..].trim();
+    (!part.is_empty()).then(|| {
+        parts.push(part);
+        parts
+    })
+}
+
+fn css_top_level_segments(source: &str, separator: u8) -> Option<Vec<&str>> {
+    let bytes = source.as_bytes();
+    let mut segments = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if bytes[cursor] == b'\\' {
+                escaped = true;
+            } else if bytes[cursor] == delimiter {
+                quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if bytes.get(cursor..cursor.saturating_add(2)) == Some(b"/*") {
+            let end = bytes[cursor + 2..]
+                .windows(2)
+                .position(|window| window == b"*/")?;
+            cursor = cursor + 2 + end + 2;
+            continue;
+        }
+        match bytes[cursor] {
+            b'\'' | b'"' => quote = Some(bytes[cursor]),
+            b'(' => depth = depth.checked_add(1)?,
+            b')' => depth = depth.checked_sub(1)?,
+            value if value == separator && depth == 0 => {
+                let segment = source[start..cursor].trim();
+                if segment.is_empty() {
+                    return None;
+                }
+                segments.push(segment);
+                start = cursor + 1;
+            }
+            _ => {}
+        }
+        if bytes[cursor] == b'\\' {
+            cursor = cursor.saturating_add(1);
+        } else {
+            cursor += 1;
+        }
+    }
+    if quote.is_some() || depth != 0 {
+        return None;
+    }
+    let segment = source[start..].trim();
+    if segment.is_empty() {
+        return None;
+    }
+    segments.push(segment);
+    Some(segments)
+}
+
+fn css_top_level_words(source: &str) -> Option<Vec<&str>> {
+    let bytes = source.as_bytes();
+    let mut words = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if bytes[cursor] == b'\\' {
+                escaped = true;
+            } else if bytes[cursor] == delimiter {
+                quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if bytes.get(cursor..cursor.saturating_add(2)) == Some(b"/*") {
+            let end = bytes[cursor + 2..]
+                .windows(2)
+                .position(|window| window == b"*/")?;
+            if depth == 0 && start < cursor {
+                words.push(source[start..cursor].trim());
+            }
+            cursor = cursor + 2 + end + 2;
+            start = cursor;
+            continue;
+        }
+        match bytes[cursor] {
+            b'\'' | b'"' => quote = Some(bytes[cursor]),
+            b'(' => depth = depth.checked_add(1)?,
+            b')' => depth = depth.checked_sub(1)?,
+            byte if byte.is_ascii_whitespace() && depth == 0 => {
+                if start < cursor {
+                    words.push(source[start..cursor].trim());
+                }
+                cursor += 1;
+                while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+                start = cursor;
+                continue;
+            }
+            _ => {}
+        }
+        if bytes[cursor] == b'\\' {
+            cursor = cursor.saturating_add(1);
+        } else {
+            cursor += 1;
+        }
+    }
+    if quote.is_some() || depth != 0 {
+        return None;
+    }
+    if start < bytes.len() {
+        words.push(source[start..].trim());
+    }
+    words.retain(|word| !word.is_empty());
+    Some(words)
 }
 
 fn file_stylesheet_base_url(document_url: &str, stylesheet_href: &str) -> Option<Url> {
@@ -11015,13 +11490,45 @@ mod tests {
         assert_eq!(
             imports
                 .into_iter()
-                .map(|(_, _, specifier)| specifier)
+                .map(|import| import.specifier)
                 .collect::<Vec<_>>(),
             vec!["theme.css", "nested.css"]
         );
         assert!(static_css_imports("@import 'missing-semicolon.css'").is_err());
         assert!(static_css_imports("@import url(\"unterminated.css); ").is_err());
         assert!(static_css_imports("@import unsupported.css;").is_err());
+    }
+
+    #[test]
+    fn css_import_conditions_parse_and_match_native_viewport() {
+        let imports = static_css_imports(
+            "@import 'wide.css' layer(theme) supports((display: grid) and (color: red)) screen and (min-width: 1000px); @import url(narrow.css) screen and (max-width: 600px); @import 'print.css' print;",
+        )
+        .unwrap();
+        assert_eq!(imports.len(), 3);
+        assert_eq!(imports[0].layer.as_deref(), Some("theme"));
+        assert_eq!(
+            imports[0].supports.as_deref(),
+            Some("(display: grid) and (color: red)")
+        );
+        assert_eq!(
+            imports[0].media.as_deref(),
+            Some("screen and (min-width: 1000px)")
+        );
+        assert!(css_import_matches(&imports[0], Viewport::default()));
+        assert!(!css_import_matches(
+            &imports[0],
+            Viewport {
+                width: 800,
+                ..Viewport::default()
+            }
+        ));
+        assert!(!css_import_matches(&imports[1], Viewport::default()));
+        assert!(!css_import_matches(&imports[2], Viewport::default()));
+
+        let anonymous =
+            static_css_imports("@import 'a.css' layer; @import 'b.css' layer;").unwrap();
+        assert_ne!(anonymous[0].layer, anonymous[1].layer);
     }
 
     #[test]
@@ -11036,7 +11543,7 @@ mod tests {
         );
         let escaped_closing_parenthesis =
             static_css_imports(r"@import url(foo\)bar.css);").unwrap();
-        assert_eq!(escaped_closing_parenthesis[0].2, r"foo\)bar.css");
+        assert_eq!(escaped_closing_parenthesis[0].specifier, r"foo\)bar.css");
         assert_eq!(
             decode_css_url_value("line\\\ncontinued"),
             Some("linecontinued".into())

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-481`, following completed
 `native-engine-browser-480`, following completed
 `native-engine-browser-479`, following completed
 `native-engine-browser-478`, following completed
@@ -457,9 +458,19 @@ line continuations in `url(...)` and literal `@import` targets are decoded
 before URL resolution; an escaped closing parenthesis remains part of an
 unquoted token, and invalid trailing escapes fail closed. The existing
 canonical file-root, stylesheet URL-base, and background-image owners remain
-unchanged for non-file stylesheets. Import media/layer/supports evaluation,
-file fonts, other CSS resource types, network stylesheet URL-base parity,
-complete file-origin semantics, and full Web IDL parity remain issue #40 work.
+unchanged for non-file stylesheets.
+
+Slice `native-engine-browser-481` closes bounded CSS `@import` condition
+evaluation for rooted file stylesheets. Initial and dynamic file stylesheet
+graphs now retain `layer(...)`, `supports(...)`, and media preludes; active
+imports evaluate the configured screen viewport, supported declaration
+conditions, and simple named or anonymous cascade layers before admitting a
+dependency. Inactive imports are skipped before root resolution, so a missing
+resource behind `print`, an unmatched viewport feature, or an unsupported
+declaration cannot fail the owning stylesheet. Complex media features,
+complete CSS Supports/layer grammar, file fonts and other CSS resource types,
+network stylesheet URL-base parity, complete file-origin semantics, and full
+Web IDL parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

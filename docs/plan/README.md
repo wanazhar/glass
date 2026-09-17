@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-481`, following completed
 `native-engine-browser-480`, following completed
 `native-engine-browser-479`, following completed
 `native-engine-browser-478`, following completed
@@ -282,8 +283,17 @@ The completed escaped-CSS-URL follow-up is
 stylesheet `url(...)` and literal `@import` targets now decode bounded CSS
 hex/simple escapes and line continuations before URL resolution, while escaped
 closing parentheses remain inside unquoted tokens and invalid trailing escapes
-fail closed. Non-file stylesheet owners retain their existing path. Import
-media/layer/supports evaluation, file fonts, other CSS resource types, network
+fail closed. Non-file stylesheet owners retain their existing path.
+
+The completed bounded-`@import`-conditions follow-up is
+[`native-engine-browser-481`](tasks/native-engine-browser-481.md): rooted file
+stylesheet graphs now retain and evaluate simple screen/all/print media
+queries, viewport width/height and orientation features, bounded logical
+`supports(...)` declaration conditions, and named or anonymous `layer`
+preludes for both initial and dynamic stylesheets. Inactive imports are
+skipped before dependency root admission, and active layered imports are
+wrapped in the existing cascade-layer owner. Complex media features, full
+CSS Supports/layer grammar, file fonts and other CSS resource types, network
 stylesheet URL-base parity, complete file-origin semantics, and complete Web
 IDL parity remain issue #40 gates.
 

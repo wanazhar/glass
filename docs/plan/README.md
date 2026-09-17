@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-456`, following completed
 `native-engine-browser-455`, following completed
 `native-engine-browser-454`, following completed
 `native-engine-browser-453`, following completed
@@ -90,8 +91,14 @@ later reads fail. The completed top-level navigation follow-up is
 [native-engine-browser-455](tasks/native-engine-browser-455.md): same-realm
 page navigation snapshots a bounded Blob document, carries it through the
 content-process worker when needed, derives the creator origin, and commits a
-fresh document realm. Generic image, stylesheet, script, and cross-realm
-object-URL subresources remain issue #40 gates.
+fresh document realm. At the 455 checkpoint, generic image, stylesheet, script,
+and cross-realm object-URL subresources remained issue #40 gates. The completed
+image follow-up is [native-engine-browser-456](tasks/native-engine-browser-456.md):
+process-backed page mutations can load a runtime-verified Blob URL into
+`<img>` and CSS background image consumers through the existing bounded image
+decoder and event/paint path, without network fallback or HTTP cache reuse.
+Stylesheet, script, media, popup/window, and cross-realm object-URL consumers
+remain issue #40 gates.
 
 The completed report-only navigation preflight slice is
 [native-engine-browser-413](tasks/native-engine-browser-413.md): the

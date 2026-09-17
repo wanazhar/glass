@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-456`, following completed
 `native-engine-browser-455`, following completed
 `native-engine-browser-454`, following completed
 `native-engine-browser-453`, following completed
@@ -259,7 +260,13 @@ same-realm page navigation snapshots the bounded Blob bytes, transfers the
 validated payload through the content-process boundary when present, derives
 the destination origin from the Blob creator URL, and commits a fresh document
 realm. Generic image, stylesheet, script, and cross-realm object-URL
-subresources remain separate resource-owner work.
+subresources remain separate resource-owner work. Slice 456 closes the page
+image portion of that boundary for process-backed documents: runtime-verified
+Blob URLs can feed `<img>` and CSS background image consumers, preserving the
+existing MIME decoder, intrinsic dimensions, paint resource, and load/error
+event path without entering network transport or the HTTP image cache.
+Stylesheet, script, media, popup/window, and cross-realm object-URL consumers
+remain separate resource-owner work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

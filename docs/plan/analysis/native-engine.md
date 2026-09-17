@@ -290,6 +290,11 @@ tokens such as `REPORT` through the native method owner and loader, while
 XHR-specific invalid/forbidden errors, body, timeout, and response-state rules
 remain explicit. Document navigation/form methods stay closed; complete XHR
 Web IDL parity and the broader browser matrix remain issue #40 work.
+Slice 453 closes the page/worker `URLSearchParams.has(name, value)` parity gap.
+Both realm implementations now honor the optional value filter while retaining
+name-only lookup, insertion order, live URL synchronization, and bounded
+entry/value limits. Complete URLSearchParams Web IDL descriptor and encoding
+parity remain issue #40 work.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

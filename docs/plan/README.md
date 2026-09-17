@@ -71,6 +71,13 @@ lookup, ownership, read-only behavior, and serialization. HTML document
 responses, non-UTF encodings, external entities, streaming XML, and complete
 XML/Web IDL parity remain issue #40 gates.
 
+The completed URLSearchParams value-filter slice is
+[native-engine-browser-453](tasks/native-engine-browser-453.md): page and
+worker `URLSearchParams.has(name, value)` now distinguish matching and
+non-matching values, aligning both realms while preserving name-only lookup,
+live URL synchronization, insertion order, and bounded limits. Complete URL
+SearchParams Web IDL descriptor and encoding parity remain issue #40 gates.
+
 The completed report-only navigation preflight slice is
 [native-engine-browser-413](tasks/native-engine-browser-413.md): the
 process-backed child reports its live `navigate-to` observations through a

@@ -26696,9 +26696,11 @@ fn document_bootstrap(
     const key = String(name);
     return this._entries.filter(entry => entry[0] === key).map(entry => entry[1]);
   }};
-  URLSearchParamsNative.prototype.has = function(name) {{
+  URLSearchParamsNative.prototype.has = function(name, value) {{
     const key = String(name);
-    return this._entries.some(entry => entry[0] === key);
+    return arguments.length < 2
+      ? this._entries.some(entry => entry[0] === key)
+      : this._entries.some(entry => entry[0] === key && entry[1] === String(value));
   }};
   Object.defineProperty(URLSearchParamsNative.prototype, "size", {{
     get() {{ return this._entries.length; }},

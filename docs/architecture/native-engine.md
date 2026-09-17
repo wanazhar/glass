@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-455`, following completed
 `native-engine-browser-454`, following completed
 `native-engine-browser-453`, following completed
 `native-engine-browser-452`, following completed
@@ -252,7 +253,13 @@ Slice 454 adds bounded realm-owned Blob object URLs. Page and worker
 native Fetch and synchronous/asynchronous XHR serve GET and HEAD reads from the
 same registry, and `revokeObjectURL()` releases the entry. The registry is
 bounded and revocation causes later reads to fail. Navigation and generic
-subresource object-URL loading remain separate resource-owner work.
+subresource object-URL loading were separate resource-owner work at that
+checkpoint. Slice 455 closes the top-level navigation part of that gap: a
+same-realm page navigation snapshots the bounded Blob bytes, transfers the
+validated payload through the content-process boundary when present, derives
+the destination origin from the Blob creator URL, and commits a fresh document
+realm. Generic image, stylesheet, script, and cross-realm object-URL
+subresources remain separate resource-owner work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

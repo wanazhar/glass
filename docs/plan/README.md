@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-455`, following completed
 `native-engine-browser-454`, following completed
 `native-engine-browser-453`, following completed
 `native-engine-browser-452`, following completed
@@ -85,8 +86,12 @@ The completed Blob object-URL slice is
 worker `URL.createObjectURL()` retain bounded Blob bytes behind an origin-
 labelled `blob:` URL, and native Fetch plus synchronous/asynchronous XHR serve
 GET/HEAD reads from that registry. `revokeObjectURL()` removes the entry and
-later reads fail. Navigation and generic subresource object-URL loading remain
-separate issue #40 gates.
+later reads fail. The completed top-level navigation follow-up is
+[native-engine-browser-455](tasks/native-engine-browser-455.md): same-realm
+page navigation snapshots a bounded Blob document, carries it through the
+content-process worker when needed, derives the creator origin, and commits a
+fresh document realm. Generic image, stylesheet, script, and cross-realm
+object-URL subresources remain issue #40 gates.
 
 The completed report-only navigation preflight slice is
 [native-engine-browser-413](tasks/native-engine-browser-413.md): the

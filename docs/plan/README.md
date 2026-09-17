@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-477`, following completed
 `native-engine-browser-476`, following completed
 `native-engine-browser-475`, following completed
 `native-engine-browser-474`, following completed
@@ -237,9 +238,21 @@ against the stylesheet's own file URL before the existing CSS cascade and
 background-image resource path. Nested stylesheet/image directories therefore
 use the same allowed-root, integrity, size, and native decode/paint owners;
 comments and quoted non-URL text are preserved, and non-file owners are
-unchanged. CSS `@import`, file fonts, other CSS resource types, URL escape
-grammar, network stylesheet URL-base parity, complete file-origin semantics,
-and complete Web IDL parity remain issue #40 gates.
+unchanged. File fonts, other CSS resource types, URL escape grammar, network
+stylesheet URL-base parity, complete file-origin semantics, and complete Web
+IDL parity remain issue #40 gates.
+
+The completed rooted-file-CSS-import-graph follow-up is
+[`native-engine-browser-477`](tasks/native-engine-browser-477.md): static and
+dynamic rooted file stylesheets now expand bounded literal quoted or `url(...)`
+`@import` dependencies at their cascade positions, with each source retaining
+its own stylesheet URL base. Duplicate imports are admitted once, cycles
+terminate, aggregate bytes and graph entries are bounded, and malformed,
+missing, credential-bearing, unsupported, or out-of-root dependencies fail the
+owning stylesheet closed. Media/layer/supports import conditions, escaped CSS
+URL grammar, file fonts, other CSS resource types, network stylesheet URL-base
+parity, complete file-origin semantics, and complete Web IDL parity remain
+issue #40 gates.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-477`, following completed
 `native-engine-browser-476`, following completed
 `native-engine-browser-475`, following completed
 `native-engine-browser-474`, following completed
@@ -413,9 +414,21 @@ relative `url(...)` tokens against the stylesheet's own file URL before the
 existing cascade creates background-image source identities, so nested
 stylesheet/image directories load through the same configured-root checks and
 native decoder/paint state. Comments and quoted non-URL text are preserved;
-non-file owners retain their existing path. CSS `@import`, file fonts, other
-CSS resource types, URL escape grammar, network stylesheet URL-base parity,
-complete file-origin semantics, and full Web IDL parity remain issue #40 work.
+non-file owners retain their existing path. File fonts, other CSS resource
+types, URL escape grammar, network stylesheet URL-base parity, complete
+file-origin semantics, and full Web IDL parity remain issue #40 work.
+
+Slice `native-engine-browser-477` closes bounded rooted-file CSS import graphs.
+Static and dynamic file stylesheets now discover literal quoted or `url(...)`
+`@import` dependencies, recursively insert them at import positions, and
+canonicalize each imported source against its own file URL before CSS parsing.
+Duplicate imports are admitted once, cycles terminate, graph entries and
+aggregate bytes are bounded, and malformed, missing, credential-bearing,
+unsupported, or out-of-root dependencies fail the owning stylesheet closed.
+Non-file stylesheet owners remain unchanged. Media/layer/supports import
+conditions, escaped CSS URL grammar, file fonts, other CSS resource types,
+network stylesheet URL-base parity, complete file-origin semantics, and full
+Web IDL parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

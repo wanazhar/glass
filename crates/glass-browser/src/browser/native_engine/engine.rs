@@ -8,6 +8,7 @@ use super::content_process::{
     NativeContentLoad, NativeContentLoadResult, NativeContentMutation, NativeContentNavigation,
     NativeContentProcess, NativeContentScriptResult,
 };
+use super::css::absolutize_file_stylesheet_urls;
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{
     NativeDocument, NativeNodeId, NativePageScriptSource, NativeScriptDocumentSnapshot,
@@ -6652,7 +6653,10 @@ impl NativeEngine {
                 load_local_initial_file_stylesheets(&document, &self.loader, &resource.url)?;
             let external_stylesheets = stylesheet_states
                 .iter()
-                .filter_map(|(_, _, body)| body.clone())
+                .filter_map(|(_, href, body)| {
+                    body.as_ref()
+                        .map(|body| absolutize_file_stylesheet_urls(body, &resource.url, href))
+                })
                 .collect::<Vec<_>>();
             document = NativeDocument::parse_with_stylesheets(
                 &resource.body,
@@ -8240,7 +8244,7 @@ fn load_local_dynamic_stylesheets(
         .collect::<Vec<_>>();
     if previous_states != next_states {
         document.set_external_stylesheet_states(next_states);
-        document.rebuild_external_stylesheet()?;
+        document.rebuild_external_stylesheet(document_url)?;
         document.refresh_background_image_sources();
     }
     Ok(events)

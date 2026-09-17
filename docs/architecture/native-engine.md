@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-476`, following completed
 `native-engine-browser-475`, following completed
 `native-engine-browser-474`, following completed
 `native-engine-browser-473`, following completed
@@ -405,6 +406,16 @@ Dynamic file module attachments use the same graph owner, and page/worker URL
 facades preserve canonical `file:///` authority markers. Import maps,
 non-literal dynamic imports, file fonts/workers/downloads, complete file-origin
 semantics, and full Web IDL parity remain issue #40 work.
+
+Slice `native-engine-browser-476` closes stylesheet-relative URL resolution for
+rooted file CSS. Loaded static and dynamic file stylesheets canonicalize
+relative `url(...)` tokens against the stylesheet's own file URL before the
+existing cascade creates background-image source identities, so nested
+stylesheet/image directories load through the same configured-root checks and
+native decoder/paint state. Comments and quoted non-URL text are preserved;
+non-file owners retain their existing path. CSS `@import`, file fonts, other
+CSS resource types, URL escape grammar, network stylesheet URL-base parity,
+complete file-origin semantics, and full Web IDL parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

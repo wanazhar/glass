@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-464`, following completed
 `native-engine-browser-463`, following completed
 `native-engine-browser-462`, following completed
 `native-engine-browser-461`, following completed
@@ -311,6 +312,17 @@ carry a bounded runtime-owned Blob snapshot through local and content-process
 browser-effect queues, bootstrap the target from `about:blank`, and commit the
 Blob document without network or HTTP-cache fallback. Media and cross-realm
 object-URL consumers remain separate resource-owner work.
+
+Slice `native-engine-browser-464` closes the page/worker cross-realm Blob URL
+message boundary. Structured messages now carry bounded snapshots for active
+Blob URLs found at bounded nesting depth, and the destination page or
+dedicated/shared worker installs each snapshot before structured-clone
+decoding. The contract is covered by both inline fixture and HTTP(S)
+content-process tests, with no network/cache lookup and no live JavaScript
+object shared between realms. Source-realm revocation remains independent of
+the destination snapshot. Page-window, MessagePort, Service Worker client
+message, media, and remaining browser/Web IDL conformance consumers remain
+separate issue #40 work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

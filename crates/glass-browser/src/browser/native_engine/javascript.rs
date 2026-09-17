@@ -30,7 +30,8 @@ use super::resource_loader::{
     MAX_NATIVE_CSP_VIOLATIONS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
     NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
     NativeFetchResponseStream, NativeInlineScriptPolicy, NativeNavigationMethod,
-    NativeObjectUrlResource, NativeRequestBody, NativeResourceLoader, NativeScriptResource,
+    NativeObjectUrlResource, NativeObjectUrlTransfer, NativeRequestBody, NativeResourceLoader,
+    NativeScriptResource,
 };
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes192, Aes256};
@@ -82,6 +83,8 @@ pub(crate) const MAX_NATIVE_SCRIPT_RESULT_BYTES: usize = crate::browser_backend:
 /// bridge. The transport is JSON-framed, while the JavaScript payload uses a
 /// tagged graph so cloneable values and cycles survive the IPC boundary.
 pub(crate) const MAX_NATIVE_POST_MESSAGE_BYTES: usize = 256 * 1024;
+/// Maximum number of realm-owned Blob URL snapshots carried by one message.
+pub(crate) const MAX_NATIVE_OBJECT_URL_TRANSFERS: usize = 16;
 /// Maximum JSON-backed state retained by one History API entry.
 pub(crate) const MAX_NATIVE_HISTORY_STATE_BYTES: usize = 256 * 1024;
 const MAX_NATIVE_HISTORY_DELTA: i32 = 1024;
@@ -599,6 +602,8 @@ pub(crate) enum NativeScriptCommand {
         data: serde_json::Value,
         #[serde(default)]
         transfer_ports: Vec<NativeMessagePortTransfer>,
+        #[serde(default)]
+        object_urls: Vec<NativeObjectUrlTransfer>,
     },
     WorkerTerminate {
         worker_id: u32,
@@ -929,6 +934,8 @@ pub(crate) struct NativeWorkerMessage {
     pub(crate) error: Option<String>,
     #[serde(default)]
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
+    #[serde(default)]
+    pub(crate) object_urls: Vec<NativeObjectUrlTransfer>,
 }
 
 /// A MessagePort event waiting for delivery to the page realm.
@@ -1071,6 +1078,7 @@ enum NativeWorkerDispatch<'a> {
     Message {
         data: &'a serde_json::Value,
         transfer_ports: &'a [NativeMessagePortTransfer],
+        object_urls: &'a [NativeObjectUrlTransfer],
     },
     MessagePort {
         bridge_key: &'a str,
@@ -1608,8 +1616,9 @@ impl NativeWorkerRegistry {
                     worker_id,
                     data,
                     transfer_ports,
+                    object_urls,
                 } => {
-                    self.post_message(worker_id, data, transfer_ports, loader)
+                    self.post_message(worker_id, data, transfer_ports, object_urls, loader)
                         .await?;
                 }
                 NativeScriptCommand::WorkerTerminate { worker_id }
@@ -1919,25 +1928,30 @@ impl NativeWorkerRegistry {
         worker_id: u32,
         data: serde_json::Value,
         transfer_ports: Vec<NativeMessagePortTransfer>,
+        object_urls: Vec<NativeObjectUrlTransfer>,
         loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
         if !self.workers.contains_key(&worker_id) {
             return Ok(());
         }
         self.register_page_transfers(worker_id, &transfer_ports)?;
+        validate_native_object_url_transfers(&object_urls)?;
         validate_native_message_payload(
             &serde_json::json!({
                 "data": &data,
                 "transfer_ports": &transfer_ports,
+                "object_urls": &object_urls,
             }),
             "native Worker message",
         )?;
         let evaluation = self.evaluate_worker_with_loader(worker_id, loader, |worker| {
+            worker.runtime.install_object_url_transfers(&object_urls)?;
             worker.evaluate_turn_with_event(
                 worker_id,
                 NativeWorkerDispatch::Message {
                     data: &data,
                     transfer_ports: &transfer_ports,
+                    object_urls: &object_urls,
                 },
             )
         });
@@ -2006,6 +2020,7 @@ impl NativeWorkerRegistry {
                         worker_id: command_worker_id,
                         data,
                         transfer_ports,
+                        object_urls,
                     } if command_worker_id == current_worker_id => {
                         self.register_worker_transfers(current_worker_id, &transfer_ports)?;
                         self.queue_message(NativeWorkerMessage {
@@ -2013,6 +2028,7 @@ impl NativeWorkerRegistry {
                             data,
                             error: None,
                             transfer_ports,
+                            object_urls,
                         })?;
                     }
                     NativeScriptCommand::WorkerClose {
@@ -3237,22 +3253,22 @@ impl NativeWorkerRegistry {
                 format!("{message} ({worker_url})")
             }),
             transfer_ports: Vec::new(),
+            object_urls: Vec::new(),
         })
     }
 
     fn queue_message(&mut self, message: NativeWorkerMessage) -> Result<(), NativeEngineError> {
         validate_message_port_transfers(&message.transfer_ports)?;
-        let encoded = serde_json::to_vec(&message.data).map_err(|_| NativeEngineError::Worker {
-            operation: "queue native Worker message".into(),
-            reason: "Worker message data could not be serialized".into(),
-        })?;
-        if encoded.len() > MAX_NATIVE_POST_MESSAGE_BYTES {
-            return Err(NativeEngineError::limit(
-                "native Worker message",
-                MAX_NATIVE_POST_MESSAGE_BYTES,
-                encoded.len(),
-            ));
-        }
+        validate_native_object_url_transfers(&message.object_urls)?;
+        validate_native_message_payload(
+            &serde_json::json!({
+                "data": &message.data,
+                "error": &message.error,
+                "transfer_ports": &message.transfer_ports,
+                "object_urls": &message.object_urls,
+            }),
+            "native Worker message",
+        )?;
         if self.pending_messages.len() >= MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
                 "native Worker message queue",
@@ -9718,6 +9734,119 @@ impl NativeJavaScriptRuntime {
         used.then_some(loader).flatten()
     }
 
+    /// Snapshot the live Blob URLs referenced by a structured message. The
+    /// message itself contains only strings; finite resource copies are kept
+    /// in a separate envelope so a destination realm can install them before
+    /// its normal structured-clone decoder runs.
+    pub(crate) fn object_url_transfers(
+        &self,
+        data: &serde_json::Value,
+    ) -> Result<Vec<NativeObjectUrlTransfer>, NativeEngineError> {
+        const MAX_OBJECT_URL_SCAN_DEPTH: usize = 128;
+        let mut values = vec![(data, 0usize)];
+        let mut seen = BTreeSet::new();
+        let mut transfers = Vec::new();
+        while let Some((value, depth)) = values.pop() {
+            if depth > MAX_OBJECT_URL_SCAN_DEPTH {
+                return Err(NativeEngineError::limit(
+                    "native object URL message depth",
+                    MAX_OBJECT_URL_SCAN_DEPTH,
+                    depth,
+                ));
+            }
+            match value {
+                serde_json::Value::String(href)
+                    if href
+                        .get(..5)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
+                        && href.len() <= MAX_NATIVE_SCRIPT_BYTES
+                        && Url::parse(href).is_ok()
+                        && seen.insert(href.clone()) =>
+                {
+                    if let Some(resource) = self.object_url_resource(href)? {
+                        transfers.push(NativeObjectUrlTransfer {
+                            href: href.clone(),
+                            resource,
+                        });
+                        if transfers.len() > MAX_NATIVE_OBJECT_URL_TRANSFERS {
+                            return Err(NativeEngineError::limit(
+                                "native object URL transfers",
+                                MAX_NATIVE_OBJECT_URL_TRANSFERS,
+                                transfers.len(),
+                            ));
+                        }
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        values.push((item, depth.saturating_add(1)));
+                    }
+                }
+                serde_json::Value::Object(object) => {
+                    for item in object.values() {
+                        values.push((item, depth.saturating_add(1)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        validate_native_object_url_transfers(&transfers)?;
+        Ok(transfers)
+    }
+
+    fn attach_object_url_transfers(
+        &self,
+        mut command: NativeScriptCommand,
+    ) -> Result<NativeScriptCommand, NativeEngineError> {
+        if let NativeScriptCommand::WorkerPostMessage {
+            data, object_urls, ..
+        } = &mut command
+        {
+            *object_urls = self.object_url_transfers(data)?;
+        }
+        Ok(command)
+    }
+
+    /// Install bounded Blob URL snapshots in this realm before a message is
+    /// decoded. Installation replaces only the destination's entry for the
+    /// transferred URL; source-realm revocation remains independent.
+    pub(crate) fn install_object_url_transfers(
+        &self,
+        transfers: &[NativeObjectUrlTransfer],
+    ) -> Result<(), NativeEngineError> {
+        validate_native_object_url_transfers(transfers)?;
+        if transfers.is_empty() {
+            return Ok(());
+        }
+        let payload = serde_json::to_value(transfers).map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native object URL transfers".into(),
+            reason: "native object URL transfers could not be serialized".into(),
+        })?;
+        self.context.with(|ctx| {
+            let payload = native_message_payload(&ctx, &payload, "native object URL transfers")?;
+            let installer: Function = ctx
+                .globals()
+                .get("__glassInstallObjectUrlTransfers")
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "install native object URL transfers".into(),
+                    reason: format!(
+                        "native object URL transfer installer was unavailable: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            installer
+                .call::<_, Value>((payload,))
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "install native object URL transfers".into(),
+                    reason: format!(
+                        "native object URL transfers could not be installed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            Ok(())
+        })
+    }
+
     /// Snapshot a live page Blob URL before a full navigation replaces the
     /// realm. The JavaScript registry remains the lifetime authority; Rust
     /// only receives a bounded byte copy for the next document owner.
@@ -11059,7 +11188,7 @@ impl NativeJavaScriptRuntime {
                 commands.len().saturating_add(1),
             ));
         }
-        commands.push(command.clone());
+        commands.push(self.attach_object_url_transfers(command.clone())?);
         Ok(true)
     }
 
@@ -12080,6 +12209,7 @@ impl NativeJavaScriptRuntime {
             let commands = read_script_commands(ctx.clone())?;
             let mut worker_commands = Vec::with_capacity(commands.len());
             for command in commands {
+                let command = self.attach_object_url_transfers(command)?;
                 if service_worker
                     && (is_service_worker_cache_command(&command)
                         || is_service_worker_lifecycle_command(&command)
@@ -12366,6 +12496,7 @@ impl NativeJavaScriptRuntime {
             Some(NativeWorkerDispatch::Message {
                 data,
                 transfer_ports,
+                object_urls: &[],
             }),
         )
     }
@@ -14172,6 +14303,80 @@ fn validate_native_message_payload(
     encode_native_message_payload(payload, operation).map(|_| ())
 }
 
+fn validate_native_object_url_transfers(
+    transfers: &[NativeObjectUrlTransfer],
+) -> Result<(), NativeEngineError> {
+    if transfers.len() > MAX_NATIVE_OBJECT_URL_TRANSFERS {
+        return Err(NativeEngineError::limit(
+            "native object URL transfers",
+            MAX_NATIVE_OBJECT_URL_TRANSFERS,
+            transfers.len(),
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    let mut total_bytes = 0usize;
+    for transfer in transfers {
+        validate_url_text("native object URL transfer", &transfer.href)?;
+        if !transfer
+            .href
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
+        {
+            return Err(NativeEngineError::invalid(
+                "native object URL transfer",
+                "must use the blob scheme",
+            ));
+        }
+        if !seen.insert(&transfer.href) {
+            return Err(NativeEngineError::invalid(
+                "native object URL transfer",
+                "URLs must be unique within one message",
+            ));
+        }
+        if transfer.resource.body.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "native object URL transfer body",
+                MAX_NATIVE_SCRIPT_BYTES,
+                transfer.resource.body.len(),
+            ));
+        }
+        if transfer
+            .resource
+            .content_type
+            .as_ref()
+            .is_some_and(|content_type| content_type.len() > MAX_NATIVE_SCRIPT_BYTES)
+        {
+            return Err(NativeEngineError::limit(
+                "native object URL transfer content type",
+                MAX_NATIVE_SCRIPT_BYTES,
+                transfer
+                    .resource
+                    .content_type
+                    .as_ref()
+                    .map_or(0, String::len),
+            ));
+        }
+        total_bytes = total_bytes
+            .saturating_add(transfer.href.len())
+            .saturating_add(transfer.resource.body.len())
+            .saturating_add(
+                transfer
+                    .resource
+                    .content_type
+                    .as_ref()
+                    .map_or(0, String::len),
+            );
+        if total_bytes > MAX_NATIVE_POST_MESSAGE_BYTES {
+            return Err(NativeEngineError::limit(
+                "native object URL transfers",
+                MAX_NATIVE_POST_MESSAGE_BYTES,
+                total_bytes,
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn set_native_timer_clock(ctx: &rquickjs::Ctx<'_>, now_ms: u64) -> Result<(), NativeEngineError> {
     ctx.globals()
         .set("__glassNativeTimerNowMs", now_ms as f64)
@@ -14362,9 +14567,11 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
                 "data": &message.data,
                 "error": &message.error,
                 "transfer_ports": &message.transfer_ports,
+                "object_urls": &message.object_urls,
             }),
             "native Worker event",
         )?;
+        validate_native_object_url_transfers(&message.object_urls)?;
     }
     for message in &events.message_port_messages {
         validate_url_text("native MessagePort bridge key", &message.bridge_key)?;
@@ -14744,6 +14951,7 @@ fn dispatch_page_event_batch(
                 "data": &message.data,
                 "error": &message.error,
                 "transfer_ports": &message.transfer_ports,
+                "object_urls": &message.object_urls,
             }),
             "native Worker event",
         )?;
@@ -15052,12 +15260,14 @@ fn dispatch_worker_event(
         NativeWorkerDispatch::Message {
             data,
             transfer_ports,
+            object_urls,
         } => {
             let payload = native_message_payload(
                 &ctx,
                 &serde_json::json!({
                     "data": data,
                     "transfer_ports": transfer_ports,
+                    "object_urls": object_urls,
                 }),
                 "native service-worker message",
             )?;
@@ -18150,6 +18360,36 @@ fn worker_bootstrap(
   WorkerFile.prototype = Object.create(WorkerBlob.prototype);
   WorkerFile.prototype.constructor = WorkerFile;
   globalThis.File = WorkerFile;
+  globalThis.__glassGetObjectUrlResource = (value) => {{
+    const entry = workerObjectUrlRegistry.get(String(value));
+    if (!entry) return null;
+    return {{
+      contentType: entry.blob.type || null,
+      bodyBase64: encodeWorkerBase64(workerBlobBytes(entry.blob), {fetch_body_limit}),
+    }};
+  }};
+  globalThis.__glassInstallObjectUrlTransfers = (transfers) => {{
+    if (!Array.isArray(transfers)) throw new TypeError("native Worker object URL transfers are invalid");
+    for (const transfer of transfers) {{
+      if (!transfer || typeof transfer !== "object")
+        throw new TypeError("native Worker object URL transfer is invalid");
+      const href = String(transfer.href || "");
+      if (!href.startsWith("blob:"))
+        throw new TypeError("native Worker object URL transfer scheme is invalid");
+      const resource = transfer.resource;
+      if (!resource || typeof resource !== "object")
+        throw new TypeError("native Worker object URL transfer resource is invalid");
+      const bytes = decodeWorkerBase64(String(resource.body || ""), {fetch_body_limit});
+      const contentType = resource.contentType === null || resource.contentType === undefined
+        ? ""
+        : String(resource.contentType);
+      if (!workerObjectUrlRegistry.has(href) && workerObjectUrlRegistry.size >= {max_commands})
+        throw new RangeError("native Worker object URL limit exceeded");
+      const blob = new WorkerBlob([new Uint8Array(bytes)], {{ type: contentType }});
+      workerObjectUrlRegistry.set(href, {{ blob, origin: workerObjectUrlOrigin() }});
+    }}
+    return null;
+  }};
   const workerResponseBytes = (payload) => payload && typeof payload.bodyBase64 === "string"
     ? decodeWorkerBase64(payload.bodyBase64, {fetch_body_limit})
     : workerUtf8Bytes(String(payload && payload.body || ""));
@@ -21159,6 +21399,8 @@ fn worker_bootstrap(
   }};
   globalThis.__glassDispatchWorkerMessage = (payload) => {{
     if (closed) return null;
+    if (payload && Array.isArray(payload.object_urls))
+      globalThis.__glassInstallObjectUrlTransfers(payload.object_urls);
     const envelope = glassMessageDecodeEnvelope(payload);
     dispatch("message", {{ type: "message", data: envelope.data, ports: envelope.ports, origin: "", source: null, target: globalThis, currentTarget: globalThis }});
     return null;
@@ -27221,6 +27463,30 @@ fn document_bootstrap(
       contentType: entry.blob.type || null,
       bodyBase64: encodeBase64(blobBytes(entry.blob), storageValueLimit),
     }};
+  }};
+  globalThis.__glassInstallObjectUrlTransfers = (transfers) => {{
+    if (!Array.isArray(transfers)) throw new TypeError("native object URL transfers are invalid");
+    for (const transfer of transfers) {{
+      if (!transfer || typeof transfer !== "object")
+        throw new TypeError("native object URL transfer is invalid");
+      const href = String(transfer.href || "");
+      if (!href.startsWith("blob:"))
+        throw new TypeError("native object URL transfer scheme is invalid");
+      const resource = transfer.resource;
+      if (!resource || typeof resource !== "object")
+        throw new TypeError("native object URL transfer resource is invalid");
+      const bytes = decodeBase64(String(resource.body || ""));
+      const contentType = resource.contentType === null || resource.contentType === undefined
+        ? ""
+        : String(resource.contentType);
+      if (contentType.length > storageValueLimit)
+        throw new RangeError("native object URL transfer content type is too large");
+      if (!nativeObjectUrlRegistry.has(href) && nativeObjectUrlRegistry.size >= {max_commands})
+        throw new RangeError("native object URL limit exceeded");
+      const blob = new BlobNative([new Uint8Array(bytes)], {{ type: contentType }});
+      nativeObjectUrlRegistry.set(href, {{ blob, origin: nativeObjectUrlOrigin() }});
+    }}
+    return null;
   }};
   const requestHeaderNameNative = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
   const nativeFetchMethod = (value) => {{
@@ -35433,6 +35699,8 @@ fn document_bootstrap(
       }};
       workerDispatch(worker, "error", error);
     }} else {{
+      if (Array.isArray(payload.object_urls))
+        globalThis.__glassInstallObjectUrlTransfers(payload.object_urls);
       const envelope = glassMessageDecodeEnvelope(payload);
       workerDispatch(worker, "message", {{
         type: "message",

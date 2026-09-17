@@ -176,6 +176,19 @@ pub(crate) struct NativeObjectUrlResource {
     pub(crate) body: Vec<u8>,
 }
 
+/// A bounded snapshot of one Blob URL referenced by a structured message.
+///
+/// Object URLs are realm-owned strings, so a destination worker cannot look
+/// up the source realm's registry directly. The browser boundary transfers
+/// the finite resource bytes and lets the destination install a fresh entry
+/// under the same URL before delivering the message.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeObjectUrlTransfer {
+    pub(crate) href: String,
+    pub(crate) resource: NativeObjectUrlResource,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub(crate) enum NativeNavigationMethod {

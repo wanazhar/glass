@@ -2639,6 +2639,81 @@ async fn native_local_worker_blob_object_urls_feed_fetch_and_xhr() {
 }
 
 #[tokio::test]
+async fn native_local_worker_blob_object_urls_cross_realm_messages() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-cross-realm-blob-page",
+            "<p>Cross-realm Worker Blob URL</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-cross-realm-blob-script",
+            r#"self.onmessage = async event => {
+                try {
+                    const response = await fetch(event.data.pageUrl);
+                    const text = await response.text();
+                    postMessage({
+                        direction: 'page-to-worker',
+                        text,
+                        contentType: response.headers.get('content-type'),
+                    });
+                    const blob = new Blob(['worker to page'], { type: 'text/worker' });
+                    postMessage({ direction: 'worker-to-page', url: URL.createObjectURL(blob) });
+                } catch (error) {
+                    postMessage({ error: String(error) });
+                }
+            };"#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-cross-realm-blob-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"globalThis.workerMessages = [];
+                globalThis.worker = new Worker('fixture://worker-cross-realm-blob-script');
+                worker.onmessage = event => {
+                    workerMessages.push(event.data);
+                    if (event.data.direction === 'worker-to-page') {
+                        const request = new XMLHttpRequest();
+                        request.open('GET', event.data.url, false);
+                        request.send();
+                        workerMessages.push({ direction: 'worker-to-page-read', text: request.responseText });
+                    }
+                };
+                globalThis.pageBlob = new Blob(['page to worker'], { type: 'text/page' });
+                globalThis.pageBlobUrl = URL.createObjectURL(pageBlob);
+                worker.postMessage({ pageUrl: pageBlobUrl });
+                true"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([
+            {
+                "direction": "page-to-worker",
+                "text": "page to worker",
+                "contentType": "text/page"
+            },
+            {
+                "direction": "worker-to-page",
+                "url": "blob:null/glass-worker-1"
+            },
+            {
+                "direction": "worker-to-page-read",
+                "text": "worker to page"
+            }
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_worker_fetch_honors_abort_signal() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -4599,6 +4674,64 @@ async fn native_content_process_worker_message_delivery_preserves_large_payloads
             .await
             .unwrap(),
         serde_json::json!(20000)
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_worker_blob_object_urls_cross_realm_messages() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            (
+                "/cross-realm-blob-page",
+                "text/html",
+                "<script>globalThis.workerMessages = []; globalThis.worker = new Worker('/cross-realm-blob-worker.js'); worker.onmessage = event => { workerMessages.push(event.data); if (event.data.kind === 'worker-url') { const request = new XMLHttpRequest(); request.open('GET', event.data.url, false); request.send(); workerMessages.push({ kind: 'page-read', text: request.responseText }); } }; const blob = new Blob(['http page to worker'], { type: 'text/page' }); worker.postMessage({ url: URL.createObjectURL(blob) });</script><main>Native</main>",
+            ),
+            (
+                "/cross-realm-blob-worker.js",
+                "text/javascript",
+                "self.onmessage = async event => { try { const response = await fetch(event.data.url); postMessage({ kind: 'page-to-worker', text: await response.text(), contentType: response.headers.get('content-type') }); const blob = new Blob(['http worker to page'], { type: 'text/worker' }); postMessage({ kind: 'worker-url', url: URL.createObjectURL(blob) }); } catch (error) { postMessage({ error: String(error) }); } };",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/cross-realm-blob-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let expected_worker_url = format!("blob:http://{address}/glass-worker-1");
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([
+            {
+                "kind": "page-to-worker",
+                "text": "http page to worker",
+                "contentType": "text/page"
+            },
+            {
+                "kind": "worker-url",
+                "url": expected_worker_url
+            },
+            {
+                "kind": "page-read",
+                "text": "http worker to page"
+            }
+        ])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

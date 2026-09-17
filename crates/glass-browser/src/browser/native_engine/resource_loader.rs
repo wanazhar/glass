@@ -797,6 +797,7 @@ impl fmt::Debug for NativeResourceLoader {
             )
             .field("cached_script_count", &self.network.script_cache.len())
             .field("cached_fetch_count", &self.network.fetch_cache.len())
+            .field("cached_font_count", &self.network.font_cache.len())
             .field("cookie_count", &self.network.cookies.len())
             .field(
                 "document_policy_count",
@@ -819,6 +820,7 @@ struct NativeNetworkState {
     stylesheet_cache: BTreeMap<String, NativeTextCacheEntry>,
     script_cache: BTreeMap<String, NativeTextCacheEntry>,
     fetch_cache: BTreeMap<String, NativeFetchCacheEntry>,
+    font_cache: BTreeMap<String, NativeFontCacheEntry>,
     cookies: Vec<NativeCookie>,
     document_policies: BTreeMap<String, NativeCspPolicy>,
     preflight_cache: BTreeMap<String, Instant>,
@@ -839,6 +841,61 @@ struct NativeTextCacheEntry {
     fresh_until: Option<Instant>,
     etag: Option<String>,
     last_modified: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeFontCacheEntry {
+    url: String,
+    body: Vec<u8>,
+    fresh_until: Option<Instant>,
+    etag: Option<String>,
+    last_modified: Option<String>,
+}
+
+impl NativeFontCacheEntry {
+    fn from_response(
+        url: String,
+        body: Vec<u8>,
+        headers: &HeaderMap,
+        now: Instant,
+    ) -> Option<Self> {
+        if body.is_empty()
+            || body.len() > MAX_NATIVE_FONT_BYTES
+            || !response_cache_metadata_present(headers)
+            || !document_cache_storage_allowed(headers)
+        {
+            return None;
+        }
+        Some(Self {
+            url,
+            body,
+            fresh_until: document_cache_fresh_until(headers, now),
+            etag: response_header_text(headers, reqwest::header::ETAG),
+            last_modified: response_header_text(headers, reqwest::header::LAST_MODIFIED),
+        })
+    }
+
+    fn is_fresh(&self, now: Instant) -> bool {
+        self.fresh_until.is_none_or(|deadline| now < deadline)
+    }
+
+    fn refresh_from_not_modified(mut self, headers: &HeaderMap, now: Instant) -> Option<Self> {
+        if !document_cache_storage_allowed(headers) {
+            return None;
+        }
+        if cache_control_requires_revalidation(headers) {
+            self.fresh_until = Some(now);
+        } else if let Some(fresh_until) = document_cache_fresh_until(headers, now) {
+            self.fresh_until = Some(fresh_until);
+        }
+        if let Some(etag) = response_header_text(headers, reqwest::header::ETAG) {
+            self.etag = Some(etag);
+        }
+        if let Some(last_modified) = response_header_text(headers, reqwest::header::LAST_MODIFIED) {
+            self.last_modified = Some(last_modified);
+        }
+        Some(self)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6079,12 +6136,46 @@ impl NativeResourceLoader {
         if !policy.allows(NativeSubresourceKind::Font, document_url, target_url) {
             return Ok(None);
         }
+        let mut requested_url = target_url.clone();
+        requested_url.set_fragment(None);
+        let request_cookie = self.network.cookie_header_for_request(
+            &requested_url,
+            Some(document_url),
+            false,
+            NativeNavigationMethod::Get,
+        );
+        let requested_cache_key =
+            font_response_cache_key(document_url, &requested_url, request_cookie.as_deref());
+        let cached_font = self
+            .network
+            .font_cache
+            .get(&requested_cache_key)
+            .cloned()
+            .filter(|cached| cached.body.len() <= MAX_NATIVE_FONT_BYTES);
+        if let Some(cached) = cached_font.as_ref().filter(|cached| {
+            cached.is_fresh(Instant::now())
+                && Url::parse(&cached.url).is_ok_and(|cached_url| {
+                    is_network_url(cached_url.as_str())
+                        && mixed_content_allowed(document_url, &cached_url)
+                        && policy.allows(NativeSubresourceKind::Font, document_url, &cached_url)
+                })
+        }) {
+            return Ok(Some(cached.body.clone()));
+        }
+        let stale_cached_font = cached_font.filter(|cached| {
+            !cached.is_fresh(Instant::now())
+                && Url::parse(&cached.url).is_ok_and(|cached_url| {
+                    is_network_url(cached_url.as_str())
+                        && mixed_content_allowed(document_url, &cached_url)
+                        && policy.allows(NativeSubresourceKind::Font, document_url, &cached_url)
+                })
+        });
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(NATIVE_NETWORK_TIMEOUT)
             .build()
             .map_err(|error| network_error("font client construction", error))?;
-        let mut current_url = target_url.clone();
+        let mut current_url = requested_url;
         current_url.set_fragment(None);
         let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
         let mut redirects = 0;
@@ -6098,6 +6189,16 @@ impl NativeResourceLoader {
             ));
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
+            }
+            if redirects == 0
+                && let Some(cached) = stale_cached_font.as_ref()
+            {
+                if let Some(etag) = cached.etag.as_deref() {
+                    request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+                }
+                if let Some(last_modified) = cached.last_modified.as_deref() {
+                    request = request.header(reqwest::header::IF_MODIFIED_SINCE, last_modified);
+                }
             }
             if current_url.origin() == document_url.origin()
                 && let Some(cookie) = self.network.cookie_header_for_request(
@@ -6162,6 +6263,31 @@ impl NativeResourceLoader {
             current_url = next_url;
             redirects += 1;
         };
+        let response_headers = response.headers().clone();
+        let has_set_cookie = !pending_cookies.is_empty();
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            let Some(cached) = stale_cached_font else {
+                return Ok(None);
+            };
+            if redirects != 0 {
+                return Ok(None);
+            }
+            for (cookie_url, cookie) in pending_cookies {
+                self.cookie_changes
+                    .extend(self.network.store_cookie(&cookie_url, &cookie));
+            }
+            let body = cached.body.clone();
+            if has_set_cookie {
+                self.network.remove_font_cache(&requested_cache_key);
+            } else if let Some(entry) =
+                cached.refresh_from_not_modified(&response_headers, Instant::now())
+            {
+                self.network.store_font_cache(requested_cache_key, entry);
+            } else {
+                self.network.remove_font_cache(&requested_cache_key);
+            }
+            return Ok(Some(body));
+        }
         if !response.status().is_success() {
             return Ok(None);
         }
@@ -6189,6 +6315,7 @@ impl NativeResourceLoader {
         if content_length.is_some_and(|length| length > MAX_NATIVE_FONT_BYTES as u64) {
             return Ok(None);
         }
+        let response_status = response.status();
         let mut stream = response.bytes_stream();
         let mut bytes = Vec::with_capacity(
             content_length
@@ -6207,6 +6334,20 @@ impl NativeResourceLoader {
         for (cookie_url, cookie) in pending_cookies {
             self.cookie_changes
                 .extend(self.network.store_cookie(&cookie_url, &cookie));
+        }
+        if !has_set_cookie && response_status != reqwest::StatusCode::PARTIAL_CONTENT {
+            if let Some(entry) = NativeFontCacheEntry::from_response(
+                without_fragment(current_url.as_str()).to_owned(),
+                bytes.clone(),
+                &response_headers,
+                Instant::now(),
+            ) {
+                self.network.store_font_cache(requested_cache_key, entry);
+            } else {
+                self.network.remove_font_cache(&requested_cache_key);
+            }
+        } else {
+            self.network.remove_font_cache(&requested_cache_key);
         }
         Ok((!bytes.is_empty()).then_some(bytes))
     }
@@ -8000,6 +8141,22 @@ fn fetch_response_cache_key(
     key
 }
 
+fn font_response_cache_key(
+    document_url: &Url,
+    target_url: &Url,
+    request_cookie: Option<&str>,
+) -> String {
+    let mut key = String::new();
+    for value in [
+        document_url.origin().ascii_serialization(),
+        cache_key(target_url),
+        request_cookie.unwrap_or_default().to_owned(),
+    ] {
+        append_fetch_cache_key_part(&mut key, &value);
+    }
+    key
+}
+
 fn append_fetch_cache_key_part(key: &mut String, value: &str) {
     key.push_str(&value.len().to_string());
     key.push(':');
@@ -8477,6 +8634,20 @@ impl NativeNetworkState {
 
     fn remove_fetch_cache(&mut self, key: &str) {
         self.fetch_cache.remove(key);
+    }
+
+    fn store_font_cache(&mut self, key: String, entry: NativeFontCacheEntry) {
+        if !self.font_cache.contains_key(&key)
+            && self.font_cache.len() >= MAX_NATIVE_CACHE_ENTRIES
+            && let Some(oldest) = self.font_cache.keys().next().cloned()
+        {
+            self.font_cache.remove(&oldest);
+        }
+        self.font_cache.insert(key, entry);
+    }
+
+    fn remove_font_cache(&mut self, key: &str) {
+        self.font_cache.remove(key);
     }
 
     fn store_document_policy(&mut self, key: String, policy: NativeCspPolicy) {
@@ -9149,6 +9320,104 @@ mod tests {
                 .unwrap(),
             Some(b"font".to_vec())
         );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn network_font_cache_reuses_fresh_response_without_refetching() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(read > 0);
+            let response = concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Content-Type: font/ttf\r\n",
+                "Access-Control-Allow-Origin: *\r\n",
+                "Cache-Control: public, max-age=60\r\n",
+                "Content-Length: 4\r\n",
+                "Connection: close\r\n\r\n",
+                "font"
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let config = NativeEngineConfig::default();
+        let mut loader = NativeResourceLoader::new(&config).unwrap();
+        let source = format!("http://{address}/font.ttf");
+        let first = loader
+            .load_font_async("http://app.test/index.html", &source, None)
+            .await
+            .unwrap();
+        let second = loader
+            .load_font_async("http://app.test/index.html", &source, None)
+            .await
+            .unwrap();
+        assert_eq!(first, Some(b"font".to_vec()));
+        assert_eq!(second, first);
+        assert_eq!(loader.network.font_cache.len(), 1);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn network_font_cache_revalidates_with_etag_and_304() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut first_stream, _) = listener.accept().await.unwrap();
+            let mut first_request = [0_u8; 2048];
+            let first_read = first_stream.read(&mut first_request).await.unwrap();
+            assert!(first_read > 0);
+            let first_response = concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Content-Type: font/ttf\r\n",
+                "Access-Control-Allow-Origin: *\r\n",
+                "Cache-Control: no-cache\r\n",
+                "ETag: \"font-v1\"\r\n",
+                "Content-Length: 4\r\n",
+                "Connection: close\r\n\r\n",
+                "font"
+            );
+            first_stream
+                .write_all(first_response.as_bytes())
+                .await
+                .unwrap();
+
+            let (mut second_stream, _) = listener.accept().await.unwrap();
+            let mut second_request = [0_u8; 2048];
+            let second_read = second_stream.read(&mut second_request).await.unwrap();
+            let second_request = String::from_utf8_lossy(&second_request[..second_read]);
+            assert!(
+                second_request
+                    .to_ascii_lowercase()
+                    .contains("if-none-match: \"font-v1\"")
+            );
+            let second_response = concat!(
+                "HTTP/1.1 304 Not Modified\r\n",
+                "Cache-Control: public, max-age=60\r\n",
+                "ETag: \"font-v1\"\r\n",
+                "Connection: close\r\n\r\n"
+            );
+            second_stream
+                .write_all(second_response.as_bytes())
+                .await
+                .unwrap();
+        });
+        let config = NativeEngineConfig::default();
+        let mut loader = NativeResourceLoader::new(&config).unwrap();
+        let source = format!("http://{address}/font.ttf");
+        let first = loader
+            .load_font_async("http://app.test/index.html", &source, None)
+            .await
+            .unwrap();
+        let second = loader
+            .load_font_async("http://app.test/index.html", &source, None)
+            .await
+            .unwrap();
+        assert_eq!(first, Some(b"font".to_vec()));
+        assert_eq!(second, first);
+        assert_eq!(loader.network.font_cache.len(), 1);
         server.await.unwrap();
     }
 

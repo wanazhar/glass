@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-491`, following completed
 `native-engine-browser-490`, following completed
 `native-engine-browser-489`, following completed
 `native-engine-browser-488`, following completed
@@ -399,6 +400,17 @@ book; custom faces remain ahead of system candidates for the existing
 HarfRust/fontdue paths. Font response caching, `local()` lookup,
 font-loading events, variable/color fonts, and complete text-rendering parity
 remain issue #40 gates.
+
+The completed network-font-cache follow-up is
+[`native-engine-browser-491`](tasks/native-engine-browser-491.md): HTTP(S)
+`@font-face` responses now use a bounded cache partitioned by document origin,
+requested URL, and same-origin cookie state. Fresh entries are reused only
+after current policy checks; stale entries revalidate with conditional headers
+and a 304 reuses the previous bounded bytes. `Set-Cookie`, `no-store`, cookie
+or wildcard `Vary`, partial responses, missing cache metadata, and invalid or
+oversized bodies are not retained. The cache is in-memory/process-local;
+`local()` lookup, loading events, variable/color fonts, and complete
+text-rendering parity remain issue #40 gates.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

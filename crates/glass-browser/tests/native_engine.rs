@@ -2399,7 +2399,7 @@ async fn native_local_worker_fetch_accepts_buffered_and_streamed_fixture_request
         .unwrap()
         .with_fixture(
             "fixture://worker-body.test/script",
-            "(async () => { const response = await fetch('/response', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: 'fixture-body' }); const stream = new ReadableStream({ start(controller) { controller.enqueue('fixture-'); controller.enqueue('stream'); controller.close(); } }); const streamed = await fetch('/response', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: stream }); postMessage({ status: response.status, text: await response.text(), streamedStatus: streamed.status, streamedText: await streamed.text() }); })().catch(error => postMessage({ kind: 'error', name: error.name, message: error.message }));",
+            "(async () => { const response = await fetch('/response', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: 'fixture-body' }); const stream = new ReadableStream({ start(controller) { controller.enqueue('fixture-'); controller.enqueue('stream'); controller.close(); } }); const streamed = await fetch('/response', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: stream }); const custom = await fetch('/response', { method: 'REPORT', body: 'custom-body' }); postMessage({ status: response.status, text: await response.text(), streamedStatus: streamed.status, streamedText: await streamed.text(), customStatus: custom.status, customText: await custom.text() }); })().catch(error => postMessage({ kind: 'error', name: error.name, message: error.message }));",
         )
         .unwrap()
         .with_fixture("fixture://worker-body.test/response", "fixture response")
@@ -2423,6 +2423,8 @@ async fn native_local_worker_fetch_accepts_buffered_and_streamed_fixture_request
             "text": "fixture response",
             "streamedStatus": 200,
             "streamedText": "fixture response",
+            "customStatus": 200,
+            "customText": "fixture response",
         }])
     );
     engine.close_async().await.unwrap();
@@ -50107,7 +50109,7 @@ async fn native_content_process_fetches_common_http_methods_with_cors_preflight(
         stream.write_all(response.as_bytes()).await.unwrap();
     });
     let api_server = tokio::spawn(async move {
-        for _ in 0..9 {
+        for _ in 0..11 {
             let (mut stream, _) = api_listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
             let method = request.split_whitespace().next().unwrap_or_default();
@@ -50121,11 +50123,12 @@ async fn native_content_process_fetches_common_http_methods_with_cors_preflight(
                 assert!(request.lines().any(|line| {
                     line.split_once(':').is_some_and(|(name, value)| {
                         name.eq_ignore_ascii_case("access-control-request-method")
-                            && ["PUT", "PATCH", "DELETE", "OPTIONS"].contains(&value.trim())
+                            && ["PUT", "PATCH", "DELETE", "OPTIONS", "REPORT"]
+                                .contains(&value.trim())
                     })
                 }));
                 let response = format!(
-                    "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Methods: HEAD, PUT, PATCH, DELETE, OPTIONS\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Methods: HEAD, PUT, PATCH, DELETE, OPTIONS, REPORT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 );
                 stream.write_all(response.as_bytes()).await.unwrap();
                 continue;
@@ -50133,7 +50136,7 @@ async fn native_content_process_fetches_common_http_methods_with_cors_preflight(
             assert_eq!(request.split_whitespace().nth(1), Some("/methods"));
             assert!(matches!(
                 method,
-                "HEAD" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
+                "HEAD" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "REPORT"
             ));
             let request_body = request
                 .split_once("\r\n\r\n")
@@ -50161,7 +50164,7 @@ async fn native_content_process_fetches_common_http_methods_with_cors_preflight(
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
-    for method in ["HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+    for method in ["HEAD", "PUT", "PATCH", "DELETE", "OPTIONS", "REPORT"] {
         let body = if method == "HEAD" {
             "undefined".to_owned()
         } else {

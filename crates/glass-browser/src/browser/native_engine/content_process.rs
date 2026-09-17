@@ -55,10 +55,11 @@ use super::resource_loader::{
     MAX_NATIVE_CSP_VIOLATIONS, MAX_NATIVE_RESPONSE_HEADER_BYTES,
     MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES, MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
     MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
-    NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeFetchResponseStream,
-    NativeNavigationMethod, NativeNavigationPolicyKind, NativeNavigationRequest, NativeRequestBody,
-    NativeResource, NativeResourceLoader, NativeWebSocketTarget,
-    schedule_native_csp_report_deliveries, validate_target_navigation_payload,
+    NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
+    NativeFetchResponseStream, NativeNavigationMethod, NativeNavigationPolicyKind,
+    NativeNavigationRequest, NativeRequestBody, NativeResource, NativeResourceLoader,
+    NativeWebSocketTarget, schedule_native_csp_report_deliveries,
+    validate_target_navigation_payload,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -141,7 +142,7 @@ struct NativePendingControlledUpload {
     task: tokio::task::JoinHandle<Result<Vec<u8>, NativeEngineError>>,
     document_url: String,
     href: String,
-    method: NativeNavigationMethod,
+    method: NativeFetchMethod,
     headers: BTreeMap<String, String>,
     content_type: Option<String>,
     cors_mode: NativeCorsMode,
@@ -154,7 +155,7 @@ struct NativePendingControlledUpload {
 type NativeScriptFetch = (
     u32,
     String,
-    NativeNavigationMethod,
+    NativeFetchMethod,
     BTreeMap<String, String>,
     Option<NativeRequestBody>,
     Option<String>,
@@ -5186,7 +5187,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         loader,
                         document_url,
                         href,
-                        NativeNavigationMethod::Get,
+                        "GET",
                         BTreeMap::new(),
                         None,
                         None,
@@ -10741,10 +10742,10 @@ fn fetch_commands(
                 };
                 let cache_mode = NativeFetchCacheMode::from_option(cache.as_deref())?;
                 let method =
-                    NativeNavigationMethod::from_fetch_method(method.as_str()).map_err(|_| {
+                    NativeFetchMethod::from_fetch_method(method.as_str()).map_err(|_| {
                         NativeEngineError::invalid(
                             "script fetch method",
-                            "must be GET, HEAD, POST, PUT, PATCH, DELETE, or OPTIONS",
+                            "must be a valid HTTP token other than CONNECT, TRACE, or TRACK",
                         )
                     })?;
                 let body = match body_base64 {
@@ -11318,7 +11319,7 @@ async fn resolve_script_fetches(
                     loader,
                     &current_url,
                     &href,
-                    method,
+                    method.as_str(),
                     headers.clone(),
                     body.clone(),
                     content_type.clone(),
@@ -11419,7 +11420,7 @@ async fn resolve_script_fetches(
                             loader,
                             &pending_fetch.document_url,
                             &pending_fetch.href,
-                            pending_fetch.method,
+                            pending_fetch.method.as_str(),
                             pending_fetch.headers.clone(),
                             Some(request_body.clone()),
                             pending_fetch.content_type.clone(),

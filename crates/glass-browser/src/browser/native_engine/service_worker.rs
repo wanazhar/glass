@@ -29,8 +29,8 @@ use super::javascript::{
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
-    NativeCorsMode, NativeFetchCacheMode, NativeFetchRedirectMode, NativeFetchRequest,
-    NativeFetchResponse, NativeNavigationMethod, NativeNavigationRequest, NativeRequestBody,
+    NativeCorsMode, NativeFetchCacheMode, NativeFetchMethod, NativeFetchRedirectMode,
+    NativeFetchRequest, NativeFetchResponse, NativeNavigationRequest, NativeRequestBody,
     NativeResource, NativeResourceLoader,
 };
 use base64::Engine as _;
@@ -1651,7 +1651,7 @@ impl NativeServiceWorkerRegistry {
                 loader,
                 &navigation.url,
                 &navigation.url,
-                navigation.method,
+                navigation.method.as_str(),
                 BTreeMap::new(),
                 navigation.body.clone(),
                 navigation.body_content_type.clone(),
@@ -1713,7 +1713,7 @@ impl NativeServiceWorkerRegistry {
         loader: &mut NativeResourceLoader,
         document_url: &str,
         href: &str,
-        method: NativeNavigationMethod,
+        method: &str,
         request_headers: BTreeMap<String, String>,
         body: Option<NativeRequestBody>,
         content_type: Option<String>,
@@ -1764,7 +1764,7 @@ impl NativeServiceWorkerRegistry {
         let client_url = without_fragment(document_url);
         let payload = json!({
             "url": without_fragment(target.as_str()),
-            "method": method.as_str(),
+            "method": method,
             "headers": headers,
             "body": body_text,
             "bodyBase64": body_base64,
@@ -2383,7 +2383,7 @@ async fn open_service_worker_fetch_upload(
     loader: &mut NativeResourceLoader,
     request_id: u32,
     href: String,
-    method: NativeNavigationMethod,
+    method: NativeFetchMethod,
     headers: BTreeMap<String, String>,
     content_type: Option<String>,
     credentials: bool,
@@ -2572,7 +2572,7 @@ async fn resolve_service_worker_fetch_command(
             request_body.as_ref().map_or(0, NativeRequestBody::len),
         ));
     }
-    let method = NativeNavigationMethod::from_fetch_method(&method)?;
+    let method = NativeFetchMethod::from_fetch_method(&method)?;
     let cors_mode = parse_cors_mode(mode.as_deref().unwrap_or("same-origin"))?;
     let redirect_mode = parse_redirect_mode(redirect.as_deref().unwrap_or("follow"))?;
     let cache_mode = NativeFetchCacheMode::from_option(cache.as_deref())?;

@@ -28,9 +28,9 @@ use super::layout::NativePoint;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
     MAX_NATIVE_CSP_VIOLATIONS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
-    NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeFetchResponseStream,
-    NativeInlineScriptPolicy, NativeNavigationMethod, NativeRequestBody, NativeResourceLoader,
-    NativeScriptResource,
+    NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
+    NativeFetchResponseStream, NativeInlineScriptPolicy, NativeNavigationMethod, NativeRequestBody,
+    NativeResourceLoader, NativeScriptResource,
 };
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes192, Aes256};
@@ -2877,7 +2877,7 @@ impl NativeWorkerRegistry {
         request_id: u32,
         worker_url: String,
         href: String,
-        method: NativeNavigationMethod,
+        method: NativeFetchMethod,
         headers: BTreeMap<String, String>,
         content_type: Option<String>,
         credentials: bool,
@@ -3088,7 +3088,7 @@ impl NativeWorkerRegistry {
                 "must not exceed the native XHR timeout limit",
             ));
         }
-        let method = NativeNavigationMethod::from_fetch_method(&method)?;
+        let method = NativeFetchMethod::from_fetch_method(&method)?;
         let cors_mode = match mode.as_deref().unwrap_or("cors") {
             "cors" => NativeCorsMode::Cors,
             "no-cors" => NativeCorsMode::NoCors,
@@ -12961,10 +12961,7 @@ fn validate_service_worker_cache_command(
                 ));
             }
             if let Some(request_method) = request_method
-                && !matches!(
-                    request_method.as_str(),
-                    "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
-                )
+                && NativeFetchMethod::from_fetch_method(request_method).is_err()
             {
                 return Err(NativeEngineError::invalid(
                     "native service worker cache request method",
@@ -13017,10 +13014,7 @@ fn validate_service_worker_cache_request_fields(
             request_url.len(),
         ));
     }
-    if !matches!(
-        request_method,
-        "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
-    ) {
+    if NativeFetchMethod::from_fetch_method(request_method).is_err() {
         return Err(NativeEngineError::invalid(
             "native service worker cache request method",
             "method is unsupported",
@@ -13552,7 +13546,7 @@ fn run_native_sync_xhr(
     let fetch_request = NativeFetchRequest {
         document_url: &request.document_url,
         href: &request.href,
-        method,
+        method: NativeFetchMethod::from_navigation_method(method),
         body,
         content_type: request.content_type,
         request_headers: request.headers,
@@ -16539,8 +16533,15 @@ fn worker_bootstrap(
   let nextWorkerFetchRequestId = Number.isSafeInteger(globalThis.__glassNextWorkerFetchRequestId)
     ? globalThis.__glassNextWorkerFetchRequestId
     : 1;
-  const workerRequestMethods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
   const workerRequestHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+  const workerXhrMethods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+  const workerRequestMethod = (value) => {{
+    const method = String(value).toUpperCase();
+    if (!method || method.length > {fetch_method_limit} || !workerRequestHeaderName.test(method)
+        || ["CONNECT", "TRACE", "TRACK"].includes(method))
+      throw new TypeError("native Worker Request method is unsupported");
+    return method;
+  }};
   const workerRequestUrl = (value) => {{
     const source = value && value.__glassUrl === true ? value.href : String(value);
     try {{
@@ -19675,9 +19676,7 @@ fn worker_bootstrap(
     }} else {{
       payload = workerRequestBodyPayload(settings.body);
     }}
-    const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
-    if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(method))
-      throw new TypeError("native Worker Request method is unsupported");
+    const method = workerRequestMethod(settings.method === undefined ? "GET" : settings.method);
     if (["GET", "HEAD"].includes(method) && !payload.bodyNull)
       throw new TypeError("native Worker " + method + " Requests must not have a body");
     const mode = settings.mode === undefined ? "cors" : String(settings.mode).toLowerCase();
@@ -19986,9 +19985,9 @@ fn worker_bootstrap(
         payload = sourceRequest.__glassWorkerRequestBodyPayload;
       }} else payload = workerRequestBodyPayload(settings.body);
     }} catch (error) {{ return Promise.reject(error); }}
-    const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
-    if (!workerRequestMethods.includes(method))
-      return Promise.reject(new TypeError("native Worker fetch method is unsupported"));
+    let method;
+    try {{ method = workerRequestMethod(settings.method === undefined ? "GET" : settings.method); }}
+    catch (error) {{ return Promise.reject(error); }}
     const mode = settings.mode === undefined ? "cors" : String(settings.mode).toLowerCase();
     if (!["cors", "no-cors", "same-origin"].includes(mode))
       return Promise.reject(new TypeError("native Worker fetch mode is unsupported"));
@@ -20269,7 +20268,7 @@ fn worker_bootstrap(
       throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest method is invalid", "SyntaxError");
     if (["CONNECT", "TRACE", "TRACK"].includes(normalized))
       throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest method is forbidden", "SecurityError");
-    if (!workerRequestMethods.includes(normalized))
+    if (!workerXhrMethods.includes(normalized))
       throw new TypeError("native Worker XMLHttpRequest method is unsupported");
     return normalized;
   }};
@@ -21055,6 +21054,7 @@ fn worker_bootstrap(
 }})()"###,
         max_commands = MAX_NATIVE_WORKER_MESSAGES,
         max_timers = MAX_NATIVE_WORKER_TIMERS,
+        fetch_method_limit = super::resource_loader::MAX_NATIVE_FETCH_METHOD_BYTES,
         fetch_header_count_limit = MAX_NATIVE_FETCH_HEADERS,
         fetch_header_name_limit = MAX_NATIVE_FETCH_HEADER_NAME_BYTES,
         fetch_header_value_limit = MAX_NATIVE_FETCH_HEADER_VALUE_BYTES,
@@ -26990,6 +26990,14 @@ fn document_bootstrap(
   URLNative.prototype.toJSON = function() {{ return this.href; }};
   globalThis.URL = URLNative;
   const requestHeaderNameNative = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+  const nativeXhrMethods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+  const nativeFetchMethod = (value) => {{
+    const method = String(value).toUpperCase();
+    if (!method || method.length > {fetch_method_limit} || !requestHeaderNameNative.test(method)
+        || ["CONNECT", "TRACE", "TRACK"].includes(method))
+      throw new TypeError("native Request method is unsupported");
+    return method;
+  }};
   const forbiddenRequestHeaderNative = (name) => [
     "accept-charset", "accept-encoding", "access-control-request-headers",
     "access-control-request-method", "connection", "content-length",
@@ -27086,7 +27094,6 @@ fn document_bootstrap(
   }});
   HeadersNative.prototype[Symbol.iterator] = HeadersNative.prototype.entries;
   globalThis.Headers = HeadersNative;
-  const nativeRequestMethods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
   const nativeBodylessMethods = ["GET", "HEAD"];
   const nativeRequestUrl = (value) => {{
     const source = value && value.__glassUrl === true ? value.href : String(value);
@@ -27126,8 +27133,7 @@ fn document_bootstrap(
     }} else {{
       payload = nativeRequestBodyPayload(settings);
     }}
-    const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
-    if (!nativeRequestMethods.includes(method)) throw new TypeError("native Request method is unsupported");
+    const method = nativeFetchMethod(settings.method === undefined ? "GET" : settings.method);
     if (nativeBodylessMethods.includes(method) && settings.body !== undefined && settings.body !== null)
       throw new TypeError("native " + method + " Requests must not have a body");
     const mode = settings.mode === undefined ? "cors" : String(settings.mode).toLowerCase();
@@ -27321,7 +27327,9 @@ fn document_bootstrap(
       return Promise.reject(new TypeError("native fetch cache mode is unsupported"));
     if (cache === "only-if-cached" && mode !== "same-origin")
       return Promise.reject(new TypeError("native only-if-cached fetches require same-origin mode"));
-    const method = settings.method === undefined ? "GET" : String(settings.method).toUpperCase();
+    let method;
+    try {{ method = nativeFetchMethod(settings.method === undefined ? "GET" : settings.method); }}
+    catch (error) {{ return Promise.reject(error); }}
     const hasStreamedBody = streamedBodyStream !== undefined;
     const blobBody = sourceBodyPayload || hasStreamedBody
       ? null
@@ -27370,9 +27378,6 @@ fn document_bootstrap(
       : binaryBody !== null
         ? encodeBase64(binaryBody, nativeFormBodyLimit)
         : null;
-    if (!nativeRequestMethods.includes(method)) {{
-      return Promise.reject(new TypeError("native fetch method is unsupported"));
-    }}
     const usesSourceBody = sourceBodyPayload !== null;
     if (usesSourceBody && streamedBodyBytes === undefined && !hasStreamedBody) {{
       if (!nativeRequestBodyUse(sourceRequest)) return Promise.reject(new TypeError("native Request body is unusable"));
@@ -29384,7 +29389,7 @@ fn document_bootstrap(
       throw new DOMExceptionNative("native XMLHttpRequest method is invalid", "SyntaxError");
     if (["CONNECT", "TRACE", "TRACK"].includes(normalized))
       throw new DOMExceptionNative("native XMLHttpRequest method is forbidden", "SecurityError");
-    if (!nativeRequestMethods.includes(normalized))
+    if (!nativeXhrMethods.includes(normalized))
       throw new TypeError("native XMLHttpRequest method is unsupported");
     return normalized;
   }};
@@ -39260,6 +39265,7 @@ fn document_bootstrap(
         fetch_header_name_limit = MAX_NATIVE_FETCH_HEADER_NAME_BYTES,
         fetch_header_value_limit = MAX_NATIVE_FETCH_HEADER_VALUE_BYTES,
         fetch_header_bytes_limit = MAX_NATIVE_FETCH_HEADER_BYTES,
+        fetch_method_limit = super::resource_loader::MAX_NATIVE_FETCH_METHOD_BYTES,
         max_native_xhr_timeout_ms = MAX_NATIVE_XHR_TIMEOUT_MS,
         websocket_message_limit = MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
         websocket_protocol_limit = MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES,

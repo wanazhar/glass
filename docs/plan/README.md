@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-483`, following completed
 `native-engine-browser-482`, following completed
 `native-engine-browser-481`, following completed
 `native-engine-browser-480`, following completed
@@ -307,6 +308,15 @@ data/blob/unsupported stylesheet owners remain byte-for-byte unchanged.
 Redirect-final URL tracking, network `@import` fetching, file fonts and other
 CSS resource types, complete file-origin semantics, and full Web IDL parity
 remain issue #40 gates.
+
+The completed redirected stylesheet URL-base follow-up is
+[`native-engine-browser-483`](tasks/native-engine-browser-483.md): the
+content-process loader now preserves the final HTTP(S) stylesheet URL with its
+body across direct loads, cache hits, and 304 revalidation, so relative CSS
+`url(...)` resources resolve against the redirected sheet while raw link
+identity remains stable for dynamic mutations. Network CSS `@import` fetching,
+file fonts and other CSS resource types, complete file-origin semantics, and
+full Web IDL parity remain issue #40 gates.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

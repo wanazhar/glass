@@ -7434,7 +7434,7 @@ async fn load_content_resource(
             .await
         {
             Ok(Some(stylesheet)) => {
-                let next_len = external_stylesheet_bytes.saturating_add(stylesheet.len());
+                let next_len = external_stylesheet_bytes.saturating_add(stylesheet.body.len());
                 if next_len <= MAX_CONTENT_STYLESHEET_BYTES {
                     external_stylesheet_bytes = next_len;
                     Some(stylesheet)
@@ -7447,14 +7447,21 @@ async fn load_content_resource(
         let event_kind = body
             .as_ref()
             .map_or(NativeEventKind::Error, |_| NativeEventKind::Load);
-        external_stylesheet_states.push((node_index, href, body));
+        external_stylesheet_states.push((
+            node_index,
+            href,
+            body.as_ref().map(|stylesheet| stylesheet.url.clone()),
+            body.map(|stylesheet| stylesheet.body),
+        ));
         resource_events.push((node_index, event_kind));
     }
     let external_stylesheets = external_stylesheet_states
         .iter()
-        .filter_map(|(_, href, body)| {
-            body.as_ref()
-                .map(|body| absolutize_stylesheet_urls(body, &resource.url, href))
+        .filter_map(|(_, href, stylesheet_url, body)| {
+            body.as_ref().map(|body| {
+                let stylesheet_url = stylesheet_url.as_deref().unwrap_or(href);
+                absolutize_stylesheet_urls(body, &resource.url, stylesheet_url)
+            })
         })
         .collect::<Vec<_>>();
     let mut document = NativeDocument::parse_with_stylesheets_and_inline_style_policy(
@@ -7799,12 +7806,12 @@ async fn load_dynamic_external_stylesheets(
     let mut states = document
         .external_stylesheet_states()
         .into_iter()
-        .map(|(node_index, href, body)| (node_index, (href, body)))
+        .map(|(node_index, href, stylesheet_url, body)| (node_index, (href, stylesheet_url, body)))
         .collect::<BTreeMap<_, _>>();
     states.retain(|node_index, _| live_nodes.contains(node_index));
     let mut loaded_bytes = states
         .values()
-        .filter_map(|(_, body)| body.as_ref())
+        .filter_map(|(_, _, body)| body.as_ref())
         .map(String::len)
         .sum::<usize>();
     let mut events = Vec::new();
@@ -7812,7 +7819,7 @@ async fn load_dynamic_external_stylesheets(
     for (node_index, href, integrity, crossorigin) in links {
         if states
             .get(&node_index)
-            .is_some_and(|(loaded_href, _)| loaded_href == &href)
+            .is_some_and(|(loaded_href, _, _)| loaded_href == &href)
         {
             continue;
         }
@@ -7828,7 +7835,7 @@ async fn load_dynamic_external_stylesheets(
             .await
         {
             Ok(Some(stylesheet)) => {
-                let next_len = loaded_bytes.saturating_add(stylesheet.len());
+                let next_len = loaded_bytes.saturating_add(stylesheet.body.len());
                 if next_len <= MAX_CONTENT_STYLESHEET_BYTES {
                     loaded_bytes = next_len;
                     Some(stylesheet)
@@ -7841,13 +7848,15 @@ async fn load_dynamic_external_stylesheets(
         let event_kind = body
             .as_ref()
             .map_or(NativeEventKind::Error, |_| NativeEventKind::Load);
-        states.insert(node_index, (href, body));
+        let stylesheet_url = body.as_ref().map(|stylesheet| stylesheet.url.clone());
+        let body = body.map(|stylesheet| stylesheet.body);
+        states.insert(node_index, (href, stylesheet_url, body));
         events.push((node_index, event_kind));
     }
 
     let next_states = states
         .into_iter()
-        .map(|(node_index, (href, body))| (node_index, href, body))
+        .map(|(node_index, (href, stylesheet_url, body))| (node_index, href, stylesheet_url, body))
         .collect::<Vec<_>>();
     if previous_states != next_states {
         document.set_external_stylesheet_states(next_states);

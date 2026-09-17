@@ -6660,9 +6660,11 @@ impl NativeEngine {
             )?;
             let external_stylesheets = stylesheet_states
                 .iter()
-                .filter_map(|(_, href, body)| {
-                    body.as_ref()
-                        .map(|body| absolutize_stylesheet_urls(body, &resource.url, href))
+                .filter_map(|(_, href, stylesheet_url, body)| {
+                    body.as_ref().map(|body| {
+                        let stylesheet_url = stylesheet_url.as_deref().unwrap_or(href);
+                        absolutize_stylesheet_urls(body, &resource.url, stylesheet_url)
+                    })
                 })
                 .collect::<Vec<_>>();
             document = NativeDocument::parse_with_stylesheets(
@@ -8193,12 +8195,12 @@ fn load_local_dynamic_stylesheets(
     let mut states = document
         .external_stylesheet_states()
         .into_iter()
-        .map(|(node_index, href, body)| (node_index, (href, body)))
+        .map(|(node_index, href, stylesheet_url, body)| (node_index, (href, stylesheet_url, body)))
         .collect::<BTreeMap<_, _>>();
     states.retain(|node_index, _| live_local_nodes.contains(node_index));
     let mut loaded_bytes = states
         .values()
-        .filter_map(|(_, body)| body.as_ref())
+        .filter_map(|(_, _, body)| body.as_ref())
         .map(String::len)
         .sum::<usize>();
     let mut events = Vec::new();
@@ -8213,11 +8215,11 @@ fn load_local_dynamic_stylesheets(
         }
         if states
             .get(&node_index)
-            .is_some_and(|(loaded_href, _)| loaded_href == &href)
+            .is_some_and(|(loaded_href, _, _)| loaded_href == &href)
         {
             continue;
         }
-        if let Some((_, previous_body)) = states.get(&node_index)
+        if let Some((_, _, previous_body)) = states.get(&node_index)
             && let Some(previous_body) = previous_body
         {
             loaded_bytes = loaded_bytes.saturating_sub(previous_body.len());
@@ -8258,13 +8260,13 @@ fn load_local_dynamic_stylesheets(
         let event_kind = body
             .as_ref()
             .map_or(NativeEventKind::Error, |_| NativeEventKind::Load);
-        states.insert(node_index, (href, body));
+        states.insert(node_index, (href, None, body));
         events.push((node_index, event_kind));
     }
 
     let next_states = states
         .into_iter()
-        .map(|(node_index, (href, body))| (node_index, href, body))
+        .map(|(node_index, (href, stylesheet_url, body))| (node_index, href, stylesheet_url, body))
         .collect::<Vec<_>>();
     if previous_states != next_states {
         document.set_external_stylesheet_states(next_states);
@@ -8411,7 +8413,7 @@ fn load_local_initial_file_stylesheets(
     viewport: Viewport,
 ) -> Result<
     (
-        Vec<(u32, String, Option<String>)>,
+        Vec<(u32, String, Option<String>, Option<String>)>,
         Vec<(u32, NativeEventKind)>,
     ),
     NativeEngineError,
@@ -8440,7 +8442,7 @@ fn load_local_initial_file_stylesheets(
         let event_kind = body
             .as_ref()
             .map_or(NativeEventKind::Error, |_| NativeEventKind::Load);
-        states.push((node_index, href, body));
+        states.push((node_index, href, None, body));
         events.push((node_index, event_kind));
     }
     Ok((states, events))

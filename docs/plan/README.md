@@ -176,6 +176,15 @@ BufferSource constructor inputs, richer CSS tokenization, variable/color
 negotiation, installed-font discovery, and complete FontFace/Web IDL parity
 remain issue #40 gates.
 
+The completed FontFace BufferSource follow-up is
+[`native-engine-browser-499`](tasks/native-engine-browser-499.md):
+`ArrayBuffer` and `ArrayBufferView` constructor inputs are copied at the exact
+selected byte range and admitted through the existing transactional
+`FontFaceInstall` path. Empty, oversized, and detached inputs fail explicitly;
+typed-array identity, `tech()` descriptors, richer CSS tokenization,
+variable/color negotiation, installed-font discovery, and complete
+FontFace/Web IDL parity remain issue #40 gates.
+
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR
 recognizes XML MIME responses, exposes a strict detached XML `Document` from

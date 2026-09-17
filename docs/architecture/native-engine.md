@@ -154,6 +154,16 @@ transactional host acknowledgement and no-partial-font-book contract from
 tokenization, variable/color negotiation, installed-font discovery, and
 complete FontFace/Web IDL parity remain issue #40 gates.
 
+Slice 499 adds binary `FontFace` constructor sources. `ArrayBuffer` and
+`ArrayBufferView` inputs are copied at construction, with a view contributing
+only its selected offset/length range; subsequent caller mutations cannot
+change the pending install. Binary faces bypass URL policy and use the same
+bounded `FontFaceInstall`, parser admission, transactional acknowledgement,
+and error-settlement path as other admitted sources. Empty, oversized, or
+detached inputs fail explicitly. Typed-array identity, `tech()` descriptors,
+richer CSS tokenization, variable/color negotiation, installed-font discovery,
+and complete FontFace/Web IDL parity remain issue #40 gates.
+
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between
 page and worker Fetch, validates worker-owned read/cancel commands, and

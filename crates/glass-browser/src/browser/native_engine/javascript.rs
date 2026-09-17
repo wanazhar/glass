@@ -9574,6 +9574,13 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
       throw nativeFontFaceError("FontFace source has no supported format", "NetworkError");
     return candidates;
   };
+  const nativeFontFaceBufferBytes = (source) => {
+    if (typeof ArrayBuffer === "function" && source instanceof ArrayBuffer)
+      return Array.from(new Uint8Array(source));
+    if (typeof ArrayBuffer === "function" && typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(source))
+      return Array.from(new Uint8Array(source.buffer, source.byteOffset, source.byteLength));
+    return null;
+  };
   const nativeFontFaceCandidateBytes = (candidate, weight, style) => {
     if (candidate.kind === "local") {
       let encoded;
@@ -9706,9 +9713,13 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
         const normalizedFamily = nativeFontFaceNormalizeFamily(family);
         if (!normalizedFamily) throw nativeFontFaceError("FontFace family must not be empty", "SyntaxError");
         const settings = descriptors && typeof descriptors === "object" ? descriptors : {};
+        let binaryBytes = null;
+        try { binaryBytes = nativeFontFaceBufferBytes(source); }
+        catch (_error) { throw nativeFontFaceError("FontFace BufferSource is detached", "TypeError"); }
         const state = {
           family: normalizedFamily,
-          source: String(source === undefined || source === null ? "" : source),
+          source: binaryBytes === null ? String(source === undefined || source === null ? "" : source) : "",
+          binaryBytes,
           status: "unloaded",
           loadedPromise: null,
           staticFace: false,
@@ -9794,6 +9805,13 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
       if (state.staticFace) {
         if (state.staticStatus === "loaded") return null;
         throw nativeFontFaceError("native CSS font face failed to load", "NetworkError");
+      }
+      if (state.binaryBytes !== null) {
+        if (state.binaryBytes.length === 0)
+          throw nativeFontFaceError("FontFace BufferSource is empty", "NetworkError");
+        if (state.binaryBytes.length > nativeFontFaceByteLimit)
+          throw nativeFontFaceError("FontFace BufferSource exceeds its byte limit", "NetworkError");
+        return state.binaryBytes.slice();
       }
       return nativeFontFaceTryCandidates(
         nativeFontFaceSources(state.source),
@@ -17736,6 +17754,78 @@ mod native_font_face_tests {
         let wire = document.to_content_wire();
         assert_eq!(wire.font_resources.len(), 1);
         assert_eq!(wire.font_resources[0].family, "Inline Sans");
+    }
+
+    #[test]
+    fn script_font_face_load_accepts_buffer_source_views() {
+        #[cfg(not(target_os = "linux"))]
+        return;
+        let Ok(font_bytes) =
+            std::fs::read("/usr/share/fonts/truetype/noto/NotoSansLycian-Regular.ttf")
+        else {
+            return;
+        };
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&font_bytes);
+        let mut padded = Vec::with_capacity(font_bytes.len() + 4);
+        padded.extend_from_slice(&[0, 1]);
+        padded.extend_from_slice(&font_bytes);
+        padded.extend_from_slice(&[2, 3]);
+        let values = serde_json::to_string(&padded).expect("buffer source must serialize");
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-buffer-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse("<body></body>", &NativeEngineLimits::default())
+            .expect("font-face document must parse");
+        let started = runtime
+            .evaluate(
+                &format!(
+                    r#"(() => {{
+                      const storage = new Uint8Array({values});
+                      const face = new FontFace("Buffer Sans", storage.subarray(2, storage.length - 2));
+                      globalThis.__bufferFontFace = face;
+                      document.fonts.add(face);
+                      face.load().then(() => {{ document.body.textContent = "buffer-loaded"; }});
+                      return true;
+                    }})()"#
+                ),
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("FontFace BufferSource must evaluate");
+        apply_document_commands_with_font_face_ack(
+            &mut document,
+            &runtime,
+            "about:blank",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+            &started.commands,
+            false,
+        )
+        .expect("FontFace BufferSource must apply and acknowledge");
+        let evaluation = runtime
+            .evaluate(
+                "[globalThis.__bufferFontFace.status, document.fonts.status, document.body.textContent]",
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("FontFace BufferSource completion must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["loaded", "loaded", "buffer-loaded"])
+        );
+        let install = started
+            .commands
+            .iter()
+            .find(|command| matches!(command, NativeScriptCommand::FontFaceInstall { .. }))
+            .expect("BufferSource FontFace load must emit an installation command");
+        assert!(matches!(
+            install,
+            NativeScriptCommand::FontFaceInstall { body_base64, .. } if body_base64 == &encoded
+        ));
+        assert_eq!(document.to_content_wire().font_resources.len(), 1);
     }
 
     #[test]

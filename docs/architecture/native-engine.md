@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-446`, following completed
 `native-engine-browser-445`, following completed
 `native-engine-browser-444`, following completed
 `native-engine-browser-443`, following completed
@@ -167,6 +168,19 @@ and the worker permits those synchronous settings. Worker `responseType =
 case-insensitively canonical. Numeric timeout bounds and the existing loader
 credential policy remain unchanged. Full XHR/Web IDL descriptor parity remains
 issue #40 work.
+
+Slice 446 closes the XHR `open()` admission boundary. Page and
+dedicated/SharedWorker XHR now resolve relative URLs and native URL objects
+against their owning document/worker URL, accept the optional username and
+password overload for authority-bearing URLs, and convert the `async`
+argument with Web IDL Boolean semantics. Invalid method tokens raise
+`SyntaxError`, forbidden `CONNECT`/`TRACE`/`TRACK` methods raise
+`SecurityError`, and the existing bounded method set continues to reject
+other unsupported methods. Method, URL, and synchronous-configuration
+validation completes before an active request is cancelled, so a failed
+reopen cannot destroy the prior transport. Full URL parsing, broader HTTP
+method admission, and complete XHR/Web IDL descriptor parity remain issue #40
+work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

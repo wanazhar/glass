@@ -16979,6 +16979,65 @@ async fn native_external_download_link_transfers_cross_origin_bytes() {
 }
 
 #[tokio::test]
+async fn native_file_download_link_transfers_rooted_bytes() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-download-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let download_directory = std::env::temp_dir().join(format!(
+        "glass-native-file-download-destination-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&download_directory).unwrap();
+    let page_path = root.join("index.html");
+    let asset_path = root.join("asset.bin");
+    fs::write(
+        &page_path,
+        "<html><body><a id='file' href='asset.bin' download='report.bin'>Download</a></body></html>",
+    )
+    .unwrap();
+    fs::write(&asset_path, b"rooted-file-download").unwrap();
+    let page_url = native_test_file_url(&page_path);
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url)
+        .with_allowed_file_root(root.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .action_async(NativeAction::Click {
+            target: "id=file".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(engine.download_ids().unwrap(), vec!["native-download-1"]);
+    let outcome = engine
+        .wait_for_download_async(&download_directory, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(outcome.guid, "native-download-1");
+    assert_eq!(outcome.suggested_filename, "report.bin");
+    assert_eq!(outcome.state, "completed");
+    assert_eq!(
+        fs::read(download_directory.join("report.bin")).unwrap(),
+        b"rooted-file-download"
+    );
+    assert_eq!(outcome.received_bytes, b"rooted-file-download".len() as u64);
+    assert!(outcome.sha256.is_some());
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&download_directory).unwrap();
+}
+
+#[tokio::test]
 async fn native_external_link_click_honors_content_process_cancellation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

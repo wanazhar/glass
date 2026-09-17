@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-479`, following completed
 `native-engine-browser-478`, following completed
 `native-engine-browser-477`, following completed
 `native-engine-browser-476`, following completed
@@ -264,6 +265,16 @@ worker's file URL while preserving isolated realms, message/error delivery,
 and root/symlink/UTF-8/size checks; fixture and HTTP(S) workers are unchanged.
 File-origin service workers, worklets, import maps, complete file-origin
 semantics, and full worker Web IDL parity remain issue #40 gates.
+
+The completed rooted-file-download follow-up is
+[`native-engine-browser-479`](tasks/native-engine-browser-479.md): download
+links owned by rooted file documents now use the configured canonical file
+root, bounded download-byte reader, and existing queue/cancel/wait writer and
+digest surface. Missing, directory, credential-bearing, and out-of-root file
+targets fail closed; HTTP(S) downloads remain on their existing fetch and
+navigation path. Content-Disposition precedence, resumable/background
+downloads, file-origin service workers, and complete download/Web IDL parity
+remain issue #40 gates.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

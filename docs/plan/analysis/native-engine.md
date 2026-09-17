@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-478`, following
+expansion checkpoint is completed `native-engine-browser-479`, following
+completed `native-engine-browser-478`, following
 completed `native-engine-browser-477`, following
 completed `native-engine-browser-476`, following
 completed `native-engine-browser-475`, following
@@ -480,6 +481,15 @@ module dependencies relative to each worker file. Isolated realms, message
 queues, and error handling remain shared with fixture/HTTP(S) workers; service
 workers on file origins, worklets, import maps, complete file-origin
 semantics, and full worker Web IDL parity remain issue #40 gates.
+
+Slice 479 closes rooted-file download response loading. The existing native
+download queue now branches to the canonical file-root reader for file-owned
+download links, preserving bounded bytes, safe destination writing, collision
+handling, completion digests, and cancellation while keeping HTTP(S) downloads
+on the fetch/navigation owner. Missing, directory, credential-bearing, and
+out-of-root targets fail closed; Content-Disposition precedence,
+resumable/background downloads, file-origin service workers, and complete
+download/Web IDL parity remain issue #40 gates.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads

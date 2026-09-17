@@ -3,7 +3,7 @@ use super::config::{
 };
 use super::css::{
     NativeFontFaceRule, NativeStylesheet, absolutize_stylesheet_urls,
-    collect_background_image_sources,
+    collect_background_image_sources, font_family_hash,
 };
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
@@ -1385,6 +1385,92 @@ impl NativeDocument {
         self.font_book = NativeFontBook::from_resources(&resources);
         self.font_resources = resources;
         Ok(())
+    }
+
+    /// Install one script-created `FontFace` after its source bytes have
+    /// already passed the page/network loader. Keeping the final admission in
+    /// the document owner makes local and process-backed documents share the
+    /// same bounds, descriptor normalization, and font-book rebuild.
+    fn apply_script_font_face_install(
+        &mut self,
+        request_id: u32,
+        family: &str,
+        weight: &str,
+        style: &str,
+        body_base64: &str,
+    ) -> Result<(), NativeEngineError> {
+        if request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native FontFace request id",
+                "must be positive",
+            ));
+        }
+        let family = family.trim();
+        if family.is_empty()
+            || family.len() > MAX_ATTRIBUTE_BYTES
+            || family.bytes().any(|byte| byte.is_ascii_control())
+        {
+            return Err(NativeEngineError::invalid(
+                "native FontFace family",
+                "must be a bounded non-empty name",
+            ));
+        }
+        let weight = match weight.trim().to_ascii_lowercase().as_str() {
+            "normal" | "400" => FontWeightValue::Normal,
+            "bold" | "700" => FontWeightValue::Bold,
+            _ => {
+                return Err(NativeEngineError::invalid(
+                    "native FontFace weight",
+                    "must be normal, 400, bold, or 700",
+                ));
+            }
+        };
+        let style = match style.trim().to_ascii_lowercase().as_str() {
+            "normal" => FontStyleValue::Normal,
+            "italic" => FontStyleValue::Italic,
+            _ => {
+                return Err(NativeEngineError::invalid(
+                    "native FontFace style",
+                    "must be normal or italic",
+                ));
+            }
+        };
+        let max_encoded_bytes = (MAX_NATIVE_FONT_BYTES.saturating_add(2) / 3).saturating_mul(4);
+        if body_base64.len() > max_encoded_bytes {
+            return Err(NativeEngineError::limit(
+                "native FontFace bytes",
+                max_encoded_bytes,
+                body_base64.len(),
+            ));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(body_base64)
+            .map_err(|_| {
+                NativeEngineError::invalid("native FontFace bytes", "must be valid base64")
+            })?;
+        if bytes.is_empty() || bytes.len() > MAX_NATIVE_FONT_BYTES {
+            return Err(NativeEngineError::limit(
+                "native FontFace bytes",
+                MAX_NATIVE_FONT_BYTES,
+                bytes.len(),
+            ));
+        }
+        if !NativeFontBook::is_parseable_font_bytes(&bytes) {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "native FontFace bytes are not a supported font format".into(),
+            });
+        }
+        let resource = NativeFontFaceResource {
+            family: family.to_owned(),
+            family_key: font_family_hash(family),
+            weight,
+            style,
+            bytes: Arc::from(bytes),
+        };
+        let mut resources = self.font_resources.clone();
+        resources.push(resource);
+        self.set_font_resources(resources)
     }
 
     pub(crate) fn external_stylesheet_states(
@@ -4632,6 +4718,21 @@ impl NativeDocument {
                     }
                 }
                 NativeScriptCommand::Fetch { .. } => {}
+                NativeScriptCommand::FontFaceInstall {
+                    request_id,
+                    family,
+                    weight,
+                    style,
+                    body_base64,
+                } => {
+                    self.apply_script_font_face_install(
+                        *request_id,
+                        family,
+                        weight,
+                        style,
+                        body_base64,
+                    )?;
+                }
                 NativeScriptCommand::ServiceWorkerRegister { .. }
                 | NativeScriptCommand::ServiceWorkerUnregister { .. }
                 | NativeScriptCommand::ServiceWorkerUpdate { .. }

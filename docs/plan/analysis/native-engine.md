@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-510`, following
+expansion checkpoint is completed `native-engine-browser-511`, following
+completed `native-engine-browser-510`, following
 completed `native-engine-browser-509`, following
 completed `native-engine-browser-508`, following
 completed `native-engine-browser-507`, following
@@ -292,6 +293,14 @@ An explicit low-level tag remains authoritative, and the existing
 character-by-character fallback is unchanged. Variable axes, color rendering,
 WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
 projection, and complete FontFace/Web IDL parity remain open.
+
+Slice 511 carries inherited `font-variant-position` through native computed
+style and CSSOM, then supplies the bounded HarfRust `subs` or `sups` feature
+tag for the selected `sub` or `super` mode. An explicit low-level tag remains
+authoritative. Character fallback and baseline metrics remain unchanged;
+numeric variants, variable axes, color rendering, WOFF2, font-display timing,
+mixed-script shaping, cross-realm FontFace projection, and complete
+FontFace/Web IDL parity remain open.
 
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-511`, following completed
 `native-engine-browser-510`, following completed
 `native-engine-browser-509`, following completed
 `native-engine-browser-508`, following completed
@@ -287,6 +288,14 @@ features, and an authored low-level feature tag retains precedence. The
 character-by-character fallback keeps its bounded glyph path; variable/color
 tables, WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
 projection, and complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 511 wires inherited `font-variant-position` into the native computed
+style, CSSOM, and HarfRust shaping path. `sub` and `super` map to the bounded
+`subs` and `sups` OpenType features, and an authored low-level feature tag
+retains precedence. The character-by-character fallback and baseline metrics
+remain unchanged; numeric variants, variable/color tables, WOFF2,
+font-display timing, mixed-script shaping, cross-realm FontFace projection,
+and complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between

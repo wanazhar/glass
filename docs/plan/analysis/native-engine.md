@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-442`, following
+expansion checkpoint is completed `native-engine-browser-443`, following
+completed `native-engine-browser-442`, following
 completed `native-engine-browser-441`, following
 completed `native-engine-browser-440`, following
 completed `native-engine-browser-439`, following
@@ -202,6 +203,12 @@ while all internal response, streaming, synchronous, abort, and timeout paths
 write private slots. Script assignments no longer corrupt those values; the
 existing response-type, timeout, response-text, and response-XML gates remain
 unchanged. Broader Web IDL descriptor parity remains open.
+Slice 443 completes the first XHR progress-event lifecycle boundary. Page and
+dedicated/SharedWorker XHR now dispatch one zero-byte `loadstart`
+`ProgressEvent` to the XHR target after body validation and before upload
+progress or transport work, including synchronous requests. The event carries
+the XHR target/current-target identity and preserves the existing upload,
+response, cancellation, and terminal ordering.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-
@@ -6415,8 +6422,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-442.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-443.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-442.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-441.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-440.md` is the preceding completed

@@ -19916,6 +19916,11 @@ fn worker_bootstrap(
     xhr._uploadTotal = total;
     xhr._uploadLoaded = 0;
     const lengthComputable = total !== null;
+    workerXhrDispatch(xhr, "loadstart", {{
+      lengthComputable: false,
+      loaded: 0,
+      total: 0,
+    }});
     workerXhrDispatch(xhr.upload, "loadstart", {{
       lengthComputable,
       loaded: 0,
@@ -28984,6 +28989,11 @@ fn document_bootstrap(
     xhr._uploadTotal = total;
     xhr._uploadLoaded = 0;
     const progress = {{ lengthComputable: true, loaded: 0, total }};
+    nativeXhrDispatch(xhr, "loadstart", {{
+      lengthComputable: false,
+      loaded: 0,
+      total: 0,
+    }});
     nativeXhrDispatch(xhr.upload, "loadstart", progress);
     xhr._uploadLoaded = total;
     nativeXhrDispatch(xhr.upload, "progress", {{ lengthComputable: true, loaded: total, total }});

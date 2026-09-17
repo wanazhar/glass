@@ -7485,6 +7485,7 @@ async fn native_content_process_worker_xhr_upload_reports_buffered_progress() {
                     r#"(() => {
   const xhr = new XMLHttpRequest();
   const events = [];
+  const xhrEvents = [];
   const record = event => events.push([
     event.type,
     event instanceof ProgressEvent,
@@ -7498,10 +7499,20 @@ async fn native_content_process_worker_xhr_upload_reports_buffered_progress() {
   xhr.upload.onprogress = record;
   xhr.upload.addEventListener('load', record);
   xhr.upload.addEventListener('loadend', record);
+  xhr.addEventListener('loadstart', event => xhrEvents.push([
+    event.type,
+    event instanceof ProgressEvent,
+    event.target === xhr,
+    event.currentTarget === xhr,
+    event.lengthComputable,
+    event.loaded,
+    event.total,
+  ]));
   xhr.open('POST', '/worker-upload');
   xhr.onload = () => postMessage({
     uploadIdentity: xhr.upload instanceof XMLHttpRequestUpload,
     events,
+    xhrEvents,
     response: xhr.responseText,
   });
   xhr.onerror = error => postMessage({ error: String(error) });
@@ -7535,6 +7546,7 @@ async fn native_content_process_worker_xhr_upload_reports_buffered_progress() {
                 ["load", true, true, true, true, 4, 4],
                 ["loadend", true, true, true, true, 4, 4],
             ],
+            "xhrEvents": [["loadstart", true, true, true, false, 0, 0]],
             "response": "worker-upload-response",
         }])
     );
@@ -54468,6 +54480,15 @@ async fn native_content_process_xhr_upload_reports_buffered_progress() {
                     xhr.upload.onprogress = record;
                     xhr.upload.addEventListener('load', record);
                     xhr.upload.addEventListener('loadend', record);
+                    xhr.addEventListener('loadstart', event => xhrEvents.push([
+                        event.type,
+                        event instanceof ProgressEvent,
+                        event.target === xhr,
+                        event.currentTarget === xhr,
+                        event.lengthComputable,
+                        event.loaded,
+                        event.total,
+                    ]));
                     xhr.addEventListener('load', () => xhrEvents.push('load'));
                     xhr.addEventListener('loadend', () => resolve({
                         uploadIdentity: xhr.upload instanceof XMLHttpRequestUpload,
@@ -54495,7 +54516,7 @@ async fn native_content_process_xhr_upload_reports_buffered_progress() {
                 ["load", true, true, true, true, 4, 4],
                 ["loadend", true, true, true, true, 4, 4],
             ],
-            "xhrEvents": ["load"],
+            "xhrEvents": [["loadstart", true, true, true, false, 0, 0], "load"],
             "response": "upload-response",
         })
     );

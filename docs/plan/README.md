@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-443`, following completed
 `native-engine-browser-442`, following completed
 `native-engine-browser-441`, following completed
 `native-engine-browser-440`, following completed
@@ -306,6 +307,13 @@ while internal lifecycle paths update private slots. Script mutation cannot
 corrupt transport state; existing response-type, timeout, response-text, and
 response-XML validators remain in force. Broader platform Web IDL descriptor
 parity remains issue #40 work.
+
+The completed XHR load-start lifecycle slice is
+[native-engine-browser-443](tasks/native-engine-browser-443.md): page and
+dedicated/SharedWorker XHR emit a zero-byte `loadstart` `ProgressEvent` on the
+XHR target before upload progress and transport work, including synchronous
+requests. Existing upload, response, cancellation, and terminal ordering
+remain bounded and unchanged.
 
 The completed XHR request-side slice is
 [native-engine-browser-439](tasks/native-engine-browser-439.md): page and

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-443`, following completed
 `native-engine-browser-442`, following completed
 `native-engine-browser-441`, following completed
 `native-engine-browser-440`, following completed
@@ -133,6 +134,13 @@ slots instead. Script assignments cannot corrupt those values, while the
 existing writable `responseType`/`timeout` validators and gated
 `responseText`/`responseXML` projections remain unchanged. Full Web IDL
 descriptor parity for the remaining platform surface remains issue #40 work.
+
+Slice 443 completes the first XHR progress-event lifecycle boundary. Page and
+dedicated/SharedWorker XHR dispatch one zero-byte `loadstart` `ProgressEvent`
+to the XHR target after request validation and before upload progress or
+transport work; the event has the XHR as target/current target and precedes
+the upload-target `loadstart`. The same boundary is used by synchronous and
+asynchronous requests without changing the bounded transport owner.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

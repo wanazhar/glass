@@ -2995,7 +2995,7 @@ impl NativeWorkerRegistry {
             Ok(mut opened)
                 if !opened.response.opaque
                     && !opened.response.opaque_redirect
-                    && opened.body.is_some() =>
+                    && (opened.body.is_some() || opened.cached_body.is_some()) =>
             {
                 let stream_key = (worker_id, request_id);
                 if self
@@ -16375,6 +16375,14 @@ fn worker_bootstrap(
     : 1;
   const workerRequestMethods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
   const workerRequestHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+  const workerRequestUrl = (value) => {{
+    const source = value && value.__glassUrl === true ? value.href : String(value);
+    try {{
+      return workerUrlParts(workerUrlResolve(source, workerUrl)).href;
+    }} catch (_) {{
+      throw new TypeError("native Worker Request URL is invalid");
+    }}
+  }};
   const forbiddenWorkerRequestHeader = (name) => [
     "accept-charset", "accept-encoding", "access-control-request-headers",
     "access-control-request-method", "connection", "content-length",
@@ -19473,8 +19481,9 @@ fn worker_bootstrap(
     const hasBodyOverride = Object.prototype.hasOwnProperty.call(overrides, "body");
     if (source && !hasBodyOverride && (source.bodyUsed || source.body && workerReadableStreamState(source.body).locked))
       throw new TypeError("native Worker Request body is unusable");
-    const href = source ? source.url : sourceUrl ? sourceUrl.href : input;
-    if (typeof href !== "string") throw new TypeError("native Worker Request URL must be a string");
+    if (!source && !sourceUrl && typeof input !== "string")
+      throw new TypeError("native Worker Request URL must be a string");
+    const href = workerRequestUrl(source ? source.url : sourceUrl || input);
     const settings = Object.assign({{}}, source ? source._settings : {{}}, overrides);
     const inheritedPayload = source && !hasBodyOverride
       ? source.__glassWorkerRequestBodyPayload
@@ -19780,8 +19789,14 @@ fn worker_bootstrap(
   const workerFetchNative = (input, options) => {{
     const sourceRequest = input && input.__glassWorkerRequest === true ? input : null;
     const sourceUrl = input && input.__glassUrl === true ? input : null;
-    const href = sourceRequest ? sourceRequest.url : sourceUrl ? sourceUrl.href : input;
-    if (typeof href !== "string") return Promise.reject(new TypeError("native Worker fetch requires a URL string or Request"));
+    if (typeof input !== "string" && !sourceRequest && !sourceUrl)
+      return Promise.reject(new TypeError("native Worker fetch requires a URL string or Request"));
+    let href;
+    try {{
+      href = workerRequestUrl(sourceRequest ? sourceRequest.url : sourceUrl || input);
+    }} catch (error) {{
+      return Promise.reject(error);
+    }}
     const optionsObject = options && typeof options === "object" ? options : {{}};
     const hasBodyOverride = Object.prototype.hasOwnProperty.call(optionsObject, "body");
     const settings = Object.assign({{}}, sourceRequest ? sourceRequest._settings : {{}}, optionsObject);
@@ -26931,6 +26946,14 @@ fn document_bootstrap(
   globalThis.Headers = HeadersNative;
   const nativeRequestMethods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
   const nativeBodylessMethods = ["GET", "HEAD"];
+  const nativeRequestUrl = (value) => {{
+    const source = value && value.__glassUrl === true ? value.href : String(value);
+    try {{
+      return nativeUrlParts(nativeUrlResolve(source, host.url)).href;
+    }} catch (_) {{
+      throw new TypeError("native Request URL is invalid");
+    }}
+  }};
   const RequestNative = function(input, init) {{
     const source = input && input.__glassRequest === true ? input : null;
     const sourceUrl = input && input.__glassUrl === true ? input : null;
@@ -26938,8 +26961,9 @@ fn document_bootstrap(
     const hasBodyOverride = Object.prototype.hasOwnProperty.call(overrides, "body");
     if (source && !hasBodyOverride && (source.bodyUsed || (source.body && source.body.locked)))
       throw new TypeError("native Request body is unusable");
-    const href = source ? source.url : sourceUrl ? sourceUrl.href : input;
-    if (typeof href !== "string") throw new TypeError("native Request URL must be a string");
+    if (!source && !sourceUrl && typeof input !== "string")
+      throw new TypeError("native Request URL must be a string");
+    const href = nativeRequestUrl(source ? source.url : sourceUrl || input);
     const settings = Object.assign({{}}, source ? source._settings : {{}}, overrides);
     const inheritedPayload = source && !Object.prototype.hasOwnProperty.call(overrides, "body")
       ? source.__glassRequestBodyPayload
@@ -27126,7 +27150,7 @@ fn document_bootstrap(
     const sourceRequest = input && input.__glassRequest === true ? input : null;
     const sourceUrl = input && input.__glassUrl === true ? input : null;
     if (typeof input !== "string" && !sourceRequest && !sourceUrl) throw new TypeError("native fetch requires a URL string, URL, or Request");
-    const href = sourceRequest ? sourceRequest.url : sourceUrl ? sourceUrl.href : input;
+    const href = nativeRequestUrl(sourceRequest ? sourceRequest.url : sourceUrl || input);
     const hasBodyOverride = options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "body");
     const sourceBodyPayload = (() => {{
       const payload = sourceRequest && !hasBodyOverride && sourceRequest.body !== null

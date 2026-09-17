@@ -4398,7 +4398,7 @@ async fn native_content_process_worker_fetch_resolves_inside_worker_realm() {
             (
                 "/worker-fetch.js",
                 "text/javascript",
-                "fetch('/worker-data').then(response => response.text().then(text => postMessage({ kind: 'fetched', text, status: response.status, url: response.url }))).catch(error => postMessage({ kind: 'error', message: String(error) }));",
+                "const request = new Request('worker-data'); fetch(request).then(response => response.text().then(text => postMessage({ kind: 'fetched', text, status: response.status, url: response.url, requestUrl: request.url }))).catch(error => postMessage({ kind: 'error', message: String(error) }));",
             ),
             ("/worker-data", "text/plain", "hello from worker fetch"),
         ] {
@@ -4426,6 +4426,7 @@ async fn native_content_process_worker_fetch_resolves_inside_worker_realm() {
             "text": "hello from worker fetch",
             "status": 200,
             "url": format!("http://{address}/worker-data"),
+            "requestUrl": format!("http://{address}/worker-data"),
         }])
     );
     engine.close_async().await.unwrap();
@@ -50298,6 +50299,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             "/page",
             "/headers",
             "/data",
+            "/data",
             "/binary",
             "/upload",
             "/constructed-upload",
@@ -50407,7 +50409,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "(() => { const headers = new Headers([['X-Glass-Token', 'alpha']]); headers.append('x-glass-token', 'beta'); headers.set('X-Glass-Extra', 'gamma'); headers.delete('x-glass-extra'); const endpoint = new URL('/headers', location.href); const query = new URL('?source=request#part', endpoint.href); const nested = new URL('../target?x=one#frag', 'http://example.test/a/b/page'); const protocolRelative = new URL('//api.example.test/v1', endpoint.href); const mutable = new URL('/headers?old=one', location.href); mutable.pathname = '/changed/../final'; mutable.searchParams.set('old', 'two'); mutable.searchParams.append('z', '3'); mutable.hash = 'changed'; const replacement = new URL('/headers?reset=yes#next', location.href); replacement.href = '/headers?reset=updated#final'; const authority = new URL('http://user:pass@api.example.test:8080/start', location.href); authority.protocol = 'https'; authority.hostname = 'other.example.test'; authority.port = '8443'; authority.username = 'next user'; authority.password = 'secret'; authority.host = 'final.example.test:9443'; const authorityBeforeInvalid = authority.href; const authorityErrors = []; try { authority.protocol = 'ftp'; } catch (error) { authorityErrors.push(error.name); } try { authority.host = 'bad/path'; } catch (error) { authorityErrors.push(error.name); } try { authority.port = '65536'; } catch (error) { authorityErrors.push(error.name); } globalThis.urlAuthorityView = [authority.protocol, authority.username, authority.password, authority.host, authority.hostname, authority.port, authority.href, authority.origin]; globalThis.urlAuthorityInvalid = [authorityErrors, authority.href === authorityBeforeInvalid]; const request = new Request(endpoint, { headers }); const requestClone = request.clone(); globalThis.urlObjectView = [endpoint instanceof URL, endpoint.origin === location.origin, endpoint.pathname, endpoint.search, endpoint.hash, query.searchParams.get('source'), query.hash, nested.pathname, nested.searchParams.get('x'), nested.hash, protocolRelative.origin, protocolRelative.pathname, mutable.pathname, mutable.search, mutable.searchParams.get('old'), mutable.href.endsWith('/final?old=two&z=3#changed'), replacement.href.endsWith('/headers?reset=updated#final'), replacement.searchParams.get('reset'), replacement.hash]; globalThis.requestObjectView = [request instanceof Request, request.method, request.url === endpoint.href, request.mode, request.redirect, request.headers.get('x-glass-token'), requestClone.headers.get('x-glass-token'), requestClone !== request]; globalThis.requestHeaderView = [headers.get('x-glass-token'), headers.has('X-Glass-Token'), Array.from(headers.entries()), Array.from(headers.keys()), Array.from(headers.values()), headers.size]; fetch(requestClone).then(response => response.text()).then(value => { globalThis.headerFetch = value; }); })()",
+            "(() => { const headers = new Headers([['X-Glass-Token', 'alpha']]); headers.append('x-glass-token', 'beta'); headers.set('X-Glass-Extra', 'gamma'); headers.delete('x-glass-extra'); const endpoint = new URL('/headers', location.href); const query = new URL('?source=request#part', endpoint.href); const nested = new URL('../target?x=one#frag', 'http://example.test/a/b/page'); const protocolRelative = new URL('//api.example.test/v1', endpoint.href); const mutable = new URL('/headers?old=one', location.href); mutable.pathname = '/changed/../final'; mutable.searchParams.set('old', 'two'); mutable.searchParams.append('z', '3'); mutable.hash = 'changed'; const replacement = new URL('/headers?reset=yes#next', location.href); replacement.href = '/headers?reset=updated#final'; const authority = new URL('http://user:pass@api.example.test:8080/start', location.href); authority.protocol = 'https'; authority.hostname = 'other.example.test'; authority.port = '8443'; authority.username = 'next user'; authority.password = 'secret'; authority.host = 'final.example.test:9443'; const authorityBeforeInvalid = authority.href; const authorityErrors = []; try { authority.protocol = 'ftp'; } catch (error) { authorityErrors.push(error.name); } try { authority.host = 'bad/path'; } catch (error) { authorityErrors.push(error.name); } try { authority.port = '65536'; } catch (error) { authorityErrors.push(error.name); } globalThis.urlAuthorityView = [authority.protocol, authority.username, authority.password, authority.host, authority.hostname, authority.port, authority.href, authority.origin]; globalThis.urlAuthorityInvalid = [authorityErrors, authority.href === authorityBeforeInvalid]; const request = new Request(endpoint, { headers }); const relativeRequest = new Request('data'); const requestClone = request.clone(); globalThis.urlObjectView = [endpoint instanceof URL, endpoint.origin === location.origin, endpoint.pathname, endpoint.search, endpoint.hash, query.searchParams.get('source'), query.hash, nested.pathname, nested.searchParams.get('x'), nested.hash, protocolRelative.origin, protocolRelative.pathname, mutable.pathname, mutable.search, mutable.searchParams.get('old'), mutable.href.endsWith('/final?old=two&z=3#changed'), replacement.href.endsWith('/headers?reset=updated#final'), replacement.searchParams.get('reset'), replacement.hash]; globalThis.requestObjectView = [request instanceof Request, request.method, request.url === endpoint.href, relativeRequest.url.endsWith('/data'), request.mode, request.redirect, request.headers.get('x-glass-token'), requestClone.headers.get('x-glass-token'), requestClone !== request]; globalThis.requestHeaderView = [headers.get('x-glass-token'), headers.has('X-Glass-Token'), Array.from(headers.entries()), Array.from(headers.keys()), Array.from(headers.values()), headers.size]; fetch(requestClone).then(response => response.text()).then(value => { globalThis.headerFetch = value; }); })()",
         )
         .await
         .unwrap();
@@ -50433,6 +50435,7 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
         serde_json::json!([
             true,
             "GET",
+            true,
             true,
             "cors",
             "follow",
@@ -50500,6 +50503,19 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
     );
     engine
         .evaluate_async(
+            "fetch('data', { headers: { 'X-Glass-Token': 'alpha' } }).then(async response => { globalThis.relativeFetchView = [response.url, await response.text()]; });",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.relativeFetchView")
+            .await
+            .unwrap(),
+        serde_json::json!([format!("http://{address}/data"), "{\"value\":\"fetched\"}"])
+    );
+    engine
+        .evaluate_async(
             "fetch('/data', { headers: { 'X-Glass-Token': 'alpha' } }).then(async response => { const headerEvents = []; response.headers.forEach((value, name) => headerEvents.push(name + '=' + value)); const clonedResponse = response.clone(); const jsonResponse = response.clone(); const textResponse = response.clone(); const blobResponse = response.clone(); const bufferResponse = response.clone(); const bytesResponse = response.clone(); const stream = response.body; const streamReader = stream.getReader(); const streamFirst = await streamReader.read(); const streamSecond = await streamReader.read(); const streamLocked = stream.locked; streamReader.releaseLock(); const releasedStreamRead = await streamReader.read().then(() => 'readable', error => error.name); const clonedText = await clonedResponse.text(); globalThis.fetchClone = [clonedText, clonedResponse.body instanceof ReadableStream, clonedResponse.body !== response.body]; globalThis.fetchStream = [response.body instanceof ReadableStream, streamLocked, stream.locked, streamFirst.done, Array.from(streamFirst.value), streamSecond.done, releasedStreamRead]; globalThis.fetchHeaders = [response.headers.get('CONTENT-TYPE'), response.headers.has('content-type'), Array.from(response.headers.entries()), Array.from(response.headers.keys()), Array.from(response.headers.values()), Array.from(response.headers), headerEvents]; return Promise.all([jsonResponse.json(), textResponse.text(), blobResponse.blob(), bufferResponse.arrayBuffer(), bytesResponse.bytes()]); }).then(async ([data, text, blob, buffer, bytes]) => { globalThis.fetchValue = data.value; globalThis.fetchBody = [text, blob instanceof Blob, buffer instanceof ArrayBuffer && Array.from(new Uint8Array(buffer)), Array.from(bytes), await blob.text()]; const binaryResponse = await fetch('/binary'); const binaryBufferResponse = binaryResponse.clone(); const binaryBytesResponse = binaryResponse.clone(); const binaryBlobResponse = binaryResponse.clone(); const binaryStream = binaryResponse.body; const binaryReader = binaryStream.getReader(); const binaryLocked = binaryStream.locked; await binaryReader.cancel(); binaryReader.releaseLock(); const canceledReader = binaryStream.getReader(); const canceledChunk = await canceledReader.read(); canceledReader.releaseLock(); globalThis.fetchStream = globalThis.fetchStream.concat([binaryResponse.body instanceof ReadableStream, binaryLocked, canceledChunk.done, binaryStream.locked]); const binaryBuffer = await binaryBufferResponse.arrayBuffer(); const binaryBytes = await binaryBytesResponse.bytes(); const binaryBlob = await binaryBlobResponse.blob(); globalThis.binaryFetchBody = [Array.from(new Uint8Array(binaryBuffer)), Array.from(binaryBytes), binaryBlob.size, Array.from(await binaryBlob.slice(1, 3).bytes()), await binaryBlob.text()]; const uploadResponse = await fetch('/upload', { method: 'POST', body: binaryBlob, headers: { 'Content-Type': 'application/octet-stream' } }); globalThis.binaryUpload = await uploadResponse.text(); const payload = new Uint8Array([0, 255, 128, 65]); const constructedBlob = new Blob([payload], { type: 'application/octet-stream' }); const constructedFile = new File([payload.buffer], 'payload.bin', { type: 'application/octet-stream' }); globalThis.binaryConstruction = [constructedBlob.size, Array.from(await constructedBlob.bytes()), constructedFile.size, Array.from(await constructedFile.bytes())]; const constructedUpload = await fetch('/constructed-upload', { method: 'POST', body: constructedBlob }); const fileUpload = await fetch('/file-upload', { method: 'POST', body: constructedFile }); globalThis.binaryUploads = [await constructedUpload.text(), await fileUpload.text()]; const form = new FormData(); form.append('name', 'glass'); form.append('payload', binaryBlob, 'payload.bin'); const formUpload = await fetch('/form-upload', { method: 'POST', body: form }); globalThis.formUpload = await formUpload.text(); document.getElementById('result').value = data.value; const controller = new AbortController(); const events = []; controller.signal.addEventListener('abort', () => events.push('listener')); controller.signal.onabort = () => events.push('property'); const request = fetch('/data', { signal: controller.signal, headers: { 'X-Glass-Token': 'alpha' } }); controller.abort(); controller.abort(); request.catch(error => { globalThis.abortValue = [error.name, controller.signal.aborted, controller.signal.reason.name, events]; }); });",
         )
         .await
@@ -50543,29 +50559,29 @@ async fn native_content_process_exposes_bounded_script_fetch_promises() {
             "application/json",
             true,
             [
-                ["content-type", "application/json"],
-                ["x-glass-response", "one, two"],
+                ["connection", "close"],
                 ["content-length", "19"],
-                ["connection", "close"]
+                ["content-type", "application/json"],
+                ["x-glass-response", "one, two"]
             ],
             [
-                "content-type",
-                "x-glass-response",
+                "connection",
                 "content-length",
-                "connection"
+                "content-type",
+                "x-glass-response"
             ],
-            ["application/json", "one, two", "19", "close"],
+            ["close", "19", "application/json", "one, two"],
             [
-                ["content-type", "application/json"],
-                ["x-glass-response", "one, two"],
+                ["connection", "close"],
                 ["content-length", "19"],
-                ["connection", "close"]
+                ["content-type", "application/json"],
+                ["x-glass-response", "one, two"]
             ],
             [
-                "content-type=application/json",
-                "x-glass-response=one, two",
+                "connection=close",
                 "content-length=19",
-                "connection=close"
+                "content-type=application/json",
+                "x-glass-response=one, two"
             ],
         ])
     );

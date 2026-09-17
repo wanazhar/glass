@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-447`, following completed
 `native-engine-browser-446`, following completed
 `native-engine-browser-445`, following completed
 `native-engine-browser-444`, following completed
@@ -326,6 +327,17 @@ XML/HTML-document projection and page/worker Blob MIME types, and retain the
 actual wire `Content-Type` in response-header views. Async and synchronous XHR
 share the same response-content ownership; full MIME-parameter parsing and
 complete XHR/Web IDL parity remain issue #40 work.
+
+The completed Fetch/Request URL-ownership slice is
+[native-engine-browser-447](tasks/native-engine-browser-447.md): page and
+dedicated/SharedWorker `Request` construction and Fetch dispatch now resolve
+supported string, native `URL`, and existing native `Request` inputs against
+their owning document or worker URL before host dispatch. Canonical absolute
+URLs survive cloning and cross-owner transport, while the existing bounded
+body/header/stream and loader policy owners remain authoritative. The inline
+worker response-stream cached-body branch is restored so fixture responses use
+the shared demand-driven 8 KiB transport. Complete URL/Fetch Web IDL parity
+and broader method/scheme admission remain issue #40 work.
 
 The completed XHR realm-state mutator slice is
 [native-engine-browser-445](tasks/native-engine-browser-445.md): page and

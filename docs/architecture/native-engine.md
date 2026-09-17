@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-447`, following completed
 `native-engine-browser-446`, following completed
 `native-engine-browser-445`, following completed
 `native-engine-browser-444`, following completed
@@ -181,6 +182,17 @@ validation completes before an active request is cancelled, so a failed
 reopen cannot destroy the prior transport. Full URL parsing, broader HTTP
 method admission, and complete XHR/Web IDL descriptor parity remain issue #40
 work.
+
+Slice 447 closes the Fetch/Request URL-ownership boundary. Page and
+dedicated/SharedWorker `Request` constructors and `fetch()` dispatch now
+resolve supported string, native `URL`, and existing native `Request` inputs
+against the owning document or worker URL before host dispatch, preserving one
+canonical absolute request URL across inline and content-process owners. The
+existing bounded body/header/stream, HTTP(S)/fixture, CORS, CSP, mixed-content,
+cookie, redirect, cache, and credential policy owners remain unchanged. The
+inline worker response-stream cached-body branch is also restored so fixture
+responses retain shared 8 KiB demand-driven chunking. Complete URL/Fetch Web
+IDL parity and broader method/scheme admission remain issue #40 work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

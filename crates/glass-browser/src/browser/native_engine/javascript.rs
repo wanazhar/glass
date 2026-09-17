@@ -9498,6 +9498,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     "woff", "woff2", "truetype", "opentype", "embedded-opentype", "svg", "collection",
     "woff-variations", "truetype-variations", "opentype-variations",
   ]);
+  const nativeFontFaceSupportedTechs = new Set();
   const nativeFontFaceSplitList = (value) => {
     const text = String(value);
     const parts = [];
@@ -9546,14 +9547,50 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     .replace(/^(["'])(.*)\1$/, "$2")
     .trim()
     .toLowerCase();
-  const nativeFontFaceFormatSupported = (suffix) => {
-    if (!suffix) return true;
-    const match = suffix.match(/^format\s*\((.*)\)$/i);
-    if (!match) throw nativeFontFaceError("FontFace source has an unsupported descriptor", "SyntaxError");
-    const formats = nativeFontFaceSplitList(match[1]).map(nativeFontFaceFormatName);
-    if (formats.length === 0 || formats.some((format) => !format))
-      throw nativeFontFaceError("FontFace format() must contain a format", "SyntaxError");
-    return formats.some((format) => nativeFontFaceSupportedFormats.has(format));
+  const nativeFontFaceDescriptorSupported = (suffix) => {
+    let rest = String(suffix || "").trim();
+    let supported = true;
+    while (rest) {
+      const match = rest.match(/^(format|tech)\s*\(/i);
+      if (!match) throw nativeFontFaceError("FontFace source has an unsupported descriptor", "SyntaxError");
+      const name = String(match[1]).toLowerCase();
+      const open = match[0].lastIndexOf("(");
+      let depth = 1;
+      let quote = null;
+      let escaped = false;
+      let close = -1;
+      for (let index = open + 1; index < rest.length; index += 1) {
+        const character = rest[index];
+        if (quote !== null) {
+          if (escaped) escaped = false;
+          else if (character === "\\") escaped = true;
+          else if (character === quote) quote = null;
+          continue;
+        }
+        if (character === "\"" || character === "'") quote = character;
+        else if (character === "(") depth += 1;
+        else if (character === ")") {
+          depth -= 1;
+          if (depth === 0) {
+            close = index;
+            break;
+          }
+        }
+      }
+      if (quote !== null || close < 0)
+        throw nativeFontFaceError("FontFace source descriptor is malformed", "SyntaxError");
+      const values = nativeFontFaceSplitList(rest.slice(open + 1, close))
+        .map(nativeFontFaceFormatName);
+      if (values.length === 0 || values.some((value) => !value))
+        throw nativeFontFaceError(`FontFace ${name}() must contain a value`, "SyntaxError");
+      if (name === "format") {
+        if (!values.some((value) => nativeFontFaceSupportedFormats.has(value))) supported = false;
+      } else if (!values.every((value) => nativeFontFaceSupportedTechs.has(value))) {
+        supported = false;
+      }
+      rest = rest.slice(close + 1).trim();
+    }
+    return supported;
   };
   const nativeFontFaceSources = (source) => {
     const text = String(source === undefined || source === null ? "" : source).trim();
@@ -9566,7 +9603,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
       }
       const value = String(match[2] === undefined ? match[3] === undefined ? match[4] : match[3] : match[2]).trim();
       if (!value) throw nativeFontFaceError("FontFace URL source must not be empty", "SyntaxError");
-      if (!nativeFontFaceFormatSupported(String(match[5] || "").trim())) continue;
+      if (!nativeFontFaceDescriptorSupported(String(match[5] || "").trim())) continue;
       if (String(match[1]).toLowerCase() === "local") candidates.push({ kind: "local", family: value });
       else candidates.push({ kind: "url", href: new URLNative(value, host.url).href });
     }
@@ -17890,7 +17927,7 @@ mod native_font_face_tests {
                 r#"(() => {
                   const face = new FontFace(
                     "Fallback Face",
-                    "local('Missing Face') format('future-format'), local('Missing Face') format('woff2'), local('DejaVu Sans') format('truetype')",
+                    "local('Missing Face') format('future-format'), local('Missing Face') format('woff2'), local('DejaVu Sans') tech(color-COLRv1), local('DejaVu Sans') format('truetype')",
                   );
                   globalThis.__fallbackFontFace = face;
                   document.fonts.add(face);

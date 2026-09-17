@@ -28,6 +28,9 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-500`, following completed
+`native-engine-browser-499`, following completed
+`native-engine-browser-498`, following completed
 `native-engine-browser-497`, following completed
 `native-engine-browser-496`, following completed
 `native-engine-browser-495`, following completed
@@ -184,6 +187,15 @@ selected byte range and admitted through the existing transactional
 typed-array identity, `tech()` descriptors, richer CSS tokenization,
 variable/color negotiation, installed-font discovery, and complete
 FontFace/Web IDL parity remain issue #40 gates.
+
+The completed FontFace technology-descriptor follow-up is
+[`native-engine-browser-500`](tasks/native-engine-browser-500.md): bounded
+`tech()` requirements are parsed and fail closed against the native renderer's
+currently empty technology set, allowing later ordinary sources to load while
+preventing unsupported color/variable technology from being admitted. The
+existing ordered fallback and transactional host acknowledgement remain in
+force; technology negotiation and complete FontFace/Web IDL parity remain
+issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

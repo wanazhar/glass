@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-470`, following
+expansion checkpoint is completed `native-engine-browser-471`, following
+completed `native-engine-browser-470`, following
 completed `native-engine-browser-469`, following
 completed `native-engine-browser-468`, following
 completed `native-engine-browser-467`, following
@@ -409,6 +410,14 @@ surface exposes media constants, source selection, time ranges, `load()`,
 admission and metadata, not codec decoding or playback. Static HTTP media,
 decoder-backed playback, and complete media/Web IDL parity remain issue #40
 gates.
+
+Slice 471 closes the bounded media timeline boundary. Finite-duration media
+advances `currentTime` against the native monotonic clock, accumulates merged
+`played` intervals, and rebases pause/resume, seek, and playback-rate changes.
+Reaching the duration clamps the position, returns to paused, and dispatches
+one `ended` event; `buffered` and `seekable` retain the complete admitted
+range. Independent media task-source scheduling, decoded audio/video output,
+range transport, and complete media/Web IDL parity remain issue #40 gates.
 
 Slice 470 closes the first media play-admission boundary. Loaded, error-free
 media with a finite duration resolves `play()` and dispatches `play` followed
@@ -6649,7 +6658,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-470.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-471.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-470.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-469.md` is the preceding completed browser
 task;

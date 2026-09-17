@@ -641,6 +641,15 @@ bodies, invalid/oversized bytes, or failed policy checks are not retained.
 The cache is in-memory and process-local. `local()` lookup, loading events,
 variable/color fonts, and complete browser text parity remain open.
 
+Slice 492 resolves ordered `@font-face` sources. The CSS owner retains up to
+eight bounded `local()` and URL candidates in declaration order; inline and
+content-process owners resolve a case-insensitive matching face from the
+deterministic system font book before trying later admitted URL, data, file,
+or Blob sources. A missing local face therefore preserves URL fallback, while
+local bytes bypass network, cookie, CSP, CORS, cache, and object-URL policy.
+Broad installed-font discovery, FontFace/FontFaceSet event timing,
+variable/color fonts, and complete browser text parity remain issue #40 gates.
+
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads
 through base64 or percent decoding, explicit MIME or bounded sniffing, and the
@@ -6896,14 +6905,16 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-491.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-492.md` is the latest completed browser
 task;
-`docs/plan/tasks/native-engine-browser-490.md` is the latest completed browser
-task;
-`docs/plan/tasks/native-engine-browser-489.md` is the latest completed browser
-task;
-`docs/plan/tasks/native-engine-browser-488.md` is the latest completed browser
-task;
+`docs/plan/tasks/native-engine-browser-491.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-490.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-489.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-488.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-487.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-485.md` is the preceding completed

@@ -37,8 +37,8 @@ use super::javascript::{
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
-    apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_inline_scripts, frame_event_batch, host_event_batch,
+    apply_document_commands_with_font_face_ack, apply_indexed_db_changes, diff_indexed_db_changes,
+    execute_dynamic_page_scripts, execute_inline_scripts, frame_event_batch, host_event_batch,
     host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
     load_local_file_module_graph, load_service_worker_client_leases, load_web_storage_profile,
     new_storage_writer_id, read_storage_event_journal, register_storage_reader,
@@ -4356,6 +4356,82 @@ impl NativeEngine {
         Ok(outcome)
     }
 
+    fn apply_local_document_commands_with_font_face_ack(
+        &self,
+        document: &mut NativeDocument,
+        commands: &[NativeScriptCommand],
+        allow_script_navigation: bool,
+    ) -> Result<
+        (
+            Vec<(NativeNodeId, NativeEventKind)>,
+            Vec<NativeScriptCommand>,
+        ),
+        NativeEngineError,
+    > {
+        if let Some(javascript) = self.javascript.as_ref() {
+            apply_document_commands_with_font_face_ack(
+                document,
+                javascript,
+                &self.url,
+                &self.origin,
+                self.config.viewport,
+                commands,
+                allow_script_navigation,
+            )
+        } else {
+            let events = if allow_script_navigation {
+                document.apply_script_commands_allowing_links(commands)?
+            } else {
+                document.apply_script_commands(commands)?
+            };
+            Ok((events, Vec::new()))
+        }
+    }
+
+    fn retain_local_font_face_follow_up_commands(
+        &self,
+        effective_commands: &mut Vec<NativeScriptCommand>,
+        scroll_commands: &mut Vec<NativeScriptCommand>,
+        history_commands: &mut Vec<LocalHistoryCommand>,
+        commands: Vec<NativeScriptCommand>,
+    ) -> Result<(), NativeEngineError> {
+        if commands.iter().any(|command| {
+            matches!(
+                command,
+                NativeScriptCommand::Fetch { .. }
+                    | NativeScriptCommand::WebSocketOpen { .. }
+                    | NativeScriptCommand::WebSocketSend { .. }
+                    | NativeScriptCommand::WebSocketClose { .. }
+                    | NativeScriptCommand::EventSourceOpen { .. }
+                    | NativeScriptCommand::EventSourceClose { .. }
+                    | NativeScriptCommand::FetchStreamRead { .. }
+                    | NativeScriptCommand::FetchStreamCancel { .. }
+            )
+        }) {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "script network transport requires a process-backed HTTP(S) document"
+                    .into(),
+            });
+        }
+        history_commands.extend(self.prepare_local_history_commands(&commands)?);
+        scroll_commands.extend(extract_local_scroll_commands(&commands));
+        effective_commands.extend(commands);
+        Ok(())
+    }
+
+    fn apply_local_evaluation_commands(
+        &self,
+        document: &mut NativeDocument,
+        commands: &[NativeScriptCommand],
+        history_commands: &mut Vec<NativeScriptCommand>,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        history_commands.extend(extract_local_history_commands(commands));
+        let (effects, follow_up_commands) =
+            self.apply_local_document_commands_with_font_face_ack(document, commands, false)?;
+        history_commands.extend(extract_local_history_commands(&follow_up_commands));
+        Ok(effects)
+    }
+
     fn apply_local_script_commands(
         &mut self,
         commands: &[super::javascript::NativeScriptCommand],
@@ -4382,19 +4458,40 @@ impl NativeEngine {
                     .into(),
             });
         }
-        let history_commands = self.prepare_local_history_commands(commands)?;
-        let mut scroll_commands = extract_local_scroll_commands(commands);
+        let mut effective_commands = commands.to_vec();
         let mut document = self.document.clone();
-        let mut events = if allow_script_navigation {
-            document.apply_script_commands_allowing_links(commands)?
-        } else {
-            document.apply_script_commands(commands)?
-        };
+        let (mut events, font_face_follow_up_commands) = self
+            .apply_local_document_commands_with_font_face_ack(
+                &mut document,
+                commands,
+                allow_script_navigation,
+            )?;
+        effective_commands.extend(font_face_follow_up_commands.iter().cloned());
+        let mut history_commands = self.prepare_local_history_commands(&effective_commands)?;
+        let mut scroll_commands = extract_local_scroll_commands(&effective_commands);
+        if font_face_follow_up_commands.iter().any(|command| {
+            matches!(
+                command,
+                super::javascript::NativeScriptCommand::Fetch { .. }
+                    | super::javascript::NativeScriptCommand::WebSocketOpen { .. }
+                    | super::javascript::NativeScriptCommand::WebSocketSend { .. }
+                    | super::javascript::NativeScriptCommand::WebSocketClose { .. }
+                    | super::javascript::NativeScriptCommand::EventSourceOpen { .. }
+                    | super::javascript::NativeScriptCommand::EventSourceClose { .. }
+                    | super::javascript::NativeScriptCommand::FetchStreamRead { .. }
+                    | super::javascript::NativeScriptCommand::FetchStreamCancel { .. }
+            )
+        }) {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "script network transport requires a process-backed HTTP(S) document"
+                    .into(),
+            });
+        }
         let mut dynamic_navigation = None;
         let mut dynamic_dialogs = Vec::new();
         if let Some(javascript) = self.javascript.as_ref() {
             let dynamic_sources = document.take_newly_attached_page_script_sources(
-                commands,
+                &effective_commands,
                 super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
                 MAX_NATIVE_SCRIPT_BYTES,
             );
@@ -4486,8 +4583,19 @@ impl NativeEngine {
             if let Some(evaluation) =
                 self.evaluate_local_events(&document, &[(node_id, event_kind)])?
             {
-                scroll_commands.extend(extract_local_scroll_commands(&evaluation.commands));
-                events.extend(document.apply_script_commands(&evaluation.commands)?);
+                let (effects, follow_up_commands) = self
+                    .apply_local_document_commands_with_font_face_ack(
+                        &mut document,
+                        &evaluation.commands,
+                        false,
+                    )?;
+                events.extend(effects);
+                self.retain_local_font_face_follow_up_commands(
+                    &mut effective_commands,
+                    &mut scroll_commands,
+                    &mut history_commands,
+                    follow_up_commands,
+                )?;
             }
             events.push((node_id, event_kind));
         }
@@ -4496,8 +4604,19 @@ impl NativeEngine {
             if let Some(evaluation) =
                 self.evaluate_local_events(&document, &[(node_id, event_kind)])?
             {
-                scroll_commands.extend(extract_local_scroll_commands(&evaluation.commands));
-                events.extend(document.apply_script_commands(&evaluation.commands)?);
+                let (effects, follow_up_commands) = self
+                    .apply_local_document_commands_with_font_face_ack(
+                        &mut document,
+                        &evaluation.commands,
+                        false,
+                    )?;
+                events.extend(effects);
+                self.retain_local_font_face_follow_up_commands(
+                    &mut effective_commands,
+                    &mut scroll_commands,
+                    &mut history_commands,
+                    follow_up_commands,
+                )?;
             }
             events.push((node_id, event_kind));
         }
@@ -4506,8 +4625,19 @@ impl NativeEngine {
             if let Some(evaluation) =
                 self.evaluate_local_events(&document, &[(node_id, event_kind)])?
             {
-                scroll_commands.extend(extract_local_scroll_commands(&evaluation.commands));
-                events.extend(document.apply_script_commands(&evaluation.commands)?);
+                let (effects, follow_up_commands) = self
+                    .apply_local_document_commands_with_font_face_ack(
+                        &mut document,
+                        &evaluation.commands,
+                        false,
+                    )?;
+                events.extend(effects);
+                self.retain_local_font_face_follow_up_commands(
+                    &mut effective_commands,
+                    &mut scroll_commands,
+                    &mut history_commands,
+                    follow_up_commands,
+                )?;
             }
             events.push((node_id, event_kind));
         }
@@ -4519,11 +4649,22 @@ impl NativeEngine {
         if !validation_events.is_empty()
             && let Some(evaluation) = self.evaluate_local_events(&document, &validation_events)?
         {
-            scroll_commands.extend(extract_local_scroll_commands(&evaluation.commands));
-            events.extend(document.apply_script_commands(&evaluation.commands)?);
+            let (effects, follow_up_commands) = self
+                .apply_local_document_commands_with_font_face_ack(
+                    &mut document,
+                    &evaluation.commands,
+                    false,
+                )?;
+            events.extend(effects);
+            self.retain_local_font_face_follow_up_commands(
+                &mut effective_commands,
+                &mut scroll_commands,
+                &mut history_commands,
+                follow_up_commands,
+            )?;
         }
         let mut navigation = if allow_script_navigation {
-            self.script_navigation_target(&document, commands)?
+            self.script_navigation_target(&document, &effective_commands)?
         } else {
             None
         };
@@ -4560,8 +4701,19 @@ impl NativeEngine {
                         reason: "native submit event result was invalid".into(),
                     })?;
                 events.push((*form_id, NativeEventKind::Submit));
-                scroll_commands.extend(extract_local_scroll_commands(&evaluation.commands));
-                events.extend(document.apply_script_commands(&evaluation.commands)?);
+                let (effects, follow_up_commands) = self
+                    .apply_local_document_commands_with_font_face_ack(
+                        &mut document,
+                        &evaluation.commands,
+                        false,
+                    )?;
+                events.extend(effects);
+                self.retain_local_font_face_follow_up_commands(
+                    &mut effective_commands,
+                    &mut scroll_commands,
+                    &mut history_commands,
+                    follow_up_commands,
+                )?;
                 if !allowed {
                     navigation = None;
                 }
@@ -4573,8 +4725,19 @@ impl NativeEngine {
                     .collect::<Vec<_>>();
                 if let Some(evaluation) = self.evaluate_local_events(&document, &invalid_events)? {
                     events.extend(invalid_events);
-                    scroll_commands.extend(extract_local_scroll_commands(&evaluation.commands));
-                    events.extend(document.apply_script_commands(&evaluation.commands)?);
+                    let (effects, follow_up_commands) = self
+                        .apply_local_document_commands_with_font_face_ack(
+                            &mut document,
+                            &evaluation.commands,
+                            false,
+                        )?;
+                    events.extend(effects);
+                    self.retain_local_font_face_follow_up_commands(
+                        &mut effective_commands,
+                        &mut scroll_commands,
+                        &mut history_commands,
+                        follow_up_commands,
+                    )?;
                 }
                 navigation = None;
             }
@@ -5562,8 +5725,11 @@ impl NativeEngine {
         let mut history_commands = Vec::new();
         let mut events = document.apply_script_focus(id)?;
         if let Some(evaluation) = self.evaluate_local_events(&document, &events)? {
-            history_commands.extend(extract_local_history_commands(&evaluation.commands));
-            events.extend(document.apply_script_commands(&evaluation.commands)?);
+            events.extend(self.apply_local_evaluation_commands(
+                &mut document,
+                &evaluation.commands,
+                &mut history_commands,
+            )?);
         }
 
         let click_evaluation = self
@@ -5581,8 +5747,11 @@ impl NativeEngine {
                 operation: "native click event preflight".into(),
                 reason: "native click event result was invalid".into(),
             })?;
-        history_commands.extend(extract_local_history_commands(&click_evaluation.commands));
-        events.extend(document.apply_script_commands(&click_evaluation.commands)?);
+        events.extend(self.apply_local_evaluation_commands(
+            &mut document,
+            &click_evaluation.commands,
+            &mut history_commands,
+        )?);
         let mut navigation: Option<(NativeNodeId, NativeNodeId)> = None;
         let mut link_navigation = None;
         if click_allowed {
@@ -5599,8 +5768,6 @@ impl NativeEngine {
                             reason: "native JavaScript realm disappeared during submit dispatch"
                                 .into(),
                         })?;
-                    history_commands
-                        .extend(extract_local_history_commands(&submit_evaluation.commands));
                     let submit_allowed = submit_evaluation
                         .value
                         .as_array()
@@ -5611,7 +5778,11 @@ impl NativeEngine {
                             reason: "native submit event result was invalid".into(),
                         })?;
                     events.push((form_id, NativeEventKind::Submit));
-                    events.extend(document.apply_script_commands(&submit_evaluation.commands)?);
+                    events.extend(self.apply_local_evaluation_commands(
+                        &mut document,
+                        &submit_evaluation.commands,
+                        &mut history_commands,
+                    )?);
                     if submit_allowed {
                         navigation = Some((form_id, id));
                     }
@@ -5624,10 +5795,12 @@ impl NativeEngine {
                     if let Some(evaluation) =
                         self.evaluate_local_events(&document, &invalid_events)?
                     {
-                        history_commands
-                            .extend(extract_local_history_commands(&evaluation.commands));
                         events.extend(invalid_events);
-                        events.extend(document.apply_script_commands(&evaluation.commands)?);
+                        events.extend(self.apply_local_evaluation_commands(
+                            &mut document,
+                            &evaluation.commands,
+                            &mut history_commands,
+                        )?);
                     }
                 }
             }
@@ -5773,8 +5946,11 @@ impl NativeEngine {
         let default_events = events.clone();
         for event in default_events {
             if let Some(evaluation) = self.evaluate_local_events(&document, &[event])? {
-                history_commands.extend(extract_local_history_commands(&evaluation.commands));
-                events.extend(document.apply_script_commands(&evaluation.commands)?);
+                events.extend(self.apply_local_evaluation_commands(
+                    &mut document,
+                    &evaluation.commands,
+                    &mut history_commands,
+                )?);
             }
             if events.len() > MAX_NATIVE_EFFECTS {
                 return Err(NativeEngineError::limit(
@@ -5819,8 +5995,11 @@ impl NativeEngine {
             if let Some(evaluation) =
                 self.evaluate_local_events(&document, &[(event_node, event_kind)])?
             {
-                history_commands.extend(extract_local_history_commands(&evaluation.commands));
-                events.extend(document.apply_script_commands(&evaluation.commands)?);
+                events.extend(self.apply_local_evaluation_commands(
+                    &mut document,
+                    &evaluation.commands,
+                    &mut history_commands,
+                )?);
             }
             if events.len() > MAX_NATIVE_EFFECTS {
                 return Err(NativeEngineError::limit(
@@ -5864,8 +6043,11 @@ impl NativeEngine {
         if let Some(evaluation) =
             self.evaluate_local_key_event_with_modifiers(&document, id, kind, key, modifiers)?
         {
-            history_commands.extend(extract_local_history_commands(&evaluation.commands));
-            events.extend(document.apply_script_commands(&evaluation.commands)?);
+            events.extend(self.apply_local_evaluation_commands(
+                &mut document,
+                &evaluation.commands,
+                &mut history_commands,
+            )?);
         }
         if events.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
@@ -5919,8 +6101,11 @@ impl NativeEngine {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
         if let Some(keydown) = keydown {
-            history_commands.extend(extract_local_history_commands(&keydown.commands));
-            events.extend(document.apply_script_commands(&keydown.commands)?);
+            events.extend(self.apply_local_evaluation_commands(
+                &mut document,
+                &keydown.commands,
+                &mut history_commands,
+            )?);
         }
 
         if keydown_allowed && apply_default && should_apply_native_key_default(key, modifiers) {
@@ -5943,8 +6128,11 @@ impl NativeEngine {
                 if let Some(evaluation) =
                     self.evaluate_local_events(&document, &[(event_node, event_kind)])?
                 {
-                    history_commands.extend(extract_local_history_commands(&evaluation.commands));
-                    events.extend(document.apply_script_commands(&evaluation.commands)?);
+                    events.extend(self.apply_local_evaluation_commands(
+                        &mut document,
+                        &evaluation.commands,
+                        &mut history_commands,
+                    )?);
                 }
             }
         }
@@ -5957,8 +6145,11 @@ impl NativeEngine {
             key,
             modifiers,
         )? {
-            history_commands.extend(extract_local_history_commands(&evaluation.commands));
-            events.extend(document.apply_script_commands(&evaluation.commands)?);
+            events.extend(self.apply_local_evaluation_commands(
+                &mut document,
+                &evaluation.commands,
+                &mut history_commands,
+            )?);
         }
         if events.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(

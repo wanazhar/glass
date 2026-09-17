@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-496`, following completed
 `native-engine-browser-495`, following completed
 `native-engine-browser-494`, following completed
 `native-engine-browser-493`, following completed
@@ -110,6 +111,20 @@ back through the existing bounded Fetch resolver, so successful bytes retain
 the established `FontFaceInstall` admission boundary. Service Worker
 interception for dynamic FontFace requests, host acknowledgement of install
 admission, and final URL/response-header fidelity remain explicit follow-up
+gates.
+
+Slice 496 closes the host-acknowledgement gate for script-created FontFace
+sources. The page keeps each face's `load()` promise pending while the native
+document owner validates and admits the bounded `FontFaceInstall` command; only
+then does the host resolve the page promise and drain its bounded Promise
+continuations. Initial and dynamic page scripts, content-process mutations,
+and local native-engine script/event paths use the same acknowledgement helper.
+Page-script owners route supported continuation fetch, WebSocket, EventSource,
+scroll, and navigation effects, while arbitrary network effects from standalone
+content user-event mutations remain outside that mutation's existing response
+contract. Service Worker interception, final response metadata, broader
+FontFace sources, installed-font discovery, font-display timing, variable/color
+fonts, cross-realm projection, and complete text/Web IDL parity remain issue #40
 gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The

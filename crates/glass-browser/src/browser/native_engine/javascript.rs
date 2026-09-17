@@ -10,8 +10,8 @@ use super::config::{
 };
 use super::css::{FontStyleValue, FontWeightValue};
 use super::dom::{
-    NativeDocument, NativePageScriptSource, NativePageScriptTiming, NativeScriptDocumentSnapshot,
-    NativeScriptElementSnapshot,
+    NativeDocument, NativeNodeId, NativePageScriptSource, NativePageScriptTiming,
+    NativeScriptDocumentSnapshot, NativeScriptElementSnapshot,
 };
 use super::environment::NativeEnvironmentOverrides;
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
@@ -1162,6 +1162,10 @@ enum NativeWorkerDispatch<'a> {
 
 enum NativePageDispatch<'a> {
     Fetch {
+        request_id: u32,
+        payload: &'a serde_json::Value,
+    },
+    FontFaceInstall {
         request_id: u32,
         payload: &'a serde_json::Value,
     },
@@ -7216,6 +7220,10 @@ pub(crate) fn execute_page_scripts(
                     let commands = error_evaluation.commands.clone();
                     apply_page_script_evaluation(
                         document,
+                        runtime.as_ref().expect("page script runtime initialized"),
+                        document_url,
+                        document_origin,
+                        viewport,
                         error_evaluation,
                         &mut pending_fetches,
                         &mut websocket_commands,
@@ -7239,6 +7247,10 @@ pub(crate) fn execute_page_scripts(
         let commands = evaluation.commands.clone();
         apply_page_script_evaluation(
             document,
+            runtime.as_ref().expect("page script runtime initialized"),
+            document_url,
+            document_origin,
+            viewport,
             evaluation,
             &mut pending_fetches,
             &mut websocket_commands,
@@ -7273,6 +7285,10 @@ pub(crate) fn execute_page_scripts(
         let commands = evaluation.commands.clone();
         apply_page_script_evaluation(
             document,
+            runtime.as_ref().expect("page script runtime initialized"),
+            document_url,
+            document_origin,
+            viewport,
             evaluation,
             &mut pending_fetches,
             &mut websocket_commands,
@@ -7308,6 +7324,10 @@ pub(crate) fn execute_page_scripts(
         let commands = evaluation.commands.clone();
         apply_page_script_evaluation(
             document,
+            runtime.as_ref().expect("page script runtime initialized"),
+            document_url,
+            document_origin,
+            viewport,
             evaluation,
             &mut pending_fetches,
             &mut websocket_commands,
@@ -7348,6 +7368,10 @@ pub(crate) fn execute_page_scripts(
         let commands = evaluation.commands.clone();
         apply_page_script_evaluation(
             document,
+            runtime.as_ref().expect("page script runtime initialized"),
+            document_url,
+            document_origin,
+            viewport,
             evaluation,
             &mut pending_fetches,
             &mut websocket_commands,
@@ -7388,6 +7412,10 @@ pub(crate) fn execute_page_scripts(
         let commands = evaluation.commands.clone();
         apply_page_script_evaluation(
             document,
+            runtime.as_ref().expect("page script runtime initialized"),
+            document_url,
+            document_origin,
+            viewport,
             evaluation,
             &mut pending_fetches,
             &mut websocket_commands,
@@ -7542,6 +7570,10 @@ pub(crate) fn execute_dynamic_page_scripts(
         )?;
         apply_page_script_evaluation(
             document,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
             evaluation,
             &mut pending_fetches,
             &mut websocket_commands,
@@ -7600,6 +7632,10 @@ pub(crate) fn execute_dynamic_page_scripts(
                     let commands = error_evaluation.commands.clone();
                     apply_page_script_evaluation(
                         document,
+                        runtime,
+                        document_url,
+                        document_origin,
+                        viewport,
                         error_evaluation,
                         &mut pending_fetches,
                         &mut websocket_commands,
@@ -7623,6 +7659,10 @@ pub(crate) fn execute_dynamic_page_scripts(
         let commands = evaluation.commands.clone();
         apply_page_script_evaluation(
             document,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
             evaluation,
             &mut pending_fetches,
             &mut websocket_commands,
@@ -7656,6 +7696,10 @@ pub(crate) fn execute_dynamic_page_scripts(
         let commands = evaluation.commands.clone();
         apply_page_script_evaluation(
             document,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
             evaluation,
             &mut pending_fetches,
             &mut websocket_commands,
@@ -7721,6 +7765,10 @@ pub(crate) fn execute_dynamic_page_scripts(
                     let commands = error_evaluation.commands.clone();
                     apply_page_script_evaluation(
                         document,
+                        runtime,
+                        document_url,
+                        document_origin,
+                        viewport,
                         error_evaluation,
                         &mut pending_fetches,
                         &mut websocket_commands,
@@ -7744,6 +7792,10 @@ pub(crate) fn execute_dynamic_page_scripts(
         let commands = evaluation.commands.clone();
         apply_page_script_evaluation(
             document,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
             evaluation,
             &mut pending_fetches,
             &mut websocket_commands,
@@ -9350,6 +9402,10 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     ? globalThis.__glassFontFaceSetStates
     : new WeakMap();
   globalThis.__glassFontFaceSetStates = nativeFontFaceSetStates;
+  const nativeFontFaceInstallRequests = globalThis.__glassFontFaceInstallRequests instanceof Map
+    ? globalThis.__glassFontFaceInstallRequests
+    : new Map();
+  globalThis.__glassFontFaceInstallRequests = nativeFontFaceInstallRequests;
   const nativeFontFaceDescriptorDefaults = {
     style: "normal",
     weight: "normal",
@@ -9451,6 +9507,18 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
   let nextFontFaceRequestId = Number.isSafeInteger(globalThis.__glassNextFontFaceRequestId)
     ? globalThis.__glassNextFontFaceRequestId
     : 1;
+  globalThis.__glassResolveFontFaceInstall = (requestId, payload) => {
+    const id = Number(requestId);
+    const pending = nativeFontFaceInstallRequests.get(id);
+    if (!pending) return null;
+    nativeFontFaceInstallRequests.delete(id);
+    if (payload && payload.error) {
+      pending.reject(nativeFontFaceError(String(payload.error), "NetworkError"));
+    } else {
+      pending.resolve();
+    }
+    return null;
+  };
   const nativeFontFaceNormalizeFamily = (value) => String(value).trim()
     .replace(/^("|')(.*)\1$/, "$2");
   const nativeFontFaceDescriptorKey = (descriptor, index) => [
@@ -9642,23 +9710,34 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
       });
     });
     const promise = sourcePromise.then((bytes) => {
+      let accepted = Promise.resolve();
       if (bytes !== null) {
         const requestId = nextFontFaceRequestId;
         nextFontFaceRequestId += 1;
         globalThis.__glassNextFontFaceRequestId = nextFontFaceRequestId;
-        pushCommand({
-          kind: "fontFaceInstall",
-          request_id: requestId,
-          family: state.family,
-          weight: state.weight,
-          style: state.style,
-          body_base64: encodeBase64(bytes, nativeFontFaceByteLimit),
+        accepted = new Promise((resolve, reject) => {
+          nativeFontFaceInstallRequests.set(requestId, { resolve, reject });
+          try {
+            pushCommand({
+              kind: "fontFaceInstall",
+              request_id: requestId,
+              family: state.family,
+              weight: state.weight,
+              style: state.style,
+              body_base64: encodeBase64(bytes, nativeFontFaceByteLimit),
+            });
+          } catch (error) {
+            nativeFontFaceInstallRequests.delete(requestId);
+            reject(error);
+          }
         });
       }
-      state.status = "loaded";
-      state.loadedPromise = Promise.resolve(this);
-      if (set) nativeFontFaceFinish(set, this, null);
-      return this;
+      return accepted.then(() => {
+        state.status = "loaded";
+        state.loadedPromise = Promise.resolve(this);
+        if (set) nativeFontFaceFinish(set, this, null);
+        return this;
+      });
     }, (error) => {
       state.status = "error";
       const rejection = Promise.reject(error);
@@ -9887,6 +9966,10 @@ fn is_ignorable_page_script_error(error: &NativeEngineError) -> bool {
 
 pub(crate) fn apply_page_script_evaluation(
     document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
     evaluation: NativeScriptEvaluation,
     pending_fetches: &mut Vec<NativeScriptCommand>,
     websocket_commands: &mut Vec<NativeScriptCommand>,
@@ -9894,46 +9977,159 @@ pub(crate) fn apply_page_script_evaluation(
     scroll_commands: &mut Vec<NativeScriptCommand>,
     navigation: &mut Option<NativePageNavigation>,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
-    let mut commands = Vec::new();
-    for command in evaluation.commands {
-        match command {
-            command @ NativeScriptCommand::Fetch { .. } => pending_fetches.push(command),
-            command @ (NativeScriptCommand::WebSocketOpen { .. }
-            | NativeScriptCommand::WebSocketSend { .. }
-            | NativeScriptCommand::WebSocketClose { .. }) => websocket_commands.push(command),
-            command @ (NativeScriptCommand::EventSourceOpen { .. }
-            | NativeScriptCommand::EventSourceClose { .. }) => event_source_commands.push(command),
-            NativeScriptCommand::Navigate { href, replace } => {
-                validate_url_text("page script navigation href", &href)?;
-                if navigation.is_some() {
-                    return Err(NativeEngineError::TargetNotActionable {
-                        reason: "one page-script batch cannot activate multiple navigations".into(),
+    let mut pending_evaluations = VecDeque::from([evaluation]);
+    let mut events = Vec::new();
+    let mut acknowledgements = 0usize;
+    while let Some(evaluation) = pending_evaluations.pop_front() {
+        let mut commands = Vec::new();
+        for command in evaluation.commands {
+            match command {
+                command @ NativeScriptCommand::Fetch { .. } => pending_fetches.push(command),
+                command @ (NativeScriptCommand::WebSocketOpen { .. }
+                | NativeScriptCommand::WebSocketSend { .. }
+                | NativeScriptCommand::WebSocketClose { .. }) => websocket_commands.push(command),
+                command @ (NativeScriptCommand::EventSourceOpen { .. }
+                | NativeScriptCommand::EventSourceClose { .. }) => {
+                    event_source_commands.push(command)
+                }
+                NativeScriptCommand::Navigate { href, replace } => {
+                    validate_url_text("page script navigation href", &href)?;
+                    if navigation.is_some() {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "one page-script batch cannot activate multiple navigations"
+                                .into(),
+                        });
+                    }
+                    *navigation = Some(NativePageNavigation {
+                        href,
+                        replace_history: replace,
+                        object_url: None,
                     });
                 }
-                *navigation = Some(NativePageNavigation {
-                    href,
-                    replace_history: replace,
-                    object_url: None,
+                command @ NativeScriptCommand::ScrollTo { .. } => {
+                    scroll_commands.push(command.clone());
+                    commands.push(command);
+                }
+                command => commands.push(command),
+            }
+        }
+        if commands.is_empty() {
+            continue;
+        }
+        let mut next = document.clone();
+        let effects = next.apply_script_commands(&commands)?;
+        let request_ids = commands
+            .iter()
+            .filter_map(|command| match command {
+                NativeScriptCommand::FontFaceInstall { request_id, .. } => Some(*request_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        *document = next;
+        events.extend(effects.into_iter().map(|(node, kind)| (node.index(), kind)));
+        for request_id in request_ids {
+            acknowledgements = acknowledgements.saturating_add(1);
+            if acknowledgements > super::interaction::MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    "native FontFace install acknowledgements",
+                    super::interaction::MAX_NATIVE_EFFECTS,
+                    acknowledgements,
+                ));
+            }
+            let payload = serde_json::json!({"ok": true});
+            let acknowledgement = runtime.resolve_font_face_install(
+                request_id,
+                &payload,
+                document,
+                document_url,
+                document_origin,
+                viewport,
+            )?;
+            if acknowledgement.top_level_await_pending {
+                return Err(NativeEngineError::Worker {
+                    operation: "native FontFace install acknowledgement".into(),
+                    reason: "acknowledgement unexpectedly left top-level await pending".into(),
                 });
             }
-            command @ NativeScriptCommand::ScrollTo { .. } => {
-                scroll_commands.push(command.clone());
-                commands.push(command);
+            if !acknowledgement.commands.is_empty() {
+                pending_evaluations.push_back(acknowledgement);
             }
-            command => commands.push(command),
         }
     }
-    if commands.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut next = document.clone();
-    let events = next
-        .apply_script_commands(&commands)?
-        .into_iter()
-        .map(|(node, kind)| (node.index(), kind))
-        .collect();
-    *document = next;
     Ok(events)
+}
+
+/// Apply a document command batch and acknowledge every host-owned
+/// `FontFaceInstall` only after the document clone has admitted its bytes.
+/// The acknowledgement may release Promise continuations, so their commands
+/// are applied in bounded follow-up batches and returned to the caller for
+/// network/navigation handoff.
+pub(crate) fn apply_document_commands_with_font_face_ack(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    commands: &[NativeScriptCommand],
+    allow_script_navigation: bool,
+) -> Result<
+    (
+        Vec<(NativeNodeId, NativeEventKind)>,
+        Vec<NativeScriptCommand>,
+    ),
+    NativeEngineError,
+> {
+    let mut pending = VecDeque::from([commands.to_vec()]);
+    let mut follow_up_commands = Vec::new();
+    let mut events = Vec::new();
+    let mut acknowledgements = 0usize;
+    while let Some(batch) = pending.pop_front() {
+        if batch.is_empty() {
+            continue;
+        }
+        let request_ids = batch
+            .iter()
+            .filter_map(|command| match command {
+                NativeScriptCommand::FontFaceInstall { request_id, .. } => Some(*request_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        events.extend(if allow_script_navigation {
+            document.apply_script_commands_allowing_links(&batch)?
+        } else {
+            document.apply_script_commands(&batch)?
+        });
+        for request_id in request_ids {
+            acknowledgements = acknowledgements.saturating_add(1);
+            if acknowledgements > super::interaction::MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    "native FontFace install acknowledgements",
+                    super::interaction::MAX_NATIVE_EFFECTS,
+                    acknowledgements,
+                ));
+            }
+            let payload = serde_json::json!({"ok": true});
+            let acknowledgement = runtime.resolve_font_face_install(
+                request_id,
+                &payload,
+                document,
+                document_url,
+                document_origin,
+                viewport,
+            )?;
+            if acknowledgement.top_level_await_pending {
+                return Err(NativeEngineError::Worker {
+                    operation: "native FontFace install acknowledgement".into(),
+                    reason: "acknowledgement unexpectedly left top-level await pending".into(),
+                });
+            }
+            if !acknowledgement.commands.is_empty() {
+                follow_up_commands.extend(acknowledgement.commands.iter().cloned());
+                pending.push_back(acknowledgement.commands);
+            }
+        }
+    }
+    Ok((events, follow_up_commands))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9977,6 +10173,10 @@ fn dispatch_page_scroll_events(
         let mut emitted_scroll_commands = Vec::new();
         apply_page_script_evaluation(
             document,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
             evaluation,
             pending_fetches,
             websocket_commands,
@@ -13594,6 +13794,35 @@ impl NativeJavaScriptRuntime {
         )
     }
 
+    pub(crate) fn resolve_font_face_install(
+        &self,
+        request_id: u32,
+        payload: &serde_json::Value,
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native FontFace install request id",
+                "must be positive",
+            ));
+        }
+        self.evaluate_with_page_events_and_dispatch(
+            "undefined;",
+            document,
+            document_url,
+            origin,
+            viewport,
+            &NativePageEventBatch::default(),
+            Some(NativePageDispatch::FontFaceInstall {
+                request_id,
+                payload,
+            }),
+        )
+    }
+
     pub(crate) fn resolve_service_worker_registration(
         &self,
         request_id: u32,
@@ -16036,6 +16265,16 @@ fn dispatch_page_payload(
             request_id,
             payload,
         )?,
+        NativePageDispatch::FontFaceInstall {
+            request_id,
+            payload,
+        } => dispatch_page_resolver(
+            &ctx,
+            "__glassResolveFontFaceInstall",
+            "native FontFace install acknowledgement",
+            request_id,
+            payload,
+        )?,
         NativePageDispatch::WebSocket { socket_id, payload } => dispatch_page_resolver(
             &ctx,
             "__glassDispatchWebSocketEvent",
@@ -17281,7 +17520,8 @@ mod native_font_face_tests {
             .expect("font source must serialize");
         let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-inline-test")
             .expect("native JavaScript runtime must construct");
-        let mut document = NativeDocument::empty();
+        let mut document = NativeDocument::parse("<body></body>", &NativeEngineLimits::default())
+            .expect("font-face document must parse");
         let started = runtime
             .evaluate(
                 &format!(
@@ -17289,7 +17529,7 @@ mod native_font_face_tests {
                       const face = new FontFace("Inline Sans", {source});
                       globalThis.__inlineFontFace = face;
                       document.fonts.add(face);
-                      face.load();
+                      face.load().then(() => {{ document.body.textContent = "accepted"; }});
                       return true;
                     }})()"#
                 ),
@@ -17299,19 +17539,39 @@ mod native_font_face_tests {
                 Viewport::default(),
             )
             .expect("inline FontFace source must evaluate");
-        document
-            .apply_script_commands(&started.commands)
-            .expect("initial FontFace commands must apply");
+        let pending = runtime
+            .evaluate(
+                "[globalThis.__inlineFontFace.status, document.fonts.status, document.body.textContent]",
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("pending FontFace state must evaluate");
+        assert_eq!(pending.value, serde_json::json!(["loading", "loading", ""]));
+        apply_document_commands_with_font_face_ack(
+            &mut document,
+            &runtime,
+            "about:blank",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+            &started.commands,
+            false,
+        )
+        .expect("initial FontFace commands must apply and acknowledge");
         let evaluation = runtime
             .evaluate(
-                "[globalThis.__inlineFontFace.status, document.fonts.status, document.fonts.size]",
+                "[globalThis.__inlineFontFace.status, document.fonts.status, document.fonts.size, document.body.textContent]",
                 &document,
                 "about:blank",
                 &NativeOrigin::Opaque,
                 Viewport::default(),
             )
             .expect("inline FontFace completion must evaluate");
-        assert_eq!(evaluation.value, serde_json::json!(["loaded", "loaded", 1]));
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["loaded", "loaded", 1, "accepted"])
+        );
         let install = started
             .commands
             .iter()
@@ -17331,9 +17591,6 @@ mod native_font_face_tests {
                 && style == "normal"
                 && !body_base64.is_empty()
         ));
-        document
-            .apply_script_commands(&evaluation.commands)
-            .expect("native document must admit inline FontFace bytes");
         let wire = document.to_content_wire();
         assert_eq!(wire.font_resources.len(), 1);
         assert_eq!(wire.font_resources[0].family, "Inline Sans");
@@ -17410,9 +17667,23 @@ mod native_font_face_tests {
                 Viewport::default(),
             )
             .expect("local FontFace source must evaluate");
-        document
-            .apply_script_commands(&started.commands)
-            .expect("local FontFace commands must apply");
+        assert!(
+            started
+                .commands
+                .iter()
+                .any(|command| matches!(command, NativeScriptCommand::FontFaceInstall { .. })),
+            "local FontFace load must emit an installation command"
+        );
+        apply_document_commands_with_font_face_ack(
+            &mut document,
+            &runtime,
+            "about:blank",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+            &started.commands,
+            false,
+        )
+        .expect("local FontFace commands must apply and acknowledge");
         let evaluation = runtime
             .evaluate(
                 "[globalThis.__localFontFace.status, document.fonts.status]",
@@ -17423,9 +17694,6 @@ mod native_font_face_tests {
             )
             .expect("local FontFace completion must evaluate");
         assert_eq!(evaluation.value, serde_json::json!(["loaded", "loaded"]));
-        document
-            .apply_script_commands(&evaluation.commands)
-            .expect("local FontFace bytes must apply");
         assert_eq!(document.to_content_wire().font_resources.len(), 1);
     }
 }

@@ -20079,7 +20079,7 @@ fn worker_bootstrap(
     if (text.length === 0 || text.length > {fetch_body_limit}
         || /[\u0000-\u001f\u007f]/.test(text)
         || !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(essence))
-      throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest MIME type is invalid", "SyntaxError");
+      return "application/octet-stream";
     return text;
   }};
   const workerXhrApplySyncResponse = (xhr, payload, responseType) => {{
@@ -29167,7 +29167,7 @@ fn document_bootstrap(
     if (text.length === 0 || text.length > nativeXmlMaxBytes
         || /[\u0000-\u001f\u007f]/.test(text)
         || !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(essence))
-      throw new DOMExceptionNative("native XMLHttpRequest MIME type is invalid", "SyntaxError");
+      return "application/octet-stream";
     return text;
   }};
   const nativeXhrApplySyncResponse = (xhr, payload, responseType) => {{

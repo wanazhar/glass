@@ -145,15 +145,15 @@ asynchronous requests without changing the bounded transport owner.
 
 Slice 444 closes the XHR MIME-override projection boundary. Page and
 dedicated/SharedWorker XHR now expose `overrideMimeType()` with bounded MIME
-essence validation, `SyntaxError` rejection for malformed values, and
-`InvalidStateError` after loading has begun or completed. An override set before
-`open()` survives that reset as required, while each new response projection
-starts with a clean response-content slot. The page uses the override for
-XML/HTML document detection and parsing, and page/worker Blob responses use it
-for their MIME type; `getResponseHeader()` and `getAllResponseHeaders()` still
-report the actual wire headers. Async and synchronous XHR share this contract;
-full MIME-parameter parsing and complete XHR/Web IDL parity remain issue #40
-gates.
+essence validation, maps malformed values to `application/octet-stream`, and
+raises `InvalidStateError` after loading has begun or completed. An override set
+before `open()` survives that reset as required, while each new response
+projection starts with a clean response-content slot. The page uses the
+override for XML/HTML document detection and parsing, and page/worker Blob
+responses use it for their MIME type; `getResponseHeader()` and
+`getAllResponseHeaders()` still report the actual wire headers. Async and
+synchronous XHR share this contract; full MIME-parameter parsing and complete
+XHR/Web IDL parity remain issue #40 gates.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

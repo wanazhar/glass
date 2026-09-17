@@ -15,7 +15,8 @@ projection without rewriting the response headers received from the network.
 
 - Page and worker `XMLHttpRequest` expose `overrideMimeType()` with a bounded
   tokenized MIME type/subtype validator. Empty, control-character, oversized,
-  or malformed MIME essences raise `SyntaxError`.
+  or malformed MIME essences select the fallback
+  `application/octet-stream` MIME type.
 - Calling the method in `UNSENT` or `OPENED` stores the override. Calling it in
   `LOADING` or `DONE` raises `InvalidStateError`.
 - `open()` resets the request/response state but preserves the stored override,
@@ -35,8 +36,8 @@ projection without rewriting the response headers received from the network.
   to sync and async response projection while retaining wire headers for
   response-header access.
 - Added a content-process witness covering invalid and post-DONE state errors,
-  pre-`open()` persistence, XML document identity/text, worker Blob type, and
-  wire `Content-Type` preservation.
+  pre-`open()` persistence, invalid-MIME fallback, XML document identity/text,
+  worker Blob type, and wire `Content-Type` preservation.
 
 ## Tradeoffs
 

@@ -2293,6 +2293,53 @@ async fn native_local_worker_exposes_url_search_params_and_navigator() {
 }
 
 #[tokio::test]
+async fn native_local_worker_url_objects_are_mutable_and_search_params_are_live() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-url-mutation-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-url-mutation-script",
+            "const url = new URL('/start?old=one', 'https://example.test:8443/base/page'); url.pathname = '/changed/../final'; url.searchParams.set('old', 'two words'); url.searchParams.append('z', '3'); url.hash = 'new fragment'; let invalid = ''; try { url.protocol = 'ftp'; } catch (error) { invalid = error.name; } postMessage({ instance: url instanceof URL, values: [url.href, url.origin, url.pathname, url.search, url.hash, url.searchParams.get('old'), url.searchParams.get('z')], invalid });",
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-url-mutation-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('fixture://worker-url-mutation-script'); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); true",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "messages": [{
+                "instance": true,
+                "values": [
+                    "https://example.test:8443/final?old=two+words&z=3#new%20fragment",
+                    "https://example.test:8443",
+                    "/final",
+                    "?old=two+words&z=3",
+                    "#new%20fragment",
+                    "two words",
+                    "3",
+                ],
+                "invalid": "TypeError",
+            }],
+            "errors": [],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_worker_fetch_honors_abort_signal() {
     let config = NativeEngineConfig::default()
         .with_fixture(

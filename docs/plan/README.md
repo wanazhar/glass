@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-460`, following completed
 `native-engine-browser-459`, following completed
 `native-engine-browser-458`, following completed
 `native-engine-browser-457`, following completed
@@ -119,7 +120,12 @@ process-backed page module scripts resolve absolute runtime-owned Blob imports
 through the bounded module-graph owner, reusing CSP, Blob-origin, MIME, size,
 UTF-8, deduplication, and graph-limit gates without HTTP/cache fallback.
 Relative Blob-derived dependency naming and parser-created cross-realm Blob
-modules remain separate issue #40 gates.
+modules remain separate issue #40 gates. The completed local dynamic-script
+follow-up is [`native-engine-browser-460`](tasks/native-engine-browser-460.md):
+fixture and other non-network documents can load a runtime-owned Blob URL as a
+dynamic classic script through the local owner, preserving bounded MIME, size,
+UTF-8, integrity, and load/error checks without a network path. Media,
+popup/window, and cross-realm object-URL consumers remain issue #40 gates.
 
 The completed report-only navigation preflight slice is
 [native-engine-browser-413](tasks/native-engine-browser-413.md): the

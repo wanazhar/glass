@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-448`, following completed
 `native-engine-browser-447`, following completed
 `native-engine-browser-446`, following completed
 `native-engine-browser-445`, following completed
@@ -193,6 +194,15 @@ cookie, redirect, cache, and credential policy owners remain unchanged. The
 inline worker response-stream cached-body branch is also restored so fixture
 responses retain shared 8 KiB demand-driven chunking. Complete URL/Fetch Web
 IDL parity and broader method/scheme admission remain issue #40 work.
+
+Slice 448 closes the shared JavaScript URL-resolution boundary. Page and
+dedicated/SharedWorker URL construction now delegates bounded absolute and
+relative parsing to the existing Rust URL owner before projecting canonical
+fields into each realm. Special-scheme handling, default-port removal,
+host/path/query/fragment escaping, and dot-segment resolution no longer drift
+between JavaScript and native resource/policy consumers. The URL Web IDL
+objects retain their realm-local mutable surface; complete setter, descriptor,
+blob/file-origin, and full scheme-matrix parity remain issue #40 work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

@@ -47888,6 +47888,65 @@ async fn native_local_url_attributes_resolve_and_persist_through_dom_commands() 
 }
 
 #[tokio::test]
+async fn native_local_url_resolution_uses_canonical_url_parser() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://url-parser/index.html", "<p>URL parser</p>")
+        .unwrap()
+        .with_initial_url("fixture://url-parser/index.html");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    const spaced = new URL('http://f:80/ b ? d # e ');
+                    const defaultPort = new URL('https://Example.COM:443/');
+                    const schemeRelative = new URL('//Example.COM:443/path', 'https://base.test/root');
+                    const absoluteSpecial = new URL('http:example.com/');
+                    const baseSpecial = new URL('http:example.com/', 'http://example.org/foo/bar');
+                    const opaque = new URL('data:text/plain,hello world');
+                    let invalid = '';
+                    try { new URL('http://bad host/'); } catch (error) { invalid = error.name; }
+                    return {
+                        spaced: [spaced.href, spaced.origin, spaced.pathname, spaced.search, spaced.hash],
+                        defaultPort: [defaultPort.href, defaultPort.host, defaultPort.port, defaultPort.origin],
+                        schemeRelative: [schemeRelative.href, schemeRelative.origin],
+                        special: [absoluteSpecial.href, baseSpecial.href],
+                        opaque: [opaque.href, opaque.origin, opaque.pathname],
+                        invalid,
+                    };
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "spaced": [
+                "http://f/%20b%20?%20d%20#%20e",
+                "http://f",
+                "/%20b%20",
+                "?%20d%20",
+                "#%20e",
+            ],
+            "defaultPort": [
+                "https://example.com/",
+                "example.com",
+                "",
+                "https://example.com",
+            ],
+            "schemeRelative": ["https://example.com/path", "https://example.com"],
+            "special": [
+                "http://example.com/",
+                "http://example.org/foo/example.com/",
+            ],
+            "opaque": ["data:text/plain,hello world", "null", "text/plain,hello world"],
+            "invalid": "TypeError",
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_namespace_dom_preserves_svg_mathml_and_foreign_content() {
     let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(
         "data:text/html,%3Cbody%3E%3Csvg%20id%3D%27parsed-svg%27%3E%3Crect%20id%3D%27parsed-rect%27%3E%3C%2Frect%3E%3CforeignObject%20id%3D%27foreign%27%3E%3Cdiv%20id%3D%27foreign-html%27%3Econtent%3C%2Fdiv%3E%3C%2FforeignObject%3E%3C%2Fsvg%3E%3C%2Fbody%3E",

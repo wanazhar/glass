@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-473`, following completed
 `native-engine-browser-472`, following completed
 `native-engine-browser-471`, following completed
 `native-engine-browser-470`, following completed
@@ -367,6 +368,17 @@ script command and event paths. This slice deliberately does not claim a
 codec/decoder or playback implementation, static HTTP media loading, or full
 media/Web IDL parity; those and the remaining browser certification gates stay
 open under issue #40.
+
+Slice `native-engine-browser-473` closes the explicitly rooted file-resource
+boundary. `NativeEngineConfig` can provide bounded absolute directory roots;
+the loader canonicalizes each requested `file:` path, rejects credentials,
+remote hosts, directories, symlink escapes, and unconfigured files, and reads
+documents/media within their existing byte limits. Relative file navigation
+and static/dynamic media use the same native resource/event/timeline owners.
+The roots cross the content-process IPC start message and are bound read-only
+by the Linux/macOS sandbox. Network documents cannot use this path to read a
+local file. File-backed scripts, stylesheets, images, fonts, workers,
+downloads, and complete file-origin/Web IDL parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit
@@ -6210,9 +6222,16 @@ native MCP routes supported operations through the same session boundary.
 ## Configuration and limits
 
 `NativeEngineConfig` contains an initial URL, a viewport descriptor, fixture
-documents, and `NativeEngineLimits`. The viewport is the stable owner for
+documents, explicitly configured `allowed_file_roots`, and
+`NativeEngineLimits`. The viewport is the stable owner for
 bounded layout, root scrolling, and logical paint output; it does not imply
 general browser layout or painting.
+
+Filesystem access is disabled when `allowed_file_roots` is empty. Every root
+must be an absolute existing UTF-8 directory and is transferred to the
+isolated content-process owner; a file URL must resolve to a regular file
+under one of those roots after canonicalization. This is an allowlist for
+native file resources, not a general host-filesystem capability.
 
 The default limits are intentionally bounded:
 
@@ -6240,13 +6259,16 @@ The current resource boundary supports:
 - `data:text/html;base64,...` with standard padded RFC 4648 base64 decoding to
   UTF-8 HTML; and
 - exact `fixture://...` URLs registered in `NativeEngineConfig`; and
+- explicitly rooted `file://` HTML documents, with bounded HTML decoding,
+  relative file URL resolution, and local media metadata admission; and
 - HTTP(S) HTML documents through the asynchronous native navigation path,
   with an eight-redirect limit, a 30-second request timeout, configured
   document-size enforcement, HTML MIME validation, bounded charset decoding,
   process-owned session cookies, and a bounded in-memory document cache.
 
-Filesystem, custom schemes, and resource candidates denied by the shared
-credential/mixed-content policy fail closed. The loader has private CSP
+Custom schemes, file paths outside the configured roots, network-to-file media,
+and resource candidates denied by the shared credential/mixed-content policy
+fail closed. The loader has private CSP
 directive-family and CORS authorization primitives. The content process now
 routes bounded stylesheets, scripts/modules, images, frames, dedicated
 workers, Fetch/XHR, WebSocket/EventSource, and service-worker registration,

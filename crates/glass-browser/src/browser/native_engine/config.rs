@@ -15,6 +15,10 @@ pub const MAX_NATIVE_HISTORY_ENTRIES: usize = 64;
 pub const MAX_NATIVE_SCHEDULER_TASKS: usize = 256;
 /// Maximum registered local fixtures.
 pub const MAX_NATIVE_FIXTURES: usize = 32;
+/// Maximum explicitly configured local filesystem roots for one native engine.
+pub const MAX_NATIVE_FILE_ROOTS: usize = 16;
+/// Maximum UTF-8 path length transferred for one local filesystem root.
+pub const MAX_NATIVE_FILE_ROOT_BYTES: usize = 4096;
 /// Maximum viewport dimension accepted before layout exists.
 pub const MAX_NATIVE_VIEWPORT_DIMENSION: u32 = 16_384;
 /// Maximum persisted `window.name` text retained by one native browsing
@@ -164,6 +168,9 @@ pub struct NativeEngineConfig {
     pub limits: NativeEngineLimits,
     pub fixtures: Vec<NativeFixture>,
     pub storage_path: Option<PathBuf>,
+    /// Explicit local filesystem roots available to native `file:` loading.
+    /// An empty list keeps filesystem access disabled.
+    pub allowed_file_roots: Vec<PathBuf>,
 }
 
 impl Default for NativeEngineConfig {
@@ -179,6 +186,7 @@ impl Default for NativeEngineConfig {
             limits: NativeEngineLimits::default(),
             fixtures: Vec::new(),
             storage_path: None,
+            allowed_file_roots: Vec::new(),
         }
     }
 }
@@ -226,6 +234,11 @@ impl NativeEngineConfig {
 
     pub fn with_storage_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.storage_path = Some(path.into());
+        self
+    }
+
+    pub fn with_allowed_file_root(mut self, path: impl Into<PathBuf>) -> Self {
+        self.allowed_file_roots.push(path.into());
         self
     }
 
@@ -282,9 +295,56 @@ impl NativeEngineConfig {
                 "must be absolute for sandboxed content-process transfer",
             ));
         }
+        if self.allowed_file_roots.len() > MAX_NATIVE_FILE_ROOTS {
+            return Err(NativeEngineError::limit(
+                "allowed file roots",
+                MAX_NATIVE_FILE_ROOTS,
+                self.allowed_file_roots.len(),
+            ));
+        }
+        let mut roots = std::collections::BTreeSet::new();
+        for root in &self.allowed_file_roots {
+            if root.as_os_str().is_empty() {
+                return Err(NativeEngineError::invalid(
+                    "allowed file root",
+                    "must not be empty",
+                ));
+            }
+            if !root.is_absolute() {
+                return Err(NativeEngineError::invalid(
+                    "allowed file root",
+                    "must be absolute for sandboxed file access",
+                ));
+            }
+            let root_text = root.to_str().ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "allowed file root",
+                    "must be valid UTF-8 for content-process transfer",
+                )
+            })?;
+            if root_text.len() > MAX_NATIVE_FILE_ROOT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "allowed file root bytes",
+                    MAX_NATIVE_FILE_ROOT_BYTES,
+                    root_text.len(),
+                ));
+            }
+            if !root.is_dir() {
+                return Err(NativeEngineError::invalid(
+                    "allowed file root",
+                    "must point to an existing directory",
+                ));
+            }
+            if !roots.insert(root) {
+                return Err(NativeEngineError::invalid(
+                    "allowed file roots",
+                    "roots must be unique",
+                ));
+            }
+        }
         if !is_supported_url_shape(&self.initial_url) {
             return Err(NativeEngineError::UnsupportedUrl {
-                reason: "native navigation accepts about:blank, data:text/html, fixture://, or HTTP(S) URLs".into(),
+                reason: "native navigation accepts about:blank, data:text/html, fixture://, file://, or HTTP(S) URLs".into(),
             });
         }
         if self.fixtures.len() > self.limits.max_fixtures {
@@ -371,7 +431,12 @@ pub(crate) fn is_supported_url_shape(value: &str) -> bool {
     resource_url == "about:blank"
         || resource_url.starts_with("data:")
         || resource_url.starts_with("fixture:")
+        || is_file_url(resource_url)
         || is_network_url(resource_url)
+}
+
+pub(crate) fn is_file_url(value: &str) -> bool {
+    Url::parse(without_fragment(value)).is_ok_and(|url| url.scheme().eq_ignore_ascii_case("file"))
 }
 
 pub(crate) fn is_network_url(value: &str) -> bool {

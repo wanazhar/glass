@@ -1,6 +1,6 @@
 use super::config::{
-    MAX_NATIVE_DOCUMENT_BYTES, NativeEngineConfig, canonical_fixture_url, is_network_url,
-    validate_url_text, without_fragment,
+    MAX_NATIVE_DOCUMENT_BYTES, NativeEngineConfig, canonical_fixture_url, is_file_url,
+    is_network_url, validate_url_text, without_fragment,
 };
 use super::environment::NativeEnvironmentOverrides;
 use super::error::NativeEngineError;
@@ -17,6 +17,9 @@ use reqwest::header::HeaderMap;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fs::{self, File};
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
@@ -770,6 +773,7 @@ pub(crate) struct NativeFetchResponseStream {
 #[derive(Clone, PartialEq)]
 pub struct NativeResourceLoader {
     fixtures: BTreeMap<String, String>,
+    allowed_file_roots: Vec<PathBuf>,
     max_document_bytes: usize,
     network: NativeNetworkState,
     environment: NativeEnvironmentOverrides,
@@ -782,6 +786,7 @@ impl fmt::Debug for NativeResourceLoader {
         formatter
             .debug_struct("NativeResourceLoader")
             .field("fixture_count", &self.fixtures.len())
+            .field("allowed_file_root_count", &self.allowed_file_roots.len())
             .field("max_document_bytes", &self.max_document_bytes)
             .field("cached_document_count", &self.network.cache.len())
             .field("cached_image_count", &self.network.image_cache.len())
@@ -2399,6 +2404,90 @@ fn subresource_response_allowed(
     }
 }
 
+fn canonical_file_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>, NativeEngineError> {
+    let mut canonical_roots = Vec::with_capacity(roots.len());
+    for root in roots {
+        let canonical = fs::canonicalize(root).map_err(|_| {
+            NativeEngineError::invalid("allowed file root", "must point to an existing directory")
+        })?;
+        if !canonical.is_dir() {
+            return Err(NativeEngineError::invalid(
+                "allowed file root",
+                "must point to an existing directory",
+            ));
+        }
+        if !canonical_roots.iter().any(|current| current == &canonical) {
+            canonical_roots.push(canonical);
+        }
+    }
+    Ok(canonical_roots)
+}
+
+fn file_url_path(url: &Url, resource_name: &str) -> Result<PathBuf, NativeEngineError> {
+    if !url.scheme().eq_ignore_ascii_case("file") {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: format!("{resource_name} URL must use the file scheme"),
+        });
+    }
+    if url
+        .host_str()
+        .is_some_and(|host| !host.eq_ignore_ascii_case("localhost"))
+    {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: format!("{resource_name} URL host must be empty or localhost"),
+        });
+    }
+    url.to_file_path()
+        .map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: format!("{resource_name} URL could not be converted to a local path"),
+        })
+}
+
+fn read_bounded_file(
+    path: &Path,
+    max_bytes: usize,
+    resource_name: &str,
+) -> Result<Vec<u8>, NativeEngineError> {
+    let mut file = File::open(path).map_err(|_| NativeEngineError::UnsupportedUrl {
+        reason: format!("{resource_name} is not readable"),
+    })?;
+    let read_limit = u64::try_from(max_bytes.saturating_add(1)).unwrap_or(u64::MAX);
+    let mut bytes = Vec::with_capacity(max_bytes.min(8192));
+    file.by_ref()
+        .take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: format!("{resource_name} could not be read"),
+        })?;
+    if bytes.len() > max_bytes {
+        return Err(NativeEngineError::limit(
+            resource_name,
+            max_bytes,
+            bytes.len(),
+        ));
+    }
+    Ok(bytes)
+}
+
+fn file_media_type(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "mp3" => Some("audio/mpeg"),
+        "ogg" | "oga" | "opus" => Some("audio/ogg"),
+        "wav" | "wave" => Some("audio/wav"),
+        "weba" => Some("audio/webm"),
+        "mp4" | "m4a" | "m4v" => Some(if extension == "m4v" {
+            "video/mp4"
+        } else {
+            "audio/mp4"
+        }),
+        "ogv" => Some("video/ogg"),
+        "webm" => Some("video/webm"),
+        "m3u8" => Some("application/vnd.apple.mpegurl"),
+        _ => None,
+    }
+}
+
 impl NativeResourceLoader {
     pub(crate) fn new(config: &NativeEngineConfig) -> Result<Self, NativeEngineError> {
         config.validate()?;
@@ -2407,9 +2496,11 @@ impl NativeResourceLoader {
             .iter()
             .map(|fixture| (fixture.url.clone(), fixture.html.clone()))
             .collect();
+        let allowed_file_roots = canonical_file_roots(&config.allowed_file_roots)?;
         let cookies = load_cookie_profile(config.storage_path.as_deref())?;
         Ok(Self {
             fixtures,
+            allowed_file_roots,
             max_document_bytes: config.limits.max_document_bytes,
             network: NativeNetworkState::from_profile(cookies)?,
             environment: NativeEnvironmentOverrides::default(),
@@ -2421,6 +2512,7 @@ impl NativeResourceLoader {
     pub(crate) fn for_content_process(
         max_document_bytes: usize,
         storage_path: Option<&std::path::Path>,
+        allowed_file_roots: &[PathBuf],
     ) -> Result<Self, NativeEngineError> {
         if max_document_bytes == 0 || max_document_bytes > MAX_NATIVE_DOCUMENT_BYTES {
             return Err(NativeEngineError::invalid(
@@ -2428,15 +2520,48 @@ impl NativeResourceLoader {
                 format!("must be between 1 and {MAX_NATIVE_DOCUMENT_BYTES}"),
             ));
         }
+        let allowed_file_roots = canonical_file_roots(allowed_file_roots)?;
         let cookies = load_cookie_profile(storage_path)?;
         Ok(Self {
             fixtures: BTreeMap::new(),
+            allowed_file_roots,
             max_document_bytes,
             network: NativeNetworkState::from_profile(cookies)?,
             environment: NativeEnvironmentOverrides::default(),
             cookie_changes: Vec::new(),
             csp_violations: Vec::new(),
         })
+    }
+
+    pub(crate) fn allowed_file_roots(&self) -> &[PathBuf] {
+        &self.allowed_file_roots
+    }
+
+    fn allowed_file_path(
+        &self,
+        url: &Url,
+        resource_name: &str,
+    ) -> Result<PathBuf, NativeEngineError> {
+        let requested_path = file_url_path(url, resource_name)?;
+        let canonical_path =
+            fs::canonicalize(&requested_path).map_err(|_| NativeEngineError::UnsupportedUrl {
+                reason: format!("{resource_name} is not an accessible local file"),
+            })?;
+        if !canonical_path.is_file() {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: format!("{resource_name} must resolve to a regular file"),
+            });
+        }
+        if !self
+            .allowed_file_roots
+            .iter()
+            .any(|root| canonical_path.starts_with(root))
+        {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: format!("{resource_name} is outside the configured file roots"),
+            });
+        }
+        Ok(canonical_path)
     }
 
     pub(crate) fn set_environment(
@@ -3587,7 +3712,7 @@ impl NativeResourceLoader {
         Ok(())
     }
 
-    /// Load one supported local resource without filesystem or network access.
+    /// Load one supported local resource without network access.
     /// HTTP(S) resources use [`Self::load_async`] so blocking transport never
     /// enters the synchronous deterministic path.
     pub fn load(&self, url: &str) -> Result<NativeResource, NativeEngineError> {
@@ -3616,8 +3741,27 @@ impl NativeResourceLoader {
                 body: body.clone(),
             });
         }
+        if is_file_url(resource_url) {
+            return self.load_file_document(url);
+        }
         Err(NativeEngineError::UnsupportedUrl {
-            reason: "HTTP(S) loading requires asynchronous native navigation; filesystem and other URL schemes are unsupported".into(),
+            reason: "HTTP(S) loading requires asynchronous native navigation; other URL schemes are unsupported".into(),
+        })
+    }
+
+    fn load_file_document(&self, url: &str) -> Result<NativeResource, NativeEngineError> {
+        let parsed =
+            Url::parse(without_fragment(url)).map_err(|_| NativeEngineError::UnsupportedUrl {
+                reason: "file document URL is not valid URL syntax".into(),
+            })?;
+        reject_credentials(&parsed)?;
+        let path = self.allowed_file_path(&parsed, "file document")?;
+        let bytes = read_bounded_file(&path, self.max_document_bytes, "file document")?;
+        let body = decode_html_body(&bytes, None, self.max_document_bytes)?;
+        Ok(NativeResource {
+            url: url.into(),
+            origin: NativeOrigin::from_url(&parsed)?,
+            body,
         })
     }
 
@@ -5574,6 +5718,47 @@ impl NativeResourceLoader {
         media_metadata_from_bytes(object_url.content_type.as_deref(), &object_url.body)
     }
 
+    /// Admit a file-backed media resource for an explicitly rooted file
+    /// document. The file is canonicalized and bounded before MIME metadata
+    /// is exposed; no file bytes enter the network or HTTP cache owners.
+    pub(crate) fn load_local_file_media(
+        &self,
+        document_url: &str,
+        src: &str,
+    ) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("media URL", src)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "media owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        if !is_file_url(document_url.as_str()) {
+            return Ok(None);
+        }
+        let Some(target_url) = resolve_media_url(&document_url, src)? else {
+            return Ok(None);
+        };
+        if !target_url.scheme().eq_ignore_ascii_case("file") {
+            return Ok(None);
+        }
+        match self.load_file_media_url(&target_url) {
+            Ok(metadata) => Ok(metadata),
+            Err(NativeEngineError::UnsupportedUrl { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn load_file_media_url(
+        &self,
+        target_url: &Url,
+    ) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
+        let path = self.allowed_file_path(target_url, "file media")?;
+        let bytes = read_bounded_file(&path, MAX_NATIVE_MEDIA_BYTES, "file media")?;
+        media_metadata_from_bytes(file_media_type(&path), &bytes)
+    }
+
     pub(crate) async fn load_media_async(
         &mut self,
         document_url: &str,
@@ -5625,6 +5810,12 @@ impl NativeResourceLoader {
         let Some(target_url) = resolve_media_url(&document_url, src)? else {
             return Ok(None);
         };
+        if target_url.scheme().eq_ignore_ascii_case("file") {
+            if !is_file_url(document_url.as_str()) {
+                return Ok(None);
+            }
+            return self.load_file_media_url(&target_url);
+        }
         if !is_network_url(document_url.as_str())
             && !target_url.scheme().eq_ignore_ascii_case("data")
         {
@@ -6583,6 +6774,7 @@ fn resolve_media_url(document_url: &Url, href: &str) -> Result<Option<Url>, Nati
     if !is_network_url(without_fragment(target_url.as_str()))
         && !target_url.scheme().eq_ignore_ascii_case("blob")
         && !target_url.scheme().eq_ignore_ascii_case("data")
+        && !target_url.scheme().eq_ignore_ascii_case("file")
     {
         return Ok(None);
     }
@@ -8155,8 +8347,8 @@ mod tests {
     };
     use super::{
         MAX_NATIVE_CACHE_ENTRIES, MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, MAX_NATIVE_MEDIA_BYTES,
-        NativeCookieProfileEntry, NativeCorsMode, NativeEngineConfig, NativeFetchMethod,
-        NativeInlineCspKind, NativeNavigationMethod, NativeNavigationPolicyKind,
+        NativeCookieProfileEntry, NativeCorsMode, NativeEngineConfig, NativeEngineError,
+        NativeFetchMethod, NativeInlineCspKind, NativeNavigationMethod, NativeNavigationPolicyKind,
         NativeNetworkState, NativeRequestBody, NativeResource, NativeResourceLoader,
         NativeSubresourceKind, cache_control_max_age, cache_control_requires_revalidation,
         content_security_policy, cors_origin_header, cors_preflight_response_allowed,
@@ -8217,6 +8409,45 @@ mod tests {
         );
         assert!(decode_html_body(b"\xff", Some("us-ascii"), 32).is_err());
         assert!(decode_html_body(b"text", Some("x-unknown"), 32).is_err());
+    }
+
+    #[test]
+    fn rooted_file_loader_reads_documents_and_denies_escape() {
+        let root =
+            std::env::temp_dir().join(format!("glass-native-file-loader-{}", std::process::id()));
+        let outside = std::env::temp_dir().join(format!(
+            "glass-native-file-loader-outside-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let page_path = root.join("index.html");
+        let media_path = root.join("clip.wav");
+        let outside_path = outside.join("outside.html");
+        fs::write(&page_path, "<p>rooted</p>").unwrap();
+        fs::write(&media_path, b"RIFFxxxxWAVE").unwrap();
+        fs::write(&outside_path, "<p>outside</p>").unwrap();
+        let page_url = Url::from_file_path(&page_path).unwrap().to_string();
+        let outside_url = Url::from_file_path(&outside_path).unwrap().to_string();
+        let config = NativeEngineConfig::default().with_allowed_file_root(root.clone());
+        let loader = NativeResourceLoader::new(&config).unwrap();
+
+        assert_eq!(loader.load(&page_url).unwrap().body, "<p>rooted</p>");
+        assert!(matches!(
+            loader.load(&outside_url),
+            Err(NativeEngineError::UnsupportedUrl { .. })
+        ));
+        let metadata = loader
+            .load_local_file_media(&page_url, "clip.wav")
+            .unwrap()
+            .unwrap();
+        assert_eq!(metadata.content_type, "audio/wav");
+        assert_eq!(metadata.byte_length, 12);
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 
     #[test]
@@ -8868,6 +9099,7 @@ mod tests {
         let mut loader = NativeResourceLoader::for_content_process(
             NativeEngineConfig::default().limits.max_document_bytes,
             None,
+            &[],
         )
         .unwrap();
         let document = Url::parse("http://app.test/page").unwrap();
@@ -9013,6 +9245,7 @@ mod tests {
         let mut loader = NativeResourceLoader::for_content_process(
             NativeEngineConfig::default().limits.max_document_bytes,
             None,
+            &[],
         )
         .unwrap();
         let document_url = "http://app.test/page";
@@ -9051,6 +9284,7 @@ mod tests {
         let mut loader = NativeResourceLoader::for_content_process(
             NativeEngineConfig::default().limits.max_document_bytes,
             None,
+            &[],
         )
         .unwrap();
         let document_url = "http://app.test/page";

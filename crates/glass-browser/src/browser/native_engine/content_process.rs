@@ -6,8 +6,8 @@
 
 use super::browsing_context::NATIVE_CONTEXT_ID;
 use super::config::{
-    MAX_NATIVE_NODES, NativeEngineLimits, Viewport, is_network_url, validate_context_id,
-    validate_url_text, validate_window_name, without_fragment,
+    MAX_NATIVE_NODES, NativeEngineLimits, Viewport, is_file_url, is_network_url,
+    validate_context_id, validate_url_text, validate_window_name, without_fragment,
 };
 use super::dom::{
     NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource,
@@ -1052,7 +1052,10 @@ pub(crate) struct NativeContentProcess {
 }
 
 impl NativeContentProcess {
-    pub(crate) async fn spawn(storage_path: Option<&Path>) -> Result<Self, NativeEngineError> {
+    pub(crate) async fn spawn(
+        storage_path: Option<&Path>,
+        allowed_file_roots: &[PathBuf],
+    ) -> Result<Self, NativeEngineError> {
         let path = worker_binary_path()?;
         if let Some(storage_path) = storage_path
             && !storage_path.exists()
@@ -1067,7 +1070,8 @@ impl NativeContentProcess {
                 &[],
             )?;
         }
-        let (mut command, mut sandbox) = prepare_worker_command(&path, storage_path)?;
+        let (mut command, mut sandbox) =
+            prepare_worker_command(&path, storage_path, allowed_file_roots)?;
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1139,6 +1143,7 @@ impl NativeContentProcess {
     pub(crate) async fn start(
         &mut self,
         storage_path: Option<&Path>,
+        allowed_file_roots: &[PathBuf],
         context_id: &str,
         frame_id: &str,
         window_name: &str,
@@ -1157,6 +1162,10 @@ impl NativeContentProcess {
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "storage_path": storage_path.map(|path| path.to_string_lossy().into_owned()),
+                "allowed_file_roots": allowed_file_roots
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>(),
                 "context_id": context_id,
                 "frame_id": frame_id,
                 "window_name": window_name,
@@ -4231,6 +4240,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut storage_state = NativeWebStorageState::default();
     let mut indexed_db_state = NativeIndexedDbState::default();
     let mut storage_profile_path: Option<PathBuf> = None;
+    let mut allowed_file_roots: Vec<PathBuf> = Vec::new();
     let mut storage_context_id = NATIVE_CONTEXT_ID.to_owned();
     let mut frame_id = NATIVE_CONTEXT_ID.to_owned();
     let mut window_name = String::new();
@@ -4344,6 +4354,18 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .get("storage_path")
                     .and_then(Value::as_str)
                     .map(PathBuf::from);
+                let requested_file_roots = request
+                    .get("allowed_file_roots")
+                    .map(|value| {
+                        serde_json::from_value::<Vec<PathBuf>>(value.clone()).map_err(|_| {
+                            NativeEngineError::invalid(
+                                "content-process allowed file roots",
+                                "must be an array of path strings",
+                            )
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
                 let requested_service_worker_clients = request
                     .get("service_worker_clients")
                     .map(|value| {
@@ -4399,6 +4421,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         }
                         service_workers.replace_client_states(requested_service_worker_clients)?;
                         storage_profile_path = requested_path;
+                        allowed_file_roots = requested_file_roots;
                         storage_context_id = requested_context_id.to_owned();
                         frame_id = requested_frame_id.to_owned();
                         window_name = requested_window_name.to_owned();
@@ -4854,6 +4877,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &load_request,
                         &mut resource_loader,
                         storage_profile_path.as_deref(),
+                        &allowed_file_roots,
                         &environment,
                         &mut service_workers,
                         resumed_fetch,
@@ -7103,6 +7127,7 @@ async fn load_content_resource(
     request: &Value,
     resource_loader: &mut Option<NativeResourceLoader>,
     storage_path: Option<&Path>,
+    allowed_file_roots: &[PathBuf],
     environment: &NativeEnvironmentOverrides,
     service_workers: &mut NativeServiceWorkerRegistry,
     resumed_fetch: Option<NativeServiceWorkerFetchCompletion>,
@@ -7144,9 +7169,12 @@ async fn load_content_resource(
                 .map_or(0, |resource| resource.body.len()),
         ));
     }
-    if !is_network_url(without_fragment(url)) && object_url.is_none() {
+    if !is_network_url(without_fragment(url))
+        && !is_file_url(without_fragment(url))
+        && object_url.is_none()
+    {
         return Err(NativeEngineError::UnsupportedUrl {
-            reason: "content process accepts only HTTP(S) document URLs".into(),
+            reason: "content process accepts only HTTP(S) or rooted file document URLs".into(),
         });
     }
     let method = match request
@@ -7328,6 +7356,7 @@ async fn load_content_resource(
             *resource_loader = Some(NativeResourceLoader::for_content_process(
                 max_document_bytes,
                 storage_path,
+                allowed_file_roots,
             )?);
             resource_loader
                 .as_mut()
@@ -12707,7 +12736,7 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_health_detects_an_exited_content_worker() {
-        let mut process = NativeContentProcess::spawn(None).await.unwrap();
+        let mut process = NativeContentProcess::spawn(None, &[]).await.unwrap();
         process.child.start_kill().unwrap();
         process.child.wait().await.unwrap();
 

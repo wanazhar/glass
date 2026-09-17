@@ -5113,6 +5113,16 @@ impl NativeResourceLoader {
         document_url: &str,
         src: &str,
     ) -> Result<Option<NativeImage>, NativeEngineError> {
+        self.load_image_async_with_object_url(document_url, src, None)
+            .await
+    }
+
+    pub(crate) async fn load_image_async_with_object_url(
+        &mut self,
+        document_url: &str,
+        src: &str,
+        object_url: Option<&NativeObjectUrlResource>,
+    ) -> Result<Option<NativeImage>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text("image URL", src)?;
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
@@ -5124,9 +5134,27 @@ impl NativeResourceLoader {
             return Ok(None);
         }
         reject_credentials(&document_url)?;
-        let Some(target_url) = resolve_subresource_url(&document_url, src)? else {
+        let Some(target_url) = resolve_subresource_url_with_blob(&document_url, src)? else {
             return Ok(None);
         };
+        if target_url.scheme().eq_ignore_ascii_case("blob") {
+            let Some(object_url) = object_url else {
+                return Ok(None);
+            };
+            NativeOrigin::from_blob_url(without_fragment(target_url.as_str()))?;
+            let Some(media_type) = object_url
+                .content_type
+                .as_deref()
+                .and_then(supported_image_media_type_text)
+            else {
+                return Ok(None);
+            };
+            return Ok(decode_image_bytes(
+                &object_url.body,
+                media_type,
+                MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+            ));
+        }
         if !mixed_content_allowed(&document_url, &target_url) {
             return Ok(None);
         }
@@ -5959,6 +5987,24 @@ pub(crate) fn resolve_subresource_url(
     Ok(Some(target_url))
 }
 
+fn resolve_subresource_url_with_blob(
+    document_url: &Url,
+    href: &str,
+) -> Result<Option<Url>, NativeEngineError> {
+    let target_url = document_url
+        .join(href)
+        .map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "subresource URL could not be resolved against the document".into(),
+        })?;
+    reject_credentials(&target_url)?;
+    if !is_network_url(without_fragment(target_url.as_str()))
+        && !target_url.scheme().eq_ignore_ascii_case("blob")
+    {
+        return Ok(None);
+    }
+    Ok(Some(target_url))
+}
+
 pub(crate) fn mixed_content_allowed(document_url: &Url, resource_url: &Url) -> bool {
     !(document_url.scheme().eq_ignore_ascii_case("https")
         && resource_url.scheme().eq_ignore_ascii_case("http"))
@@ -6354,21 +6400,25 @@ fn supported_image_media_type(
         reason: "HTTP image content type is not valid ASCII".into(),
     })?;
     let media_type = value.split(';').next().unwrap_or_default().trim();
-    Ok(if media_type.eq_ignore_ascii_case("image/png") {
+    Ok(supported_image_media_type_text(media_type))
+}
+
+fn supported_image_media_type_text(value: &str) -> Option<&'static str> {
+    if value.eq_ignore_ascii_case("image/png") {
         Some("image/png")
-    } else if media_type.eq_ignore_ascii_case("image/jpeg") {
+    } else if value.eq_ignore_ascii_case("image/jpeg") {
         Some("image/jpeg")
-    } else if media_type.eq_ignore_ascii_case("image/webp") {
+    } else if value.eq_ignore_ascii_case("image/webp") {
         Some("image/webp")
-    } else if media_type.eq_ignore_ascii_case("image/gif") {
+    } else if value.eq_ignore_ascii_case("image/gif") {
         Some("image/gif")
-    } else if media_type.eq_ignore_ascii_case("image/apng") {
+    } else if value.eq_ignore_ascii_case("image/apng") {
         Some("image/apng")
-    } else if media_type.eq_ignore_ascii_case("image/svg+xml") {
+    } else if value.eq_ignore_ascii_case("image/svg+xml") {
         Some("image/svg+xml")
     } else {
         None
-    })
+    }
 }
 
 fn script_content_type_allowed(

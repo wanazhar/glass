@@ -7372,7 +7372,7 @@ async fn load_content_resource(
     document.mark_inline_style_reports_seen();
     document.mark_content_security_policy_meta_processed();
     resource_events
-        .extend(load_external_images(&mut document, loader, &resource.url, viewport).await?);
+        .extend(load_external_images(&mut document, None, loader, &resource.url, viewport).await?);
     let (script_sources, script_resource_events) =
         load_page_script_sources(&document, loader, &resource.url).await?;
     resource_events.extend(script_resource_events);
@@ -7572,6 +7572,7 @@ fn dispatch_pending_csp_violations(
 
 async fn load_external_images(
     document: &mut NativeDocument,
+    runtime: Option<&NativeJavaScriptRuntime>,
     loader: &mut NativeResourceLoader,
     document_url: &str,
     viewport: Viewport,
@@ -7587,7 +7588,19 @@ async fn load_external_images(
             continue;
         }
         document.mark_image_load(node_index, source.clone(), viewport)?;
-        let event_kind = match loader.load_image_async(document_url, &source).await {
+        let object_url = runtime
+            .map(|runtime| runtime.object_url_resource(&source))
+            .transpose()?
+            .flatten();
+        let image = match runtime {
+            None => loader.load_image_async(document_url, &source).await,
+            Some(_) => {
+                loader
+                    .load_image_async_with_object_url(document_url, &source, object_url.as_ref())
+                    .await
+            }
+        };
+        let event_kind = match image {
             Ok(Some(image)) => {
                 document.set_image_resource(node_index, source, image)?;
                 NativeEventKind::Load
@@ -7608,7 +7621,19 @@ async fn load_external_images(
         {
             continue;
         }
-        if let Ok(Some(image)) = loader.load_image_async(document_url, &source).await {
+        let object_url = runtime
+            .map(|runtime| runtime.object_url_resource(&source))
+            .transpose()?
+            .flatten();
+        let image = match runtime {
+            None => loader.load_image_async(document_url, &source).await,
+            Some(_) => {
+                loader
+                    .load_image_async_with_object_url(document_url, &source, object_url.as_ref())
+                    .await
+            }
+        };
+        if let Ok(Some(image)) = image {
             document.set_background_image_resource(node_index, source, image)?;
         }
     }
@@ -9661,7 +9686,7 @@ async fn mutate_script_document(
         events.extend(next.apply_script_commands(&evaluation.commands)?);
     }
     let image_events = if let Some(loader) = loader.as_deref_mut() {
-        load_external_images(&mut next, loader, &document_url, viewport).await?
+        load_external_images(&mut next, Some(runtime), loader, &document_url, viewport).await?
     } else {
         Vec::new()
     };

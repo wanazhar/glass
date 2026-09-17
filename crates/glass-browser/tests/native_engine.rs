@@ -47878,6 +47878,67 @@ async fn native_content_process_loads_image_after_script_source_mutation() {
 }
 
 #[tokio::test]
+async fn native_content_process_loads_blob_object_url_image_subresources() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<img id='image' width='2' height='2'><div id='surface' style='width:2px;height:2px'></div><script>globalThis.imageLoaded = 0; document.getElementById('image').addEventListener('load', () => { globalThis.imageLoaded = 1; });</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); const surface = document.getElementById('surface'); const url = URL.createObjectURL(new Blob(['<svg xmlns=\\\"http://www.w3.org/2000/svg\\\" width=\\\"2\\\" height=\\\"2\\\"><rect width=\\\"2\\\" height=\\\"2\\\" fill=\\\"red\\\"/></svg>'], { type: 'image/svg+xml' })); image.src = url; surface.style.backgroundImage = `url(\\\"${url}\\\")`; return url; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(format!("blob:http://{address}/glass-native-1"))
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc, imageLoaded]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            true,
+            2,
+            2,
+            format!("blob:http://{address}/glass-native-1"),
+            1
+        ])
+    );
+    assert_eq!(
+        engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .filter(|command| matches!(command, NativeDisplayCommand::Image { .. }))
+            .count(),
+        2
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_reuses_cacheable_external_png_for_duplicate_images() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

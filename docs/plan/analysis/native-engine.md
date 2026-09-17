@@ -1,7 +1,10 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-497`, following
+expansion checkpoint is completed `native-engine-browser-500`, following
+completed `native-engine-browser-499`, following
+completed `native-engine-browser-498`, following
+completed `native-engine-browser-497`, following
 completed `native-engine-browser-496`, following
 completed `native-engine-browser-495`, following
 completed `native-engine-browser-494`, following
@@ -168,6 +171,17 @@ transactional host acknowledgement as other sources. Empty, oversized, and
 detached buffers fail explicitly. Typed-array identity, `tech()` descriptors,
 richer CSS tokenization, variable/color negotiation, installed-font discovery,
 and complete FontFace/Web IDL parity remain open.
+
+Slice 500 adds `tech()` descriptor filtering to FontFace source selection. The
+page parser consumes bounded `format()` and `tech()` functions with explicit
+quote/parenthesis tracking; candidates that require an unsupported technology
+are skipped before local lookup or network fetch. The native technology set is
+empty at this checkpoint, so color/variable requirements fail closed and a
+later ordinary candidate can load. If all candidates are filtered, the page
+retains the bounded `NetworkError` failure; malformed descriptor tails remain
+syntax errors. No unsupported technology enters the 497 transactional install
+path, while technology negotiation and complete FontFace/Web IDL parity remain
+open.
 
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
@@ -6992,11 +7006,11 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-499.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-500.md` is the latest completed browser
 task;
-`docs/plan/tasks/native-engine-browser-498.md` is the preceding completed
+`docs/plan/tasks/native-engine-browser-499.md` is the preceding completed
 browser task;
-`docs/plan/tasks/native-engine-browser-497.md` is the preceding completed
+`docs/plan/tasks/native-engine-browser-498.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-492.md` is the preceding completed
 browser task;

@@ -1,6 +1,9 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-500`, following completed
+`native-engine-browser-499`, following completed
+`native-engine-browser-498`, following completed
 `native-engine-browser-497`, following completed
 `native-engine-browser-496`, following completed
 `native-engine-browser-495`, following completed
@@ -163,6 +166,18 @@ and error-settlement path as other admitted sources. Empty, oversized, or
 detached inputs fail explicitly. Typed-array identity, `tech()` descriptors,
 richer CSS tokenization, variable/color negotiation, installed-font discovery,
 and complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 500 adds explicit `tech()` source-descriptor handling. The page realm
+parses bounded `format()`/`tech()` functions with quote- and
+parenthesis-aware boundaries and skips a candidate when any required
+technology is outside the native renderer's supported set. That set is
+currently empty, so color/variable technology requirements fail closed and a
+later ordinary source can load; if no eligible source remains, the existing
+bounded `NetworkError` path is used. Unknown trailing descriptors and malformed
+functions remain syntax errors. No unsupported technology crosses the
+transactional `FontFaceInstall` admission boundary. Technology negotiation,
+variable/color tables, installed-font discovery, and complete FontFace/Web IDL
+parity remain issue #40 gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between

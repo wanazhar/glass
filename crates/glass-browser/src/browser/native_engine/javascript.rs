@@ -17808,6 +17808,35 @@ mod native_font_face_tests {
     }
 
     #[test]
+    fn computed_style_projects_font_variant_caps() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-caps-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<style>#parent { font-variant-caps: all-small-caps; } #child { font-variant-caps: petite-caps; } #reset { font-variant-caps: initial; }</style><div id='parent'><span id='child'>Child</span><span id='reset'>Reset</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("font-variant-caps fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const parent = getComputedStyle(document.getElementById("parent"));
+                  const child = getComputedStyle(document.getElementById("child"));
+                  const reset = getComputedStyle(document.getElementById("reset"));
+                  return [parent.fontVariantCaps, child.getPropertyValue("font-variant-caps"), reset.fontVariantCaps];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("computed font-variant-caps surface must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["all-small-caps", "petite-caps", "normal"])
+        );
+    }
+
+    #[test]
     fn css_font_face_refresh_dispatches_loading_error_for_new_rules() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-refresh-test")
             .expect("native JavaScript runtime must construct");
@@ -37225,6 +37254,7 @@ fn document_bootstrap(
       contextual ? "contextual" : "no-contextual",
     ].join(" ");
   }};
+  const computedStyleFontVariantCaps = (value) => computedStyleEnumName(value, "normal");
   const computedStyleFeatureSettings = (value) => {{
     if (!value || typeof value !== "object" || !Array.isArray(value.values)) return "normal";
     const count = Math.max(0, Math.min(value.values.length, Number(value.count) || 0));
@@ -37280,7 +37310,7 @@ fn document_bootstrap(
     "border-left-color", "border-radius", "overflow", "overflow-x", "overflow-y", "white-space",
     "text-align", "text-align-last", "text-justify", "text-indent", "text-transform", "text-overflow",
     "text-decoration", "text-decoration-style", "text-decoration-thickness", "text-underline-offset",
-    "font-weight", "font-style", "font-stretch", "font-variant-ligatures", "font-feature-settings", "font-kerning", "line-height", "word-break", "word-spacing", "letter-spacing",
+    "font-weight", "font-style", "font-stretch", "font-variant-ligatures", "font-variant-caps", "font-feature-settings", "font-kerning", "line-height", "word-break", "word-spacing", "letter-spacing",
     "vertical-align", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
     "justify-content", "align-items", "align-self", "align-content", "gap", "row-gap", "column-gap",
     "order", "grid-template-columns", "grid-template-rows"
@@ -37374,6 +37404,7 @@ fn document_bootstrap(
     if (name === "font-style") return computedStyleEnumName(raw.font_style, "normal");
     if (name === "font-stretch") return computedStyleStretch(raw.font_stretch);
     if (name === "font-variant-ligatures") return computedStyleLigatures(raw.font_variant_ligatures);
+    if (name === "font-variant-caps") return computedStyleFontVariantCaps(raw.font_variant_caps);
     if (name === "font-feature-settings") return computedStyleFeatureSettings(raw.font_feature_settings);
     if (name === "font-kerning") return computedStyleEnumName(raw.font_kerning, "auto");
     if (name === "line-height") return computedStylePixels(raw.line_height, "normal");

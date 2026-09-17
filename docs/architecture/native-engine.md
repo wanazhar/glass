@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-510`, following completed
 `native-engine-browser-509`, following completed
 `native-engine-browser-508`, following completed
 `native-engine-browser-507`, following completed
@@ -278,6 +279,14 @@ while `normal` and `none` provide explicit `kern` values; an authored low-level
 keeps its existing bounded advances, while variable/color tables, WOFF2,
 font-display timing, mixed-script shaping, cross-realm FontFace projection, and
 complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 510 wires inherited `font-variant-caps` into the native computed style,
+CSSOM, and HarfRust shaping path. The seven bounded values map to the
+corresponding `smcp`, `c2sc`, `pcap`, `c2pc`, `unic`, and `titl` OpenType
+features, and an authored low-level feature tag retains precedence. The
+character-by-character fallback keeps its bounded glyph path; variable/color
+tables, WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
+projection, and complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between

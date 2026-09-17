@@ -841,6 +841,12 @@ struct NativeTextCacheEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeStylesheetResource {
+    pub(crate) url: String,
+    pub(crate) body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeFetchCacheEntry {
     response: NativeFetchResponse,
     fresh_until: Option<Instant>,
@@ -5217,7 +5223,7 @@ impl NativeResourceLoader {
         href: &str,
         integrity: Option<&str>,
         crossorigin: Option<&str>,
-    ) -> Result<Option<String>, NativeEngineError> {
+    ) -> Result<Option<NativeStylesheetResource>, NativeEngineError> {
         self.load_stylesheet_async_with_object_url(document_url, href, integrity, crossorigin, None)
             .await
     }
@@ -5229,7 +5235,7 @@ impl NativeResourceLoader {
         integrity: Option<&str>,
         crossorigin: Option<&str>,
         object_url: Option<&NativeObjectUrlResource>,
-    ) -> Result<Option<String>, NativeEngineError> {
+    ) -> Result<Option<NativeStylesheetResource>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text("stylesheet URL", href)?;
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
@@ -5296,7 +5302,10 @@ impl NativeResourceLoader {
                     reason: "Blob CSS subresource is not valid UTF-8".into(),
                 }
             })?;
-            return Ok(Some(body));
+            return Ok(Some(NativeStylesheetResource {
+                url: without_fragment(target_url.as_str()).to_owned(),
+                body,
+            }));
         }
         let requested_cache_key = cache_key(&target_url);
         let stale_cached_stylesheet = self
@@ -5310,8 +5319,12 @@ impl NativeResourceLoader {
             && cached.is_fresh(Instant::now())
         {
             return Ok(
-                subresource_integrity_matches(integrity, cached.body.as_bytes())
-                    .then_some(cached.body.clone()),
+                subresource_integrity_matches(integrity, cached.body.as_bytes()).then_some(
+                    NativeStylesheetResource {
+                        url: cached.url.clone(),
+                        body: cached.body.clone(),
+                    },
+                ),
             );
         }
 
@@ -5438,6 +5451,7 @@ impl NativeResourceLoader {
                 self.cookie_changes
                     .extend(self.network.store_cookie(&cookie_url, &cookie));
             }
+            let cached_url = cached.url.clone();
             let cached_body = cached.body.clone();
             if !subresource_integrity_matches(integrity, cached_body.as_bytes()) {
                 return Ok(None);
@@ -5452,7 +5466,10 @@ impl NativeResourceLoader {
             } else {
                 self.network.remove_stylesheet_cache(&requested_cache_key);
             }
-            return Ok(Some(cached_body));
+            return Ok(Some(NativeStylesheetResource {
+                url: cached_url,
+                body: cached_body,
+            }));
         }
         if !response.status().is_success() {
             return Err(NativeEngineError::Network {
@@ -5534,7 +5551,10 @@ impl NativeResourceLoader {
             self.network
                 .remove_stylesheet_cache(&cache_key(&current_url));
         }
-        Ok(Some(body))
+        Ok(Some(NativeStylesheetResource {
+            url: without_fragment(current_url.as_str()).to_owned(),
+            body,
+        }))
     }
 
     pub(crate) async fn load_image_async(

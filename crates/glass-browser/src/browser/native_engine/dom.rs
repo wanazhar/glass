@@ -679,6 +679,7 @@ pub struct NativeDocument {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeExternalStylesheetState {
     href: String,
+    stylesheet_url: Option<String>,
     body: Option<String>,
 }
 
@@ -1267,20 +1268,36 @@ impl NativeDocument {
 
     pub(crate) fn set_external_stylesheet_states(
         &mut self,
-        states: impl IntoIterator<Item = (u32, String, Option<String>)>,
+        states: impl IntoIterator<Item = (u32, String, Option<String>, Option<String>)>,
     ) {
         self.external_stylesheet_states = states
             .into_iter()
-            .map(|(node_index, href, body)| {
-                (node_index, NativeExternalStylesheetState { href, body })
+            .map(|(node_index, href, stylesheet_url, body)| {
+                (
+                    node_index,
+                    NativeExternalStylesheetState {
+                        href,
+                        stylesheet_url,
+                        body,
+                    },
+                )
             })
             .collect();
     }
 
-    pub(crate) fn external_stylesheet_states(&self) -> Vec<(u32, String, Option<String>)> {
+    pub(crate) fn external_stylesheet_states(
+        &self,
+    ) -> Vec<(u32, String, Option<String>, Option<String>)> {
         self.external_stylesheet_states
             .iter()
-            .map(|(node_index, state)| (*node_index, state.href.clone(), state.body.clone()))
+            .map(|(node_index, state)| {
+                (
+                    *node_index,
+                    state.href.clone(),
+                    state.stylesheet_url.clone(),
+                    state.body.clone(),
+                )
+            })
             .collect()
     }
 
@@ -1292,10 +1309,10 @@ impl NativeDocument {
             .external_stylesheet_states
             .values()
             .filter_map(|state| {
-                state
-                    .body
-                    .as_ref()
-                    .map(|body| absolutize_stylesheet_urls(body, document_url, &state.href))
+                state.body.as_ref().map(|body| {
+                    let stylesheet_url = state.stylesheet_url.as_deref().unwrap_or(&state.href);
+                    absolutize_stylesheet_urls(body, document_url, stylesheet_url)
+                })
             })
             .collect::<Vec<_>>();
         let mut style_sources = self

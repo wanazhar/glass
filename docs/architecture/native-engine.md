@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-506`, following completed
 `native-engine-browser-505`, following completed
 `native-engine-browser-504`, following completed
 `native-engine-browser-503`, following completed
@@ -233,6 +234,17 @@ reversed values fail at the parser or native admission boundary, and older
 payloads default to `normal`. The computed CSS `font-stretch` property,
 font-face range matching, and horizontal glyph scaling remain the next
 rendering gate; font-variant, font-display timing, variable/color fonts, WOFF2,
+cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
+issue #40 gates.
+
+Slice 506 applies `font-stretch` to the rendering path. The inherited computed
+property is exposed as a canonical percentage, face matching considers the
+closest bounded descriptor range after weight/style, and tied unicode-ranged
+faces remain available for codepoint selection. Shaped and character-path text
+now scale advances, offsets, kerning, and glyph coverage horizontally, while
+`local()` source lookup uses the descriptor's nominal width. Descriptor ranges
+use a normal-width synthetic baseline until a real variation-axis owner exists;
+variable/color tables, WOFF2, font-display timing, mixed-script shaping,
 cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
 issue #40 gates.
 

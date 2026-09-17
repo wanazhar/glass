@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-505`, following
+expansion checkpoint is completed `native-engine-browser-506`, following
+completed `native-engine-browser-505`, following
 completed `native-engine-browser-504`, following
 completed `native-engine-browser-503`, following
 completed `native-engine-browser-502`, following
@@ -235,10 +236,20 @@ and script-created `FontFace` resources. Named values and 50%–200% percentage
 ranges are represented as integer percentage tenths, carried through native
 resources, content-process wire snapshots, and the `document.fonts` projection,
 and validated before byte admission; missing fields default to `normal` for
-older payloads. The computed CSS `font-stretch` property, face-range matching,
-and horizontal glyph scaling remain the next rendering slice. Font-variant,
-font-display timing, variable/color rendering, WOFF2, cross-realm FontFace
-projection, and complete FontFace/Web IDL parity remain open.
+older payloads. Font-variant, font-display timing, variable/color rendering,
+WOFF2, cross-realm FontFace projection, and complete FontFace/Web IDL parity
+remain open.
+
+Slice 506 applies the computed `font-stretch` property to the rendering path.
+The inherited value is projected as a canonical percentage, face matching
+chooses the closest bounded descriptor range after weight/style while keeping
+tied unicode-ranged faces, and shaped plus character-path runs scale horizontal
+advances, offsets, kerning, and glyph coverage. `local()` source lookup uses a
+selected descriptor's nominal width. Singleton descriptors supply that nominal
+width; ranges use normal width as the synthetic baseline until a real variation
+axis owner exists. Variable/color rendering, WOFF2, font-display timing,
+mixed-script shaping, cross-realm FontFace projection, and complete FontFace/Web
+IDL parity remain open.
 
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
@@ -7063,8 +7074,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-505.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-506.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-505.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-504.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-503.md` is the preceding completed

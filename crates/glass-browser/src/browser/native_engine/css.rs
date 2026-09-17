@@ -1022,6 +1022,16 @@ pub(crate) enum NativeFontVariantCaps {
     TitlingCaps,
 }
 
+/// The bounded OpenType subscript/superscript controls exposed by
+/// `font-variant-position`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeFontVariantPosition {
+    #[default]
+    Normal,
+    Sub,
+    Super,
+}
+
 const MAX_NATIVE_FONT_FEATURES: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1386,6 +1396,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) text_transform: TextTransformValue,
     pub(crate) font_variant_ligatures: NativeFontVariantLigatures,
     pub(crate) font_variant_caps: NativeFontVariantCaps,
+    pub(crate) font_variant_position: NativeFontVariantPosition,
     pub(crate) font_feature_settings: NativeFontFeatureSettings,
     pub(crate) font_kerning: NativeFontKerning,
     pub(crate) font_weight: FontWeightValue,
@@ -1450,6 +1461,7 @@ impl Default for NativeInheritedStyle {
             text_transform: TextTransformValue::None,
             font_variant_ligatures: NativeFontVariantLigatures::default(),
             font_variant_caps: NativeFontVariantCaps::Normal,
+            font_variant_position: NativeFontVariantPosition::Normal,
             font_feature_settings: NativeFontFeatureSettings::default(),
             font_kerning: NativeFontKerning::Auto,
             font_weight: FontWeightValue::Normal,
@@ -1615,6 +1627,8 @@ pub(crate) struct NativeComputedStyle {
     font_variant_ligatures: NativeFontVariantLigatures,
     #[serde(default)]
     font_variant_caps: NativeFontVariantCaps,
+    #[serde(default)]
+    font_variant_position: NativeFontVariantPosition,
     #[serde(default)]
     font_feature_settings: NativeFontFeatureSettings,
     #[serde(default)]
@@ -1810,6 +1824,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn font_variant_caps(self) -> NativeFontVariantCaps {
         self.font_variant_caps
+    }
+
+    pub(crate) const fn font_variant_position(self) -> NativeFontVariantPosition {
+        self.font_variant_position
     }
 
     pub(crate) const fn font_feature_settings(self) -> NativeFontFeatureSettings {
@@ -2142,6 +2160,7 @@ impl NativeStylesheet {
         let mut text_transform = &mut scratch.text_transform;
         let mut font_variant_ligatures = &mut scratch.font_variant_ligatures;
         let mut font_variant_caps = &mut scratch.font_variant_caps;
+        let mut font_variant_position = &mut scratch.font_variant_position;
         let mut font_feature_settings = &mut scratch.font_feature_settings;
         let mut font_kerning = &mut scratch.font_kerning;
         let mut font_weight = &mut scratch.font_weight;
@@ -2407,6 +2426,14 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.text_importance.font_variant_caps,
                 &mut font_variant_caps,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.font_variant_position,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.font_variant_position,
+                &mut font_variant_position,
             );
             apply_text_cascade_declaration(
                 rule.declarations.font_feature_settings,
@@ -3030,6 +3057,14 @@ impl NativeStylesheet {
                 &mut font_variant_caps,
             );
             apply_text_cascade_declaration(
+                declarations.font_variant_position,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.font_variant_position,
+                &mut font_variant_position,
+            );
+            apply_text_cascade_declaration(
                 declarations.font_feature_settings,
                 u16::MAX,
                 usize::MAX,
@@ -3623,6 +3658,11 @@ impl NativeStylesheet {
                 inherited.font_variant_caps,
                 NativeFontVariantCaps::Normal,
             ),
+            font_variant_position: resolve_inherited_text_declaration(
+                *font_variant_position,
+                inherited.font_variant_position,
+                NativeFontVariantPosition::Normal,
+            ),
             font_feature_settings: resolve_inherited_text_declaration(
                 *font_feature_settings,
                 inherited.font_feature_settings,
@@ -3828,6 +3868,7 @@ struct NativeCascadeScratch {
     text_transform: NativeTextCascadeCandidates<TextTransformValue>,
     font_variant_ligatures: NativeTextCascadeCandidates<NativeFontVariantLigatures>,
     font_variant_caps: NativeTextCascadeCandidates<NativeFontVariantCaps>,
+    font_variant_position: NativeTextCascadeCandidates<NativeFontVariantPosition>,
     font_feature_settings: NativeTextCascadeCandidates<NativeFontFeatureSettings>,
     font_kerning: NativeTextCascadeCandidates<NativeFontKerning>,
     font_weight: NativeTextCascadeCandidates<FontWeightValue>,
@@ -3924,6 +3965,7 @@ impl NativeCascadeScratch {
             initialize!(text_transform);
             initialize!(font_variant_ligatures);
             initialize!(font_variant_caps);
+            initialize!(font_variant_position);
             initialize!(font_feature_settings);
             initialize!(font_kerning);
             initialize!(font_weight);
@@ -6069,6 +6111,7 @@ struct NativeTextDeclarationImportance {
     text_transform: bool,
     font_variant_ligatures: bool,
     font_variant_caps: bool,
+    font_variant_position: bool,
     font_feature_settings: bool,
     font_kerning: bool,
     font_weight: bool,
@@ -6132,6 +6175,7 @@ struct NativeDeclarations {
     text_transform: Option<InheritedTextDeclaration<TextTransformValue>>,
     font_variant_ligatures: Option<InheritedTextDeclaration<NativeFontVariantLigatures>>,
     font_variant_caps: Option<InheritedTextDeclaration<NativeFontVariantCaps>>,
+    font_variant_position: Option<InheritedTextDeclaration<NativeFontVariantPosition>>,
     font_feature_settings: Option<InheritedTextDeclaration<NativeFontFeatureSettings>>,
     font_kerning: Option<InheritedTextDeclaration<NativeFontKerning>>,
     font_weight: Option<InheritedTextDeclaration<FontWeightValue>>,
@@ -6688,6 +6732,7 @@ fn parse_style_rule(
         || declarations.text_transform.is_some()
         || declarations.font_variant_ligatures.is_some()
         || declarations.font_variant_caps.is_some()
+        || declarations.font_variant_position.is_some()
         || declarations.font_feature_settings.is_some()
         || declarations.font_kerning.is_some()
         || declarations.font_weight.is_some()
@@ -6921,6 +6966,7 @@ fn parse_declarations_with_diagnostics(
             "text-transform" => parse_text_transform_declaration(value).is_some(),
             "font-variant-ligatures" => parse_font_variant_ligatures_declaration(value).is_some(),
             "font-variant-caps" => parse_font_variant_caps_declaration(value).is_some(),
+            "font-variant-position" => parse_font_variant_position_declaration(value).is_some(),
             "font-feature-settings" => parse_font_feature_settings_declaration(value).is_some(),
             "font-kerning" => parse_font_kerning_declaration(value).is_some(),
             "font-weight" => parse_font_weight_declaration(value).is_some(),
@@ -7115,6 +7161,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "text-transform"
             | "font-variant-ligatures"
             | "font-variant-caps"
+            | "font-variant-position"
             | "font-feature-settings"
             | "font-kerning"
             | "font-weight"
@@ -7541,6 +7588,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_font_variant_caps_declaration(value) {
                     declarations.font_variant_caps = Some(parsed);
                     declarations.text_importance.font_variant_caps = important;
+                }
+            }
+            "font-variant-position" => {
+                if let Some(parsed) = parse_font_variant_position_declaration(value) {
+                    declarations.font_variant_position = Some(parsed);
+                    declarations.text_importance.font_variant_position = important;
                 }
             }
             "font-feature-settings" => {
@@ -12223,6 +12276,21 @@ fn parse_font_variant_caps_declaration(
     value: &str,
 ) -> Option<InheritedTextDeclaration<NativeFontVariantCaps>> {
     parse_inherited_text_declaration(value, parse_font_variant_caps)
+}
+
+fn parse_font_variant_position(value: &str) -> Option<NativeFontVariantPosition> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(NativeFontVariantPosition::Normal),
+        "sub" => Some(NativeFontVariantPosition::Sub),
+        "super" => Some(NativeFontVariantPosition::Super),
+        _ => None,
+    }
+}
+
+fn parse_font_variant_position_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<NativeFontVariantPosition>> {
+    parse_inherited_text_declaration(value, parse_font_variant_position)
 }
 
 fn parse_font_feature_settings(value: &str) -> Option<NativeFontFeatureSettings> {
@@ -21959,6 +22027,25 @@ mod tests {
     }
 
     #[test]
+    fn font_variant_position_parser_accepts_only_supported_keywords() {
+        assert_eq!(
+            parse_font_variant_position("normal"),
+            Some(NativeFontVariantPosition::Normal)
+        );
+        assert_eq!(
+            parse_font_variant_position("SUB"),
+            Some(NativeFontVariantPosition::Sub)
+        );
+        assert_eq!(
+            parse_font_variant_position("super"),
+            Some(NativeFontVariantPosition::Super)
+        );
+        assert!(parse_font_variant_position("inherit").is_none());
+        assert!(parse_font_variant_position("sub super").is_none());
+        assert!(parse_font_variant_position("none").is_none());
+    }
+
+    #[test]
     fn font_family_parser_keeps_ordered_bounded_fallbacks() {
         let families = parse_font_family("\"Missing Face\", sans-serif, monospace").unwrap();
         assert_eq!(families.len, 3);
@@ -23248,6 +23335,39 @@ mod tests {
         assert_eq!(
             style("invalid").font_variant_caps(),
             NativeFontVariantCaps::AllSmallCaps
+        );
+    }
+
+    #[test]
+    fn font_variant_position_is_inherited_and_css_wide_resets_are_bounded() {
+        let document = NativeDocument::parse(
+            "<style>#parent { font-variant-position: super; } #child { font-variant-position: sub; } #inherit { font-variant-position: inherit; } #clear { font-variant-position: initial; } #invalid { font-variant-position: sub super; }</style><div id='parent'><span id='child'>Child</span><span id='inherit'>Inherit</span><span id='clear'>Clear</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+        assert_eq!(
+            style("parent").font_variant_position(),
+            NativeFontVariantPosition::Super
+        );
+        assert_eq!(
+            style("child").font_variant_position(),
+            NativeFontVariantPosition::Sub
+        );
+        assert_eq!(
+            style("inherit").font_variant_position(),
+            NativeFontVariantPosition::Super
+        );
+        assert_eq!(
+            style("clear").font_variant_position(),
+            NativeFontVariantPosition::Normal
+        );
+        assert_eq!(
+            style("invalid").font_variant_position(),
+            NativeFontVariantPosition::Super
         );
     }
 

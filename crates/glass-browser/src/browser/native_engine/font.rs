@@ -3,8 +3,8 @@ use super::css::NativeFontFeature;
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
     NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning, NativeFontStretchRange,
-    NativeFontVariantCaps, NativeFontVariantLigatures, NativeGenericFontFamily, NativeUnicodeRange,
-    font_family_hash,
+    NativeFontVariantCaps, NativeFontVariantLigatures, NativeFontVariantPosition,
+    NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
 };
 use std::fmt;
 use std::io::Read;
@@ -146,6 +146,7 @@ pub(crate) struct NativeTextMetrics {
     stretch: u16,
     ligatures: NativeFontVariantLigatures,
     variant_caps: NativeFontVariantCaps,
+    variant_position: NativeFontVariantPosition,
     feature_settings: NativeFontFeatureSettings,
     kerning: NativeFontKerning,
     ascent: u32,
@@ -173,6 +174,14 @@ fn font_variant_caps_tags(caps: NativeFontVariantCaps) -> ([Option<[u8; 4]>; 2],
         NativeFontVariantCaps::AllPetiteCaps => ([Some(*b"c2pc"), Some(*b"pcap")], 2),
         NativeFontVariantCaps::Unicase => ([Some(*b"unic"), None], 1),
         NativeFontVariantCaps::TitlingCaps => ([Some(*b"titl"), None], 1),
+    }
+}
+
+fn font_variant_position_tag(position: NativeFontVariantPosition) -> Option<[u8; 4]> {
+    match position {
+        NativeFontVariantPosition::Normal => None,
+        NativeFontVariantPosition::Sub => Some(*b"subs"),
+        NativeFontVariantPosition::Super => Some(*b"sups"),
     }
 }
 
@@ -225,6 +234,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn fallback_with_stretch_and_ligatures_and_features_and_kerning(
         font_size: u32,
         stretch: u16,
@@ -244,6 +254,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps(
         font_size: u32,
         stretch: u16,
@@ -253,12 +264,35 @@ impl NativeTextMetrics {
         variant_caps: NativeFontVariantCaps,
         direction: DirectionValue,
     ) -> Self {
+        Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position(
+            font_size,
+            stretch,
+            ligatures,
+            feature_settings,
+            kerning,
+            variant_caps,
+            NativeFontVariantPosition::Normal,
+            direction,
+        )
+    }
+
+    pub(crate) fn fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position(
+        font_size: u32,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
+        kerning: NativeFontKerning,
+        variant_caps: NativeFontVariantCaps,
+        variant_position: NativeFontVariantPosition,
+        direction: DirectionValue,
+    ) -> Self {
         Self {
             faces: Vec::new(),
             font_size: font_size.clamp(1, MAX_NATIVE_FONT_SIZE),
             stretch: stretch.clamp(500, 2000),
             ligatures,
             variant_caps,
+            variant_position,
             feature_settings,
             kerning,
             ascent: FALLBACK_LINE_HEIGHT.saturating_sub(5),
@@ -371,6 +405,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning(
         families: NativeFontFamilyList,
         font_size: u32,
@@ -398,6 +433,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps(
         families: NativeFontFamilyList,
         font_size: u32,
@@ -411,17 +447,48 @@ impl NativeTextMetrics {
         direction: DirectionValue,
         book: &NativeFontBook,
     ) -> Self {
+        Self::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position(
+            families,
+            font_size,
+            weight,
+            style,
+            stretch,
+            ligatures,
+            feature_settings,
+            kerning,
+            variant_caps,
+            NativeFontVariantPosition::Normal,
+            direction,
+            book,
+        )
+    }
+
+    pub(crate) fn for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position(
+        families: NativeFontFamilyList,
+        font_size: u32,
+        weight: FontWeightValue,
+        style: FontStyleValue,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
+        kerning: NativeFontKerning,
+        variant_caps: NativeFontVariantCaps,
+        variant_position: NativeFontVariantPosition,
+        direction: DirectionValue,
+        book: &NativeFontBook,
+    ) -> Self {
         let font_size = font_size.clamp(1, MAX_NATIVE_FONT_SIZE);
         let stretch = stretch.clamp(500, 2000);
         let faces = book.faces_for(families, weight, style, stretch);
         let Some(face) = faces.first() else {
-            return Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps(
+            return Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position(
                 font_size,
                 stretch,
                 ligatures,
                 feature_settings,
                 kerning,
                 variant_caps,
+                variant_position,
                 direction,
             );
         };
@@ -439,6 +506,7 @@ impl NativeTextMetrics {
             stretch,
             ligatures,
             variant_caps,
+            variant_position,
             feature_settings,
             kerning,
             ascent,
@@ -565,7 +633,7 @@ impl NativeTextMetrics {
         buffer.set_direction(direction);
         let scale = i32::try_from(self.font_size.saturating_mul(FONT_SHAPE_SCALE)).ok()?;
         let shaper = shaper_data.shaper(&font).build();
-        let mut features = Vec::with_capacity(8 + self.feature_settings.values().len());
+        let mut features = Vec::with_capacity(9 + self.feature_settings.values().len());
         for (tag, value) in [
             (*b"liga", u32::from(self.ligatures.common)),
             (*b"clig", u32::from(self.ligatures.common)),
@@ -589,6 +657,9 @@ impl NativeTextMetrics {
         }
         let (caps_tags, caps_count) = font_variant_caps_tags(self.variant_caps);
         for tag in caps_tags.into_iter().take(caps_count).flatten() {
+            push_feature_if_not_explicit(&mut features, self.feature_settings, tag, 1);
+        }
+        if let Some(tag) = font_variant_position_tag(self.variant_position) {
             push_feature_if_not_explicit(&mut features, self.feature_settings, tag, 1);
         }
         let explicit_features = self.feature_settings.values();
@@ -2404,6 +2475,46 @@ mod tests {
             font_variant_caps_tags(NativeFontVariantCaps::TitlingCaps),
             ([Some(*b"titl"), None], 1)
         );
+    }
+
+    #[test]
+    fn font_variant_position_maps_to_bounded_opentype_feature_tags() {
+        assert_eq!(
+            font_variant_position_tag(NativeFontVariantPosition::Normal),
+            None
+        );
+        assert_eq!(
+            font_variant_position_tag(NativeFontVariantPosition::Sub),
+            Some(*b"subs")
+        );
+        assert_eq!(
+            font_variant_position_tag(NativeFontVariantPosition::Super),
+            Some(*b"sups")
+        );
+    }
+
+    #[test]
+    fn font_variant_position_respects_explicit_low_level_feature_tags() {
+        let mut features = Vec::new();
+        push_feature_if_not_explicit(
+            &mut features,
+            NativeFontFeatureSettings::default(),
+            *b"subs",
+            1,
+        );
+        assert_eq!(features.len(), 1);
+        assert_eq!(features[0].tag, harfrust::Tag::new(b"subs"));
+        assert_eq!(features[0].value, 1);
+
+        let mut settings = NativeFontFeatureSettings::default();
+        settings.values[0] = NativeFontFeature {
+            tag: *b"subs",
+            value: 0,
+        };
+        settings.count = 1;
+        let mut overridden = Vec::new();
+        push_feature_if_not_explicit(&mut overridden, settings, *b"subs", 1);
+        assert!(overridden.is_empty());
     }
 
     #[test]

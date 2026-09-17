@@ -1,6 +1,6 @@
 use super::css::{
-    DirectionValue, FontStyleValue, FontWeightValue, NativeFontFamilyList, NativeFontFamilyValue,
-    NativeGenericFontFamily, font_family_hash,
+    DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
+    NativeFontFamilyValue, NativeGenericFontFamily, font_family_hash,
 };
 use std::fmt;
 use std::path::Path;
@@ -10,6 +10,13 @@ use std::sync::{Arc, OnceLock};
 pub(crate) const DEFAULT_NATIVE_FONT_SIZE: u32 = 16;
 /// Prevent a stylesheet from requesting an unbounded rasterization scale.
 pub(crate) const MAX_NATIVE_FONT_SIZE: u32 = 256;
+/// Limit the number of document-owned font faces crossing the native process
+/// boundary in one document snapshot.
+pub(crate) const MAX_NATIVE_FONT_FACES: usize = 16;
+/// Bound one document-owned font payload before it reaches a font parser.
+pub(crate) const MAX_NATIVE_FONT_BYTES: usize = 4 * 1024 * 1024;
+/// Bound the aggregate document-owned font payload in one snapshot.
+pub(crate) const MAX_NATIVE_FONT_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const FONT_PARSE_SCALE: f32 = 40.0;
 const FONT_SHAPE_SCALE: u32 = 64;
 const FALLBACK_GLYPH_ADVANCE: u32 = 8;
@@ -53,13 +60,26 @@ pub struct NativeFontRun {
 struct NativeFontFace {
     family: String,
     family_key: u64,
-    generic_family: NativeGenericFontFamily,
+    generic_family: Option<NativeGenericFontFamily>,
     weight: FontWeightValue,
     style: FontStyleValue,
     font: Arc<fontdue::Font>,
     font_data: Arc<[u8]>,
     shaper_data: Option<Arc<harfrust::ShaperData>>,
 }
+
+impl PartialEq for NativeFontFace {
+    fn eq(&self, other: &Self) -> bool {
+        self.family == other.family
+            && self.family_key == other.family_key
+            && self.generic_family == other.generic_family
+            && self.weight == other.weight
+            && self.style == other.style
+            && self.font_data == other.font_data
+    }
+}
+
+impl Eq for NativeFontFace {}
 
 impl fmt::Debug for NativeFontFace {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -72,9 +92,30 @@ impl fmt::Debug for NativeFontFace {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct NativeFontBook {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct NativeFontBook {
     faces: Vec<NativeFontFace>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeFontFaceResource {
+    pub(crate) family: String,
+    pub(crate) family_key: u64,
+    pub(crate) weight: FontWeightValue,
+    pub(crate) style: FontStyleValue,
+    pub(crate) bytes: Arc<[u8]>,
+}
+
+impl NativeFontFaceResource {
+    pub(crate) fn from_rule(rule: &NativeFontFaceRule, bytes: Vec<u8>) -> Self {
+        Self {
+            family: rule.family.clone(),
+            family_key: rule.family_key,
+            weight: rule.weight,
+            style: rule.style,
+            bytes: Arc::from(bytes),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +138,7 @@ impl NativeTextMetrics {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn for_style(
         families: NativeFontFamilyList,
         font_size: u32,
@@ -104,8 +146,25 @@ impl NativeTextMetrics {
         style: FontStyleValue,
         direction: DirectionValue,
     ) -> Self {
+        Self::for_style_with_book(
+            families,
+            font_size,
+            weight,
+            style,
+            direction,
+            system_font_book(),
+        )
+    }
+
+    pub(crate) fn for_style_with_book(
+        families: NativeFontFamilyList,
+        font_size: u32,
+        weight: FontWeightValue,
+        style: FontStyleValue,
+        direction: DirectionValue,
+        book: &NativeFontBook,
+    ) -> Self {
         let font_size = font_size.clamp(1, MAX_NATIVE_FONT_SIZE);
-        let book = system_font_book();
         let faces = book.faces_for(families, weight, style);
         let Some(face) = faces.first() else {
             return Self::fallback_with_direction(font_size, direction);
@@ -509,6 +568,45 @@ struct NativeShapedRun {
 }
 
 impl NativeFontBook {
+    pub(crate) fn system() -> Self {
+        system_font_book().clone()
+    }
+
+    pub(crate) fn from_resources(resources: &[NativeFontFaceResource]) -> Self {
+        let mut book = Self::default();
+        for resource in resources.iter().take(MAX_NATIVE_FONT_FACES) {
+            if resource.bytes.is_empty() || resource.bytes.len() > MAX_NATIVE_FONT_BYTES {
+                continue;
+            }
+            let Ok(font) = fontdue::Font::from_bytes(
+                resource.bytes.as_ref().to_vec(),
+                fontdue::FontSettings {
+                    collection_index: 0,
+                    scale: FONT_PARSE_SCALE,
+                    load_substitutions: true,
+                },
+            ) else {
+                continue;
+            };
+            let font_data = resource.bytes.clone();
+            let shaper_data = harfrust::FontRef::new(font_data.as_ref())
+                .ok()
+                .map(|font| Arc::new(harfrust::ShaperData::new(&font)));
+            book.faces.push(NativeFontFace {
+                family: resource.family.clone(),
+                family_key: resource.family_key,
+                generic_family: None,
+                weight: resource.weight,
+                style: resource.style,
+                font: Arc::new(font),
+                font_data,
+                shaper_data,
+            });
+        }
+        book.faces.extend(system_font_book().faces.iter().cloned());
+        book
+    }
+
     fn faces_for(
         &self,
         families: NativeFontFamilyList,
@@ -570,7 +668,7 @@ fn load_system_font_book() -> NativeFontBook {
         book.faces.push(NativeFontFace {
             family: family.to_owned(),
             family_key: font_family_hash(family),
-            generic_family,
+            generic_family: Some(generic_family),
             weight,
             style,
             font: Arc::new(font),
@@ -584,7 +682,7 @@ fn load_system_font_book() -> NativeFontBook {
 fn family_matches(family: NativeFontFamilyValue, face: &NativeFontFace) -> bool {
     match family {
         NativeFontFamilyValue::Named(key) => key == face.family_key,
-        NativeFontFamilyValue::Generic(generic) => generic == face.generic_family,
+        NativeFontFamilyValue::Generic(generic) => face.generic_family == Some(generic),
         NativeFontFamilyValue::Fallback => false,
     }
 }
@@ -854,9 +952,12 @@ mod tests {
         }
         assert_eq!(
             candidates[0].generic_family,
-            NativeGenericFontFamily::SansSerif
+            Some(NativeGenericFontFamily::SansSerif)
         );
-        assert_eq!(candidates[1].generic_family, NativeGenericFontFamily::Serif);
+        assert_eq!(
+            candidates[1].generic_family,
+            Some(NativeGenericFontFamily::Serif)
+        );
     }
 
     #[test]
@@ -880,6 +981,34 @@ mod tests {
         }
         let run = metrics.rasterize(&missing.to_string(), 0, 0, 0).unwrap();
         assert_eq!(run.width, FALLBACK_GLYPH_ADVANCE);
+    }
+
+    #[test]
+    fn document_font_resource_precedes_system_fallback_for_named_family() {
+        let Some(system_face) = system_font_book().faces.first() else {
+            return;
+        };
+        let resource = NativeFontFaceResource {
+            family: "Embedded Sans".into(),
+            family_key: font_family_hash("Embedded Sans"),
+            weight: FontWeightValue::Normal,
+            style: FontStyleValue::Normal,
+            bytes: system_face.font_data.clone(),
+        };
+        let book = NativeFontBook::from_resources(&[resource]);
+        let families = NativeFontFamilyList::parse("Embedded Sans").unwrap();
+        let metrics = NativeTextMetrics::for_style_with_book(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            DirectionValue::Ltr,
+            &book,
+        );
+        assert!(!metrics.faces.is_empty());
+        assert!(metrics.measure_text("Glass", 0, 0) > 0);
+        assert_eq!(metrics.faces[0].family, "Embedded Sans");
+        assert_eq!(metrics.faces[0].generic_family, None);
     }
 
     #[test]

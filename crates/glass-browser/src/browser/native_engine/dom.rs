@@ -1,7 +1,10 @@
 use super::config::{
     NativeEngineLimits, validate_url_text, validate_window_name, without_fragment,
 };
-use super::css::{NativeStylesheet, absolutize_stylesheet_urls, collect_background_image_sources};
+use super::css::{
+    NativeFontFaceRule, NativeStylesheet, absolutize_stylesheet_urls,
+    collect_background_image_sources,
+};
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
 use super::image::{
@@ -36,9 +39,13 @@ use super::{
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use url::Url;
 
-use super::font::NativeTextMetrics;
+use super::font::{
+    MAX_NATIVE_FONT_BYTES, MAX_NATIVE_FONT_FACES, MAX_NATIVE_FONT_TOTAL_BYTES, NativeFontBook,
+    NativeFontFaceResource, NativeTextMetrics,
+};
 
 const MAX_ATTRIBUTE_BYTES: usize = 1024;
 const MAX_LOCATOR_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
@@ -179,6 +186,8 @@ pub(crate) struct NativeDocumentWire {
     pub(crate) nodes: Vec<NativeNodeWire>,
     pub(crate) computed_styles: Vec<NativeComputedStyle>,
     #[serde(default)]
+    pub(crate) font_resources: Vec<NativeFontFaceResourceWire>,
+    #[serde(default)]
     pub(crate) blocked_inline_style_nodes: Vec<u32>,
     #[serde(default)]
     pub(crate) script_nodes: Vec<NativeScriptNodeIdentity>,
@@ -200,6 +209,15 @@ pub(crate) struct NativeDocumentWire {
     pub(crate) media_loads: Vec<NativeMediaLoadWire>,
     #[serde(default)]
     pub(crate) media_errors: Vec<NativeMediaLoadWire>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeFontFaceResourceWire {
+    pub(crate) family: String,
+    pub(crate) family_key: u64,
+    pub(crate) weight: FontWeightValue,
+    pub(crate) style: FontStyleValue,
+    pub(crate) data_base64: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -658,6 +676,8 @@ pub struct NativeDocument {
     max_dom_depth: usize,
     nodes: Vec<NativeNode>,
     stylesheet: NativeStylesheet,
+    font_resources: Vec<NativeFontFaceResource>,
+    font_book: NativeFontBook,
     external_stylesheet_states: BTreeMap<u32, NativeExternalStylesheetState>,
     computed_styles: Option<Vec<NativeComputedStyle>>,
     diagnostics: Vec<NativeDiagnostic>,
@@ -895,6 +915,8 @@ impl NativeDocument {
                 state: NativeElementState::default(),
             }],
             stylesheet: NativeStylesheet::default(),
+            font_resources: Vec::new(),
+            font_book: NativeFontBook::system(),
             external_stylesheet_states: BTreeMap::new(),
             computed_styles: None,
             diagnostics: Vec::new(),
@@ -1287,6 +1309,48 @@ impl NativeDocument {
             .collect();
     }
 
+    pub(crate) fn font_face_rules(&self) -> &[NativeFontFaceRule] {
+        self.stylesheet.font_face_rules()
+    }
+
+    pub(crate) fn set_font_resources(
+        &mut self,
+        resources: Vec<NativeFontFaceResource>,
+    ) -> Result<(), NativeEngineError> {
+        if resources.len() > MAX_NATIVE_FONT_FACES {
+            return Err(NativeEngineError::limit(
+                "native font faces",
+                MAX_NATIVE_FONT_FACES,
+                resources.len(),
+            ));
+        }
+        let total_bytes = resources.iter().try_fold(0usize, |total, resource| {
+            if resource.family.is_empty() || resource.family.len() > MAX_ATTRIBUTE_BYTES {
+                return None;
+            }
+            if resource.bytes.is_empty() || resource.bytes.len() > MAX_NATIVE_FONT_BYTES {
+                return None;
+            }
+            total.checked_add(resource.bytes.len())
+        });
+        let Some(total_bytes) = total_bytes else {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "native font resource metadata is invalid".into(),
+            });
+        };
+        if total_bytes > MAX_NATIVE_FONT_TOTAL_BYTES {
+            return Err(NativeEngineError::limit(
+                "native font resource bytes",
+                MAX_NATIVE_FONT_TOTAL_BYTES,
+                total_bytes,
+            ));
+        }
+        self.font_book = NativeFontBook::from_resources(&resources);
+        self.font_resources = resources;
+        Ok(())
+    }
+
     pub(crate) fn external_stylesheet_states(
         &self,
     ) -> Vec<(u32, String, Option<String>, Option<String>)> {
@@ -1351,6 +1415,8 @@ impl NativeDocument {
         }
         let (diagnostics, diagnostics_truncated) = diagnostics.finish();
         self.stylesheet = stylesheet;
+        self.font_resources.clear();
+        self.font_book = NativeFontBook::system();
         self.background_image_sources = background_image_sources;
         self.diagnostics = diagnostics;
         self.diagnostics_truncated = diagnostics_truncated;
@@ -2089,9 +2155,22 @@ impl NativeDocument {
                     })
             })
             .collect();
+        let font_resources = self
+            .font_resources
+            .iter()
+            .map(|resource| NativeFontFaceResourceWire {
+                family: resource.family.clone(),
+                family_key: resource.family_key,
+                weight: resource.weight,
+                style: resource.style,
+                data_base64: base64::engine::general_purpose::STANDARD
+                    .encode(resource.bytes.as_ref()),
+            })
+            .collect();
         NativeDocumentWire {
             nodes,
             computed_styles,
+            font_resources,
             blocked_inline_style_nodes: self
                 .nodes
                 .iter()
@@ -2147,6 +2226,59 @@ impl NativeDocument {
                 reason: "content process returned incomplete computed styles".into(),
             });
         }
+        if wire.font_resources.len() > MAX_NATIVE_FONT_FACES {
+            return Err(NativeEngineError::limit(
+                "content-process font faces",
+                MAX_NATIVE_FONT_FACES,
+                wire.font_resources.len(),
+            ));
+        }
+        let max_encoded_font_bytes =
+            (MAX_NATIVE_FONT_BYTES.saturating_add(2).saturating_div(3)).saturating_mul(4);
+        let mut font_resources = Vec::with_capacity(wire.font_resources.len());
+        let mut total_font_bytes = 0usize;
+        for resource in wire.font_resources {
+            if resource.family.is_empty()
+                || resource.family.len() > MAX_ATTRIBUTE_BYTES
+                || resource.family.bytes().any(|byte| byte.is_ascii_control())
+                || resource.family_key != super::css::font_family_hash(&resource.family)
+                || resource.data_base64.len() > max_encoded_font_bytes
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned invalid font metadata".into(),
+                });
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&resource.data_base64)
+                .map_err(|_| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned invalid font bytes".into(),
+                })?;
+            if bytes.is_empty() || bytes.len() > MAX_NATIVE_FONT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "content-process font bytes",
+                    MAX_NATIVE_FONT_BYTES,
+                    bytes.len(),
+                ));
+            }
+            total_font_bytes = total_font_bytes.saturating_add(bytes.len());
+            if total_font_bytes > MAX_NATIVE_FONT_TOTAL_BYTES {
+                return Err(NativeEngineError::limit(
+                    "content-process font bytes",
+                    MAX_NATIVE_FONT_TOTAL_BYTES,
+                    total_font_bytes,
+                ));
+            }
+            font_resources.push(NativeFontFaceResource {
+                family: resource.family,
+                family_key: resource.family_key,
+                weight: resource.weight,
+                style: resource.style,
+                bytes: Arc::from(bytes),
+            });
+        }
+        let font_book = NativeFontBook::from_resources(&font_resources);
         if wire.background_image_sources.len() > limits.max_nodes {
             return Err(NativeEngineError::limit(
                 "content-process background image sources",
@@ -2845,6 +2977,8 @@ impl NativeDocument {
             max_dom_depth: limits.max_dom_depth,
             nodes,
             stylesheet: NativeStylesheet::default(),
+            font_resources: font_resources.clone(),
+            font_book,
             external_stylesheet_states: BTreeMap::new(),
             computed_styles: Some(wire.computed_styles),
             diagnostics,
@@ -2928,6 +3062,8 @@ impl NativeDocument {
                 state: NativeElementState::default(),
             }],
             stylesheet: NativeStylesheet::default(),
+            font_resources: Vec::new(),
+            font_book: NativeFontBook::system(),
             external_stylesheet_states: BTreeMap::new(),
             computed_styles: None,
             diagnostics: Vec::new(),
@@ -6325,12 +6461,13 @@ impl NativeDocument {
             .iter()
             .any(|family| !matches!(family, super::css::NativeFontFamilyValue::Fallback))
         {
-            NativeTextMetrics::for_style(
+            NativeTextMetrics::for_style_with_book(
                 style.font_family(),
                 style.font_size(),
                 style.font_weight(),
                 style.font_style(),
                 style.direction(),
+                &self.font_book,
             )
         } else {
             NativeTextMetrics::fallback_with_direction(style.font_size(), style.direction())
@@ -9483,6 +9620,29 @@ mod tests {
         assert!(first.node(first.root()).is_some());
         assert!(second.node(first.root()).is_none());
         assert_eq!(second.generation(), 2);
+    }
+
+    #[test]
+    fn content_wire_round_trips_document_font_resources() {
+        let limits = NativeEngineLimits::default();
+        let mut document = NativeDocument::parse("<p>embedded</p>", &limits).unwrap();
+        document
+            .set_font_resources(vec![NativeFontFaceResource {
+                family: "Embedded Sans".into(),
+                family_key: super::super::css::font_family_hash("Embedded Sans"),
+                weight: FontWeightValue::Normal,
+                style: FontStyleValue::Normal,
+                bytes: Arc::from(vec![0_u8, 1, 2, 3]),
+            }])
+            .unwrap();
+        let wire = document.to_content_wire();
+        assert_eq!(wire.font_resources.len(), 1);
+        assert_eq!(wire.font_resources[0].data_base64, "AAECAw==");
+        let restored =
+            NativeDocument::from_content_wire(wire, &limits, document.generation()).unwrap();
+        assert_eq!(restored.font_resources.len(), 1);
+        assert_eq!(restored.font_resources[0].family, "Embedded Sans");
+        assert_eq!(restored.font_resources[0].bytes.as_ref(), &[0, 1, 2, 3]);
     }
 
     #[test]

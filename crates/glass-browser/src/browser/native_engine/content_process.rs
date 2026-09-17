@@ -24,6 +24,7 @@ use super::fetch_stream::{
     NativeFetchUploadEvent, spawn_native_fetch_bytes_stream, spawn_native_fetch_stream,
     spawn_native_fetch_upload_source, spawn_native_fetch_upload_stream,
 };
+use super::font::{MAX_NATIVE_FONT_FACES, NativeFontFaceResource};
 use super::interaction::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_FORM_BODY_BYTES, NativeEventKind, NativeFile,
     validate_native_edit_key, validate_native_key,
@@ -96,7 +97,7 @@ use url::Url;
 // the base64 envelope and the rest of the document state.
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 12;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 13;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -4211,6 +4212,24 @@ fn decode_document_wire(
     })
 }
 
+fn load_data_font_faces(
+    document: &mut NativeDocument,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+) -> Result<(), NativeEngineError> {
+    let mut resources = Vec::new();
+    for rule in document
+        .font_face_rules()
+        .iter()
+        .take(MAX_NATIVE_FONT_FACES)
+    {
+        if let Ok(Some(bytes)) = loader.load_data_font(document_url, &rule.source) {
+            resources.push(NativeFontFaceResource::from_rule(rule, bytes));
+        }
+    }
+    document.set_font_resources(resources)
+}
+
 #[doc(hidden)]
 pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut stdin = tokio::io::stdin();
@@ -7490,6 +7509,7 @@ async fn load_content_resource(
     document.set_external_stylesheet_states(external_stylesheet_states);
     document.mark_inline_style_reports_seen();
     document.mark_content_security_policy_meta_processed();
+    load_data_font_faces(&mut document, loader, &resource.url)?;
     resource_events
         .extend(load_external_images(&mut document, None, loader, &resource.url, viewport).await?);
     resource_events.extend(load_external_media(&mut document, None, loader, &resource.url).await?);
@@ -8044,6 +8064,7 @@ async fn load_dynamic_external_stylesheets(
     if previous_states != next_states {
         document.set_external_stylesheet_states(next_states);
         document.rebuild_external_stylesheet(document_url)?;
+        load_data_font_faces(document, loader, document_url)?;
         document.refresh_background_image_sources();
     }
     Ok(events)

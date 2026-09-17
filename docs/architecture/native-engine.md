@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-488`, following completed
 `native-engine-browser-487`, following completed
 `native-engine-browser-486`, following completed
 `native-engine-browser-485`, following completed
@@ -539,6 +540,16 @@ existing alignment owner. Mixed-direction bidi segmentation, Unicode bidi
 reordering, vertical writing modes, language/script negotiation, font fallback
 across missing glyphs, and complete text-rendering parity remain issue #40
 work.
+
+Slice `native-engine-browser-488` makes an ordered CSS family list functional
+for missing glyphs. The cached font selection now retains the best matching
+face for each declared family; a fully covered run keeps HarfRust shaping,
+while unsupported characters select the first face that has a real cmap glyph
+and preserve kerning only within that face. Shaped runs continue to use the
+same indexed raster and display-list owners, while mixed-coverage runs use the
+bounded character recovery path without changing the run's security or
+resource ownership. `@font-face` resources, arbitrary discovery, variable
+fonts, and complete text-rendering parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

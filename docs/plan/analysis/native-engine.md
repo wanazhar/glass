@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-487`, following
+expansion checkpoint is completed `native-engine-browser-488`, following
+completed `native-engine-browser-487`, following
 completed `native-engine-browser-486`, following
 completed `native-engine-browser-485`, following
 completed `native-engine-browser-484`, following
@@ -578,6 +579,16 @@ their prior geometry. The fixed-cell fallback keeps the direction value for
 the existing alignment owner. Mixed bidi segmentation, Unicode bidi
 reordering, vertical writing modes, language/script negotiation, missing-glyph
 font fallback, and complete browser text parity remain open.
+
+Slice 488 makes ordered CSS font-family fallback functional. The native font
+book now retains the best matching face for every declared family. If one
+face covers a complete run, HarfRust shaping remains active; otherwise the
+bounded recovery path selects the first face with a real cmap glyph per
+source character and keeps kerning only across adjacent characters using the
+same face. Missing glyphs still use a bounded primary-face replacement rather
+than expanding filesystem discovery. `@font-face` resources, arbitrary font
+discovery, variable-font selection, mixed bidi, writing modes, grapheme-safe
+line breaking, and complete browser text parity remain open.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads
@@ -6834,9 +6845,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-487.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-488.md` is the latest completed browser
 task;
-`docs/plan/tasks/native-engine-browser-486.md` is the preceding completed
+`docs/plan/tasks/native-engine-browser-487.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-485.md` is the preceding completed
 browser task;

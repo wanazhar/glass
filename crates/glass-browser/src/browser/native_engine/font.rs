@@ -79,7 +79,7 @@ struct NativeFontBook {
 
 #[derive(Debug, Clone)]
 pub(crate) struct NativeTextMetrics {
-    face: Option<Arc<NativeFontFace>>,
+    faces: Vec<Arc<NativeFontFace>>,
     font_size: u32,
     ascent: u32,
     line_height: u32,
@@ -89,7 +89,7 @@ pub(crate) struct NativeTextMetrics {
 impl NativeTextMetrics {
     pub(crate) fn fallback_with_direction(font_size: u32, direction: DirectionValue) -> Self {
         Self {
-            face: None,
+            faces: Vec::new(),
             font_size: font_size.clamp(1, MAX_NATIVE_FONT_SIZE),
             ascent: FALLBACK_LINE_HEIGHT.saturating_sub(5),
             line_height: FALLBACK_LINE_HEIGHT,
@@ -106,8 +106,8 @@ impl NativeTextMetrics {
     ) -> Self {
         let font_size = font_size.clamp(1, MAX_NATIVE_FONT_SIZE);
         let book = system_font_book();
-        let face = book.face_for(families, weight, style);
-        let Some(face) = face else {
+        let faces = book.faces_for(families, weight, style);
+        let Some(face) = faces.first() else {
             return Self::fallback_with_direction(font_size, direction);
         };
         let line_metrics = face.font.horizontal_line_metrics(font_size as f32);
@@ -119,7 +119,7 @@ impl NativeTextMetrics {
             .unwrap_or(FALLBACK_LINE_HEIGHT)
             .max(1);
         Self {
-            face: Some(face),
+            faces,
             font_size,
             ascent,
             line_height,
@@ -132,15 +132,24 @@ impl NativeTextMetrics {
     }
 
     pub(crate) fn advance(&self, character: char, letter_spacing: u32, word_spacing: u32) -> u32 {
-        let base = self.face.as_ref().map_or(FALLBACK_GLYPH_ADVANCE, |face| {
-            ceil_positive(
-                face.font
-                    .metrics(character, self.font_size as f32)
-                    .advance_width,
-            )
-        });
+        let base = self
+            .face_index_for_character(character)
+            .and_then(|face_index| self.faces.get(face_index))
+            .map_or(FALLBACK_GLYPH_ADVANCE, |face| {
+                ceil_positive(
+                    face.font
+                        .metrics(character, self.font_size as f32)
+                        .advance_width,
+                )
+            });
         base.saturating_add(letter_spacing)
             .saturating_add(if character == ' ' { word_spacing } else { 0 })
+    }
+
+    fn face_index_for_character(&self, character: char) -> Option<usize> {
+        self.faces
+            .iter()
+            .position(|face| has_glyph(face, character))
     }
 
     pub(crate) fn measure_text(&self, value: &str, letter_spacing: u32, word_spacing: u32) -> u32 {
@@ -149,8 +158,12 @@ impl NativeTextMetrics {
         }
         let mut width = 0u32;
         let mut previous = None;
+        let mut previous_face_index = None;
         for character in value.chars() {
-            if let Some(face) = &self.face
+            let face_index = self.face_index_for_character(character);
+            if let Some(face_index) = face_index
+                && previous_face_index == Some(face_index)
+                && let Some(face) = self.faces.get(face_index)
                 && let Some(previous) = previous
             {
                 let kerning = face
@@ -165,6 +178,7 @@ impl NativeTextMetrics {
             }
             width = width.saturating_add(self.advance(character, letter_spacing, word_spacing));
             previous = Some(character);
+            previous_face_index = face_index;
         }
         width
     }
@@ -176,19 +190,12 @@ impl NativeTextMetrics {
         word_spacing: u32,
         justify_spacing: u32,
     ) -> Option<NativeFontRun> {
-        let face = self.face.as_ref()?;
         if let Some(shaped) = self.shape(value, letter_spacing, word_spacing)
             && let Some(run) = self.rasterize_shaped(value, &shaped, justify_spacing)
         {
             return Some(run);
         }
-        self.rasterize_character_by_character(
-            value,
-            letter_spacing,
-            word_spacing,
-            justify_spacing,
-            face,
-        )
+        self.rasterize_character_by_character(value, letter_spacing, word_spacing, justify_spacing)
     }
 
     fn shape(
@@ -197,7 +204,22 @@ impl NativeTextMetrics {
         letter_spacing: u32,
         word_spacing: u32,
     ) -> Option<NativeShapedRun> {
-        let face = self.face.as_ref()?;
+        let (face_index, face) = self
+            .faces
+            .iter()
+            .enumerate()
+            .find(|(_, face)| value.chars().all(|character| has_glyph(face, character)))?;
+        self.shape_with_face(face_index, face, value, letter_spacing, word_spacing)
+    }
+
+    fn shape_with_face(
+        &self,
+        face_index: usize,
+        face: &NativeFontFace,
+        value: &str,
+        letter_spacing: u32,
+        word_spacing: u32,
+    ) -> Option<NativeShapedRun> {
         let shaper_data = face.shaper_data.as_ref()?;
         let font = harfrust::FontRef::new(face.font_data.as_ref()).ok()?;
         let mut buffer = harfrust::UnicodeBuffer::new();
@@ -280,6 +302,7 @@ impl NativeTextMetrics {
             previous_cluster = Some(cluster);
         }
         Some(NativeShapedRun {
+            face_index,
             glyphs,
             width: round_fixed_nonnegative(pen_x),
             width_fixed: pen_x,
@@ -292,7 +315,7 @@ impl NativeTextMetrics {
         shaped: &NativeShapedRun,
         justify_spacing: u32,
     ) -> Option<NativeFontRun> {
-        let face = self.face.as_ref()?;
+        let face = self.faces.get(shaped.face_index)?;
         let characters: Vec<char> = value.chars().collect();
         let justify_unit = i64::from(justify_spacing).saturating_mul(i64::from(FONT_SHAPE_SCALE));
         let justified_space_count = shaped
@@ -407,14 +430,18 @@ impl NativeTextMetrics {
         letter_spacing: u32,
         word_spacing: u32,
         justify_spacing: u32,
-        face: &NativeFontFace,
     ) -> Option<NativeFontRun> {
         let mut glyphs = Vec::new();
         let mut space_ranges = Vec::new();
         let mut x = 0i32;
         let mut previous = None;
+        let mut previous_face_index = None;
         for (char_index, character) in value.chars().enumerate() {
-            if let Some(previous) = previous {
+            let face_index = self.face_index_for_character(character).unwrap_or(0);
+            let face = self.faces.get(face_index)?;
+            if previous_face_index == Some(face_index)
+                && let Some(previous) = previous
+            {
                 let kerning = face
                     .font
                     .horizontal_kern(previous, character, self.font_size as f32)
@@ -451,6 +478,7 @@ impl NativeTextMetrics {
             }
             x = x.saturating_add(i32::try_from(advance).unwrap_or(i32::MAX));
             previous = Some(character);
+            previous_face_index = Some(face_index);
         }
         Some(NativeFontRun {
             glyphs,
@@ -474,18 +502,20 @@ struct NativeShapedGlyph {
 
 #[derive(Debug, Clone)]
 struct NativeShapedRun {
+    face_index: usize,
     glyphs: Vec<NativeShapedGlyph>,
     width: u32,
     width_fixed: i64,
 }
 
 impl NativeFontBook {
-    fn face_for(
+    fn faces_for(
         &self,
         families: NativeFontFamilyList,
         weight: FontWeightValue,
         style: FontStyleValue,
-    ) -> Option<Arc<NativeFontFace>> {
+    ) -> Vec<Arc<NativeFontFace>> {
+        let mut selected = Vec::new();
         for family in families.iter() {
             let mut best = None;
             let mut best_score = u8::MAX;
@@ -500,11 +530,15 @@ impl NativeFontBook {
                 }
             }
             if let Some(face) = best {
-                return Some(Arc::new(face.clone()));
+                selected.push(Arc::new(face.clone()));
             }
         }
-        None
+        selected
     }
+}
+
+fn has_glyph(face: &NativeFontFace, character: char) -> bool {
+    face.font.lookup_glyph_index(character) != 0
 }
 
 fn system_font_book() -> &'static NativeFontBook {
@@ -803,11 +837,49 @@ mod tests {
         );
         assert!(metrics.line_height() > 0);
         assert!(metrics.measure_text("Glass", 0, 0) > 0);
-        if metrics.face.is_some() {
+        if !metrics.faces.is_empty() {
             let run = metrics.rasterize("Glass", 0, 0, 0).unwrap();
             assert!(!run.glyphs.is_empty());
             assert!(run.width > 0);
         }
+    }
+
+    #[test]
+    fn ordered_font_candidates_preserve_css_family_order() {
+        let families = NativeFontFamilyList::parse("sans-serif, serif").unwrap();
+        let candidates =
+            system_font_book().faces_for(families, FontWeightValue::Normal, FontStyleValue::Normal);
+        if candidates.len() < 2 {
+            return;
+        }
+        assert_eq!(
+            candidates[0].generic_family,
+            NativeGenericFontFamily::SansSerif
+        );
+        assert_eq!(candidates[1].generic_family, NativeGenericFontFamily::Serif);
+    }
+
+    #[test]
+    fn missing_glyph_uses_bounded_primary_replacement() {
+        let families = NativeFontFamilyList::single(NativeFontFamilyValue::Generic(
+            NativeGenericFontFamily::SansSerif,
+        ));
+        let metrics = NativeTextMetrics::for_style(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            DirectionValue::Ltr,
+        );
+        if metrics.faces.is_empty() {
+            return;
+        }
+        let missing = char::from_u32(0x10_ffff).unwrap();
+        if metrics.face_index_for_character(missing).is_some() {
+            return;
+        }
+        let run = metrics.rasterize(&missing.to_string(), 0, 0, 0).unwrap();
+        assert_eq!(run.width, FALLBACK_GLYPH_ADVANCE);
     }
 
     #[test]
@@ -822,7 +894,7 @@ mod tests {
             FontStyleValue::Normal,
             DirectionValue::Ltr,
         );
-        let Some(face) = metrics.face.as_ref() else {
+        let Some(face) = metrics.faces.first() else {
             return;
         };
         if face.shaper_data.is_none() {
@@ -865,7 +937,7 @@ mod tests {
             FontStyleValue::Normal,
             DirectionValue::Rtl,
         );
-        let Some(face) = metrics.face.as_ref() else {
+        let Some(face) = metrics.faces.first() else {
             return;
         };
         if face.shaper_data.is_none() {

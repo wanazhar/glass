@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-440`, following completed
 `native-engine-browser-439`, following completed
 `native-engine-browser-438`, following completed
 `native-engine-browser-437`, following completed
@@ -275,7 +276,17 @@ ReadableStream bodies fail closed. Responses are buffered and publish the
 bounded terminal lifecycle, while complete XHR/Streams Web IDL parity remains
 issue #40 work.
 
-The active XHR request-side slice is
+The completed XHR response-metadata slice is
+[native-engine-browser-440](tasks/native-engine-browser-440.md): native HTTP
+reason phrases now reach page and worker Fetch/XHR and synchronous-XHR
+projections as `statusText`; the synthetic fixture response uses `OK`. Page
+and worker response headers validate response names independently of request
+restrictions, combine duplicate values, sort `getAllResponseHeaders()`
+deterministically, and keep `Set-Cookie` unreadable. The loader remains the
+CORS and response-policy owner; raw invalid wire-header bytes and complete
+XHR/Web IDL descriptor parity remain issue #40 gates.
+
+The completed XHR request-side slice is
 [native-engine-browser-439](tasks/native-engine-browser-439.md): page and
 worker XHR share bounded permitted request-header validation and duplicate
 combination, expose ready-state constants on interfaces and prototypes, and

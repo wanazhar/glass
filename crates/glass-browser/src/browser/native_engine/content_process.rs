@@ -3488,6 +3488,11 @@ fn decode_fetch_response(
             operation: "decode content process fetch".into(),
             reason: "content process returned an invalid HTTP status".into(),
         })?;
+    let status_text = response
+        .get("status_text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let content_type = response
         .get("content_type")
         .filter(|value| !value.is_null())
@@ -3537,6 +3542,7 @@ fn decode_fetch_response(
     Ok(NativeFetchResponse {
         url: url.to_owned(),
         status,
+        status_text,
         content_type,
         headers,
         body,
@@ -5215,6 +5221,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "id": id,
                             "url": fetch.url,
                             "status": fetch.status,
+                            "status_text": fetch.status_text,
                             "content_type": fetch.content_type,
                             "headers": fetch.headers,
                             "redirected": fetch.redirected,
@@ -10785,6 +10792,7 @@ fn fetch_response_payload(result: Result<NativeFetchResponse, NativeEngineError>
         Ok(response) => json!({
             "url": response.url,
             "status": response.status,
+            "statusText": response.status_text,
             "contentType": response.content_type,
             "headers": response.headers,
             "body": String::from_utf8_lossy(&response.body),

@@ -6949,7 +6949,7 @@ async fn native_local_sync_xhr_uses_fixture_loader() {
             .unwrap(),
         serde_json::json!({
             "status": 200,
-            "statusText": "200",
+            "statusText": "OK",
             "responseText": "fixture-sync-response",
             "response": "fixture-sync-response",
             "responseURL": "fixture://sync-xhr.test/response",
@@ -7082,7 +7082,7 @@ async fn native_content_process_worker_exposes_xhr_fetch_bridge() {
             "identity": true,
             "states": [1, 2, 3, 4],
             "status": 200,
-            "statusText": "200",
+            "statusText": "OK",
             "responseText": "worker-xhr-response",
             "responseURL": format!("http://{address}/worker-xhr"),
             "responseHeader": "text",
@@ -7199,7 +7199,7 @@ async fn native_content_process_page_and_worker_support_sync_xhr() {
         engine.evaluate_async("syncPageResult").await.unwrap(),
         serde_json::json!({
             "status": 200,
-            "statusText": "200",
+            "statusText": "OK",
             "responseText": "sync-page-response",
             "response": "sync-page-response",
             "responseURL": format!("http://{address}/sync-xhr"),
@@ -7213,7 +7213,7 @@ async fn native_content_process_page_and_worker_support_sync_xhr() {
         engine.evaluate_async("workerMessages").await.unwrap(),
         serde_json::json!([{
             "status": 200,
-            "statusText": "200",
+            "statusText": "OK",
             "responseText": "sync-worker-response",
             "responseURL": format!("http://{address}/sync-xhr-worker"),
             "responseHeader": "worker",
@@ -7237,6 +7237,126 @@ async fn native_content_process_page_and_worker_support_sync_xhr() {
             "TypeError",
             "TypeError",
             [0, 1, 2, 3, 4],
+        ])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_xhr_exposes_status_text_and_safe_response_headers() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            let (status, reason, content_type, body) = match path {
+                "/headers-page" => (
+                    200,
+                    "OK",
+                    "text/html",
+                    r#"<script>
+globalThis.pageHeaderPromise = new Promise(resolve => {
+  const xhr = new XMLHttpRequest();
+  xhr.onload = () => {
+    let invalid = '';
+    try { xhr.getResponseHeader('bad header'); } catch (error) { invalid = error.name; }
+    resolve({
+      status: xhr.status,
+      statusText: xhr.statusText,
+      multi: xhr.getResponseHeader('X-Multi'),
+      hidden: xhr.getResponseHeader('set-cookie'),
+      invalid,
+      safe: xhr.getAllResponseHeaders().includes('set-cookie') === false,
+      combined: xhr.getAllResponseHeaders().includes('x-multi: first, second\r\n'),
+    });
+  };
+  xhr.onerror = () => resolve({ error: 'page-xhr' });
+  xhr.open('GET', '/headers');
+  xhr.send();
+});
+globalThis.workerHeaderPromise = new Promise(resolve => {
+  globalThis.headerWorker = new Worker('/headers-worker.js');
+  headerWorker.onmessage = event => resolve(event.data);
+});
+</script>"#,
+                ),
+                "/headers" => (201, "Created", "text/plain", "page-headers"),
+                "/headers-worker.js" => (
+                    200,
+                    "OK",
+                    "text/javascript",
+                    r#"const xhr = new XMLHttpRequest();
+xhr.onload = () => {
+  let invalid = '';
+  try { xhr.getResponseHeader('bad header'); } catch (error) { invalid = error.name; }
+  postMessage({
+    status: xhr.status,
+    statusText: xhr.statusText,
+    multi: xhr.getResponseHeader('x-multi'),
+    hidden: xhr.getResponseHeader('set-cookie'),
+    invalid,
+    safe: xhr.getAllResponseHeaders().includes('set-cookie') === false,
+    combined: xhr.getAllResponseHeaders().includes('x-multi: worker, second\r\n'),
+  });
+};
+xhr.onerror = () => postMessage({ error: 'worker-xhr' });
+xhr.open('GET', '/headers-worker');
+xhr.send();"#,
+                ),
+                "/headers-worker" => (202, "Accepted", "text/plain", "worker-headers"),
+                other => panic!("unexpected response-header request path: {other}"),
+            };
+            let extra_headers = match path {
+                "/headers" => "X-Multi: first\r\nX-Multi: second\r\n",
+                "/headers-worker" => "X-Multi: worker\r\nX-Multi: second\r\n",
+                _ => "",
+            };
+            let set_cookie = if matches!(path, "/headers" | "/headers-worker") {
+                "Set-Cookie: secret=not-page-readable\r\n"
+            } else {
+                ""
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n{extra_headers}{set_cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/headers-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await Promise.all([pageHeaderPromise, workerHeaderPromise])")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            {
+                "status": 201,
+                "statusText": "Created",
+                "multi": "first, second",
+                "hidden": null,
+                "invalid": "SyntaxError",
+                "safe": true,
+                "combined": true,
+            },
+            {
+                "status": 202,
+                "statusText": "Accepted",
+                "multi": "worker, second",
+                "hidden": null,
+                "invalid": "SyntaxError",
+                "safe": true,
+                "combined": true,
+            }
         ])
     );
     engine.close_async().await.unwrap();
@@ -54158,7 +54278,7 @@ async fn native_content_process_exposes_bounded_xhr_fetch_bridge() {
             format!("http://{address}/xhr"),
             "text/plain",
             "one, two",
-            "content-type: text/plain\r\nx-glass-response: one, two\r\ncontent-length: 12\r\nconnection: close\r\n"
+            "connection: close\r\ncontent-length: 12\r\ncontent-type: text/plain\r\nx-glass-response: one, two\r\n"
         ])
     );
     assert_eq!(
@@ -54360,7 +54480,7 @@ async fn native_content_process_xhr_publishes_response_state_lifecycle() {
                 {
                     "readyState": 2,
                     "status": 200,
-                    "statusText": "200",
+                    "statusText": "OK",
                     "url": format!("http://{address}/state"),
                     "header": "ready",
                     "responseText": ""
@@ -54368,7 +54488,7 @@ async fn native_content_process_xhr_publishes_response_state_lifecycle() {
                 {
                     "readyState": 3,
                     "status": 200,
-                    "statusText": "200",
+                    "statusText": "OK",
                     "url": format!("http://{address}/state"),
                     "header": "ready",
                     "responseText": "state-response"
@@ -54376,7 +54496,7 @@ async fn native_content_process_xhr_publishes_response_state_lifecycle() {
                 {
                     "readyState": 4,
                     "status": 200,
-                    "statusText": "200",
+                    "statusText": "OK",
                     "url": format!("http://{address}/state"),
                     "header": "ready",
                     "responseText": "state-response"

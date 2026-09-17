@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-440`, following completed
 `native-engine-browser-439`, following completed
 `native-engine-browser-438`, following completed
 `native-engine-browser-437`, following completed
@@ -98,6 +99,16 @@ prototypes, and keep the pending-send bit coherent across validation errors,
 completion, timeout, abort, and reuse. The native loader continues to own
 header, CORS, credential, cache, and redirect policy. Raw invalid header bytes
 and complete XHR/Web IDL descriptor parity remain issue #40 gates.
+
+Slice 440 completes the XHR response-metadata handoff. Native HTTP reason
+phrases now travel through local, content-process, worker, Service Worker,
+Fetch, and synchronous-XHR payloads as `statusText`; synthetic fixture
+responses use the deterministic `OK` phrase. Page and worker response-header
+views validate response names independently of request-header restrictions,
+combine duplicate values, sort the exposed list, filter `Set-Cookie`, and
+raise `SyntaxError` for malformed names. The native loader remains the owner
+of CORS exposure and all response policy; raw invalid wire-header bytes and
+complete XHR/Web IDL descriptor parity remain issue #40 gates.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

@@ -166,6 +166,16 @@ interception, response metadata, installed-font discovery, font-display
 timing, variable/color fonts, cross-realm projection, and complete FontFace/Web
 IDL parity remain issue #40 gates.
 
+The completed FontFace source-list follow-up is
+[`native-engine-browser-498`](tasks/native-engine-browser-498.md): bounded
+ordered `url()`/`local()` candidates now honor supported `format()` descriptors
+and advance through unavailable or rejected candidates until one succeeds.
+Quoted/function-contained commas remain intact, and successful bytes still use
+the transactional host acknowledgement path. `tech()` descriptors,
+BufferSource constructor inputs, richer CSS tokenization, variable/color
+negotiation, installed-font discovery, and complete FontFace/Web IDL parity
+remain issue #40 gates.
+
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR
 recognizes XML MIME responses, exposes a strict detached XML `Document` from

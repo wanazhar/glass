@@ -9493,16 +9493,124 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
       throw nativeFontFaceError("FontFace Blob exceeds its byte limit", "NetworkError");
     return bytes;
   };
-  const nativeFontFaceSource = (source) => {
-    const text = String(source === undefined || source === null ? "" : source).trim();
-    const match = text.match(/^(url|local)\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)/i);
-    if (!match) {
-      throw nativeFontFaceError("FontFace source must contain url() or local()", "SyntaxError");
+  const nativeFontFaceSourceLimit = 32;
+  const nativeFontFaceSupportedFormats = new Set([
+    "woff", "woff2", "truetype", "opentype", "embedded-opentype", "svg", "collection",
+    "woff-variations", "truetype-variations", "opentype-variations",
+  ]);
+  const nativeFontFaceSplitList = (value) => {
+    const text = String(value);
+    const parts = [];
+    let start = 0;
+    let depth = 0;
+    let quote = null;
+    let escaped = false;
+    for (let index = 0; index < text.length; index += 1) {
+      const character = text[index];
+      if (quote !== null) {
+        if (escaped) {
+          escaped = false;
+        } else if (character === "\\") {
+          escaped = true;
+        } else if (character === quote) {
+          quote = null;
+        }
+        continue;
+      }
+      if (character === "\"" || character === "'") {
+        quote = character;
+      } else if (character === "(") {
+        depth += 1;
+      } else if (character === ")") {
+        depth -= 1;
+        if (depth < 0) throw nativeFontFaceError("FontFace source list is malformed", "SyntaxError");
+      } else if (character === "," && depth === 0) {
+        const part = text.slice(start, index).trim();
+        if (!part) throw nativeFontFaceError("FontFace source list contains an empty entry", "SyntaxError");
+        parts.push(part);
+        if (parts.length >= nativeFontFaceSourceLimit)
+          throw nativeFontFaceError("FontFace source list exceeds its limit", "RangeError");
+        start = index + 1;
+      }
     }
-    const value = String(match[2] === undefined ? match[3] === undefined ? match[4] : match[3] : match[2]).trim();
-    if (!value) throw nativeFontFaceError("FontFace URL source must not be empty", "SyntaxError");
-    if (String(match[1]).toLowerCase() === "local") return { kind: "local", family: value };
-    return { kind: "url", href: new URLNative(value, host.url).href };
+    if (quote !== null || depth !== 0)
+      throw nativeFontFaceError("FontFace source list is malformed", "SyntaxError");
+    const finalPart = text.slice(start).trim();
+    if (!finalPart) throw nativeFontFaceError("FontFace source list contains an empty entry", "SyntaxError");
+    parts.push(finalPart);
+    if (parts.length > nativeFontFaceSourceLimit)
+      throw nativeFontFaceError("FontFace source list exceeds its limit", "RangeError");
+    return parts;
+  };
+  const nativeFontFaceFormatName = (value) => String(value).trim()
+    .replace(/^(["'])(.*)\1$/, "$2")
+    .trim()
+    .toLowerCase();
+  const nativeFontFaceFormatSupported = (suffix) => {
+    if (!suffix) return true;
+    const match = suffix.match(/^format\s*\((.*)\)$/i);
+    if (!match) throw nativeFontFaceError("FontFace source has an unsupported descriptor", "SyntaxError");
+    const formats = nativeFontFaceSplitList(match[1]).map(nativeFontFaceFormatName);
+    if (formats.length === 0 || formats.some((format) => !format))
+      throw nativeFontFaceError("FontFace format() must contain a format", "SyntaxError");
+    return formats.some((format) => nativeFontFaceSupportedFormats.has(format));
+  };
+  const nativeFontFaceSources = (source) => {
+    const text = String(source === undefined || source === null ? "" : source).trim();
+    if (!text) throw nativeFontFaceError("FontFace source must not be empty", "SyntaxError");
+    const candidates = [];
+    for (const entry of nativeFontFaceSplitList(text)) {
+      const match = entry.match(/^(url|local)\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)\s*(.*)$/i);
+      if (!match) {
+        throw nativeFontFaceError("FontFace source must contain url() or local()", "SyntaxError");
+      }
+      const value = String(match[2] === undefined ? match[3] === undefined ? match[4] : match[3] : match[2]).trim();
+      if (!value) throw nativeFontFaceError("FontFace URL source must not be empty", "SyntaxError");
+      if (!nativeFontFaceFormatSupported(String(match[5] || "").trim())) continue;
+      if (String(match[1]).toLowerCase() === "local") candidates.push({ kind: "local", family: value });
+      else candidates.push({ kind: "url", href: new URLNative(value, host.url).href });
+    }
+    if (candidates.length === 0)
+      throw nativeFontFaceError("FontFace source has no supported format", "NetworkError");
+    return candidates;
+  };
+  const nativeFontFaceCandidateBytes = (candidate, weight, style) => {
+    if (candidate.kind === "local") {
+      let encoded;
+      try { encoded = globalThis.__glassNativeLocalFont(candidate.family, weight, style); }
+      catch (_error) { encoded = null; }
+      if (typeof encoded !== "string" || !encoded)
+        throw nativeFontFaceError("FontFace local() source was not found", "NetworkError");
+      try { return decodeBase64(encoded, nativeFontFaceByteLimit); }
+      catch (error) { throw nativeFontFaceError(String(error), "NetworkError"); }
+    }
+    const href = candidate.href;
+    const inlineBytes = nativeFontFaceInlineBytes(href);
+    if (inlineBytes !== null) return inlineBytes;
+    return fetchNative(href, { credentials: "same-origin", mode: "cors" }, "font").then((response) => {
+      if (!response || response.ok !== true)
+        throw nativeFontFaceError("FontFace source response was not successful", "NetworkError");
+      const contentType = response.headers && response.headers.get
+        ? response.headers.get("content-type") || ""
+        : "";
+      if (!nativeFontFaceContentTypeAllowed(contentType))
+        throw nativeFontFaceError("FontFace source has an unsupported media type", "NetworkError");
+      return response.arrayBuffer().then((buffer) => {
+        const bytes = Array.from(new Uint8Array(buffer));
+        if (bytes.length === 0) throw nativeFontFaceError("FontFace source is empty", "NetworkError");
+        if (bytes.length > nativeFontFaceByteLimit)
+          throw nativeFontFaceError("FontFace source exceeds its byte limit", "NetworkError");
+        return bytes;
+      });
+    });
+  };
+  const nativeFontFaceTryCandidates = (candidates, index, lastError, weight, style) => {
+    if (index >= candidates.length) {
+      throw lastError || nativeFontFaceError("FontFace sources could not be loaded", "NetworkError");
+    }
+    return Promise.resolve()
+      .then(() => nativeFontFaceCandidateBytes(candidates[index], weight, style))
+      .catch((error) => nativeFontFaceTryCandidates(candidates, index + 1, error, weight, style));
   };
   let nextFontFaceRequestId = Number.isSafeInteger(globalThis.__glassNextFontFaceRequestId)
     ? globalThis.__glassNextFontFaceRequestId
@@ -9687,35 +9795,13 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
         if (state.staticStatus === "loaded") return null;
         throw nativeFontFaceError("native CSS font face failed to load", "NetworkError");
       }
-      const source = nativeFontFaceSource(state.source);
-      if (source.kind === "local") {
-        let encoded;
-        try { encoded = globalThis.__glassNativeLocalFont(source.family, state.weight, state.style); }
-        catch (_error) { encoded = null; }
-        if (typeof encoded !== "string" || !encoded)
-          throw nativeFontFaceError("FontFace local() source was not found", "NetworkError");
-        try { return decodeBase64(encoded, nativeFontFaceByteLimit); }
-        catch (error) { throw nativeFontFaceError(String(error), "NetworkError"); }
-      }
-      const href = source.href;
-      const inlineBytes = nativeFontFaceInlineBytes(href);
-      if (inlineBytes !== null) return inlineBytes;
-      return fetchNative(href, { credentials: "same-origin", mode: "cors" }, "font").then((response) => {
-        if (!response || response.ok !== true)
-          throw nativeFontFaceError("FontFace source response was not successful", "NetworkError");
-        const contentType = response.headers && response.headers.get
-          ? response.headers.get("content-type") || ""
-          : "";
-        if (!nativeFontFaceContentTypeAllowed(contentType))
-          throw nativeFontFaceError("FontFace source has an unsupported media type", "NetworkError");
-        return response.arrayBuffer().then((buffer) => {
-          const bytes = Array.from(new Uint8Array(buffer));
-          if (bytes.length === 0) throw nativeFontFaceError("FontFace source is empty", "NetworkError");
-          if (bytes.length > nativeFontFaceByteLimit)
-            throw nativeFontFaceError("FontFace source exceeds its byte limit", "NetworkError");
-          return bytes;
-        });
-      });
+      return nativeFontFaceTryCandidates(
+        nativeFontFaceSources(state.source),
+        0,
+        null,
+        state.weight,
+        state.style,
+      );
     });
     const promise = sourcePromise.then((bytes) => {
       let accepted = Promise.resolve();
@@ -17689,6 +17775,68 @@ mod native_font_face_tests {
                 && redirect == "follow"
                 && cache == "default"
         )));
+    }
+
+    #[test]
+    fn script_font_face_source_list_tries_supported_fallbacks() {
+        #[cfg(not(target_os = "linux"))]
+        return;
+        if NativeFontBook::system()
+            .local_font_bytes(
+                "DejaVu Sans",
+                FontWeightValue::Normal,
+                FontStyleValue::Normal,
+            )
+            .is_none()
+        {
+            return;
+        }
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-list-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse("<body></body>", &NativeEngineLimits::default())
+            .expect("font-face document must parse");
+        let started = runtime
+            .evaluate(
+                r#"(() => {
+                  const face = new FontFace(
+                    "Fallback Face",
+                    "local('Missing Face') format('future-format'), local('Missing Face') format('woff2'), local('DejaVu Sans') format('truetype')",
+                  );
+                  globalThis.__fallbackFontFace = face;
+                  document.fonts.add(face);
+                  face.load().then(() => { document.body.textContent = "fallback-loaded"; });
+                  return true;
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("FontFace source list must evaluate");
+        apply_document_commands_with_font_face_ack(
+            &mut document,
+            &runtime,
+            "about:blank",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+            &started.commands,
+            false,
+        )
+        .expect("FontFace source-list fallback must apply and acknowledge");
+        let evaluation = runtime
+            .evaluate(
+                "[globalThis.__fallbackFontFace.status, document.fonts.status, document.body.textContent]",
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("FontFace source-list completion must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["loaded", "loaded", "fallback-loaded"])
+        );
+        assert_eq!(document.to_content_wire().font_resources.len(), 1);
     }
 
     #[test]

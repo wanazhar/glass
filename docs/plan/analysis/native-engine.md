@@ -149,6 +149,17 @@ normal owner path. The remaining source, Service Worker, response metadata,
 installed-font, timing, cross-realm, and full FontFace/Web IDL gates stay
 explicit.
 
+Slice 498 adds ordered FontFace source-list selection. The page parser splits a
+bounded list at top-level commas only, parses candidate `url()`/`local()`
+functions and `format()` descriptors, and skips candidates whose declared
+formats are not admitted by the native font loader. Candidate loading uses a
+bounded Promise fallback chain, so a missing local face or failed inline/HTTP
+resource advances to the next eligible candidate while preserving the final
+native error if all candidates fail. Successful bytes still use the 497
+transactional host acknowledgement. `tech()` descriptors, BufferSource
+constructor inputs, richer CSS tokenization, variable/color negotiation,
+installed-font discovery, and complete FontFace/Web IDL parity remain open.
+
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
 navigation effects. New POST targets avoid a duplicate GET by bootstrapping
@@ -6972,11 +6983,11 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-497.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-498.md` is the latest completed browser
 task;
-`docs/plan/tasks/native-engine-browser-496.md` is the preceding completed
+`docs/plan/tasks/native-engine-browser-497.md` is the preceding completed
 browser task;
-`docs/plan/tasks/native-engine-browser-495.md` is the preceding completed
+`docs/plan/tasks/native-engine-browser-496.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-492.md` is the preceding completed
 browser task;

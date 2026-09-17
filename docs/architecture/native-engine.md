@@ -141,6 +141,19 @@ Service Worker interception, response metadata, installed-font discovery,
 font-display timing, variable/color fonts, cross-realm projection, and
 complete text/Web IDL parity remain issue #40 gates.
 
+Slice 498 adds ordered script-created FontFace source selection. The page
+realm parses a bounded comma-separated list without splitting quoted or
+function-contained commas, filters each candidate's `format()` descriptor
+against the formats admitted by the native font loader, and tries eligible
+`local()`/inline/HTTP candidates in source order. Missing local faces,
+transport failures, unsupported response types, empty bodies, and oversized
+bodies advance to the next candidate; the last error remains the page-facing
+failure when every candidate is exhausted. Successful bytes retain the
+transactional host acknowledgement and no-partial-font-book contract from
+497. `tech()` descriptors, BufferSource constructor inputs, richer CSS
+tokenization, variable/color negotiation, installed-font discovery, and
+complete FontFace/Web IDL parity remain issue #40 gates.
+
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between
 page and worker Fetch, validates worker-owned read/cancel commands, and

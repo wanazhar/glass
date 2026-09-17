@@ -20292,17 +20292,15 @@ fn worker_bootstrap(
     const responseType = String(this.responseType || "").toLowerCase();
     if (!["", "text", "json", "arraybuffer", "blob"].includes(responseType))
       throw new TypeError("native Worker XMLHttpRequest responseType is unsupported");
-    const token = this._token + 1;
-    this._token = token;
-    this._sent = true;
-    this._aborted = false;
     const requestBody = body === undefined ? null : body;
     if (!this._async) {{
       if (this._timeout !== 0)
         throw new WorkerDOMExceptionNative("native synchronous Worker XMLHttpRequest cannot use timeout", "InvalidAccessError");
       const request = workerSyncXhrRequestPayload(this, requestBody);
-      workerXhrStartUpload(this, requestBody);
+      this._token += 1;
+      this._sent = true;
       this._aborted = false;
+      workerXhrStartUpload(this, requestBody);
       let payload;
       try {{
         payload = JSON.parse(globalThis.__glassSyncXhr(JSON.stringify(request)));
@@ -20313,6 +20311,10 @@ fn worker_bootstrap(
       workerXhrApplySyncResponse(this, payload, responseType);
       return;
     }}
+    const token = this._token + 1;
+    this._token = token;
+    this._sent = true;
+    this._aborted = false;
     const controller = new AbortControllerNative();
     this._controller = controller;
     workerXhrStartUpload(this, requestBody);
@@ -20382,6 +20384,11 @@ fn worker_bootstrap(
   WorkerXMLHttpRequestNative.HEADERS_RECEIVED = 2;
   WorkerXMLHttpRequestNative.LOADING = 3;
   WorkerXMLHttpRequestNative.DONE = 4;
+  WorkerXMLHttpRequestNative.prototype.UNSENT = 0;
+  WorkerXMLHttpRequestNative.prototype.OPENED = 1;
+  WorkerXMLHttpRequestNative.prototype.HEADERS_RECEIVED = 2;
+  WorkerXMLHttpRequestNative.prototype.LOADING = 3;
+  WorkerXMLHttpRequestNative.prototype.DONE = 4;
   globalThis.__glassWorkerXmlHttpRequestConstructor = WorkerXMLHttpRequestNative;
   globalThis.XMLHttpRequest = WorkerXMLHttpRequestNative;
   globalThis.__glassWorkerFetchRequests = workerFetchRequests;
@@ -29098,14 +29105,15 @@ fn document_bootstrap(
       throw new TypeError("native synchronous XMLHttpRequest cannot use a ReadableStream body");
     if (nativeBodylessMethods.includes(xhr._method) && !payload.bodyNull)
       throw new TypeError("native " + xhr._method + " XMLHttpRequest requests must not have a body");
-    const headers = Object.assign({{}}, xhr._headers);
+    const headers = {{}};
     let contentType = payload.contentType;
-    for (const name of Object.keys(headers)) {{
-      if (name.toLowerCase() !== "content-type") continue;
-      if (contentType !== null && contentType !== undefined)
-        throw new TypeError("native XMLHttpRequest body chooses its own Content-Type");
-      contentType = headers[name];
-      delete headers[name];
+    for (const entry of xhr._headers._entries) {{
+      const name = String(entry[0]).toLowerCase();
+      if (name === "content-type") {{
+        if (contentType !== null && contentType !== undefined)
+          throw new TypeError("native XMLHttpRequest body chooses its own Content-Type");
+        contentType = String(entry[1]);
+      }} else headers[name] = String(entry[1]);
     }}
     const bytes = payload.bodyNull ? [] : payload.bytes;
     return {{
@@ -29123,6 +29131,7 @@ fn document_bootstrap(
     const fail = (error, eventType) => {{
       xhr._controller = null;
       xhr._responseReader = null;
+      xhr._sent = false;
       xhr.status = 0;
       xhr.statusText = "";
       xhr._responseText = "";
@@ -29194,6 +29203,7 @@ fn document_bootstrap(
     }}
     xhr._controller = null;
     xhr._responseReader = null;
+    xhr._sent = false;
     xhr.readyState = 4;
     xhr._notifyReadyState();
     nativeXhrFinishUpload(xhr, "load");
@@ -29221,13 +29231,14 @@ fn document_bootstrap(
     this._method = "GET";
     this._url = "";
     this._async = true;
-    this._headers = {{}};
+    this._headers = new HeadersNative();
     this._responseContentType = null;
     this._responseHeaders = responseHeaders([], null);
     this._controller = null;
     this._responseReader = null;
     this._responseUtf8Pending = [];
     this._aborted = false;
+    this._sent = false;
     this._timeout = 0;
     this._listeners = new Map();
     this.upload = new NativeXMLHttpRequestUpload();
@@ -29304,9 +29315,10 @@ fn document_bootstrap(
     this._method = normalizedMethod;
     this._url = url;
     this._async = async !== false;
-    this._headers = {{}};
+    this._headers = new HeadersNative();
     this._controller = null;
     this._aborted = false;
+    this._sent = false;
     this.status = 0;
     this.statusText = "";
     this._responseText = "";
@@ -29324,9 +29336,9 @@ fn document_bootstrap(
     this._notifyReadyState();
   }};
   XMLHttpRequestNative.prototype.setRequestHeader = function(name, value) {{
-    if (String(name).toLowerCase() !== "content-type")
-      throw new TypeError("native XMLHttpRequest only supports the Content-Type header");
-    this._headers["Content-Type"] = String(value);
+    if (this.readyState !== 1 || this._sent)
+      throw new TypeError("native XMLHttpRequest is not open");
+    this._headers.append(name, value);
   }};
   XMLHttpRequestNative.prototype.abort = function() {{
     const active = this.readyState !== 0 && this.readyState !== 4;
@@ -29335,6 +29347,7 @@ fn document_bootstrap(
     this._aborted = true;
     this._controller = null;
     this._responseReader = null;
+    this._sent = false;
     if (controller) controller.abort();
     if (reader) {{ try {{ reader.cancel(); }} catch (_) {{}} }}
     if (!active) return;
@@ -29354,15 +29367,17 @@ fn document_bootstrap(
     nativeXhrDispatch(this, "loadend");
   }};
   XMLHttpRequestNative.prototype.getResponseHeader = function(name) {{
+    if (this.readyState < 2 || this.readyState === 0) return null;
     return this._responseHeaders.get(name);
   }};
   XMLHttpRequestNative.prototype.getAllResponseHeaders = function() {{
+    if (this.readyState < 2 || this.readyState === 0) return "";
     return Array.from(this._responseHeaders.entries())
       .map(entry => entry[0] + ": " + entry[1] + "\r\n")
       .join("");
   }};
   XMLHttpRequestNative.prototype.send = function(body) {{
-    if (this.readyState !== 1) throw new TypeError("native XMLHttpRequest is not open");
+    if (this.readyState !== 1 || this._sent) throw new TypeError("native XMLHttpRequest is not open");
     const responseType = String(this.responseType || "").toLowerCase();
     if (!["", "text", "json", "arraybuffer", "blob", "document"].includes(responseType)) throw new TypeError("native XMLHttpRequest responseType is unsupported");
     const requestBody = body && (body.__glassFormData === true || body.__glassUrlSearchParams === true || body.__glassNativeBlob === true)
@@ -29374,18 +29389,21 @@ fn document_bootstrap(
       if (this._timeout !== 0)
         throw new DOMExceptionNative("native synchronous XMLHttpRequest cannot use timeout", "InvalidAccessError");
       const request = nativeSyncXhrRequestPayload(this, requestBody);
+      this._sent = true;
       nativeXhrStartUpload(this, requestBody);
       this._aborted = false;
       let payload;
       try {{
         payload = JSON.parse(globalThis.__glassSyncXhr(JSON.stringify(request)));
       }} catch (error) {{
+        this._sent = false;
         nativeXhrFinishUpload(this, "error");
         throw error;
       }}
       nativeXhrApplySyncResponse(this, payload, responseType);
       return;
     }}
+    this._sent = true;
     nativeXhrStartUpload(this, requestBody);
     const controller = new AbortControllerNative();
     this._controller = controller;
@@ -29444,6 +29462,7 @@ fn document_bootstrap(
         this._responseText = typeof value === "string" ? value : "";
         this.response = value;
       }}
+      this._sent = false;
       this.readyState = 4;
       this._notifyReadyState();
       nativeXhrFinishUpload(this, "load");
@@ -29453,6 +29472,7 @@ fn document_bootstrap(
       if (this._controller !== controller || this._aborted) return;
       this._controller = null;
       if (error && error.name === "TimeoutError") {{
+      this._sent = false;
       this.status = 0;
       this.statusText = "";
       this._responseText = "";
@@ -29469,6 +29489,7 @@ fn document_bootstrap(
         nativeXhrDispatch(this, "loadend");
         return;
       }}
+      this._sent = false;
       this.readyState = 4;
       this._notifyReadyState();
       nativeXhrFinishUpload(this, "error");
@@ -29476,6 +29497,16 @@ fn document_bootstrap(
       nativeXhrDispatch(this, "loadend");
     }});
   }};
+  XMLHttpRequestNative.UNSENT = 0;
+  XMLHttpRequestNative.OPENED = 1;
+  XMLHttpRequestNative.HEADERS_RECEIVED = 2;
+  XMLHttpRequestNative.LOADING = 3;
+  XMLHttpRequestNative.DONE = 4;
+  XMLHttpRequestNative.prototype.UNSENT = 0;
+  XMLHttpRequestNative.prototype.OPENED = 1;
+  XMLHttpRequestNative.prototype.HEADERS_RECEIVED = 2;
+  XMLHttpRequestNative.prototype.LOADING = 3;
+  XMLHttpRequestNative.prototype.DONE = 4;
   globalThis.XMLHttpRequest = XMLHttpRequestNative;
   globalThis.__glassFetchRequests = fetchRequests;
   globalThis.__glassNextFetchRequestId = nextFetchRequestId;

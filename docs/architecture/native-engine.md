@@ -90,6 +90,14 @@ The response is buffered and publishes the bounded terminal lifecycle;
 non-zero sync timeouts and ReadableStream bodies fail closed. Complete
 XHR/Streams Web IDL parity remains an issue #40 gate.
 
+Slice 439 extends the XHR request-side contract. Page and worker XHR now share
+the existing bounded request-header validators, combine duplicate permitted
+headers, expose the standard ready-state constants on interfaces and
+prototypes, and keep the pending-send bit coherent across validation errors,
+completion, timeout, abort, and reuse. The native loader continues to own
+header, CORS, credential, cache, and redirect policy. Raw invalid header bytes
+and complete XHR/Web IDL descriptor parity remain issue #40 gates.
+
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is
 now covered by slice 432.

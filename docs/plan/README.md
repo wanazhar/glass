@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-439`, following completed
 `native-engine-browser-438`, following completed
 `native-engine-browser-437`, following completed
 `native-engine-browser-436`, following completed
@@ -273,6 +274,13 @@ contract without deadlocking the async owner; non-zero sync timeouts and
 ReadableStream bodies fail closed. Responses are buffered and publish the
 bounded terminal lifecycle, while complete XHR/Streams Web IDL parity remains
 issue #40 work.
+
+The active XHR request-side slice is
+[native-engine-browser-439](tasks/native-engine-browser-439.md): page and
+worker XHR share bounded permitted request-header validation and duplicate
+combination, expose ready-state constants on interfaces and prototypes, and
+keep pending-send state reusable across validation failure and terminal
+outcomes. The existing native loader remains the policy owner.
 
 The completed page XHR reopen-cancellation slice is
 [native-engine-browser-429](tasks/native-engine-browser-429.md): reopening a

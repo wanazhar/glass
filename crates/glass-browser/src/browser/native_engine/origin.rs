@@ -39,6 +39,31 @@ impl NativeOrigin {
         })
     }
 
+    /// Recover the creator origin encoded in a native Blob URL. The Blob URL
+    /// itself is not a tuple origin in `url::Url`; its first component carries
+    /// the origin of the realm that created it instead.
+    pub(crate) fn from_blob_url(url: &str) -> Result<Self, NativeEngineError> {
+        let parsed = Url::parse(url).map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "native Blob URL is not valid URL syntax".into(),
+        })?;
+        if parsed.scheme() != "blob" {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "native object URL navigation requires a blob URL".into(),
+            });
+        }
+        let inner = url
+            .strip_prefix("blob:")
+            .and_then(|value| value.split('#').next())
+            .unwrap_or_default();
+        if inner == "null" || inner.starts_with("null/") {
+            return Ok(Self::Opaque);
+        }
+        let inner_url = Url::parse(inner).map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "native Blob URL creator origin is invalid".into(),
+        })?;
+        Self::from_url(&inner_url)
+    }
+
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Opaque => "opaque",

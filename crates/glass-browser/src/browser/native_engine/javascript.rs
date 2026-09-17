@@ -29,8 +29,8 @@ use super::origin::NativeOrigin;
 use super::resource_loader::{
     MAX_NATIVE_CSP_VIOLATIONS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
     NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
-    NativeFetchResponseStream, NativeInlineScriptPolicy, NativeNavigationMethod, NativeRequestBody,
-    NativeResourceLoader, NativeScriptResource,
+    NativeFetchResponseStream, NativeInlineScriptPolicy, NativeNavigationMethod,
+    NativeObjectUrlResource, NativeRequestBody, NativeResourceLoader, NativeScriptResource,
 };
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes192, Aes256};
@@ -3666,6 +3666,7 @@ pub(crate) struct NativeFrameScriptContext {
 pub(crate) struct NativePageNavigation {
     pub(crate) href: String,
     pub(crate) replace_history: bool,
+    pub(crate) object_url: Option<NativeObjectUrlResource>,
 }
 
 #[derive(Default)]
@@ -7168,6 +7169,12 @@ pub(crate) fn execute_page_scripts(
         &mut navigation,
         &mut events,
     )?;
+    if let Some(navigation) = navigation.as_mut() {
+        navigation.object_url = runtime
+            .as_ref()
+            .expect("page script runtime initialized")
+            .object_url_resource(&navigation.href)?;
+    }
     Ok(NativePageScriptResult {
         pending_fetches,
         service_worker_commands: service_worker_commands
@@ -7466,6 +7473,10 @@ pub(crate) fn execute_dynamic_page_scripts(
             &mut pending,
             &mut pending_script_sources,
         )?;
+    }
+
+    if let Some(navigation) = navigation.as_mut() {
+        navigation.object_url = runtime.object_url_resource(&navigation.href)?;
     }
 
     Ok(NativePageScriptResult {
@@ -9077,6 +9088,7 @@ pub(crate) fn apply_page_script_evaluation(
                 *navigation = Some(NativePageNavigation {
                     href,
                     replace_history: replace,
+                    object_url: None,
                 });
             }
             command @ NativeScriptCommand::ScrollTo { .. } => {
@@ -9700,6 +9712,104 @@ impl NativeJavaScriptRuntime {
             .ok()
             .and_then(|mut current| current.take());
         used.then_some(loader).flatten()
+    }
+
+    /// Snapshot a live page Blob URL before a full navigation replaces the
+    /// realm. The JavaScript registry remains the lifetime authority; Rust
+    /// only receives a bounded byte copy for the next document owner.
+    pub(crate) fn object_url_resource(
+        &self,
+        href: &str,
+    ) -> Result<Option<NativeObjectUrlResource>, NativeEngineError> {
+        validate_url_text("native object URL", href)?;
+        self.context.with(|ctx| {
+            let getter: Function =
+                ctx.globals()
+                    .get("__glassGetObjectUrlResource")
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "read native object URL".into(),
+                        reason: format!(
+                            "native object URL registry was unavailable: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?;
+            let value = getter
+                .call::<_, Value>((href.to_owned(),))
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "read native object URL".into(),
+                    reason: format!(
+                        "native object URL registry read failed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            let json = ctx
+                .json_stringify(value)
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "serialize native object URL".into(),
+                    reason: format!(
+                        "native object URL could not be serialized: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            let Some(json) = json else {
+                return Ok(None);
+            };
+            let json = json.to_string().map_err(|_| NativeEngineError::Worker {
+                operation: "serialize native object URL".into(),
+                reason: "native object URL could not be converted to UTF-8".into(),
+            })?;
+            if json == "null" {
+                return Ok(None);
+            }
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct NativeObjectUrlPayload {
+                #[serde(default)]
+                content_type: Option<String>,
+                body_base64: String,
+            }
+            let payload = serde_json::from_str::<NativeObjectUrlPayload>(&json).map_err(|_| {
+                NativeEngineError::Worker {
+                    operation: "decode native object URL".into(),
+                    reason: "native object URL registry returned malformed data".into(),
+                }
+            })?;
+            if payload.body_base64.len() > MAX_NATIVE_SCRIPT_BYTES.saturating_mul(2) {
+                return Err(NativeEngineError::limit(
+                    "native object URL payload",
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    payload.body_base64.len(),
+                ));
+            }
+            let body = base64::engine::general_purpose::STANDARD
+                .decode(payload.body_base64)
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "decode native object URL".into(),
+                    reason: "native object URL body was not valid base64".into(),
+                })?;
+            if body.len() > MAX_NATIVE_SCRIPT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "native object URL payload",
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    body.len(),
+                ));
+            }
+            if payload
+                .content_type
+                .as_ref()
+                .is_some_and(|content_type| content_type.len() > MAX_NATIVE_SCRIPT_BYTES)
+            {
+                return Err(NativeEngineError::limit(
+                    "native object URL content type",
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    payload.content_type.as_ref().map_or(0, String::len),
+                ));
+            }
+            Ok(Some(NativeObjectUrlResource {
+                content_type: payload.content_type,
+                body,
+            }))
+        })
     }
 
     pub(crate) fn set_inline_script_policy(&self, policy: NativeInlineScriptPolicy) {
@@ -27098,6 +27208,14 @@ fn document_bootstrap(
     nativeObjectUrlRegistry.delete(String(value));
   }};
   globalThis.__glassObjectUrlRegistry = nativeObjectUrlRegistry;
+  globalThis.__glassGetObjectUrlResource = (value) => {{
+    const entry = nativeObjectUrlRegistry.get(String(value));
+    if (!entry) return null;
+    return {{
+      contentType: entry.blob.type || null,
+      bodyBase64: encodeBase64(blobBytes(entry.blob), storageValueLimit),
+    }};
+  }};
   const requestHeaderNameNative = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
   const nativeFetchMethod = (value) => {{
     const method = String(value).toUpperCase();

@@ -20073,6 +20073,15 @@ fn worker_bootstrap(
       timeoutMs: xhr._timeout === 0 ? null : xhr._timeout,
     }};
   }};
+  const workerXhrNormalizeOverrideMimeType = (value) => {{
+    const text = String(value).trim();
+    const essence = text.split(";", 1)[0].trim();
+    if (text.length === 0 || text.length > {fetch_body_limit}
+        || /[\u0000-\u001f\u007f]/.test(text)
+        || !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(essence))
+      throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest MIME type is invalid", "SyntaxError");
+    return text;
+  }};
   const workerXhrApplySyncResponse = (xhr, payload, responseType) => {{
     const fail = (error, eventType) => {{
       xhr._controller = null;
@@ -20084,6 +20093,7 @@ fn worker_bootstrap(
       xhr._responseURL = "";
       xhr._response = "";
       xhr._responseXML = null;
+      xhr._responseContentType = null;
       xhr._responseHeaders = new WorkerHeadersNative();
       xhr._sent = false;
       xhr._readyState = 4;
@@ -20104,9 +20114,11 @@ fn worker_bootstrap(
       const contentType = payload.contentType === null || payload.contentType === undefined
         ? null
         : String(payload.contentType);
+      const responseContentType = xhr._overrideMimeType || contentType;
       xhr._status = Number(payload.status) || 0;
       xhr._statusText = payload.statusText === undefined ? String(xhr._status) : String(payload.statusText);
       xhr._responseURL = payload.url === undefined ? "" : String(payload.url);
+      xhr._responseContentType = responseContentType;
       xhr._responseHeaders = workerResponseHeaders(payload.headers, contentType);
       xhr._responseText = responseType === "" || responseType === "text"
         ? workerUtf8Text(bytes)
@@ -20116,7 +20128,7 @@ fn worker_bootstrap(
         : responseType === "arraybuffer"
           ? new Uint8Array(bytes).buffer
           : responseType === "blob"
-            ? new WorkerBlob([new Uint8Array(bytes)], {{ type: contentType || "" }})
+            ? new WorkerBlob([new Uint8Array(bytes)], {{ type: responseContentType || "" }})
             : xhr._responseText;
     }} catch (error) {{
       fail(error, "error");
@@ -20146,6 +20158,8 @@ fn worker_bootstrap(
     this._response = "";
     this._responseType = "";
     this._responseXML = null;
+    this._overrideMimeType = null;
+    this._responseContentType = null;
     this.withCredentials = false;
     this.onreadystatechange = null;
     this.onprogress = null;
@@ -20222,6 +20236,11 @@ fn worker_bootstrap(
       return this.readyState === 4 ? this._responseXML : null;
     }},
   }});
+  WorkerXMLHttpRequestNative.prototype.overrideMimeType = function(value) {{
+    if (this.readyState === 3 || this.readyState === 4)
+      throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest MIME type cannot change after loading", "InvalidStateError");
+    this._overrideMimeType = workerXhrNormalizeOverrideMimeType(value);
+  }};
   WorkerXMLHttpRequestNative.prototype.open = function(method, url, async) {{
     const previousController = this._controller;
     const previousReader = this._responseReader;
@@ -20250,6 +20269,7 @@ fn worker_bootstrap(
     this._responseURL = "";
     this._response = "";
     this._responseXML = null;
+    this._responseContentType = null;
     this._token += 1;
     this._uploadStarted = false;
     this._uploadFinished = false;
@@ -20293,6 +20313,7 @@ fn worker_bootstrap(
     this._responseURL = "";
     this._response = "";
     this._responseXML = null;
+    this._responseContentType = null;
     this._responseHeaders = new WorkerHeadersNative();
     this._notifyReadyState();
     workerXhrFinishUpload(this, "abort");
@@ -20343,6 +20364,7 @@ fn worker_bootstrap(
       this._status = response.status;
       this._statusText = response.statusText;
       this._responseURL = response.url;
+      this._responseContentType = this._overrideMimeType || response.headers.get("content-type");
       this._responseHeaders = response.headers;
       this._readyState = 2;
       this._notifyReadyState();
@@ -20356,7 +20378,7 @@ fn worker_bootstrap(
         : responseType === "arraybuffer"
           ? new Uint8Array(bytes).buffer
           : responseType === "blob"
-            ? new WorkerBlob([new Uint8Array(bytes)], {{ type: this._responseHeaders.get("content-type") || "" }})
+            ? new WorkerBlob([new Uint8Array(bytes)], {{ type: this._responseContentType || "" }})
             : workerUtf8Text(bytes);
       this._controller = null;
       this._responseText = typeof responseValue === "string" ? responseValue : this._responseText;
@@ -20379,6 +20401,7 @@ fn worker_bootstrap(
       this._responseURL = "";
       this._response = "";
       this._responseXML = null;
+      this._responseContentType = null;
       this._responseHeaders = new WorkerHeadersNative();
       this._readyState = 4;
       this._notifyReadyState();
@@ -29138,6 +29161,15 @@ fn document_bootstrap(
       timeoutMs: xhr._timeout === 0 ? null : xhr._timeout,
     }};
   }};
+  const nativeXhrNormalizeOverrideMimeType = (value) => {{
+    const text = String(value).trim();
+    const essence = text.split(";", 1)[0].trim();
+    if (text.length === 0 || text.length > nativeXmlMaxBytes
+        || /[\u0000-\u001f\u007f]/.test(text)
+        || !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(essence))
+      throw new DOMExceptionNative("native XMLHttpRequest MIME type is invalid", "SyntaxError");
+    return text;
+  }};
   const nativeXhrApplySyncResponse = (xhr, payload, responseType) => {{
     const fail = (error, eventType) => {{
       xhr._controller = null;
@@ -29170,22 +29202,23 @@ fn document_bootstrap(
       const contentType = payload.contentType === null || payload.contentType === undefined
         ? null
         : String(payload.contentType);
+      const responseContentType = xhr._overrideMimeType || contentType;
       xhr._status = Number(payload.status) || 0;
       xhr._statusText = payload.statusText === undefined ? String(xhr._status) : String(payload.statusText);
       xhr._responseURL = payload.url === undefined ? "" : String(payload.url);
-      xhr._responseContentType = contentType;
+      xhr._responseContentType = responseContentType;
       xhr._responseHeaders = responseHeaders(payload.headers, contentType);
       const value = responseType === "json"
         ? JSON.parse(utf8TextFromBytes(bytes))
         : responseType === "arraybuffer"
           ? new Uint8Array(bytes).buffer
           : responseType === "blob"
-            ? responseBodyBlobFromBytes(bytes, contentType)
+            ? responseBodyBlobFromBytes(bytes, responseContentType)
             : utf8TextFromBytes(bytes);
       const xmlContent = typeof globalThis.__glassIsXmlMime === "function"
-        && globalThis.__glassIsXmlMime(contentType);
+        && globalThis.__glassIsXmlMime(responseContentType);
       const htmlContent = typeof globalThis.__glassIsHtmlMime === "function"
-        && globalThis.__glassIsHtmlMime(contentType);
+        && globalThis.__glassIsHtmlMime(responseContentType);
       if (responseType === "document") {{
         const parseDocument = xmlContent && typeof globalThis.__glassParseXmlDocument === "function"
           ? globalThis.__glassParseXmlDocument
@@ -29193,13 +29226,13 @@ fn document_bootstrap(
             ? globalThis.__glassParseHtmlDocument
             : null;
         xhr._responseXML = parseDocument
-          ? parseDocument(utf8TextFromBytes(bytes), xhr.responseURL, contentType)
+          ? parseDocument(utf8TextFromBytes(bytes), xhr.responseURL, responseContentType)
           : null;
         xhr._responseText = "";
         xhr._response = xhr._responseXML;
       }} else if (responseType === "" && xmlContent) {{
         xhr._responseXML = typeof globalThis.__glassParseXmlDocument === "function"
-          ? globalThis.__glassParseXmlDocument(utf8TextFromBytes(bytes), xhr.responseURL, contentType)
+          ? globalThis.__glassParseXmlDocument(utf8TextFromBytes(bytes), xhr.responseURL, responseContentType)
           : null;
         xhr._responseText = utf8TextFromBytes(bytes);
         xhr._response = value;
@@ -29231,6 +29264,7 @@ fn document_bootstrap(
     this._response = "";
     this._responseXML = null;
     this._responseType = "";
+    this._overrideMimeType = null;
     this.withCredentials = false;
     for (const type of nativeXhrEventTypes) installEventHandlerProperty(this, type);
     this._method = "GET";
@@ -29301,6 +29335,11 @@ fn document_bootstrap(
       return this.readyState === 4 ? this._responseXML : null;
     }},
   }});
+  XMLHttpRequestNative.prototype.overrideMimeType = function(value) {{
+    if (this.readyState === 3 || this.readyState === 4)
+      throw new DOMExceptionNative("native XMLHttpRequest MIME type cannot change after loading", "InvalidStateError");
+    this._overrideMimeType = nativeXhrNormalizeOverrideMimeType(value);
+  }};
   XMLHttpRequestNative.prototype.open = function(method, url, async) {{
     const previousController = this._controller;
     const previousReader = this._responseReader;
@@ -29421,7 +29460,7 @@ fn document_bootstrap(
       this._status = response.status;
       this._statusText = response.statusText;
       this._responseURL = response.url;
-      this._responseContentType = response.headers.get("content-type");
+      this._responseContentType = this._overrideMimeType || response.headers.get("content-type");
       this._responseHeaders = response.headers;
       this._readyState = 2;
       this._notifyReadyState();
@@ -29480,7 +29519,7 @@ fn document_bootstrap(
       this._responseURL = "";
         this._response = "";
         this._responseXML = null;
-        this._responseContentType = null;
+      this._responseContentType = null;
         this._responseHeaders = responseHeaders([], null);
         this._readyState = 4;
         this._notifyReadyState();

@@ -54891,6 +54891,114 @@ async fn native_content_process_xhr_exposes_bounded_xml_response_document() {
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_override_mime_type_controls_response_projection() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..4 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .expect("timed out waiting for the next override MIME type request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let (content_type, body) = match path {
+                "/page" => (
+                    "text/html",
+                    r#"<script>
+globalThis.overrideMimeResultPromise = new Promise(resolve => {
+  const xhr = new XMLHttpRequest();
+  let invalid = '';
+  let done = '';
+  try { xhr.overrideMimeType('not-a-mime'); } catch (error) { invalid = error.name; }
+  xhr.overrideMimeType('text/xml');
+  xhr.open('GET', '/override');
+  xhr.onload = () => {
+    try { xhr.overrideMimeType('text/plain'); } catch (error) { done = error.name; }
+    const document = xhr.responseXML;
+    resolve({
+      invalid,
+      done,
+      document: document instanceof Document,
+      identity: document === xhr.responseXML,
+      root: document && document.documentElement.nodeName,
+      text: document && document.documentElement.textContent,
+      wireContentType: xhr.getResponseHeader('content-type'),
+    });
+  };
+  xhr.onerror = () => resolve({ error: 'page-xhr' });
+  xhr.send();
+});
+globalThis.overrideMimeWorkerPromise = new Promise(resolve => {
+  const worker = new Worker('/worker.js');
+  worker.onmessage = event => resolve(event.data);
+});
+</script><main>XHR MIME override</main>"#,
+                ),
+                "/override" => (
+                    "text/plain",
+                    r#"<?xml version="1.0"?><root>override</root>"#,
+                ),
+                "/worker.js" => (
+                    "text/javascript",
+                    r#"const xhr = new XMLHttpRequest();
+xhr.responseType = 'blob';
+xhr.overrideMimeType('application/x-worker-override');
+xhr.open('GET', '/worker-blob');
+xhr.onload = () => postMessage({
+  type: xhr.response.type,
+  size: xhr.response.size,
+  wireContentType: xhr.getResponseHeader('content-type'),
+});
+xhr.onerror = () => postMessage({ error: 'worker-xhr' });
+xhr.send();"#,
+                ),
+                "/worker-blob" => ("text/plain", "worker"),
+                other => panic!("unexpected XHR MIME override request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await Promise.all([overrideMimeResultPromise, overrideMimeWorkerPromise])"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            {
+                "invalid": "SyntaxError",
+                "done": "InvalidStateError",
+                "document": true,
+                "identity": true,
+                "root": "root",
+                "text": "override",
+                "wireContentType": "text/plain",
+            },
+            {
+                "type": "application/x-worker-override",
+                "size": 6,
+                "wireContentType": "text/plain",
+            },
+        ])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_xhr_response_type_is_canonical_and_state_aware() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

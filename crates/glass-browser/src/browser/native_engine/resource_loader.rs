@@ -5574,6 +5574,191 @@ impl NativeResourceLoader {
         media_metadata_from_bytes(object_url.content_type.as_deref(), &object_url.body)
     }
 
+    pub(crate) async fn load_media_async(
+        &mut self,
+        document_url: &str,
+        src: &str,
+    ) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
+        self.load_media_async_with_object_url(document_url, src, None)
+            .await
+    }
+
+    pub(crate) async fn load_media_async_with_object_url(
+        &mut self,
+        document_url: &str,
+        src: &str,
+        object_url: Option<&NativeObjectUrlResource>,
+    ) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("media URL", src)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "media owner URL is not valid HTTP(S) syntax".into(),
+            }
+        })?;
+        if !is_network_url(document_url.as_str()) {
+            return Ok(None);
+        }
+        reject_credentials(&document_url)?;
+        let Some(target_url) = resolve_subresource_url_with_blob(&document_url, src)? else {
+            return Ok(None);
+        };
+        if !mixed_content_allowed(&document_url, &target_url) {
+            return Ok(None);
+        }
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .cloned()
+            .unwrap_or_default();
+        self.record_report_only_url_violations(
+            &policy,
+            NativeSubresourceKind::Media,
+            &document_url,
+            &target_url,
+        );
+        if !policy.allows(NativeSubresourceKind::Media, &document_url, &target_url) {
+            return Ok(None);
+        }
+        if target_url.scheme().eq_ignore_ascii_case("blob") {
+            let Some(object_url) = object_url else {
+                return Ok(None);
+            };
+            NativeOrigin::from_blob_url(without_fragment(target_url.as_str()))?;
+            return media_metadata_from_bytes(object_url.content_type.as_deref(), &object_url.body);
+        }
+        if !is_network_url(target_url.as_str()) {
+            return Ok(None);
+        }
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(NATIVE_NETWORK_TIMEOUT)
+            .build()
+            .map_err(|error| network_error("media client construction", error))?;
+        let mut current_url = target_url;
+        let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
+        let mut redirects = 0;
+        let mut pending_cookies = Vec::new();
+        let response = loop {
+            let mut request_url = current_url.clone();
+            request_url.set_fragment(None);
+            let mut request = self.apply_environment_headers(client.get(request_url).header(
+                reqwest::header::ACCEPT,
+                "audio/*,video/*,application/ogg,application/vnd.apple.mpegurl,*/*;q=0.5",
+            ));
+            if let Some(referrer) = request_referrer.as_deref() {
+                request = request.header(reqwest::header::REFERER, referrer);
+            }
+            if document_url.origin() == current_url.origin()
+                && let Some(cookie) = self.network.cookie_header_for_request(
+                    &current_url,
+                    Some(&document_url),
+                    false,
+                    NativeNavigationMethod::Get,
+                )
+            {
+                request = request.header(reqwest::header::COOKIE, cookie);
+            }
+            self.before_request(0).await?;
+            let response = request
+                .send()
+                .await
+                .map_err(|error| network_error("media subresource request", error))?;
+            for value in response
+                .headers()
+                .get_all(reqwest::header::SET_COOKIE)
+                .iter()
+            {
+                if let Ok(cookie) = value.to_str() {
+                    pending_cookies.push((current_url.clone(), cookie.to_owned()));
+                }
+            }
+            if !is_http_redirect(response.status()) {
+                break response;
+            }
+            if redirects >= MAX_NATIVE_NETWORK_REDIRECTS {
+                return Ok(None);
+            }
+            let Some(location) = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| !value.is_empty())
+            else {
+                return Ok(None);
+            };
+            let next_url = current_url
+                .join(location)
+                .map_err(|_| NativeEngineError::Network {
+                    operation: "media redirect".into(),
+                    reason: "media redirect location is not valid URL syntax".into(),
+                })?;
+            reject_credentials(&next_url)?;
+            self.record_report_only_url_violations_for_redirect(
+                &policy,
+                NativeSubresourceKind::Media,
+                &document_url,
+                &next_url,
+                true,
+                None,
+            );
+            if !is_network_url(without_fragment(next_url.as_str()))
+                || !mixed_content_allowed(&document_url, &next_url)
+                || !policy.allows_redirect(NativeSubresourceKind::Media, &document_url, &next_url)
+            {
+                return Ok(None);
+            }
+            request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            current_url = next_url;
+            redirects += 1;
+        };
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .map(|value| {
+                value
+                    .to_str()
+                    .map(str::to_owned)
+                    .map_err(|_| NativeEngineError::Network {
+                        operation: "media content-type validation".into(),
+                        reason: "media content type is not valid ASCII".into(),
+                    })
+            })
+            .transpose()?;
+        let content_length = response.content_length();
+        if content_length.is_some_and(|length| length > MAX_NATIVE_MEDIA_BYTES as u64) {
+            return Ok(None);
+        }
+        let mut stream = response.bytes_stream();
+        let mut bytes = Vec::with_capacity(
+            content_length
+                .unwrap_or_default()
+                .min(MAX_NATIVE_MEDIA_BYTES as u64) as usize,
+        );
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| network_error("media subresource body", error))?;
+            self.after_response_chunk(chunk.len()).await;
+            let next_len = bytes.len().saturating_add(chunk.len());
+            if next_len > MAX_NATIVE_MEDIA_BYTES {
+                return Ok(None);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let metadata = media_metadata_from_bytes(content_type.as_deref(), &bytes)?;
+        if metadata.is_some() {
+            for (cookie_url, cookie) in pending_cookies {
+                self.cookie_changes
+                    .extend(self.network.store_cookie(&cookie_url, &cookie));
+            }
+        }
+        Ok(metadata)
+    }
+
     /// Load a Blob-backed classic script for a local document without entering
     /// the asynchronous network loader. The JavaScript runtime remains the
     /// registry authority; this method only validates and copies the bounded

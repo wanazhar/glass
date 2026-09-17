@@ -7328,7 +7328,8 @@ async fn load_content_resource(
         .navigation_sources_for_document(&resource.url, NativeNavigationPolicyKind::NavigateTo)?;
     let allowed_inline_style_nodes =
         inline_style_policy_nodes(&mut discovery, loader, &resource.url)?;
-    let mut external_stylesheets = Vec::new();
+    let mut external_stylesheet_states = Vec::new();
+    let mut external_stylesheet_bytes = 0usize;
     let mut resource_events = Vec::new();
     for href in discovery
         .external_stylesheet_links()
@@ -7336,7 +7337,7 @@ async fn load_content_resource(
         .take(MAX_CONTENT_STYLESHEETS)
     {
         let (node_index, href, integrity, crossorigin) = href;
-        let event_kind = match loader
+        let body = match loader
             .load_stylesheet_async(
                 &resource.url,
                 &href,
@@ -7346,22 +7347,26 @@ async fn load_content_resource(
             .await
         {
             Ok(Some(stylesheet)) => {
-                let next_len = external_stylesheets
-                    .iter()
-                    .map(String::len)
-                    .sum::<usize>()
-                    .saturating_add(stylesheet.len());
+                let next_len = external_stylesheet_bytes.saturating_add(stylesheet.len());
                 if next_len <= MAX_CONTENT_STYLESHEET_BYTES {
-                    external_stylesheets.push(stylesheet);
-                    NativeEventKind::Load
+                    external_stylesheet_bytes = next_len;
+                    Some(stylesheet)
                 } else {
-                    NativeEventKind::Error
+                    None
                 }
             }
-            Ok(None) | Err(_) => NativeEventKind::Error,
+            Ok(None) | Err(_) => None,
         };
+        let event_kind = body
+            .as_ref()
+            .map_or(NativeEventKind::Error, |_| NativeEventKind::Load);
+        external_stylesheet_states.push((node_index, href, body));
         resource_events.push((node_index, event_kind));
     }
+    let external_stylesheets = external_stylesheet_states
+        .iter()
+        .filter_map(|(_, _, body)| body.clone())
+        .collect::<Vec<_>>();
     let mut document = NativeDocument::parse_with_stylesheets_and_inline_style_policy(
         &resource.body,
         &limits,
@@ -7369,6 +7374,7 @@ async fn load_content_resource(
         1,
         Some(&allowed_inline_style_nodes),
     )?;
+    document.set_external_stylesheet_states(external_stylesheet_states);
     document.mark_inline_style_reports_seen();
     document.mark_content_security_policy_meta_processed();
     resource_events
@@ -7638,6 +7644,83 @@ async fn load_external_images(
         }
     }
     Ok(image_events)
+}
+
+async fn load_dynamic_external_stylesheets(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
+    let links = document
+        .external_stylesheet_links()
+        .into_iter()
+        .take(MAX_CONTENT_STYLESHEETS)
+        .collect::<Vec<_>>();
+    let previous_states = document.external_stylesheet_states();
+    let live_nodes = links
+        .iter()
+        .map(|(node_index, _, _, _)| *node_index)
+        .collect::<BTreeSet<_>>();
+    let mut states = document
+        .external_stylesheet_states()
+        .into_iter()
+        .map(|(node_index, href, body)| (node_index, (href, body)))
+        .collect::<BTreeMap<_, _>>();
+    states.retain(|node_index, _| live_nodes.contains(node_index));
+    let mut loaded_bytes = states
+        .values()
+        .filter_map(|(_, body)| body.as_ref())
+        .map(String::len)
+        .sum::<usize>();
+    let mut events = Vec::new();
+
+    for (node_index, href, integrity, crossorigin) in links {
+        if states
+            .get(&node_index)
+            .is_some_and(|(loaded_href, _)| loaded_href == &href)
+        {
+            continue;
+        }
+        let object_url = runtime.object_url_resource(&href)?;
+        let body = match loader
+            .load_stylesheet_async_with_object_url(
+                document_url,
+                &href,
+                integrity.as_deref(),
+                crossorigin.as_deref(),
+                object_url.as_ref(),
+            )
+            .await
+        {
+            Ok(Some(stylesheet)) => {
+                let next_len = loaded_bytes.saturating_add(stylesheet.len());
+                if next_len <= MAX_CONTENT_STYLESHEET_BYTES {
+                    loaded_bytes = next_len;
+                    Some(stylesheet)
+                } else {
+                    None
+                }
+            }
+            Ok(None) | Err(_) => None,
+        };
+        let event_kind = body
+            .as_ref()
+            .map_or(NativeEventKind::Error, |_| NativeEventKind::Load);
+        states.insert(node_index, (href, body));
+        events.push((node_index, event_kind));
+    }
+
+    let next_states = states
+        .into_iter()
+        .map(|(node_index, (href, body))| (node_index, href, body))
+        .collect::<Vec<_>>();
+    if previous_states != next_states {
+        document.set_external_stylesheet_states(next_states);
+        document.rebuild_external_stylesheet()?;
+        document.refresh_background_image_sources();
+    }
+    Ok(events)
 }
 
 async fn load_page_script_sources(
@@ -9674,6 +9757,36 @@ async fn mutate_script_document(
                 &mut scroll_commands,
             )?;
         }
+    }
+    let stylesheet_events = if let Some(loader) = loader.as_deref_mut() {
+        load_dynamic_external_stylesheets(&mut next, runtime, loader, &document_url).await?
+    } else {
+        Vec::new()
+    };
+    for (node_index, event_kind) in stylesheet_events {
+        let Some(event_batch) = host_event_batch(&[(node_index, event_kind)])? else {
+            continue;
+        };
+        let evaluation = runtime.evaluate_with_host_events(
+            &event_batch,
+            &next,
+            &document_url,
+            document_origin,
+            viewport,
+        )?;
+        apply_content_event_history(
+            &evaluation.commands,
+            &mut document_url,
+            document_origin,
+            runtime,
+            &mut history,
+        )?;
+        scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
+        events.extend(next.apply_script_commands(&evaluation.commands)?);
+        events.push((
+            NativeNodeId::from_parts(next.generation(), node_index),
+            event_kind,
+        ));
     }
     let validation_ids = events
         .iter()

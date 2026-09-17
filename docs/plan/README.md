@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-463`, following completed
 `native-engine-browser-462`, following completed
 `native-engine-browser-461`, following completed
 `native-engine-browser-460`, following completed
@@ -138,8 +139,13 @@ image follow-up is
 documents can load a runtime-owned Blob URL for a dynamically attached `<img>`
 and CSS background-image consumer through the bounded native decoder, retain
 intrinsic dimensions and paint resources, and deliver the image `load`/`error`
-event without network or HTTP-cache fallback. Media, popup/window, and
-cross-realm object-URL consumers remain issue #40 gates.
+event without network or HTTP-cache fallback. Media and cross-realm object-URL
+consumers remain issue #40 gates. The completed popup/window follow-up is
+[`native-engine-browser-463`](tasks/native-engine-browser-463.md): popup and
+`WindowProxy` navigation requests carry a bounded runtime-owned Blob snapshot
+through local and content-process browser-effect queues, bootstrap the target
+from `about:blank`, and commit the Blob document without network or HTTP-cache
+fallback. Media and cross-realm object-URL consumers remain issue #40 gates.
 
 The completed report-only navigation preflight slice is
 [native-engine-browser-413](tasks/native-engine-browser-413.md): the

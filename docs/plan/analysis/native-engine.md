@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-468`, following
+expansion checkpoint is completed `native-engine-browser-469`, following
+completed `native-engine-browser-468`, following
 completed `native-engine-browser-467`, following
 completed `native-engine-browser-466`, following
 completed `native-engine-browser-465`, following
@@ -407,6 +408,14 @@ surface exposes media constants, source selection, time ranges, `load()`,
 admission and metadata, not codec decoding or playback. Static HTTP media,
 decoder-backed playback, and complete media/Web IDL parity remain issue #40
 gates.
+
+Slice 469 closes the static HTTP media-resource boundary. Initial and dynamic
+HTTP(S) media loads now use a bounded native GET owner with mixed-content,
+redirect, same-origin-cookie, content-type, streamed-size, and media CSP
+checks; successful metadata joins the existing selected-source, readiness,
+network, and load/error projection. Blob loads remain realm-owned and bypass
+network/cache transport. Decoder-backed playback, audio/video output, richer
+timelines, and complete media/Web IDL parity remain issue #40 gates.
 
 Slice 466 closes the cross-realm Blob URL MessagePort boundary: page,
 dedicated/shared-worker, popup/`WindowProxy`, and Service Worker port messages
@@ -6631,7 +6640,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-468.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-469.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-468.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-467.md` is the preceding completed browser
 task;

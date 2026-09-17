@@ -48920,6 +48920,60 @@ async fn native_content_process_blocks_csp_disallowed_blob_media_subresources() 
 }
 
 #[tokio::test]
+async fn native_content_process_loads_static_http_media_subresource() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/media.webm"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/media.webm" {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: audio/webm\r\nContent-Length: 4\r\nConnection: close\r\n\r\n\x1a\x45\xdf\xa3",
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                let body = "<audio id='audio' src='/media.webm'></audio><script>globalThis.mediaEvents = []; const audio = document.getElementById('audio'); audio.addEventListener('load', () => mediaEvents.push('load')); audio.addEventListener('error', () => mediaEvents.push('error'));</script>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: script-src 'unsafe-inline'; media-src 'self'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const audio = document.getElementById('audio'); return [mediaEvents, audio.readyState, audio.networkState, audio.currentSrc, audio.error, audio.canPlayType('audio/webm')]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            ["load"],
+            1,
+            1,
+            format!("http://{address}/media.webm"),
+            serde_json::Value::Null,
+            "maybe"
+        ])
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_blocks_csp_disallowed_blob_image_subresources() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

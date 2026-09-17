@@ -7710,28 +7710,27 @@ async fn load_external_media(
     loader: &mut NativeResourceLoader,
     document_url: &str,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
-    let Some(runtime) = runtime else {
-        return Ok(Vec::new());
-    };
     let mut media_events = Vec::new();
     for (node_index, source) in document
         .external_media_links()
         .into_iter()
         .take(MAX_CONTENT_MEDIA)
     {
-        if !source
+        let is_blob = source
             .get(..5)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
-        {
-            continue;
-        }
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"));
         let node_id = NativeNodeId::from_parts(document.generation(), node_index);
         if document.has_media_resource_for_node(node_id) {
             continue;
         }
         document.mark_media_load(node_index, source.clone())?;
-        let object_url = runtime.object_url_resource(&source)?;
-        let metadata = loader.load_local_blob_media(document_url, &source, object_url.as_ref())?;
+        let metadata = match (is_blob, runtime) {
+            (true, Some(runtime)) => {
+                let object_url = runtime.object_url_resource(&source)?;
+                loader.load_local_blob_media(document_url, &source, object_url.as_ref())?
+            }
+            _ => loader.load_media_async(document_url, &source).await?,
+        };
         let event_kind = match metadata {
             Some(metadata) => {
                 document.set_media_resource(node_index, source, metadata)?;

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-469`, following completed
 `native-engine-browser-468`, following completed
 `native-engine-browser-467`, following completed
 `native-engine-browser-466`, following completed
@@ -363,6 +364,16 @@ script command and event paths. This slice deliberately does not claim a
 codec/decoder or playback implementation, static HTTP media loading, or full
 media/Web IDL parity; those and the remaining browser certification gates stay
 open under issue #40.
+
+Slice `native-engine-browser-469` closes the static HTTP media-resource
+boundary. Initial and dynamic media loads in HTTP(S) content processes now
+use the native bounded GET owner, apply mixed-content and media CSP policy
+including redirect checks, preserve same-origin cookies, enforce response
+content-type and 16 MiB streaming limits, and project supported media
+metadata into the existing DOM/resource/event state. Blob media continues to
+use the realm-owned registry path and never enters HTTP transport or cache.
+Decoder-backed playback, audio/video output, richer timelines, and complete
+media/Web IDL parity remain issue #40 work.
 
 Slice `native-engine-browser-466` closes the cross-realm Blob URL MessagePort
 boundary. Page, dedicated/shared-worker, popup/`WindowProxy`, and Service

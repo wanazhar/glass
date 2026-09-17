@@ -1691,6 +1691,7 @@ impl NativeEngine {
                 self.resolve_page_navigation_href(&content.url, &page_navigation.href)?;
             navigation = NativeNavigationRequest::get(target_url.clone());
             navigation.replace_history = page_navigation.replace_history;
+            navigation.object_url = page_navigation.object_url;
             history_commit = if page_navigation.replace_history {
                 HistoryCommit::Replace
             } else {
@@ -4508,7 +4509,14 @@ impl NativeEngine {
                     self.queue_popup(target_url)?;
                     None
                 } else {
-                    Some(NativeNavigationRequest::get(target_url))
+                    let mut request = NativeNavigationRequest::get(target_url.clone());
+                    request.object_url = self
+                        .javascript
+                        .as_ref()
+                        .map(|javascript| javascript.object_url_resource(&target_url))
+                        .transpose()?
+                        .flatten();
+                    Some(request)
                 }
             }
             Some(ScriptNavigationTarget::Form {
@@ -4521,6 +4529,12 @@ impl NativeEngine {
                     .document
                     .form_submission_request_with_submitter(form_id, &self.url, submitter)?;
                 request.target = Some(target);
+                request.object_url = self
+                    .javascript
+                    .as_ref()
+                    .map(|javascript| javascript.object_url_resource(&request.url))
+                    .transpose()?
+                    .flatten();
                 self.loader
                     .allows_navigation(
                         &self.url,
@@ -4535,6 +4549,12 @@ impl NativeEngine {
             }) => {
                 let mut request = NativeNavigationRequest::get(self.resolve_link_href(&href)?);
                 request.replace_history = replace_history;
+                request.object_url = self
+                    .javascript
+                    .as_ref()
+                    .map(|javascript| javascript.object_url_resource(&request.url))
+                    .transpose()?
+                    .flatten();
                 Some(request)
             }
             None => None,
@@ -6339,6 +6359,7 @@ impl NativeEngine {
             self.resolve_page_navigation_href(&self.url, &navigation.href)?,
         );
         request.replace_history = navigation.replace_history;
+        request.object_url = navigation.object_url;
         Ok(request)
     }
 
@@ -6350,6 +6371,7 @@ impl NativeEngine {
             self.resolve_page_navigation_href(&self.url, &navigation.href)?,
         );
         request.replace_history = navigation.replace_history;
+        request.object_url = navigation.object_url;
         Ok(request)
     }
 
@@ -6381,7 +6403,7 @@ impl NativeEngine {
             } else {
                 HistoryCommit::Push
             };
-            let resource = self.loader.load(&navigation.url)?;
+            let resource = self.loader.load_navigation(&navigation)?;
             if self.is_same_document_navigation(&resource.url) {
                 let _ = std::mem::take(&mut self.skip_next_navigation_lifecycle);
                 if let Some(next_navigation) =
@@ -7089,6 +7111,7 @@ impl NativeEngine {
                     body_content_type: None,
                     location: true,
                     replace_history: navigation.replace_history,
+                    object_url: None,
                 },
                 page_navigation_handoffs + 1,
             ))

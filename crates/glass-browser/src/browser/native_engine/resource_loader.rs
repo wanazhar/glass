@@ -7,8 +7,8 @@ use super::error::NativeEngineError;
 use super::image::{MAX_NATIVE_IMAGE_TRANSFER_BYTES, NativeImage, decode_image_bytes};
 use super::interaction::MAX_NATIVE_FORM_BODY_BYTES;
 use super::javascript::{
-    MAX_NATIVE_COOKIE_PROFILE_ENTRIES, NativeCookieChange, NativeCookieProfileEntry,
-    load_cookie_profile,
+    MAX_NATIVE_COOKIE_PROFILE_ENTRIES, MAX_NATIVE_SCRIPT_BYTES, NativeCookieChange,
+    NativeCookieProfileEntry, load_cookie_profile,
 };
 use super::origin::NativeOrigin;
 use base64::Engine as _;
@@ -160,6 +160,20 @@ pub struct NativeResource {
     pub url: String,
     pub origin: NativeOrigin,
     pub body: String,
+}
+
+/// Bytes captured from a realm-owned Blob URL for a document navigation.
+///
+/// The resource is deliberately transferred as bytes rather than as a live
+/// JavaScript object. That makes the handoff finite and lets the destination
+/// document receive a fresh realm, matching full-navigation lifetime rules.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeObjectUrlResource {
+    #[serde(default)]
+    pub(crate) content_type: Option<String>,
+    #[serde(with = "native_object_url_bytes")]
+    pub(crate) body: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -335,6 +349,7 @@ pub(crate) struct NativeNavigationRequest {
     pub(crate) body_content_type: Option<String>,
     pub(crate) replace_history: bool,
     pub(crate) target: Option<String>,
+    pub(crate) object_url: Option<NativeObjectUrlResource>,
 }
 
 impl NativeNavigationRequest {
@@ -346,6 +361,7 @@ impl NativeNavigationRequest {
             body_content_type: None,
             replace_history: false,
             target: None,
+            object_url: None,
         }
     }
 
@@ -374,6 +390,7 @@ impl NativeNavigationRequest {
             body_content_type: Some(content_type),
             replace_history: false,
             target: None,
+            object_url: None,
         })
     }
 }
@@ -386,6 +403,27 @@ pub(crate) enum NativeRequestBody {
 }
 
 mod native_request_body_bytes {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        STANDARD.decode(encoded).map_err(serde::de::Error::custom)
+    }
+}
+
+mod native_object_url_bytes {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
     use serde::{Deserialize, Deserializer, Serializer};
@@ -3582,6 +3620,9 @@ impl NativeResourceLoader {
         navigation: &NativeNavigationRequest,
         referrer: Option<&str>,
     ) -> Result<NativeResource, NativeEngineError> {
+        if navigation.object_url.is_some() {
+            return self.load_object_url_request(navigation);
+        }
         let request_method = navigation.method;
         if !request_method.is_document_method() {
             return Err(NativeEngineError::UnsupportedUrl {
@@ -3891,6 +3932,66 @@ impl NativeResourceLoader {
             }
         }
         Ok(resource)
+    }
+
+    pub(crate) fn load_navigation(
+        &self,
+        navigation: &NativeNavigationRequest,
+    ) -> Result<NativeResource, NativeEngineError> {
+        if navigation.object_url.is_some() {
+            return self.load_object_url_request(navigation);
+        }
+        self.load(&navigation.url)
+    }
+
+    fn load_object_url_request(
+        &self,
+        navigation: &NativeNavigationRequest,
+    ) -> Result<NativeResource, NativeEngineError> {
+        if navigation.method != NativeNavigationMethod::Get {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "native Blob document navigation supports only GET".into(),
+            });
+        }
+        if navigation.body.is_some() || navigation.body_content_type.is_some() {
+            return Err(NativeEngineError::invalid(
+                "native Blob document navigation",
+                "must not carry a request body or content type",
+            ));
+        }
+        let Some(object_url) = navigation.object_url.as_ref() else {
+            unreachable!("object URL navigation payload was checked above")
+        };
+        if object_url.body.len() > self.max_document_bytes {
+            return Err(NativeEngineError::limit(
+                "Blob document",
+                self.max_document_bytes,
+                object_url.body.len(),
+            ));
+        }
+        if object_url
+            .content_type
+            .as_ref()
+            .is_some_and(|content_type| content_type.len() > MAX_NATIVE_SCRIPT_BYTES)
+        {
+            return Err(NativeEngineError::limit(
+                "Blob document content type",
+                MAX_NATIVE_SCRIPT_BYTES,
+                object_url.content_type.as_ref().map_or(0, String::len),
+            ));
+        }
+        let resource_url = without_fragment(&navigation.url);
+        let origin = NativeOrigin::from_blob_url(resource_url)?;
+        let body = String::from_utf8(object_url.body.clone()).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "native Blob document must contain valid UTF-8 HTML".into(),
+            }
+        })?;
+        Ok(NativeResource {
+            url: navigation.url.clone(),
+            origin,
+            body,
+        })
     }
 
     pub(crate) async fn fetch_async(

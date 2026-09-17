@@ -10,7 +10,7 @@ use glass_browser::browser::native_engine::{
     NativeBorderStyle, NativeColor, NativeDiagnosticCode, NativeDiagnosticSource,
     NativeDisplayCommand, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
     NativeEngineLimits, NativeEventKind, NativeFile, NativeHistoryDirection, NativeLifecycleState,
-    NativeNodeId, NativePoint, NativePreflightAction, NativeRect, NativeRuntimeState,
+    NativeNodeId, NativeOrigin, NativePoint, NativePreflightAction, NativeRect, NativeRuntimeState,
     NativeRuntimeTraceKind, NativeSurface, NativeSvgStrokeShape, NativeTextDecorationSkipInk,
     NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, NativeWorkerFailureKind, Viewport,
 };
@@ -2395,6 +2395,80 @@ async fn native_local_blob_object_urls_feed_fetch_and_xhr_and_revoke() {
         })
     );
     engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_blob_object_urls_navigate_to_a_fresh_document() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://blob-document-start",
+            "<title>Start</title><p>Before Blob navigation</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://blob-document-start");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let object_url = engine
+        .evaluate_async(
+            r#"(() => {
+                const url = URL.createObjectURL(new Blob([
+                    '<title>Blob document</title><main>Loaded from an object URL</main>'
+                ], { type: 'text/html' }));
+                location.assign(url);
+                return url;
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(object_url, serde_json::json!("blob:null/glass-native-1"));
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.url, "blob:null/glass-native-1");
+    assert_eq!(snapshot.origin, NativeOrigin::Opaque);
+    assert_eq!(snapshot.title, "Blob document");
+    assert_eq!(snapshot.visible_text, "Loaded from an object URL");
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_blob_object_urls_navigate_across_the_worker_boundary() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/start"));
+        let body = "<script>addEventListener('load', () => { const url = URL.createObjectURL(new Blob(['<title>Remote Blob</title><p>Loaded in the native content process</p>'], { type: 'text/html' })); location.assign(url); });</script><title>Start</title><p>Initial</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/start")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let snapshot = engine.snapshot().unwrap();
+    assert!(snapshot.url.starts_with("blob:http://127.0.0.1:"));
+    assert_eq!(
+        snapshot.origin,
+        NativeOrigin::Tuple {
+            scheme: "http".into(),
+            host: "127.0.0.1".into(),
+            port: address.port(),
+        }
+    );
+    assert_eq!(snapshot.title, "Remote Blob");
+    assert_eq!(
+        snapshot.visible_text,
+        "Loaded in the native content process"
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test]

@@ -57,8 +57,8 @@ use super::resource_loader::{
     MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
     NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
     NativeFetchResponseStream, NativeNavigationMethod, NativeNavigationPolicyKind,
-    NativeNavigationRequest, NativeRequestBody, NativeResource, NativeResourceLoader,
-    NativeWebSocketTarget, schedule_native_csp_report_deliveries,
+    NativeNavigationRequest, NativeObjectUrlResource, NativeRequestBody, NativeResource,
+    NativeResourceLoader, NativeWebSocketTarget, schedule_native_csp_report_deliveries,
     validate_target_navigation_payload,
 };
 #[cfg(windows)]
@@ -977,6 +977,7 @@ pub(crate) struct NativeContentNavigation {
     pub(crate) body_content_type: Option<String>,
     pub(crate) location: bool,
     pub(crate) replace_history: bool,
+    pub(crate) object_url: Option<NativeObjectUrlResource>,
 }
 
 fn content_navigation_json(navigation: &NativeContentNavigation) -> Value {
@@ -990,6 +991,7 @@ fn content_navigation_json(navigation: &NativeContentNavigation) -> Value {
         "body_content_type": navigation.body_content_type,
         "location": navigation.location,
         "replace_history": navigation.replace_history,
+        "object_url": navigation.object_url,
     })
 }
 
@@ -1381,6 +1383,7 @@ impl NativeContentProcess {
                     ),
                 }),
                 "content_type": navigation.body_content_type,
+                "object_url": navigation.object_url,
                 "referrer": referrer,
                 "max_document_bytes": limits.max_document_bytes,
                 "max_nodes": limits.max_nodes,
@@ -2482,10 +2485,11 @@ fn decode_load_response(
                 reason: "content process omitted the final URL".into(),
             })?;
     validate_url_text("content process final URL", url)?;
-    if !is_network_url(without_fragment(url)) {
+    let is_blob_url = without_fragment(url).starts_with("blob:");
+    if !is_network_url(without_fragment(url)) && !is_blob_url {
         return Err(NativeEngineError::Worker {
             operation: "decode content process load".into(),
-            reason: "content process returned a non-HTTP(S) final URL".into(),
+            reason: "content process returned an unsupported non-HTTP(S) final URL".into(),
         });
     }
     let encoded_document = response
@@ -2511,12 +2515,16 @@ fn decode_load_response(
     let document = decode_document_wire(&document_bytes, "decode content process load")?;
     let events = decode_event_payload(response, "decode content process load")?;
     let scroll_commands = decode_scroll_commands(response, "decode content process load")?;
-    let origin_url =
-        url::Url::parse(without_fragment(url)).map_err(|_| NativeEngineError::Worker {
-            operation: "decode content process load".into(),
-            reason: "content process returned invalid final URL syntax".into(),
-        })?;
-    let origin = NativeOrigin::from_url(&origin_url)?;
+    let origin = if is_blob_url {
+        NativeOrigin::from_blob_url(without_fragment(url))?
+    } else {
+        let origin_url =
+            url::Url::parse(without_fragment(url)).map_err(|_| NativeEngineError::Worker {
+                operation: "decode content process load".into(),
+                reason: "content process returned invalid final URL syntax".into(),
+            })?;
+        NativeOrigin::from_url(&origin_url)?
+    };
     let navigation = response
         .get("navigation")
         .filter(|value| !value.is_null())
@@ -3329,6 +3337,37 @@ fn decode_content_navigation(
                 .to_owned(),
         ),
     };
+    let object_url = match value.get("object_url") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            serde_json::from_value::<NativeObjectUrlResource>(value.clone()).map_err(|_| {
+                NativeEngineError::Worker {
+                    operation: operation.into(),
+                    reason: "content process returned a malformed object URL payload".into(),
+                }
+            })?,
+        ),
+    };
+    if let Some(object_url) = object_url.as_ref() {
+        if object_url.body.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process object URL payload",
+                MAX_NATIVE_SCRIPT_BYTES,
+                object_url.body.len(),
+            ));
+        }
+        if object_url
+            .content_type
+            .as_ref()
+            .is_some_and(|content_type| content_type.len() > MAX_NATIVE_SCRIPT_BYTES)
+        {
+            return Err(NativeEngineError::limit(
+                "content-process object URL content type",
+                MAX_NATIVE_SCRIPT_BYTES,
+                object_url.content_type.as_ref().map_or(0, String::len),
+            ));
+        }
+    }
     validate_target_navigation_payload(
         method,
         body.as_ref(),
@@ -3377,6 +3416,7 @@ fn decode_content_navigation(
         body_content_type,
         location,
         replace_history,
+        object_url,
     })
 }
 
@@ -4936,6 +4976,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             body_content_type: None,
                                             location: true,
                                             replace_history: navigation.replace_history,
+                                            object_url: navigation.object_url,
                                         }
                                     });
                                     Ok((parsed, navigation, dialogs, events, scroll_commands))
@@ -7023,7 +7064,30 @@ async fn load_content_resource(
         .and_then(Value::as_str)
         .ok_or_else(|| NativeEngineError::invalid("content-process URL", "must be text"))?;
     validate_url_text("content-process URL", url)?;
-    if !is_network_url(without_fragment(url)) {
+    let object_url = match request.get("object_url") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            serde_json::from_value::<NativeObjectUrlResource>(value.clone()).map_err(|_| {
+                NativeEngineError::invalid(
+                    "content-process object URL payload",
+                    "must be a valid bounded native object URL resource",
+                )
+            })?,
+        ),
+    };
+    if object_url
+        .as_ref()
+        .is_some_and(|resource| resource.body.len() > MAX_NATIVE_SCRIPT_BYTES)
+    {
+        return Err(NativeEngineError::limit(
+            "content-process object URL payload",
+            MAX_NATIVE_SCRIPT_BYTES,
+            object_url
+                .as_ref()
+                .map_or(0, |resource| resource.body.len()),
+        ));
+    }
+    if !is_network_url(without_fragment(url)) && object_url.is_none() {
         return Err(NativeEngineError::UnsupportedUrl {
             reason: "content process accepts only HTTP(S) document URLs".into(),
         });
@@ -7096,7 +7160,7 @@ async fn load_content_resource(
             })
         })
         .transpose()?;
-    let navigation = match method {
+    let mut navigation = match method {
         NativeNavigationMethod::Get => {
             if body.is_some() {
                 return Err(NativeEngineError::invalid(
@@ -7127,6 +7191,7 @@ async fn load_content_resource(
             });
         }
     };
+    navigation.object_url = object_url;
     let max_document_bytes = request
         .get("max_document_bytes")
         .and_then(Value::as_u64)
@@ -7213,7 +7278,11 @@ async fn load_content_resource(
         }
     };
     loader.set_environment(environment)?;
-    let resource = if let Some(completion) = resumed_fetch {
+    let resource = if navigation.object_url.is_some() {
+        loader
+            .load_async_request_with_referrer(&navigation, referrer)
+            .await?
+    } else if let Some(completion) = resumed_fetch {
         match completion.response {
             Some(response) => {
                 let response_headers = response.headers.clone();
@@ -7246,7 +7315,9 @@ async fn load_content_resource(
             NativeServiceWorkerNavigationOutcome::Suspended => return Ok(None),
         }
     };
-    service_workers.commit_document(&resource.url)?;
+    if navigation.object_url.is_none() {
+        service_workers.commit_document(&resource.url)?;
+    }
     let mut discovery = NativeDocument::parse(&resource.body, &limits)?;
     loader.apply_meta_content_security_policies(
         &resource.url,
@@ -8025,6 +8096,7 @@ fn mutate_click_with_event_preflight(
                         Some(node_id),
                     )?;
                     if form_action_allows(loader.as_deref_mut(), document_url, &request.url)? {
+                        let object_url = runtime.object_url_resource(&request.url)?;
                         navigation = Some(NativeContentNavigation {
                             node_index: form_id.index(),
                             href: request.url,
@@ -8035,6 +8107,7 @@ fn mutate_click_with_event_preflight(
                             body_content_type: request.body_content_type,
                             location: false,
                             replace_history: false,
+                            object_url,
                         });
                     }
                 }
@@ -8819,6 +8892,7 @@ fn should_apply_native_key_default(key: &str, modifiers: i64) -> bool {
 }
 
 fn split_location_navigation(
+    runtime: &NativeJavaScriptRuntime,
     commands: Vec<NativeScriptCommand>,
 ) -> Result<(Vec<NativeScriptCommand>, Option<NativeContentNavigation>), NativeEngineError> {
     let mut retained = Vec::new();
@@ -8832,6 +8906,7 @@ fn split_location_navigation(
                         reason: "one lifecycle event cannot activate multiple navigations".into(),
                     });
                 }
+                let object_url = runtime.object_url_resource(&href)?;
                 navigation = Some(NativeContentNavigation {
                     node_index: 0,
                     href,
@@ -8842,6 +8917,7 @@ fn split_location_navigation(
                     body_content_type: None,
                     location: true,
                     replace_history: replace,
+                    object_url,
                 });
             }
             command => retained.push(command),
@@ -9138,7 +9214,7 @@ fn mutate_before_unload(
         NativeEventKind::BeforeUnload,
     )];
     let mut scroll_commands = extract_scroll_commands(&evaluation.commands);
-    let (commands, navigation) = split_location_navigation(evaluation.commands)?;
+    let (commands, navigation) = split_location_navigation(runtime, evaluation.commands)?;
     apply_content_event_history(
         &commands,
         document_url,
@@ -9247,7 +9323,7 @@ fn mutate_lifecycle_events(
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = extract_scroll_commands(&evaluation.commands);
-    let (commands, navigation) = split_location_navigation(evaluation.commands)?;
+    let (commands, navigation) = split_location_navigation(runtime, evaluation.commands)?;
     apply_content_event_history(
         &commands,
         document_url,
@@ -9355,7 +9431,7 @@ fn mutate_hash_change(
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = extract_scroll_commands(&evaluation.commands);
-    let (commands, navigation) = split_location_navigation(evaluation.commands)?;
+    let (commands, navigation) = split_location_navigation(runtime, evaluation.commands)?;
     apply_content_event_history(&commands, new_url, document_origin, runtime, &mut history)?;
     let mut events = vec![NativeContentEvent {
         node_index: u32::MAX,
@@ -9724,6 +9800,7 @@ async fn mutate_script_document(
             .map(|navigation| match navigation {
                 ScriptNavigationTarget::Link { node_index, href } => Ok(NativeContentNavigation {
                     node_index,
+                    object_url: runtime.object_url_resource(&href)?,
                     href,
                     submitter_node_index: None,
                     target: "_self".into(),
@@ -9747,6 +9824,7 @@ async fn mutate_script_document(
                     )?;
                     Ok(NativeContentNavigation {
                         node_index,
+                        object_url: runtime.object_url_resource(&request.url)?,
                         href: request.url,
                         submitter_node_index: submitter.map(NativeNodeId::index),
                         target,
@@ -9762,6 +9840,7 @@ async fn mutate_script_document(
                     replace_history,
                 } => Ok(NativeContentNavigation {
                     node_index: 0,
+                    object_url: runtime.object_url_resource(&href)?,
                     href,
                     submitter_node_index: None,
                     target: "_self".into(),

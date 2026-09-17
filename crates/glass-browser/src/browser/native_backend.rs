@@ -5450,6 +5450,7 @@ fn native_navigation_request_from_parts(
         body_content_type,
         replace_history,
         target: None,
+        object_url: None,
     })
 }
 

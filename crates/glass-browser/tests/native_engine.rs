@@ -7261,12 +7261,29 @@ async fn native_content_process_xhr_exposes_status_text_and_safe_response_header
                     r#"<script>
 globalThis.pageHeaderPromise = new Promise(resolve => {
   const xhr = new XMLHttpRequest();
+  const identity = [
+    xhr instanceof XMLHttpRequest,
+    xhr instanceof EventTarget,
+    Object.getPrototypeOf(XMLHttpRequest.prototype) === EventTarget.prototype,
+    xhr.addEventListener === EventTarget.prototype.addEventListener,
+    xhr.upload instanceof XMLHttpRequestUpload,
+    xhr.upload instanceof EventTarget,
+    Object.getPrototypeOf(XMLHttpRequestUpload.prototype) === EventTarget.prototype,
+    xhr.upload.addEventListener === EventTarget.prototype.addEventListener,
+  ];
+  const synthetic = new XMLHttpRequest();
+  const dispatchEvents = [];
+  synthetic.onload = () => dispatchEvents.push('handler');
+  synthetic.addEventListener('load', () => dispatchEvents.push('listener'));
+  const dispatchResult = synthetic.dispatchEvent(new Event('load'));
   xhr.onload = () => {
     let invalid = '';
     try { xhr.getResponseHeader('bad header'); } catch (error) { invalid = error.name; }
     resolve({
       status: xhr.status,
       statusText: xhr.statusText,
+      identity,
+      dispatch: [dispatchResult, dispatchEvents],
       multi: xhr.getResponseHeader('X-Multi'),
       hidden: xhr.getResponseHeader('set-cookie'),
       invalid,
@@ -7290,12 +7307,29 @@ globalThis.workerHeaderPromise = new Promise(resolve => {
                     "OK",
                     "text/javascript",
                     r#"const xhr = new XMLHttpRequest();
+const identity = [
+  xhr instanceof XMLHttpRequest,
+  xhr instanceof EventTarget,
+  Object.getPrototypeOf(XMLHttpRequest.prototype) === EventTarget.prototype,
+  xhr.addEventListener === EventTarget.prototype.addEventListener,
+  xhr.upload instanceof XMLHttpRequestUpload,
+  xhr.upload instanceof EventTarget,
+  Object.getPrototypeOf(XMLHttpRequestUpload.prototype) === EventTarget.prototype,
+  xhr.upload.addEventListener === EventTarget.prototype.addEventListener,
+];
+const synthetic = new XMLHttpRequest();
+const dispatchEvents = [];
+synthetic.onload = () => dispatchEvents.push('handler');
+synthetic.addEventListener('load', () => dispatchEvents.push('listener'));
+const dispatchResult = synthetic.dispatchEvent(new Event('load'));
 xhr.onload = () => {
   let invalid = '';
   try { xhr.getResponseHeader('bad header'); } catch (error) { invalid = error.name; }
   postMessage({
     status: xhr.status,
     statusText: xhr.statusText,
+    identity,
+    dispatch: [dispatchResult, dispatchEvents],
     multi: xhr.getResponseHeader('x-multi'),
     hidden: xhr.getResponseHeader('set-cookie'),
     invalid,
@@ -7342,6 +7376,8 @@ xhr.send();"#,
             {
                 "status": 201,
                 "statusText": "Created",
+                "identity": [true, true, true, true, true, true, true, true],
+                "dispatch": [true, ["handler", "listener"]],
                 "multi": "first, second",
                 "hidden": null,
                 "invalid": "SyntaxError",
@@ -7351,6 +7387,8 @@ xhr.send();"#,
             {
                 "status": 202,
                 "statusText": "Accepted",
+                "identity": [true, true, true, true, true, true, true, true],
+                "dispatch": [true, ["handler", "listener"]],
                 "multi": "worker, second",
                 "hidden": null,
                 "invalid": "SyntaxError",

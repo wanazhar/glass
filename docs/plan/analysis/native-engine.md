@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-440`, following
+expansion checkpoint is completed `native-engine-browser-441`, following
+completed `native-engine-browser-440`, following
 completed `native-engine-browser-439`, following
 completed `native-engine-browser-438`, following
 completed `native-engine-browser-437`, following
@@ -184,6 +185,15 @@ sorted `getAllResponseHeaders()` output, filter `Set-Cookie`, and raise
 `SyntaxError` for malformed names. The loader remains the CORS/exposure and
 response-policy owner; raw invalid wire-header bytes and complete XHR/Web IDL
 descriptor parity remain open.
+Slice 441 closes the XHR EventTarget identity gap. Page and
+dedicated/SharedWorker `XMLHttpRequest` and `XMLHttpRequestUpload` prototypes
+now inherit their realm's `EventTarget.prototype`; instances expose
+constructor and `instanceof EventTarget` identity, and inherited listener and
+dispatch methods drive the existing bounded lifecycle. Page handler
+attributes use the owner-backed event store while worker handler attributes
+use the isolated worker store; synthetic dispatch invokes both handler and
+listener callbacks. Full descriptor and broader platform Web IDL parity remain
+open.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-
@@ -6397,8 +6407,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-440.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-441.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-440.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-439.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-438.md` is the preceding completed

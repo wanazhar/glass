@@ -239,6 +239,12 @@ response-state rules. Document navigation/form methods remain closed, and
 `CONNECT`, `TRACE`, and `TRACK` remain forbidden. Complete XHR Web IDL parity
 and the broader browser matrix remain issue #40 work.
 
+Slice 453 closes the page/worker `URLSearchParams.has(name, value)` parity gap.
+Both realm implementations now honor the optional value filter while keeping
+the existing name-only lookup, insertion order, live URL synchronization, and
+bounded entry/value limits. Complete URLSearchParams Web IDL descriptor and
+encoding parity remain issue #40 work.
+
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is
 now covered by slice 432.

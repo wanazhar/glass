@@ -2227,7 +2227,7 @@ async fn native_local_worker_exposes_url_search_params_and_navigator() {
         .unwrap()
         .with_fixture(
             "fixture://worker-runtime-script",
-            "const url = new URL('https://example.test:8443/data?x=1&x=2#frag'); const relative = new URL('../asset?mode=1', 'https://example.test:8443/path/worker.js'); const params = new URLSearchParams('b=2&a=1&a=3'); params.sort(); params.append('space', 'hello world'); params.set('b', '4'); params.delete('missing'); postMessage({ sameGlobal: self === globalThis, hasDocument: typeof document !== 'undefined', location: [location.href, location.protocol, location.host, location.hostname, location.port, location.pathname], url: [url.href, url.origin, url.host, url.hostname, url.port, url.pathname, url.search, url.hash, url.searchParams.getAll('x')], relative: [relative.href, relative.pathname, relative.search], params: [params.toString(), params.getAll('a'), params.get('b'), params.has('space', 'hello world'), params.size, typeof URL, typeof URLSearchParams], navigator: [navigator.userAgent, navigator.language, navigator.languages[0], navigator.onLine, navigator.cookieEnabled, navigator.hardwareConcurrency] });",
+            "const url = new URL('https://example.test:8443/data?x=1&x=2#frag'); const relative = new URL('../asset?mode=1', 'https://example.test:8443/path/worker.js'); const params = new URLSearchParams('b=2&a=1&a=3'); params.sort(); params.append('space', 'hello world'); params.set('b', '4'); params.delete('missing'); postMessage({ sameGlobal: self === globalThis, hasDocument: typeof document !== 'undefined', location: [location.href, location.protocol, location.host, location.hostname, location.port, location.pathname], url: [url.href, url.origin, url.host, url.hostname, url.port, url.pathname, url.search, url.hash, url.searchParams.getAll('x')], relative: [relative.href, relative.pathname, relative.search], params: [params.toString(), params.getAll('a'), params.get('b'), params.has('space', 'hello world'), params.has('space', 'wrong'), params.size, typeof URL, typeof URLSearchParams], navigator: [navigator.userAgent, navigator.language, navigator.languages[0], navigator.onLine, navigator.cookieEnabled, navigator.hardwareConcurrency] });",
         )
         .unwrap()
         .with_initial_url("fixture://worker-runtime-page");
@@ -2280,6 +2280,7 @@ async fn native_local_worker_exposes_url_search_params_and_navigator() {
                     ["1", "3"],
                     "4",
                     true,
+                    false,
                     4,
                     "function",
                     "function",
@@ -12869,6 +12870,8 @@ async fn native_local_url_search_params_iterators_are_live_and_self_iterating() 
                     complete.done,
                     firstKey.value,
                     remainingKeys,
+                    params.has('b', 'updated'),
+                    params.has('b', 'two'),
                 ];
             })()"#,
         )
@@ -12889,6 +12892,8 @@ async fn native_local_url_search_params_iterators_are_live_and_self_iterating() 
             true,
             "a",
             ["b", "c", "d", true],
+            true,
+            false,
         ])
     );
     engine.close_async().await.unwrap();

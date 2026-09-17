@@ -1564,6 +1564,73 @@ async fn native_local_dynamic_blob_media_exposes_metadata_and_load_event() {
 }
 
 #[tokio::test]
+async fn native_local_dynamic_blob_media_play_resolves_for_known_duration() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://blob-media-playback",
+            "<html><head></head><body><div id='host'></div></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://blob-media-playback");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    globalThis.mediaPlaybackLog = [];
+                    const bytes = new Uint8Array(44 + 8000);
+                    const view = new DataView(bytes.buffer);
+                    const write = (offset, value) => [...value].forEach((character, index) => view.setUint8(offset + index, character.charCodeAt(0)));
+                    write(0, 'RIFF');
+                    view.setUint32(4, 8036, true);
+                    write(8, 'WAVE');
+                    write(12, 'fmt ');
+                    view.setUint32(16, 16, true);
+                    view.setUint16(20, 1, true);
+                    view.setUint16(22, 1, true);
+                    view.setUint32(24, 8000, true);
+                    view.setUint32(28, 8000, true);
+                    view.setUint16(32, 1, true);
+                    view.setUint16(34, 8, true);
+                    write(36, 'data');
+                    view.setUint32(40, 8000, true);
+                    bytes.fill(128, 44);
+                    const audio = document.createElement('audio');
+                    for (const type of ['play', 'playing', 'pause']) audio.addEventListener(type, () => mediaPlaybackLog.push(type));
+                    audio.src = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+                    document.getElementById('host').appendChild(audio);
+                    globalThis.mediaPlaybackAudio = audio;
+                    return true;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await mediaPlaybackAudio.play().then(() => [mediaPlaybackLog, mediaPlaybackAudio.paused, mediaPlaybackAudio.ended])",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([["play", "playing"], false, false])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { mediaPlaybackAudio.pause(); return [mediaPlaybackLog, mediaPlaybackAudio.paused]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([["play", "playing", "pause"], true])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_dynamic_blob_media_selects_supported_source() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -1616,6 +1683,15 @@ async fn native_local_dynamic_blob_media_selects_supported_source() {
             "blob:null/glass-native-2",
             serde_json::Value::Null
         ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await mediaSourceAudio.play().then(() => 'played', error => error.name)",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("NotSupportedError")
     );
     engine.close_async().await.unwrap();
 }

@@ -56,8 +56,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -1440,6 +1441,26 @@ impl NativeWorkerRegistry {
         }
     }
 
+    fn evaluate_worker_with_loader<F>(
+        &mut self,
+        worker_id: u32,
+        loader: &mut NativeResourceLoader,
+        evaluate: F,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError>
+    where
+        F: FnOnce(&NativeDedicatedWorker) -> Result<NativeScriptEvaluation, NativeEngineError>,
+    {
+        let worker = self.workers.get(&worker_id).ok_or_else(|| {
+            NativeEngineError::invalid("native Worker", "worker no longer exists")
+        })?;
+        worker.runtime.set_sync_xhr_loader(loader);
+        let result = evaluate(worker);
+        if let Some(updated_loader) = worker.runtime.take_sync_xhr_loader() {
+            loader.merge_fetch_task_state(updated_loader)?;
+        }
+        result
+    }
+
     pub(crate) fn clear(&mut self) {
         self.workers.clear();
         self.shared_worker_keys.clear();
@@ -1517,13 +1538,12 @@ impl NativeWorkerRegistry {
             return Ok(());
         };
         self.next_worker_timer_id = worker_id;
-        let Some(worker) = self.workers.get(&worker_id) else {
-            return Ok(());
-        };
-        let evaluation = worker.evaluate_turn(
-            worker_id,
-            "globalThis.__glassRunWorkerTimers(performance.now());",
-        );
+        let evaluation = self.evaluate_worker_with_loader(worker_id, loader, |worker| {
+            worker.evaluate_turn(
+                worker_id,
+                "globalThis.__glassRunWorkerTimers(performance.now());",
+            )
+        });
         match evaluation {
             Ok(evaluation) => {
                 self.collect_worker_evaluation(worker_id, evaluation, loader)
@@ -1690,8 +1710,9 @@ impl NativeWorkerRegistry {
             },
         );
         let evaluation = {
-            let worker = self.workers.get(&worker_id).expect("worker was inserted");
-            worker.evaluate_initial(worker_id, &source)
+            self.evaluate_worker_with_loader(worker_id, loader, |worker| {
+                worker.evaluate_initial(worker_id, &source)
+            })
         };
         match evaluation {
             Ok(evaluation) => {
@@ -1752,11 +1773,9 @@ impl NativeWorkerRegistry {
                     .map(|worker| worker.url.clone())
                     .expect("SharedWorker key points to a worker");
                 self.register_page_transfers(worker_id, std::slice::from_ref(&transfer_port))?;
-                let evaluation = self
-                    .workers
-                    .get(&worker_id)
-                    .expect("SharedWorker survived transfer registration")
-                    .evaluate_shared_connect(worker_id, &transfer_port);
+                let evaluation = self.evaluate_worker_with_loader(worker_id, loader, |worker| {
+                    worker.evaluate_shared_connect(worker_id, &transfer_port)
+                });
                 match evaluation {
                     Ok(evaluation) => {
                         if let Err(error) = self
@@ -1850,11 +1869,9 @@ impl NativeWorkerRegistry {
             self.shared_worker_keys.remove(&shared_key);
             return Err(error);
         }
-        let initial = self
-            .workers
-            .get(&connection_id)
-            .expect("SharedWorker was inserted")
-            .evaluate_initial(connection_id, &source);
+        let initial = self.evaluate_worker_with_loader(connection_id, loader, |worker| {
+            worker.evaluate_initial(connection_id, &source)
+        });
         match initial {
             Ok(evaluation) => {
                 if let Err(error) = self
@@ -1873,11 +1890,9 @@ impl NativeWorkerRegistry {
                 return Ok(());
             }
         }
-        let connect = self
-            .workers
-            .get(&connection_id)
-            .expect("SharedWorker survived initial evaluation")
-            .evaluate_shared_connect(connection_id, &transfer_port);
+        let connect = self.evaluate_worker_with_loader(connection_id, loader, |worker| {
+            worker.evaluate_shared_connect(connection_id, &transfer_port)
+        });
         match connect {
             Ok(evaluation) => {
                 if let Err(error) = self
@@ -1917,11 +1932,7 @@ impl NativeWorkerRegistry {
             }),
             "native Worker message",
         )?;
-        let evaluation = {
-            let worker = self
-                .workers
-                .get(&worker_id)
-                .expect("worker presence was checked");
+        let evaluation = self.evaluate_worker_with_loader(worker_id, loader, |worker| {
             worker.evaluate_turn_with_event(
                 worker_id,
                 NativeWorkerDispatch::Message {
@@ -1929,7 +1940,7 @@ impl NativeWorkerRegistry {
                     transfer_ports: &transfer_ports,
                 },
             )
-        };
+        });
         match evaluation {
             Ok(evaluation) => {
                 self.collect_worker_evaluation(worker_id, evaluation, loader)
@@ -2170,25 +2181,16 @@ impl NativeWorkerRegistry {
                 "native page MessagePort event",
             )?;
             let worker_id = route.worker_id;
-            let evaluation = self
-                .workers
-                .get(&worker_id)
-                .map(|worker| {
-                    worker.evaluate_turn_with_event(
-                        worker_id,
-                        NativeWorkerDispatch::MessagePort {
-                            bridge_key: &bridge_key,
-                            data: &data,
-                            transfer_ports: &transfer_ports,
-                        },
-                    )
-                })
-                .ok_or_else(|| {
-                    NativeEngineError::invalid(
-                        "native page MessagePort route",
-                        "target Worker no longer exists",
-                    )
-                })?;
+            let evaluation = self.evaluate_worker_with_loader(worker_id, loader, |worker| {
+                worker.evaluate_turn_with_event(
+                    worker_id,
+                    NativeWorkerDispatch::MessagePort {
+                        bridge_key: &bridge_key,
+                        data: &data,
+                        transfer_ports: &transfer_ports,
+                    },
+                )
+            });
             match evaluation {
                 Ok(evaluation) => {
                     self.collect_worker_evaluation(worker_id, evaluation, loader)
@@ -2347,11 +2349,12 @@ impl NativeWorkerRegistry {
         csp_violations: &[NativeCspViolation],
         loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
-        let Some(worker) = self.workers.get(&worker_id) else {
+        if !self.workers.contains_key(&worker_id) {
             return Ok(());
-        };
-        let evaluation =
-            worker.evaluate_websocket_event(worker_id, socket_id, event, csp_violations);
+        }
+        let evaluation = self.evaluate_worker_with_loader(worker_id, loader, |worker| {
+            worker.evaluate_websocket_event(worker_id, socket_id, event, csp_violations)
+        });
         match evaluation {
             Ok(evaluation) => {
                 self.collect_worker_evaluation(worker_id, evaluation, loader)
@@ -2378,11 +2381,12 @@ impl NativeWorkerRegistry {
         csp_violations: &[NativeCspViolation],
         loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
-        let Some(worker) = self.workers.get(&worker_id) else {
+        if !self.workers.contains_key(&worker_id) {
             return Ok(());
-        };
-        let evaluation =
-            worker.evaluate_event_source_event(worker_id, source_id, event, csp_violations);
+        }
+        let evaluation = self.evaluate_worker_with_loader(worker_id, loader, |worker| {
+            worker.evaluate_event_source_event(worker_id, source_id, event, csp_violations)
+        });
         match evaluation {
             Ok(evaluation) => {
                 self.collect_worker_evaluation(worker_id, evaluation, loader)
@@ -2439,10 +2443,15 @@ impl NativeWorkerRegistry {
                 NativeFetchStreamEvent::End | NativeFetchStreamEvent::Error { .. }
             );
             let payload = worker_fetch_stream_event_payload(&event);
-            let evaluation = self
-                .workers
-                .get(&worker_id)
-                .map(|worker| worker.evaluate_fetch_stream_event(worker_id, stream_id, &payload));
+            let evaluation = if self.workers.contains_key(&worker_id) {
+                Some(
+                    self.evaluate_worker_with_loader(worker_id, loader, |worker| {
+                        worker.evaluate_fetch_stream_event(worker_id, stream_id, &payload)
+                    }),
+                )
+            } else {
+                None
+            };
             match evaluation {
                 Some(Ok(evaluation)) => {
                     self.collect_worker_evaluation(worker_id, evaluation, loader)
@@ -2823,20 +2832,21 @@ impl NativeWorkerRegistry {
                 });
             }
             if demand {
-                let evaluation = match self.workers.get(&worker_id) {
-                    Some(worker) => worker.evaluate_fetch_upload_event(
-                        worker_id,
-                        request_id,
-                        &serde_json::json!({"type": "demand"}),
-                    ),
-                    None => {
-                        task.abort();
-                        self.cancel_worker_fetch_upload_connection((worker_id, request_id));
-                        return Err(NativeEngineError::Worker {
-                            operation: "Worker fetch request upload".into(),
-                            reason: "worker terminated while its request body was in flight".into(),
-                        });
-                    }
+                let evaluation = if self.workers.contains_key(&worker_id) {
+                    self.evaluate_worker_with_loader(worker_id, loader, |worker| {
+                        worker.evaluate_fetch_upload_event(
+                            worker_id,
+                            request_id,
+                            &serde_json::json!({"type": "demand"}),
+                        )
+                    })
+                } else {
+                    task.abort();
+                    self.cancel_worker_fetch_upload_connection((worker_id, request_id));
+                    return Err(NativeEngineError::Worker {
+                        operation: "Worker fetch request upload".into(),
+                        reason: "worker terminated while its request body was in flight".into(),
+                    });
                 };
                 match evaluation {
                     Ok(evaluation) => {
@@ -2985,7 +2995,7 @@ impl NativeWorkerRegistry {
             Ok(mut opened)
                 if !opened.response.opaque
                     && !opened.response.opaque_redirect
-                    && (opened.body.is_some() || opened.cached_body.is_some()) =>
+                    && opened.body.is_some() =>
             {
                 let stream_key = (worker_id, request_id);
                 if self
@@ -3194,19 +3204,15 @@ impl NativeWorkerRegistry {
                 )
             }
         };
-        let worker = self.workers.get(&worker_id).ok_or_else(|| {
-            NativeEngineError::invalid(
-                "native Worker fetch",
-                "worker terminated while its fetch was in flight",
+        self.evaluate_worker_with_loader(worker_id, loader, |worker| {
+            worker.evaluate_turn_with_event(
+                worker_id,
+                NativeWorkerDispatch::Fetch {
+                    request_id,
+                    payload: &payload,
+                },
             )
-        })?;
-        worker.evaluate_turn_with_event(
-            worker_id,
-            NativeWorkerDispatch::Fetch {
-                request_id,
-                payload: &payload,
-            },
-        )
+        })
     }
 
     fn queue_error(
@@ -9481,6 +9487,8 @@ pub(crate) struct NativeJavaScriptRuntime {
     deadline: Arc<Mutex<Option<Instant>>>,
     environment: Arc<Mutex<NativeEnvironmentOverrides>>,
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
+    sync_xhr_loader: Arc<Mutex<Option<NativeResourceLoader>>>,
+    sync_xhr_loader_used: Arc<AtomicBool>,
     timer_pump_enabled: Arc<Mutex<bool>>,
     storage: Arc<Mutex<NativeWebStorageState>>,
     indexed_db: Arc<Mutex<NativeIndexedDbOrigin>>,
@@ -9626,6 +9634,8 @@ impl NativeJavaScriptRuntime {
             deadline,
             environment: Arc::new(Mutex::new(NativeEnvironmentOverrides::default())),
             module_sources,
+            sync_xhr_loader: Arc::new(Mutex::new(None)),
+            sync_xhr_loader_used: Arc::new(AtomicBool::new(false)),
             timer_pump_enabled: Arc::new(Mutex::new(true)),
             storage: Arc::new(Mutex::new(NativeWebStorageState::default())),
             indexed_db: Arc::new(Mutex::new(NativeIndexedDbOrigin::default())),
@@ -9668,6 +9678,27 @@ impl NativeJavaScriptRuntime {
         if let Ok(mut current) = self.environment.lock() {
             *current = environment;
         }
+    }
+
+    /// Give the synchronous XHR host call a bounded snapshot of the owner's
+    /// loader. The snapshot is returned through `take_sync_xhr_loader` after a
+    /// turn so cookies, cache validators, and CSP observations can be merged
+    /// by the process that owns the live loader.
+    pub(crate) fn set_sync_xhr_loader(&self, loader: &NativeResourceLoader) {
+        self.sync_xhr_loader_used.store(false, Ordering::Release);
+        if let Ok(mut current) = self.sync_xhr_loader.lock() {
+            *current = Some(loader.clone());
+        }
+    }
+
+    pub(crate) fn take_sync_xhr_loader(&self) -> Option<NativeResourceLoader> {
+        let used = self.sync_xhr_loader_used.swap(false, Ordering::AcqRel);
+        let loader = self
+            .sync_xhr_loader
+            .lock()
+            .ok()
+            .and_then(|mut current| current.take());
+        used.then_some(loader).flatten()
     }
 
     pub(crate) fn set_inline_script_policy(&self, policy: NativeInlineScriptPolicy) {
@@ -11307,6 +11338,11 @@ impl NativeJavaScriptRuntime {
         }
         let result = self.context.with(|ctx| {
             install_native_crypto_sources(ctx.clone())?;
+            install_native_sync_xhr_source(
+                ctx.clone(),
+                Arc::clone(&self.sync_xhr_loader),
+                Arc::clone(&self.sync_xhr_loader_used),
+            )?;
             install_native_inline_script_policy(
                 ctx.clone(),
                 Arc::clone(&self.inline_script_policy),
@@ -11774,6 +11810,11 @@ impl NativeJavaScriptRuntime {
         }
         let result = self.context.with(|ctx| {
             install_native_crypto_sources(ctx.clone())?;
+            install_native_sync_xhr_source(
+                ctx.clone(),
+                Arc::clone(&self.sync_xhr_loader),
+                Arc::clone(&self.sync_xhr_loader_used),
+            )?;
             ctx.eval::<(), _>(bootstrap.as_str())
                 .map_err(|error| NativeEngineError::Worker {
                     operation: "install native Worker host view".into(),
@@ -12599,6 +12640,11 @@ impl NativeJavaScriptRuntime {
         }
         let result = self.context.with(|ctx| {
             install_native_crypto_sources(ctx.clone())?;
+            install_native_sync_xhr_source(
+                ctx.clone(),
+                Arc::clone(&self.sync_xhr_loader),
+                Arc::clone(&self.sync_xhr_loader_used),
+            )?;
             ctx.eval::<(), _>(bootstrap.as_str())
                 .map_err(|_| NativeEngineError::Worker {
                     operation: "install JavaScript host view".into(),
@@ -13400,6 +13446,146 @@ fn install_native_inline_script_policy<'js>(
         .map_err(|_| NativeEngineError::Worker {
             operation: "publish inline event-handler policy".into(),
             reason: "native inline event-handler policy could not be published".into(),
+        })
+}
+
+#[derive(Debug, Deserialize)]
+struct NativeSyncXhrRequest {
+    #[serde(rename = "documentUrl")]
+    document_url: String,
+    href: String,
+    method: String,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+    #[serde(rename = "bodyBase64", default)]
+    body_base64: Option<String>,
+    #[serde(rename = "contentType", default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    credentials: bool,
+    #[serde(rename = "timeoutMs", default)]
+    timeout_ms: Option<u32>,
+}
+
+fn sync_xhr_error_payload(error: &NativeEngineError) -> serde_json::Value {
+    let reason = error.to_string();
+    let timeout = reason.to_ascii_lowercase().contains("timeout");
+    serde_json::json!({
+        "error": true,
+        "errorMessage": reason,
+        "timeout": timeout,
+    })
+}
+
+/// Execute one synchronous XHR without creating a second HTTP policy owner.
+/// QuickJS cannot await from a synchronous host callback, so the existing
+/// async loader runs on a short-lived current-thread Tokio runtime on a
+/// dedicated OS thread. The loader snapshot comes back with the response so
+/// the owning browser/content process can merge observable state afterward.
+fn run_native_sync_xhr(
+    mut loader: NativeResourceLoader,
+    request: NativeSyncXhrRequest,
+) -> (NativeResourceLoader, serde_json::Value) {
+    let method = match NativeNavigationMethod::from_fetch_method(&request.method) {
+        Ok(method) => method,
+        Err(error) => return (loader, sync_xhr_error_payload(&error)),
+    };
+    let body = match request.body_base64 {
+        Some(encoded) => match base64::engine::general_purpose::STANDARD.decode(encoded) {
+            Ok(bytes) => Some(NativeRequestBody::Bytes(bytes)),
+            Err(_) => {
+                let error =
+                    NativeEngineError::invalid("synchronous XHR body", "must be valid base64");
+                return (loader, sync_xhr_error_payload(&error));
+            }
+        },
+        None => None,
+    };
+    let timeout = request
+        .timeout_ms
+        .filter(|value| *value > 0)
+        .map(|value| Duration::from_millis(u64::from(value)));
+    let fetch_request = NativeFetchRequest {
+        document_url: &request.document_url,
+        href: &request.href,
+        method,
+        body,
+        content_type: request.content_type,
+        request_headers: request.headers,
+        credentials: request.credentials,
+        cors_mode: NativeCorsMode::Cors,
+        redirect_mode: NativeFetchRedirectMode::Follow,
+        cache_mode: NativeFetchCacheMode::Default,
+        timeout,
+        max_response_bytes: None,
+    };
+    let result = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime.block_on(loader.fetch_request_with_headers_async(fetch_request)),
+        Err(_) => Err(NativeEngineError::Worker {
+            operation: "synchronous XHR runtime".into(),
+            reason: "a native synchronous XHR runtime could not be created".into(),
+        }),
+    };
+    match result {
+        Ok(response) => (
+            loader,
+            serde_json::json!({
+                "error": false,
+                "url": response.url,
+                "status": response.status,
+                "statusText": response.status.to_string(),
+                "contentType": response.content_type,
+                "headers": response.headers,
+                "bodyBase64": base64::engine::general_purpose::STANDARD.encode(response.body),
+                "redirected": response.redirected,
+            }),
+        ),
+        Err(error) => (loader, sync_xhr_error_payload(&error)),
+    }
+}
+
+fn install_native_sync_xhr_source<'js>(
+    ctx: rquickjs::Ctx<'js>,
+    loader_slot: Arc<Mutex<Option<NativeResourceLoader>>>,
+    loader_used: Arc<AtomicBool>,
+) -> Result<(), NativeEngineError> {
+    let source = Function::new(
+        ctx.clone(),
+        move |encoded: String| -> std::result::Result<String, Error> {
+            if encoded.len() > MAX_NATIVE_SCRIPT_BYTES {
+                return Err(Error::Unknown);
+            }
+            let request: NativeSyncXhrRequest =
+                serde_json::from_str(&encoded).map_err(|_| Error::Unknown)?;
+            let loader = loader_slot
+                .lock()
+                .map_err(|_| Error::Unknown)?
+                .take()
+                .ok_or(Error::Unknown)?;
+            let result = thread::spawn(move || run_native_sync_xhr(loader, request))
+                .join()
+                .map_err(|_| Error::Unknown)?;
+            let (loader, payload) = result;
+            loader_slot
+                .lock()
+                .map_err(|_| Error::Unknown)?
+                .replace(loader);
+            loader_used.store(true, Ordering::Release);
+            serde_json::to_string(&payload).map_err(|_| Error::Unknown)
+        },
+    )
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install native synchronous XHR source".into(),
+        reason: "native synchronous XHR source could not be installed".into(),
+    })?;
+    ctx.globals()
+        .set("__glassSyncXhr", source)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "publish native synchronous XHR source".into(),
+            reason: "native synchronous XHR source could not be published".into(),
         })
 }
 
@@ -19851,6 +20037,92 @@ fn worker_bootstrap(
     }};
     return readNext();
   }};
+  const workerSyncXhrRequestPayload = (xhr, body) => {{
+    const payload = workerRequestBodyPayload(body);
+    if (payload.stream)
+      throw new TypeError("native synchronous Worker XMLHttpRequest cannot use a ReadableStream body");
+    const headers = {{}};
+    let contentType = payload.contentType;
+    for (const entry of xhr._headers._entries) {{
+      const name = String(entry[0]).toLowerCase();
+      if (name === "content-type") {{
+        if (contentType !== null && contentType !== undefined)
+          throw new TypeError("native Worker XMLHttpRequest body chooses its own Content-Type");
+        contentType = String(entry[1]);
+      }} else headers[name] = String(entry[1]);
+    }}
+    const bytes = payload.bodyNull ? [] : payload.bytes;
+    if (["GET", "HEAD"].includes(xhr._method) && !payload.bodyNull)
+      throw new TypeError("native Worker " + xhr._method + " XMLHttpRequest requests must not have a body");
+    return {{
+      documentUrl: workerUrl,
+      href: xhr._url,
+      method: xhr._method,
+      headers,
+      bodyBase64: payload.bodyNull ? null : encodeWorkerBase64(bytes, {fetch_body_limit}),
+      contentType: contentType === undefined ? null : contentType,
+      credentials: xhr.withCredentials,
+      timeoutMs: xhr._timeout === 0 ? null : xhr._timeout,
+    }};
+  }};
+  const workerXhrApplySyncResponse = (xhr, payload, responseType) => {{
+    const fail = (error, eventType) => {{
+      xhr._controller = null;
+      xhr._responseReader = null;
+      xhr.status = 0;
+      xhr.statusText = "";
+      xhr._responseText = "";
+      xhr._responseUtf8Pending = [];
+      xhr.responseURL = "";
+      xhr.response = "";
+      xhr.responseXML = null;
+      xhr._responseHeaders = new WorkerHeadersNative();
+      xhr._sent = false;
+      xhr.readyState = 4;
+      xhr._notifyReadyState();
+      workerXhrFinishUpload(xhr, eventType);
+      workerXhrDispatch(xhr, eventType, {{ error }});
+      workerXhrDispatch(xhr, "loadend", {{}});
+    }};
+    if (!payload || payload.error === true) {{
+      const error = new Error(String(payload && payload.errorMessage || "native synchronous Worker XMLHttpRequest failed"));
+      error.name = payload && payload.timeout === true ? "TimeoutError" : "NetworkError";
+      fail(error, payload && payload.timeout === true ? "timeout" : "error");
+      return;
+    }}
+    let bytes;
+    try {{
+      bytes = workerResponseBytes(payload);
+      const contentType = payload.contentType === null || payload.contentType === undefined
+        ? null
+        : String(payload.contentType);
+      xhr.status = Number(payload.status) || 0;
+      xhr.statusText = payload.statusText === undefined ? String(xhr.status) : String(payload.statusText);
+      xhr.responseURL = payload.url === undefined ? "" : String(payload.url);
+      xhr._responseHeaders = workerResponseHeaders(payload.headers, contentType);
+      xhr._responseText = responseType === "" || responseType === "text"
+        ? workerUtf8Text(bytes)
+        : "";
+      xhr.response = responseType === "json"
+        ? JSON.parse(workerUtf8Text(bytes))
+        : responseType === "arraybuffer"
+          ? new Uint8Array(bytes).buffer
+          : responseType === "blob"
+            ? new WorkerBlob([new Uint8Array(bytes)], {{ type: contentType || "" }})
+            : xhr._responseText;
+    }} catch (error) {{
+      fail(error, "error");
+      return;
+    }}
+    xhr._controller = null;
+    xhr._responseReader = null;
+    xhr._sent = false;
+    xhr.readyState = 4;
+    xhr._notifyReadyState();
+    workerXhrFinishUpload(xhr, "load");
+    workerXhrDispatch(xhr, "load", {{}});
+    workerXhrDispatch(xhr, "loadend", {{}});
+  }};
   const WorkerXMLHttpRequestNative = typeof globalThis.__glassWorkerXmlHttpRequestConstructor === "function"
     ? globalThis.__glassWorkerXmlHttpRequestConstructor
     : function() {{
@@ -19875,6 +20147,7 @@ fn worker_bootstrap(
     this.onloadend = null;
     this._method = "GET";
     this._url = "";
+    this._async = true;
     this._headers = new WorkerHeadersNative();
     this._responseHeaders = new WorkerHeadersNative();
     this._listeners = new Map();
@@ -19937,7 +20210,6 @@ fn worker_bootstrap(
     }},
   }});
   WorkerXMLHttpRequestNative.prototype.open = function(method, url, async) {{
-    if (async === false) throw new TypeError("native Worker XMLHttpRequest requires async mode");
     const previousController = this._controller;
     const previousReader = this._responseReader;
     this._controller = null;
@@ -19951,6 +20223,7 @@ fn worker_bootstrap(
     if (typeof source !== "string") throw new TypeError("native Worker XMLHttpRequest URL must be text");
     this._method = normalizedMethod;
     this._url = source;
+    this._async = async !== false;
     this._headers = new WorkerHeadersNative();
     this._responseHeaders = new WorkerHeadersNative();
     this._aborted = false;
@@ -20023,9 +20296,25 @@ fn worker_bootstrap(
     this._token = token;
     this._sent = true;
     this._aborted = false;
+    const requestBody = body === undefined ? null : body;
+    if (!this._async) {{
+      if (this._timeout !== 0)
+        throw new WorkerDOMExceptionNative("native synchronous Worker XMLHttpRequest cannot use timeout", "InvalidAccessError");
+      const request = workerSyncXhrRequestPayload(this, requestBody);
+      workerXhrStartUpload(this, requestBody);
+      this._aborted = false;
+      let payload;
+      try {{
+        payload = JSON.parse(globalThis.__glassSyncXhr(JSON.stringify(request)));
+      }} catch (error) {{
+        workerXhrFinishUpload(this, "error");
+        throw error;
+      }}
+      workerXhrApplySyncResponse(this, payload, responseType);
+      return;
+    }}
     const controller = new AbortControllerNative();
     this._controller = controller;
-    const requestBody = body === undefined ? null : body;
     workerXhrStartUpload(this, requestBody);
     workerFetchNative(this._url, {{
       method: this._method,
@@ -28803,6 +29092,114 @@ fn document_bootstrap(
     }};
     return readNext();
   }};
+  const nativeSyncXhrRequestPayload = (xhr, body) => {{
+    const payload = nativeRequestBodyPayload({{ body }});
+    if (payload.stream)
+      throw new TypeError("native synchronous XMLHttpRequest cannot use a ReadableStream body");
+    if (nativeBodylessMethods.includes(xhr._method) && !payload.bodyNull)
+      throw new TypeError("native " + xhr._method + " XMLHttpRequest requests must not have a body");
+    const headers = Object.assign({{}}, xhr._headers);
+    let contentType = payload.contentType;
+    for (const name of Object.keys(headers)) {{
+      if (name.toLowerCase() !== "content-type") continue;
+      if (contentType !== null && contentType !== undefined)
+        throw new TypeError("native XMLHttpRequest body chooses its own Content-Type");
+      contentType = headers[name];
+      delete headers[name];
+    }}
+    const bytes = payload.bodyNull ? [] : payload.bytes;
+    return {{
+      documentUrl: host.url,
+      href: xhr._url,
+      method: xhr._method,
+      headers,
+      bodyBase64: payload.bodyNull ? null : encodeBase64(bytes, nativeFormBodyLimit),
+      contentType: contentType === undefined ? null : contentType,
+      credentials: xhr.withCredentials,
+      timeoutMs: xhr._timeout === 0 ? null : xhr._timeout,
+    }};
+  }};
+  const nativeXhrApplySyncResponse = (xhr, payload, responseType) => {{
+    const fail = (error, eventType) => {{
+      xhr._controller = null;
+      xhr._responseReader = null;
+      xhr.status = 0;
+      xhr.statusText = "";
+      xhr._responseText = "";
+      xhr._responseUtf8Pending = [];
+      xhr.responseURL = "";
+      xhr.response = "";
+      xhr._responseXML = null;
+      xhr._responseContentType = null;
+      xhr._responseHeaders = responseHeaders([], null);
+      xhr.readyState = 4;
+      xhr._notifyReadyState();
+      nativeXhrFinishUpload(xhr, eventType);
+      nativeXhrDispatch(xhr, eventType, {{ error }});
+      nativeXhrDispatch(xhr, "loadend");
+    }};
+    if (!payload || payload.error === true) {{
+      const error = new Error(String(payload && payload.errorMessage || "native synchronous XMLHttpRequest failed"));
+      error.name = payload && payload.timeout === true ? "TimeoutError" : "NetworkError";
+      fail(error, payload && payload.timeout === true ? "timeout" : "error");
+      return;
+    }}
+    let bytes;
+    try {{
+      bytes = decodeBase64(String(payload.bodyBase64 || ""), nativeXmlMaxBytes);
+      const contentType = payload.contentType === null || payload.contentType === undefined
+        ? null
+        : String(payload.contentType);
+      xhr.status = Number(payload.status) || 0;
+      xhr.statusText = payload.statusText === undefined ? String(xhr.status) : String(payload.statusText);
+      xhr.responseURL = payload.url === undefined ? "" : String(payload.url);
+      xhr._responseContentType = contentType;
+      xhr._responseHeaders = responseHeaders(payload.headers, contentType);
+      const value = responseType === "json"
+        ? JSON.parse(utf8TextFromBytes(bytes))
+        : responseType === "arraybuffer"
+          ? new Uint8Array(bytes).buffer
+          : responseType === "blob"
+            ? responseBodyBlobFromBytes(bytes, contentType)
+            : utf8TextFromBytes(bytes);
+      const xmlContent = typeof globalThis.__glassIsXmlMime === "function"
+        && globalThis.__glassIsXmlMime(contentType);
+      const htmlContent = typeof globalThis.__glassIsHtmlMime === "function"
+        && globalThis.__glassIsHtmlMime(contentType);
+      if (responseType === "document") {{
+        const parseDocument = xmlContent && typeof globalThis.__glassParseXmlDocument === "function"
+          ? globalThis.__glassParseXmlDocument
+          : htmlContent && typeof globalThis.__glassParseHtmlDocument === "function"
+            ? globalThis.__glassParseHtmlDocument
+            : null;
+        xhr._responseXML = parseDocument
+          ? parseDocument(utf8TextFromBytes(bytes), xhr.responseURL, contentType)
+          : null;
+        xhr._responseText = "";
+        xhr.response = xhr._responseXML;
+      }} else if (responseType === "" && xmlContent) {{
+        xhr._responseXML = typeof globalThis.__glassParseXmlDocument === "function"
+          ? globalThis.__glassParseXmlDocument(utf8TextFromBytes(bytes), xhr.responseURL, contentType)
+          : null;
+        xhr._responseText = utf8TextFromBytes(bytes);
+        xhr.response = value;
+      }} else {{
+        xhr._responseXML = null;
+        xhr._responseText = typeof value === "string" ? value : "";
+        xhr.response = value;
+      }}
+    }} catch (error) {{
+      fail(error, "error");
+      return;
+    }}
+    xhr._controller = null;
+    xhr._responseReader = null;
+    xhr.readyState = 4;
+    xhr._notifyReadyState();
+    nativeXhrFinishUpload(xhr, "load");
+    nativeXhrDispatch(xhr, "load");
+    nativeXhrDispatch(xhr, "loadend");
+  }};
   const XMLHttpRequestNative = function() {{
     this.readyState = 0;
     this.status = 0;
@@ -28823,6 +29220,7 @@ fn document_bootstrap(
     this.onloadend = null;
     this._method = "GET";
     this._url = "";
+    this._async = true;
     this._headers = {{}};
     this._responseContentType = null;
     this._responseHeaders = responseHeaders([], null);
@@ -28893,7 +29291,6 @@ fn document_bootstrap(
     }},
   }});
   XMLHttpRequestNative.prototype.open = function(method, url, async) {{
-    if (async === false) throw new TypeError("native XMLHttpRequest requires async mode");
     const previousController = this._controller;
     const previousReader = this._responseReader;
     this._controller = null;
@@ -28906,6 +29303,7 @@ fn document_bootstrap(
     if (typeof url !== "string") throw new TypeError("native XMLHttpRequest URL must be text");
     this._method = normalizedMethod;
     this._url = url;
+    this._async = async !== false;
     this._headers = {{}};
     this._controller = null;
     this._aborted = false;
@@ -28972,6 +29370,22 @@ fn document_bootstrap(
       : body instanceof ArrayBuffer || (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(body))
         ? body
         : body === undefined || body === null ? null : String(body);
+    if (!this._async) {{
+      if (this._timeout !== 0)
+        throw new DOMExceptionNative("native synchronous XMLHttpRequest cannot use timeout", "InvalidAccessError");
+      const request = nativeSyncXhrRequestPayload(this, requestBody);
+      nativeXhrStartUpload(this, requestBody);
+      this._aborted = false;
+      let payload;
+      try {{
+        payload = JSON.parse(globalThis.__glassSyncXhr(JSON.stringify(request)));
+      }} catch (error) {{
+        nativeXhrFinishUpload(this, "error");
+        throw error;
+      }}
+      nativeXhrApplySyncResponse(this, payload, responseType);
+      return;
+    }}
     nativeXhrStartUpload(this, requestBody);
     const controller = new AbortControllerNative();
     this._controller = controller;

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-437`, following
+expansion checkpoint is completed `native-engine-browser-438`, following
+completed `native-engine-browser-437`, following
 completed `native-engine-browser-436`, following
 completed `native-engine-browser-435`, following
 completed `native-engine-browser-434`, following
@@ -155,6 +156,16 @@ bytes then enter the ordinary deterministic fixture Fetch path as a validated
 buffered body. HTTP(S) Worker uploads retain their direct transport stream and
 loader-state merge; synchronous XHR and complete XHR/Streams Web IDL parity
 remain open.
+Slice 438 closes the synchronous-XHR gate. Page and dedicated/SharedWorker
+realms now accept `open(..., false)` and send bounded fixture or HTTP(S)
+requests through the existing loader, including its body validation, CORS,
+redirect, cookie/cache, CSP, and response-size policy. The host call runs the
+existing async loader on a short-lived current-thread runtime in a dedicated
+OS thread, then merges the loader snapshot back into the owning browser or
+content process. The existing text, JSON, binary, XML, and HTML response
+projections are reused, with a bounded `[OPENED, DONE]` synchronous lifecycle;
+non-zero sync timeouts and stream bodies fail closed. Complete XHR/Streams Web
+IDL parity remains an issue #40 gate.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

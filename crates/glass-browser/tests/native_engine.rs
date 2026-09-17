@@ -6930,6 +6930,37 @@ async fn native_content_process_worker_fetch_preserves_binary_request_and_respon
 }
 
 #[tokio::test]
+async fn native_local_sync_xhr_uses_fixture_loader() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://sync-xhr.test/page", "<main>Sync</main>")
+        .unwrap()
+        .with_fixture("fixture://sync-xhr.test/response", "fixture-sync-response")
+        .unwrap()
+        .with_initial_url("fixture://sync-xhr.test/page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const xhr = new XMLHttpRequest(); const states = []; xhr.onreadystatechange = () => states.push(xhr.readyState); xhr.open('GET', '/response', false); xhr.send(); return { status: xhr.status, statusText: xhr.statusText, responseText: xhr.responseText, response: xhr.response, responseURL: xhr.responseURL, states, readyState: xhr.readyState }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "status": 200,
+            "statusText": "200",
+            "responseText": "fixture-sync-response",
+            "response": "fixture-sync-response",
+            "responseURL": "fixture://sync-xhr.test/response",
+            "states": [1, 4],
+            "readyState": 4,
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_worker_exposes_xhr_fetch_bridge() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -7061,6 +7092,131 @@ async fn native_content_process_worker_exposes_xhr_fetch_bridge() {
             "binaryURL": format!("http://{address}/worker-xhr-binary"),
             "timeout": [20, [1, 4], 4, 0, ""],
         }])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_page_and_worker_support_sync_xhr() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in [
+            "/sync-xhr-page",
+            "/sync-xhr",
+            "/sync-xhr-worker.js",
+            "/sync-xhr-worker",
+            "/sync-xhr-later",
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request_bytes = read_http_request_bytes(&mut stream).await;
+            let header_end = request_bytes
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4)
+                .unwrap();
+            let request = String::from_utf8_lossy(&request_bytes);
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            match expected_path {
+                "/sync-xhr" | "/sync-xhr-worker" => {
+                    assert_eq!(request.split_whitespace().next(), Some("POST"));
+                    assert!(request.lines().any(|line| {
+                        line.split_once(':').is_some_and(|(name, value)| {
+                            name.eq_ignore_ascii_case("content-type")
+                                && value.trim() == "text/plain"
+                        })
+                    }));
+                    let body = &request_bytes[header_end..];
+                    let expected_body = if expected_path == "/sync-xhr" {
+                        b"page-body".as_slice()
+                    } else {
+                        b"worker-body".as_slice()
+                    };
+                    assert_eq!(body, expected_body);
+                }
+                _ => assert_eq!(request.split_whitespace().next(), Some("GET")),
+            }
+            let (content_type, body) = match expected_path {
+                "/sync-xhr-page" => (
+                    "text/html",
+                    "<script>globalThis.syncPageStates = []; const xhr = new XMLHttpRequest(); xhr.onreadystatechange = () => syncPageStates.push(xhr.readyState); xhr.open('POST', '/sync-xhr', false); xhr.setRequestHeader('Content-Type', 'text/plain'); xhr.send('page-body'); globalThis.syncPageResult = { status: xhr.status, statusText: xhr.statusText, responseText: xhr.responseText, response: xhr.response, responseURL: xhr.responseURL, responseHeader: xhr.getResponseHeader('x-sync'), states: syncPageStates, readyState: xhr.readyState }; globalThis.workerMessages = []; globalThis.worker = new Worker('/sync-xhr-worker.js'); worker.onmessage = event => workerMessages.push(event.data);</script>",
+                ),
+                "/sync-xhr" => ("text/plain", "sync-page-response"),
+                "/sync-xhr-worker.js" => (
+                    "text/javascript",
+                    "(() => { const xhr = new XMLHttpRequest(); const states = []; xhr.onreadystatechange = () => states.push(xhr.readyState); xhr.open('POST', '/sync-xhr-worker', false); xhr.setRequestHeader('Content-Type', 'text/plain'); xhr.send('worker-body'); postMessage({ status: xhr.status, statusText: xhr.statusText, responseText: xhr.responseText, responseURL: xhr.responseURL, responseHeader: xhr.getResponseHeader('x-sync'), states, readyState: xhr.readyState }); })();",
+                ),
+                "/sync-xhr-worker" => ("text/plain", "sync-worker-response"),
+                "/sync-xhr-later" => ("text/plain", "sync-later-response"),
+                _ => unreachable!(),
+            };
+            let sync_header = if expected_path == "/sync-xhr" {
+                "page"
+            } else if expected_path == "/sync-xhr-worker" {
+                "worker"
+            } else {
+                ""
+            };
+            let response = if sync_header.is_empty() {
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            } else {
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nX-Sync: {sync_header}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            };
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/sync-xhr-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("syncPageResult").await.unwrap(),
+        serde_json::json!({
+            "status": 200,
+            "statusText": "200",
+            "responseText": "sync-page-response",
+            "response": "sync-page-response",
+            "responseURL": format!("http://{address}/sync-xhr"),
+            "responseHeader": "page",
+            "states": [1, 4],
+            "readyState": 4,
+        })
+    );
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([{
+            "status": 200,
+            "statusText": "200",
+            "responseText": "sync-worker-response",
+            "responseURL": format!("http://{address}/sync-xhr-worker"),
+            "responseHeader": "worker",
+            "states": [1, 4],
+            "readyState": 4,
+        }])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const xhr = new XMLHttpRequest(); xhr.open('GET', '/sync-xhr-later', false); xhr.send(); return [xhr.status, xhr.responseText, xhr.responseURL, xhr.readyState]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            200,
+            "sync-later-response",
+            format!("http://{address}/sync-xhr-later"),
+            4,
+        ])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

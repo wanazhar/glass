@@ -4250,6 +4250,34 @@ impl NativeResourceLoader {
         document_url: &str,
         href: &str,
     ) -> Result<NativeFetchResponse, NativeEngineError> {
+        validate_url_text("download owner URL", document_url)?;
+        validate_url_text("download URL", href)?;
+        let owner_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "download owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        if owner_url.scheme().eq_ignore_ascii_case("file") {
+            let Some((target_url, path)) =
+                self.local_file_subresource_path(document_url, href, "file download")?
+            else {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "file download URL must use the file scheme".into(),
+                });
+            };
+            let body = read_bounded_file(&path, MAX_NATIVE_DOWNLOAD_BYTES, "file download")?;
+            return Ok(NativeFetchResponse {
+                url: without_fragment(target_url.as_str()).to_owned(),
+                status: 200,
+                status_text: "OK".into(),
+                content_type: file_media_type(&path).map(str::to_owned),
+                headers: Vec::new(),
+                body,
+                redirected: false,
+                opaque: false,
+                opaque_redirect: false,
+            });
+        }
         self.fetch_request_with_headers_async(NativeFetchRequest {
             document_url,
             href,

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-479`, following completed
 `native-engine-browser-478`, following completed
 `native-engine-browser-477`, following completed
 `native-engine-browser-476`, following completed
@@ -439,6 +440,15 @@ dependencies through the same isolated native worker realms, message queues,
 and root/symlink/UTF-8/size checks already used by file scripts. Fixture and
 HTTP(S) workers remain unchanged; file-origin service workers, worklets,
 import maps, and full worker Web IDL parity remain issue #40 work.
+
+Slice `native-engine-browser-479` closes rooted-file download response loading.
+Download links owned by file documents now read bounded bytes through the
+configured canonical file-root capability and feed the existing parent-owned
+download queue, collision-safe writer, completion digest, and cancellation
+surface. Missing, directory, credential-bearing, and out-of-root sources stay
+denied; HTTP(S) downloads retain their existing fetch/navigation owner. File
+origin service workers, resumable/background downloads, Content-Disposition
+precedence, and full download/Web IDL parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

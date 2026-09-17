@@ -3966,6 +3966,7 @@ fn decode_service_worker_client_messages(
             ));
         }
         validate_message_port_transfers(&message.transfer_ports)?;
+        validate_native_object_url_transfers(&message.object_urls)?;
         let encoded = serde_json::to_vec(&message.data).map_err(|_| NativeEngineError::Worker {
             operation: operation.into(),
             reason: "service worker client message data could not be serialized".into(),
@@ -3977,6 +3978,14 @@ fn decode_service_worker_client_messages(
                 encoded.len(),
             ));
         }
+        validate_native_message_payload(
+            &serde_json::json!({
+                "data": &message.data,
+                "transfer_ports": &message.transfer_ports,
+                "object_urls": &message.object_urls,
+            }),
+            "content-process service worker client message",
+        )?;
     }
     Ok(messages)
 }

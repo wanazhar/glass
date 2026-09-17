@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-466`, following
+expansion checkpoint is completed `native-engine-browser-467`, following
+completed `native-engine-browser-466`, following
 completed `native-engine-browser-465`, following
 completed `native-engine-browser-464`, following
 completed `native-engine-browser-463`, following
@@ -383,6 +384,16 @@ non-Blob URLs, which removes a reentrant QuickJS initialization deadlock.
 MessagePort was subsequently closed by slice 466; Service Worker client
 messaging, media, and remaining browser/Web IDL conformance consumers remain
 separate owner work.
+Slice 467 closes the Service Worker client-message Blob URL boundary. The
+worker-side `Client.postMessage()` command now snapshots bounded Blob URL
+resources in its active QuickJS context, carries the typed envelope through
+content-process decoding and validation, and installs the destination registry
+before the page Service Worker `message` event decodes its structured clone.
+The HTTP(S) regression fetches the received URL and checks body and MIME,
+proving no network/cache fallback and preserving source-worker revocation
+ownership. MessagePort event-origin metadata, media, and remaining
+browser/Web IDL conformance consumers remain separate owner work.
+
 Slice 466 closes the cross-realm Blob URL MessagePort boundary: page,
 dedicated/shared-worker, popup/`WindowProxy`, and Service Worker port messages
 carry bounded Blob snapshots through active, parked, frame, and content-process
@@ -391,7 +402,8 @@ decoding. Inline and HTTP(S) tests cover both directions across page/worker,
 popup, and service-worker owners without network/cache fallback; source
 revocation remains independent. MessagePort event-origin metadata, Service
 Worker client-message Blob transfer, media, and remaining browser/Web IDL
-conformance consumers remain separate owner work.
+conformance consumers remained separate owner work at that checkpoint; slice
+467 now closes the client-message Blob transfer gate.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-
@@ -6605,8 +6617,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-466.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-467.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-466.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-465.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-464.md` is the preceding completed browser
@@ -6828,7 +6842,7 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain starts at `native-engine-browser-466`.
+The current browser-slice evidence chain starts at `native-engine-browser-467`.
 Slices 440 through 356 are summarized in the current checkpoint paragraphs
 above; the historical continuation below begins with `native-engine-browser-355`,
 `native-engine-browser-354`,

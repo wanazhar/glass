@@ -1598,7 +1598,7 @@ async fn native_local_dynamic_blob_media_play_resolves_for_known_duration() {
                     view.setUint32(40, 8000, true);
                     bytes.fill(128, 44);
                     const audio = document.createElement('audio');
-                    for (const type of ['play', 'playing', 'pause']) audio.addEventListener(type, () => mediaPlaybackLog.push(type));
+                    for (const type of ['play', 'playing', 'pause', 'ended']) audio.addEventListener(type, () => mediaPlaybackLog.push(type));
                     audio.src = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
                     document.getElementById('host').appendChild(audio);
                     globalThis.mediaPlaybackAudio = audio;
@@ -1626,6 +1626,50 @@ async fn native_local_dynamic_blob_media_play_resolves_for_known_duration() {
             .await
             .unwrap(),
         serde_json::json!([["play", "playing", "pause"], true])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { mediaPlaybackAudio.currentTime = 0.25; return [mediaPlaybackAudio.currentTime, mediaPlaybackAudio.played.length]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([0.25, 1])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await mediaPlaybackAudio.play().then(() => [mediaPlaybackAudio.paused, mediaPlaybackAudio.ended])",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([false, false])
+    );
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const time = mediaPlaybackAudio.currentTime; return [time > 0.25, time < 1, mediaPlaybackAudio.ended, mediaPlaybackAudio.played.length, mediaPlaybackAudio.played.end(0) > 0.25]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, true, false, 1, true])
+    );
+    engine
+            .evaluate_async(
+            "(() => { mediaPlaybackAudio.playbackRate = 100; mediaPlaybackAudio.play(); return true; })()",
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[mediaPlaybackAudio.currentTime, mediaPlaybackAudio.ended, mediaPlaybackAudio.paused, mediaPlaybackLog.includes('ended')]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([1, true, true, true])
     );
     engine.close_async().await.unwrap();
 }

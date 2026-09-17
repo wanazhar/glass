@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-471`, following completed
 `native-engine-browser-470`, following completed
 `native-engine-browser-469`, following completed
 `native-engine-browser-468`, following completed
@@ -193,6 +194,15 @@ validate bounded supported media payloads, expose WAV duration metadata, and
 deliver selected-source readiness/error state plus load/error events through
 the native DOM and event paths. Codec/decoder playback, static HTTP media
 loading, and complete media/Web IDL parity remain issue #40 gates.
+
+The completed media timeline follow-up is
+[`native-engine-browser-471`](tasks/native-engine-browser-471.md): finite
+duration media now advances `currentTime` against the native monotonic clock,
+records merged `played` intervals, rebases pause/resume, seek, and playback
+rate changes, and reaches a paused `ended` state with one `ended` event.
+`buffered`/`seekable` retain the full admitted range. Independent media task
+source scheduling, decoded output, range transport, and complete media/Web IDL
+parity remain issue #40 gates.
 
 The completed bounded media play follow-up is
 [`native-engine-browser-470`](tasks/native-engine-browser-470.md): admitted

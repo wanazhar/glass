@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-471`, following completed
 `native-engine-browser-470`, following completed
 `native-engine-browser-469`, following completed
 `native-engine-browser-468`, following completed
@@ -365,6 +366,15 @@ script command and event paths. This slice deliberately does not claim a
 codec/decoder or playback implementation, static HTTP media loading, or full
 media/Web IDL parity; those and the remaining browser certification gates stay
 open under issue #40.
+
+Slice `native-engine-browser-471` closes the bounded media timeline boundary.
+Finite-duration media advances `currentTime` against the native monotonic
+clock, accumulates merged `played` intervals, and rebases pause/resume, seek,
+and playback-rate changes. Reaching the duration clamps the position, returns
+to paused, and dispatches one `ended` event; `buffered` and `seekable` retain
+the complete admitted range. Independent media task-source scheduling,
+decoded audio/video output, range transport, and complete media/Web IDL parity
+remain issue #40 work.
 
 Slice `native-engine-browser-470` closes the first media play-admission
 boundary. Loaded, error-free media with a finite duration now resolves

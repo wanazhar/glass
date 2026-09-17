@@ -31873,21 +31873,6 @@ fn document_bootstrap(
           ? Number.NaN
           : Math.max(0, Number(millis) / 1000);
       }};
-      const mediaTimeRanges = () => {{
-        const duration = mediaDuration();
-        const end = Number.isFinite(duration) && duration >= 0 ? duration : null;
-        return {{
-          length: end === null ? 0 : 1,
-          start(index) {{
-            if (Number(index) !== 0 || end === null) throw new DOMExceptionNative("The time range index is invalid", "IndexSizeError");
-            return 0;
-          }},
-          end(index) {{
-            if (Number(index) !== 0 || end === null) throw new DOMExceptionNative("The time range index is invalid", "IndexSizeError");
-            return end;
-          }},
-        }};
-      }};
       const mediaSelectedSource = () => {{
         const own = element.getAttribute("src");
         if (own !== null && own !== "") return own;
@@ -31912,15 +31897,95 @@ fn document_bootstrap(
       let mediaDefaultPlaybackRate = 1;
       let mediaVolume = 1;
       let mediaSeeking = false;
+      let mediaPlaybackStartedAt = null;
+      let mediaPlaybackStartTime = 0;
+      let mediaPlayedRanges = [];
+      const mediaNow = () => {{
+        const now = Number(globalThis.performance && globalThis.performance.now && globalThis.performance.now());
+        return Number.isFinite(now) && now >= 0 ? now : 0;
+      }};
+      const recordMediaPlayedRange = (start, end) => {{
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+        const ranges = [];
+        let nextStart = start;
+        let nextEnd = end;
+        let inserted = false;
+        for (const range of mediaPlayedRanges) {{
+          if (range[1] < nextStart) {{
+            ranges.push(range);
+            continue;
+          }}
+          if (nextEnd < range[0]) {{
+            if (!inserted) {{
+              ranges.push([nextStart, nextEnd]);
+              inserted = true;
+            }}
+            ranges.push(range);
+            continue;
+          }}
+          nextStart = Math.min(nextStart, range[0]);
+          nextEnd = Math.max(nextEnd, range[1]);
+        }}
+        if (!inserted) ranges.push([nextStart, nextEnd]);
+        mediaPlayedRanges = ranges;
+      }};
+      const dispatchMediaEvent = (type) => {{
+        try {{ dispatchTarget(element, createEvent(type)); }} catch (_error) {{}}
+      }};
+      const syncMediaClock = () => {{
+        if (mediaPaused || mediaPlaybackStartedAt === null || mediaEnded) return;
+        const duration = mediaDuration();
+        if (!Number.isFinite(duration)) {{
+          mediaPaused = true;
+          mediaPlaybackStartedAt = null;
+          return;
+        }}
+        const elapsed = Math.max(0, mediaNow() - mediaPlaybackStartedAt)
+          * mediaPlaybackRate / 1000;
+        const previous = mediaCurrentTime;
+        const next = Math.max(0, Math.min(duration, mediaPlaybackStartTime + elapsed));
+        if (next > previous) {{
+          mediaCurrentTime = next;
+          recordMediaPlayedRange(previous, next);
+          dispatchMediaEvent("timeupdate");
+        }}
+        if (next >= duration && mediaPlaybackRate > 0) {{
+          mediaCurrentTime = duration;
+          mediaEnded = true;
+          mediaPaused = true;
+          mediaPlaybackStartedAt = null;
+          dispatchMediaEvent("ended");
+        }}
+      }};
       const resetMediaState = () => {{
         mediaCurrentTime = 0;
         mediaPaused = true;
         mediaEnded = false;
         mediaSeeking = false;
+        mediaPlaybackStartedAt = null;
+        mediaPlaybackStartTime = 0;
+        mediaPlayedRanges = [];
         if (typeof state.mediaReset === "function") state.mediaReset();
       }};
-      const dispatchMediaEvent = (type) => {{
-        try {{ dispatchTarget(element, createEvent(type)); }} catch (_error) {{}}
+      const mediaTimeRanges = (kind = "buffered") => {{
+        syncMediaClock();
+        const duration = mediaDuration();
+        const ranges = kind === "played"
+          ? mediaPlayedRanges.map(range => [range[0], range[1]])
+          : (Number.isFinite(duration) && duration >= 0 ? [[0, duration]] : []);
+        return {{
+          length: ranges.length,
+          start(index) {{
+            const position = Number(index);
+            if (!Number.isInteger(position) || position < 0 || position >= ranges.length) throw new DOMExceptionNative("The time range index is invalid", "IndexSizeError");
+            return ranges[position][0];
+          }},
+          end(index) {{
+            const position = Number(index);
+            if (!Number.isInteger(position) || position < 0 || position >= ranges.length) throw new DOMExceptionNative("The time range index is invalid", "IndexSizeError");
+            return ranges[position][1];
+          }},
+        }};
       }};
       Object.defineProperties(element, {{
         currentSrc: {{ enumerable: true, configurable: false, get() {{ return mediaCurrentSource(); }} }},
@@ -31930,12 +31995,18 @@ fn document_bootstrap(
         currentTime: {{
           enumerable: true,
           configurable: false,
-          get() {{ return mediaCurrentTime; }},
+          get() {{ syncMediaClock(); return mediaCurrentTime; }},
           set(next) {{
+            syncMediaClock();
             const numeric = Number(next);
             if (!Number.isFinite(numeric) || numeric < 0) throw new DOMExceptionNative("The media time is invalid", "InvalidStateError");
             const duration = mediaDuration();
             mediaCurrentTime = Number.isFinite(duration) ? Math.min(numeric, duration) : numeric;
+            mediaEnded = Number.isFinite(duration) && mediaCurrentTime >= duration;
+            if (!mediaPaused) {{
+              mediaPlaybackStartedAt = mediaNow();
+              mediaPlaybackStartTime = mediaCurrentTime;
+            }}
             mediaSeeking = true;
             dispatchMediaEvent("seeking");
             mediaSeeking = false;
@@ -31943,17 +32014,22 @@ fn document_bootstrap(
             dispatchMediaEvent("seeked");
           }},
         }},
-        paused: {{ enumerable: true, configurable: false, get() {{ return mediaPaused; }} }},
-        ended: {{ enumerable: true, configurable: false, get() {{ return mediaEnded; }} }},
+        paused: {{ enumerable: true, configurable: false, get() {{ syncMediaClock(); return mediaPaused; }} }},
+        ended: {{ enumerable: true, configurable: false, get() {{ syncMediaClock(); return mediaEnded; }} }},
         seeking: {{ enumerable: true, configurable: false, get() {{ return mediaSeeking; }} }},
         playbackRate: {{
           enumerable: true,
           configurable: false,
           get() {{ return mediaPlaybackRate; }},
           set(next) {{
+            syncMediaClock();
             const numeric = Number(next);
             if (!Number.isFinite(numeric) || numeric === 0) throw new DOMExceptionNative("The playback rate is invalid", "NotSupportedError");
             mediaPlaybackRate = numeric;
+            if (!mediaPaused) {{
+              mediaPlaybackStartedAt = mediaNow();
+              mediaPlaybackStartTime = mediaCurrentTime;
+            }}
             dispatchMediaEvent("ratechange");
           }},
         }},
@@ -31990,9 +32066,9 @@ fn document_bootstrap(
               : {{ code: Number(code), message: "The media resource could not be loaded" }};
           }},
         }},
-        buffered: {{ enumerable: true, configurable: false, get() {{ return mediaTimeRanges(); }} }},
-        seekable: {{ enumerable: true, configurable: false, get() {{ return mediaTimeRanges(); }} }},
-        played: {{ enumerable: true, configurable: false, get() {{ return mediaTimeRanges(); }} }},
+        buffered: {{ enumerable: true, configurable: false, get() {{ return mediaTimeRanges("buffered"); }} }},
+        seekable: {{ enumerable: true, configurable: false, get() {{ return mediaTimeRanges("seekable"); }} }},
+        played: {{ enumerable: true, configurable: false, get() {{ return mediaTimeRanges("played"); }} }},
         srcObject: {{
           enumerable: true,
           configurable: false,
@@ -32012,6 +32088,7 @@ fn document_bootstrap(
         dispatchMediaEvent("loadstart");
       }};
       element.play = () => {{
+        syncMediaClock();
         const state = mediaState();
         if (state.errorCode !== null && state.errorCode !== undefined
           || state.readyState < 1
@@ -32021,9 +32098,14 @@ fn document_bootstrap(
             "NotSupportedError",
           ));
         }}
-        if (mediaPaused) {{
-          mediaPaused = false;
+        if (mediaEnded || mediaCurrentTime >= mediaDuration()) {{
+          mediaCurrentTime = 0;
           mediaEnded = false;
+        }}
+        if (mediaPaused) {{
+          mediaPlaybackStartedAt = mediaNow();
+          mediaPlaybackStartTime = mediaCurrentTime;
+          mediaPaused = false;
           dispatchMediaEvent("play");
           dispatchMediaEvent("playing");
         }}
@@ -32031,7 +32113,9 @@ fn document_bootstrap(
       }};
       element.pause = () => {{
         if (!mediaPaused) {{
+          syncMediaClock();
           mediaPaused = true;
+          mediaPlaybackStartedAt = null;
           dispatchMediaEvent("pause");
         }}
       }};

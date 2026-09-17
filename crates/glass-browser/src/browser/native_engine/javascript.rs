@@ -618,6 +618,8 @@ pub(crate) enum NativeScriptCommand {
         worker_id: Option<u32>,
         #[serde(default)]
         transfer_ports: Vec<NativeMessagePortTransfer>,
+        #[serde(default)]
+        object_urls: Vec<NativeObjectUrlTransfer>,
     },
 }
 
@@ -943,7 +945,10 @@ pub(crate) struct NativeWorkerMessage {
 pub(crate) struct NativeMessagePortPageMessage {
     pub(crate) bridge_key: String,
     pub(crate) data: serde_json::Value,
+    #[serde(default)]
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
+    #[serde(default)]
+    pub(crate) object_urls: Vec<NativeObjectUrlTransfer>,
 }
 
 /// A page-owned MessagePort command whose bridge is outside the current
@@ -956,6 +961,8 @@ pub(crate) struct NativePageMessagePortCommand {
     pub(crate) data: serde_json::Value,
     #[serde(default)]
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
+    #[serde(default)]
+    pub(crate) object_urls: Vec<NativeObjectUrlTransfer>,
     #[serde(default, skip_serializing)]
     pub(crate) source_context_id: String,
     #[serde(default, skip_serializing)]
@@ -1088,6 +1095,7 @@ enum NativeWorkerDispatch<'a> {
         bridge_key: &'a str,
         data: &'a serde_json::Value,
         transfer_ports: &'a [NativeMessagePortTransfer],
+        object_urls: &'a [NativeObjectUrlTransfer],
     },
     Fetch {
         request_id: u32,
@@ -2002,12 +2010,14 @@ impl NativeWorkerRegistry {
                         data,
                         worker_id: Some(command_worker_id),
                         transfer_ports,
+                        object_urls,
                     } if command_worker_id == current_worker_id => {
                         self.queue_page_message_port(
                             current_worker_id,
                             bridge_key,
                             data,
                             transfer_ports,
+                            object_urls,
                         )?;
                     }
                     _ => {
@@ -2043,12 +2053,14 @@ impl NativeWorkerRegistry {
                         data,
                         worker_id: Some(command_worker_id),
                         transfer_ports,
+                        object_urls,
                     } if command_worker_id == current_worker_id => {
                         self.queue_page_message_port(
                             current_worker_id,
                             bridge_key,
                             data,
                             transfer_ports,
+                            object_urls,
                         )?;
                     }
                     NativeScriptCommand::Fetch {
@@ -2164,6 +2176,7 @@ impl NativeWorkerRegistry {
                 data,
                 worker_id: None,
                 transfer_ports,
+                object_urls,
             } = command
             else {
                 return Err(NativeEngineError::invalid(
@@ -2176,6 +2189,7 @@ impl NativeWorkerRegistry {
                     bridge_key,
                     data,
                     transfer_ports,
+                    object_urls,
                     source_context_id: String::new(),
                     source_frame_id: String::new(),
                 };
@@ -2193,10 +2207,12 @@ impl NativeWorkerRegistry {
                 continue;
             };
             self.register_page_transfers(route.worker_id, &transfer_ports)?;
+            validate_native_object_url_transfers(&object_urls)?;
             validate_native_message_payload(
                 &serde_json::json!({
                     "data": &data,
                     "transfer_ports": &transfer_ports,
+                    "object_urls": &object_urls,
                 }),
                 "native page MessagePort event",
             )?;
@@ -2208,6 +2224,7 @@ impl NativeWorkerRegistry {
                         bridge_key: &bridge_key,
                         data: &data,
                         transfer_ports: &transfer_ports,
+                        object_urls: &object_urls,
                     },
                 )
             });
@@ -2294,6 +2311,7 @@ impl NativeWorkerRegistry {
         bridge_key: String,
         data: serde_json::Value,
         transfer_ports: Vec<NativeMessagePortTransfer>,
+        object_urls: Vec<NativeObjectUrlTransfer>,
     ) -> Result<(), NativeEngineError> {
         let Some(route) = self.message_port_routes.get(&bridge_key).cloned() else {
             return Ok(());
@@ -2305,6 +2323,15 @@ impl NativeWorkerRegistry {
             ));
         }
         self.register_worker_transfers(worker_id, &transfer_ports)?;
+        validate_native_object_url_transfers(&object_urls)?;
+        validate_native_message_payload(
+            &serde_json::json!({
+                "data": &data,
+                "transfer_ports": &transfer_ports,
+                "object_urls": &object_urls,
+            }),
+            "native page MessagePort event",
+        )?;
         if self.pending_message_port_messages.len() >= MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
                 "native page MessagePort messages",
@@ -2317,6 +2344,7 @@ impl NativeWorkerRegistry {
                 bridge_key,
                 data,
                 transfer_ports,
+                object_urls,
             });
         Ok(())
     }
@@ -11230,6 +11258,7 @@ impl NativeJavaScriptRuntime {
 
     fn apply_message_port_command(
         &self,
+        ctx: &rquickjs::Ctx<'_>,
         command: &NativeScriptCommand,
     ) -> Result<bool, NativeEngineError> {
         let NativeScriptCommand::MessagePortPostMessage {
@@ -11237,6 +11266,7 @@ impl NativeJavaScriptRuntime {
             data,
             worker_id,
             transfer_ports,
+            ..
         } = command
         else {
             return Ok(false);
@@ -11267,6 +11297,16 @@ impl NativeJavaScriptRuntime {
                 encoded.len(),
             ));
         }
+        let object_urls = self.object_url_transfers_in_context(ctx, data)?;
+        validate_native_object_url_transfers(&object_urls)?;
+        validate_native_message_payload(
+            &serde_json::json!({
+                "data": data,
+                "transfer_ports": transfer_ports,
+                "object_urls": &object_urls,
+            }),
+            "native MessagePort message",
+        )?;
         let mut commands =
             self.message_port_commands
                 .lock()
@@ -11281,7 +11321,13 @@ impl NativeJavaScriptRuntime {
                 commands.len().saturating_add(1),
             ));
         }
-        commands.push(command.clone());
+        commands.push(NativeScriptCommand::MessagePortPostMessage {
+            bridge_key: bridge_key.clone(),
+            data: data.clone(),
+            worker_id: *worker_id,
+            transfer_ports: transfer_ports.clone(),
+            object_urls,
+        });
         Ok(true)
     }
 
@@ -11818,7 +11864,7 @@ impl NativeJavaScriptRuntime {
                 if self.apply_post_message_command(&ctx, &command)? {
                     continue;
                 }
-                if self.apply_message_port_command(&command)? {
+                if self.apply_message_port_command(&ctx, &command)? {
                     continue;
                 }
                 if self.apply_service_worker_command(&command)? {
@@ -12272,7 +12318,7 @@ impl NativeJavaScriptRuntime {
                         ..
                     } if *command_worker_id == worker_id
                 )
-                    && self.apply_message_port_command(&command)?
+                    && self.apply_message_port_command(&ctx, &command)?
                 {
                     continue;
                 }
@@ -12548,6 +12594,7 @@ impl NativeJavaScriptRuntime {
         bridge_key: &str,
         data: &serde_json::Value,
         transfer_ports: &[NativeMessagePortTransfer],
+        object_urls: &[NativeObjectUrlTransfer],
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         validate_url_text("native service worker MessagePort bridge key", bridge_key)?;
         if bridge_key.is_empty() {
@@ -12564,9 +12611,11 @@ impl NativeJavaScriptRuntime {
             ));
         }
         validate_message_port_transfers(transfer_ports)?;
+        validate_native_object_url_transfers(object_urls)?;
         let payload = serde_json::json!({
             "data": data,
             "transfer_ports": transfer_ports,
+            "object_urls": object_urls,
         });
         validate_native_message_payload(&payload, "native service worker MessagePort event")?;
         let bootstrap = service_worker_bootstrap(
@@ -12588,6 +12637,7 @@ impl NativeJavaScriptRuntime {
                 bridge_key,
                 data,
                 transfer_ports,
+                object_urls,
             }),
         )
     }
@@ -13027,7 +13077,7 @@ impl NativeJavaScriptRuntime {
                 if self.apply_post_message_command(&ctx, &command)? {
                     continue;
                 }
-                if self.apply_message_port_command(&command)? {
+                if self.apply_message_port_command(&ctx, &command)? {
                     continue;
                 }
                 if self.apply_service_worker_command(&command)? {
@@ -14633,9 +14683,11 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
             &serde_json::json!({
                 "data": &message.data,
                 "transfer_ports": &message.transfer_ports,
+                "object_urls": &message.object_urls,
             }),
             "native page MessagePort event",
         )?;
+        validate_native_object_url_transfers(&message.object_urls)?;
     }
     for message in &events.service_worker_client_messages {
         if message.worker_id == 0 {
@@ -14963,6 +15015,7 @@ fn dispatch_page_event_batch(
             &serde_json::json!({
                 "data": &message.data,
                 "transfer_ports": &message.transfer_ports,
+                "object_urls": &message.object_urls,
             }),
             "native page MessagePort event",
         )?;
@@ -15339,12 +15392,14 @@ fn dispatch_worker_event(
             bridge_key,
             data,
             transfer_ports,
+            object_urls,
         } => {
             let payload = native_message_payload(
                 &ctx,
                 &serde_json::json!({
                     "data": data,
                     "transfer_ports": transfer_ports,
+                    "object_urls": object_urls,
                 }),
                 "native service-worker MessagePort event",
             )?;
@@ -15675,10 +15730,12 @@ pub(crate) fn validate_page_message_port_command(
         ));
     }
     validate_message_port_transfers(&command.transfer_ports)?;
+    validate_native_object_url_transfers(&command.object_urls)?;
     validate_native_message_payload(
         &serde_json::json!({
             "data": &command.data,
             "transfer_ports": &command.transfer_ports,
+            "object_urls": &command.object_urls,
         }),
         "native page MessagePort command",
     )
@@ -23187,6 +23244,8 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
   globalThis.__glassDispatchMessagePortById = (portId, payload) => {
     const port = glassMessagePortRegistry.get(Number(portId));
     if (!port || port.__glassMessageClosed) return null;
+    if (payload && Array.isArray(payload.object_urls))
+      globalThis.__glassInstallObjectUrlTransfers(payload.object_urls);
     const envelope = glassMessageDecodeEnvelope(payload);
     glassMessageEnqueue(port, envelope.data, envelope.ports);
     return null;
@@ -23194,6 +23253,8 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
   globalThis.__glassDispatchMessagePortByBridge = (bridgeKey, payload) => {
     const port = glassMessageBridgeRegistry.get(String(bridgeKey));
     if (!port || port.__glassMessageClosed) return null;
+    if (payload && Array.isArray(payload.object_urls))
+      globalThis.__glassInstallObjectUrlTransfers(payload.object_urls);
     const envelope = glassMessageDecodeEnvelope(payload);
     glassMessageEnqueue(port, envelope.data, envelope.ports);
     return null;

@@ -24,7 +24,8 @@ use super::javascript::{
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
     NativeServiceWorkerRegistrationProfile, NativeServiceWorkerRegistrationState,
     NativeServiceWorkerWorkerProfile, NativeServiceWorkerWorkerState, load_service_worker_source,
-    validate_message_port_transfers, validate_native_service_worker_cache_request_headers,
+    validate_message_port_transfers, validate_native_message_payload,
+    validate_native_object_url_transfers, validate_native_service_worker_cache_request_headers,
     validate_service_worker_client_states,
 };
 use super::origin::NativeOrigin;
@@ -1560,6 +1561,7 @@ impl NativeServiceWorkerRegistry {
                 data,
                 worker_id: None,
                 transfer_ports,
+                object_urls,
             } = command
             else {
                 return Err(NativeEngineError::invalid(
@@ -1589,6 +1591,7 @@ impl NativeServiceWorkerRegistry {
                     &bridge_key,
                     &data,
                     &transfer_ports,
+                    &object_urls,
                 )
             };
             let evaluation = match evaluation {
@@ -1990,6 +1993,7 @@ impl NativeServiceWorkerRegistry {
                 data,
                 worker_id: Some(command_worker_id),
                 transfer_ports,
+                object_urls,
             } = command
             else {
                 return Err(NativeEngineError::invalid(
@@ -2013,6 +2017,15 @@ impl NativeServiceWorkerRegistry {
                 ));
             }
             self.register_worker_transfers(worker_id, &transfer_ports)?;
+            validate_native_object_url_transfers(&object_urls)?;
+            validate_native_message_payload(
+                &serde_json::json!({
+                    "data": &data,
+                    "transfer_ports": &transfer_ports,
+                    "object_urls": &object_urls,
+                }),
+                "native service-worker MessagePort event",
+            )?;
             if self.pending_message_port_messages.len() >= MAX_NATIVE_WORKER_MESSAGES {
                 return Err(NativeEngineError::limit(
                     "native page MessagePort messages",
@@ -2025,6 +2038,7 @@ impl NativeServiceWorkerRegistry {
                     bridge_key,
                     data,
                     transfer_ports,
+                    object_urls,
                 });
         }
         Ok(())

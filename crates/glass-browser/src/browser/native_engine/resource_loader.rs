@@ -5383,6 +5383,30 @@ impl NativeResourceLoader {
         integrity: Option<&str>,
         crossorigin: Option<&str>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.load_script_async_with_metadata_and_object_url(
+            document_url,
+            href,
+            max_source_bytes,
+            parser_inserted,
+            nonce,
+            integrity,
+            crossorigin,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_script_async_with_metadata_and_object_url(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+        integrity: Option<&str>,
+        crossorigin: Option<&str>,
+        object_url: Option<&NativeObjectUrlResource>,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         self.load_script_like_async(
             document_url,
             href,
@@ -5392,6 +5416,7 @@ impl NativeResourceLoader {
             nonce,
             integrity,
             crossorigin,
+            object_url,
         )
         .await
     }
@@ -5411,6 +5436,7 @@ impl NativeResourceLoader {
             None,
             None,
             None,
+            None,
         )
         .await
     }
@@ -5425,6 +5451,7 @@ impl NativeResourceLoader {
         nonce: Option<&str>,
         integrity: Option<&str>,
         crossorigin: Option<&str>,
+        object_url: Option<&NativeObjectUrlResource>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text(
@@ -5457,7 +5484,7 @@ impl NativeResourceLoader {
                 })?;
             (target_url.scheme() == "fixture").then_some(target_url)
         } else {
-            resolve_subresource_url(&document_url, href)?
+            resolve_subresource_url_with_blob(&document_url, href)?
         };
         let Some(target_url) = target_url else {
             return Ok(None);
@@ -5508,6 +5535,44 @@ impl NativeResourceLoader {
         };
         if !allowed {
             return Ok(None);
+        }
+        if target_url.scheme().eq_ignore_ascii_case("blob") {
+            if subresource_kind != NativeSubresourceKind::Script {
+                return Ok(None);
+            }
+            let Some(object_url) = object_url else {
+                return Ok(None);
+            };
+            NativeOrigin::from_blob_url(without_fragment(target_url.as_str()))?;
+            if object_url
+                .content_type
+                .as_deref()
+                .is_some_and(|content_type| {
+                    !content_type.is_empty() && !script_content_type_text_allowed(content_type)
+                })
+            {
+                return Ok(None);
+            }
+            if object_url.body.len() > max_source_bytes {
+                return Err(NativeEngineError::limit(
+                    "Blob script subresource",
+                    max_source_bytes,
+                    object_url.body.len(),
+                ));
+            }
+            if !subresource_integrity_matches(integrity, &object_url.body) {
+                return Ok(None);
+            }
+            let body = String::from_utf8(object_url.body.clone()).map_err(|_| {
+                NativeEngineError::Network {
+                    operation: "Blob script subresource decoding".into(),
+                    reason: "Blob script subresource is not valid UTF-8".into(),
+                }
+            })?;
+            return Ok(Some(NativeScriptResource {
+                url: target_url.to_string(),
+                body,
+            }));
         }
         let requested_cache_key = cache_key(&target_url);
         let stale_cached_script = (subresource_kind == NativeSubresourceKind::Script)
@@ -6431,7 +6496,11 @@ fn script_content_type_allowed(
         operation: "script content-type validation".into(),
         reason: "script content type is not valid ASCII".into(),
     })?;
-    Ok(matches!(
+    Ok(script_content_type_text_allowed(value))
+}
+
+fn script_content_type_text_allowed(value: &str) -> bool {
+    matches!(
         value
             .split(';')
             .next()
@@ -6444,7 +6513,7 @@ fn script_content_type_allowed(
             | "application/ecmascript"
             | "text/ecmascript"
             | "application/x-javascript"
-    ))
+    )
 }
 
 pub(crate) fn referrer_for_navigation(

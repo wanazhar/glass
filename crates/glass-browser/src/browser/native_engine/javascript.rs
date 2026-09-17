@@ -32092,10 +32092,10 @@ fn document_bootstrap(
           tokens.every((token) => String(candidate.className).split(/\s+/).includes(token))));
       }},
       addEventListener(type, callback, options) {{
-        addListener("node:" + entry.nodeIndex, type, callback, options);
+        addListener(ownerFor(element), type, callback, options);
       }},
       removeEventListener(type, callback, options) {{
-        removeListener("node:" + entry.nodeIndex, type, callback, options);
+        removeListener(ownerFor(element), type, callback, options);
       }},
       dispatchEvent(event) {{
         return dispatchTarget(this, event);
@@ -32346,12 +32346,17 @@ fn document_bootstrap(
         element.append(...items);
       }}
     }};
+    Object.defineProperty(element, "__glassEventOwner", {{
+      enumerable: false,
+      configurable: false,
+      value: "node:" + entry.nodeIndex,
+    }});
     const inlineEventType = (name) => {{
       const value = String(name).toLowerCase();
       if (!value.startsWith("on") || value.length <= 2 || !/^[a-z][a-z0-9]*$/.test(value.slice(2))) return null;
       try {{ return normalizeEventType(value.slice(2)); }} catch (_error) {{ return null; }}
     }};
-    const inlineAttributeOwner = () => "node:" + element.nodeIndex;
+    const inlineAttributeOwner = () => ownerFor(element);
     const removeInlineAttributeHandler = (name) => {{
       const type = inlineEventType(name);
       if (!type) return;

@@ -166,6 +166,13 @@ content process. The existing text, JSON, binary, XML, and HTML response
 projections are reused, with a bounded `[OPENED, DONE]` synchronous lifecycle;
 non-zero sync timeouts and stream bodies fail closed. Complete XHR/Streams Web
 IDL parity remains an issue #40 gate.
+Slice 439 closes the next request-side XHR gap. Page and worker XHR now use
+the existing bounded request-header validators for permitted custom headers,
+combine duplicates in insertion order, expose ready-state constants on both
+interfaces and prototypes, and commit their pending-send state only after
+body validation. Terminal, abort, timeout, and synchronous validation paths
+restore reusable state while existing event delivery remains unchanged.
+Complete raw-header and XHR/Web IDL descriptor parity remain open.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

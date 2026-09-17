@@ -7128,6 +7128,22 @@ async fn native_content_process_page_and_worker_support_sync_xhr() {
                                 && value.trim() == "text/plain"
                         })
                     }));
+                    let expected_client = if expected_path == "/sync-xhr" {
+                        "page, second"
+                    } else {
+                        "worker, second"
+                    };
+                    assert!(request.lines().any(|line| {
+                        line.split_once(':').is_some_and(|(name, value)| {
+                            name.eq_ignore_ascii_case("x-sync-client")
+                                && value.trim() == expected_client
+                        })
+                    }));
+                    assert!(request.lines().any(|line| {
+                        line.split_once(':').is_some_and(|(name, value)| {
+                            name.eq_ignore_ascii_case("accept") && value.trim() == "text/plain"
+                        })
+                    }));
                     let body = &request_bytes[header_end..];
                     let expected_body = if expected_path == "/sync-xhr" {
                         b"page-body".as_slice()
@@ -7141,12 +7157,12 @@ async fn native_content_process_page_and_worker_support_sync_xhr() {
             let (content_type, body) = match expected_path {
                 "/sync-xhr-page" => (
                     "text/html",
-                    "<script>globalThis.syncPageStates = []; const xhr = new XMLHttpRequest(); xhr.onreadystatechange = () => syncPageStates.push(xhr.readyState); xhr.open('POST', '/sync-xhr', false); xhr.setRequestHeader('Content-Type', 'text/plain'); xhr.send('page-body'); globalThis.syncPageResult = { status: xhr.status, statusText: xhr.statusText, responseText: xhr.responseText, response: xhr.response, responseURL: xhr.responseURL, responseHeader: xhr.getResponseHeader('x-sync'), states: syncPageStates, readyState: xhr.readyState }; globalThis.workerMessages = []; globalThis.worker = new Worker('/sync-xhr-worker.js'); worker.onmessage = event => workerMessages.push(event.data);</script>",
+                    "<script>globalThis.syncPageStates = []; const xhr = new XMLHttpRequest(); xhr.onreadystatechange = () => syncPageStates.push(xhr.readyState); xhr.open('POST', '/sync-xhr', false); xhr.setRequestHeader('Content-Type', 'text/plain'); xhr.setRequestHeader('X-Sync-Client', 'page'); xhr.setRequestHeader('X-Sync-Client', 'second'); xhr.setRequestHeader('Accept', 'text/plain'); xhr.send('page-body'); globalThis.syncPageResult = { status: xhr.status, statusText: xhr.statusText, responseText: xhr.responseText, response: xhr.response, responseURL: xhr.responseURL, responseHeader: xhr.getResponseHeader('x-sync'), constants: [XMLHttpRequest.UNSENT, XMLHttpRequest.OPENED, XMLHttpRequest.HEADERS_RECEIVED, XMLHttpRequest.LOADING, XMLHttpRequest.DONE, xhr.UNSENT, xhr.OPENED, xhr.HEADERS_RECEIVED, xhr.LOADING, xhr.DONE], states: syncPageStates, readyState: xhr.readyState }; globalThis.workerMessages = []; globalThis.worker = new Worker('/sync-xhr-worker.js'); worker.onmessage = event => workerMessages.push(event.data);</script>",
                 ),
                 "/sync-xhr" => ("text/plain", "sync-page-response"),
                 "/sync-xhr-worker.js" => (
                     "text/javascript",
-                    "(() => { const xhr = new XMLHttpRequest(); const states = []; xhr.onreadystatechange = () => states.push(xhr.readyState); xhr.open('POST', '/sync-xhr-worker', false); xhr.setRequestHeader('Content-Type', 'text/plain'); xhr.send('worker-body'); postMessage({ status: xhr.status, statusText: xhr.statusText, responseText: xhr.responseText, responseURL: xhr.responseURL, responseHeader: xhr.getResponseHeader('x-sync'), states, readyState: xhr.readyState }); })();",
+                    "(() => { const xhr = new XMLHttpRequest(); const states = []; xhr.onreadystatechange = () => states.push(xhr.readyState); xhr.open('POST', '/sync-xhr-worker', false); xhr.setRequestHeader('Content-Type', 'text/plain'); xhr.setRequestHeader('X-Sync-Client', 'worker'); xhr.setRequestHeader('X-Sync-Client', 'second'); xhr.setRequestHeader('Accept', 'text/plain'); xhr.send('worker-body'); postMessage({ status: xhr.status, statusText: xhr.statusText, responseText: xhr.responseText, responseURL: xhr.responseURL, responseHeader: xhr.getResponseHeader('x-sync'), constants: [XMLHttpRequest.UNSENT, XMLHttpRequest.OPENED, XMLHttpRequest.HEADERS_RECEIVED, XMLHttpRequest.LOADING, XMLHttpRequest.DONE, xhr.UNSENT, xhr.OPENED, xhr.HEADERS_RECEIVED, xhr.LOADING, xhr.DONE], states, readyState: xhr.readyState }); })();",
                 ),
                 "/sync-xhr-worker" => ("text/plain", "sync-worker-response"),
                 "/sync-xhr-later" => ("text/plain", "sync-later-response"),
@@ -7188,6 +7204,7 @@ async fn native_content_process_page_and_worker_support_sync_xhr() {
             "response": "sync-page-response",
             "responseURL": format!("http://{address}/sync-xhr"),
             "responseHeader": "page",
+            "constants": [0, 1, 2, 3, 4, 0, 1, 2, 3, 4],
             "states": [1, 4],
             "readyState": 4,
         })
@@ -7200,6 +7217,7 @@ async fn native_content_process_page_and_worker_support_sync_xhr() {
             "responseText": "sync-worker-response",
             "responseURL": format!("http://{address}/sync-xhr-worker"),
             "responseHeader": "worker",
+            "constants": [0, 1, 2, 3, 4, 0, 1, 2, 3, 4],
             "states": [1, 4],
             "readyState": 4,
         }])
@@ -7207,7 +7225,7 @@ async fn native_content_process_page_and_worker_support_sync_xhr() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const xhr = new XMLHttpRequest(); xhr.open('GET', '/sync-xhr-later', false); xhr.send(); return [xhr.status, xhr.responseText, xhr.responseURL, xhr.readyState]; })()",
+                "(() => { const xhr = new XMLHttpRequest(); xhr.open('GET', '/sync-xhr-later', false); let bodyError = ''; try { xhr.send(new ReadableStream({ start(controller) { controller.close(); } })); } catch (error) { bodyError = error.name; } xhr.send(); let completeHeaderError = ''; try { xhr.setRequestHeader('X-After', 'value'); } catch (error) { completeHeaderError = error.name; } return [xhr.status, xhr.responseText, xhr.responseURL, xhr.readyState, bodyError, completeHeaderError, [XMLHttpRequest.UNSENT, XMLHttpRequest.OPENED, XMLHttpRequest.HEADERS_RECEIVED, XMLHttpRequest.LOADING, XMLHttpRequest.DONE]]; })()",
             )
             .await
             .unwrap(),
@@ -7216,6 +7234,9 @@ async fn native_content_process_page_and_worker_support_sync_xhr() {
             "sync-later-response",
             format!("http://{address}/sync-xhr-later"),
             4,
+            "TypeError",
+            "TypeError",
+            [0, 1, 2, 3, 4],
         ])
     );
     engine.close_async().await.unwrap();
@@ -7334,7 +7355,7 @@ async fn native_content_process_worker_xhr_streams_response_progress() {
                     for chunk in chunks {
                         stream.write_all(chunk).await.unwrap();
                         stream.flush().await.unwrap();
-                        tokio::time::sleep(Duration::from_millis(15)).await;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                     }
                 }
                 "/worker-xhr-stream-page" => {
@@ -7395,7 +7416,10 @@ async fn native_content_process_worker_xhr_streams_response_progress() {
     assert!(states.iter().any(|state| state[0] == 2));
     assert!(states.iter().any(|state| state[0] == 3));
     assert_eq!(states.last().unwrap()[0], 4);
-    assert!(states.iter().any(|state| state[1] == "first-"));
+    assert!(
+        states.iter().any(|state| state[1] == "first-"),
+        "worker XHR states: {message}"
+    );
     let progress = message["progress"].as_array().unwrap();
     assert!(progress.len() >= 2);
     let mut previous_loaded = 0_u64;

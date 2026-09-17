@@ -50,10 +50,10 @@ browser-owned resource envelope across inline and content-process owners.
 Transfers intentionally copy bounded Blob bytes. This preserves explicit realm
 and process ownership and independent revocation, but oversized or revoked
 entries remain rejected or unavailable rather than becoming unbounded shared
-state. MessagePort `event.origin` metadata remains part of broader Web IDL
-conformance. Service Worker client-message Blob transfer, media consumers, and
-the remaining browser/Web IDL certification gates remain separate issue #40
-slices.
+state. Channel-message `MessageEvent.origin` intentionally remains the HTML
+default empty string. Service Worker client-message Blob transfer, media
+consumers, and the remaining browser/Web IDL certification gates remain
+separate issue #40 slices.
 
 ## Evidence
 

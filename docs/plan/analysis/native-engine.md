@@ -391,8 +391,9 @@ content-process decoding and validation, and installs the destination registry
 before the page Service Worker `message` event decodes its structured clone.
 The HTTP(S) regression fetches the received URL and checks body and MIME,
 proving no network/cache fallback and preserving source-worker revocation
-ownership. MessagePort event-origin metadata, media, and remaining
-browser/Web IDL conformance consumers remain separate owner work.
+ownership. Channel-message events intentionally retain the HTML default empty
+`origin`; media and remaining browser/Web IDL conformance consumers remain
+separate owner work.
 
 Slice 466 closes the cross-realm Blob URL MessagePort boundary: page,
 dedicated/shared-worker, popup/`WindowProxy`, and Service Worker port messages
@@ -400,10 +401,10 @@ carry bounded Blob snapshots through active, parked, frame, and content-process
 routes, and each destination installs the snapshot before structured-clone
 decoding. Inline and HTTP(S) tests cover both directions across page/worker,
 popup, and service-worker owners without network/cache fallback; source
-revocation remains independent. MessagePort event-origin metadata, Service
-Worker client-message Blob transfer, media, and remaining browser/Web IDL
-conformance consumers remained separate owner work at that checkpoint; slice
-467 now closes the client-message Blob transfer gate.
+revocation remains independent. Channel-message events retained the HTML
+default empty `origin`; Service Worker client-message Blob transfer, media, and
+remaining browser/Web IDL conformance consumers remained separate owner work
+at that checkpoint. Slice 467 now closes the client-message Blob transfer gate.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

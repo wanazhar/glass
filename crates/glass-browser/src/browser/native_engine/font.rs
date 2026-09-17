@@ -2,7 +2,7 @@
 use super::css::NativeFontFeature;
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
-    NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontStretchRange,
+    NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning, NativeFontStretchRange,
     NativeFontVariantLigatures, NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
 };
 use std::fmt;
@@ -145,6 +145,7 @@ pub(crate) struct NativeTextMetrics {
     stretch: u16,
     ligatures: NativeFontVariantLigatures,
     feature_settings: NativeFontFeatureSettings,
+    kerning: NativeFontKerning,
     ascent: u32,
     line_height: u32,
     direction: DirectionValue,
@@ -181,11 +182,30 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn fallback_with_stretch_and_ligatures_and_features(
         font_size: u32,
         stretch: u16,
         ligatures: NativeFontVariantLigatures,
         feature_settings: NativeFontFeatureSettings,
+        direction: DirectionValue,
+    ) -> Self {
+        Self::fallback_with_stretch_and_ligatures_and_features_and_kerning(
+            font_size,
+            stretch,
+            ligatures,
+            feature_settings,
+            NativeFontKerning::Auto,
+            direction,
+        )
+    }
+
+    pub(crate) fn fallback_with_stretch_and_ligatures_and_features_and_kerning(
+        font_size: u32,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
+        kerning: NativeFontKerning,
         direction: DirectionValue,
     ) -> Self {
         Self {
@@ -194,6 +214,7 @@ impl NativeTextMetrics {
             stretch: stretch.clamp(500, 2000),
             ligatures,
             feature_settings,
+            kerning,
             ascent: FALLBACK_LINE_HEIGHT.saturating_sub(5),
             line_height: FALLBACK_LINE_HEIGHT,
             direction,
@@ -278,6 +299,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn for_style_with_book_and_stretch_and_ligatures_and_features(
         families: NativeFontFamilyList,
         font_size: u32,
@@ -289,15 +311,42 @@ impl NativeTextMetrics {
         direction: DirectionValue,
         book: &NativeFontBook,
     ) -> Self {
+        Self::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning(
+            families,
+            font_size,
+            weight,
+            style,
+            stretch,
+            ligatures,
+            feature_settings,
+            NativeFontKerning::Auto,
+            direction,
+            book,
+        )
+    }
+
+    pub(crate) fn for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning(
+        families: NativeFontFamilyList,
+        font_size: u32,
+        weight: FontWeightValue,
+        style: FontStyleValue,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
+        kerning: NativeFontKerning,
+        direction: DirectionValue,
+        book: &NativeFontBook,
+    ) -> Self {
         let font_size = font_size.clamp(1, MAX_NATIVE_FONT_SIZE);
         let stretch = stretch.clamp(500, 2000);
         let faces = book.faces_for(families, weight, style, stretch);
         let Some(face) = faces.first() else {
-            return Self::fallback_with_stretch_and_ligatures_and_features(
+            return Self::fallback_with_stretch_and_ligatures_and_features_and_kerning(
                 font_size,
                 stretch,
                 ligatures,
                 feature_settings,
+                kerning,
                 direction,
             );
         };
@@ -315,6 +364,7 @@ impl NativeTextMetrics {
             stretch,
             ligatures,
             feature_settings,
+            kerning,
             ascent,
             line_height,
             direction,
@@ -439,7 +489,7 @@ impl NativeTextMetrics {
         buffer.set_direction(direction);
         let scale = i32::try_from(self.font_size.saturating_mul(FONT_SHAPE_SCALE)).ok()?;
         let shaper = shaper_data.shaper(&font).build();
-        let mut features = Vec::with_capacity(5 + self.feature_settings.values().len());
+        let mut features = Vec::with_capacity(6 + self.feature_settings.values().len());
         for (tag, value) in [
             (*b"liga", u32::from(self.ligatures.common)),
             (*b"clig", u32::from(self.ligatures.common)),
@@ -450,6 +500,16 @@ impl NativeTextMetrics {
             if !self.feature_settings.contains_tag(&tag) {
                 features.push(harfrust::Feature::new(harfrust::Tag::new(&tag), value, ..));
             }
+        }
+        if !matches!(self.kerning, NativeFontKerning::Auto)
+            && !self.feature_settings.contains_tag(b"kern")
+        {
+            let value = u32::from(matches!(self.kerning, NativeFontKerning::Normal));
+            features.push(harfrust::Feature::new(
+                harfrust::Tag::new(b"kern"),
+                value,
+                ..,
+            ));
         }
         let explicit_features = self.feature_settings.values();
         for (index, feature) in explicit_features.iter().enumerate() {
@@ -2166,6 +2226,72 @@ mod tests {
             explicit_off_shape.glyphs.len(),
             no_common_shape.glyphs.len()
         );
+    }
+
+    #[test]
+    fn font_kerning_toggles_kern_feature_and_honors_low_level_override() {
+        let families = NativeFontFamilyList::single(NativeFontFamilyValue::Generic(
+            NativeGenericFontFamily::SansSerif,
+        ));
+        let kerning_on =
+            NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning(
+                families,
+                DEFAULT_NATIVE_FONT_SIZE,
+                FontWeightValue::Normal,
+                FontStyleValue::Normal,
+                1000,
+                NativeFontVariantLigatures::default(),
+                NativeFontFeatureSettings::default(),
+                NativeFontKerning::Normal,
+                DirectionValue::Ltr,
+                system_font_book(),
+            );
+        let kerning_off =
+            NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning(
+                families,
+                DEFAULT_NATIVE_FONT_SIZE,
+                FontWeightValue::Normal,
+                FontStyleValue::Normal,
+                1000,
+                NativeFontVariantLigatures::default(),
+                NativeFontFeatureSettings::default(),
+                NativeFontKerning::None,
+                DirectionValue::Ltr,
+                system_font_book(),
+            );
+        let Some(on_shape) = kerning_on.shape("AV", 0, 0) else {
+            return;
+        };
+        let Some(off_shape) = kerning_off.shape("AV", 0, 0) else {
+            return;
+        };
+        if on_shape.width_fixed == off_shape.width_fixed {
+            return;
+        }
+
+        let mut low_level_off = NativeFontFeatureSettings::default();
+        low_level_off.values[0] = NativeFontFeature {
+            tag: *b"kern",
+            value: 0,
+        };
+        low_level_off.count = 1;
+        let explicit_off =
+            NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning(
+                families,
+                DEFAULT_NATIVE_FONT_SIZE,
+                FontWeightValue::Normal,
+                FontStyleValue::Normal,
+                1000,
+                NativeFontVariantLigatures::default(),
+                low_level_off,
+                NativeFontKerning::Normal,
+                DirectionValue::Ltr,
+                system_font_book(),
+            );
+        let Some(explicit_off_shape) = explicit_off.shape("AV", 0, 0) else {
+            return;
+        };
+        assert_eq!(explicit_off_shape.width_fixed, off_shape.width_fixed);
     }
 
     #[test]

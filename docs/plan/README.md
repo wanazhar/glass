@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-509`, following completed
 `native-engine-browser-508`, following completed
 `native-engine-browser-507`, following completed
 `native-engine-browser-506`, following completed
@@ -280,9 +281,19 @@ The completed low-level feature-settings follow-up is
 canonical CSSOM list, and supplies bounded quoted OpenType tags to HarfRust
 for measurement and rasterization. Duplicate tags normalize last-wins, and
 explicit ligature-tag values override the native `font-variant-ligatures`
-defaults. The fixed cap, escape-free parser, variable/color fonts, WOFF2,
-font-display timing, mixed-script shaping, cross-realm FontFace projection,
-and complete FontFace/Web IDL parity remain issue #40 gates.
+defaults. The fixed cap and escape-free parser are deliberate boundaries;
+variable/color fonts, WOFF2, font-display timing, mixed-script shaping,
+cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
+issue #40 gates.
+
+The completed kerning follow-up is
+[`native-engine-browser-509`](tasks/native-engine-browser-509.md): inherited
+`font-kerning` now projects through native CSSOM and maps `auto`, `normal`, and
+`none` to the existing HarfRust `kern` feature owner, while an explicit
+`"kern"` setting retains precedence. Character fallback keeps its bounded
+advances; variable/color fonts, WOFF2, font-display timing, mixed-script
+shaping, cross-realm FontFace projection, and complete FontFace/Web IDL parity
+remain issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

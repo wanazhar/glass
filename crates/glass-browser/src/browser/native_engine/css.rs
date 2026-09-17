@@ -1053,6 +1053,14 @@ impl NativeFontFeatureSettings {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeFontKerning {
+    #[default]
+    Auto,
+    Normal,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum FontWeightValue {
     #[default]
     Normal,
@@ -1364,6 +1372,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) text_transform: TextTransformValue,
     pub(crate) font_variant_ligatures: NativeFontVariantLigatures,
     pub(crate) font_feature_settings: NativeFontFeatureSettings,
+    pub(crate) font_kerning: NativeFontKerning,
     pub(crate) font_weight: FontWeightValue,
     pub(crate) font_style: FontStyleValue,
     pub(crate) font_stretch: NativeFontStretchRange,
@@ -1426,6 +1435,7 @@ impl Default for NativeInheritedStyle {
             text_transform: TextTransformValue::None,
             font_variant_ligatures: NativeFontVariantLigatures::default(),
             font_feature_settings: NativeFontFeatureSettings::default(),
+            font_kerning: NativeFontKerning::Auto,
             font_weight: FontWeightValue::Normal,
             font_style: FontStyleValue::Normal,
             font_stretch: NativeFontStretchRange::default(),
@@ -1589,6 +1599,8 @@ pub(crate) struct NativeComputedStyle {
     font_variant_ligatures: NativeFontVariantLigatures,
     #[serde(default)]
     font_feature_settings: NativeFontFeatureSettings,
+    #[serde(default)]
+    font_kerning: NativeFontKerning,
     font_weight: FontWeightValue,
     font_style: FontStyleValue,
     font_stretch: NativeFontStretchRange,
@@ -1780,6 +1792,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn font_feature_settings(self) -> NativeFontFeatureSettings {
         self.font_feature_settings
+    }
+
+    pub(crate) const fn font_kerning(self) -> NativeFontKerning {
+        self.font_kerning
     }
 
     pub(crate) const fn font_weight(self) -> FontWeightValue {
@@ -2104,6 +2120,7 @@ impl NativeStylesheet {
         let mut text_transform = &mut scratch.text_transform;
         let mut font_variant_ligatures = &mut scratch.font_variant_ligatures;
         let mut font_feature_settings = &mut scratch.font_feature_settings;
+        let mut font_kerning = &mut scratch.font_kerning;
         let mut font_weight = &mut scratch.font_weight;
         let mut font_style = &mut scratch.font_style;
         let mut font_stretch = &mut scratch.font_stretch;
@@ -2367,6 +2384,14 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.text_importance.font_feature_settings,
                 &mut font_feature_settings,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.font_kerning,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.font_kerning,
+                &mut font_kerning,
             );
             apply_text_cascade_declaration(
                 rule.declarations.font_weight,
@@ -2974,6 +2999,14 @@ impl NativeStylesheet {
                 &mut font_feature_settings,
             );
             apply_text_cascade_declaration(
+                declarations.font_kerning,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.font_kerning,
+                &mut font_kerning,
+            );
+            apply_text_cascade_declaration(
                 declarations.font_weight,
                 u16::MAX,
                 usize::MAX,
@@ -3551,6 +3584,11 @@ impl NativeStylesheet {
                 inherited.font_feature_settings,
                 NativeFontFeatureSettings::default(),
             ),
+            font_kerning: resolve_inherited_text_declaration(
+                *font_kerning,
+                inherited.font_kerning,
+                NativeFontKerning::Auto,
+            ),
             font_weight: resolve_inherited_text_declaration(
                 *font_weight,
                 inherited.font_weight,
@@ -3746,6 +3784,7 @@ struct NativeCascadeScratch {
     text_transform: NativeTextCascadeCandidates<TextTransformValue>,
     font_variant_ligatures: NativeTextCascadeCandidates<NativeFontVariantLigatures>,
     font_feature_settings: NativeTextCascadeCandidates<NativeFontFeatureSettings>,
+    font_kerning: NativeTextCascadeCandidates<NativeFontKerning>,
     font_weight: NativeTextCascadeCandidates<FontWeightValue>,
     font_style: NativeTextCascadeCandidates<FontStyleValue>,
     font_stretch: NativeTextCascadeCandidates<NativeFontStretchRange>,
@@ -3840,6 +3879,7 @@ impl NativeCascadeScratch {
             initialize!(text_transform);
             initialize!(font_variant_ligatures);
             initialize!(font_feature_settings);
+            initialize!(font_kerning);
             initialize!(font_weight);
             initialize!(font_style);
             initialize!(font_stretch);
@@ -5983,6 +6023,7 @@ struct NativeTextDeclarationImportance {
     text_transform: bool,
     font_variant_ligatures: bool,
     font_feature_settings: bool,
+    font_kerning: bool,
     font_weight: bool,
     font_style: bool,
     font_stretch: bool,
@@ -6044,6 +6085,7 @@ struct NativeDeclarations {
     text_transform: Option<InheritedTextDeclaration<TextTransformValue>>,
     font_variant_ligatures: Option<InheritedTextDeclaration<NativeFontVariantLigatures>>,
     font_feature_settings: Option<InheritedTextDeclaration<NativeFontFeatureSettings>>,
+    font_kerning: Option<InheritedTextDeclaration<NativeFontKerning>>,
     font_weight: Option<InheritedTextDeclaration<FontWeightValue>>,
     font_style: Option<InheritedTextDeclaration<FontStyleValue>>,
     font_stretch: Option<InheritedTextDeclaration<NativeFontStretchRange>>,
@@ -6598,6 +6640,7 @@ fn parse_style_rule(
         || declarations.text_transform.is_some()
         || declarations.font_variant_ligatures.is_some()
         || declarations.font_feature_settings.is_some()
+        || declarations.font_kerning.is_some()
         || declarations.font_weight.is_some()
         || declarations.font_style.is_some()
         || declarations.font_stretch.is_some()
@@ -6829,6 +6872,7 @@ fn parse_declarations_with_diagnostics(
             "text-transform" => parse_text_transform_declaration(value).is_some(),
             "font-variant-ligatures" => parse_font_variant_ligatures_declaration(value).is_some(),
             "font-feature-settings" => parse_font_feature_settings_declaration(value).is_some(),
+            "font-kerning" => parse_font_kerning_declaration(value).is_some(),
             "font-weight" => parse_font_weight_declaration(value).is_some(),
             "font-style" => parse_font_style_declaration(value).is_some(),
             "font-stretch" => parse_font_stretch_declaration(value).is_some(),
@@ -7021,6 +7065,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "text-transform"
             | "font-variant-ligatures"
             | "font-feature-settings"
+            | "font-kerning"
             | "font-weight"
             | "font-style"
             | "font-stretch"
@@ -7445,6 +7490,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_font_feature_settings_declaration(value) {
                     declarations.font_feature_settings = Some(parsed);
                     declarations.text_importance.font_feature_settings = important;
+                }
+            }
+            "font-kerning" => {
+                if let Some(parsed) = parse_font_kerning_declaration(value) {
+                    declarations.font_kerning = Some(parsed);
+                    declarations.text_importance.font_kerning = important;
                 }
             }
             "font-weight" => {
@@ -12173,6 +12224,21 @@ fn parse_font_feature_settings_declaration(
     value: &str,
 ) -> Option<InheritedTextDeclaration<NativeFontFeatureSettings>> {
     parse_inherited_text_declaration(value, parse_font_feature_settings)
+}
+
+fn parse_font_kerning(value: &str) -> Option<NativeFontKerning> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(NativeFontKerning::Auto),
+        "normal" => Some(NativeFontKerning::Normal),
+        "none" => Some(NativeFontKerning::None),
+        _ => None,
+    }
+}
+
+fn parse_font_kerning_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<NativeFontKerning>> {
+    parse_inherited_text_declaration(value, parse_font_kerning)
 }
 
 fn parse_font_weight_declaration(value: &str) -> Option<InheritedTextDeclaration<FontWeightValue>> {
@@ -21774,6 +21840,18 @@ mod tests {
     }
 
     #[test]
+    fn font_kerning_parser_accepts_only_supported_keywords() {
+        assert_eq!(parse_font_kerning("auto"), Some(NativeFontKerning::Auto));
+        assert_eq!(
+            parse_font_kerning("NORMAL"),
+            Some(NativeFontKerning::Normal)
+        );
+        assert_eq!(parse_font_kerning("none"), Some(NativeFontKerning::None));
+        assert!(parse_font_kerning("inherit").is_none());
+        assert!(parse_font_kerning("normal none").is_none());
+    }
+
+    #[test]
     fn font_family_parser_keeps_ordered_bounded_fallbacks() {
         let families = parse_font_family("\"Missing Face\", sans-serif, monospace").unwrap();
         assert_eq!(families.len, 3);
@@ -23006,6 +23084,31 @@ mod tests {
         assert_eq!(inherit, parent);
         assert_eq!(clear, NativeFontFeatureSettings::default());
         assert_eq!(invalid, parent);
+    }
+
+    #[test]
+    fn font_kerning_is_inherited_and_low_level_kern_wins() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { font-kerning: none; }
+            #child { font-kerning: normal; font-feature-settings: "kern" off; }
+            #inherit { font-kerning: inherit; }
+            #clear { font-kerning: initial; }
+            #invalid { font-kerning: normal none; }
+            </style>
+            <div id='parent'><span id='child'>Child</span><span id='inherit'>Inherit</span><span id='clear'>Clear</span><span id='invalid'>Invalid</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+        assert_eq!(style("parent").font_kerning(), NativeFontKerning::None);
+        assert_eq!(style("child").font_kerning(), NativeFontKerning::Normal);
+        assert_eq!(style("inherit").font_kerning(), NativeFontKerning::None);
+        assert_eq!(style("clear").font_kerning(), NativeFontKerning::Auto);
+        assert_eq!(style("invalid").font_kerning(), NativeFontKerning::None);
     }
 
     #[test]

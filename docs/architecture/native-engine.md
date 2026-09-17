@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-509`, following completed
 `native-engine-browser-508`, following completed
 `native-engine-browser-507`, following completed
 `native-engine-browser-506`, following completed
@@ -235,10 +236,10 @@ content-process wire snapshots, and the `document.fonts` projection. Invalid or
 reversed values fail at the parser or native admission boundary, and older
 payloads default to `normal`. The computed CSS `font-stretch` property,
 font-face range matching, horizontal glyph scaling, inherited
-`font-variant-ligatures`, and bounded `font-feature-settings` remain implemented
-rendering gates; font-display timing, variable/color fonts, WOFF2, cross-realm
-FontFace projection, and complete FontFace/Web IDL parity remain issue #40
-gates.
+`font-variant-ligatures`, bounded `font-feature-settings`, and `font-kerning`
+remain implemented rendering gates; font-display timing, variable/color fonts,
+WOFF2, cross-realm FontFace projection, and complete FontFace/Web IDL parity
+remain issue #40 gates.
 
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
 property is exposed as a canonical percentage, face matching considers the
@@ -269,6 +270,14 @@ native ligature defaults. The fixed feature-list cap and escape-free parser
 are deliberate boundaries; variable/color tables, WOFF2, font-display timing,
 mixed-script shaping, cross-realm FontFace projection, and complete
 FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 509 wires inherited `font-kerning` into the native computed style, CSSOM,
+and HarfRust shaping path. `auto` delegates to the shaper's normal behavior,
+while `normal` and `none` provide explicit `kern` values; an authored low-level
+`"kern"` feature setting retains precedence. Character-by-character fallback
+keeps its existing bounded advances, while variable/color tables, WOFF2,
+font-display timing, mixed-script shaping, cross-realm FontFace projection, and
+complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between

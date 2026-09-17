@@ -30,7 +30,7 @@ use super::{
         AlignContentValue, AlignItemsValue, AlignSelfValue, DirectionValue, FlexBasisValue,
         FlexDirectionValue, FlexWrapValue, FontStyleValue, FontWeightValue, JustifyContentValue,
         NativeBorderRadius, NativeBorderStyleValue, NativeBoxSizing, NativeColor,
-        NativeComputedStyle, NativeFontFamilyList, NativeFontFeatureSettings,
+        NativeComputedStyle, NativeFontFamilyList, NativeFontFeatureSettings, NativeFontKerning,
         NativeFontVariantLigatures, NativeInheritedStyle, NativeMarginValue, NativeOrderValue,
         NativePointerEventsValue, NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces,
         NativeTextDecorationStyle, OverflowValue, TextAlignLastValue, TextAlignValue,
@@ -6530,6 +6530,7 @@ impl NativeDocument {
         let mut inherited_text_transform = TextTransformValue::None;
         let mut inherited_font_variant_ligatures = NativeFontVariantLigatures::default();
         let mut inherited_font_feature_settings = NativeFontFeatureSettings::default();
+        let mut inherited_font_kerning = NativeFontKerning::Auto;
         let mut inherited_font_weight = FontWeightValue::Normal;
         let mut inherited_font_style = FontStyleValue::Normal;
         let mut inherited_font_stretch = super::css::NativeFontStretchRange::default();
@@ -6595,6 +6596,7 @@ impl NativeDocument {
                     text_transform: inherited_text_transform,
                     font_variant_ligatures: inherited_font_variant_ligatures,
                     font_feature_settings: inherited_font_feature_settings,
+                    font_kerning: inherited_font_kerning,
                     font_weight: inherited_font_weight,
                     font_style: inherited_font_style,
                     font_stretch: inherited_font_stretch,
@@ -6661,6 +6663,7 @@ impl NativeDocument {
             inherited_text_transform = style.text_transform();
             inherited_font_variant_ligatures = style.font_variant_ligatures();
             inherited_font_feature_settings = style.font_feature_settings();
+            inherited_font_kerning = style.font_kerning();
             inherited_font_weight = style.font_weight();
             inherited_font_style = style.font_style();
             inherited_font_stretch = style.font_stretch();
@@ -6693,7 +6696,7 @@ impl NativeDocument {
             .iter()
             .any(|family| !matches!(family, super::css::NativeFontFamilyValue::Fallback))
         {
-            NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features(
+            NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning(
                 style.font_family(),
                 style.font_size(),
                 style.font_weight(),
@@ -6701,15 +6704,17 @@ impl NativeDocument {
                 style.font_stretch().min,
                 style.font_variant_ligatures(),
                 style.font_feature_settings(),
+                style.font_kerning(),
                 style.direction(),
                 &self.font_book,
             )
         } else {
-            NativeTextMetrics::fallback_with_stretch_and_ligatures_and_features(
+            NativeTextMetrics::fallback_with_stretch_and_ligatures_and_features_and_kerning(
                 style.font_size(),
                 style.font_stretch().min,
                 style.font_variant_ligatures(),
                 style.font_feature_settings(),
+                style.font_kerning(),
                 style.direction(),
             )
         }

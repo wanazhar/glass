@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-458`, following completed
 `native-engine-browser-457`, following completed
 `native-engine-browser-456`, following completed
 `native-engine-browser-455`, following completed
@@ -103,9 +104,15 @@ The completed script follow-up is
 process-backed page mutations can load a runtime-verified Blob URL as a classic
 external script, enforce the document CSP, content-type, integrity, size, and
 UTF-8 gates, execute without network/cache fallback, and deliver the normal
-script-target `load`/`error` event through stable DOM ownership. Stylesheet,
-module dependency graphs, media, popup/window, and cross-realm object-URL
-consumers remain issue #40 gates.
+script-target `load`/`error` event through stable DOM ownership. The
+completed stylesheet follow-up is
+[`native-engine-browser-458`](tasks/native-engine-browser-458.md):
+process-backed dynamic stylesheet links retain bounded per-link resource state,
+resolve runtime-owned Blob CSS through document CSP, MIME, size, UTF-8, and
+SRI gates, rebuild the native stylesheet/background-source owner, and deliver
+the link `load`/`error` event without HTTP/cache fallback. Module dependency
+graphs, media, popup/window, local-inline dynamic consumers, and cross-realm
+object-URL consumers remain issue #40 gates.
 
 The completed report-only navigation preflight slice is
 [native-engine-browser-413](tasks/native-engine-browser-413.md): the

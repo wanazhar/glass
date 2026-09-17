@@ -1008,6 +1008,50 @@ impl Default for NativeFontVariantLigatures {
     }
 }
 
+const MAX_NATIVE_FONT_FEATURES: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeFontFeature {
+    pub(crate) tag: [u8; 4],
+    pub(crate) value: u32,
+}
+
+impl Default for NativeFontFeature {
+    fn default() -> Self {
+        Self {
+            tag: [b' '; 4],
+            value: 0,
+        }
+    }
+}
+
+/// The bounded low-level OpenType feature list exposed by
+/// `font-feature-settings`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeFontFeatureSettings {
+    pub(crate) values: [NativeFontFeature; MAX_NATIVE_FONT_FEATURES],
+    pub(crate) count: u8,
+}
+
+impl Default for NativeFontFeatureSettings {
+    fn default() -> Self {
+        Self {
+            values: [NativeFontFeature::default(); MAX_NATIVE_FONT_FEATURES],
+            count: 0,
+        }
+    }
+}
+
+impl NativeFontFeatureSettings {
+    pub(crate) fn values(&self) -> &[NativeFontFeature] {
+        &self.values[..usize::from(self.count).min(MAX_NATIVE_FONT_FEATURES)]
+    }
+
+    pub(crate) fn contains_tag(&self, tag: &[u8; 4]) -> bool {
+        self.values().iter().any(|feature| &feature.tag == tag)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum FontWeightValue {
     #[default]
@@ -1319,6 +1363,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) text_underline_offset: i32,
     pub(crate) text_transform: TextTransformValue,
     pub(crate) font_variant_ligatures: NativeFontVariantLigatures,
+    pub(crate) font_feature_settings: NativeFontFeatureSettings,
     pub(crate) font_weight: FontWeightValue,
     pub(crate) font_style: FontStyleValue,
     pub(crate) font_stretch: NativeFontStretchRange,
@@ -1380,6 +1425,7 @@ impl Default for NativeInheritedStyle {
             text_underline_offset: 0,
             text_transform: TextTransformValue::None,
             font_variant_ligatures: NativeFontVariantLigatures::default(),
+            font_feature_settings: NativeFontFeatureSettings::default(),
             font_weight: FontWeightValue::Normal,
             font_style: FontStyleValue::Normal,
             font_stretch: NativeFontStretchRange::default(),
@@ -1541,6 +1587,8 @@ pub(crate) struct NativeComputedStyle {
     text_transform: TextTransformValue,
     #[serde(default)]
     font_variant_ligatures: NativeFontVariantLigatures,
+    #[serde(default)]
+    font_feature_settings: NativeFontFeatureSettings,
     font_weight: FontWeightValue,
     font_style: FontStyleValue,
     font_stretch: NativeFontStretchRange,
@@ -1728,6 +1776,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn font_variant_ligatures(self) -> NativeFontVariantLigatures {
         self.font_variant_ligatures
+    }
+
+    pub(crate) const fn font_feature_settings(self) -> NativeFontFeatureSettings {
+        self.font_feature_settings
     }
 
     pub(crate) const fn font_weight(self) -> FontWeightValue {
@@ -2051,6 +2103,7 @@ impl NativeStylesheet {
         let mut text_decoration_color = &mut scratch.text_decoration_color;
         let mut text_transform = &mut scratch.text_transform;
         let mut font_variant_ligatures = &mut scratch.font_variant_ligatures;
+        let mut font_feature_settings = &mut scratch.font_feature_settings;
         let mut font_weight = &mut scratch.font_weight;
         let mut font_style = &mut scratch.font_style;
         let mut font_stretch = &mut scratch.font_stretch;
@@ -2306,6 +2359,14 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.text_importance.font_variant_ligatures,
                 &mut font_variant_ligatures,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.font_feature_settings,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.font_feature_settings,
+                &mut font_feature_settings,
             );
             apply_text_cascade_declaration(
                 rule.declarations.font_weight,
@@ -2905,6 +2966,14 @@ impl NativeStylesheet {
                 &mut font_variant_ligatures,
             );
             apply_text_cascade_declaration(
+                declarations.font_feature_settings,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.font_feature_settings,
+                &mut font_feature_settings,
+            );
+            apply_text_cascade_declaration(
                 declarations.font_weight,
                 u16::MAX,
                 usize::MAX,
@@ -3477,6 +3546,11 @@ impl NativeStylesheet {
                 inherited.font_variant_ligatures,
                 NativeFontVariantLigatures::default(),
             ),
+            font_feature_settings: resolve_inherited_text_declaration(
+                *font_feature_settings,
+                inherited.font_feature_settings,
+                NativeFontFeatureSettings::default(),
+            ),
             font_weight: resolve_inherited_text_declaration(
                 *font_weight,
                 inherited.font_weight,
@@ -3671,6 +3745,7 @@ struct NativeCascadeScratch {
     text_decoration_color: NativePaintDeclarationCandidates<NativeTextDecorationColorDeclaration>,
     text_transform: NativeTextCascadeCandidates<TextTransformValue>,
     font_variant_ligatures: NativeTextCascadeCandidates<NativeFontVariantLigatures>,
+    font_feature_settings: NativeTextCascadeCandidates<NativeFontFeatureSettings>,
     font_weight: NativeTextCascadeCandidates<FontWeightValue>,
     font_style: NativeTextCascadeCandidates<FontStyleValue>,
     font_stretch: NativeTextCascadeCandidates<NativeFontStretchRange>,
@@ -3764,6 +3839,7 @@ impl NativeCascadeScratch {
             initialize!(text_decoration_color);
             initialize!(text_transform);
             initialize!(font_variant_ligatures);
+            initialize!(font_feature_settings);
             initialize!(font_weight);
             initialize!(font_style);
             initialize!(font_stretch);
@@ -5906,6 +5982,7 @@ struct NativeTextDeclarationImportance {
     text_underline_offset: bool,
     text_transform: bool,
     font_variant_ligatures: bool,
+    font_feature_settings: bool,
     font_weight: bool,
     font_style: bool,
     font_stretch: bool,
@@ -5966,6 +6043,7 @@ struct NativeDeclarations {
     text_decoration_color_important: bool,
     text_transform: Option<InheritedTextDeclaration<TextTransformValue>>,
     font_variant_ligatures: Option<InheritedTextDeclaration<NativeFontVariantLigatures>>,
+    font_feature_settings: Option<InheritedTextDeclaration<NativeFontFeatureSettings>>,
     font_weight: Option<InheritedTextDeclaration<FontWeightValue>>,
     font_style: Option<InheritedTextDeclaration<FontStyleValue>>,
     font_stretch: Option<InheritedTextDeclaration<NativeFontStretchRange>>,
@@ -6519,6 +6597,7 @@ fn parse_style_rule(
         || declarations.text_decoration_color.is_some()
         || declarations.text_transform.is_some()
         || declarations.font_variant_ligatures.is_some()
+        || declarations.font_feature_settings.is_some()
         || declarations.font_weight.is_some()
         || declarations.font_style.is_some()
         || declarations.font_stretch.is_some()
@@ -6749,6 +6828,7 @@ fn parse_declarations_with_diagnostics(
             "text-decoration-color" => parse_text_decoration_color(value).is_some(),
             "text-transform" => parse_text_transform_declaration(value).is_some(),
             "font-variant-ligatures" => parse_font_variant_ligatures_declaration(value).is_some(),
+            "font-feature-settings" => parse_font_feature_settings_declaration(value).is_some(),
             "font-weight" => parse_font_weight_declaration(value).is_some(),
             "font-style" => parse_font_style_declaration(value).is_some(),
             "font-stretch" => parse_font_stretch_declaration(value).is_some(),
@@ -6940,6 +7020,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "text-decoration-color"
             | "text-transform"
             | "font-variant-ligatures"
+            | "font-feature-settings"
             | "font-weight"
             | "font-style"
             | "font-stretch"
@@ -7358,6 +7439,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_font_variant_ligatures_declaration(value) {
                     declarations.font_variant_ligatures = Some(parsed);
                     declarations.text_importance.font_variant_ligatures = important;
+                }
+            }
+            "font-feature-settings" => {
+                if let Some(parsed) = parse_font_feature_settings_declaration(value) {
+                    declarations.font_feature_settings = Some(parsed);
+                    declarations.text_importance.font_feature_settings = important;
                 }
             }
             "font-weight" => {
@@ -12009,6 +12096,83 @@ fn parse_font_variant_ligatures_declaration(
     value: &str,
 ) -> Option<InheritedTextDeclaration<NativeFontVariantLigatures>> {
     parse_inherited_text_declaration(value, parse_font_variant_ligatures)
+}
+
+fn parse_font_feature_settings(value: &str) -> Option<NativeFontFeatureSettings> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("normal") {
+        return Some(NativeFontFeatureSettings::default());
+    }
+    let entries = value.split(',').map(str::trim).collect::<Vec<_>>();
+    if entries.is_empty()
+        || entries.len() > MAX_NATIVE_FONT_FEATURES
+        || entries.iter().any(|entry| entry.is_empty())
+    {
+        return None;
+    }
+
+    let mut settings = NativeFontFeatureSettings::default();
+    for entry in entries {
+        let feature = parse_font_feature_entry(entry)?;
+        let count = usize::from(settings.count);
+        if let Some(existing) = settings.values.get_mut(..count).and_then(|values| {
+            values
+                .iter_mut()
+                .find(|existing| existing.tag == feature.tag)
+        }) {
+            *existing = feature;
+        } else {
+            *settings.values.get_mut(count)? = feature;
+            settings.count = settings.count.saturating_add(1);
+        }
+    }
+    Some(settings)
+}
+
+fn parse_font_feature_entry(value: &str) -> Option<NativeFontFeature> {
+    let bytes = value.trim().as_bytes();
+    if bytes.len() < 6 {
+        return None;
+    }
+    let quote = *bytes.first()?;
+    if !matches!(quote, b'\'' | b'"') || bytes[5] != quote {
+        return None;
+    }
+    let tag: [u8; 4] = bytes[1..5].try_into().ok()?;
+    if tag
+        .iter()
+        .any(|byte| !(*byte >= 0x20 && *byte <= 0x7e) || matches!(*byte, b'\'' | b'"' | b','))
+    {
+        return None;
+    }
+    let suffix = std::str::from_utf8(&bytes[6..]).ok()?.trim();
+    let feature_value = if suffix.is_empty() {
+        1
+    } else {
+        let mut tokens = suffix.split_ascii_whitespace();
+        let token = tokens.next()?;
+        if tokens.next().is_some() {
+            return None;
+        }
+        if token.eq_ignore_ascii_case("on") {
+            1
+        } else if token.eq_ignore_ascii_case("off") {
+            0
+        } else {
+            let parsed = token.parse::<u32>().ok()?;
+            (parsed <= u32::from(u16::MAX)).then_some(parsed)?
+        }
+    };
+    Some(NativeFontFeature {
+        tag,
+        value: feature_value,
+    })
+}
+
+fn parse_font_feature_settings_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<NativeFontFeatureSettings>> {
+    parse_inherited_text_declaration(value, parse_font_feature_settings)
 }
 
 fn parse_font_weight_declaration(value: &str) -> Option<InheritedTextDeclaration<FontWeightValue>> {
@@ -21588,6 +21752,28 @@ mod tests {
     }
 
     #[test]
+    fn font_feature_settings_parser_keeps_bounded_last_values() {
+        let settings =
+            parse_font_feature_settings(r#""liga" off, "kern" 0, "liga" on, "dlig""#).unwrap();
+        assert_eq!(settings.count, 3);
+        assert_eq!(settings.values[0].tag, *b"liga");
+        assert_eq!(settings.values[0].value, 1);
+        assert_eq!(settings.values[1].tag, *b"kern");
+        assert_eq!(settings.values[1].value, 0);
+        assert_eq!(settings.values[2].tag, *b"dlig");
+        assert_eq!(settings.values[2].value, 1);
+        assert_eq!(
+            parse_font_feature_settings("normal"),
+            Some(NativeFontFeatureSettings::default())
+        );
+        assert!(parse_font_feature_settings("liga 0").is_none());
+        assert!(parse_font_feature_settings(r#""lig" 0"#).is_none());
+        assert!(parse_font_feature_settings(r#""liga" -1"#).is_none());
+        assert!(parse_font_feature_settings(r#""liga" 65536"#).is_none());
+        assert!(parse_font_feature_settings(r#""liga" 1 extra"#).is_none());
+    }
+
+    #[test]
     fn font_family_parser_keeps_ordered_bounded_fallbacks() {
         let families = parse_font_family("\"Missing Face\", sans-serif, monospace").unwrap();
         assert_eq!(families.len, 3);
@@ -22761,6 +22947,65 @@ mod tests {
                 .font_variant_ligatures(),
             disabled_common
         );
+    }
+
+    #[test]
+    fn font_feature_settings_is_inherited_and_css_wide_resets_are_bounded() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { font-feature-settings: "liga" off, "kern" on; }
+            #child { font-feature-settings: "liga" 1, "liga" 0, "dlig" on; }
+            #inherit { font-feature-settings: inherit; }
+            #clear { font-feature-settings: initial; }
+            #invalid { font-feature-settings: "liga" 65536; }
+            </style>
+            <div id='parent'><span id='child'>Child</span><span id='inherit'>Inherit</span><span id='clear'>Clear</span><span id='invalid'>Invalid</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+        let parent = style("parent").font_feature_settings();
+        let child = style("child").font_feature_settings();
+        let inherit = style("inherit").font_feature_settings();
+        let clear = style("clear").font_feature_settings();
+        let invalid = style("invalid").font_feature_settings();
+
+        assert_eq!(parent.count, 2);
+        assert_eq!(
+            parent.values[0],
+            NativeFontFeature {
+                tag: *b"liga",
+                value: 0
+            }
+        );
+        assert_eq!(
+            parent.values[1],
+            NativeFontFeature {
+                tag: *b"kern",
+                value: 1
+            }
+        );
+        assert_eq!(child.count, 2);
+        assert_eq!(
+            child.values[0],
+            NativeFontFeature {
+                tag: *b"liga",
+                value: 0
+            }
+        );
+        assert_eq!(
+            child.values[1],
+            NativeFontFeature {
+                tag: *b"dlig",
+                value: 1
+            }
+        );
+        assert_eq!(inherit, parent);
+        assert_eq!(clear, NativeFontFeatureSettings::default());
+        assert_eq!(invalid, parent);
     }
 
     #[test]

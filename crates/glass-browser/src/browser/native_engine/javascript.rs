@@ -16748,6 +16748,10 @@ fn worker_bootstrap(
     if (event.target === null || event.target === undefined) event.target = this;
     event.currentTarget = this;
     event.eventPhase = 2;
+    const handler = this["on" + String(event.type)];
+    if (typeof handler === "function") {{
+      try {{ handler.call(this, event); }} catch (_) {{}}
+    }}
     const callbacks = (this._eventListeners.get(String(event.type)) || []).slice();
     for (const callback of callbacks) {{
       try {{
@@ -19890,39 +19894,15 @@ fn worker_bootstrap(
       && typeof globalThis.ProgressEvent === "function"
       ? new globalThis.ProgressEvent(type, extra)
       : Object.assign({{ type, target: xhr, currentTarget: xhr }}, extra || {{}});
-    event.target = xhr;
-    event.currentTarget = xhr;
-    const handler = xhr["on" + type];
-    if (typeof handler === "function") {{
-      try {{ handler.call(xhr, event); }} catch (_) {{}}
-    }}
-    const callbacks = xhr._listeners.get(type) || [];
-    for (const callback of callbacks.slice()) {{
-      try {{
-        if (typeof callback === "function") callback.call(xhr, event);
-        else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
-      }} catch (_) {{}}
-    }}
+    return xhr.dispatchEvent(event);
   }};
   const workerXhrEventTypes = ["loadstart", "progress", "load", "error", "timeout", "abort", "loadend"];
   const WorkerXMLHttpRequestUpload = typeof globalThis.__glassWorkerXmlHttpRequestUploadConstructor === "function"
     ? globalThis.__glassWorkerXmlHttpRequestUploadConstructor
     : function() {{
-      this._listeners = new Map();
+      WorkerEventTargetNative.call(this);
       for (const type of workerXhrEventTypes) this["on" + type] = null;
     }};
-  WorkerXMLHttpRequestUpload.prototype.addEventListener = function(type, callback) {{
-    if (typeof callback !== "function" && !(callback && typeof callback.handleEvent === "function")) return;
-    const name = String(type);
-    const callbacks = this._listeners.get(name) || [];
-    if (!callbacks.includes(callback)) callbacks.push(callback);
-    this._listeners.set(name, callbacks);
-  }};
-  WorkerXMLHttpRequestUpload.prototype.removeEventListener = function(type, callback) {{
-    const name = String(type);
-    const callbacks = this._listeners.get(name) || [];
-    this._listeners.set(name, callbacks.filter(candidate => candidate !== callback));
-  }};
   globalThis.__glassWorkerXmlHttpRequestUploadConstructor = WorkerXMLHttpRequestUpload;
   globalThis.XMLHttpRequestUpload = WorkerXMLHttpRequestUpload;
   const workerXhrBodyLength = (body) => {{
@@ -20151,6 +20131,7 @@ fn worker_bootstrap(
     : function() {{
     if (!(this instanceof WorkerXMLHttpRequestNative))
       throw new TypeError("native Worker XMLHttpRequest requires new");
+    WorkerEventTargetNative.call(this);
     this.readyState = 0;
     this.status = 0;
     this.statusText = "";
@@ -20173,7 +20154,6 @@ fn worker_bootstrap(
     this._async = true;
     this._headers = new WorkerHeadersNative();
     this._responseHeaders = new WorkerHeadersNative();
-    this._listeners = new Map();
     this._aborted = false;
     this._controller = null;
     this._responseReader = null;
@@ -20188,18 +20168,6 @@ fn worker_bootstrap(
   }};
   WorkerXMLHttpRequestNative.prototype._notifyReadyState = function() {{
     workerXhrDispatch(this, "readystatechange", {{}});
-  }};
-  WorkerXMLHttpRequestNative.prototype.addEventListener = function(type, callback) {{
-    if (typeof callback !== "function" && !(callback && typeof callback.handleEvent === "function")) return;
-    const name = String(type);
-    const callbacks = this._listeners.get(name) || [];
-    if (!callbacks.includes(callback)) callbacks.push(callback);
-    this._listeners.set(name, callbacks);
-  }};
-  WorkerXMLHttpRequestNative.prototype.removeEventListener = function(type, callback) {{
-    const name = String(type);
-    const callbacks = this._listeners.get(name) || [];
-    this._listeners.set(name, callbacks.filter(candidate => candidate !== callback));
   }};
   Object.defineProperty(WorkerXMLHttpRequestNative.prototype, "timeout", {{
     configurable: true,
@@ -20412,6 +20380,10 @@ fn worker_bootstrap(
   WorkerXMLHttpRequestNative.prototype.HEADERS_RECEIVED = 2;
   WorkerXMLHttpRequestNative.prototype.LOADING = 3;
   WorkerXMLHttpRequestNative.prototype.DONE = 4;
+  if (typeof globalThis.EventTarget === "function" && globalThis.EventTarget.prototype) {{
+    Object.setPrototypeOf(WorkerXMLHttpRequestUpload.prototype, globalThis.EventTarget.prototype);
+    Object.setPrototypeOf(WorkerXMLHttpRequestNative.prototype, globalThis.EventTarget.prototype);
+  }}
   globalThis.__glassWorkerXmlHttpRequestConstructor = WorkerXMLHttpRequestNative;
   globalThis.XMLHttpRequest = WorkerXMLHttpRequestNative;
   globalThis.__glassWorkerFetchRequests = workerFetchRequests;
@@ -28962,39 +28934,16 @@ fn document_bootstrap(
     const event = extra && Object.prototype.hasOwnProperty.call(extra, "loaded")
       && typeof globalThis.ProgressEvent === "function"
       ? new globalThis.ProgressEvent(type, extra)
-      : Object.assign({{ type, target, currentTarget: target }}, extra || {{}});
-    event.target = target;
-    event.currentTarget = target;
-    const handler = target["on" + type];
-    if (typeof handler === "function") {{
-      try {{ handler.call(target, event); }} catch (_error) {{}}
-    }}
-    const callbacks = target._listeners instanceof Map ? (target._listeners.get(type) || []) : [];
-    for (const callback of callbacks.slice()) {{
-      try {{
-        if (typeof callback === "function") callback.call(target, event);
-        else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
-      }} catch (_error) {{}}
-    }}
+      : createEvent(type, extra);
+    Object.assign(event, extra || {{}});
+    return dispatchTarget(target, event);
   }};
   const NativeXMLHttpRequestUpload = typeof globalThis.__glassXmlHttpRequestUploadConstructor === "function"
     ? globalThis.__glassXmlHttpRequestUploadConstructor
     : function() {{
-      this._listeners = new Map();
-      for (const type of nativeXhrEventTypes) this["on" + type] = null;
+      EventTargetNative.call(this);
+      for (const type of nativeXhrEventTypes) installEventHandlerProperty(this, type);
     }};
-  NativeXMLHttpRequestUpload.prototype.addEventListener = function(type, callback) {{
-    if (typeof callback !== "function" && !(callback && typeof callback.handleEvent === "function")) return;
-    const name = String(type);
-    const callbacks = this._listeners.get(name) || [];
-    if (!callbacks.includes(callback)) callbacks.push(callback);
-    this._listeners.set(name, callbacks);
-  }};
-  NativeXMLHttpRequestUpload.prototype.removeEventListener = function(type, callback) {{
-    const name = String(type);
-    const callbacks = this._listeners.get(name) || [];
-    this._listeners.set(name, callbacks.filter(candidate => candidate !== callback));
-  }};
   globalThis.__glassXmlHttpRequestUploadConstructor = NativeXMLHttpRequestUpload;
   globalThis.XMLHttpRequestUpload = NativeXMLHttpRequestUpload;
   const nativeXhrBodyLength = (body) => {{
@@ -29246,6 +29195,7 @@ fn document_bootstrap(
     nativeXhrDispatch(xhr, "loadend");
   }};
   const XMLHttpRequestNative = function() {{
+    EventTargetNative.call(this);
     this.readyState = 0;
     this.status = 0;
     this.statusText = "";
@@ -29255,14 +29205,7 @@ fn document_bootstrap(
     this._responseXML = null;
     this._responseType = "";
     this.withCredentials = false;
-    this.onreadystatechange = null;
-    this.onload = null;
-    this.onerror = null;
-    this.onabort = null;
-    this.ontimeout = null;
-    this.onloadstart = null;
-    this.onprogress = null;
-    this.onloadend = null;
+    for (const type of nativeXhrEventTypes) installEventHandlerProperty(this, type);
     this._method = "GET";
     this._url = "";
     this._async = true;
@@ -29275,7 +29218,6 @@ fn document_bootstrap(
     this._aborted = false;
     this._sent = false;
     this._timeout = 0;
-    this._listeners = new Map();
     this.upload = new NativeXMLHttpRequestUpload();
     this._uploadStarted = false;
     this._uploadFinished = false;
@@ -29284,18 +29226,6 @@ fn document_bootstrap(
   }};
   XMLHttpRequestNative.prototype._notifyReadyState = function() {{
     nativeXhrDispatch(this, "readystatechange");
-  }};
-  XMLHttpRequestNative.prototype.addEventListener = function(type, callback) {{
-    if (typeof callback !== "function" && !(callback && typeof callback.handleEvent === "function")) return;
-    const name = String(type);
-    const callbacks = this._listeners.get(name) || [];
-    if (!callbacks.includes(callback)) callbacks.push(callback);
-    this._listeners.set(name, callbacks);
-  }};
-  XMLHttpRequestNative.prototype.removeEventListener = function(type, callback) {{
-    const name = String(type);
-    const callbacks = this._listeners.get(name) || [];
-    this._listeners.set(name, callbacks.filter(candidate => candidate !== callback));
   }};
   Object.defineProperty(XMLHttpRequestNative.prototype, "timeout", {{
     get() {{ return this._timeout; }},
@@ -30042,7 +29972,7 @@ fn document_bootstrap(
     event.eventPhase = phase;
     for (const record of callbacks) {{
       if (record.capture !== capture) continue;
-      record.callback.call(target, event);
+      try {{ record.callback.call(target, event); }} catch (_error) {{}}
       if (record.once) removeListener(owner, event.type, record.callback, capture);
       if (eventState.immediate) break;
     }}
@@ -30197,6 +30127,14 @@ fn document_bootstrap(
   }};
   globalThis.__glassEventTargetConstructor = EventTargetNative;
   globalThis.EventTarget = EventTargetNative;
+  if (typeof globalThis.XMLHttpRequestUpload === "function"
+      && typeof globalThis.XMLHttpRequestUpload.prototype === "object") {{
+    try {{ Object.setPrototypeOf(globalThis.XMLHttpRequestUpload.prototype, EventTargetNative.prototype); }} catch (_error) {{}}
+  }}
+  if (typeof globalThis.XMLHttpRequest === "function"
+      && typeof globalThis.XMLHttpRequest.prototype === "object") {{
+    try {{ Object.setPrototypeOf(globalThis.XMLHttpRequest.prototype, EventTargetNative.prototype); }} catch (_error) {{}}
+  }}
   const mutationObservers = globalThis.__glassMutationObservers instanceof Set
     ? globalThis.__glassMutationObservers
     : new Set();

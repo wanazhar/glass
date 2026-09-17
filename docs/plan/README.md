@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-441`, following completed
 `native-engine-browser-440`, following completed
 `native-engine-browser-439`, following completed
 `native-engine-browser-438`, following completed
@@ -285,6 +286,16 @@ restrictions, combine duplicate values, sort `getAllResponseHeaders()`
 deterministically, and keep `Set-Cookie` unreadable. The loader remains the
 CORS and response-policy owner; raw invalid wire-header bytes and complete
 XHR/Web IDL descriptor parity remain issue #40 gates.
+
+The completed XHR EventTarget identity slice is
+[native-engine-browser-441](tasks/native-engine-browser-441.md): page and
+dedicated/SharedWorker `XMLHttpRequest` and `XMLHttpRequestUpload` prototypes
+inherit their realm's `EventTarget.prototype`, instances expose constructor
+and `instanceof EventTarget` identity, and inherited listener/dispatch methods
+drive the existing bounded lifecycle. Page handler attributes use the shared
+owner-backed event store and worker handler attributes use the isolated worker
+store; synthetic dispatch invokes both handler and listener callbacks. Full
+descriptor and broader platform Web IDL parity remain issue #40 gates.
 
 The completed XHR request-side slice is
 [native-engine-browser-439](tasks/native-engine-browser-439.md): page and

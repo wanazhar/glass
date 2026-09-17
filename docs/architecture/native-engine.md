@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-441`, following completed
 `native-engine-browser-440`, following completed
 `native-engine-browser-439`, following completed
 `native-engine-browser-438`, following completed
@@ -109,6 +110,19 @@ combine duplicate values, sort the exposed list, filter `Set-Cookie`, and
 raise `SyntaxError` for malformed names. The native loader remains the owner
 of CORS exposure and all response policy; raw invalid wire-header bytes and
 complete XHR/Web IDL descriptor parity remain issue #40 gates.
+
+Slice 441 closes the XHR EventTarget identity gap. Page and dedicated/SharedWorker
+`XMLHttpRequest` and `XMLHttpRequestUpload` prototypes now inherit their
+realm's `EventTarget.prototype`; instances satisfy constructor and
+`instanceof EventTarget` identity, and the inherited listener/dispatch methods
+drive the existing bounded lifecycle. Page XHR handler attributes use the
+owner-backed event store, while worker XHR uses its isolated worker store;
+synthetic dispatch invokes both the `on*` handler and explicit listeners, and
+listener exceptions cannot escape into the transport turn. Full descriptor
+and broader platform Web IDL parity remain issue #40 gates.
+The capability inventory's broader `no live Web IDL identity` qualifier now
+refers to the remaining platform interfaces; it does not describe the page
+and worker XHR or upload targets covered by this slice.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

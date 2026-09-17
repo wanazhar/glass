@@ -1,7 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-452`, following
+expansion checkpoint is completed `native-engine-browser-454`, following
+completed `native-engine-browser-453`, following
+completed `native-engine-browser-452`, following
 completed `native-engine-browser-451`, following
 completed `native-engine-browser-450`, following
 completed `native-engine-browser-449`, following
@@ -6514,8 +6516,12 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-452.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-454.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-453.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-452.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-451.md` is the latest completed browser
 task;
 `docs/plan/tasks/native-engine-browser-450.md` is the latest completed browser
@@ -6709,7 +6715,7 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain starts at `native-engine-browser-452`.
+The current browser-slice evidence chain starts at `native-engine-browser-454`.
 Slices 440 through 356 are summarized in the current checkpoint paragraphs
 above; the historical continuation below begins with `native-engine-browser-355`,
 `native-engine-browser-354`,

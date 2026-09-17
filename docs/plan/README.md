@@ -28,6 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-454`, following completed
+`native-engine-browser-453`, following completed
 `native-engine-browser-452`, following completed
 `native-engine-browser-451`, following completed
 `native-engine-browser-450`, following completed

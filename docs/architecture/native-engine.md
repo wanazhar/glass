@@ -245,6 +245,13 @@ the existing name-only lookup, insertion order, live URL synchronization, and
 bounded entry/value limits. Complete URLSearchParams Web IDL descriptor and
 encoding parity remain issue #40 work.
 
+Slice 454 adds bounded realm-owned Blob object URLs. Page and worker
+`URL.createObjectURL()` retain Blob bytes behind an origin-labelled `blob:` URL;
+native Fetch and synchronous/asynchronous XHR serve GET and HEAD reads from the
+same registry, and `revokeObjectURL()` releases the entry. The registry is
+bounded and revocation causes later reads to fail. Navigation and generic
+subresource object-URL loading remain separate resource-owner work.
+
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is
 now covered by slice 432.

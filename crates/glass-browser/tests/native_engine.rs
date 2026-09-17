@@ -2341,6 +2341,120 @@ async fn native_local_worker_url_objects_are_mutable_and_search_params_are_live(
 }
 
 #[tokio::test]
+async fn native_local_blob_object_urls_feed_fetch_and_xhr_and_revoke() {
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://blob-object-url-page", "<p>Blob object URL</p>")
+        .unwrap()
+        .with_initial_url("fixture://blob-object-url-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                    const blob = new Blob(['native object URL'], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    const response = await fetch(url);
+                    const head = await fetch(url, { method: 'HEAD' });
+                    const xhr = await new Promise((resolve, reject) => {
+                        const request = new XMLHttpRequest();
+                        request.onload = () => resolve([request.status, request.responseURL, request.responseText]);
+                        request.onerror = () => reject(new Error('object URL XHR failed'));
+                        request.open('GET', url);
+                        request.send();
+                    });
+                    const sync = new XMLHttpRequest();
+                    sync.open('GET', url, false);
+                    sync.send();
+                    const fetched = await response.text();
+                    URL.revokeObjectURL(url);
+                    const revoked = await fetch(url).then(() => false, () => true);
+                    let invalid = '';
+                    try { URL.createObjectURL('not-a-blob'); } catch (error) { invalid = error.name; }
+                    return {
+                        url: url.startsWith('blob:'),
+                        response: [response.status, response.url, response.headers.get('content-type'), response.headers.get('content-length'), fetched],
+                        head: [head.status, head.body === null, head.headers.get('content-length')],
+                        xhr,
+                        sync: [sync.status, sync.responseURL, sync.responseText],
+                        revoked,
+                        invalid,
+                    };
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "url": true,
+            "response": [200, "blob:null/glass-native-1", "text/plain", "17", "native object URL"],
+            "head": [200, true, "17"],
+            "xhr": [200, "blob:null/glass-native-1", "native object URL"],
+            "sync": [200, "blob:null/glass-native-1", "native object URL"],
+            "revoked": true,
+            "invalid": "TypeError",
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_worker_blob_object_urls_feed_fetch_and_xhr() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-blob-object-url-page",
+            "<p>Worker Blob object URL</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-blob-object-url-script",
+            r#"(async () => {
+                const blob = new Blob(['worker object URL'], { type: 'text/custom' });
+                const url = URL.createObjectURL(blob);
+                const response = await fetch(url);
+                const head = await fetch(url, { method: 'HEAD' });
+                const xhr = await new Promise((resolve, reject) => {
+                    const request = new XMLHttpRequest();
+                    request.onload = () => resolve([request.status, request.responseURL, request.responseText]);
+                    request.onerror = () => reject(new Error('worker object URL XHR failed'));
+                    request.open('GET', url);
+                    request.send();
+                });
+                const fetched = await response.text();
+                URL.revokeObjectURL(url);
+                const revoked = await fetch(url).then(() => false, () => true);
+                postMessage({
+                    url: url.startsWith('blob:'),
+                    response: [response.status, response.url, response.headers.get('content-type'), fetched],
+                    head: [head.status, head.body === null, head.headers.get('content-length')],
+                    xhr,
+                    revoked,
+                });
+            })().catch(error => postMessage({ error: String(error) }));"#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-blob-object-url-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "globalThis.workerMessages = []; globalThis.worker = new Worker('fixture://worker-blob-object-url-script'); worker.onmessage = event => workerMessages.push(event.data); true",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([{
+            "url": true,
+            "response": [200, "blob:null/glass-worker-1", "text/custom", "worker object URL"],
+            "head": [200, true, "17"],
+            "xhr": [200, "blob:null/glass-worker-1", "worker object URL"],
+            "revoked": true,
+        }])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_worker_fetch_honors_abort_signal() {
     let config = NativeEngineConfig::default()
         .with_fixture(

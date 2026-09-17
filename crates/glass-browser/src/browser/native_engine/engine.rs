@@ -6690,7 +6690,7 @@ impl NativeEngine {
         } else {
             load_local_initial_media(&mut document, &self.loader, &resource.url)?
         };
-        load_data_font_faces(&mut document, &mut self.loader, &resource.url)?;
+        load_font_faces(&mut document, None, &mut self.loader, &resource.url)?;
         let frame_sources = self.loader.frame_sources_for_document(&resource.url)?;
         let navigate_to_sources = self.loader.navigation_sources_for_document(
             &resource.url,
@@ -8273,7 +8273,7 @@ fn load_local_dynamic_stylesheets(
     if previous_states != next_states {
         document.set_external_stylesheet_states(next_states);
         document.rebuild_external_stylesheet(document_url)?;
-        load_data_font_faces(document, loader, document_url)?;
+        load_font_faces(document, Some(runtime), loader, document_url)?;
         document.refresh_background_image_sources();
     }
     Ok(events)
@@ -8726,8 +8726,9 @@ fn is_file_subresource_source(document_url: &str, source: &str) -> bool {
             .is_ok_and(|target| target.scheme().eq_ignore_ascii_case("file"))
 }
 
-fn load_data_font_faces(
+fn load_font_faces(
     document: &mut NativeDocument,
+    runtime: Option<&NativeJavaScriptRuntime>,
     loader: &mut NativeResourceLoader,
     document_url: &str,
 ) -> Result<(), NativeEngineError> {
@@ -8737,7 +8738,11 @@ fn load_data_font_faces(
         .iter()
         .take(MAX_NATIVE_FONT_FACES)
     {
-        if let Ok(Some(bytes)) = loader.load_data_font(document_url, &rule.source) {
+        let object_url = runtime
+            .map(|runtime| runtime.object_url_resource(&rule.source))
+            .transpose()?
+            .flatten();
+        if let Ok(Some(bytes)) = loader.load_font(document_url, &rule.source, object_url.as_ref()) {
             resources.push(NativeFontFaceResource::from_rule(rule, bytes));
         }
     }

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-490`, following completed
 `native-engine-browser-489`, following completed
 `native-engine-browser-488`, following completed
 `native-engine-browser-487`, following completed
@@ -562,6 +563,17 @@ system faces, and feed the existing HarfRust/fontdue metrics, rasterization,
 and ordered fallback paths. File/network/blob sources, `local()` resolution,
 font-loading events, variable/color fonts, and complete text-rendering parity
 remain issue #40 work.
+
+Slice `native-engine-browser-490` extends document-owned `@font-face` loading
+to external resource owners. Rooted file documents may load bounded font bytes
+from their configured filesystem roots; runtime-owned Blob URLs may transfer
+bounded bytes with an admitted font MIME type; and HTTP(S) documents use a
+bounded GET/redirect stream with font-specific CSP, mixed-content, CORS, MIME,
+cookie, referrer, and byte-limit checks. The existing document-local font book
+then places valid custom faces ahead of deterministic system candidates for
+HarfRust/fontdue metrics and rasterization. Font response caching,
+`local()` lookup, font-loading events, variable/color fonts, and complete
+text-rendering parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

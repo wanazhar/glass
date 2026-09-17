@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-490`, following completed
 `native-engine-browser-489`, following completed
 `native-engine-browser-488`, following completed
 `native-engine-browser-487`, following completed
@@ -385,6 +386,17 @@ MIME, decoding, size, and document CSP `font-src` checks. Admitted bytes are
 transferred through content-process protocol v13 and placed ahead of system
 faces in the document-local font book used by the existing HarfRust/fontdue
 metrics and raster paths. File/network/blob sources, `local()` resolution,
+font-loading events, variable/color fonts, and complete text-rendering parity
+remain issue #40 gates.
+
+The completed external document-font follow-up is
+[`native-engine-browser-490`](tasks/native-engine-browser-490.md): rooted file
+documents, runtime-owned Blob URLs, and HTTP(S) documents can admit bounded
+font bytes through their existing file, object-URL, or network owners. HTTP
+fonts enforce redirects, `font-src`, mixed-content, CORS, MIME, cookie,
+referrer, and streamed byte limits before entering the document-local font
+book; custom faces remain ahead of system candidates for the existing
+HarfRust/fontdue paths. Font response caching, `local()` lookup,
 font-loading events, variable/color fonts, and complete text-rendering parity
 remain issue #40 gates.
 

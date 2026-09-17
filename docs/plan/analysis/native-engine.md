@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-489`, following
+expansion checkpoint is completed `native-engine-browser-490`, following
+completed `native-engine-browser-489`, following
 completed `native-engine-browser-488`, following
 completed `native-engine-browser-487`, following
 completed `native-engine-browser-486`, following
@@ -603,6 +604,20 @@ count before constructing the book. Existing HarfRust/fontdue metrics,
 rasterization, ordered fallback, display-list, and PNG replay consumers are
 unchanged. File/network/blob sources, `local()` resolution, font-loading
 events, variable/color fonts, and complete browser text parity remain open.
+
+Slice 490 extends the resource path beyond embedded data. The CSS URL owner
+now retains relative and absolute file/network/blob candidates while still
+skipping `local()` and unsupported schemes. Rooted file documents read a
+bounded source through the canonical allowed-root check; runtime-owned Blob
+URLs are admitted only with bounded bytes and a supported font MIME type; and
+HTTP(S) sources use a dedicated GET/redirect stream. The network owner applies
+`font-src` and report-only policy, mixed-content and redirect checks, same-
+origin cookies/referrers, cross-origin font CORS, supported response MIME, and
+per-face byte limits before returning bytes. Inline and content-process
+initial/dynamic stylesheet owners rebuild the document-local font book so
+valid custom faces precede system candidates. Font response caching,
+`local()` lookup, loading events, variable/color fonts, and complete browser
+text parity remain open.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads
@@ -6859,6 +6874,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-browser-490.md` is the latest completed browser
+task;
 `docs/plan/tasks/native-engine-browser-489.md` is the latest completed browser
 task;
 `docs/plan/tasks/native-engine-browser-488.md` is the latest completed browser

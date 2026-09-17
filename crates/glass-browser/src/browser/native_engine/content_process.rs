@@ -46,9 +46,10 @@ use super::javascript::{
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
-    NativeWorkerRegistry, NativeWorkerWebSocketCommand, apply_page_script_evaluation,
-    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts, host_event_batch,
-    host_key_event_batch, host_key_event_batch_with_modifiers, host_submit_event_batch,
+    NativeWorkerRegistry, NativeWorkerWebSocketCommand, apply_document_commands_with_font_face_ack,
+    apply_page_script_evaluation, diff_indexed_db_changes, execute_dynamic_page_scripts,
+    execute_page_scripts, host_event_batch, host_key_event_batch,
+    host_key_event_batch_with_modifiers, host_submit_event_batch,
     literal_dynamic_module_specifiers, load_indexed_db_profile, load_service_worker_cache_profile,
     load_service_worker_registration_profiles, load_web_storage_profile, order_page_scripts,
     page_script_sources_to_scripts, save_service_worker_cache_profile, save_web_storage_profile,
@@ -7713,6 +7714,10 @@ fn dispatch_pending_csp_violations(
     apply_content_event_history(&commands, document_url, document_origin, runtime, history)?;
     let emitted = apply_page_script_evaluation(
         document,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
         evaluation,
         &mut result.pending_fetches,
         &mut result.websocket_commands,
@@ -8561,7 +8566,16 @@ fn mutate_click_with_event_preflight(
             &mut history,
         )?;
         scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
-        events.extend(next.apply_script_commands(&evaluation.commands)?);
+        let (effects, _) = apply_document_commands_with_font_face_ack(
+            &mut next,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
+            &evaluation.commands,
+            false,
+        )?;
+        events.extend(effects);
     }
 
     let click_event_batch =
@@ -8595,7 +8609,16 @@ fn mutate_click_with_event_preflight(
         &mut history,
     )?;
     scroll_commands.extend(extract_scroll_commands(&click_evaluation.commands));
-    events.extend(next.apply_script_commands(&click_evaluation.commands)?);
+    let (effects, _) = apply_document_commands_with_font_face_ack(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &click_evaluation.commands,
+        false,
+    )?;
+    events.extend(effects);
     let mut navigation = None;
     if click_allowed {
         events.extend(next.apply_click(node_id)?);
@@ -8742,7 +8765,16 @@ fn dispatch_submit_event(
             reason: "native submit event result was invalid".into(),
         })?;
     events.push((form_id, NativeEventKind::Submit));
-    events.extend(document.apply_script_commands(&evaluation.commands)?);
+    let (effects, _) = apply_document_commands_with_font_face_ack(
+        document,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &evaluation.commands,
+        false,
+    )?;
+    events.extend(effects);
     Ok(allowed)
 }
 
@@ -8785,7 +8817,16 @@ fn dispatch_invalid_events(
             .copied()
             .map(|id| (id, NativeEventKind::Invalid)),
     );
-    events.extend(document.apply_script_commands(&evaluation.commands)?);
+    let (effects, _) = apply_document_commands_with_font_face_ack(
+        document,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &evaluation.commands,
+        false,
+    )?;
+    events.extend(effects);
     Ok(())
 }
 
@@ -8825,7 +8866,16 @@ fn mutate_type_with_event_bridge(
             &mut history,
         )?;
         scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
-        events.extend(next.apply_script_commands(&evaluation.commands)?);
+        let (effects, _) = apply_document_commands_with_font_face_ack(
+            &mut next,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
+            &evaluation.commands,
+            false,
+        )?;
+        events.extend(effects);
         if events.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
                 "content-process type event effects",
@@ -8930,7 +8980,16 @@ fn mutate_form_action_with_event_bridge(
             &mut history,
         )?;
         scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
-        events.extend(next.apply_script_commands(&evaluation.commands)?);
+        let (effects, _) = apply_document_commands_with_font_face_ack(
+            &mut next,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
+            &evaluation.commands,
+            false,
+        )?;
+        events.extend(effects);
         if events.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
                 "content-process form event effects",
@@ -9030,7 +9089,16 @@ fn mutate_key_with_event_bridge(
             operation: "content process keydown event bridge".into(),
             reason: "native keydown event result was invalid".into(),
         })?;
-    events.extend(next.apply_script_commands(&keydown.commands)?);
+    let (effects, _) = apply_document_commands_with_font_face_ack(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &keydown.commands,
+        false,
+    )?;
+    events.extend(effects);
 
     if keydown_allowed
         && next
@@ -9059,7 +9127,16 @@ fn mutate_key_with_event_bridge(
                 &mut history,
             )?;
             scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
-            events.extend(next.apply_script_commands(&evaluation.commands)?);
+            let (effects, _) = apply_document_commands_with_font_face_ack(
+                &mut next,
+                runtime,
+                document_url,
+                document_origin,
+                viewport,
+                &evaluation.commands,
+                false,
+            )?;
+            events.extend(effects);
         }
     }
 
@@ -9084,7 +9161,16 @@ fn mutate_key_with_event_bridge(
         &mut history,
     )?;
     scroll_commands.extend(extract_scroll_commands(&keyup.commands));
-    events.extend(next.apply_script_commands(&keyup.commands)?);
+    let (effects, _) = apply_document_commands_with_font_face_ack(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &keyup.commands,
+        false,
+    )?;
+    events.extend(effects);
     dispatch_scroll_events(
         &mut next,
         runtime,
@@ -9182,7 +9268,16 @@ fn mutate_key_event_with_event_bridge(
     )?;
     scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
     let mut events = vec![(node_id, kind)];
-    events.extend(next.apply_script_commands(&evaluation.commands)?);
+    let (effects, _) = apply_document_commands_with_font_face_ack(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &evaluation.commands,
+        false,
+    )?;
+    events.extend(effects);
     dispatch_scroll_events(
         &mut next,
         runtime,
@@ -9298,7 +9393,16 @@ fn mutate_key_shortcut_with_event_bridge(
             reason: "native shortcut keydown result was invalid".into(),
         })?;
     let mut events = vec![(node_id, NativeEventKind::KeyDown)];
-    events.extend(next.apply_script_commands(&keydown.commands)?);
+    let (effects, _) = apply_document_commands_with_font_face_ack(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &keydown.commands,
+        false,
+    )?;
+    events.extend(effects);
     if keydown_allowed && apply_default && next.focused_node() == node_id {
         let default_events = if key == "Tab" {
             next.apply_tab_focus(modifiers & 8 != 0)?
@@ -9326,7 +9430,16 @@ fn mutate_key_shortcut_with_event_bridge(
                 &mut history,
             )?;
             scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
-            events.extend(next.apply_script_commands(&evaluation.commands)?);
+            let (effects, _) = apply_document_commands_with_font_face_ack(
+                &mut next,
+                runtime,
+                document_url,
+                document_origin,
+                viewport,
+                &evaluation.commands,
+                false,
+            )?;
+            events.extend(effects);
         }
     }
     let keyup_event_batch =
@@ -9351,7 +9464,16 @@ fn mutate_key_shortcut_with_event_bridge(
     )?;
     scroll_commands.extend(extract_scroll_commands(&keyup.commands));
     events.push((node_id, NativeEventKind::KeyUp));
-    events.extend(next.apply_script_commands(&keyup.commands)?);
+    let (effects, _) = apply_document_commands_with_font_face_ack(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &keyup.commands,
+        false,
+    )?;
+    events.extend(effects);
     dispatch_scroll_events(
         &mut next,
         runtime,
@@ -9530,7 +9652,16 @@ fn dispatch_scroll_events(
             NativeNodeId::from_parts(document.generation(), event_node_index),
             NativeEventKind::Scroll,
         ));
-        events.extend(document.apply_script_commands(&evaluation.commands)?);
+        let (effects, _) = apply_document_commands_with_font_face_ack(
+            document,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
+            &evaluation.commands,
+            false,
+        )?;
+        events.extend(effects);
         pending.extend(new_scroll_commands);
         if events.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
@@ -9746,7 +9877,16 @@ fn mutate_before_unload(
         runtime,
         &mut history,
     )?;
-    events.extend(next.apply_script_commands(&commands)?);
+    let (effects, _) = apply_document_commands_with_font_face_ack(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &commands,
+        false,
+    )?;
+    events.extend(effects);
     dispatch_scroll_events(
         &mut next,
         runtime,
@@ -9855,7 +9995,15 @@ fn mutate_lifecycle_events(
         runtime,
         &mut history,
     )?;
-    let effects = next.apply_script_commands(&commands)?;
+    let (effects, _) = apply_document_commands_with_font_face_ack(
+        &mut next,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        &commands,
+        false,
+    )?;
     let mut events = kinds
         .iter()
         .copied()
@@ -9961,14 +10109,19 @@ fn mutate_hash_change(
         node_index: u32::MAX,
         kind: NativeEventKind::HashChange,
     }];
-    events.extend(
-        next.apply_script_commands(&commands)?
-            .into_iter()
-            .map(|(node, kind)| NativeContentEvent {
-                node_index: node.index(),
-                kind,
-            }),
-    );
+    let (effects, _) = apply_document_commands_with_font_face_ack(
+        &mut next,
+        runtime,
+        new_url.as_str(),
+        document_origin,
+        viewport,
+        &commands,
+        false,
+    )?;
+    events.extend(effects.into_iter().map(|(node, kind)| NativeContentEvent {
+        node_index: node.index(),
+        kind,
+    }));
     let mut event_effects = events
         .iter()
         .map(|event| {
@@ -10047,12 +10200,25 @@ async fn mutate_script_document(
 > {
     let mut document_url = document_url.to_owned();
     let mut history = Vec::new();
-    let mut scroll_commands = extract_scroll_commands(commands);
+    let mut effective_commands = commands.to_vec();
+    let mut scroll_commands = extract_scroll_commands(&effective_commands);
     let mut dialogs = Vec::new();
     let mut dynamic_navigation = None;
     let mut dynamic_result = NativePageScriptResult::default();
     let mut next = current.clone();
-    let mut events = next.apply_script_commands_allowing_links(commands)?;
+    let (initial_events, font_face_follow_up_commands) =
+        apply_document_commands_with_font_face_ack(
+            &mut next,
+            runtime,
+            &document_url,
+            document_origin,
+            viewport,
+            commands,
+            true,
+        )?;
+    effective_commands.extend(font_face_follow_up_commands.iter().cloned());
+    scroll_commands.extend(extract_scroll_commands(&font_face_follow_up_commands));
+    let mut events = initial_events;
     if let Some(loader) = loader.as_deref_mut() {
         apply_pending_meta_content_security_policies(&mut next, loader, &document_url)?;
         refresh_inline_style_policy(&mut next, loader, &document_url)?;
@@ -10072,7 +10238,7 @@ async fn mutate_script_document(
     next.refresh_image_loads(viewport);
     next.refresh_background_image_sources();
     let dynamic_sources = next.take_newly_attached_page_script_sources(
-        commands,
+        &effective_commands,
         super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
         MAX_NATIVE_SCRIPT_BYTES,
     );
@@ -10154,6 +10320,7 @@ async fn mutate_script_document(
             )?;
         }
     }
+    retain_font_face_network_commands(&mut dynamic_result, font_face_follow_up_commands);
     let stylesheet_events = if let Some(loader) = loader.as_deref_mut() {
         load_dynamic_external_stylesheets(&mut next, runtime, loader, &document_url, viewport)
             .await?
@@ -10179,7 +10346,22 @@ async fn mutate_script_document(
             &mut history,
         )?;
         scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
-        events.extend(next.apply_script_commands(&evaluation.commands)?);
+        let (effects, follow_up_commands) = apply_document_commands_with_font_face_ack(
+            &mut next,
+            runtime,
+            &document_url,
+            document_origin,
+            viewport,
+            &evaluation.commands,
+            true,
+        )?;
+        events.extend(effects);
+        retain_font_face_follow_up_commands(
+            &mut effective_commands,
+            &mut scroll_commands,
+            &mut dynamic_result,
+            follow_up_commands,
+        );
         events.push((
             NativeNodeId::from_parts(next.generation(), node_index),
             event_kind,
@@ -10213,7 +10395,22 @@ async fn mutate_script_document(
             &mut history,
         )?;
         scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
-        events.extend(next.apply_script_commands(&evaluation.commands)?);
+        let (effects, follow_up_commands) = apply_document_commands_with_font_face_ack(
+            &mut next,
+            runtime,
+            &document_url,
+            document_origin,
+            viewport,
+            &evaluation.commands,
+            true,
+        )?;
+        events.extend(effects);
+        retain_font_face_follow_up_commands(
+            &mut effective_commands,
+            &mut scroll_commands,
+            &mut dynamic_result,
+            follow_up_commands,
+        );
     }
     let image_events = if let Some(loader) = loader.as_deref_mut() {
         load_external_images(&mut next, Some(runtime), loader, &document_url, viewport).await?
@@ -10239,7 +10436,22 @@ async fn mutate_script_document(
             &mut history,
         )?;
         scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
-        events.extend(next.apply_script_commands(&evaluation.commands)?);
+        let (effects, follow_up_commands) = apply_document_commands_with_font_face_ack(
+            &mut next,
+            runtime,
+            &document_url,
+            document_origin,
+            viewport,
+            &evaluation.commands,
+            true,
+        )?;
+        events.extend(effects);
+        retain_font_face_follow_up_commands(
+            &mut effective_commands,
+            &mut scroll_commands,
+            &mut dynamic_result,
+            follow_up_commands,
+        );
         events.push((
             NativeNodeId::from_parts(next.generation(), node_index),
             event_kind,
@@ -10270,7 +10482,22 @@ async fn mutate_script_document(
             &mut history,
         )?;
         scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
-        events.extend(next.apply_script_commands(&evaluation.commands)?);
+        let (effects, follow_up_commands) = apply_document_commands_with_font_face_ack(
+            &mut next,
+            runtime,
+            &document_url,
+            document_origin,
+            viewport,
+            &evaluation.commands,
+            true,
+        )?;
+        events.extend(effects);
+        retain_font_face_follow_up_commands(
+            &mut effective_commands,
+            &mut scroll_commands,
+            &mut dynamic_result,
+            follow_up_commands,
+        );
         events.push((
             NativeNodeId::from_parts(next.generation(), node_index),
             event_kind,
@@ -10294,7 +10521,7 @@ async fn mutate_script_document(
         )?;
     }
     next.refresh_background_image_sources();
-    let mut navigation = script_navigation_target(&next, &document_url, commands)?;
+    let mut navigation = script_navigation_target(&next, &document_url, &effective_commands)?;
     if let Some(dynamic_navigation) = dynamic_navigation {
         if navigation.is_some() {
             return Err(NativeEngineError::TargetNotActionable {
@@ -10452,6 +10679,42 @@ async fn mutate_script_document(
         window_name: String::new(),
     };
     Ok((next, mutation, dynamic_result))
+}
+
+fn retain_font_face_network_commands(
+    dynamic_result: &mut NativePageScriptResult,
+    commands: Vec<NativeScriptCommand>,
+) {
+    for command in commands {
+        match &command {
+            NativeScriptCommand::Fetch { .. } => {
+                dynamic_result.pending_fetches.push(command.clone())
+            }
+            NativeScriptCommand::WebSocketOpen { .. }
+            | NativeScriptCommand::WebSocketSend { .. }
+            | NativeScriptCommand::WebSocketClose { .. } => {
+                dynamic_result.websocket_commands.push(command.clone())
+            }
+            NativeScriptCommand::EventSourceOpen { .. }
+            | NativeScriptCommand::EventSourceClose { .. } => {
+                dynamic_result.event_source_commands.push(command.clone())
+            }
+            _ => {}
+        }
+    }
+}
+
+fn retain_font_face_follow_up_commands(
+    effective_commands: &mut Vec<NativeScriptCommand>,
+    scroll_commands: &mut Vec<NativeScriptCommand>,
+    dynamic_result: &mut NativePageScriptResult,
+    commands: Vec<NativeScriptCommand>,
+) {
+    scroll_commands.extend(extract_scroll_commands(&commands));
+    for command in &commands {
+        effective_commands.push(command.clone());
+    }
+    retain_font_face_network_commands(dynamic_result, commands);
 }
 
 fn process_websocket_commands(

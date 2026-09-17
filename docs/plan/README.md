@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-496`, following completed
 `native-engine-browser-495`, following completed
 `native-engine-browser-494`, following completed
 `native-engine-browser-493`, following completed
@@ -139,6 +140,19 @@ requests, host acknowledgement of install admission, final URL/response-header
 fidelity, installed-font discovery, font-display timing, variable/color fonts,
 cross-realm FontFace projection, and complete text/Web IDL parity remain open
 issue #40 gates.
+
+The completed FontFace admission-acknowledgement follow-up is
+[`native-engine-browser-496`](tasks/native-engine-browser-496.md): page
+`FontFace.load()` promises remain pending until the native document owner has
+validated and admitted the bounded `FontFaceInstall` command. The shared helper
+drains bounded Promise continuations after acknowledgement and is wired through
+initial/dynamic page scripts plus local and content-process mutation paths.
+Supported page-script continuation fetch, WebSocket, EventSource, scroll, and
+navigation effects retain their owner handoff; arbitrary network effects from
+standalone content user-event mutations remain outside that response contract.
+Service Worker interception, final response metadata, broader FontFace sources,
+installed-font discovery, font-display timing, variable/color fonts,
+cross-realm projection, and complete text/Web IDL parity remain issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

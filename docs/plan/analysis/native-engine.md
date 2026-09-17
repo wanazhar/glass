@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-495`, following
+expansion checkpoint is completed `native-engine-browser-496`, following
+completed `native-engine-browser-495`, following
 completed `native-engine-browser-494`, following
 completed `native-engine-browser-493`, following
 completed `native-engine-browser-492`, following
@@ -120,6 +121,19 @@ worker and Service Worker commands. Service Worker interception, host
 acknowledgement after native install admission, final URL/response-header
 fidelity, and the remaining FontFace/Web IDL gates stay explicit rather than
 being inferred from the generic Fetch contract.
+
+Slice 496 adds the host acknowledgement after `FontFaceInstall` admission. The
+page keeps a bounded request map and leaves `FontFace.load()` pending until the
+document owner has accepted the bytes; the acknowledgement then drains bounded
+Promise continuations through the same document-command owner. Initial and
+dynamic page scripts, content-process script mutations, and local native-engine
+script/event paths share this protocol. Page-script owners retain supported
+fetch, WebSocket, EventSource, scroll, and navigation continuation handoff;
+standalone content user-event mutations keep their existing DOM/event response
+boundary for arbitrary network continuations. Service Worker interception,
+response metadata fidelity, broader source types, installed-font discovery,
+font-display timing, variable/color fonts, cross-realm projection, and complete
+FontFace/Web IDL parity remain explicit issue #40 gates.
 
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
@@ -6944,9 +6958,11 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-494.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-496.md` is the latest completed browser
 task;
-`docs/plan/tasks/native-engine-browser-493.md` is the preceding completed
+`docs/plan/tasks/native-engine-browser-495.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-494.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-492.md` is the preceding completed
 browser task;

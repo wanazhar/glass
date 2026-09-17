@@ -3168,8 +3168,40 @@ fn decode_popup_requests(
             popup.body_content_type.as_deref(),
             "content-process popup navigation payload",
         )?;
+        validate_object_url_payload(
+            popup.object_url.as_ref(),
+            "content-process popup object URL",
+        )?;
     }
     Ok(popups)
+}
+
+fn validate_object_url_payload(
+    object_url: Option<&NativeObjectUrlResource>,
+    operation: &str,
+) -> Result<(), NativeEngineError> {
+    let Some(object_url) = object_url else {
+        return Ok(());
+    };
+    if object_url.body.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            operation,
+            MAX_NATIVE_SCRIPT_BYTES,
+            object_url.body.len(),
+        ));
+    }
+    if object_url
+        .content_type
+        .as_ref()
+        .is_some_and(|content_type| content_type.len() > MAX_NATIVE_SCRIPT_BYTES)
+    {
+        return Err(NativeEngineError::limit(
+            operation,
+            MAX_NATIVE_SCRIPT_BYTES,
+            object_url.content_type.as_ref().map_or(0, String::len),
+        ));
+    }
+    Ok(())
 }
 
 fn decode_post_message_requests(
@@ -3830,6 +3862,10 @@ fn decode_window_navigation_requests(
             request.body.as_ref(),
             request.body_content_type.as_deref(),
             "content-process window navigation payload",
+        )?;
+        validate_object_url_payload(
+            request.object_url.as_ref(),
+            "content-process window navigation object URL",
         )?;
     }
     Ok(requests)

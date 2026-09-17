@@ -2227,7 +2227,9 @@ impl NativeEngineBackend {
             (target_id, opener_id, opener_window_name, opener_url)
         };
         let initial_window_name = name.clone().unwrap_or_default();
-        let initial_url = if navigation.method == NativeNavigationMethod::Post {
+        let initial_url = if navigation.method == NativeNavigationMethod::Post
+            || navigation.object_url.is_some()
+        {
             "about:blank"
         } else {
             navigation.url.as_str()
@@ -2248,7 +2250,7 @@ impl NativeEngineBackend {
             let _ = engine.close_async().await;
             return Err(native_error(error));
         }
-        if navigation.method == NativeNavigationMethod::Post {
+        if navigation.method == NativeNavigationMethod::Post || navigation.object_url.is_some() {
             if let Err(error) = engine.navigate_request_async(navigation.clone(), 0).await {
                 let _ = engine.close_async().await;
                 return Err(native_error(error));
@@ -5465,6 +5467,10 @@ fn native_navigation_request_from_popup(
         false,
         "popup navigation payload",
     )
+    .map(|mut navigation| {
+        navigation.object_url = request.object_url.clone();
+        navigation
+    })
 }
 
 fn native_navigation_request_from_window(
@@ -5478,6 +5484,10 @@ fn native_navigation_request_from_window(
         request.replace,
         "window navigation payload",
     )
+    .map(|mut navigation| {
+        navigation.object_url = request.object_url.clone();
+        navigation
+    })
 }
 
 fn project_native_frame(

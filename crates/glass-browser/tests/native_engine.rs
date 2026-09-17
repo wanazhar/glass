@@ -10286,6 +10286,78 @@ async fn native_window_open_creates_and_reuses_named_target() {
 }
 
 #[tokio::test]
+async fn native_window_open_loads_blob_document_target() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://blob-popup-parent",
+            "<title>Blob opener</title><script>globalThis.popup = window.open(URL.createObjectURL(new Blob(['<title>Blob popup</title><p>popup body</p>'], { type: 'text/html' })), 'blob-report');</script><p>parent</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://blob-popup-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert!(targets[0].active);
+    assert_eq!(targets[1].opener_id.as_deref(), Some("native-context"));
+    assert!(targets[1].url.starts_with("blob:null/glass-native-1"));
+    assert_eq!(targets[1].title, "Blob popup");
+
+    session
+        .script("popup.location.assign(URL.createObjectURL(new Blob(['<title>Blob popup next</title><p>next body</p>'], { type: 'text/html' }))); 'navigated'")
+        .await
+        .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets[1].title, "Blob popup next");
+    assert!(targets[1].url.starts_with("blob:null/glass-native-2"));
+
+    session.native_select_target(&targets[1].id).await.unwrap();
+    let evidence = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    assert_eq!(evidence.title, "Blob popup next");
+    assert_eq!(evidence.visible_text, "next body");
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_window_open_transfers_blob_document_target() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/blob-popup-parent")
+        );
+        let body = "<title>Remote Blob opener</title><script>window.open(URL.createObjectURL(new Blob(['<title>Remote Blob popup</title><p>remote popup body</p>'], { type: 'text/html' })), 'blob-report');</script><p>parent</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/blob-popup-parent")),
+    )
+    .await
+    .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[1].opener_id.as_deref(), Some("native-context"));
+    assert!(targets[1].url.starts_with("blob:http://"));
+    assert_eq!(targets[1].title, "Remote Blob popup");
+
+    session.native_select_target(&targets[1].id).await.unwrap();
+    let evidence = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    assert_eq!(evidence.visible_text, "remote popup body");
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_http_window_open_crosses_content_worker_and_reuses_name() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

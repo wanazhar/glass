@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-462`, following completed
 `native-engine-browser-461`, following completed
 `native-engine-browser-460`, following completed
 `native-engine-browser-459`, following completed
@@ -297,7 +298,13 @@ non-network documents can attach a runtime-owned Blob stylesheet, retain
 bounded per-link success/failure state, rebuild the native CSS and background
 source owners, and deliver `load`/`error` without HTTP/cache fallback. Media,
 popup/window, and cross-realm object-URL consumers remain separate
-resource-owner work.
+resource-owner work. The completed local image follow-up is
+`native-engine-browser-462`: non-network documents can load a runtime-owned
+Blob URL for a dynamically attached `<img>` and CSS background-image consumer
+through the bounded native decoder, retain intrinsic dimensions and paint
+resources, and deliver the image `load`/`error` event without network or
+HTTP-cache fallback. Media, popup/window, and cross-realm object-URL
+consumers remain separate resource-owner work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

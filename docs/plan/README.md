@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-484`, following completed
 `native-engine-browser-483`, following completed
 `native-engine-browser-482`, following completed
 `native-engine-browser-481`, following completed
@@ -317,6 +318,16 @@ body across direct loads, cache hits, and 304 revalidation, so relative CSS
 identity remains stable for dynamic mutations. Network CSS `@import` fetching,
 file fonts and other CSS resource types, complete file-origin semantics, and
 full Web IDL parity remain issue #40 gates.
+
+The completed network CSS import follow-up is
+[`native-engine-browser-484`](tasks/native-engine-browser-484.md): direct
+HTTP(S) stylesheet graphs now fetch bounded recursive literal `@import`
+dependencies through the existing HTTP policy/redirect/cache/MIME/integrity
+owners, evaluate supported viewport conditions, preserve each dependency's
+final URL base, and splice active rules at their import positions. Duplicate
+and cyclic dependencies are suppressed within each graph, with bounded entry
+and byte totals; file fonts and other CSS resource types, complete file-origin
+semantics, and full Web IDL parity remain issue #40 gates.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-484`, following completed
 `native-engine-browser-483`, following completed
 `native-engine-browser-482`, following completed
 `native-engine-browser-481`, following completed
@@ -490,6 +491,15 @@ revalidation, while retaining the raw link `href` for mutation identity.
 Relative CSS resources therefore resolve against the redirected sheet; policy,
 cache, decoder, and paint ownership remain unchanged. Network CSS import
 fetching, file fonts and other CSS resource types, complete file-origin
+semantics, and full Web IDL parity remain issue #40 work.
+
+Slice `native-engine-browser-484` closes bounded network CSS `@import`
+fetching. Direct HTTP(S) stylesheet graphs now evaluate the configured
+viewport conditions, load recursive imports through the existing HTTP policy,
+redirect, cache, MIME, integrity, and byte owners, preserve each imported
+stylesheet's final URL base, and splice admitted rules at their import
+positions. Per-graph entry/byte limits and duplicate/cycle suppression remain
+active; file fonts and other CSS resource types, complete file-origin
 semantics, and full Web IDL parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.

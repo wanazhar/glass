@@ -9,7 +9,9 @@ use super::config::{
     MAX_NATIVE_NODES, NativeEngineLimits, Viewport, is_file_url, is_network_url,
     validate_context_id, validate_url_text, validate_window_name, without_fragment,
 };
-use super::css::absolutize_stylesheet_urls;
+use super::css::{
+    absolutize_stylesheet_urls, css_import_matches, decode_css_url_value, static_css_imports,
+};
 use super::dom::{
     NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource,
     NativePageScriptTiming,
@@ -60,8 +62,8 @@ use super::resource_loader::{
     NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
     NativeFetchResponseStream, NativeNavigationMethod, NativeNavigationPolicyKind,
     NativeNavigationRequest, NativeObjectUrlResource, NativeRequestBody, NativeResource,
-    NativeResourceLoader, NativeWebSocketTarget, schedule_native_csp_report_deliveries,
-    validate_target_navigation_payload,
+    NativeResourceLoader, NativeStylesheetResource, NativeWebSocketTarget, resolve_subresource_url,
+    schedule_native_csp_report_deliveries, validate_target_navigation_payload,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -74,7 +76,9 @@ use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -7434,12 +7438,24 @@ async fn load_content_resource(
             .await
         {
             Ok(Some(stylesheet)) => {
-                let next_len = external_stylesheet_bytes.saturating_add(stylesheet.body.len());
-                if next_len <= MAX_CONTENT_STYLESHEET_BYTES {
-                    external_stylesheet_bytes = next_len;
-                    Some(stylesheet)
+                if is_network_url(&stylesheet.url) {
+                    expand_network_stylesheet_imports(
+                        loader,
+                        &resource.url,
+                        stylesheet,
+                        viewport,
+                        &mut external_stylesheet_bytes,
+                    )
+                    .await
+                    .ok()
                 } else {
-                    None
+                    let next_len = external_stylesheet_bytes.saturating_add(stylesheet.body.len());
+                    if next_len <= MAX_CONTENT_STYLESHEET_BYTES {
+                        external_stylesheet_bytes = next_len;
+                        Some(stylesheet)
+                    } else {
+                        None
+                    }
                 }
             }
             Ok(None) | Err(_) => None,
@@ -7787,11 +7803,161 @@ async fn load_external_media(
     Ok(media_events)
 }
 
+fn expand_network_stylesheet_imports<'a>(
+    loader: &'a mut NativeResourceLoader,
+    document_url: &'a str,
+    stylesheet: NativeStylesheetResource,
+    viewport: Viewport,
+    loaded_bytes: &'a mut usize,
+) -> Pin<Box<dyn Future<Output = Result<NativeStylesheetResource, NativeEngineError>> + 'a>> {
+    Box::pin(async move {
+        let mut graph_entries = 0usize;
+        let mut graph_bytes = 0usize;
+        let mut active = BTreeSet::new();
+        let mut loaded = BTreeSet::from([without_fragment(&stylesheet.url).to_owned()]);
+        expand_network_stylesheet_body(
+            loader,
+            document_url,
+            stylesheet,
+            &mut graph_entries,
+            &mut graph_bytes,
+            &mut active,
+            &mut loaded,
+            viewport,
+            loaded_bytes,
+        )
+        .await
+    })
+}
+
+fn expand_network_stylesheet_body<'a>(
+    loader: &'a mut NativeResourceLoader,
+    document_url: &'a str,
+    stylesheet: NativeStylesheetResource,
+    graph_entries: &'a mut usize,
+    graph_bytes: &'a mut usize,
+    active: &'a mut BTreeSet<String>,
+    loaded: &'a mut BTreeSet<String>,
+    viewport: Viewport,
+    loaded_bytes: &'a mut usize,
+) -> Pin<Box<dyn Future<Output = Result<NativeStylesheetResource, NativeEngineError>> + 'a>> {
+    Box::pin(async move {
+        *graph_entries = graph_entries.saturating_add(1);
+        if *graph_entries > MAX_CONTENT_STYLESHEETS {
+            return Err(NativeEngineError::limit(
+                "network stylesheet graph entries",
+                MAX_CONTENT_STYLESHEETS,
+                *graph_entries,
+            ));
+        }
+        *graph_bytes = graph_bytes.saturating_add(stylesheet.body.len());
+        if *graph_bytes > MAX_CONTENT_STYLESHEET_BYTES {
+            return Err(NativeEngineError::limit(
+                "network stylesheet graph bytes",
+                MAX_CONTENT_STYLESHEET_BYTES,
+                *graph_bytes,
+            ));
+        }
+        let next_loaded_bytes = loaded_bytes.saturating_add(stylesheet.body.len());
+        if next_loaded_bytes > MAX_CONTENT_STYLESHEET_BYTES {
+            return Err(NativeEngineError::limit(
+                "network stylesheet bytes",
+                MAX_CONTENT_STYLESHEET_BYTES,
+                next_loaded_bytes,
+            ));
+        }
+        *loaded_bytes = next_loaded_bytes;
+
+        let stylesheet_url = without_fragment(&stylesheet.url).to_owned();
+        active.insert(stylesheet_url.clone());
+        let imports = static_css_imports(&stylesheet.body).map_err(|reason| {
+            NativeEngineError::UnsupportedUrl {
+                reason: format!("network stylesheet import: {reason}"),
+            }
+        })?;
+        let mut expanded = String::with_capacity(stylesheet.body.len());
+        let mut cursor = 0usize;
+        for import in imports {
+            expanded.push_str(&stylesheet.body[cursor..import.start]);
+            if !css_import_matches(&import, viewport) {
+                cursor = import.end;
+                continue;
+            }
+            let specifier = decode_css_url_value(&import.specifier).ok_or_else(|| {
+                NativeEngineError::UnsupportedUrl {
+                    reason: "network stylesheet import contains an invalid CSS escape".into(),
+                }
+            })?;
+            let base_url =
+                Url::parse(&stylesheet_url).map_err(|_| NativeEngineError::UnsupportedUrl {
+                    reason: "network stylesheet owner URL is not valid URL syntax".into(),
+                })?;
+            let target = resolve_subresource_url(&base_url, &specifier)?.ok_or_else(|| {
+                NativeEngineError::UnsupportedUrl {
+                    reason: format!(
+                        "network stylesheet dependency {:?} is not an HTTP(S) URL",
+                        import.specifier
+                    ),
+                }
+            })?;
+            let target = without_fragment(target.as_str()).to_owned();
+            if active.contains(&target) || !loaded.insert(target.clone()) {
+                cursor = import.end;
+                continue;
+            }
+            let dependency = loader
+                .load_stylesheet_async(document_url, &target, None, None)
+                .await?
+                .ok_or_else(|| NativeEngineError::Network {
+                    operation: "network stylesheet dependency".into(),
+                    reason: format!(
+                        "network stylesheet dependency {:?} was blocked or unavailable",
+                        import.specifier
+                    ),
+                })?;
+            let dependency_url = without_fragment(&dependency.url).to_owned();
+            if dependency_url != target && !loaded.insert(dependency_url.clone()) {
+                cursor = import.end;
+                continue;
+            }
+            let dependency = expand_network_stylesheet_body(
+                loader,
+                document_url,
+                dependency,
+                graph_entries,
+                graph_bytes,
+                active,
+                loaded,
+                viewport,
+                loaded_bytes,
+            )
+            .await?;
+            if let Some(layer) = import.layer {
+                expanded.push_str("@layer ");
+                expanded.push_str(&layer);
+                expanded.push_str(" { ");
+                expanded.push_str(&dependency.body);
+                expanded.push_str(" }");
+            } else {
+                expanded.push_str(&dependency.body);
+            }
+            cursor = import.end;
+        }
+        expanded.push_str(&stylesheet.body[cursor..]);
+        active.remove(&stylesheet_url);
+        Ok(NativeStylesheetResource {
+            url: stylesheet_url.clone(),
+            body: absolutize_stylesheet_urls(&expanded, document_url, &stylesheet_url),
+        })
+    })
+}
+
 async fn load_dynamic_external_stylesheets(
     document: &mut NativeDocument,
     runtime: &NativeJavaScriptRuntime,
     loader: &mut NativeResourceLoader,
     document_url: &str,
+    viewport: Viewport,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
     let links = document
         .external_stylesheet_links()
@@ -7823,6 +7989,11 @@ async fn load_dynamic_external_stylesheets(
         {
             continue;
         }
+        if let Some((_, _, previous_body)) = states.get(&node_index)
+            && let Some(previous_body) = previous_body
+        {
+            loaded_bytes = loaded_bytes.saturating_sub(previous_body.len());
+        }
         let object_url = runtime.object_url_resource(&href)?;
         let body = match loader
             .load_stylesheet_async_with_object_url(
@@ -7835,12 +8006,24 @@ async fn load_dynamic_external_stylesheets(
             .await
         {
             Ok(Some(stylesheet)) => {
-                let next_len = loaded_bytes.saturating_add(stylesheet.body.len());
-                if next_len <= MAX_CONTENT_STYLESHEET_BYTES {
-                    loaded_bytes = next_len;
-                    Some(stylesheet)
+                if is_network_url(&stylesheet.url) {
+                    expand_network_stylesheet_imports(
+                        loader,
+                        document_url,
+                        stylesheet,
+                        viewport,
+                        &mut loaded_bytes,
+                    )
+                    .await
+                    .ok()
                 } else {
-                    None
+                    let next_len = loaded_bytes.saturating_add(stylesheet.body.len());
+                    if next_len <= MAX_CONTENT_STYLESHEET_BYTES {
+                        loaded_bytes = next_len;
+                        Some(stylesheet)
+                    } else {
+                        None
+                    }
                 }
             }
             Ok(None) | Err(_) => None,
@@ -9928,7 +10111,8 @@ async fn mutate_script_document(
         }
     }
     let stylesheet_events = if let Some(loader) = loader.as_deref_mut() {
-        load_dynamic_external_stylesheets(&mut next, runtime, loader, &document_url).await?
+        load_dynamic_external_stylesheets(&mut next, runtime, loader, &document_url, viewport)
+            .await?
     } else {
         Vec::new()
     };

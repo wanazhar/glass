@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-483`, following
+expansion checkpoint is completed `native-engine-browser-484`, following
+completed `native-engine-browser-483`, following
 completed `native-engine-browser-482`, following
 completed `native-engine-browser-481`, following
 completed `native-engine-browser-480`, following
@@ -529,6 +530,15 @@ with the body through direct loads, cache hits, and 304 revalidation while
 retaining raw link identity for dynamic mutations. Relative CSS resources
 therefore resolve against the redirected stylesheet; network CSS `@import`
 fetching, file fonts and other CSS resource types, complete file-origin
+semantics, and full Web IDL parity remain issue #40 work.
+
+Slice 484 closes bounded network CSS `@import` fetching. The content-process
+owner recursively loads literal imports through the existing HTTP(S) loader,
+keeps the final response URL with each dependency, evaluates supported media/
+Supports conditions, preserves import-layer placement, and canonicalizes each
+dependency's CSS URLs before cascade/resource discovery. Graph entries, raw
+bytes, duplicate/cycle admission, and false-condition pre-resolution remain
+bounded; file fonts and other CSS resource types, complete file-origin
 semantics, and full Web IDL parity remain issue #40 work.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local

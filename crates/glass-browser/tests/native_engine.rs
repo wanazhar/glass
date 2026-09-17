@@ -19274,6 +19274,106 @@ async fn native_content_process_uses_redirected_network_stylesheet_url_as_css_ba
 }
 
 #[tokio::test]
+async fn native_content_process_loads_network_css_import_graph() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let png = native_test_png_bytes();
+    let server = tokio::spawn(async move {
+        for expected_path in [
+            "/page",
+            "/styles/main.css",
+            "/styles/theme/base.css",
+            "/styles/theme/colors.css",
+            "/styles/assets/dot.png",
+        ] {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            match expected_path {
+                "/page" => {
+                    let body = "<link rel='stylesheet' href='/styles/main.css'><div id='surface'>Imported</div>";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                "/styles/main.css" => {
+                    let body = "@import '/styles/theme/base.css' layer(theme) screen; @import '/styles/print.css' print;";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                "/styles/theme/base.css" => {
+                    let body = "@import './colors.css'; #surface { width: 8px; height: 8px; background: url('../assets/dot.png') no-repeat 0 0 / 100% 100%; }";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                "/styles/theme/colors.css" => {
+                    let body = "#surface { color: red; }";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                "/styles/assets/dot.png" => {
+                    let headers = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        png.len()
+                    );
+                    stream.write_all(headers.as_bytes()).await.unwrap();
+                    stream.write_all(&png).await.unwrap();
+                }
+                _ => unreachable!(),
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 8,
+                height: 8,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async("getComputedStyle(document.getElementById('surface')).color")
+            .await
+            .unwrap(),
+        serde_json::json!("rgb(255, 0, 0)")
+    );
+    assert_eq!(
+        engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .filter(|command| matches!(command, NativeDisplayCommand::Image { .. }))
+            .count(),
+        1
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_revalidates_fetch_and_xhr_responses() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

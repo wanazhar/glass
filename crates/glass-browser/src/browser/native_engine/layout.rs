@@ -11,6 +11,7 @@ use super::dom::{
     MAX_NATIVE_CANVAS_DIMENSION, NativeDocument, NativeNode, NativeNodeId, NativeNodeKind,
 };
 use super::error::NativeEngineError;
+use super::font::NativeTextMetrics;
 use super::image::image_dimensions_from_source;
 use std::collections::BTreeMap;
 
@@ -332,17 +333,28 @@ impl NativeLayoutSnapshot {
                 let text_rect = NativeRect {
                     x: text_run.origin.x,
                     y: text_run.origin.y,
-                    width: LayoutBuilder::text_width_with_justification(
-                        &text_run.text,
-                        document
-                            .computed_style_for_layout(text_run.node_id)
-                            .letter_spacing(),
-                        document
-                            .computed_style_for_layout(text_run.node_id)
-                            .word_spacing(),
-                        text_run.justify_spacing,
-                    ),
-                    height: DEFAULT_LINE_HEIGHT,
+                    width: document
+                        .text_metrics_for_layout(text_run.node_id)
+                        .measure_text(
+                            &text_run.text,
+                            document
+                                .computed_style_for_layout(text_run.node_id)
+                                .letter_spacing(),
+                            document
+                                .computed_style_for_layout(text_run.node_id)
+                                .word_spacing(),
+                        )
+                        .saturating_add(
+                            text_run
+                                .text
+                                .chars()
+                                .filter(|character| *character == ' ')
+                                .count()
+                                .try_into()
+                                .unwrap_or(u32::MAX)
+                                .saturating_mul(text_run.justify_spacing),
+                        ),
+                    height: document.text_line_height_for_layout(text_run.node_id),
                 };
                 let visible_rect = overflow_clip_for(document, &builder.boxes, text_run.node_id)
                     .map_or(text_rect, |clip| intersect_rect(text_rect, clip));
@@ -1815,8 +1827,9 @@ fn flex_space_evenly_offset(free_space: u32, index: u32, count: usize) -> u32 {
     u32::try_from(numerator / denominator).unwrap_or(u32::MAX)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct FlowStyle {
+    font: NativeTextMetrics,
     minimum_line_height: u32,
     direction: DirectionValue,
     text_align: TextAlignValue,
@@ -1859,6 +1872,7 @@ impl FlowItem {
 }
 
 struct FlowCursor {
+    font: NativeTextMetrics,
     base_start_x: u32,
     base_available_width: u32,
     start_x: u32,
@@ -1890,6 +1904,7 @@ impl FlowCursor {
             .text_indent
             .min(available_width.saturating_sub(CHARACTER_WIDTH));
         Self {
+            font: style.font,
             base_start_x: x,
             base_available_width: available_width,
             start_x: x.saturating_add(effective_indent),
@@ -1976,8 +1991,7 @@ impl FlowCursor {
         let mut width: u32 = 0;
         let mut count: usize = 0;
         for character in value.chars() {
-            let advance =
-                LayoutBuilder::character_advance(character, self.letter_spacing, self.word_spacing);
+            let advance = self.character_advance(character);
             if width.saturating_add(advance) > remaining_width {
                 if count == 0 && !self.line_has_content {
                     return 1;
@@ -1991,11 +2005,17 @@ impl FlowCursor {
     }
 
     fn text_width(&self, value: &str) -> u32 {
-        LayoutBuilder::text_width_with_spacing(value, self.letter_spacing, self.word_spacing)
+        self.font
+            .measure_text(value, self.letter_spacing, self.word_spacing)
     }
 
     fn character_advance(&self, character: char) -> u32 {
-        LayoutBuilder::character_advance(character, self.letter_spacing, self.word_spacing)
+        self.font
+            .advance(character, self.letter_spacing, self.word_spacing)
+    }
+
+    fn text_line_height(&self) -> u32 {
+        self.font.line_height()
     }
 
     fn place_inline(&mut self, width: u32, height: u32) -> Option<NativePoint> {
@@ -2102,16 +2122,16 @@ impl<'a> LayoutBuilder<'a> {
         available_width: u32,
         depth: usize,
     ) -> FlowSize {
-        let minimum_line_height = self
-            .document
-            .computed_style_for_layout(parent)
+        let style = self.document.computed_style_for_layout(parent);
+        let font = self.document.text_metrics_for_layout(parent);
+        let minimum_line_height = style
             .line_height()
-            .unwrap_or(DEFAULT_LINE_HEIGHT);
+            .unwrap_or(DEFAULT_LINE_HEIGHT)
+            .max(font.line_height());
         let white_space = self
             .document
             .computed_style_for_layout(parent)
             .white_space();
-        let style = self.document.computed_style_for_layout(parent);
         let direction = style.direction();
         let text_align = style.text_align();
         let text_align_last = style.text_align_last();
@@ -2149,6 +2169,7 @@ impl<'a> LayoutBuilder<'a> {
             y,
             available_width,
             FlowStyle {
+                font,
                 minimum_line_height,
                 direction,
                 text_align,
@@ -2701,7 +2722,10 @@ impl<'a> LayoutBuilder<'a> {
                 !self.explicit_width_can_overflow(id),
             )
         });
-        let minimum_line_height = style.line_height().unwrap_or(DEFAULT_LINE_HEIGHT);
+        let minimum_line_height = style
+            .line_height()
+            .unwrap_or(DEFAULT_LINE_HEIGHT)
+            .max(self.document.text_line_height_for_layout(id));
         let default_content_height = if is_block {
             minimum_line_height
         } else if matches!(
@@ -5342,7 +5366,8 @@ impl<'a> LayoutBuilder<'a> {
             return;
         }
         let width = flow.text_width(&value);
-        let Some(origin) = flow.place_unwrapped_with_origin(width, DEFAULT_LINE_HEIGHT) else {
+        let line_height = flow.text_line_height();
+        let Some(origin) = flow.place_unwrapped_with_origin(width, line_height) else {
             return;
         };
         let text_index = self.text_runs.len();
@@ -5365,7 +5390,7 @@ impl<'a> LayoutBuilder<'a> {
             box_end: self.boxes.len(),
             text_start: text_index,
             text_end: text_index.saturating_add(1),
-            height: DEFAULT_LINE_HEIGHT,
+            height: line_height,
             vertical_align: VerticalAlignValue::Baseline,
         });
     }
@@ -5696,7 +5721,8 @@ impl<'a> LayoutBuilder<'a> {
         truncated: bool,
     ) {
         let width = flow.text_width(fragment);
-        let Some(origin) = flow.place_inline_with_origin(width, DEFAULT_LINE_HEIGHT) else {
+        let line_height = flow.text_line_height();
+        let Some(origin) = flow.place_inline_with_origin(width, line_height) else {
             return;
         };
         let text_index = self.text_runs.len();
@@ -5719,7 +5745,7 @@ impl<'a> LayoutBuilder<'a> {
             box_end: self.boxes.len(),
             text_start: text_index,
             text_end: text_index.saturating_add(1),
-            height: DEFAULT_LINE_HEIGHT,
+            height: line_height,
             vertical_align: VerticalAlignValue::Baseline,
         });
     }
@@ -5728,10 +5754,6 @@ impl<'a> LayoutBuilder<'a> {
         CHARACTER_WIDTH
             .saturating_add(letter_spacing)
             .saturating_add(if character == ' ' { word_spacing } else { 0 })
-    }
-
-    fn text_width_with_spacing(value: &str, letter_spacing: u32, word_spacing: u32) -> u32 {
-        Self::text_width_with_justification(value, letter_spacing, word_spacing, 0)
     }
 
     fn text_width_with_justification(
@@ -5784,31 +5806,24 @@ impl<'a> LayoutBuilder<'a> {
             return 0;
         };
         let value = self.transform_text(id, &value);
+        let metrics = self.document.text_metrics_for_layout(id);
         match style.white_space() {
             WhiteSpaceValue::Normal | WhiteSpaceValue::NoWrap => {
                 let (value, _) = NativeDocument::collapse_text_for_layout(&value);
-                Self::text_width_with_spacing(&value, style.letter_spacing(), style.word_spacing())
+                metrics.measure_text(&value, style.letter_spacing(), style.word_spacing())
             }
             WhiteSpaceValue::PreLine => value
                 .split(['\n', '\r'])
                 .map(|line| {
                     let (line, _) = NativeDocument::collapse_text_for_layout(line);
-                    Self::text_width_with_spacing(
-                        &line,
-                        style.letter_spacing(),
-                        style.word_spacing(),
-                    )
+                    metrics.measure_text(&line, style.letter_spacing(), style.word_spacing())
                 })
                 .max()
                 .unwrap_or(0),
             WhiteSpaceValue::Pre | WhiteSpaceValue::PreWrap => value
                 .split(['\n', '\r'])
                 .map(|line| {
-                    Self::text_width_with_spacing(
-                        line,
-                        style.letter_spacing(),
-                        style.word_spacing(),
-                    )
+                    metrics.measure_text(line, style.letter_spacing(), style.word_spacing())
                 })
                 .max()
                 .unwrap_or(0),

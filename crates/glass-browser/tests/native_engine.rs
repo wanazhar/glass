@@ -23671,13 +23671,76 @@ fn native_display_list_is_revisioned_deterministic_and_visibility_aware() {
         | NativeDisplayCommand::SvgPathStroke { node_id, .. }
         | NativeDisplayCommand::BorderRect { node_id, .. }
         | NativeDisplayCommand::Image { node_id, .. }
-        | NativeDisplayCommand::TextRun { node_id, .. } => *node_id == hidden,
+        | NativeDisplayCommand::TextRun { node_id, .. }
+        | NativeDisplayCommand::GlyphRun { node_id, .. } => *node_id == hidden,
         NativeDisplayCommand::BeginOpacityGroup { .. }
         | NativeDisplayCommand::Clear { .. }
         | NativeDisplayCommand::SetNestedScrollOffset { .. }
         | NativeDisplayCommand::EndOpacityGroup { .. } => false,
     }));
     assert_eq!(list, document.display_list(viewport).unwrap());
+}
+
+#[test]
+fn native_real_font_metrics_feed_layout_and_glyph_paint_when_available() {
+    let limits = NativeEngineLimits::default();
+    let viewport = Viewport {
+        width: 320,
+        height: 120,
+        device_scale_factor_milli: 1000,
+    };
+    let narrow = NativeDocument::parse(
+        "<style>#text { font-family: sans-serif; font-size: 12px; }</style><div id='text'>Glass</div>",
+        &limits,
+    )
+    .unwrap();
+    let wide = NativeDocument::parse(
+        "<style>#text { font-family: sans-serif; font-size: 24px; }</style><div id='text'>Glass</div>",
+        &limits,
+    )
+    .unwrap();
+
+    let glyph_width = |document: &NativeDocument| {
+        document
+            .display_list(viewport)
+            .unwrap()
+            .commands
+            .into_iter()
+            .find_map(|command| match command {
+                NativeDisplayCommand::GlyphRun { run, .. } => Some(run.width),
+                NativeDisplayCommand::TextRun { .. }
+                | NativeDisplayCommand::BeginOpacityGroup { .. }
+                | NativeDisplayCommand::Clear { .. }
+                | NativeDisplayCommand::EndOpacityGroup { .. }
+                | NativeDisplayCommand::FillRect { .. }
+                | NativeDisplayCommand::SetNestedScrollOffset { .. }
+                | NativeDisplayCommand::Image { .. }
+                | NativeDisplayCommand::SvgStroke { .. }
+                | NativeDisplayCommand::SvgPolygonFill { .. }
+                | NativeDisplayCommand::SvgPolyline { .. }
+                | NativeDisplayCommand::SvgPathFill { .. }
+                | NativeDisplayCommand::SvgPathStroke { .. }
+                | NativeDisplayCommand::BorderRect { .. } => None,
+            })
+    };
+
+    let narrow_width = glyph_width(&narrow);
+    let wide_width = glyph_width(&wide);
+    if let (Some(narrow_width), Some(wide_width)) = (narrow_width, wide_width) {
+        assert!(wide_width > narrow_width);
+        assert!(wide_width <= 320);
+        let surface = wide.rasterize(viewport).unwrap();
+        assert!(
+            (0..120).any(|y| {
+                (0..wide_width.min(320)).any(|x| {
+                    surface
+                        .pixel(x, y)
+                        .is_some_and(|pixel| pixel != [255, 255, 255, 255])
+                })
+            }),
+            "real font run should produce non-white coverage"
+        );
+    }
 }
 
 #[test]
@@ -28242,6 +28305,10 @@ fn native_local_presentation_important_priority_reaches_hidden_and_opacity_owner
                 ..
             }
             | NativeDisplayCommand::TextRun {
+                node_id: command_node,
+                ..
+            }
+            | NativeDisplayCommand::GlyphRun {
                 node_id: command_node,
                 ..
             }
@@ -42208,7 +42275,8 @@ fn native_br_elements_create_bounded_hard_breaks_without_layout_nodes() {
         | NativeDisplayCommand::SvgPathStroke { node_id, .. }
         | NativeDisplayCommand::BorderRect { node_id, .. }
         | NativeDisplayCommand::Image { node_id, .. }
-        | NativeDisplayCommand::TextRun { node_id, .. } => {
+        | NativeDisplayCommand::TextRun { node_id, .. }
+        | NativeDisplayCommand::GlyphRun { node_id, .. } => {
             *node_id != leading
                 && *node_id != middle_a
                 && *node_id != middle_b

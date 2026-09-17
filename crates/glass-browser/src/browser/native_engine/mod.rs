@@ -16,6 +16,7 @@ mod engine;
 mod environment;
 mod error;
 mod fetch_stream;
+mod font;
 mod history;
 mod image;
 mod interaction;
@@ -58,6 +59,7 @@ pub use engine::{
     NativePreflightAction, NativeTargetErrorKind, NativeTargetPreflight,
 };
 pub use error::{NativeEngineError, NativeWorkerFailureKind};
+pub use font::{NativeFontRun, NativeGlyph};
 pub use history::{NativeHistory, NativeHistoryDirection, NativeHistoryEntry};
 pub use interaction::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FILE_COUNT, MAX_NATIVE_FILE_TOTAL_BYTES,

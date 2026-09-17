@@ -37,10 +37,17 @@ all-features = true
 default = ["native-engine"]
 visual-compare = []
 fuzzing = []
-native-engine = ["dep:jpeg-encoder", "dep:regex", "dep:rquickjs", "dep:webp-rust"]
+native-engine = [
+    "dep:fontdue",
+    "dep:jpeg-encoder",
+    "dep:regex",
+    "dep:rquickjs",
+    "dep:webp-rust",
+]
 
 [dependencies]
 base64 = "0.22"
+fontdue = { version = "0.9.4", optional = true, default-features = false, features = ["simd", "std"] }
 aes = "0.8"
 aes-gcm = "0.10"
 tokio = {

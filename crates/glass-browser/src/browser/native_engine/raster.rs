@@ -3,6 +3,7 @@ use super::css::{
     NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
 };
 use super::error::NativeEngineError;
+use super::font::NativeFontRun;
 use super::layout::{NativePoint, NativeRect, NativeSvgSubpath, rounded_rect_contains};
 use super::paint::{
     MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList, NativeSvgStrokeShape,
@@ -356,6 +357,76 @@ impl NativeSurface {
                     Self::current_surface_mut(&mut surfaces)?.draw_text(
                         *origin,
                         text,
+                        TextPaint {
+                            color: *color,
+                            decoration_color: *decoration_color,
+                            decoration_style: *decoration_style,
+                            decoration_skip_ink: *decoration_skip_ink,
+                            decoration_skip_spaces: *decoration_skip_spaces,
+                            decoration_thickness,
+                            underline_offset,
+                            underline: *underline,
+                            overline: *overline,
+                            line_through: *line_through,
+                            bold: *bold,
+                            italic: *italic,
+                            word_spacing: *word_spacing,
+                            letter_spacing: *letter_spacing,
+                            justify_spacing: *justify_spacing,
+                        },
+                        line_boundary,
+                        clip,
+                        render_scroll_offset,
+                    );
+                }
+                NativeDisplayCommand::GlyphRun {
+                    origin,
+                    text,
+                    run,
+                    color,
+                    decoration_color,
+                    decoration_style,
+                    decoration_skip_ink,
+                    decoration_skip_spaces,
+                    decoration_thickness,
+                    underline_offset,
+                    underline,
+                    overline,
+                    line_through,
+                    bold,
+                    italic,
+                    word_spacing,
+                    letter_spacing,
+                    justify_spacing,
+                    clip,
+                    ..
+                } => {
+                    let line_boundary = display_list
+                        .text_run_boundaries
+                        .get(text_run_index)
+                        .copied()
+                        .unwrap_or_default();
+                    text_run_index = text_run_index.saturating_add(1);
+                    if text.len() > crate::browser_backend::MAX_TEXT_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "display text",
+                            crate::browser_backend::MAX_TEXT_BYTES,
+                            text.len(),
+                        ));
+                    }
+                    let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
+                        continue;
+                    };
+                    let decoration_thickness = (*decoration_thickness)
+                        .min(super::css::MAX_NATIVE_TEXT_DECORATION_THICKNESS);
+                    let underline_offset = (*underline_offset).clamp(
+                        super::css::MIN_NATIVE_TEXT_UNDERLINE_OFFSET,
+                        super::css::MAX_NATIVE_TEXT_UNDERLINE_OFFSET,
+                    );
+                    Self::current_surface_mut(&mut surfaces)?.draw_glyph_run(
+                        *origin,
+                        text,
+                        run,
                         TextPaint {
                             color: *color,
                             decoration_color: *decoration_color,
@@ -1490,6 +1561,191 @@ impl NativeSurface {
         ))
     }
 
+    fn draw_glyph_run(
+        &mut self,
+        origin: super::layout::NativePoint,
+        text: &str,
+        run: &NativeFontRun,
+        paint: TextPaint,
+        line_boundary: NativeTextLineBoundary,
+        clip: Option<NativeRect>,
+        scroll_offset: NativePoint,
+    ) {
+        let origin_x = i64::from(origin.x) - i64::from(scroll_offset.x);
+        let origin_y = i64::from(origin.y) - i64::from(scroll_offset.y);
+        for glyph in &run.glyphs {
+            let Ok(width) = usize::try_from(glyph.width) else {
+                continue;
+            };
+            let Ok(height) = usize::try_from(glyph.height) else {
+                continue;
+            };
+            if width == 0 || height == 0 {
+                continue;
+            }
+            let glyph_x = origin_x.saturating_add(i64::from(glyph.x));
+            let glyph_y = origin_y.saturating_add(i64::from(glyph.y));
+            for (row, coverage_row) in glyph.coverage.chunks(width).take(height).enumerate() {
+                let y = glyph_y.saturating_add(i64::try_from(row).unwrap_or(i64::MAX));
+                if y < 0 || y >= i64::from(self.height) {
+                    continue;
+                }
+                for (column, coverage) in coverage_row.iter().enumerate() {
+                    if *coverage == 0 {
+                        continue;
+                    }
+                    let x = glyph_x.saturating_add(i64::try_from(column).unwrap_or(i64::MAX));
+                    if x < 0
+                        || x >= i64::from(self.width)
+                        || !clip.is_none_or(|clip| {
+                            clip.contains(NativePoint {
+                                x: u32::try_from(x).unwrap_or(u32::MAX),
+                                y: u32::try_from(y).unwrap_or(u32::MAX),
+                            })
+                        })
+                    {
+                        continue;
+                    }
+                    self.blend_coverage_pixel(
+                        u32::try_from(x).unwrap_or(u32::MAX),
+                        u32::try_from(y).unwrap_or(u32::MAX),
+                        paint.color,
+                        *coverage,
+                    );
+                }
+            }
+        }
+
+        let skip_space_ranges = if matches!(
+            paint.decoration_skip_spaces,
+            NativeTextDecorationSkipSpaces::All
+        ) || line_boundary.starts_line
+            || line_boundary.ends_line
+        {
+            run.space_ranges.clone()
+        } else {
+            Vec::new()
+        };
+        let first_space_count = if line_boundary.starts_line {
+            text.chars()
+                .take_while(|character| is_text_decoration_whitespace(*character))
+                .count()
+        } else {
+            0
+        };
+        let trailing_space_start = if line_boundary.ends_line {
+            text.chars().count().saturating_sub(
+                text.chars()
+                    .rev()
+                    .take_while(|character| is_text_decoration_whitespace(*character))
+                    .count(),
+            )
+        } else {
+            text.len()
+        };
+        let mut enabled_space_ranges = Vec::new();
+        if !skip_space_ranges.is_empty() {
+            for range in &run.space_ranges {
+                let skip = matches!(
+                    paint.decoration_skip_spaces,
+                    NativeTextDecorationSkipSpaces::All
+                ) || (line_boundary.starts_line && range.char_index < first_space_count)
+                    || (line_boundary.ends_line && range.char_index >= trailing_space_start);
+                if skip {
+                    enabled_space_ranges.push(*range);
+                }
+            }
+        }
+        let baseline = origin_y.saturating_add(i64::from(run.ascent));
+        for (enabled, line_y, skip_ink) in [
+            (
+                paint.overline,
+                baseline.saturating_sub(i64::from(run.ascent.max(1))),
+                true,
+            ),
+            (
+                paint.line_through,
+                baseline.saturating_sub(i64::from(run.ascent / 3)),
+                false,
+            ),
+            (
+                paint.underline,
+                origin_y
+                    .saturating_add(i64::from(run.line_height.saturating_sub(2)))
+                    .saturating_add(i64::from(paint.underline_offset)),
+                true,
+            ),
+        ] {
+            if !enabled {
+                continue;
+            }
+            let band_count = if matches!(paint.decoration_style, NativeTextDecorationStyle::Double)
+            {
+                2
+            } else {
+                1
+            };
+            for band_index in 0..band_count {
+                let band_offset = if band_index == 0 {
+                    0
+                } else {
+                    i64::from(paint.decoration_thickness).saturating_add(1)
+                };
+                for offset in 0..run.width {
+                    let skips_space = enabled_space_ranges.iter().any(|range| {
+                        i64::from(offset) >= i64::from(range.start)
+                            && i64::from(offset) < i64::from(range.end)
+                    });
+                    if skips_space {
+                        continue;
+                    }
+                    let band_origin = line_y.saturating_add(band_offset).saturating_add(
+                        Self::text_decoration_vertical_offset(
+                            paint.decoration_style,
+                            i64::from(offset),
+                        ),
+                    );
+                    for thickness_offset in 0..paint.decoration_thickness {
+                        let y = band_origin.saturating_add(i64::from(thickness_offset));
+                        if y < 0 || y >= i64::from(self.height) {
+                            continue;
+                        }
+                        let intersects_glyph = skip_ink
+                            && matches!(
+                                paint.decoration_skip_ink,
+                                NativeTextDecorationSkipInk::Auto
+                            )
+                            && glyph_run_contains_ink(run, i64::from(offset), y - origin_y);
+                        if intersects_glyph {
+                            continue;
+                        }
+                        let x = origin_x.saturating_add(i64::from(offset));
+                        if x >= 0
+                            && x < i64::from(self.width)
+                            && Self::text_decoration_pattern_paints(
+                                paint.decoration_style,
+                                paint.decoration_thickness,
+                                i64::from(offset),
+                            )
+                            && clip.is_none_or(|clip| {
+                                clip.contains(NativePoint {
+                                    x: u32::try_from(x).unwrap_or(u32::MAX),
+                                    y: u32::try_from(y).unwrap_or(u32::MAX),
+                                })
+                            })
+                        {
+                            self.blend_pixel(
+                                u32::try_from(x).unwrap_or(u32::MAX),
+                                u32::try_from(y).unwrap_or(u32::MAX),
+                                paint.decoration_color,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn draw_text(
         &mut self,
         origin: super::layout::NativePoint,
@@ -1774,6 +2030,17 @@ impl NativeSurface {
                 .unwrap_or(u8::MAX);
     }
 
+    fn blend_coverage_pixel(
+        &mut self,
+        x: u32,
+        y: u32,
+        mut color: super::css::NativeColor,
+        coverage: u8,
+    ) {
+        color.alpha = multiply_alpha(color.alpha, coverage);
+        self.blend_pixel(x, y, color);
+    }
+
     fn pixel_index(&self, x: u32, y: u32) -> Option<usize> {
         let pixel = usize::try_from(y)
             .ok()?
@@ -1785,6 +2052,31 @@ impl NativeSurface {
 
 const fn multiply_alpha(source: u8, multiplier: u8) -> u8 {
     (((source as u16) * (multiplier as u16) + (u8::MAX as u16) / 2) / (u8::MAX as u16)) as u8
+}
+
+fn glyph_run_contains_ink(run: &NativeFontRun, x: i64, y: i64) -> bool {
+    run.glyphs.iter().any(|glyph| {
+        let glyph_x = i64::from(glyph.x);
+        let glyph_y = i64::from(glyph.y);
+        let glyph_right = glyph_x.saturating_add(i64::from(glyph.width));
+        let glyph_bottom = glyph_y.saturating_add(i64::from(glyph.height));
+        if x < glyph_x || x >= glyph_right || y < glyph_y || y >= glyph_bottom {
+            return false;
+        }
+        let Ok(relative_x) = usize::try_from(x.saturating_sub(glyph_x)) else {
+            return false;
+        };
+        let Ok(relative_y) = usize::try_from(y.saturating_sub(glyph_y)) else {
+            return false;
+        };
+        let Ok(width) = usize::try_from(glyph.width) else {
+            return false;
+        };
+        glyph
+            .coverage
+            .get(relative_y.saturating_mul(width).saturating_add(relative_x))
+            .is_some_and(|coverage| *coverage > 0)
+    })
 }
 
 fn scaled_capture_dimension(value: u32, scale: f64) -> Result<u32, NativeEngineError> {

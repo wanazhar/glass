@@ -7,6 +7,7 @@ use super::css::{
 };
 use super::dom::{NativeDocument, NativeNode, NativeNodeId};
 use super::error::NativeEngineError;
+use super::font::NativeFontRun;
 use super::image::decode_data_image;
 use super::layout::{
     MAX_NATIVE_SVG_POINTS, NativeLayoutPaintOrder, NativeLayoutSnapshot, NativePoint, NativeRect,
@@ -145,6 +146,29 @@ pub enum NativeDisplayCommand {
         origin: NativePoint,
         text: String,
         truncated: bool,
+        color: NativeColor,
+        decoration_color: NativeColor,
+        decoration_style: NativeTextDecorationStyle,
+        decoration_skip_ink: NativeTextDecorationSkipInk,
+        decoration_skip_spaces: NativeTextDecorationSkipSpaces,
+        decoration_thickness: u32,
+        underline_offset: i32,
+        underline: bool,
+        overline: bool,
+        line_through: bool,
+        bold: bool,
+        italic: bool,
+        word_spacing: u32,
+        letter_spacing: u32,
+        justify_spacing: u32,
+        clip: Option<NativeRect>,
+    },
+    GlyphRun {
+        node_id: NativeNodeId,
+        origin: NativePoint,
+        text: String,
+        truncated: bool,
+        run: NativeFontRun,
         color: NativeColor,
         decoration_color: NativeColor,
         decoration_style: NativeTextDecorationStyle,
@@ -321,8 +345,52 @@ impl NativeDisplayList {
                     let color = style.color().unwrap_or(NativeColor::BLACK);
                     let decoration_color = style.text_decoration_color().unwrap_or(color);
                     let clip = paint_clip(document, layout, text_run.node_id);
-                    push_command(
-                        &mut commands,
+                    let font_run = document
+                        .text_metrics_for_layout(text_run.node_id)
+                        .rasterize(
+                            &text_run.text,
+                            style.letter_spacing(),
+                            style.word_spacing(),
+                            text_run.justify_spacing,
+                        );
+                    let bold = style.font_weight() == FontWeightValue::Bold;
+                    let italic = style.font_style() == FontStyleValue::Italic;
+                    let decoration_style = style.text_decoration_style();
+                    let decoration_skip_ink = style.text_decoration_skip_ink();
+                    let decoration_skip_spaces = style.text_decoration_skip_spaces();
+                    let decoration_thickness = style.text_decoration_thickness();
+                    let underline_offset = style.text_underline_offset();
+                    let underline = decoration.underline();
+                    let overline = decoration.overline();
+                    let line_through = decoration.line_through();
+                    let word_spacing = style.word_spacing();
+                    let letter_spacing = style.letter_spacing();
+                    let justify_spacing = text_run.justify_spacing;
+                    let command = if let Some(run) = font_run {
+                        NativeDisplayCommand::GlyphRun {
+                            node_id: text_run.node_id,
+                            origin: text_run.origin,
+                            text: text_run.text.clone(),
+                            truncated: text_run.truncated,
+                            run,
+                            color,
+                            decoration_color,
+                            decoration_style,
+                            decoration_skip_ink,
+                            decoration_skip_spaces,
+                            decoration_thickness,
+                            underline_offset,
+                            underline,
+                            overline,
+                            line_through,
+                            bold,
+                            italic,
+                            word_spacing,
+                            letter_spacing,
+                            justify_spacing,
+                            clip,
+                        }
+                    } else {
                         NativeDisplayCommand::TextRun {
                             node_id: text_run.node_id,
                             origin: text_run.origin,
@@ -330,22 +398,23 @@ impl NativeDisplayList {
                             truncated: text_run.truncated,
                             color,
                             decoration_color,
-                            decoration_style: style.text_decoration_style(),
-                            decoration_skip_ink: style.text_decoration_skip_ink(),
-                            decoration_skip_spaces: style.text_decoration_skip_spaces(),
-                            decoration_thickness: style.text_decoration_thickness(),
-                            underline_offset: style.text_underline_offset(),
-                            underline: decoration.underline(),
-                            overline: decoration.overline(),
-                            line_through: decoration.line_through(),
-                            bold: style.font_weight() == FontWeightValue::Bold,
-                            italic: style.font_style() == FontStyleValue::Italic,
-                            word_spacing: style.word_spacing(),
-                            letter_spacing: style.letter_spacing(),
-                            justify_spacing: text_run.justify_spacing,
+                            decoration_style,
+                            decoration_skip_ink,
+                            decoration_skip_spaces,
+                            decoration_thickness,
+                            underline_offset,
+                            underline,
+                            overline,
+                            line_through,
+                            bold,
+                            italic,
+                            word_spacing,
+                            letter_spacing,
+                            justify_spacing,
                             clip,
-                        },
-                    )?;
+                        }
+                    };
+                    push_command(&mut commands, command)?;
                     text_run_boundaries.push(NativeTextLineBoundary {
                         starts_line: text_run.starts_line,
                         ends_line: text_run.ends_line,

@@ -1042,6 +1042,34 @@ pub(crate) enum NativeFontVariantAlternates {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeFontVariantEastAsianForm {
+    #[default]
+    Normal,
+    Jis78,
+    Jis83,
+    Jis90,
+    Jis04,
+    Simplified,
+    Traditional,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeFontVariantEastAsianWidth {
+    #[default]
+    Normal,
+    Full,
+    Proportional,
+}
+
+/// The bounded OpenType controls exposed by `font-variant-east-asian`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeFontVariantEastAsian {
+    pub(crate) form: NativeFontVariantEastAsianForm,
+    pub(crate) width: NativeFontVariantEastAsianWidth,
+    pub(crate) ruby: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeFontVariantNumericFigure {
     #[default]
     Normal,
@@ -1441,6 +1469,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) font_variant_caps: NativeFontVariantCaps,
     pub(crate) font_variant_position: NativeFontVariantPosition,
     pub(crate) font_variant_alternates: NativeFontVariantAlternates,
+    pub(crate) font_variant_east_asian: NativeFontVariantEastAsian,
     pub(crate) font_variant_numeric: NativeFontVariantNumeric,
     pub(crate) font_feature_settings: NativeFontFeatureSettings,
     pub(crate) font_kerning: NativeFontKerning,
@@ -1508,6 +1537,7 @@ impl Default for NativeInheritedStyle {
             font_variant_caps: NativeFontVariantCaps::Normal,
             font_variant_position: NativeFontVariantPosition::Normal,
             font_variant_alternates: NativeFontVariantAlternates::Normal,
+            font_variant_east_asian: NativeFontVariantEastAsian::default(),
             font_variant_numeric: NativeFontVariantNumeric::default(),
             font_feature_settings: NativeFontFeatureSettings::default(),
             font_kerning: NativeFontKerning::Auto,
@@ -1678,6 +1708,8 @@ pub(crate) struct NativeComputedStyle {
     font_variant_position: NativeFontVariantPosition,
     #[serde(default)]
     font_variant_alternates: NativeFontVariantAlternates,
+    #[serde(default)]
+    font_variant_east_asian: NativeFontVariantEastAsian,
     #[serde(default)]
     font_variant_numeric: NativeFontVariantNumeric,
     #[serde(default)]
@@ -1883,6 +1915,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn font_variant_alternates(self) -> NativeFontVariantAlternates {
         self.font_variant_alternates
+    }
+
+    pub(crate) const fn font_variant_east_asian(self) -> NativeFontVariantEastAsian {
+        self.font_variant_east_asian
     }
 
     pub(crate) const fn font_variant_numeric(self) -> NativeFontVariantNumeric {
@@ -2221,6 +2257,7 @@ impl NativeStylesheet {
         let mut font_variant_caps = &mut scratch.font_variant_caps;
         let mut font_variant_position = &mut scratch.font_variant_position;
         let mut font_variant_alternates = &mut scratch.font_variant_alternates;
+        let mut font_variant_east_asian = &mut scratch.font_variant_east_asian;
         let mut font_variant_numeric = &mut scratch.font_variant_numeric;
         let mut font_feature_settings = &mut scratch.font_feature_settings;
         let mut font_kerning = &mut scratch.font_kerning;
@@ -2503,6 +2540,14 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.text_importance.font_variant_alternates,
                 &mut font_variant_alternates,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.font_variant_east_asian,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.font_variant_east_asian,
+                &mut font_variant_east_asian,
             );
             apply_text_cascade_declaration(
                 rule.declarations.font_variant_numeric,
@@ -3150,6 +3195,14 @@ impl NativeStylesheet {
                 &mut font_variant_alternates,
             );
             apply_text_cascade_declaration(
+                declarations.font_variant_east_asian,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.font_variant_east_asian,
+                &mut font_variant_east_asian,
+            );
+            apply_text_cascade_declaration(
                 declarations.font_variant_numeric,
                 u16::MAX,
                 usize::MAX,
@@ -3761,6 +3814,11 @@ impl NativeStylesheet {
                 inherited.font_variant_alternates,
                 NativeFontVariantAlternates::Normal,
             ),
+            font_variant_east_asian: resolve_inherited_text_declaration(
+                *font_variant_east_asian,
+                inherited.font_variant_east_asian,
+                NativeFontVariantEastAsian::default(),
+            ),
             font_variant_numeric: resolve_inherited_text_declaration(
                 *font_variant_numeric,
                 inherited.font_variant_numeric,
@@ -3973,6 +4031,7 @@ struct NativeCascadeScratch {
     font_variant_caps: NativeTextCascadeCandidates<NativeFontVariantCaps>,
     font_variant_position: NativeTextCascadeCandidates<NativeFontVariantPosition>,
     font_variant_alternates: NativeTextCascadeCandidates<NativeFontVariantAlternates>,
+    font_variant_east_asian: NativeTextCascadeCandidates<NativeFontVariantEastAsian>,
     font_variant_numeric: NativeTextCascadeCandidates<NativeFontVariantNumeric>,
     font_feature_settings: NativeTextCascadeCandidates<NativeFontFeatureSettings>,
     font_kerning: NativeTextCascadeCandidates<NativeFontKerning>,
@@ -4072,6 +4131,7 @@ impl NativeCascadeScratch {
             initialize!(font_variant_caps);
             initialize!(font_variant_position);
             initialize!(font_variant_alternates);
+            initialize!(font_variant_east_asian);
             initialize!(font_variant_numeric);
             initialize!(font_feature_settings);
             initialize!(font_kerning);
@@ -6220,6 +6280,7 @@ struct NativeTextDeclarationImportance {
     font_variant_caps: bool,
     font_variant_position: bool,
     font_variant_alternates: bool,
+    font_variant_east_asian: bool,
     font_variant_numeric: bool,
     font_feature_settings: bool,
     font_kerning: bool,
@@ -6286,6 +6347,7 @@ struct NativeDeclarations {
     font_variant_caps: Option<InheritedTextDeclaration<NativeFontVariantCaps>>,
     font_variant_position: Option<InheritedTextDeclaration<NativeFontVariantPosition>>,
     font_variant_alternates: Option<InheritedTextDeclaration<NativeFontVariantAlternates>>,
+    font_variant_east_asian: Option<InheritedTextDeclaration<NativeFontVariantEastAsian>>,
     font_variant_numeric: Option<InheritedTextDeclaration<NativeFontVariantNumeric>>,
     font_feature_settings: Option<InheritedTextDeclaration<NativeFontFeatureSettings>>,
     font_kerning: Option<InheritedTextDeclaration<NativeFontKerning>>,
@@ -6845,6 +6907,7 @@ fn parse_style_rule(
         || declarations.font_variant_caps.is_some()
         || declarations.font_variant_position.is_some()
         || declarations.font_variant_alternates.is_some()
+        || declarations.font_variant_east_asian.is_some()
         || declarations.font_variant_numeric.is_some()
         || declarations.font_feature_settings.is_some()
         || declarations.font_kerning.is_some()
@@ -7081,6 +7144,7 @@ fn parse_declarations_with_diagnostics(
             "font-variant-caps" => parse_font_variant_caps_declaration(value).is_some(),
             "font-variant-position" => parse_font_variant_position_declaration(value).is_some(),
             "font-variant-alternates" => parse_font_variant_alternates_declaration(value).is_some(),
+            "font-variant-east-asian" => parse_font_variant_east_asian_declaration(value).is_some(),
             "font-variant-numeric" => parse_font_variant_numeric_declaration(value).is_some(),
             "font-feature-settings" => parse_font_feature_settings_declaration(value).is_some(),
             "font-kerning" => parse_font_kerning_declaration(value).is_some(),
@@ -7278,6 +7342,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "font-variant-caps"
             | "font-variant-position"
             | "font-variant-alternates"
+            | "font-variant-east-asian"
             | "font-variant-numeric"
             | "font-feature-settings"
             | "font-kerning"
@@ -7717,6 +7782,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_font_variant_alternates_declaration(value) {
                     declarations.font_variant_alternates = Some(parsed);
                     declarations.text_importance.font_variant_alternates = important;
+                }
+            }
+            "font-variant-east-asian" => {
+                if let Some(parsed) = parse_font_variant_east_asian_declaration(value) {
+                    declarations.font_variant_east_asian = Some(parsed);
+                    declarations.text_importance.font_variant_east_asian = important;
                 }
             }
             "font-variant-numeric" => {
@@ -12434,6 +12505,69 @@ fn parse_font_variant_alternates_declaration(
     value: &str,
 ) -> Option<InheritedTextDeclaration<NativeFontVariantAlternates>> {
     parse_inherited_text_declaration(value, parse_font_variant_alternates)
+}
+
+fn parse_font_variant_east_asian(value: &str) -> Option<NativeFontVariantEastAsian> {
+    let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
+    if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("normal") {
+        return Some(NativeFontVariantEastAsian::default());
+    }
+    if tokens.is_empty()
+        || tokens
+            .iter()
+            .any(|token| token.eq_ignore_ascii_case("normal"))
+    {
+        return None;
+    }
+
+    let mut result = NativeFontVariantEastAsian::default();
+    let mut form_seen = false;
+    let mut width_seen = false;
+    for token in tokens {
+        match token.to_ascii_lowercase().as_str() {
+            "jis78" if !form_seen => {
+                form_seen = true;
+                result.form = NativeFontVariantEastAsianForm::Jis78;
+            }
+            "jis83" if !form_seen => {
+                form_seen = true;
+                result.form = NativeFontVariantEastAsianForm::Jis83;
+            }
+            "jis90" if !form_seen => {
+                form_seen = true;
+                result.form = NativeFontVariantEastAsianForm::Jis90;
+            }
+            "jis04" if !form_seen => {
+                form_seen = true;
+                result.form = NativeFontVariantEastAsianForm::Jis04;
+            }
+            "simplified" if !form_seen => {
+                form_seen = true;
+                result.form = NativeFontVariantEastAsianForm::Simplified;
+            }
+            "traditional" if !form_seen => {
+                form_seen = true;
+                result.form = NativeFontVariantEastAsianForm::Traditional;
+            }
+            "full-width" if !width_seen => {
+                width_seen = true;
+                result.width = NativeFontVariantEastAsianWidth::Full;
+            }
+            "proportional-width" if !width_seen => {
+                width_seen = true;
+                result.width = NativeFontVariantEastAsianWidth::Proportional;
+            }
+            "ruby" if !result.ruby => result.ruby = true,
+            _ => return None,
+        }
+    }
+    Some(result)
+}
+
+fn parse_font_variant_east_asian_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<NativeFontVariantEastAsian>> {
+    parse_inherited_text_declaration(value, parse_font_variant_east_asian)
 }
 
 fn parse_font_variant_numeric(value: &str) -> Option<NativeFontVariantNumeric> {
@@ -22259,6 +22393,35 @@ mod tests {
     }
 
     #[test]
+    fn font_variant_east_asian_parser_keeps_feature_groups_exclusive() {
+        assert_eq!(
+            parse_font_variant_east_asian("normal"),
+            Some(NativeFontVariantEastAsian::default())
+        );
+        assert_eq!(
+            parse_font_variant_east_asian("JIS83 FULL-WIDTH ruby"),
+            Some(NativeFontVariantEastAsian {
+                form: NativeFontVariantEastAsianForm::Jis83,
+                width: NativeFontVariantEastAsianWidth::Full,
+                ruby: true,
+            })
+        );
+        assert_eq!(
+            parse_font_variant_east_asian("traditional proportional-width"),
+            Some(NativeFontVariantEastAsian {
+                form: NativeFontVariantEastAsianForm::Traditional,
+                width: NativeFontVariantEastAsianWidth::Proportional,
+                ruby: false,
+            })
+        );
+        assert!(parse_font_variant_east_asian("normal ruby").is_none());
+        assert!(parse_font_variant_east_asian("jis78 jis90").is_none());
+        assert!(parse_font_variant_east_asian("full-width proportional-width").is_none());
+        assert!(parse_font_variant_east_asian("ruby ruby").is_none());
+        assert!(parse_font_variant_east_asian("oldstyle-nums").is_none());
+    }
+
+    #[test]
     fn font_variant_numeric_parser_keeps_one_value_per_group() {
         assert_eq!(
             parse_font_variant_numeric("normal"),
@@ -23649,6 +23812,37 @@ mod tests {
             style("invalid").font_variant_alternates(),
             NativeFontVariantAlternates::HistoricalForms
         );
+    }
+
+    #[test]
+    fn font_variant_east_asian_is_inherited_and_css_wide_resets_are_bounded() {
+        let document = NativeDocument::parse(
+            "<style>#parent { font-variant-east-asian: jis90 full-width ruby; } #child { font-variant-east-asian: simplified proportional-width; } #inherit { font-variant-east-asian: inherit; } #clear { font-variant-east-asian: initial; } #invalid { font-variant-east-asian: jis78 jis83; }</style><div id='parent'><span id='child'>Child</span><span id='inherit'>Inherit</span><span id='clear'>Clear</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+        let parent = NativeFontVariantEastAsian {
+            form: NativeFontVariantEastAsianForm::Jis90,
+            width: NativeFontVariantEastAsianWidth::Full,
+            ruby: true,
+        };
+        let child = NativeFontVariantEastAsian {
+            form: NativeFontVariantEastAsianForm::Simplified,
+            width: NativeFontVariantEastAsianWidth::Proportional,
+            ruby: false,
+        };
+        assert_eq!(style("parent").font_variant_east_asian(), parent);
+        assert_eq!(style("child").font_variant_east_asian(), child);
+        assert_eq!(style("inherit").font_variant_east_asian(), parent);
+        assert_eq!(
+            style("clear").font_variant_east_asian(),
+            NativeFontVariantEastAsian::default()
+        );
+        assert_eq!(style("invalid").font_variant_east_asian(), parent);
     }
 
     #[test]

@@ -3,7 +3,8 @@ use super::css::NativeFontFeature;
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
     NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning, NativeFontStretchRange,
-    NativeFontVariantAlternates, NativeFontVariantCaps, NativeFontVariantLigatures,
+    NativeFontVariantAlternates, NativeFontVariantCaps, NativeFontVariantEastAsian,
+    NativeFontVariantEastAsianForm, NativeFontVariantEastAsianWidth, NativeFontVariantLigatures,
     NativeFontVariantNumeric, NativeFontVariantNumericFigure, NativeFontVariantNumericFraction,
     NativeFontVariantNumericSpacing, NativeFontVariantPosition, NativeGenericFontFamily,
     NativeUnicodeRange, font_family_hash,
@@ -150,6 +151,7 @@ pub(crate) struct NativeTextMetrics {
     variant_caps: NativeFontVariantCaps,
     variant_position: NativeFontVariantPosition,
     variant_alternates: NativeFontVariantAlternates,
+    variant_east_asian: NativeFontVariantEastAsian,
     variant_numeric: NativeFontVariantNumeric,
     feature_settings: NativeFontFeatureSettings,
     kerning: NativeFontKerning,
@@ -194,6 +196,35 @@ fn font_variant_alternates_tag(alternates: NativeFontVariantAlternates) -> Optio
         NativeFontVariantAlternates::Normal => None,
         NativeFontVariantAlternates::HistoricalForms => Some(*b"hist"),
     }
+}
+
+fn font_variant_east_asian_tags(
+    east_asian: NativeFontVariantEastAsian,
+) -> ([Option<[u8; 4]>; 3], usize) {
+    let mut tags = [None; 3];
+    let mut count = 0;
+    let mut push = |tag| {
+        tags[count] = Some(tag);
+        count += 1;
+    };
+    match east_asian.form {
+        NativeFontVariantEastAsianForm::Normal => {}
+        NativeFontVariantEastAsianForm::Jis78 => push(*b"jp78"),
+        NativeFontVariantEastAsianForm::Jis83 => push(*b"jp83"),
+        NativeFontVariantEastAsianForm::Jis90 => push(*b"jp90"),
+        NativeFontVariantEastAsianForm::Jis04 => push(*b"jp04"),
+        NativeFontVariantEastAsianForm::Simplified => push(*b"smpl"),
+        NativeFontVariantEastAsianForm::Traditional => push(*b"trad"),
+    }
+    match east_asian.width {
+        NativeFontVariantEastAsianWidth::Normal => {}
+        NativeFontVariantEastAsianWidth::Full => push(*b"fwid"),
+        NativeFontVariantEastAsianWidth::Proportional => push(*b"pwid"),
+    }
+    if east_asian.ruby {
+        push(*b"ruby");
+    }
+    (tags, count)
 }
 
 fn font_variant_numeric_tags(numeric: NativeFontVariantNumeric) -> ([Option<[u8; 4]>; 8], usize) {
@@ -368,6 +399,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates(
         font_size: u32,
         stretch: u16,
@@ -380,6 +412,34 @@ impl NativeTextMetrics {
         variant_alternates: NativeFontVariantAlternates,
         direction: DirectionValue,
     ) -> Self {
+        Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian(
+            font_size,
+            stretch,
+            ligatures,
+            feature_settings,
+            kerning,
+            variant_caps,
+            variant_position,
+            variant_numeric,
+            variant_alternates,
+            NativeFontVariantEastAsian::default(),
+            direction,
+        )
+    }
+
+    pub(crate) fn fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian(
+        font_size: u32,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
+        kerning: NativeFontKerning,
+        variant_caps: NativeFontVariantCaps,
+        variant_position: NativeFontVariantPosition,
+        variant_numeric: NativeFontVariantNumeric,
+        variant_alternates: NativeFontVariantAlternates,
+        variant_east_asian: NativeFontVariantEastAsian,
+        direction: DirectionValue,
+    ) -> Self {
         Self {
             faces: Vec::new(),
             font_size: font_size.clamp(1, MAX_NATIVE_FONT_SIZE),
@@ -388,6 +448,7 @@ impl NativeTextMetrics {
             variant_caps,
             variant_position,
             variant_alternates,
+            variant_east_asian,
             variant_numeric,
             feature_settings,
             kerning,
@@ -625,6 +686,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates(
         families: NativeFontFamilyList,
         font_size: u32,
@@ -641,11 +703,47 @@ impl NativeTextMetrics {
         direction: DirectionValue,
         book: &NativeFontBook,
     ) -> Self {
+        Self::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian(
+            families,
+            font_size,
+            weight,
+            style,
+            stretch,
+            ligatures,
+            feature_settings,
+            kerning,
+            variant_caps,
+            variant_position,
+            variant_numeric,
+            variant_alternates,
+            NativeFontVariantEastAsian::default(),
+            direction,
+            book,
+        )
+    }
+
+    pub(crate) fn for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian(
+        families: NativeFontFamilyList,
+        font_size: u32,
+        weight: FontWeightValue,
+        style: FontStyleValue,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
+        kerning: NativeFontKerning,
+        variant_caps: NativeFontVariantCaps,
+        variant_position: NativeFontVariantPosition,
+        variant_numeric: NativeFontVariantNumeric,
+        variant_alternates: NativeFontVariantAlternates,
+        variant_east_asian: NativeFontVariantEastAsian,
+        direction: DirectionValue,
+        book: &NativeFontBook,
+    ) -> Self {
         let font_size = font_size.clamp(1, MAX_NATIVE_FONT_SIZE);
         let stretch = stretch.clamp(500, 2000);
         let faces = book.faces_for(families, weight, style, stretch);
         let Some(face) = faces.first() else {
-            return Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates(
+            return Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian(
                 font_size,
                 stretch,
                 ligatures,
@@ -655,6 +753,7 @@ impl NativeTextMetrics {
                 variant_position,
                 variant_numeric,
                 variant_alternates,
+                variant_east_asian,
                 direction,
             );
         };
@@ -674,6 +773,7 @@ impl NativeTextMetrics {
             variant_caps,
             variant_position,
             variant_alternates,
+            variant_east_asian,
             variant_numeric,
             feature_settings,
             kerning,
@@ -801,7 +901,7 @@ impl NativeTextMetrics {
         buffer.set_direction(direction);
         let scale = i32::try_from(self.font_size.saturating_mul(FONT_SHAPE_SCALE)).ok()?;
         let shaper = shaper_data.shaper(&font).build();
-        let mut features = Vec::with_capacity(18 + self.feature_settings.values().len());
+        let mut features = Vec::with_capacity(21 + self.feature_settings.values().len());
         for (tag, value) in [
             (*b"liga", u32::from(self.ligatures.common)),
             (*b"clig", u32::from(self.ligatures.common)),
@@ -835,6 +935,11 @@ impl NativeTextMetrics {
             push_feature_if_not_explicit(&mut features, self.feature_settings, tag, 1);
         }
         if let Some(tag) = font_variant_alternates_tag(self.variant_alternates) {
+            push_feature_if_not_explicit(&mut features, self.feature_settings, tag, 1);
+        }
+        let (east_asian_tags, east_asian_count) =
+            font_variant_east_asian_tags(self.variant_east_asian);
+        for tag in east_asian_tags.into_iter().take(east_asian_count).flatten() {
             push_feature_if_not_explicit(&mut features, self.feature_settings, tag, 1);
         }
         let explicit_features = self.feature_settings.values();
@@ -2759,6 +2864,36 @@ mod tests {
             push_feature_if_not_explicit(&mut admitted, settings, tag, 1);
         }
         assert!(admitted.is_empty());
+    }
+
+    #[test]
+    fn font_variant_east_asian_maps_to_bounded_opentype_tags() {
+        assert_eq!(
+            font_variant_east_asian_tags(NativeFontVariantEastAsian::default()),
+            ([None, None, None], 0)
+        );
+        let all = NativeFontVariantEastAsian {
+            form: NativeFontVariantEastAsianForm::Jis83,
+            width: NativeFontVariantEastAsianWidth::Full,
+            ruby: true,
+        };
+        assert_eq!(
+            font_variant_east_asian_tags(all),
+            ([Some(*b"jp83"), Some(*b"fwid"), Some(*b"ruby")], 3)
+        );
+        let mut settings = NativeFontFeatureSettings::default();
+        settings.values[0] = NativeFontFeature {
+            tag: *b"fwid",
+            value: 0,
+        };
+        settings.count = 1;
+        let (tags, count) = font_variant_east_asian_tags(all);
+        let mut admitted = Vec::new();
+        for tag in tags.into_iter().take(count).flatten() {
+            push_feature_if_not_explicit(&mut admitted, settings, tag, 1);
+        }
+        assert_eq!(admitted.len(), 2);
+        assert!(!admitted.iter().any(|feature| feature.tag == *b"fwid"));
     }
 
     #[test]

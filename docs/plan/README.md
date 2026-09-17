@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-506`, following completed
 `native-engine-browser-505`, following completed
 `native-engine-browser-504`, following completed
 `native-engine-browser-503`, following completed
@@ -250,6 +251,17 @@ face-range matching, and horizontal glyph scaling remain the next rendering
 gate; font-variant, font-display timing, variable/color fonts, WOFF2,
 cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
 issue #40 gates.
+
+The completed rendering follow-up is
+[`native-engine-browser-506`](tasks/native-engine-browser-506.md): computed
+`font-stretch` now inherits and projects as a canonical percentage, matching
+considers the closest bounded face range after weight/style, and shaped and
+character-path runs scale horizontal advances, offsets, kerning, and glyph
+coverage. `local()` source lookup uses the selected descriptor's nominal width;
+descriptor ranges remain on a normal-width synthetic baseline until a real
+variation-axis owner exists. Variable/color tables, WOFF2, font-display timing,
+mixed-script shaping, cross-realm FontFace projection, and complete FontFace/Web
+IDL parity remain issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

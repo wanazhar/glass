@@ -8,7 +8,7 @@ use super::config::{
     MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, is_file_url, is_network_url, validate_context_id,
     validate_url_text, validate_window_name, without_fragment,
 };
-use super::css::{FontStyleValue, FontWeightValue};
+use super::css::{FontStyleValue, FontWeightValue, parse_font_stretch_range};
 use super::dom::{
     NativeDocument, NativeNodeId, NativePageScriptSource, NativePageScriptTiming,
     NativeScriptDocumentSnapshot, NativeScriptElementSnapshot,
@@ -9621,10 +9621,10 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
       return Array.from(new Uint8Array(source.buffer, source.byteOffset, source.byteLength));
     return null;
   };
-  const nativeFontFaceCandidateBytes = (candidate, weight, style) => {
+  const nativeFontFaceCandidateBytes = (candidate, weight, style, stretch) => {
     if (candidate.kind === "local") {
       let encoded;
-      try { encoded = globalThis.__glassNativeLocalFont(candidate.family, weight, style); }
+      try { encoded = globalThis.__glassNativeLocalFont(candidate.family, weight, style, stretch); }
       catch (_error) { encoded = null; }
       if (typeof encoded !== "string" || !encoded)
         throw nativeFontFaceError("FontFace local() source was not found", "NetworkError");
@@ -9651,13 +9651,13 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
       });
     });
   };
-  const nativeFontFaceTryCandidates = (candidates, index, lastError, weight, style) => {
+  const nativeFontFaceTryCandidates = (candidates, index, lastError, weight, style, stretch) => {
     if (index >= candidates.length) {
       throw lastError || nativeFontFaceError("FontFace sources could not be loaded", "NetworkError");
     }
     return Promise.resolve()
-      .then(() => nativeFontFaceCandidateBytes(candidates[index], weight, style))
-      .catch((error) => nativeFontFaceTryCandidates(candidates, index + 1, error, weight, style));
+      .then(() => nativeFontFaceCandidateBytes(candidates[index], weight, style, stretch))
+      .catch((error) => nativeFontFaceTryCandidates(candidates, index + 1, error, weight, style, stretch));
   };
   let nextFontFaceRequestId = Number.isSafeInteger(globalThis.__glassNextFontFaceRequestId)
     ? globalThis.__glassNextFontFaceRequestId
@@ -9860,6 +9860,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
         null,
         state.weight,
         state.style,
+        state.stretch,
       );
     });
     const promise = sourcePromise.then((bytes) => {
@@ -15191,7 +15192,8 @@ fn install_native_local_font_source<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), 
         ctx.clone(),
         |family: String,
          weight: String,
-         style: String|
+         style: String,
+         stretch: String|
          -> std::result::Result<Option<String>, Error> {
             let family = family.trim();
             if family.is_empty() || family.len() > MAX_NATIVE_SCRIPT_BYTES {
@@ -15207,7 +15209,11 @@ fn install_native_local_font_source<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), 
                 "italic" => FontStyleValue::Italic,
                 _ => return Err(Error::Unknown),
             };
-            let bytes = NativeFontBook::system().local_font_bytes(family, weight, style);
+            let stretch = parse_font_stretch_range(&stretch)
+                .ok_or(Error::Unknown)?
+                .nominal();
+            let bytes = NativeFontBook::system()
+                .local_font_bytes_with_stretch(family, weight, style, stretch);
             if bytes
                 .as_ref()
                 .is_some_and(|bytes| bytes.len() > MAX_NATIVE_FONT_BYTES)
@@ -17683,6 +17689,31 @@ mod native_font_face_tests {
                 1,
             ])
         );
+    }
+
+    #[test]
+    fn computed_style_projects_font_stretch_as_a_percentage() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-stretch-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<style>#parent { font-stretch: condensed; } #child { font-stretch: 62.5%; }</style><div id='parent'><span id='child'>Child</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("font-stretch fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const parent = getComputedStyle(document.getElementById("parent"));
+                  const child = getComputedStyle(document.getElementById("child"));
+                  return [parent.fontStretch, child.getPropertyValue("font-stretch"), child.item(0) !== ""];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("computed font-stretch surface must evaluate");
+        assert_eq!(evaluation.value, serde_json::json!(["75%", "62.5%", true]));
     }
 
     #[test]
@@ -37083,6 +37114,11 @@ fn document_bootstrap(
     const payload = computedStyleEnumPayload(value);
     return typeof payload === "number" && Number.isFinite(payload) ? payload : fallback;
   }};
+  const computedStyleStretch = (value, fallback = "100%") => {{
+    const number = value && typeof value === "object" ? Number(value.min) : Number(value);
+    if (!Number.isFinite(number) || number < 500 || number > 2000) return fallback;
+    return String(number / 10).replace(/\.0$/, "") + "%";
+  }};
   const computedStyleColor = (value, fallback = "rgba(0, 0, 0, 0)") => {{
     if (!value || typeof value !== "object") return fallback;
     const red = Number(value.red);
@@ -37122,7 +37158,7 @@ fn document_bootstrap(
     "border-left-color", "border-radius", "overflow", "overflow-x", "overflow-y", "white-space",
     "text-align", "text-align-last", "text-justify", "text-indent", "text-transform", "text-overflow",
     "text-decoration", "text-decoration-style", "text-decoration-thickness", "text-underline-offset",
-    "font-weight", "font-style", "line-height", "word-break", "word-spacing", "letter-spacing",
+    "font-weight", "font-style", "font-stretch", "line-height", "word-break", "word-spacing", "letter-spacing",
     "vertical-align", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
     "justify-content", "align-items", "align-self", "align-content", "gap", "row-gap", "column-gap",
     "order", "grid-template-columns", "grid-template-rows"
@@ -37214,6 +37250,7 @@ fn document_bootstrap(
     if (name === "text-underline-offset") return String(Number(raw.text_underline_offset) || 0) + "px";
     if (name === "font-weight") return computedStyleEnumName(raw.font_weight, "normal");
     if (name === "font-style") return computedStyleEnumName(raw.font_style, "normal");
+    if (name === "font-stretch") return computedStyleStretch(raw.font_stretch);
     if (name === "line-height") return computedStylePixels(raw.line_height, "normal");
     if (name === "word-spacing") return String(Number(raw.word_spacing) || 0) + "px";
     if (name === "letter-spacing") return String(Number(raw.letter_spacing) || 0) + "px";

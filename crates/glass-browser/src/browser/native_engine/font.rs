@@ -140,16 +140,22 @@ impl NativeFontFaceResource {
 pub(crate) struct NativeTextMetrics {
     faces: Vec<Arc<NativeFontFace>>,
     font_size: u32,
+    stretch: u16,
     ascent: u32,
     line_height: u32,
     direction: DirectionValue,
 }
 
 impl NativeTextMetrics {
-    pub(crate) fn fallback_with_direction(font_size: u32, direction: DirectionValue) -> Self {
+    pub(crate) fn fallback_with_stretch(
+        font_size: u32,
+        stretch: u16,
+        direction: DirectionValue,
+    ) -> Self {
         Self {
             faces: Vec::new(),
             font_size: font_size.clamp(1, MAX_NATIVE_FONT_SIZE),
+            stretch: stretch.clamp(500, 2000),
             ascent: FALLBACK_LINE_HEIGHT.saturating_sub(5),
             line_height: FALLBACK_LINE_HEIGHT,
             direction,
@@ -174,6 +180,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn for_style_with_book(
         families: NativeFontFamilyList,
         font_size: u32,
@@ -182,10 +189,25 @@ impl NativeTextMetrics {
         direction: DirectionValue,
         book: &NativeFontBook,
     ) -> Self {
+        Self::for_style_with_book_and_stretch(
+            families, font_size, weight, style, 1000, direction, book,
+        )
+    }
+
+    pub(crate) fn for_style_with_book_and_stretch(
+        families: NativeFontFamilyList,
+        font_size: u32,
+        weight: FontWeightValue,
+        style: FontStyleValue,
+        stretch: u16,
+        direction: DirectionValue,
+        book: &NativeFontBook,
+    ) -> Self {
         let font_size = font_size.clamp(1, MAX_NATIVE_FONT_SIZE);
-        let faces = book.faces_for(families, weight, style);
+        let stretch = stretch.clamp(500, 2000);
+        let faces = book.faces_for(families, weight, style, stretch);
         let Some(face) = faces.first() else {
-            return Self::fallback_with_direction(font_size, direction);
+            return Self::fallback_with_stretch(font_size, stretch, direction);
         };
         let line_metrics = face.font.horizontal_line_metrics(font_size as f32);
         let ascent = line_metrics
@@ -198,6 +220,7 @@ impl NativeTextMetrics {
         Self {
             faces,
             font_size,
+            stretch,
             ascent,
             line_height,
             direction,
@@ -212,15 +235,25 @@ impl NativeTextMetrics {
         let base = self
             .face_index_for_character(character)
             .and_then(|face_index| self.faces.get(face_index))
-            .map_or(FALLBACK_GLYPH_ADVANCE, |face| {
-                ceil_positive(
-                    face.font
-                        .metrics(character, self.font_size as f32)
-                        .advance_width,
-                )
-            });
+            .map_or(
+                scale_dimension(FALLBACK_GLYPH_ADVANCE, self.stretch, 1000),
+                |face| {
+                    let (_, nominal) = self.stretch_factor(face);
+                    ceil_stretched(
+                        face.font
+                            .metrics(character, self.font_size as f32)
+                            .advance_width,
+                        self.stretch,
+                        nominal,
+                    )
+                },
+            );
         base.saturating_add(letter_spacing)
             .saturating_add(if character == ' ' { word_spacing } else { 0 })
+    }
+
+    fn stretch_factor(&self, face: &NativeFontFace) -> (u16, u16) {
+        (self.stretch, face.stretch.nominal())
     }
 
     fn face_index_for_character(&self, character: char) -> Option<usize> {
@@ -321,6 +354,7 @@ impl NativeTextMetrics {
 
         let characters: Vec<char> = value.chars().collect();
         let character_count = characters.len();
+        let (requested_stretch, nominal_stretch) = self.stretch_factor(face);
         let cluster_indices = infos
             .iter()
             .map(|info| cluster_index(value, info.cluster))
@@ -365,16 +399,32 @@ impl NativeTextMetrics {
             if position.x_advance < 0 {
                 return None;
             }
+            let x_advance = i32::try_from(scale_fixed(
+                i64::from(position.x_advance),
+                requested_stretch,
+                nominal_stretch,
+            ))
+            .unwrap_or(i32::MAX);
+            let x_offset = i32::try_from(scale_fixed(
+                i64::from(position.x_offset),
+                requested_stretch,
+                nominal_stretch,
+            ))
+            .unwrap_or(if position.x_offset.is_negative() {
+                i32::MIN
+            } else {
+                i32::MAX
+            });
             glyphs.push(NativeShapedGlyph {
                 glyph_id: info.glyph_id,
-                x_offset: position.x_offset,
+                x_offset,
                 y_offset: position.y_offset,
-                x_advance: position.x_advance,
+                x_advance,
                 cluster,
                 cluster_spacing,
             });
             pen_x = pen_x
-                .saturating_add(i64::from(position.x_advance))
+                .saturating_add(i64::from(x_advance))
                 .saturating_add(cluster_spacing);
             previous_cluster = Some(cluster);
         }
@@ -393,6 +443,7 @@ impl NativeTextMetrics {
         justify_spacing: u32,
     ) -> Option<NativeFontRun> {
         let face = self.faces.get(shaped.face_index)?;
+        let (requested_stretch, nominal_stretch) = self.stretch_factor(face);
         let characters: Vec<char> = value.chars().collect();
         let justify_unit = i64::from(justify_spacing).saturating_mul(i64::from(FONT_SHAPE_SCALE));
         let justified_space_count = shaped
@@ -463,6 +514,13 @@ impl NativeTextMetrics {
             if metrics.width > 0 && metrics.height > 0 && !coverage.is_empty() {
                 let width = u32::try_from(metrics.width).ok()?;
                 let height = u32::try_from(metrics.height).ok()?;
+                let (width, coverage) = scale_coverage_horizontal(
+                    coverage,
+                    width,
+                    height,
+                    requested_stretch,
+                    nominal_stretch,
+                )?;
                 let y = i32::try_from(self.ascent)
                     .ok()?
                     .saturating_sub(
@@ -479,12 +537,16 @@ impl NativeTextMetrics {
                         .saturating_add(i64::from(shaped_glyph.x_offset)),
                 };
                 glyphs.push(NativeGlyph {
-                    x: round_signed_fixed(glyph_x).saturating_add(metrics.xmin),
+                    x: round_signed_fixed(glyph_x).saturating_add(scale_signed(
+                        metrics.xmin,
+                        requested_stretch,
+                        nominal_stretch,
+                    )),
                     y,
                     width,
                     height,
                     advance,
-                    coverage: Arc::from(coverage),
+                    coverage,
                 });
             }
             pen_x = pen_x
@@ -516,13 +578,16 @@ impl NativeTextMetrics {
         for (char_index, character) in value.chars().enumerate() {
             let face_index = self.face_index_for_character(character).unwrap_or(0);
             let face = self.faces.get(face_index)?;
+            let (requested_stretch, nominal_stretch) = self.stretch_factor(face);
             if previous_face_index == Some(face_index)
                 && let Some(previous) = previous
             {
                 let kerning = face
                     .font
                     .horizontal_kern(previous, character, self.font_size as f32)
-                    .map_or(0, round_signed);
+                    .map_or(0, |value| {
+                        round_stretched(value, requested_stretch, nominal_stretch)
+                    });
                 x = x.saturating_add(kerning);
             }
             let (metrics, coverage) = face.font.rasterize(character, self.font_size as f32);
@@ -539,18 +604,29 @@ impl NativeTextMetrics {
             if metrics.width > 0 && metrics.height > 0 && !coverage.is_empty() {
                 let width = u32::try_from(metrics.width).ok()?;
                 let height = u32::try_from(metrics.height).ok()?;
+                let (width, coverage) = scale_coverage_horizontal(
+                    coverage,
+                    width,
+                    height,
+                    requested_stretch,
+                    nominal_stretch,
+                )?;
                 let y = i32::try_from(self.ascent).ok()?.saturating_sub(
                     i32::try_from(metrics.height)
                         .ok()?
                         .saturating_add(metrics.ymin),
                 );
                 glyphs.push(NativeGlyph {
-                    x: x.saturating_add(metrics.xmin),
+                    x: x.saturating_add(scale_signed(
+                        metrics.xmin,
+                        requested_stretch,
+                        nominal_stretch,
+                    )),
                     y,
                     width,
                     height,
                     advance,
-                    coverage: Arc::from(coverage),
+                    coverage,
                 });
             }
             x = x.saturating_add(i32::try_from(advance).unwrap_or(i32::MAX));
@@ -855,13 +931,23 @@ impl NativeFontBook {
         weight: FontWeightValue,
         style: FontStyleValue,
     ) -> Option<Vec<u8>> {
+        self.local_font_bytes_with_stretch(family, weight, style, 1000)
+    }
+
+    pub(crate) fn local_font_bytes_with_stretch(
+        &self,
+        family: &str,
+        weight: FontWeightValue,
+        style: FontStyleValue,
+        stretch: u16,
+    ) -> Option<Vec<u8>> {
         let mut best = None;
-        let mut best_score = u8::MAX;
+        let mut best_score = u16::MAX;
         for face in &self.faces {
             if !face.family.eq_ignore_ascii_case(family) {
                 continue;
             }
-            let score = face_score(face, weight, style);
+            let score = face_score(face, weight, style, stretch);
             if score < best_score {
                 best_score = score;
                 best = Some(face);
@@ -912,6 +998,7 @@ impl NativeFontBook {
         families: NativeFontFamilyList,
         weight: FontWeightValue,
         style: FontStyleValue,
+        stretch: u16,
     ) -> Vec<Arc<NativeFontFace>> {
         let mut selected = Vec::new();
         for family in families.iter() {
@@ -922,14 +1009,14 @@ impl NativeFontBook {
                 .collect::<Vec<_>>();
             let Some(best_score) = matching
                 .iter()
-                .map(|face| face_score(face, weight, style))
+                .map(|face| face_score(face, weight, style, stretch))
                 .min()
             else {
                 continue;
             };
             let best = matching
                 .into_iter()
-                .filter(|face| face_score(face, weight, style) == best_score)
+                .filter(|face| face_score(face, weight, style, stretch) == best_score)
                 .collect::<Vec<_>>();
             if best.iter().any(|face| !face.unicode_ranges.is_empty()) {
                 selected.extend(best.into_iter().map(|face| Arc::new(face.clone())));
@@ -1235,10 +1322,18 @@ fn family_matches(family: NativeFontFamilyValue, face: &NativeFontFace) -> bool 
     }
 }
 
-fn face_score(face: &NativeFontFace, weight: FontWeightValue, style: FontStyleValue) -> u8 {
-    let weight_score = u8::from(face.weight != weight);
-    let style_score = u8::from(face.style != style);
-    weight_score.saturating_mul(2).saturating_add(style_score)
+fn face_score(
+    face: &NativeFontFace,
+    weight: FontWeightValue,
+    style: FontStyleValue,
+    stretch: u16,
+) -> u16 {
+    let weight_score = u16::from(face.weight != weight);
+    let style_score = u16::from(face.style != style);
+    weight_score
+        .saturating_mul(4000)
+        .saturating_add(style_score.saturating_mul(2000))
+        .saturating_add(face.stretch.distance(stretch))
 }
 
 fn ceil_positive(value: f32) -> u32 {
@@ -1247,6 +1342,91 @@ fn ceil_positive(value: f32) -> u32 {
     } else {
         0
     }
+}
+
+fn scale_fixed(value: i64, requested: u16, nominal: u16) -> i64 {
+    if nominal == 0 {
+        return value;
+    }
+    value
+        .saturating_mul(i64::from(requested))
+        .checked_div(i64::from(nominal))
+        .unwrap_or_else(|| {
+            if value.is_negative() {
+                i64::MIN
+            } else {
+                i64::MAX
+            }
+        })
+}
+
+fn scale_dimension(value: u32, requested: u16, nominal: u16) -> u32 {
+    if value == 0 || nominal == 0 {
+        return value;
+    }
+    let scaled = u64::from(value)
+        .saturating_mul(u64::from(requested))
+        .saturating_add(u64::from(nominal / 2))
+        / u64::from(nominal);
+    u32::try_from(scaled.max(1)).unwrap_or(u32::MAX)
+}
+
+fn scale_signed(value: i32, requested: u16, nominal: u16) -> i32 {
+    i32::try_from(scale_fixed(i64::from(value), requested, nominal)).unwrap_or(
+        if value.is_negative() {
+            i32::MIN
+        } else {
+            i32::MAX
+        },
+    )
+}
+
+fn ceil_stretched(value: f32, requested: u16, nominal: u16) -> u32 {
+    if nominal == 0 {
+        return ceil_positive(value);
+    }
+    ceil_positive(value * (f32::from(requested) / f32::from(nominal)))
+}
+
+fn round_stretched(value: f32, requested: u16, nominal: u16) -> i32 {
+    if nominal == 0 {
+        return round_signed(value);
+    }
+    round_signed(value * (f32::from(requested) / f32::from(nominal)))
+}
+
+fn scale_coverage_horizontal(
+    coverage: Vec<u8>,
+    width: u32,
+    height: u32,
+    requested: u16,
+    nominal: u16,
+) -> Option<(u32, Arc<[u8]>)> {
+    let source_width = usize::try_from(width).ok()?;
+    let source_height = usize::try_from(height).ok()?;
+    let source_len = source_width.checked_mul(source_height)?;
+    if source_width == 0 || source_height == 0 || coverage.len() != source_len {
+        return None;
+    }
+    let scaled_width = scale_dimension(width, requested, nominal);
+    let destination_width = usize::try_from(scaled_width).ok()?;
+    if scaled_width == width {
+        return Some((width, Arc::from(coverage)));
+    }
+    let destination_len = destination_width.checked_mul(source_height)?;
+    let mut scaled = vec![0_u8; destination_len];
+    for row in 0..source_height {
+        let source_row = row.checked_mul(source_width)?;
+        let destination_row = row.checked_mul(destination_width)?;
+        for column in 0..destination_width {
+            let numerator =
+                (column.saturating_mul(2).saturating_add(1)).saturating_mul(source_width);
+            let denominator = destination_width.saturating_mul(2).max(1);
+            let source_column = (numerator / denominator).min(source_width - 1);
+            scaled[destination_row + column] = coverage[source_row + source_column];
+        }
+    }
+    Some((scaled_width, Arc::from(scaled)))
 }
 
 fn round_signed(value: f32) -> i32 {
@@ -1493,8 +1673,12 @@ mod tests {
     #[test]
     fn ordered_font_candidates_preserve_css_family_order() {
         let families = NativeFontFamilyList::parse("sans-serif, serif").unwrap();
-        let candidates =
-            system_font_book().faces_for(families, FontWeightValue::Normal, FontStyleValue::Normal);
+        let candidates = system_font_book().faces_for(
+            families,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            1000,
+        );
         if candidates.len() < 2 {
             return;
         }
@@ -1721,6 +1905,79 @@ mod tests {
     }
 
     #[test]
+    fn font_stretch_matches_face_ranges_and_scales_glyph_runs() {
+        let Some(system_face) = system_font_book().faces.first() else {
+            return;
+        };
+        if !has_glyph(system_face, 'A') {
+            return;
+        }
+        let family_key = font_family_hash("Stretch Face");
+        let resources = [
+            NativeFontFaceResource {
+                family: "Stretch Face".into(),
+                family_key,
+                weight: FontWeightValue::Normal,
+                style: FontStyleValue::Normal,
+                stretch: NativeFontStretchRange::default(),
+                bytes: system_face.font_data.clone(),
+                unicode_ranges: Vec::new(),
+            },
+            NativeFontFaceResource {
+                family: "Stretch Face".into(),
+                family_key,
+                weight: FontWeightValue::Normal,
+                style: FontStyleValue::Normal,
+                stretch: NativeFontStretchRange { min: 750, max: 750 },
+                bytes: system_face.font_data.clone(),
+                unicode_ranges: Vec::new(),
+            },
+        ];
+        let book = NativeFontBook::from_resources(&resources);
+        let families = NativeFontFamilyList::parse("Stretch Face").unwrap();
+        let normal = NativeTextMetrics::for_style_with_book_and_stretch(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            1000,
+            DirectionValue::Ltr,
+            &book,
+        );
+        let condensed = NativeTextMetrics::for_style_with_book_and_stretch(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            750,
+            DirectionValue::Ltr,
+            &book,
+        );
+        let expanded = NativeTextMetrics::for_style_with_book_and_stretch(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            1250,
+            DirectionValue::Ltr,
+            &book,
+        );
+
+        assert_eq!(normal.faces[0].stretch, NativeFontStretchRange::default());
+        assert_eq!(condensed.faces[0].stretch.min, 750);
+        assert_eq!(expanded.faces[0].stretch, NativeFontStretchRange::default());
+        let normal_width = normal.measure_text("AAAA", 0, 0);
+        assert_eq!(
+            condensed.measure_text("AAAA", 0, 0),
+            normal_width,
+            "a singleton condensed face is already at its declared width"
+        );
+        assert!(expanded.measure_text("AAAA", 0, 0) > normal_width);
+        let run = expanded.rasterize("AAAA", 0, 0, 0).unwrap();
+        assert!(run.width > normal.rasterize("AAAA", 0, 0, 0).unwrap().width);
+    }
+
+    #[test]
     fn missing_glyph_uses_bounded_primary_replacement() {
         let families = NativeFontFamilyList::single(NativeFontFamilyValue::Generic(
             NativeGenericFontFamily::SansSerif,
@@ -1856,8 +2113,9 @@ mod tests {
 
     #[test]
     fn fallback_metrics_keep_the_legacy_cell_contract() {
-        let metrics = NativeTextMetrics::fallback_with_direction(
+        let metrics = NativeTextMetrics::fallback_with_stretch(
             DEFAULT_NATIVE_FONT_SIZE,
+            1000,
             DirectionValue::Ltr,
         );
         assert_eq!(metrics.measure_text("A B", 0, 0), 24);

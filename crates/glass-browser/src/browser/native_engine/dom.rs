@@ -6529,6 +6529,7 @@ impl NativeDocument {
         let mut inherited_text_transform = TextTransformValue::None;
         let mut inherited_font_weight = FontWeightValue::Normal;
         let mut inherited_font_style = FontStyleValue::Normal;
+        let mut inherited_font_stretch = super::css::NativeFontStretchRange::default();
         let mut inherited_font_family = NativeFontFamilyList::default();
         let mut inherited_font_size = super::font::DEFAULT_NATIVE_FONT_SIZE;
         let mut inherited_word_break = WordBreakValue::Normal;
@@ -6591,6 +6592,7 @@ impl NativeDocument {
                     text_transform: inherited_text_transform,
                     font_weight: inherited_font_weight,
                     font_style: inherited_font_style,
+                    font_stretch: inherited_font_stretch,
                     font_family: inherited_font_family,
                     font_size: inherited_font_size,
                     word_break: inherited_word_break,
@@ -6654,6 +6656,7 @@ impl NativeDocument {
             inherited_text_transform = style.text_transform();
             inherited_font_weight = style.font_weight();
             inherited_font_style = style.font_style();
+            inherited_font_stretch = style.font_stretch();
             inherited_font_family = style.font_family();
             inherited_font_size = style.font_size();
             inherited_word_break = style.word_break();
@@ -6683,16 +6686,21 @@ impl NativeDocument {
             .iter()
             .any(|family| !matches!(family, super::css::NativeFontFamilyValue::Fallback))
         {
-            NativeTextMetrics::for_style_with_book(
+            NativeTextMetrics::for_style_with_book_and_stretch(
                 style.font_family(),
                 style.font_size(),
                 style.font_weight(),
                 style.font_style(),
+                style.font_stretch().min,
                 style.direction(),
                 &self.font_book,
             )
         } else {
-            NativeTextMetrics::fallback_with_direction(style.font_size(), style.direction())
+            NativeTextMetrics::fallback_with_stretch(
+                style.font_size(),
+                style.font_stretch().min,
+                style.direction(),
+            )
         }
     }
 

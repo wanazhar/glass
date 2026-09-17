@@ -48,6 +48,7 @@ use super::javascript::{
     load_service_worker_registration_profiles, load_web_storage_profile, order_page_scripts,
     page_script_sources_to_scripts, save_service_worker_cache_profile, save_web_storage_profile,
     static_module_specifiers, storage_key, validate_message_port_transfers,
+    validate_native_message_payload, validate_native_object_url_transfers,
 };
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
@@ -3257,6 +3258,16 @@ fn decode_post_message_requests(
                 encoded.len(),
             ));
         }
+        validate_message_port_transfers(&message.transfer_ports)?;
+        validate_native_object_url_transfers(&message.object_urls)?;
+        validate_native_message_payload(
+            &serde_json::json!({
+                "data": &message.data,
+                "transfer_ports": &message.transfer_ports,
+                "object_urls": &message.object_urls,
+            }),
+            "content-process postMessage data",
+        )?;
     }
     Ok(messages)
 }

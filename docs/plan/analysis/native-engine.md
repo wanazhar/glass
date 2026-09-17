@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-455`, following
+expansion checkpoint is completed `native-engine-browser-456`, following
+completed `native-engine-browser-455`, following
 completed `native-engine-browser-454`, following
 completed `native-engine-browser-453`, following
 completed `native-engine-browser-452`, following
@@ -307,7 +308,12 @@ same-realm page navigation snapshots a bounded UTF-8 Blob document, carries its
 payload through the content-process boundary when needed, derives the creator
 origin for the new document, and creates a fresh destination realm. Generic
 image, stylesheet, script, and cross-realm object-URL subresources remain
-separate resource-owner work.
+separate resource-owner work. Slice 456 closes the page image portion of that
+boundary for process-backed documents: runtime-verified Blob URLs feed `<img>`
+and CSS background image consumers through the bounded MIME decoder, intrinsic
+dimension, paint-resource, and load/error path without network transport or
+HTTP image-cache reuse. Stylesheet, script, media, popup/window, and
+cross-realm object-URL consumers remain separate resource-owner work.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-
@@ -6521,7 +6527,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-455.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-456.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-455.md` is the preceding completed
 task;
 `docs/plan/tasks/native-engine-browser-454.md` is the preceding completed
 task;
@@ -6722,7 +6730,7 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain starts at `native-engine-browser-455`.
+The current browser-slice evidence chain starts at `native-engine-browser-456`.
 Slices 440 through 356 are summarized in the current checkpoint paragraphs
 above; the historical continuation below begins with `native-engine-browser-355`,
 `native-engine-browser-354`,

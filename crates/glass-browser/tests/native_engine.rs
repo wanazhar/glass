@@ -1494,6 +1494,180 @@ async fn native_local_dynamic_blob_images_load_and_paint_after_late_attachment()
 }
 
 #[tokio::test]
+async fn native_local_dynamic_blob_media_exposes_metadata_and_load_event() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://blob-dynamic-media",
+            "<html><head></head><body><div id='host'></div></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://blob-dynamic-media");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    globalThis.localBlobMediaLog = [];
+                    const bytes = new Uint8Array(44 + 8000);
+                    const view = new DataView(bytes.buffer);
+                    const write = (offset, value) => [...value].forEach((character, index) => view.setUint8(offset + index, character.charCodeAt(0)));
+                    write(0, 'RIFF');
+                    view.setUint32(4, 8036, true);
+                    write(8, 'WAVE');
+                    write(12, 'fmt ');
+                    view.setUint32(16, 16, true);
+                    view.setUint16(20, 1, true);
+                    view.setUint16(22, 1, true);
+                    view.setUint32(24, 8000, true);
+                    view.setUint32(28, 8000, true);
+                    view.setUint16(32, 1, true);
+                    view.setUint16(34, 8, true);
+                    write(36, 'data');
+                    view.setUint32(40, 8000, true);
+                    bytes.fill(128, 44);
+                    const audio = document.createElement('audio');
+                    audio.addEventListener('load', () => localBlobMediaLog.push('load'));
+                    audio.addEventListener('error', () => localBlobMediaLog.push('error'));
+                    audio.src = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+                    document.getElementById('host').appendChild(audio);
+                    globalThis.localBlobAudio = audio;
+                    return audio.src;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("blob:null/glass-native-1")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const audio = localBlobAudio; return [localBlobMediaLog, audio instanceof HTMLAudioElement, audio.readyState, audio.networkState, audio.duration, audio.currentSrc, audio.error, audio.buffered.length, audio.buffered.end(0), audio.canPlayType('audio/wav')]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            ["load"],
+            true,
+            1,
+            1,
+            1,
+            "blob:null/glass-native-1",
+            serde_json::Value::Null,
+            1,
+            1,
+            "maybe"
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_dynamic_blob_media_selects_supported_source() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://blob-media-source-selection",
+            "<html><head></head><body><div id='host'></div></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://blob-media-source-selection");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    globalThis.mediaSourceLog = [];
+                    const audio = document.createElement('audio');
+                    const unsupported = document.createElement('source');
+                    unsupported.type = 'audio/x-not-supported';
+                    unsupported.src = URL.createObjectURL(new Blob(['bad'], { type: 'audio/x-not-supported' }));
+                    const supported = document.createElement('source');
+                    supported.type = 'audio/webm';
+                    supported.src = URL.createObjectURL(new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], { type: 'audio/webm' }));
+                    audio.addEventListener('load', () => mediaSourceLog.push('load'));
+                    audio.addEventListener('error', () => mediaSourceLog.push('error'));
+                    audio.append(unsupported, supported);
+                    document.getElementById('host').appendChild(audio);
+                    globalThis.mediaSourceAudio = audio;
+                    return [unsupported.src, supported.src];
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "blob:null/glass-native-1",
+            "blob:null/glass-native-2"
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[mediaSourceLog, mediaSourceAudio.readyState, mediaSourceAudio.networkState, mediaSourceAudio.currentSrc, mediaSourceAudio.error]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            ["load"],
+            1,
+            1,
+            "blob:null/glass-native-2",
+            serde_json::Value::Null
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_dynamic_blob_media_reports_unsupported_payload_error() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://blob-media-error",
+            "<html><head></head><body><div id='host'></div></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://blob-media-error");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    globalThis.mediaErrorLog = [];
+                    const audio = document.createElement('audio');
+                    audio.addEventListener('error', () => mediaErrorLog.push('error'));
+                    audio.src = URL.createObjectURL(new Blob(['not a media resource']));
+                    document.getElementById('host').appendChild(audio);
+                    globalThis.mediaErrorAudio = audio;
+                    return audio.src;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("blob:null/glass-native-1")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[mediaErrorLog, mediaErrorAudio.readyState, mediaErrorAudio.networkState, mediaErrorAudio.currentSrc, mediaErrorAudio.error && mediaErrorAudio.error.code]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            ["error"],
+            0,
+            3,
+            "blob:null/glass-native-1",
+            4
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_exposes_computed_style_and_media_queries() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -48636,6 +48810,109 @@ async fn native_content_process_loads_blob_object_url_image_subresources() {
             .filter(|command| matches!(command, NativeDisplayCommand::Image { .. }))
             .count(),
         2
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_loads_blob_object_url_media_subresources() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<audio id='audio'></audio><script>globalThis.mediaEvents = []; const audio = document.getElementById('audio'); audio.addEventListener('load', () => mediaEvents.push('load')); audio.addEventListener('error', () => mediaEvents.push('error'));</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: script-src 'unsafe-inline'; media-src blob:\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const audio = document.getElementById('audio'); const url = URL.createObjectURL(new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], { type: 'audio/webm' })); audio.src = url; return url; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(format!("blob:http://{address}/glass-native-1"))
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const audio = document.getElementById('audio'); return [mediaEvents, audio.readyState, audio.networkState, audio.currentSrc, audio.error, audio.canPlayType('audio/webm')]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            ["load"],
+            1,
+            1,
+            format!("blob:http://{address}/glass-native-1"),
+            serde_json::Value::Null,
+            "maybe"
+        ])
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_blocks_csp_disallowed_blob_media_subresources() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<audio id='audio'></audio><script>globalThis.mediaError = 0; const audio = document.getElementById('audio'); audio.addEventListener('error', () => mediaError += 1);</script>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: script-src 'unsafe-inline'; media-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const audio = document.getElementById('audio'); const url = URL.createObjectURL(new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], { type: 'audio/webm' })); audio.src = url; return url; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(format!("blob:http://{address}/glass-native-1"))
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const audio = document.getElementById('audio'); return [mediaError, audio.readyState, audio.networkState, audio.currentSrc, audio.error && audio.error.code]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            1,
+            0,
+            3,
+            format!("blob:http://{address}/glass-native-1"),
+            4
+        ])
     );
 
     engine.close_async().await.unwrap();

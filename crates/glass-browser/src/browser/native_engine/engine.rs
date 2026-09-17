@@ -78,6 +78,7 @@ const MAX_NATIVE_HISTORY_DELTA: i32 = 1024;
 const MAX_NATIVE_LOCAL_STYLESHEETS: usize = 16;
 const MAX_NATIVE_LOCAL_STYLESHEET_BYTES: usize = 512 * 1024;
 const MAX_NATIVE_LOCAL_IMAGES: usize = 64;
+const MAX_NATIVE_LOCAL_MEDIA: usize = 64;
 
 #[derive(Debug)]
 struct NativeRequestLedger {
@@ -4437,24 +4438,31 @@ impl NativeEngine {
             let dialog_url = self.url.clone();
             self.install_dialogs(dynamic_dialogs, &dialog_url)?;
         }
-        let (stylesheet_events, image_events) = if let Some(javascript) = self.javascript.as_ref() {
-            let stylesheet_events = load_local_dynamic_blob_stylesheets(
-                &mut document,
-                javascript,
-                &mut self.loader,
-                &self.url,
-            )?;
-            let image_events = load_local_dynamic_blob_images(
-                &mut document,
-                javascript,
-                &mut self.loader,
-                &self.url,
-                self.config.viewport,
-            )?;
-            (stylesheet_events, image_events)
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        let (stylesheet_events, image_events, media_events) =
+            if let Some(javascript) = self.javascript.as_ref() {
+                let stylesheet_events = load_local_dynamic_blob_stylesheets(
+                    &mut document,
+                    javascript,
+                    &mut self.loader,
+                    &self.url,
+                )?;
+                let image_events = load_local_dynamic_blob_images(
+                    &mut document,
+                    javascript,
+                    &mut self.loader,
+                    &self.url,
+                    self.config.viewport,
+                )?;
+                let media_events = load_local_dynamic_blob_media(
+                    &mut document,
+                    javascript,
+                    &mut self.loader,
+                    &self.url,
+                )?;
+                (stylesheet_events, image_events, media_events)
+            } else {
+                (Vec::new(), Vec::new(), Vec::new())
+            };
         for (node_index, event_kind) in stylesheet_events {
             let node_id = NativeNodeId::from_parts(document.generation(), node_index);
             if let Some(evaluation) =
@@ -4466,6 +4474,16 @@ impl NativeEngine {
             events.push((node_id, event_kind));
         }
         for (node_index, event_kind) in image_events {
+            let node_id = NativeNodeId::from_parts(document.generation(), node_index);
+            if let Some(evaluation) =
+                self.evaluate_local_events(&document, &[(node_id, event_kind)])?
+            {
+                scroll_commands.extend(extract_local_scroll_commands(&evaluation.commands));
+                events.extend(document.apply_script_commands(&evaluation.commands)?);
+            }
+            events.push((node_id, event_kind));
+        }
+        for (node_index, event_kind) in media_events {
             let node_id = NativeNodeId::from_parts(document.generation(), node_index);
             if let Some(evaluation) =
                 self.evaluate_local_events(&document, &[(node_id, event_kind)])?
@@ -8168,6 +8186,47 @@ fn load_local_dynamic_blob_images(
             document.set_background_image_resource(node_index, source, image)?;
         }
     }
+    Ok(events)
+}
+
+fn load_local_dynamic_blob_media(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
+    let mut events = Vec::new();
+    for (node_index, source) in document
+        .external_media_links()
+        .into_iter()
+        .take(MAX_NATIVE_LOCAL_MEDIA)
+    {
+        if !source
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
+        {
+            continue;
+        }
+        let node_id = NativeNodeId::from_parts(document.generation(), node_index);
+        if document.has_media_resource_for_node(node_id) {
+            continue;
+        }
+        document.mark_media_load(node_index, source.clone())?;
+        let object_url = runtime.object_url_resource(&source)?;
+        let metadata = loader.load_local_blob_media(document_url, &source, object_url.as_ref())?;
+        let event_kind = match metadata {
+            Some(metadata) => {
+                document.set_media_resource(node_index, source, metadata)?;
+                NativeEventKind::Load
+            }
+            None => {
+                document.set_media_error(node_index, source)?;
+                NativeEventKind::Error
+            }
+        };
+        events.push((node_index, event_kind));
+    }
+    document.refresh_media_loads();
     Ok(events)
 }
 

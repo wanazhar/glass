@@ -489,6 +489,9 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default = "default_true")]
         origin_clean: bool,
     },
+    MediaLoad {
+        node_index: u32,
+    },
     SetChecked {
         node_index: u32,
         checked: bool,
@@ -9480,6 +9483,7 @@ pub(crate) fn validate_frame_script_command(
                 | NativeScriptCommand::SetValue { .. }
                 | NativeScriptCommand::SetSelection { .. }
                 | NativeScriptCommand::CanvasCommit { .. }
+                | NativeScriptCommand::MediaLoad { .. }
                 | NativeScriptCommand::SetChecked { .. }
                 | NativeScriptCommand::SetSelected { .. }
                 | NativeScriptCommand::SetAttribute { .. }
@@ -9525,6 +9529,7 @@ fn is_frame_script_batch_command(command: &NativeScriptCommand) -> bool {
             | NativeScriptCommand::ClearFileInput { .. }
             | NativeScriptCommand::SetSelection { .. }
             | NativeScriptCommand::CanvasCommit { .. }
+            | NativeScriptCommand::MediaLoad { .. }
             | NativeScriptCommand::SetChecked { .. }
             | NativeScriptCommand::SetSelected { .. }
             | NativeScriptCommand::SetAttribute { .. }
@@ -31732,6 +31737,19 @@ fn document_bootstrap(
       set(next) {{ element.setAttribute(attribute, String(next)); }},
     }});
   }};
+  const nativeMediaTypeSupported = (value) => {{
+    const mediaType = String(value === undefined || value === null ? "" : value)
+      .split(";", 1)[0]
+      .trim()
+      .toLowerCase();
+    return mediaType === ""
+      || [
+        "audio/mpeg", "audio/mp3", "audio/ogg", "application/ogg",
+        "audio/wav", "audio/wave", "audio/x-wav", "audio/webm", "audio/mp4",
+        "video/mp4", "video/ogg", "video/webm",
+        "application/vnd.apple.mpegurl", "application/x-mpegurl",
+      ].includes(mediaType);
+  }};
   const installUrlAttributeProperty = (element, property, attribute, baseUrl, onSet = null) => {{
     Object.defineProperty(element, property, {{
       enumerable: true,
@@ -31744,7 +31762,7 @@ fn document_bootstrap(
       set(next) {{
         const value = String(next);
         element.setAttribute(attribute, value);
-        if (typeof onSet === "function") onSet(value === "");
+        if (typeof onSet === "function") onSet(value);
       }},
     }});
   }};
@@ -31769,10 +31787,15 @@ fn document_bootstrap(
     ]) installStringAttributeProperty(element, property, attribute);
     if (["A", "AREA", "BASE", "LINK"].includes(element.tagName))
       installUrlAttributeProperty(element, "href", "href", baseUrl);
-    if (["IMG", "SCRIPT", "IFRAME", "FRAME", "EMBED", "SOURCE", "TRACK", "AUDIO", "VIDEO"].includes(element.tagName))
-      installUrlAttributeProperty(element, "src", "src", baseUrl,
-        element.tagName === "IMG" ? state.imageReset : null);
-    if (["LINK", "SCRIPT"].includes(element.tagName)) {{
+    if (["IMG", "SCRIPT", "IFRAME", "FRAME", "EMBED", "SOURCE", "TRACK", "AUDIO", "VIDEO"].includes(element.tagName)) {{
+      const reset = element.tagName === "IMG"
+        ? (typeof state.imageReset === "function" ? (value) => state.imageReset(value === "") : null)
+        : (["AUDIO", "VIDEO"].includes(element.tagName) && typeof state.mediaReset === "function"
+          ? state.mediaReset
+          : null);
+      installUrlAttributeProperty(element, "src", "src", baseUrl, reset);
+    }}
+    if (["LINK", "SCRIPT", "AUDIO", "VIDEO"].includes(element.tagName)) {{
       installStringAttributeProperty(element, "integrity", "integrity");
       installStringAttributeProperty(element, "crossOrigin", "crossorigin");
     }}
@@ -31825,6 +31848,182 @@ fn document_bootstrap(
       }});
       installEventHandlerProperty(element, "load");
       installEventHandlerProperty(element, "error");
+    }}
+    if (["AUDIO", "VIDEO"].includes(element.tagName)) {{
+      const mediaState = () => ({{
+        readyState: typeof state.mediaReadyState === "function"
+          ? Number(state.mediaReadyState()) || 0
+          : 0,
+        networkState: typeof state.mediaNetworkState === "function"
+          ? Number(state.mediaNetworkState()) || 0
+          : (element.getAttribute("src") ? 2 : 0),
+        currentSrc: typeof state.mediaCurrentSrc === "function"
+          ? String(state.mediaCurrentSrc() || "")
+          : "",
+        durationMillis: typeof state.mediaDurationMillis === "function"
+          ? state.mediaDurationMillis()
+          : null,
+        errorCode: typeof state.mediaError === "function"
+          ? state.mediaError()
+          : null,
+      }});
+      const mediaDuration = () => {{
+        const millis = mediaState().durationMillis;
+        return millis === null || millis === undefined
+          ? Number.NaN
+          : Math.max(0, Number(millis) / 1000);
+      }};
+      const mediaTimeRanges = () => {{
+        const duration = mediaDuration();
+        const end = Number.isFinite(duration) && duration >= 0 ? duration : null;
+        return {{
+          length: end === null ? 0 : 1,
+          start(index) {{
+            if (Number(index) !== 0 || end === null) throw new DOMExceptionNative("The time range index is invalid", "IndexSizeError");
+            return 0;
+          }},
+          end(index) {{
+            if (Number(index) !== 0 || end === null) throw new DOMExceptionNative("The time range index is invalid", "IndexSizeError");
+            return end;
+          }},
+        }};
+      }};
+      const mediaSelectedSource = () => {{
+        const own = element.getAttribute("src");
+        if (own !== null && own !== "") return own;
+        const children = Array.isArray(element.__glassChildren) ? element.__glassChildren : [];
+        for (const child of children) {{
+          if (!child || child.localName !== "source") continue;
+          if (!nativeMediaTypeSupported(child.getAttribute("type"))) continue;
+          const source = child.getAttribute("src");
+          if (source !== null && source !== "") return source;
+        }}
+        return "";
+      }};
+      const mediaCurrentSource = () => {{
+        const selected = mediaState().currentSrc || mediaSelectedSource();
+        if (!selected) return "";
+        try {{ return new URLNative(selected, baseUrl).href; }} catch (_error) {{ return selected; }}
+      }};
+      let mediaCurrentTime = 0;
+      let mediaPaused = true;
+      let mediaEnded = false;
+      let mediaPlaybackRate = 1;
+      let mediaDefaultPlaybackRate = 1;
+      let mediaVolume = 1;
+      let mediaSeeking = false;
+      const resetMediaState = () => {{
+        mediaCurrentTime = 0;
+        mediaPaused = true;
+        mediaEnded = false;
+        mediaSeeking = false;
+        if (typeof state.mediaReset === "function") state.mediaReset();
+      }};
+      const dispatchMediaEvent = (type) => {{
+        try {{ dispatchTarget(element, createEvent(type)); }} catch (_error) {{}}
+      }};
+      Object.defineProperties(element, {{
+        currentSrc: {{ enumerable: true, configurable: false, get() {{ return mediaCurrentSource(); }} }},
+        readyState: {{ enumerable: true, configurable: false, get() {{ return mediaState().readyState; }} }},
+        networkState: {{ enumerable: true, configurable: false, get() {{ return mediaState().networkState; }} }},
+        duration: {{ enumerable: true, configurable: false, get() {{ return mediaDuration(); }} }},
+        currentTime: {{
+          enumerable: true,
+          configurable: false,
+          get() {{ return mediaCurrentTime; }},
+          set(next) {{
+            const numeric = Number(next);
+            if (!Number.isFinite(numeric) || numeric < 0) throw new DOMExceptionNative("The media time is invalid", "InvalidStateError");
+            const duration = mediaDuration();
+            mediaCurrentTime = Number.isFinite(duration) ? Math.min(numeric, duration) : numeric;
+            mediaSeeking = true;
+            dispatchMediaEvent("seeking");
+            mediaSeeking = false;
+            dispatchMediaEvent("timeupdate");
+            dispatchMediaEvent("seeked");
+          }},
+        }},
+        paused: {{ enumerable: true, configurable: false, get() {{ return mediaPaused; }} }},
+        ended: {{ enumerable: true, configurable: false, get() {{ return mediaEnded; }} }},
+        seeking: {{ enumerable: true, configurable: false, get() {{ return mediaSeeking; }} }},
+        playbackRate: {{
+          enumerable: true,
+          configurable: false,
+          get() {{ return mediaPlaybackRate; }},
+          set(next) {{
+            const numeric = Number(next);
+            if (!Number.isFinite(numeric) || numeric === 0) throw new DOMExceptionNative("The playback rate is invalid", "NotSupportedError");
+            mediaPlaybackRate = numeric;
+            dispatchMediaEvent("ratechange");
+          }},
+        }},
+        defaultPlaybackRate: {{
+          enumerable: true,
+          configurable: false,
+          get() {{ return mediaDefaultPlaybackRate; }},
+          set(next) {{
+            const numeric = Number(next);
+            if (!Number.isFinite(numeric) || numeric === 0) throw new DOMExceptionNative("The default playback rate is invalid", "NotSupportedError");
+            mediaDefaultPlaybackRate = numeric;
+          }},
+        }},
+        volume: {{
+          enumerable: true,
+          configurable: false,
+          get() {{ return mediaVolume; }},
+          set(next) {{
+            const numeric = Number(next);
+            if (!Number.isFinite(numeric) || numeric < 0 || numeric > 1) throw new DOMExceptionNative("The media volume is invalid", "IndexSizeError");
+            if (mediaVolume !== numeric) {{
+              mediaVolume = numeric;
+              dispatchMediaEvent("volumechange");
+            }}
+          }},
+        }},
+        error: {{
+          enumerable: true,
+          configurable: false,
+          get() {{
+            const code = mediaState().errorCode;
+            return code === null || code === undefined
+              ? null
+              : {{ code: Number(code), message: "The media resource could not be loaded" }};
+          }},
+        }},
+        buffered: {{ enumerable: true, configurable: false, get() {{ return mediaTimeRanges(); }} }},
+        seekable: {{ enumerable: true, configurable: false, get() {{ return mediaTimeRanges(); }} }},
+        played: {{ enumerable: true, configurable: false, get() {{ return mediaTimeRanges(); }} }},
+        srcObject: {{
+          enumerable: true,
+          configurable: false,
+          get() {{ return null; }},
+          set(_next) {{ throw new DOMExceptionNative("srcObject is unsupported", "NotSupportedError"); }},
+        }},
+      }});
+      for (const type of [
+        "loadstart", "durationchange", "loadedmetadata", "loadeddata", "canplay",
+        "canplaythrough", "play", "playing", "pause", "ended", "timeupdate",
+        "progress", "error", "stalled", "suspend", "waiting", "seeking", "seeked",
+        "ratechange", "volumechange",
+      ]) installEventHandlerProperty(element, type);
+      element.load = () => {{
+        resetMediaState();
+        if (typeof state.mediaLoad === "function") state.mediaLoad();
+        dispatchMediaEvent("loadstart");
+      }};
+      element.play = () => Promise.reject(new DOMExceptionNative(
+        "The native media decoder is not implemented",
+        "NotSupportedError",
+      ));
+      element.pause = () => {{
+        if (!mediaPaused) {{
+          mediaPaused = true;
+          dispatchMediaEvent("pause");
+        }}
+      }};
+      element.fastSeek = (next) => {{ element.currentTime = next; }};
+      element.canPlayType = (type) => nativeMediaTypeSupported(type) && String(type || "").trim() ? "maybe" : "";
+      element.__glassMediaReset = resetMediaState;
     }}
     Object.defineProperty(element, "type", {{
       enumerable: true,
@@ -32252,6 +32451,15 @@ fn document_bootstrap(
     let imageNaturalWidth = Number(entry.imageNaturalWidth) || 0;
     let imageNaturalHeight = Number(entry.imageNaturalHeight) || 0;
     let imageCurrentSrc = String(entry.imageCurrentSrc || "");
+    let mediaReadyState = Number(entry.mediaReadyState) || 0;
+    let mediaNetworkState = Number(entry.mediaNetworkState) || 0;
+    let mediaCurrentSrc = String(entry.mediaCurrentSrc || "");
+    let mediaDurationMillis = entry.mediaDurationMillis === null || entry.mediaDurationMillis === undefined
+      ? null
+      : Number(entry.mediaDurationMillis);
+    let mediaError = entry.mediaError === null || entry.mediaError === undefined
+      ? null
+      : Number(entry.mediaError);
     let inlineStyleAllowed = entry.inlineStyleAllowed !== false;
     const inlineAttributeHandlers = new Map();
     let computedStyle = entry.computedStyle && typeof entry.computedStyle === "object"
@@ -32264,6 +32472,13 @@ fn document_bootstrap(
       imageNaturalWidth = 0;
       imageNaturalHeight = 0;
       imageCurrentSrc = "";
+    }};
+    const resetMediaState = () => {{
+      mediaReadyState = 0;
+      mediaNetworkState = Object.prototype.hasOwnProperty.call(entry.attributes, "src") ? 2 : 0;
+      mediaCurrentSrc = "";
+      mediaDurationMillis = null;
+      mediaError = null;
     }};
     if (!entry.attributeNamespaces || typeof entry.attributeNamespaces !== "object") entry.attributeNamespaces = {{}};
     const setNamespacedAttribute = (namespace, name, nextValue) => {{
@@ -32571,6 +32786,9 @@ fn document_bootstrap(
         delete entry.attributeNamespaces[key];
         installInlineAttributeHandler(key, stringValue);
         if (["src", "srcset", "sizes"].includes(key) && element.tagName === "IMG") resetImageState(stringValue === "" && key === "src");
+        if ((element.tagName === "AUDIO" || element.tagName === "VIDEO") && key === "src") resetMediaState();
+        if (element.tagName === "SOURCE" && ["src", "type"].includes(key)
+            && element.__glassParent && typeof element.__glassParent.__glassMediaReset === "function") element.__glassParent.__glassMediaReset();
         if (key === "disabled") disabled = true;
         if (key === "hidden") hidden = true;
         if (key === "multiple") multiple = true;
@@ -32586,6 +32804,9 @@ fn document_bootstrap(
         delete entry.attributeNamespaces[key];
         removeInlineAttributeHandler(key);
         if (["src", "srcset", "sizes"].includes(key) && element.tagName === "IMG") resetImageState(key === "src");
+        if ((element.tagName === "AUDIO" || element.tagName === "VIDEO") && key === "src") resetMediaState();
+        if (element.tagName === "SOURCE" && ["src", "type"].includes(key)
+            && element.__glassParent && typeof element.__glassParent.__glassMediaReset === "function") element.__glassParent.__glassMediaReset();
         if (key === "disabled") disabled = false;
         if (key === "hidden") hidden = false;
         if (key === "multiple") multiple = false;
@@ -32620,6 +32841,8 @@ fn document_bootstrap(
         child.__glassParent = element;
         child.parentIndex = element.nodeIndex;
         element.__glassSyncContent();
+        if (child.localName === "source"
+            && (element.tagName === "AUDIO" || element.tagName === "VIDEO")) resetMediaState();
         pushCommand({{ kind: "appendChild", parent_index: entry.nodeIndex, child_index: child.nodeIndex }});
         if (nodeIsConnected(element)) executeInsertedScripts(child);
         return child;
@@ -32655,6 +32878,8 @@ fn document_bootstrap(
         child.__glassParent = element;
         child.parentIndex = element.nodeIndex;
         element.__glassSyncContent();
+        if (child.localName === "source"
+            && (element.tagName === "AUDIO" || element.tagName === "VIDEO")) resetMediaState();
         pushCommand({{
           kind: "insertBefore",
           parent_index: entry.nodeIndex,
@@ -32890,6 +33115,13 @@ fn document_bootstrap(
       imageNaturalHeight: () => imageNaturalHeight,
       imageCurrentSrc: () => imageCurrentSrc,
       imageReset: resetImageState,
+      mediaReadyState: () => mediaReadyState,
+      mediaNetworkState: () => mediaNetworkState,
+      mediaCurrentSrc: () => mediaCurrentSrc,
+      mediaDurationMillis: () => mediaDurationMillis,
+      mediaError: () => mediaError,
+      mediaReset: resetMediaState,
+      mediaLoad: () => pushCommand({{ kind: "mediaLoad", node_index: entry.nodeIndex }}),
     }});
     refreshInlineAttributeHandlers();
     nativeCanvasInstallElement(element, entry);
@@ -33082,6 +33314,15 @@ fn document_bootstrap(
         imageNaturalWidth = Number(nextEntry.imageNaturalWidth) || 0;
         imageNaturalHeight = Number(nextEntry.imageNaturalHeight) || 0;
         imageCurrentSrc = String(nextEntry.imageCurrentSrc || "");
+        mediaReadyState = Number(nextEntry.mediaReadyState) || 0;
+        mediaNetworkState = Number(nextEntry.mediaNetworkState) || 0;
+        mediaCurrentSrc = String(nextEntry.mediaCurrentSrc || "");
+        mediaDurationMillis = nextEntry.mediaDurationMillis === null || nextEntry.mediaDurationMillis === undefined
+          ? null
+          : Number(nextEntry.mediaDurationMillis);
+        mediaError = nextEntry.mediaError === null || nextEntry.mediaError === undefined
+          ? null
+          : Number(nextEntry.mediaError);
         scrollLeft = Number(nextEntry.scrollX) || 0;
         scrollTop = Number(nextEntry.scrollY) || 0;
         refreshInlineAttributeHandlers();
@@ -33123,6 +33364,11 @@ fn document_bootstrap(
       imageNaturalWidth: 0,
       imageNaturalHeight: 0,
       imageCurrentSrc: "",
+      mediaReadyState: 0,
+      mediaNetworkState: 0,
+      mediaCurrentSrc: "",
+      mediaDurationMillis: null,
+      mediaError: null,
     }};
     const element = makeElement(entry);
     element.__glassCreated = true;
@@ -33827,6 +34073,7 @@ fn document_bootstrap(
       case "click": element.click(); break;
       case "setValue": element.value = String(command.value); break;
       case "setSelection": element.setSelectionRange(command.start, command.end, command.direction); break;
+      case "mediaLoad": if (typeof element.load === "function") element.load(); else throw new TypeError("native media load is unsupported"); break;
       case "setChecked": element.checked = Boolean(command.checked); break;
       case "setSelected": element.selected = Boolean(command.selected); break;
       case "setAttribute":
@@ -37492,11 +37739,15 @@ fn document_bootstrap(
   const DocumentFragmentNative = ensureNativeConstructor("DocumentFragment", NodeNative);
   const ElementNative = ensureNativeConstructor("Element", NodeNative);
   const HTMLElementNative = ensureNativeConstructor("HTMLElement", ElementNative);
+  const HTMLMediaElementNative = ensureNativeConstructor("HTMLMediaElement", HTMLElementNative);
   const WindowNative = ensureNativeConstructor("Window", null);
   const LocationNative = ensureNativeConstructor("Location", null);
   const NodeListNative = ensureNativeConstructor("NodeList", null);
   const HtmlCollectionNative = ensureNativeConstructor("HTMLCollection", null);
   const NamedNodeMapNative = ensureNativeConstructor("NamedNodeMap", null);
+  for (const [name, value] of [["HAVE_NOTHING", 0], ["HAVE_METADATA", 1], ["HAVE_CURRENT_DATA", 2], ["HAVE_FUTURE_DATA", 3], ["HAVE_ENOUGH_DATA", 4], ["NETWORK_EMPTY", 0], ["NETWORK_IDLE", 1], ["NETWORK_LOADING", 2], ["NETWORK_NO_SOURCE", 3]]) {{
+    if (!(name in HTMLMediaElementNative)) Object.defineProperty(HTMLMediaElementNative, name, {{ configurable: false, enumerable: true, value }});
+  }}
   globalThis.Attr = AttrNative;
   globalThis.NamedNodeMap = NamedNodeMapNative;
   const characterDataTarget = (target) => {{
@@ -37599,6 +37850,9 @@ fn document_bootstrap(
     HTMLButtonElement: HTMLElementNative,
     HTMLAnchorElement: HTMLElementNative,
     HTMLCanvasElement: HTMLElementNative,
+    HTMLMediaElement: HTMLMediaElementNative,
+    HTMLAudioElement: HTMLMediaElementNative,
+    HTMLVideoElement: HTMLMediaElementNative,
     HTMLIFrameElement: HTMLElementNative,
     HTMLFrameElement: HTMLElementNative,
   }};
@@ -37617,6 +37871,8 @@ fn document_bootstrap(
       BUTTON: "HTMLButtonElement",
       A: "HTMLAnchorElement",
       CANVAS: "HTMLCanvasElement",
+      AUDIO: "HTMLAudioElement",
+      VIDEO: "HTMLVideoElement",
       IFRAME: "HTMLIFrameElement",
       FRAME: "HTMLFrameElement",
     }}[tagName] || "HTMLUnknownElement";
@@ -37785,7 +38041,7 @@ fn document_bootstrap(
   }};
   globalThis.__glassRecordFrameMutation = recordFrameMutation;
   const frameBatchableCommand = (command) => command && [
-    "setValue", "setSelection", "setChecked", "setSelected",
+    "setValue", "setSelection", "setChecked", "setSelected", "mediaLoad",
     "setAttribute", "removeAttribute", "setTextContent", "setInnerHtml",
     "removeNode", "createElement", "createTextNode", "createComment", "createDocumentType", "appendChild",
     "insertBefore", "setCustomValidity",

@@ -16,7 +16,10 @@ use super::javascript::NativeScriptCommand;
 use super::layout::{NativeLayoutSnapshot, NativePoint};
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
-use super::resource_loader::{MAX_NATIVE_CSP_POLICIES, NativeNavigationRequest, NativeRequestBody};
+use super::resource_loader::{
+    MAX_NATIVE_CSP_POLICIES, MAX_NATIVE_MEDIA_BYTES, NativeMediaMetadata, NativeNavigationRequest,
+    NativeRequestBody,
+};
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES, TextFragmentTerms, Viewport},
     css::{
@@ -189,6 +192,12 @@ pub(crate) struct NativeDocumentWire {
     pub(crate) image_loads: Vec<NativeImageLoadWire>,
     #[serde(default)]
     pub(crate) canvas_resources: Vec<NativeCanvasResourceWire>,
+    #[serde(default)]
+    pub(crate) media_resources: Vec<NativeMediaResourceWire>,
+    #[serde(default)]
+    pub(crate) media_loads: Vec<NativeMediaLoadWire>,
+    #[serde(default)]
+    pub(crate) media_errors: Vec<NativeMediaLoadWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,6 +262,22 @@ pub(crate) struct NativeImageResourceWire {
 pub(crate) struct NativeImageFrameWire {
     pub(crate) delay_ms: u32,
     pub(crate) pixels_base64: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeMediaResourceWire {
+    pub(crate) node_index: u32,
+    pub(crate) source: String,
+    pub(crate) content_type: String,
+    pub(crate) byte_length: usize,
+    #[serde(default)]
+    pub(crate) duration_millis: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeMediaLoadWire {
+    pub(crate) node_index: u32,
+    pub(crate) source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -515,6 +540,16 @@ pub(crate) struct NativeScriptElementSnapshot {
     #[serde(default)]
     pub(crate) image_current_src: String,
     #[serde(default)]
+    pub(crate) media_ready_state: u8,
+    #[serde(default)]
+    pub(crate) media_network_state: u8,
+    #[serde(default)]
+    pub(crate) media_current_src: String,
+    #[serde(default)]
+    pub(crate) media_duration_millis: Option<u64>,
+    #[serde(default)]
+    pub(crate) media_error: Option<u16>,
+    #[serde(default)]
     pub(crate) scroll_x: u32,
     #[serde(default)]
     pub(crate) scroll_y: u32,
@@ -631,6 +666,9 @@ pub struct NativeDocument {
     pending_csp_meta_policies: BTreeMap<u32, String>,
     image_resources: BTreeMap<u32, NativeImageResource>,
     image_loads: BTreeMap<u32, String>,
+    media_resources: BTreeMap<u32, NativeMediaResource>,
+    media_loads: BTreeMap<u32, String>,
+    media_errors: BTreeMap<u32, String>,
     background_image_sources: BTreeMap<u32, String>,
     background_image_resources: BTreeMap<u32, NativeImageResource>,
     canvas_resources: BTreeMap<u32, NativeCanvasResource>,
@@ -642,6 +680,14 @@ pub struct NativeDocument {
 struct NativeExternalStylesheetState {
     href: String,
     body: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeMediaResource {
+    source: String,
+    content_type: String,
+    byte_length: usize,
+    duration_millis: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -856,6 +902,9 @@ impl NativeDocument {
             pending_csp_meta_policies: BTreeMap::new(),
             image_resources: BTreeMap::new(),
             image_loads: BTreeMap::new(),
+            media_resources: BTreeMap::new(),
+            media_loads: BTreeMap::new(),
+            media_errors: BTreeMap::new(),
             background_image_sources: BTreeMap::new(),
             background_image_resources: BTreeMap::new(),
             canvas_resources: BTreeMap::new(),
@@ -1327,6 +1376,209 @@ impl NativeDocument {
             .collect()
     }
 
+    /// Return media elements whose selected source needs native resource
+    /// admission. Source children are considered in document order after the
+    /// element's own src attribute, matching the bounded HTML media source
+    /// selection model.
+    pub(crate) fn external_media_links(&self) -> Vec<(u32, String)> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                self.node(node.id())?;
+                let source = self.selected_media_source(node.id())?;
+                (node.element_name() == Some("audio") || node.element_name() == Some("video"))
+                    .then_some((node.id().index(), source))
+            })
+            .filter(|(_, source)| !source.is_empty())
+            .collect()
+    }
+
+    fn selected_media_source(&self, node_id: NativeNodeId) -> Option<String> {
+        let node = self.node(node_id)?;
+        if node.element_name() != Some("audio") && node.element_name() != Some("video") {
+            return None;
+        }
+        if let Some(source) = node.attribute("src").filter(|source| !source.is_empty()) {
+            return Some(source.to_owned());
+        }
+        for child_id in node.children() {
+            let child = self.node(*child_id)?;
+            if child.element_name() != Some("source")
+                || !media_type_is_supported(child.attribute("type"))
+            {
+                continue;
+            }
+            if let Some(source) = child.attribute("src").filter(|source| !source.is_empty()) {
+                return Some(source.to_owned());
+            }
+        }
+        None
+    }
+
+    pub(crate) fn media_current_src(&self, node_id: NativeNodeId) -> String {
+        self.media_loads
+            .get(&node_id.index())
+            .cloned()
+            .or_else(|| self.media_errors.get(&node_id.index()).cloned())
+            .or_else(|| self.selected_media_source(node_id))
+            .unwrap_or_default()
+    }
+
+    /// Return the bounded HTMLMediaElement resource state:
+    /// (ready_state, network_state, duration_millis, current_src, error).
+    pub(crate) fn media_properties(
+        &self,
+        node_id: NativeNodeId,
+    ) -> Option<(u8, u8, Option<u64>, String, Option<u16>)> {
+        let node = self.node(node_id)?;
+        if node.element_name() != Some("audio") && node.element_name() != Some("video") {
+            return None;
+        }
+        let source = self.media_current_src(node_id);
+        if source.is_empty() {
+            return Some((0, 0, None, String::new(), None));
+        }
+        if let Some(resource) = self.media_resources.get(&node_id.index())
+            && resource.source == source
+        {
+            return Some((1, 1, resource.duration_millis, source, None));
+        }
+        if self
+            .media_errors
+            .get(&node_id.index())
+            .is_some_and(|loaded_source| loaded_source == &source)
+        {
+            return Some((0, 3, None, source, Some(4)));
+        }
+        Some((0, 2, None, source, None))
+    }
+
+    pub(crate) fn mark_media_load(
+        &mut self,
+        node_index: u32,
+        source: String,
+    ) -> Result<(), NativeEngineError> {
+        let node_id = NativeNodeId::from_parts(self.generation, node_index);
+        let node = self
+            .node(node_id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if (node.element_name() != Some("audio") && node.element_name() != Some("video"))
+            || self.selected_media_source(node_id).as_deref() != Some(source.as_str())
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "media load state does not match its media element".into(),
+            });
+        }
+        self.media_resources.remove(&node_index);
+        self.media_errors.remove(&node_index);
+        self.media_loads.insert(node_index, source);
+        Ok(())
+    }
+
+    pub(crate) fn refresh_media_loads(&mut self) {
+        let retained_loads = self
+            .media_loads
+            .iter()
+            .filter_map(|(node_index, source)| {
+                let node_id = NativeNodeId::from_parts(self.generation, *node_index);
+                let node = self.node(node_id)?;
+                ((node.element_name() == Some("audio") || node.element_name() == Some("video"))
+                    && self.selected_media_source(node_id).as_deref() == Some(source.as_str()))
+                .then(|| (*node_index, source.clone()))
+            })
+            .collect();
+        self.media_loads = retained_loads;
+        let retained_errors = self
+            .media_errors
+            .iter()
+            .filter_map(|(node_index, source)| {
+                let node_id = NativeNodeId::from_parts(self.generation, *node_index);
+                let node = self.node(node_id)?;
+                ((node.element_name() == Some("audio") || node.element_name() == Some("video"))
+                    && self.selected_media_source(node_id).as_deref() == Some(source.as_str()))
+                .then(|| (*node_index, source.clone()))
+            })
+            .collect();
+        self.media_errors = retained_errors;
+        self.media_resources.retain(|node_index, resource| {
+            self.media_loads
+                .get(node_index)
+                .is_some_and(|source| source == &resource.source)
+        });
+    }
+
+    pub(crate) fn has_media_resource_for_node(&self, node_id: NativeNodeId) -> bool {
+        self.media_resources
+            .get(&node_id.index())
+            .is_some_and(|resource| {
+                self.media_loads.get(&node_id.index()) == Some(&resource.source)
+            })
+    }
+
+    pub(crate) fn set_media_resource(
+        &mut self,
+        node_index: u32,
+        source: String,
+        metadata: NativeMediaMetadata,
+    ) -> Result<(), NativeEngineError> {
+        if source.is_empty()
+            || source.len() > MAX_ATTRIBUTE_BYTES
+            || source.bytes().any(|byte| byte.is_ascii_control())
+            || metadata.content_type.len() > MAX_ATTRIBUTE_BYTES
+            || !media_type_is_supported(Some(&metadata.content_type))
+            || metadata.byte_length == 0
+            || metadata.byte_length > MAX_NATIVE_MEDIA_BYTES
+        {
+            return Err(NativeEngineError::invalid(
+                "native media resource",
+                "contains an invalid bounded media resource",
+            ));
+        }
+        let node_id = NativeNodeId::from_parts(self.generation, node_index);
+        let node = self
+            .node(node_id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if (node.element_name() != Some("audio") && node.element_name() != Some("video"))
+            || self.media_loads.get(&node_index) != Some(&source)
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "media resource does not match its media element".into(),
+            });
+        }
+        self.media_errors.remove(&node_index);
+        self.media_resources.insert(
+            node_index,
+            NativeMediaResource {
+                source,
+                content_type: metadata.content_type,
+                byte_length: metadata.byte_length,
+                duration_millis: metadata.duration_millis,
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn set_media_error(
+        &mut self,
+        node_index: u32,
+        source: String,
+    ) -> Result<(), NativeEngineError> {
+        let node_id = NativeNodeId::from_parts(self.generation, node_index);
+        let node = self
+            .node(node_id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if (node.element_name() != Some("audio") && node.element_name() != Some("video"))
+            || self.media_loads.get(&node_index) != Some(&source)
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "media error does not match its media element".into(),
+            });
+        }
+        self.media_resources.remove(&node_index);
+        self.media_errors.insert(node_index, source);
+        Ok(())
+    }
+
     fn selected_image_source(&self, node_id: NativeNodeId, viewport: Viewport) -> Option<String> {
         let node = self.node(node_id)?;
         if node.element_name() != Some("img") {
@@ -1720,6 +1972,46 @@ impl NativeDocument {
                 })
             })
             .collect();
+        let media_resources = self
+            .media_resources
+            .iter()
+            .filter_map(|(node_index, resource)| {
+                let node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
+                ((node.element_name() == Some("audio") || node.element_name() == Some("video"))
+                    && self.media_loads.get(node_index) == Some(&resource.source))
+                .then(|| NativeMediaResourceWire {
+                    node_index: *node_index,
+                    source: resource.source.clone(),
+                    content_type: resource.content_type.clone(),
+                    byte_length: resource.byte_length,
+                    duration_millis: resource.duration_millis,
+                })
+            })
+            .collect();
+        let media_loads =
+            self.media_loads
+                .iter()
+                .filter_map(|(node_index, source)| {
+                    let node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
+                    (node.element_name() == Some("audio") || node.element_name() == Some("video"))
+                        .then(|| NativeMediaLoadWire {
+                            node_index: *node_index,
+                            source: source.clone(),
+                        })
+                })
+                .collect();
+        let media_errors =
+            self.media_errors
+                .iter()
+                .filter_map(|(node_index, source)| {
+                    let node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
+                    (node.element_name() == Some("audio") || node.element_name() == Some("video"))
+                        .then(|| NativeMediaLoadWire {
+                            node_index: *node_index,
+                            source: source.clone(),
+                        })
+                })
+                .collect();
         let canvas_resources = self
             .canvas_resources
             .iter()
@@ -1797,6 +2089,9 @@ impl NativeDocument {
             background_image_resources,
             image_loads,
             canvas_resources,
+            media_resources,
+            media_loads,
+            media_errors,
         }
     }
 
@@ -2226,6 +2521,129 @@ impl NativeDocument {
                 });
             }
         }
+        if wire.media_resources.len() > limits.max_nodes {
+            return Err(NativeEngineError::limit(
+                "content-process media resources",
+                limits.max_nodes,
+                wire.media_resources.len(),
+            ));
+        }
+        let mut media_resources = BTreeMap::new();
+        for resource in wire.media_resources {
+            if resource.source.is_empty()
+                || resource.source.len() > MAX_ATTRIBUTE_BYTES
+                || resource.source.bytes().any(|byte| byte.is_ascii_control())
+                || resource.content_type.is_empty()
+                || resource.content_type.len() > MAX_ATTRIBUTE_BYTES
+                || resource.byte_length == 0
+                || resource.byte_length > MAX_NATIVE_MEDIA_BYTES
+                || !media_type_is_supported(Some(&resource.content_type))
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid media resource".into(),
+                });
+            }
+            let node_index =
+                usize::try_from(resource.node_index).map_err(|_| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid media node index".into(),
+                })?;
+            let node = nodes
+                .get(node_index)
+                .ok_or_else(|| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an out-of-range media node index".into(),
+                })?;
+            if (node.element_name() != Some("audio") && node.element_name() != Some("video"))
+                || !media_source_is_declared(&nodes, node_index, &resource.source)
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned a media resource for a different node".into(),
+                });
+            }
+            if media_resources
+                .insert(
+                    resource.node_index,
+                    NativeMediaResource {
+                        source: resource.source,
+                        content_type: resource.content_type,
+                        byte_length: resource.byte_length,
+                        duration_millis: resource.duration_millis,
+                    },
+                )
+                .is_some()
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned duplicate media resources".into(),
+                });
+            }
+        }
+        let decode_media_loads = |loads: Vec<NativeMediaLoadWire>,
+                                  kind: &'static str|
+         -> Result<BTreeMap<u32, String>, NativeEngineError> {
+            if loads.len() > limits.max_nodes {
+                return Err(NativeEngineError::limit(
+                    kind,
+                    limits.max_nodes,
+                    loads.len(),
+                ));
+            }
+            let mut result = BTreeMap::new();
+            for load in loads {
+                if load.source.is_empty()
+                    || load.source.len() > MAX_ATTRIBUTE_BYTES
+                    || load.source.bytes().any(|byte| byte.is_ascii_control())
+                {
+                    return Err(NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "content process returned an invalid media load source".into(),
+                    });
+                }
+                let node_index =
+                    usize::try_from(load.node_index).map_err(|_| NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "content process returned an invalid media load node index".into(),
+                    })?;
+                let node = nodes
+                    .get(node_index)
+                    .ok_or_else(|| NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "content process returned an out-of-range media load node index"
+                            .into(),
+                    })?;
+                if (node.element_name() != Some("audio") && node.element_name() != Some("video"))
+                    || !media_source_is_declared(&nodes, node_index, &load.source)
+                {
+                    return Err(NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "content process returned a media load for a different node".into(),
+                    });
+                }
+                if result.insert(load.node_index, load.source).is_some() {
+                    return Err(NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "content process returned duplicate media load states".into(),
+                    });
+                }
+            }
+            Ok(result)
+        };
+        let media_loads =
+            decode_media_loads(wire.media_loads, "content-process media load states")?;
+        let media_errors =
+            decode_media_loads(wire.media_errors, "content-process media error states")?;
+        if media_resources
+            .iter()
+            .any(|(node_index, resource)| media_loads.get(node_index) != Some(&resource.source))
+        {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned media resources without matching loads".into(),
+            });
+        }
         if wire.canvas_resources.len() > limits.max_nodes {
             return Err(NativeEngineError::limit(
                 "content-process canvas resources",
@@ -2410,6 +2828,9 @@ impl NativeDocument {
             pending_csp_meta_policies: BTreeMap::new(),
             image_resources,
             image_loads,
+            media_resources,
+            media_loads,
+            media_errors,
             background_image_sources,
             background_image_resources,
             canvas_resources,
@@ -2490,6 +2911,9 @@ impl NativeDocument {
             pending_csp_meta_policies: BTreeMap::new(),
             image_resources: BTreeMap::new(),
             image_loads: BTreeMap::new(),
+            media_resources: BTreeMap::new(),
+            media_loads: BTreeMap::new(),
+            media_errors: BTreeMap::new(),
             background_image_sources: BTreeMap::new(),
             background_image_resources: BTreeMap::new(),
             canvas_resources: BTreeMap::new(),
@@ -2703,6 +3127,15 @@ impl NativeDocument {
                 } else {
                     String::new()
                 };
+                let (
+                    media_ready_state,
+                    media_network_state,
+                    media_duration_millis,
+                    media_current_src,
+                    media_error,
+                ) = self
+                    .media_properties(node.id())
+                    .unwrap_or((0, 0, None, String::new(), None));
                 let computed_style = self.computed_style_for_layout(node.id());
                 Some(NativeScriptElementSnapshot {
                     node_index: node.id().index(),
@@ -2732,6 +3165,11 @@ impl NativeDocument {
                     image_natural_width,
                     image_natural_height,
                     image_current_src,
+                    media_ready_state,
+                    media_network_state,
+                    media_current_src,
+                    media_duration_millis,
+                    media_error,
                     scroll_x: 0,
                     scroll_y: 0,
                     inline_style_allowed: node.inline_style_allowed(),
@@ -4103,6 +4541,9 @@ impl NativeDocument {
                         &script_nodes,
                     )?;
                 }
+                NativeScriptCommand::MediaLoad { node_index } => {
+                    self.reset_media_load(*node_index, &script_nodes)?;
+                }
                 NativeScriptCommand::SetChecked {
                     node_index,
                     checked,
@@ -4314,6 +4755,30 @@ impl NativeDocument {
             .filter(|(node_index, _)| *node_index >= SCRIPT_TEMP_NODE_BASE)
             .collect();
         Ok(events)
+    }
+
+    fn reset_media_load(
+        &mut self,
+        node_index: u32,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
+    ) -> Result<(), NativeEngineError> {
+        let node_id = self.resolve_script_node_id(node_index, script_nodes);
+        let node = self
+            .script_node(node_id, script_nodes)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if node.element_name() != Some("audio") && node.element_name() != Some("video") {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "media load requires an audio or video element".into(),
+            });
+        }
+        let source = self.selected_media_source(node_id);
+        self.media_resources.remove(&node_index);
+        self.media_errors.remove(&node_index);
+        self.media_loads.remove(&node_index);
+        if let Some(source) = source.filter(|source| !source.is_empty()) {
+            self.media_loads.insert(node_index, source);
+        }
+        Ok(())
     }
 
     fn apply_script_canvas(
@@ -5324,6 +5789,9 @@ impl NativeDocument {
         }
         for current in &detached {
             self.canvas_resources.remove(&current.index());
+            self.media_resources.remove(&current.index());
+            self.media_loads.remove(&current.index());
+            self.media_errors.remove(&current.index());
         }
         for current in detached {
             let node = self
@@ -8005,6 +8473,35 @@ fn image_type_is_supported(image_type: Option<&str>) -> bool {
     })
 }
 
+fn media_type_is_supported(media_type: Option<&str>) -> bool {
+    media_type.is_none_or(|media_type| {
+        let media_type = media_type
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        media_type.is_empty()
+            || matches!(
+                media_type.as_str(),
+                "audio/mpeg"
+                    | "audio/mp3"
+                    | "audio/ogg"
+                    | "application/ogg"
+                    | "audio/wav"
+                    | "audio/wave"
+                    | "audio/x-wav"
+                    | "audio/webm"
+                    | "audio/mp4"
+                    | "video/mp4"
+                    | "video/ogg"
+                    | "video/webm"
+                    | "application/vnd.apple.mpegurl"
+                    | "application/x-mpegurl"
+            )
+    })
+}
+
 fn parse_image_srcset(value: &str) -> Vec<NativeImageCandidate> {
     let mut candidates = Vec::new();
     let mut descriptor_kind = None;
@@ -8105,6 +8602,23 @@ fn image_source_is_declared(nodes: &[NativeNode], node_index: usize, source: &st
         }
     }
     false
+}
+
+fn media_source_is_declared(nodes: &[NativeNode], node_index: usize, source: &str) -> bool {
+    let Some(node) = nodes.get(node_index) else {
+        return false;
+    };
+    if node.attribute("src") == Some(source) {
+        return true;
+    }
+    node.children().iter().any(|child_id| {
+        usize::try_from(child_id.index())
+            .ok()
+            .and_then(|index| nodes.get(index))
+            .is_some_and(|child| {
+                child.element_name() == Some("source") && child.attribute("src") == Some(source)
+            })
+    })
 }
 
 fn parse_image_density(value: &str) -> Option<u32> {

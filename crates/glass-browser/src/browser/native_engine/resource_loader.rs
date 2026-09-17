@@ -46,6 +46,7 @@ const MAX_NATIVE_CSP_REPORT_PAYLOAD_BYTES: usize = 128 * 1024;
 const MAX_NATIVE_CSP_REPORT_TASKS: usize = 32;
 const NATIVE_CSP_REPORT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES: usize = 2048;
+pub(crate) const MAX_NATIVE_MEDIA_BYTES: usize = 16 * 1024 * 1024;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +188,17 @@ pub(crate) struct NativeObjectUrlResource {
 pub(crate) struct NativeObjectUrlTransfer {
     pub(crate) href: String,
     pub(crate) resource: NativeObjectUrlResource,
+}
+
+/// Metadata admitted for one media element resource. The native engine keeps
+/// this separate from decoded audio/video frames: callers can inspect source
+/// ownership and media readiness without retaining an unbounded codec buffer
+/// in the document wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeMediaMetadata {
+    pub(crate) content_type: String,
+    pub(crate) byte_length: usize,
+    pub(crate) duration_millis: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -5512,6 +5524,56 @@ impl NativeResourceLoader {
         Ok(Some(image))
     }
 
+    /// Admit a Blob-backed media resource. Blob URLs are resolved through the
+    /// caller's JavaScript realm; no network or HTTP cache lookup is performed
+    /// for this path.
+    pub(crate) fn load_local_blob_media(
+        &mut self,
+        document_url: &str,
+        src: &str,
+        object_url: Option<&NativeObjectUrlResource>,
+    ) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("media URL", src)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "media owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        let Some(target_url) = resolve_subresource_url_with_blob(&document_url, src)? else {
+            return Ok(None);
+        };
+        if !target_url.scheme().eq_ignore_ascii_case("blob") {
+            return Ok(None);
+        }
+        if is_network_url(document_url.as_str()) {
+            if !mixed_content_allowed(&document_url, &target_url) {
+                return Ok(None);
+            }
+            let policy = self
+                .network
+                .document_policies
+                .get(&cache_key(&document_url))
+                .cloned()
+                .unwrap_or_default();
+            self.record_report_only_url_violations(
+                &policy,
+                NativeSubresourceKind::Media,
+                &document_url,
+                &target_url,
+            );
+            if !policy.allows(NativeSubresourceKind::Media, &document_url, &target_url) {
+                return Ok(None);
+            }
+        }
+        let Some(object_url) = object_url else {
+            return Ok(None);
+        };
+        NativeOrigin::from_blob_url(without_fragment(target_url.as_str()))?;
+        media_metadata_from_bytes(object_url.content_type.as_deref(), &object_url.body)
+    }
+
     /// Load a Blob-backed classic script for a local document without entering
     /// the asynchronous network loader. The JavaScript runtime remains the
     /// registry authority; this method only validates and copies the bounded
@@ -6721,6 +6783,114 @@ fn supported_image_media_type_text(value: &str) -> Option<&'static str> {
     }
 }
 
+fn media_metadata_from_bytes(
+    declared_type: Option<&str>,
+    bytes: &[u8],
+) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    if bytes.len() > MAX_NATIVE_MEDIA_BYTES {
+        return Err(NativeEngineError::limit(
+            "native media resource",
+            MAX_NATIVE_MEDIA_BYTES,
+            bytes.len(),
+        ));
+    }
+    let content_type = match declared_type
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(declared_type) => supported_media_type_text(declared_type),
+        None => sniff_media_type(bytes),
+    };
+    let Some(content_type) = content_type else {
+        return Ok(None);
+    };
+    let duration_millis = (content_type == "audio/wav")
+        .then(|| wav_duration_millis(bytes))
+        .flatten();
+    Ok(Some(NativeMediaMetadata {
+        content_type: content_type.to_owned(),
+        byte_length: bytes.len(),
+        duration_millis,
+    }))
+}
+
+fn supported_media_type_text(value: &str) -> Option<&'static str> {
+    let value = value.split(';').next().unwrap_or_default().trim();
+    match value.to_ascii_lowercase().as_str() {
+        "audio/mpeg" | "audio/mp3" => Some("audio/mpeg"),
+        "audio/ogg" => Some("audio/ogg"),
+        "application/ogg" => Some("application/ogg"),
+        "audio/wav" | "audio/wave" | "audio/x-wav" => Some("audio/wav"),
+        "audio/webm" => Some("audio/webm"),
+        "audio/mp4" => Some("audio/mp4"),
+        "video/mp4" => Some("video/mp4"),
+        "video/ogg" => Some("video/ogg"),
+        "video/webm" => Some("video/webm"),
+        "application/vnd.apple.mpegurl" | "application/x-mpegurl" => {
+            Some("application/vnd.apple.mpegurl")
+        }
+        _ => None,
+    }
+}
+
+fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        return Some("audio/wav");
+    }
+    if bytes.len() >= 4 && &bytes[..4] == b"OggS" {
+        return Some("application/ogg");
+    }
+    if bytes.len() >= 4 && &bytes[..4] == b"\x1A\x45\xDF\xA3" {
+        return Some("video/webm");
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        return Some("video/mp4");
+    }
+    if bytes.len() >= 3 && &bytes[..3] == b"ID3" {
+        return Some("audio/mpeg");
+    }
+    None
+}
+
+fn wav_duration_millis(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut offset = 12usize;
+    let mut byte_rate = None;
+    let mut data_length = None;
+    while offset.checked_add(8)? <= bytes.len() {
+        let chunk_length = usize::try_from(u32::from_le_bytes(
+            bytes[offset + 4..offset + 8].try_into().ok()?,
+        ))
+        .ok()?;
+        let start = offset.checked_add(8)?;
+        let end = start.checked_add(chunk_length)?.min(bytes.len());
+        match &bytes[offset..offset + 4] {
+            b"fmt " if end.saturating_sub(start) >= 12 => {
+                byte_rate = Some(u32::from_le_bytes(
+                    bytes[start + 8..start + 12].try_into().ok()?,
+                ));
+            }
+            b"data" => data_length = Some(end.saturating_sub(start) as u64),
+            _ => {}
+        }
+        if end == bytes.len() {
+            break;
+        }
+        offset = end.saturating_add(chunk_length % 2);
+    }
+    let byte_rate = u64::from(byte_rate?);
+    if byte_rate > 0 {
+        data_length.map(|length| length.saturating_mul(1000) / byte_rate)
+    } else {
+        None
+    }
+}
+
 fn script_content_type_allowed(
     value: Option<&reqwest::header::HeaderValue>,
 ) -> Result<bool, NativeEngineError> {
@@ -7699,16 +7869,17 @@ mod tests {
         NativeIndexedDbState, NativeWebStorageState, save_web_storage_profile,
     };
     use super::{
-        MAX_NATIVE_CACHE_ENTRIES, MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, NativeCookieProfileEntry,
-        NativeCorsMode, NativeEngineConfig, NativeFetchMethod, NativeInlineCspKind,
-        NativeNavigationMethod, NativeNavigationPolicyKind, NativeNetworkState, NativeRequestBody,
-        NativeResource, NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
-        cache_control_requires_revalidation, content_security_policy, cors_origin_header,
-        cors_preflight_response_allowed, cors_response_allowed,
-        csp_report_deliveries_for_declaration, csp_sources_allow, csp_sources_allow_for_redirect,
-        decode_html_body, document_cache_fresh_until, document_cache_storage_allowed,
-        mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
-        subresource_integrity_matches,
+        MAX_NATIVE_CACHE_ENTRIES, MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, MAX_NATIVE_MEDIA_BYTES,
+        NativeCookieProfileEntry, NativeCorsMode, NativeEngineConfig, NativeFetchMethod,
+        NativeInlineCspKind, NativeNavigationMethod, NativeNavigationPolicyKind,
+        NativeNetworkState, NativeRequestBody, NativeResource, NativeResourceLoader,
+        NativeSubresourceKind, cache_control_max_age, cache_control_requires_revalidation,
+        content_security_policy, cors_origin_header, cors_preflight_response_allowed,
+        cors_response_allowed, csp_report_deliveries_for_declaration, csp_sources_allow,
+        csp_sources_allow_for_redirect, decode_html_body, document_cache_fresh_until,
+        document_cache_storage_allowed, media_metadata_from_bytes, mixed_content_allowed,
+        referrer_for_navigation, resolve_subresource_url, subresource_integrity_matches,
+        supported_media_type_text,
     };
     use base64::Engine as _;
     use reqwest::header::{
@@ -7761,6 +7932,45 @@ mod tests {
         );
         assert!(decode_html_body(b"\xff", Some("us-ascii"), 32).is_err());
         assert!(decode_html_body(b"text", Some("x-unknown"), 32).is_err());
+    }
+
+    #[test]
+    fn media_metadata_accepts_supported_types_and_bounds_payloads() {
+        let mut wav = vec![0_u8; 44 + 8000];
+        wav[0..4].copy_from_slice(b"RIFF");
+        wav[4..8].copy_from_slice(&(8036_u32).to_le_bytes());
+        wav[8..12].copy_from_slice(b"WAVE");
+        wav[12..16].copy_from_slice(b"fmt ");
+        wav[16..20].copy_from_slice(&(16_u32).to_le_bytes());
+        wav[20..22].copy_from_slice(&(1_u16).to_le_bytes());
+        wav[22..24].copy_from_slice(&(1_u16).to_le_bytes());
+        wav[24..28].copy_from_slice(&(8000_u32).to_le_bytes());
+        wav[28..32].copy_from_slice(&(8000_u32).to_le_bytes());
+        wav[32..34].copy_from_slice(&(1_u16).to_le_bytes());
+        wav[34..36].copy_from_slice(&(8_u16).to_le_bytes());
+        wav[36..40].copy_from_slice(b"data");
+        wav[40..44].copy_from_slice(&(8000_u32).to_le_bytes());
+        wav[44..].fill(128);
+
+        assert_eq!(
+            supported_media_type_text("audio/mp3; codecs=1"),
+            Some("audio/mpeg")
+        );
+        let metadata = media_metadata_from_bytes(Some("audio/wav"), &wav)
+            .unwrap()
+            .unwrap();
+        assert_eq!(metadata.content_type, "audio/wav");
+        assert_eq!(metadata.byte_length, wav.len());
+        assert_eq!(metadata.duration_millis, Some(1000));
+        assert_eq!(
+            media_metadata_from_bytes(None, b"not a media resource").unwrap(),
+            None
+        );
+        assert_eq!(
+            media_metadata_from_bytes(Some("application/octet-stream"), &wav).unwrap(),
+            None
+        );
+        assert!(media_metadata_from_bytes(None, &vec![0_u8; MAX_NATIVE_MEDIA_BYTES + 1]).is_err());
     }
 
     #[test]

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-496`, following
+expansion checkpoint is completed `native-engine-browser-497`, following
+completed `native-engine-browser-496`, following
 completed `native-engine-browser-495`, following
 completed `native-engine-browser-494`, following
 completed `native-engine-browser-493`, following
@@ -134,6 +135,19 @@ boundary for arbitrary network continuations. Service Worker interception,
 response metadata fidelity, broader source types, installed-font discovery,
 font-display timing, variable/color fonts, cross-realm projection, and complete
 FontFace/Web IDL parity remain explicit issue #40 gates.
+
+Slice 497 adds the rejected-admission path for that host acknowledgement. A
+batch containing `FontFaceInstall` commands is applied to a document clone and
+committed only after the complete batch passes the existing native font
+validation path. When admission fails, a font-only probe identifies the
+failure, the live document and font book remain unchanged, and the pending
+request receives a bounded error payload. The page-realm rejection finalizer
+handles both host acknowledgement and source-resolution failures, setting the
+face to `error`, rejecting `load()`, and completing the owning
+`FontFaceSet` loading cycle. Unrelated DOM errors still return through their
+normal owner path. The remaining source, Service Worker, response metadata,
+installed-font, timing, cross-realm, and full FontFace/Web IDL gates stay
+explicit.
 
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
@@ -6958,11 +6972,11 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-496.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-497.md` is the latest completed browser
 task;
-`docs/plan/tasks/native-engine-browser-495.md` is the preceding completed
+`docs/plan/tasks/native-engine-browser-496.md` is the preceding completed
 browser task;
-`docs/plan/tasks/native-engine-browser-494.md` is the preceding completed
+`docs/plan/tasks/native-engine-browser-495.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-492.md` is the preceding completed
 browser task;

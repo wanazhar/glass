@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-497`, following completed
 `native-engine-browser-496`, following completed
 `native-engine-browser-495`, following completed
 `native-engine-browser-494`, following completed
@@ -126,6 +127,19 @@ contract. Service Worker interception, final response metadata, broader
 FontFace sources, installed-font discovery, font-display timing, variable/color
 fonts, cross-realm projection, and complete text/Web IDL parity remain issue #40
 gates.
+
+Slice 497 closes the admission-rejection half of that acknowledgement gate.
+Font-bearing script-command batches are applied to a cloned document and
+committed only after every install succeeds. A font parser, descriptor, byte,
+or aggregate-resource rejection leaves the live document and font book
+unchanged, then resolves the pending host request with a bounded error payload.
+The page face transitions to `error`, its `load()` promise rejects, and the
+owning `FontFaceSet` loading cycle settles instead of remaining stuck in
+`loading`. A font-only probe distinguishes this failure from unrelated DOM
+command errors, which still propagate normally. Broader FontFace sources,
+Service Worker interception, response metadata, installed-font discovery,
+font-display timing, variable/color fonts, cross-realm projection, and
+complete text/Web IDL parity remain issue #40 gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between

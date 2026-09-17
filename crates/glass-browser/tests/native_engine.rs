@@ -1384,6 +1384,37 @@ async fn native_local_dynamic_inline_script_runs_once_after_late_attachment() {
 }
 
 #[tokio::test]
+async fn native_local_dynamic_blob_classic_script_runs_after_late_attachment() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://blob-dynamic-script",
+            "<html><body><p>Native</p></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://blob-dynamic-script");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { globalThis.localBlobLog = []; globalThis.localBlobScript = document.createElement('script'); const url = URL.createObjectURL(new Blob([\"localBlobLog.push('ran'); document.body.setAttribute('data-local-blob', 'yes');\"], { type: 'text/javascript' })); localBlobScript.src = url; localBlobScript.addEventListener('load', () => localBlobLog.push('loaded')); document.body.appendChild(localBlobScript); return url; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("blob:null/glass-native-1")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("[localBlobLog, document.body.getAttribute('data-local-blob')]",)
+            .await
+            .unwrap(),
+        serde_json::json!([["ran", "loaded"], "yes"])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_exposes_computed_style_and_media_queries() {
     let config = NativeEngineConfig::default()
         .with_fixture(

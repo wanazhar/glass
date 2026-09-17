@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-475`, following completed
 `native-engine-browser-474`, following completed
 `native-engine-browser-473`, following completed
 `native-engine-browser-472`, following completed
@@ -215,6 +216,18 @@ Dynamic file script, stylesheet, and image attachment shares the same
 canonical root, integrity, size, event, and paint/resource owners. File fonts,
 workers, downloads, CSS URL base parity, module dependency graphs, complete
 file-origin semantics, and complete Web IDL parity remain issue #40 gates.
+
+The completed rooted-file-module-graph follow-up is
+[`native-engine-browser-475`](tasks/native-engine-browser-475.md): static and
+dynamic file modules now prefetch bounded relative/absolute `file:` imports,
+`export ... from` references, and literal dynamic imports through the existing
+QuickJS module source map. Canonical roots, duplicate suppression, graph-entry
+and aggregate-byte limits, and fail-closed handling for bare, network/data/blob,
+credential-bearing, missing, oversized, and out-of-root dependencies are
+enforced before evaluation. The page and worker URL facades also preserve
+canonical `file:///` URLs. Import maps, non-literal dynamic imports, file
+fonts/workers/downloads, complete file-origin semantics, and complete Web IDL
+parity remain issue #40 gates.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

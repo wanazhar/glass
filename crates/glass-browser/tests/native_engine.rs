@@ -1768,6 +1768,8 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
     fs::create_dir_all(&root).unwrap();
     let page_path = root.join("index.html");
     let script_path = root.join("app.js");
+    let module_path = root.join("module.js");
+    let module_dependency_path = root.join("module-dependency.js");
     let stylesheet_path = root.join("style.css");
     let image_path = root.join("dot.png");
     fs::write(
@@ -1775,11 +1777,21 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
         "globalThis.fileScriptValue = getComputedStyle(document.getElementById('target')).color;",
     )
     .unwrap();
+    fs::write(
+        &module_path,
+        "import { value } from './module-dependency.js'; globalThis.fileModuleValue = value;",
+    )
+    .unwrap();
+    fs::write(
+        &module_dependency_path,
+        "export const value = 'module-loaded';",
+    )
+    .unwrap();
     fs::write(&stylesheet_path, "#target { color: rgb(1, 2, 3); }").unwrap();
     fs::write(&image_path, native_test_png_bytes()).unwrap();
     fs::write(
         &page_path,
-        "<html><head><link rel='stylesheet' href='style.css'></head><body><div id='target'>rooted</div><img id='image' src='dot.png'><script src='app.js'></script><script>globalThis.fileScriptEvents = []; document.querySelector('script[src]').addEventListener('load', () => fileScriptEvents.push('load'));</script></body></html>",
+        "<html><head><link rel='stylesheet' href='style.css'></head><body><div id='target'>rooted</div><img id='image' src='dot.png'><script src='app.js'></script><script type='module' src='module.js'></script><script>globalThis.fileScriptEvents = []; document.querySelector('script[src]').addEventListener('load', () => fileScriptEvents.push('load'));</script></body></html>",
     )
     .unwrap();
     let page_url = native_test_file_url(&page_path);
@@ -1793,12 +1805,13 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const image = document.getElementById('image'); return [fileScriptValue, fileScriptEvents, getComputedStyle(document.getElementById('target')).color, image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
+                "(() => { const image = document.getElementById('image'); return [fileScriptValue, fileModuleValue, fileScriptEvents, getComputedStyle(document.getElementById('target')).color, image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
             )
             .await
             .unwrap(),
         serde_json::json!([
             "rgb(1, 2, 3)",
+            "module-loaded",
             ["load"],
             "rgb(1, 2, 3)",
             true,
@@ -1821,11 +1834,23 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
     fs::create_dir_all(&root).unwrap();
     let page_path = root.join("index.html");
     let script_path = root.join("late.js");
+    let module_path = root.join("late-module.js");
+    let module_dependency_path = root.join("late-module-dependency.js");
     let stylesheet_path = root.join("late.css");
     let image_path = root.join("late.png");
     fs::write(
         &script_path,
         "globalThis.dynamicFileScriptValue = 'executed';",
+    )
+    .unwrap();
+    fs::write(
+        &module_path,
+        "import { value } from './late-module-dependency.js'; globalThis.dynamicFileModuleValue = value;",
+    )
+    .unwrap();
+    fs::write(
+        &module_dependency_path,
+        "export const value = 'module-executed';",
     )
     .unwrap();
     fs::write(&stylesheet_path, "#target { color: rgb(4, 5, 6); }").unwrap();
@@ -1837,6 +1862,7 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
     .unwrap();
     let page_url = native_test_file_url(&page_path);
     let script_url = native_test_file_url(&script_path);
+    let module_url = native_test_file_url(&module_path);
     let stylesheet_url = native_test_file_url(&stylesheet_path);
     let image_url = native_test_file_url(&image_path);
     let config = NativeEngineConfig::default()
@@ -1846,6 +1872,7 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
     engine.initialize_async().await.unwrap();
 
     let script_literal = serde_json::to_string(&script_url).unwrap();
+    let module_literal = serde_json::to_string(&module_url).unwrap();
     let stylesheet_literal = serde_json::to_string(&stylesheet_url).unwrap();
     let image_literal = serde_json::to_string(&image_url).unwrap();
     engine
@@ -1856,6 +1883,11 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
                 script.src = {script_literal};
                 script.addEventListener('load', () => dynamicFileEvents.push('script-load'));
                 script.addEventListener('error', () => dynamicFileEvents.push('script-error'));
+                const module = document.createElement('script');
+                module.type = 'module';
+                module.src = {module_literal};
+                module.addEventListener('load', () => dynamicFileEvents.push('module-load'));
+                module.addEventListener('error', () => dynamicFileEvents.push('module-error'));
                 const link = document.createElement('link');
                 link.rel = 'stylesheet';
                 link.href = {stylesheet_literal};
@@ -1865,7 +1897,7 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
                 image.src = {image_literal};
                 image.addEventListener('load', () => dynamicFileEvents.push('image-load'));
                 image.addEventListener('error', () => dynamicFileEvents.push('image-error'));
-                host.append(script, link, image);
+                host.append(script, module, link, image);
                 globalThis.dynamicFileImage = image;
                 return true;
             }})()"#,
@@ -1876,13 +1908,14 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
     assert_eq!(
         engine
             .evaluate_async(
-                "[dynamicFileScriptValue, dynamicFileEvents, getComputedStyle(document.getElementById('target')).color, dynamicFileImage.complete, dynamicFileImage.naturalWidth, dynamicFileImage.currentSrc]",
+                "[dynamicFileScriptValue, dynamicFileModuleValue, dynamicFileEvents, getComputedStyle(document.getElementById('target')).color, dynamicFileImage.complete, dynamicFileImage.naturalWidth, dynamicFileImage.currentSrc]",
             )
             .await
             .unwrap(),
         serde_json::json!([
             "executed",
-            ["script-load", "style-load", "image-load"],
+            "module-executed",
+            ["script-load", "module-load", "style-load", "image-load"],
             "rgb(4, 5, 6)",
             true,
             2,
@@ -1891,6 +1924,52 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
     );
     engine.close_async().await.unwrap();
     fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn native_file_module_graph_rejects_unrooted_dependencies() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-module-root-{}",
+        std::process::id()
+    ));
+    let outside_path = std::env::temp_dir().join(format!(
+        "glass-native-file-module-outside-{}.js",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_file(&outside_path);
+    fs::create_dir_all(&root).unwrap();
+    let page_path = root.join("index.html");
+    let module_path = root.join("module.js");
+    fs::write(&outside_path, "globalThis.unrootedModuleValue = 'read';").unwrap();
+    let outside_url = native_test_file_url(&outside_path);
+    fs::write(
+        &module_path,
+        format!("import {outside_url:?}; globalThis.unrootedModuleValue = 'read';"),
+    )
+    .unwrap();
+    fs::write(
+        &page_path,
+        r#"<html><body><script type='module' src='module.js'></script><script>globalThis.moduleEvents = []; document.querySelector("script[type='module']").addEventListener('error', () => moduleEvents.push('error')); </script></body></html>"#,
+    )
+    .unwrap();
+    let page_url = native_test_file_url(&page_path);
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url)
+        .with_allowed_file_root(root.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async("[moduleEvents, typeof unrootedModuleValue]")
+            .await
+            .unwrap(),
+        serde_json::json!([["error"], "undefined"])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_file(outside_path).unwrap();
 }
 
 #[tokio::test]

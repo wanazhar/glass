@@ -6831,6 +6831,7 @@ pub(crate) fn execute_inline_scripts(
     loader: &mut NativeResourceLoader,
 ) -> Result<NativePageScriptResult, NativeEngineError> {
     let mut resource_events = Vec::new();
+    let mut module_dependency_sources = Vec::new();
     let sources = document
         .page_script_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_BYTES)
         .into_iter()
@@ -6906,15 +6907,24 @@ pub(crate) fn execute_inline_scripts(
                     integrity.as_deref(),
                 ) {
                     Ok(Some(resource)) => {
-                        resource_events.push((node_index, NativeEventKind::Load));
-                        Some((
+                        match load_local_file_module_graph(
+                            loader,
+                            document_url,
+                            resource,
                             timing,
-                            NativePageScript::Module {
-                                name: resource.url,
-                                source: resource.body,
-                                node_index: Some(node_index),
-                            },
-                        ))
+                            node_index,
+                        ) {
+                            Ok(mut graph) => {
+                                let root = graph.remove(0);
+                                module_dependency_sources.extend(graph);
+                                resource_events.push((node_index, NativeEventKind::Load));
+                                Some(root)
+                            }
+                            Err(_) => {
+                                resource_events.push((node_index, NativeEventKind::Error));
+                                None
+                            }
+                        }
                     }
                     Ok(None) | Err(_) => {
                         resource_events.push((node_index, NativeEventKind::Error));
@@ -6926,7 +6936,12 @@ pub(crate) fn execute_inline_scripts(
             | NativePageScriptSource::ModuleExternal { .. } => None,
         })
         .collect::<Vec<_>>();
-    let sources = order_page_scripts(sources);
+    let mut sources = order_page_scripts(sources);
+    sources.extend(
+        module_dependency_sources
+            .into_iter()
+            .map(|(_, source)| source),
+    );
     execute_page_scripts(
         document,
         runtime,
@@ -6941,6 +6956,124 @@ pub(crate) fn execute_inline_scripts(
         &resource_events,
         &loader.take_csp_violations(),
     )
+}
+
+pub(crate) fn load_local_file_module_graph(
+    loader: &NativeResourceLoader,
+    document_url: &str,
+    root: NativeScriptResource,
+    timing: NativePageScriptTiming,
+    node_index: u32,
+) -> Result<Vec<(NativePageScriptTiming, NativePageScript)>, NativeEngineError> {
+    let root_name = root.url.clone();
+    let root_source = root.body.clone();
+    let mut sources = vec![(
+        timing,
+        NativePageScript::Module {
+            name: root_name.clone(),
+            source: root_source.clone(),
+            node_index: Some(node_index),
+        },
+    )];
+    let mut seen = BTreeSet::from([root_name.clone()]);
+    let mut pending = vec![(root_name, root_source)];
+    let mut import_edges = 0usize;
+    let mut total_bytes = root.body.len();
+    while let Some((module_url, module_source)) = pending.pop() {
+        let mut specifiers = static_module_specifiers(&module_source)?;
+        specifiers.extend(literal_dynamic_module_specifiers(&module_source));
+        for specifier in specifiers {
+            import_edges = import_edges.saturating_add(1);
+            if import_edges > MAX_NATIVE_MODULE_IMPORTS {
+                return Err(NativeEngineError::limit(
+                    "native file module imports",
+                    MAX_NATIVE_MODULE_IMPORTS,
+                    import_edges,
+                ));
+            }
+            let target = resolve_local_file_module_specifier(&module_url, &specifier)?;
+            if !seen.insert(target.clone()) {
+                continue;
+            }
+            if seen.len() > MAX_NATIVE_MODULE_IMPORTS {
+                return Err(NativeEngineError::limit(
+                    "native file module graph entries",
+                    MAX_NATIVE_MODULE_IMPORTS,
+                    seen.len(),
+                ));
+            }
+            let resource = loader
+                .load_local_file_script(document_url, &target, MAX_NATIVE_SCRIPT_BYTES, None)?
+                .ok_or_else(|| NativeEngineError::Network {
+                    operation: "file module dependency".into(),
+                    reason: format!(
+                        "file module dependency {specifier:?} was blocked or unavailable"
+                    ),
+                })?;
+            total_bytes = total_bytes.saturating_add(resource.body.len());
+            if total_bytes > MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS) {
+                return Err(NativeEngineError::limit(
+                    "native file module graph bytes",
+                    MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS),
+                    total_bytes,
+                ));
+            }
+            let name = resource.url;
+            let source = resource.body;
+            sources.push((
+                timing,
+                NativePageScript::ModuleDependency {
+                    name: name.clone(),
+                    source: source.clone(),
+                },
+            ));
+            pending.push((name, source));
+        }
+    }
+    Ok(sources)
+}
+
+fn resolve_local_file_module_specifier(
+    module_url: &str,
+    specifier: &str,
+) -> Result<String, NativeEngineError> {
+    let is_absolute_file = specifier
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"));
+    let is_relative = specifier.starts_with("./")
+        || specifier.starts_with("../")
+        || specifier.starts_with('/')
+        || specifier.starts_with("//");
+    if !is_absolute_file && !is_relative {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "bare file module specifiers require an import map".into(),
+        });
+    }
+    let base = Url::parse(without_fragment(module_url)).map_err(|_| {
+        NativeEngineError::UnsupportedUrl {
+            reason: "file module owner URL is not valid URL syntax".into(),
+        }
+    })?;
+    let mut target = if is_absolute_file {
+        Url::parse(specifier)
+    } else {
+        base.join(specifier)
+    }
+    .map_err(|_| NativeEngineError::UnsupportedUrl {
+        reason: "file module specifier could not be resolved against its owner".into(),
+    })?;
+    if !target.username().is_empty() || target.password().is_some() {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "file module URL must not contain credentials".into(),
+        });
+    }
+    target.set_fragment(None);
+    if !is_file_url(target.as_str()) {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "file module URL must use the file scheme".into(),
+        });
+    }
+    Ok(target.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -16699,6 +16832,7 @@ fn worker_bootstrap(
     if (!match) throw new TypeError("native Worker URL requires an absolute or resolvable URL");
     const protocol = match[1].toLowerCase();
     const authority = match[2] || "";
+    const hasAuthorityDelimiter = main.slice(match[1].length).startsWith("//");
     let pathname = match[3] || "";
     if (authority && !pathname && ["http:", "https:"].includes(protocol)) pathname = "/";
     const at = authority.lastIndexOf("@");
@@ -16722,12 +16856,14 @@ fn worker_bootstrap(
         port = host.slice(portIndex + 1);
       }}
     }}
-    const prefix = authority ? protocol + "//" + authority : protocol;
+    const prefix = authority || (protocol === "file:" && hasAuthorityDelimiter)
+      ? protocol + "//" + authority
+      : protocol;
     const originProtocol = protocol === "ws:" ? "http:" : protocol === "wss:" ? "https:" : protocol;
     const origin = ["http:", "https:"].includes(originProtocol) && host
       ? originProtocol + "//" + host.toLowerCase()
       : "null";
-    return {{ protocol, authority, host, hostname, port, username, password, pathname, search, hash, origin, href: prefix + pathname + search + hash }};
+    return {{ protocol, authority, host, hostname, port, username, password, pathname, search, hash, origin, hasAuthorityDelimiter, href: prefix + pathname + search + hash }};
   }};
   const workerUrlResolve = (input, base) => {{
     const value = String(input);
@@ -16745,7 +16881,9 @@ fn worker_bootstrap(
     const parts = workerUrlParts(workerUrlResolve(source, base));
     const state = {{
       hasAuthority: Boolean(parts.authority),
-      prefix: parts.authority ? parts.protocol + "//" + parts.authority : parts.protocol,
+      prefix: parts.authority || (parts.protocol === "file:" && parts.hasAuthorityDelimiter)
+        ? parts.protocol + "//" + parts.authority
+        : parts.protocol,
       origin: parts.origin,
       protocol: parts.protocol,
       username: parts.username,
@@ -16760,7 +16898,9 @@ fn worker_bootstrap(
     const searchParams = new WorkerURLSearchParamsNative(parts.search);
     const updateParts = next => {{
       state.hasAuthority = Boolean(next.authority);
-      state.prefix = next.authority ? next.protocol + "//" + next.authority : next.protocol;
+      state.prefix = next.authority || (next.protocol === "file:" && next.hasAuthorityDelimiter)
+        ? next.protocol + "//" + next.authority
+        : next.protocol;
       state.origin = next.origin;
       state.protocol = next.protocol;
       state.username = next.username;
@@ -27387,7 +27527,9 @@ fn document_bootstrap(
     let rest = match[2];
     let authority = "";
     let pathname = "";
+    let hasAuthorityDelimiter = false;
     if (rest.startsWith("//")) {{
+      hasAuthorityDelimiter = true;
       rest = rest.slice(2);
       const slash = rest.indexOf("/");
       if (slash < 0) {{
@@ -27424,7 +27566,9 @@ fn document_bootstrap(
     const origin = protocol === "http:" || protocol === "https:"
       ? protocol + "//" + hostPort.toLowerCase()
       : "null";
-    const prefix = authority ? protocol + "//" + authority : protocol;
+    const prefix = authority || (protocol === "file:" && hasAuthorityDelimiter)
+      ? protocol + "//" + authority
+      : protocol;
     const href = prefix + pathname + search + hash;
     return {{
       href,
@@ -27439,6 +27583,7 @@ fn document_bootstrap(
       pathname,
       search,
       hash,
+      hasAuthorityDelimiter,
     }};
   }};
   const nativeUrlResolve = (input, base) => {{
@@ -27456,7 +27601,9 @@ fn document_bootstrap(
     const parts = nativeUrlParts(nativeUrlResolve(input && input.__glassUrl === true ? input.href : input, base));
     const state = {{
       hasAuthority: Boolean(parts.authority),
-      prefix: parts.authority ? parts.protocol + "//" + parts.authority : parts.protocol,
+      prefix: parts.authority || (parts.protocol === "file:" && parts.hasAuthorityDelimiter)
+        ? parts.protocol + "//" + parts.authority
+        : parts.protocol,
       origin: parts.origin,
       protocol: parts.protocol,
       username: parts.username,
@@ -27471,7 +27618,9 @@ fn document_bootstrap(
     const searchParams = new URLSearchParamsNative(parts.search);
     const updateParts = (next) => {{
       state.hasAuthority = Boolean(next.authority);
-      state.prefix = next.authority ? next.protocol + "//" + next.authority : next.protocol;
+      state.prefix = next.authority || (next.protocol === "file:" && next.hasAuthorityDelimiter)
+        ? next.protocol + "//" + next.authority
+        : next.protocol;
       state.origin = next.origin;
       state.protocol = next.protocol;
       state.username = next.username;

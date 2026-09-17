@@ -1041,6 +1041,14 @@ pub(crate) enum NativeFontVariantAlternates {
     HistoricalForms,
 }
 
+/// The bounded OpenType language-system override exposed by
+/// `font-language-override`. CSS supplies this as a four-byte string tag;
+/// `None` represents the initial `normal` value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeFontLanguageOverride {
+    pub(crate) tag: Option<[u8; 4]>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeFontVariantEastAsianForm {
     #[default]
@@ -1479,6 +1487,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) font_variant_caps: NativeFontVariantCaps,
     pub(crate) font_variant_position: NativeFontVariantPosition,
     pub(crate) font_variant_alternates: NativeFontVariantAlternates,
+    pub(crate) font_language_override: NativeFontLanguageOverride,
     pub(crate) font_variant_east_asian: NativeFontVariantEastAsian,
     pub(crate) font_variant_numeric: NativeFontVariantNumeric,
     pub(crate) font_feature_settings: NativeFontFeatureSettings,
@@ -1547,6 +1556,7 @@ impl Default for NativeInheritedStyle {
             font_variant_caps: NativeFontVariantCaps::Normal,
             font_variant_position: NativeFontVariantPosition::Normal,
             font_variant_alternates: NativeFontVariantAlternates::Normal,
+            font_language_override: NativeFontLanguageOverride::default(),
             font_variant_east_asian: NativeFontVariantEastAsian::default(),
             font_variant_numeric: NativeFontVariantNumeric::default(),
             font_feature_settings: NativeFontFeatureSettings::default(),
@@ -1718,6 +1728,8 @@ pub(crate) struct NativeComputedStyle {
     font_variant_position: NativeFontVariantPosition,
     #[serde(default)]
     font_variant_alternates: NativeFontVariantAlternates,
+    #[serde(default)]
+    font_language_override: NativeFontLanguageOverride,
     #[serde(default)]
     font_variant_east_asian: NativeFontVariantEastAsian,
     #[serde(default)]
@@ -1925,6 +1937,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn font_variant_alternates(self) -> NativeFontVariantAlternates {
         self.font_variant_alternates
+    }
+
+    pub(crate) const fn font_language_override(self) -> NativeFontLanguageOverride {
+        self.font_language_override
     }
 
     pub(crate) const fn font_variant_east_asian(self) -> NativeFontVariantEastAsian {
@@ -2267,6 +2283,7 @@ impl NativeStylesheet {
         let mut font_variant_caps = &mut scratch.font_variant_caps;
         let mut font_variant_position = &mut scratch.font_variant_position;
         let mut font_variant_alternates = &mut scratch.font_variant_alternates;
+        let mut font_language_override = &mut scratch.font_language_override;
         let mut font_variant_east_asian = &mut scratch.font_variant_east_asian;
         let mut font_variant_numeric = &mut scratch.font_variant_numeric;
         let mut font_feature_settings = &mut scratch.font_feature_settings;
@@ -2550,6 +2567,14 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.text_importance.font_variant_alternates,
                 &mut font_variant_alternates,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.font_language_override,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.font_language_override,
+                &mut font_language_override,
             );
             apply_text_cascade_declaration(
                 rule.declarations.font_variant_east_asian,
@@ -3205,6 +3230,14 @@ impl NativeStylesheet {
                 &mut font_variant_alternates,
             );
             apply_text_cascade_declaration(
+                declarations.font_language_override,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.font_language_override,
+                &mut font_language_override,
+            );
+            apply_text_cascade_declaration(
                 declarations.font_variant_east_asian,
                 u16::MAX,
                 usize::MAX,
@@ -3824,6 +3857,11 @@ impl NativeStylesheet {
                 inherited.font_variant_alternates,
                 NativeFontVariantAlternates::Normal,
             ),
+            font_language_override: resolve_inherited_text_declaration(
+                *font_language_override,
+                inherited.font_language_override,
+                NativeFontLanguageOverride::default(),
+            ),
             font_variant_east_asian: resolve_inherited_text_declaration(
                 *font_variant_east_asian,
                 inherited.font_variant_east_asian,
@@ -4041,6 +4079,7 @@ struct NativeCascadeScratch {
     font_variant_caps: NativeTextCascadeCandidates<NativeFontVariantCaps>,
     font_variant_position: NativeTextCascadeCandidates<NativeFontVariantPosition>,
     font_variant_alternates: NativeTextCascadeCandidates<NativeFontVariantAlternates>,
+    font_language_override: NativeTextCascadeCandidates<NativeFontLanguageOverride>,
     font_variant_east_asian: NativeTextCascadeCandidates<NativeFontVariantEastAsian>,
     font_variant_numeric: NativeTextCascadeCandidates<NativeFontVariantNumeric>,
     font_feature_settings: NativeTextCascadeCandidates<NativeFontFeatureSettings>,
@@ -4141,6 +4180,7 @@ impl NativeCascadeScratch {
             initialize!(font_variant_caps);
             initialize!(font_variant_position);
             initialize!(font_variant_alternates);
+            initialize!(font_language_override);
             initialize!(font_variant_east_asian);
             initialize!(font_variant_numeric);
             initialize!(font_feature_settings);
@@ -6290,6 +6330,7 @@ struct NativeTextDeclarationImportance {
     font_variant_caps: bool,
     font_variant_position: bool,
     font_variant_alternates: bool,
+    font_language_override: bool,
     font_variant_east_asian: bool,
     font_variant_numeric: bool,
     font_feature_settings: bool,
@@ -6357,6 +6398,7 @@ struct NativeDeclarations {
     font_variant_caps: Option<InheritedTextDeclaration<NativeFontVariantCaps>>,
     font_variant_position: Option<InheritedTextDeclaration<NativeFontVariantPosition>>,
     font_variant_alternates: Option<InheritedTextDeclaration<NativeFontVariantAlternates>>,
+    font_language_override: Option<InheritedTextDeclaration<NativeFontLanguageOverride>>,
     font_variant_east_asian: Option<InheritedTextDeclaration<NativeFontVariantEastAsian>>,
     font_variant_numeric: Option<InheritedTextDeclaration<NativeFontVariantNumeric>>,
     font_feature_settings: Option<InheritedTextDeclaration<NativeFontFeatureSettings>>,
@@ -6917,6 +6959,7 @@ fn parse_style_rule(
         || declarations.font_variant_caps.is_some()
         || declarations.font_variant_position.is_some()
         || declarations.font_variant_alternates.is_some()
+        || declarations.font_language_override.is_some()
         || declarations.font_variant_east_asian.is_some()
         || declarations.font_variant_numeric.is_some()
         || declarations.font_feature_settings.is_some()
@@ -7155,6 +7198,7 @@ fn parse_declarations_with_diagnostics(
             "font-variant-caps" => parse_font_variant_caps_declaration(value).is_some(),
             "font-variant-position" => parse_font_variant_position_declaration(value).is_some(),
             "font-variant-alternates" => parse_font_variant_alternates_declaration(value).is_some(),
+            "font-language-override" => parse_font_language_override_declaration(value).is_some(),
             "font-variant-east-asian" => parse_font_variant_east_asian_declaration(value).is_some(),
             "font-variant-numeric" => parse_font_variant_numeric_declaration(value).is_some(),
             "font-feature-settings" => parse_font_feature_settings_declaration(value).is_some(),
@@ -7354,6 +7398,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "font-variant-caps"
             | "font-variant-position"
             | "font-variant-alternates"
+            | "font-language-override"
             | "font-variant-east-asian"
             | "font-variant-numeric"
             | "font-feature-settings"
@@ -7792,6 +7837,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_font_variant_ligatures_declaration(value) {
                     declarations.font_variant_ligatures = Some(parsed);
                     declarations.text_importance.font_variant_ligatures = important;
+                }
+            }
+            "font-language-override" => {
+                if let Some(parsed) = parse_font_language_override_declaration(value) {
+                    declarations.font_language_override = Some(parsed);
+                    declarations.text_importance.font_language_override = important;
                 }
             }
             "font-variant-caps" => {
@@ -12535,6 +12586,38 @@ fn parse_font_variant_alternates_declaration(
     value: &str,
 ) -> Option<InheritedTextDeclaration<NativeFontVariantAlternates>> {
     parse_inherited_text_declaration(value, parse_font_variant_alternates)
+}
+
+fn parse_font_language_override(value: &str) -> Option<NativeFontLanguageOverride> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("normal") {
+        return Some(NativeFontLanguageOverride::default());
+    }
+    let bytes = value.as_bytes();
+    if bytes.len() != 6 || !matches!(bytes[0], b'\'' | b'"') || bytes[5] != bytes[0] {
+        return None;
+    }
+    let tag: [u8; 4] = bytes[1..5].try_into().ok()?;
+    if tag
+        .iter()
+        .any(|byte| !(*byte >= 0x20 && *byte <= 0x7e) || matches!(*byte, b'\'' | b'"' | b'\\'))
+    {
+        return None;
+    }
+    let language_end = tag
+        .iter()
+        .position(|byte| *byte == b' ')
+        .unwrap_or(tag.len());
+    if language_end == 0 || !tag[language_end..].iter().all(|byte| *byte == b' ') {
+        return None;
+    }
+    Some(NativeFontLanguageOverride { tag: Some(tag) })
+}
+
+fn parse_font_language_override_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<NativeFontLanguageOverride>> {
+    parse_inherited_text_declaration(value, parse_font_language_override)
 }
 
 fn parse_font_variant_east_asian(value: &str) -> Option<NativeFontVariantEastAsian> {
@@ -22609,6 +22692,31 @@ mod tests {
     }
 
     #[test]
+    fn font_language_override_parser_accepts_padded_four_byte_tags() {
+        assert_eq!(
+            parse_font_language_override("normal"),
+            Some(NativeFontLanguageOverride::default())
+        );
+        assert_eq!(
+            parse_font_language_override("\"ENG \""),
+            Some(NativeFontLanguageOverride {
+                tag: Some(*b"ENG "),
+            })
+        );
+        assert_eq!(
+            parse_font_language_override("'TRK '"),
+            Some(NativeFontLanguageOverride {
+                tag: Some(*b"TRK "),
+            })
+        );
+        assert!(parse_font_language_override("ENG ").is_none());
+        assert!(parse_font_language_override("\"EN G\"").is_none());
+        assert!(parse_font_language_override("\"    \"").is_none());
+        assert!(parse_font_language_override_declaration("inherit").is_some());
+        assert!(parse_font_language_override_declaration("revert-layer").is_some());
+    }
+
+    #[test]
     fn font_variant_east_asian_parser_keeps_feature_groups_exclusive() {
         assert_eq!(
             parse_font_variant_east_asian("normal"),
@@ -24083,6 +24191,33 @@ mod tests {
             style("invalid").font_variant_alternates(),
             NativeFontVariantAlternates::HistoricalForms
         );
+    }
+
+    #[test]
+    fn font_language_override_is_inherited_and_css_wide_resets_are_bounded() {
+        let document = NativeDocument::parse(
+            r#"<style>#parent { font-language-override: "ENG "; } #child { font-language-override: normal; } #inherit { font-language-override: inherit; } #clear { font-language-override: initial; } #invalid { font-language-override: "EN G"; }</style><div id='parent'><span id='child'>Child</span><span id='inherit'>Inherit</span><span id='clear'>Clear</span><span id='invalid'>Invalid</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+        let english = NativeFontLanguageOverride {
+            tag: Some(*b"ENG "),
+        };
+        assert_eq!(style("parent").font_language_override(), english);
+        assert_eq!(
+            style("child").font_language_override(),
+            NativeFontLanguageOverride::default()
+        );
+        assert_eq!(style("inherit").font_language_override(), english);
+        assert_eq!(
+            style("clear").font_language_override(),
+            NativeFontLanguageOverride::default()
+        );
+        assert_eq!(style("invalid").font_language_override(), english);
     }
 
     #[test]

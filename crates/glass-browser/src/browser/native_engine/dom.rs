@@ -31,12 +31,13 @@ use super::{
         FlexDirectionValue, FlexWrapValue, FontStyleValue, FontWeightValue, JustifyContentValue,
         NativeBorderRadius, NativeBorderStyleValue, NativeBoxSizing, NativeColor,
         NativeComputedStyle, NativeFontFamilyList, NativeFontFeatureSettings, NativeFontKerning,
-        NativeFontVariantAlternates, NativeFontVariantCaps, NativeFontVariantEastAsian,
-        NativeFontVariantLigatures, NativeFontVariantNumeric, NativeFontVariantPosition,
-        NativeInheritedStyle, NativeMarginValue, NativeOrderValue, NativePointerEventsValue,
-        NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
-        OverflowValue, TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
-        TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+        NativeFontLanguageOverride, NativeFontVariantAlternates, NativeFontVariantCaps,
+        NativeFontVariantEastAsian, NativeFontVariantLigatures, NativeFontVariantNumeric,
+        NativeFontVariantPosition, NativeInheritedStyle, NativeMarginValue, NativeOrderValue,
+        NativePointerEventsValue, NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces,
+        NativeTextDecorationStyle, OverflowValue, TextAlignLastValue, TextAlignValue,
+        TextDecorationValue, TextJustifyValue, TextOverflowValue, TextTransformValue,
+        VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
 use base64::Engine as _;
@@ -6533,6 +6534,7 @@ impl NativeDocument {
         let mut inherited_font_variant_caps = NativeFontVariantCaps::Normal;
         let mut inherited_font_variant_position = NativeFontVariantPosition::Normal;
         let mut inherited_font_variant_alternates = NativeFontVariantAlternates::Normal;
+        let mut inherited_font_language_override = NativeFontLanguageOverride::default();
         let mut inherited_font_variant_east_asian = NativeFontVariantEastAsian::default();
         let mut inherited_font_variant_numeric = NativeFontVariantNumeric::default();
         let mut inherited_font_feature_settings = NativeFontFeatureSettings::default();
@@ -6604,6 +6606,7 @@ impl NativeDocument {
                     font_variant_caps: inherited_font_variant_caps,
                     font_variant_position: inherited_font_variant_position,
                     font_variant_alternates: inherited_font_variant_alternates,
+                    font_language_override: inherited_font_language_override,
                     font_variant_east_asian: inherited_font_variant_east_asian,
                     font_variant_numeric: inherited_font_variant_numeric,
                     font_feature_settings: inherited_font_feature_settings,
@@ -6676,6 +6679,7 @@ impl NativeDocument {
             inherited_font_variant_caps = style.font_variant_caps();
             inherited_font_variant_position = style.font_variant_position();
             inherited_font_variant_alternates = style.font_variant_alternates();
+            inherited_font_language_override = style.font_language_override();
             inherited_font_variant_east_asian = style.font_variant_east_asian();
             inherited_font_variant_numeric = style.font_variant_numeric();
             inherited_font_feature_settings = style.font_feature_settings();
@@ -6712,7 +6716,7 @@ impl NativeDocument {
             .iter()
             .any(|family| !matches!(family, super::css::NativeFontFamilyValue::Fallback))
         {
-            NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian(
+            NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language(
                 style.font_family(),
                 style.font_size(),
                 style.font_weight(),
@@ -6726,11 +6730,12 @@ impl NativeDocument {
                 style.font_variant_numeric(),
                 style.font_variant_alternates(),
                 style.font_variant_east_asian(),
+                style.font_language_override(),
                 style.direction(),
                 &self.font_book,
             )
         } else {
-            NativeTextMetrics::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian(
+            NativeTextMetrics::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language(
                 style.font_size(),
                 style.font_stretch().min,
                 style.font_variant_ligatures(),
@@ -6741,6 +6746,7 @@ impl NativeDocument {
                 style.font_variant_numeric(),
                 style.font_variant_alternates(),
                 style.font_variant_east_asian(),
+                style.font_language_override(),
                 style.direction(),
             )
         }

@@ -26750,22 +26750,6 @@ fn document_bootstrap(
     return this._entries.map(entry => encode(entry[0]) + "=" + encode(entry[1])).join("&");
   }};
   globalThis.URLSearchParams = URLSearchParamsNative;
-  const nativeUrlNormalizePath = (path) => {{
-    const source = String(path || "/");
-    const trailing = source.endsWith("/");
-    const segments = [];
-    for (const segment of source.split("/")) {{
-      if (!segment || segment === ".") continue;
-      if (segment === "..") {{
-        if (segments.length > 0) segments.pop();
-        continue;
-      }}
-      segments.push(segment);
-    }}
-    let normalized = "/" + segments.join("/");
-    if (trailing && normalized !== "/") normalized += "/";
-    return normalized;
-  }};
   const nativeUrlParts = (input) => {{
     const source = String(input);
     const hashIndex = source.indexOf("#");
@@ -26974,7 +26958,12 @@ fn document_bootstrap(
     Object.defineProperty(this, "pathname", {{
       enumerable: true,
       get: () => state.pathname,
-      set: value => {{ state.pathname = nativeUrlNormalizePath(String(value)); }},
+      set: value => {{
+        const source = String(value).replace(/\\/g, "%5C").replace(/[\?#]/g, character => encodeURIComponent(character));
+        const path = source.startsWith("/") ? source : "/" + source;
+        const canonical = __glassNativeCanonicalUrl("http://glass.invalid" + path, undefined);
+        state.pathname = nativeUrlParts(canonical).pathname;
+      }},
     }});
     Object.defineProperty(this, "search", {{
       enumerable: true,
@@ -26990,7 +26979,8 @@ fn document_bootstrap(
       get: () => state.hash,
       set: value => {{
         const source = String(value);
-        state.hash = !source ? "" : source.startsWith("#") ? source : "#" + source;
+        const canonical = __glassNativeCanonicalUrl("http://glass.invalid/" + (!source ? "" : source.startsWith("#") ? source : "#" + source), undefined);
+        state.hash = nativeUrlParts(canonical).hash;
       }},
     }});
     define("searchParams", () => searchParams);

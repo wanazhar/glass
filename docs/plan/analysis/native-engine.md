@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-443`, following
+expansion checkpoint is completed `native-engine-browser-444`, following
+completed `native-engine-browser-443`, following
 completed `native-engine-browser-442`, following
 completed `native-engine-browser-441`, following
 completed `native-engine-browser-440`, following
@@ -209,6 +210,15 @@ dedicated/SharedWorker XHR now dispatch one zero-byte `loadstart`
 progress or transport work, including synchronous requests. The event carries
 the XHR target/current-target identity and preserves the existing upload,
 response, cancellation, and terminal ordering.
+Slice 444 closes the XHR MIME-override projection boundary. Page and
+dedicated/SharedWorker XHR now validate a bounded MIME essence in
+`overrideMimeType()`, reject malformed values with `SyntaxError`, reject
+mutation during `LOADING`/`DONE` with `InvalidStateError`, and preserve the
+override across `open()`. The page applies the override to XML/HTML document
+selection and parsing; page and worker Blob projections use the override while
+response-header views retain the actual wire content type. Async and
+synchronous response owners share the same rule; full MIME-parameter parsing
+and complete XHR/Web IDL parity remain issue #40 gates.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-
@@ -6422,8 +6432,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-443.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-444.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-443.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-442.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-441.md` is the preceding completed

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-444`, following completed
 `native-engine-browser-443`, following completed
 `native-engine-browser-442`, following completed
 `native-engine-browser-441`, following completed
@@ -141,6 +142,18 @@ to the XHR target after request validation and before upload progress or
 transport work; the event has the XHR as target/current target and precedes
 the upload-target `loadstart`. The same boundary is used by synchronous and
 asynchronous requests without changing the bounded transport owner.
+
+Slice 444 closes the XHR MIME-override projection boundary. Page and
+dedicated/SharedWorker XHR now expose `overrideMimeType()` with bounded MIME
+essence validation, `SyntaxError` rejection for malformed values, and
+`InvalidStateError` after loading has begun or completed. An override set before
+`open()` survives that reset as required, while each new response projection
+starts with a clean response-content slot. The page uses the override for
+XML/HTML document detection and parsing, and page/worker Blob responses use it
+for their MIME type; `getResponseHeader()` and `getAllResponseHeaders()` still
+report the actual wire headers. Async and synchronous XHR share this contract;
+full MIME-parameter parsing and complete XHR/Web IDL parity remain issue #40
+gates.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

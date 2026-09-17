@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-444`, following completed
 `native-engine-browser-443`, following completed
 `native-engine-browser-442`, following completed
 `native-engine-browser-441`, following completed
@@ -314,6 +315,15 @@ dedicated/SharedWorker XHR emit a zero-byte `loadstart` `ProgressEvent` on the
 XHR target before upload progress and transport work, including synchronous
 requests. Existing upload, response, cancellation, and terminal ordering
 remain bounded and unchanged.
+
+The completed XHR MIME-override slice is
+[native-engine-browser-444](tasks/native-engine-browser-444.md): page and
+dedicated/SharedWorker XHR expose bounded `overrideMimeType()` validation and
+state errors, preserve an override across `open()`, apply it to page
+XML/HTML-document projection and page/worker Blob MIME types, and retain the
+actual wire `Content-Type` in response-header views. Async and synchronous XHR
+share the same response-content ownership; full MIME-parameter parsing and
+complete XHR/Web IDL parity remain issue #40 work.
 
 The completed XHR request-side slice is
 [native-engine-browser-439](tasks/native-engine-browser-439.md): page and

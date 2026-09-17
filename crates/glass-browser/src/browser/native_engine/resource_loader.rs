@@ -5137,24 +5137,6 @@ impl NativeResourceLoader {
         let Some(target_url) = resolve_subresource_url_with_blob(&document_url, src)? else {
             return Ok(None);
         };
-        if target_url.scheme().eq_ignore_ascii_case("blob") {
-            let Some(object_url) = object_url else {
-                return Ok(None);
-            };
-            NativeOrigin::from_blob_url(without_fragment(target_url.as_str()))?;
-            let Some(media_type) = object_url
-                .content_type
-                .as_deref()
-                .and_then(supported_image_media_type_text)
-            else {
-                return Ok(None);
-            };
-            return Ok(decode_image_bytes(
-                &object_url.body,
-                media_type,
-                MAX_NATIVE_IMAGE_TRANSFER_BYTES,
-            ));
-        }
         if !mixed_content_allowed(&document_url, &target_url) {
             return Ok(None);
         }
@@ -5172,6 +5154,24 @@ impl NativeResourceLoader {
         );
         if !policy.allows(NativeSubresourceKind::Image, &document_url, &target_url) {
             return Ok(None);
+        }
+        if target_url.scheme().eq_ignore_ascii_case("blob") {
+            let Some(object_url) = object_url else {
+                return Ok(None);
+            };
+            NativeOrigin::from_blob_url(without_fragment(target_url.as_str()))?;
+            let Some(media_type) = object_url
+                .content_type
+                .as_deref()
+                .and_then(supported_image_media_type_text)
+            else {
+                return Ok(None);
+            };
+            return Ok(decode_image_bytes(
+                &object_url.body,
+                media_type,
+                MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+            ));
         }
         let requested_cache_key = cache_key(&target_url);
         let stale_cached_image = self

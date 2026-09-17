@@ -11344,6 +11344,7 @@ impl NativeJavaScriptRuntime {
                 Arc::clone(&self.sync_xhr_loader),
                 Arc::clone(&self.sync_xhr_loader_used),
             )?;
+            install_native_url_source(ctx.clone())?;
             install_native_inline_script_policy(
                 ctx.clone(),
                 Arc::clone(&self.inline_script_policy),
@@ -11816,6 +11817,7 @@ impl NativeJavaScriptRuntime {
                 Arc::clone(&self.sync_xhr_loader),
                 Arc::clone(&self.sync_xhr_loader_used),
             )?;
+            install_native_url_source(ctx.clone())?;
             ctx.eval::<(), _>(bootstrap.as_str())
                 .map_err(|error| NativeEngineError::Worker {
                     operation: "install native Worker host view".into(),
@@ -12646,6 +12648,7 @@ impl NativeJavaScriptRuntime {
                 Arc::clone(&self.sync_xhr_loader),
                 Arc::clone(&self.sync_xhr_loader_used),
             )?;
+            install_native_url_source(ctx.clone())?;
             ctx.eval::<(), _>(bootstrap.as_str())
                 .map_err(|_| NativeEngineError::Worker {
                     operation: "install JavaScript host view".into(),
@@ -13447,6 +13450,46 @@ fn install_native_inline_script_policy<'js>(
         .map_err(|_| NativeEngineError::Worker {
             operation: "publish inline event-handler policy".into(),
             reason: "native inline event-handler policy could not be published".into(),
+        })
+}
+
+/// Publish the Rust URL parser as the single canonicalization boundary for
+/// JavaScript URL construction and relative resolution. The JavaScript
+/// objects still own their Web IDL surface and mutable state, but every
+/// initial URL value is normalized by the same WHATWG-oriented parser already
+/// used by the native resource and policy owners.
+fn install_native_url_source<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), NativeEngineError> {
+    let canonical = Function::new(
+        ctx.clone(),
+        |input: String, base: Option<String>| -> std::result::Result<String, Error> {
+            if input.len() > MAX_NATIVE_SCRIPT_BYTES {
+                return Err(Error::Unknown);
+            }
+            let base = match base {
+                Some(base) if !base.is_empty() => {
+                    if base.len() > MAX_NATIVE_SCRIPT_BYTES {
+                        return Err(Error::Unknown);
+                    }
+                    Some(Url::parse(&base).map_err(|_| Error::Unknown)?)
+                }
+                _ => None,
+            };
+            Url::options()
+                .base_url(base.as_ref())
+                .parse(&input)
+                .map(|url| url.to_string())
+                .map_err(|_| Error::Unknown)
+        },
+    )
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install native URL source".into(),
+        reason: "native URL source could not be installed".into(),
+    })?;
+    ctx.globals()
+        .set("__glassNativeCanonicalUrl", canonical)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "publish native URL source".into(),
+            reason: "native URL source could not be published".into(),
         })
 }
 
@@ -16135,20 +16178,6 @@ fn worker_bootstrap(
   Object.defineProperty(WorkerURLSearchParamsNative.prototype, "size", {{ get() {{ return this._entries.length; }} }});
   WorkerURLSearchParamsNative.prototype.toJSON = function() {{ return this.toString(); }};
   globalThis.URLSearchParams = WorkerURLSearchParamsNative;
-  const workerUrlScheme = /^[A-Za-z][A-Za-z0-9+.-]*:/;
-  const workerUrlNormalizePath = (path) => {{
-    const source = String(path || "/");
-    const trailing = source.endsWith("/");
-    const segments = [];
-    for (const segment of source.split("/")) {{
-      if (!segment || segment === ".") continue;
-      if (segment === "..") {{ if (segments.length) segments.pop(); continue; }}
-      segments.push(segment);
-    }}
-    let normalized = "/" + segments.join("/");
-    if (trailing && normalized !== "/") normalized += "/";
-    return normalized;
-  }};
   const workerUrlParts = (input) => {{
     const source = String(input);
     const hashIndex = source.indexOf("#");
@@ -16193,23 +16222,14 @@ fn worker_bootstrap(
   }};
   const workerUrlResolve = (input, base) => {{
     const value = String(input);
-    if (workerUrlScheme.test(value)) return value;
-    if (base === undefined || base === null) throw new TypeError("native relative Worker URL requires a base");
-    const baseParts = workerUrlParts(base && base.__glassUrl === true ? base.href : base);
-    if (value.startsWith("//")) return baseParts.protocol + value;
-    const hashIndex = value.indexOf("#");
-    const hash = hashIndex < 0 ? "" : value.slice(hashIndex);
-    const withoutHash = hashIndex < 0 ? value : value.slice(0, hashIndex);
-    const queryIndex = withoutHash.indexOf("?");
-    const search = queryIndex < 0 ? "" : withoutHash.slice(queryIndex);
-    const path = queryIndex < 0 ? withoutHash : withoutHash.slice(0, queryIndex);
-    const baseWithoutHash = baseParts.href.slice(0, baseParts.href.indexOf("#") < 0 ? baseParts.href.length : baseParts.href.indexOf("#"));
-    if (!path && !search && hash) return baseWithoutHash + hash;
-    if (!path && search) return baseWithoutHash.split("?")[0] + search + hash;
-    if (!path && !search) return baseWithoutHash;
-    const baseDirectory = baseParts.pathname.slice(0, baseParts.pathname.lastIndexOf("/") + 1);
-    const resolvedPath = path.startsWith("/") ? path : baseDirectory + path;
-    return baseParts.protocol + "//" + baseParts.authority + workerUrlNormalizePath(resolvedPath) + search + hash;
+    const baseHref = base === undefined
+      ? undefined
+      : base && base.__glassUrl === true ? base.href : String(base);
+    try {{
+      return __glassNativeCanonicalUrl(value, baseHref);
+    }} catch (_) {{
+      throw new TypeError("native Worker URL is invalid");
+    }}
   }};
   const WorkerURLNative = function(input, base) {{
     const source = input && input.__glassUrl === true ? input.href : input;
@@ -26584,7 +26604,6 @@ fn document_bootstrap(
     return this._entries.map(entry => encode(entry[0]) + "=" + encode(entry[1])).join("&");
   }};
   globalThis.URLSearchParams = URLSearchParamsNative;
-  const nativeUrlScheme = /^[A-Za-z][A-Za-z0-9+.-]*:/;
   const nativeUrlNormalizePath = (path) => {{
     const source = String(path || "/");
     const trailing = source.endsWith("/");
@@ -26671,27 +26690,14 @@ fn document_bootstrap(
   }};
   const nativeUrlResolve = (input, base) => {{
     const value = String(input);
-    if (nativeUrlScheme.test(value)) return value;
-    if (base === undefined || base === null) throw new TypeError("native relative URL requires a base");
-    const baseHref = base && base.__glassUrl === true ? base.href : String(base);
-    const baseParts = nativeUrlParts(baseHref);
-    if (value.startsWith("//")) return baseParts.protocol + value;
-    const hashIndex = value.indexOf("#");
-    const hash = hashIndex < 0 ? "" : value.slice(hashIndex);
-    const withoutHash = hashIndex < 0 ? value : value.slice(0, hashIndex);
-    const queryIndex = withoutHash.indexOf("?");
-    const search = queryIndex < 0 ? "" : withoutHash.slice(queryIndex);
-    const path = queryIndex < 0 ? withoutHash : withoutHash.slice(0, queryIndex);
-    const baseWithoutHash = baseParts.href.slice(0, baseParts.href.indexOf("#") < 0 ? baseParts.href.length : baseParts.href.indexOf("#"));
-    if (!path && !search && hash) return baseWithoutHash + hash;
-    if (!path && search) {{
-      const baseQuery = baseWithoutHash.indexOf("?");
-      return (baseQuery < 0 ? baseWithoutHash : baseWithoutHash.slice(0, baseQuery)) + search + hash;
+    const baseHref = base === undefined
+      ? undefined
+      : base && base.__glassUrl === true ? base.href : String(base);
+    try {{
+      return __glassNativeCanonicalUrl(value, baseHref);
+    }} catch (_) {{
+      throw new TypeError("native URL is invalid");
     }}
-    if (!path && !search && !hash) return baseWithoutHash;
-    const baseDirectory = baseParts.pathname.slice(0, baseParts.pathname.lastIndexOf("/") + 1);
-    const resolvedPath = path.startsWith("/") ? path : baseDirectory + path;
-    return baseParts.protocol + "//" + baseParts.authority + nativeUrlNormalizePath(resolvedPath) + search + hash;
   }};
   const URLNative = function(input, base) {{
     const parts = nativeUrlParts(nativeUrlResolve(input && input.__glassUrl === true ? input.href : input, base));

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-448`, following completed
 `native-engine-browser-447`, following completed
 `native-engine-browser-446`, following completed
 `native-engine-browser-445`, following completed
@@ -338,6 +339,15 @@ body/header/stream and loader policy owners remain authoritative. The inline
 worker response-stream cached-body branch is restored so fixture responses use
 the shared demand-driven 8 KiB transport. Complete URL/Fetch Web IDL parity
 and broader method/scheme admission remain issue #40 work.
+
+The completed canonical URL-resolution slice is
+[native-engine-browser-448](tasks/native-engine-browser-448.md): page and
+dedicated/SharedWorker URL construction and relative resolution now use the
+existing bounded Rust URL owner before JavaScript projects URL fields. Special
+schemes, default ports, escaping, and dot-segment joining therefore share one
+canonical result across URL, Fetch, XHR, worker, and resource consumers.
+Complete URL setter/Web IDL parity and the full browser scheme matrix remain
+issue #40 work.
 
 The completed XHR realm-state mutator slice is
 [native-engine-browser-445](tasks/native-engine-browser-445.md): page and

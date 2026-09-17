@@ -29,6 +29,7 @@ const MAX_NATIVE_PREFLIGHT_CACHE_ENTRIES: usize = 64;
 const MAX_NATIVE_PREFLIGHT_CACHE_AGE: Duration = Duration::from_secs(600);
 const MAX_NATIVE_COOKIE_BYTES: usize = 4096;
 const MAX_NATIVE_FETCH_HEADERS: usize = 16;
+pub(crate) const MAX_NATIVE_FETCH_METHOD_BYTES: usize = 64;
 const MAX_NATIVE_FETCH_HEADER_NAME_BYTES: usize = 128;
 const MAX_NATIVE_FETCH_HEADER_VALUE_BYTES: usize = 64 * 1024;
 const MAX_NATIVE_FETCH_HEADER_BYTES: usize = 128 * 1024;
@@ -213,16 +214,116 @@ impl NativeNavigationMethod {
             .expect("native fetch method is a valid HTTP token")
     }
 
-    const fn is_bodyless(self) -> bool {
-        matches!(self, Self::Get | Self::Head)
-    }
-
     const fn is_document_method(self) -> bool {
         matches!(self, Self::Get | Self::Post)
     }
 
     const fn is_safe_cookie_navigation(self) -> bool {
         matches!(self, Self::Get | Self::Head)
+    }
+}
+
+/// A script-Fetch HTTP method token. Document navigation keeps its
+/// deliberately closed method enum because forms and history have a smaller
+/// contract; script Fetch must be able to carry any valid HTTP token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeFetchMethod(String);
+
+impl Default for NativeFetchMethod {
+    fn default() -> Self {
+        Self::get()
+    }
+}
+
+impl NativeFetchMethod {
+    pub(crate) fn get() -> Self {
+        Self("GET".into())
+    }
+
+    pub(crate) fn from_fetch_method(method: &str) -> Result<Self, NativeEngineError> {
+        if method.is_empty() || method.len() > MAX_NATIVE_FETCH_METHOD_BYTES {
+            return Err(NativeEngineError::invalid(
+                "fetch method",
+                format!(
+                    "must be a non-empty HTTP token no longer than {MAX_NATIVE_FETCH_METHOD_BYTES} bytes"
+                ),
+            ));
+        }
+        let normalized = method.to_ascii_uppercase();
+        if !normalized.bytes().all(is_http_token_byte) {
+            return Err(NativeEngineError::invalid(
+                "fetch method",
+                "must contain only HTTP token characters",
+            ));
+        }
+        if matches!(normalized.as_str(), "CONNECT" | "TRACE" | "TRACK") {
+            return Err(NativeEngineError::invalid(
+                "fetch method",
+                "CONNECT, TRACE, and TRACK are forbidden",
+            ));
+        }
+        Ok(Self(normalized))
+    }
+
+    pub(crate) fn from_navigation_method(method: NativeNavigationMethod) -> Self {
+        Self(method.as_str().into())
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn reqwest_method(&self) -> reqwest::Method {
+        reqwest::Method::from_bytes(self.0.as_bytes())
+            .expect("native fetch method is a valid HTTP token")
+    }
+
+    fn is_bodyless(&self) -> bool {
+        matches!(self.as_str(), "GET" | "HEAD")
+    }
+
+    fn is_simple(&self) -> bool {
+        matches!(self.as_str(), "GET" | "HEAD" | "POST")
+    }
+}
+
+fn is_http_token_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'0'..=b'9'
+            | b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'!'
+            | b'#'
+            | b'$'
+            | b'%'
+            | b'&'
+            | b'\''
+            | b'*'
+            | b'+'
+            | b'-'
+            | b'.'
+            | b'^'
+            | b'_'
+            | b'`'
+            | b'|'
+            | b'~'
+    )
+}
+
+trait NativeCookieMethod {
+    fn is_safe_cookie_method(&self) -> bool;
+}
+
+impl NativeCookieMethod for NativeNavigationMethod {
+    fn is_safe_cookie_method(&self) -> bool {
+        self.is_safe_cookie_navigation()
+    }
+}
+
+impl NativeCookieMethod for NativeFetchMethod {
+    fn is_safe_cookie_method(&self) -> bool {
+        matches!(self.as_str(), "GET" | "HEAD")
     }
 }
 
@@ -365,7 +466,7 @@ pub(crate) fn validate_target_navigation_payload(
 pub(crate) struct NativeFetchRequest<'a> {
     pub(crate) document_url: &'a str,
     pub(crate) href: &'a str,
-    pub(crate) method: NativeNavigationMethod,
+    pub(crate) method: NativeFetchMethod,
     pub(crate) body: Option<NativeRequestBody>,
     pub(crate) content_type: Option<String>,
     pub(crate) request_headers: BTreeMap<String, String>,
@@ -3821,7 +3922,7 @@ impl NativeResourceLoader {
         self.fetch_request_with_headers_async(NativeFetchRequest {
             document_url,
             href,
-            method,
+            method: NativeFetchMethod::from_navigation_method(method),
             body: body.map(NativeRequestBody::Text),
             content_type,
             request_headers: BTreeMap::new(),
@@ -3847,7 +3948,7 @@ impl NativeResourceLoader {
         self.fetch_request_with_headers_async(NativeFetchRequest {
             document_url,
             href,
-            method: NativeNavigationMethod::Get,
+            method: NativeFetchMethod::get(),
             body: None,
             content_type: None,
             request_headers: BTreeMap::new(),
@@ -3969,37 +4070,32 @@ impl NativeResourceLoader {
                 "content-type must use the dedicated content type field",
             ));
         }
-        match method {
-            method
-                if method.is_bodyless()
-                    && (body.is_some() || content_type.is_some() || request_body.is_some()) =>
-            {
-                return Err(NativeEngineError::invalid(
-                    format!("{} fetch body", method.as_str()),
-                    "must be absent",
-                ));
-            }
-            _ => {
-                if body
-                    .as_ref()
-                    .is_some_and(|body| body.len() > MAX_NATIVE_FORM_BODY_BYTES)
-                {
-                    return Err(NativeEngineError::limit(
-                        "fetch request body",
-                        MAX_NATIVE_FORM_BODY_BYTES,
-                        body.as_ref().map_or(0, NativeRequestBody::len),
-                    ));
-                }
-                if content_type
-                    .as_ref()
-                    .is_some_and(|content_type| content_type.is_empty())
-                {
-                    return Err(NativeEngineError::invalid(
-                        "fetch content type",
-                        "must be non-empty when present",
-                    ));
-                }
-            }
+        if method.is_bodyless()
+            && (body.is_some() || content_type.is_some() || request_body.is_some())
+        {
+            return Err(NativeEngineError::invalid(
+                format!("{} fetch body", method.as_str()),
+                "must be absent",
+            ));
+        }
+        if body
+            .as_ref()
+            .is_some_and(|body| body.len() > MAX_NATIVE_FORM_BODY_BYTES)
+        {
+            return Err(NativeEngineError::limit(
+                "fetch request body",
+                MAX_NATIVE_FORM_BODY_BYTES,
+                body.as_ref().map_or(0, NativeRequestBody::len),
+            ));
+        }
+        if content_type
+            .as_ref()
+            .is_some_and(|content_type| content_type.is_empty())
+        {
+            return Err(NativeEngineError::invalid(
+                "fetch content type",
+                "must be non-empty when present",
+            ));
         }
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
             NativeEngineError::UnsupportedUrl {
@@ -4104,15 +4200,17 @@ impl NativeResourceLoader {
                 reason: "only-if-cached requires same-origin fetch mode".into(),
             });
         }
-        let cacheable_request = matches!(
-            method,
-            NativeNavigationMethod::Get | NativeNavigationMethod::Head
-        ) && body.is_none()
+        let cacheable_request = matches!(method.as_str(), "GET" | "HEAD")
+            && body.is_none()
             && redirect_mode == NativeFetchRedirectMode::Follow
             && cors_mode != NativeCorsMode::Navigation;
         let request_cookie = if cacheable_request && credentials {
-            self.network
-                .cookie_header_for_request(&target_url, Some(&document_url), false, method)
+            self.network.cookie_header_for_request(
+                &target_url,
+                Some(&document_url),
+                false,
+                method.clone(),
+            )
         } else {
             None
         };
@@ -4120,7 +4218,7 @@ impl NativeResourceLoader {
             fetch_response_cache_key(
                 &document_url,
                 &target_url,
-                method,
+                &method,
                 &current_headers,
                 content_type.as_deref(),
                 credentials,
@@ -4192,12 +4290,7 @@ impl NativeResourceLoader {
             let requested_headers =
                 cors_preflight_request_headers(current_content_type.as_deref(), &current_headers);
             let cross_origin_request = document_url.origin() != current_url.origin();
-            let simple_method = matches!(
-                current_method,
-                NativeNavigationMethod::Get
-                    | NativeNavigationMethod::Head
-                    | NativeNavigationMethod::Post
-            );
+            let simple_method = current_method.is_simple();
             if cors_mode == NativeCorsMode::NoCors
                 && cross_origin_request
                 && (!simple_method || !requested_headers.is_empty())
@@ -4216,7 +4309,7 @@ impl NativeResourceLoader {
                     &client,
                     &document_url,
                     &request_url,
-                    current_method,
+                    &current_method,
                     &requested_headers,
                     credentials,
                 )
@@ -4268,7 +4361,7 @@ impl NativeResourceLoader {
                     &current_url,
                     Some(&document_url),
                     false,
-                    current_method,
+                    current_method.clone(),
                 )
             {
                 request = request.header(reqwest::header::COOKIE, cookie);
@@ -4383,12 +4476,9 @@ impl NativeResourceLoader {
             }
             no_cors_cross_origin |= document_url.origin() != next_url.origin();
             if matches!(response.status().as_u16(), 301..=303)
-                && !matches!(
-                    current_method,
-                    NativeNavigationMethod::Get | NativeNavigationMethod::Head
-                )
+                && !matches!(current_method.as_str(), "GET" | "HEAD")
             {
-                current_method = NativeNavigationMethod::Get;
+                current_method = NativeFetchMethod::get();
                 current_body = None;
                 current_request_body = None;
                 streaming_request_body_sent = false;
@@ -4563,7 +4653,7 @@ impl NativeResourceLoader {
         client: &reqwest::Client,
         document_url: &Url,
         target_url: &Url,
-        method: NativeNavigationMethod,
+        method: &NativeFetchMethod,
         requested_headers: &[String],
         credentials: bool,
     ) -> Result<(), NativeEngineError> {
@@ -6267,7 +6357,7 @@ fn cache_key(url: &Url) -> String {
 fn fetch_response_cache_key(
     document_url: &Url,
     target_url: &Url,
-    method: NativeNavigationMethod,
+    method: &NativeFetchMethod,
     request_headers: &BTreeMap<String, String>,
     content_type: Option<&str>,
     credentials: bool,
@@ -6430,12 +6520,12 @@ impl NativeNetworkState {
         )
     }
 
-    fn cookie_header_for_request(
+    fn cookie_header_for_request<M: NativeCookieMethod>(
         &self,
         url: &Url,
         initiator_url: Option<&Url>,
         top_level_navigation: bool,
-        method: NativeNavigationMethod,
+        method: M,
     ) -> Option<String> {
         self.cookie_header_with_visibility(url, true, initiator_url, top_level_navigation, method)
     }
@@ -6473,19 +6563,19 @@ impl NativeNetworkState {
         matching
     }
 
-    fn cookie_header_with_visibility(
+    fn cookie_header_with_visibility<M: NativeCookieMethod>(
         &self,
         url: &Url,
         include_http_only: bool,
         initiator_url: Option<&Url>,
         top_level_navigation: bool,
-        method: NativeNavigationMethod,
+        method: M,
     ) -> Option<String> {
         let matching = self
             .matching_cookies(url, include_http_only)
             .into_iter()
             .filter(|cookie| {
-                cookie_same_site_allows(cookie, url, initiator_url, top_level_navigation, method)
+                cookie_same_site_allows(cookie, url, initiator_url, top_level_navigation, &method)
             });
 
         let mut header = String::new();
@@ -6793,12 +6883,12 @@ impl NativeNetworkState {
     }
 }
 
-fn cookie_same_site_allows(
+fn cookie_same_site_allows<M: NativeCookieMethod>(
     cookie: &NativeCookie,
     request_url: &Url,
     initiator_url: Option<&Url>,
     top_level_navigation: bool,
-    method: NativeNavigationMethod,
+    method: &M,
 ) -> bool {
     let same_site = initiator_url.is_none_or(|initiator| {
         schemeful_site(initiator).is_some()
@@ -6808,7 +6898,7 @@ fn cookie_same_site_allows(
         NativeCookieSameSite::None => true,
         NativeCookieSameSite::Strict => same_site,
         NativeCookieSameSite::Lax => {
-            same_site || (top_level_navigation && method.is_safe_cookie_navigation())
+            same_site || (top_level_navigation && method.is_safe_cookie_method())
         }
     }
 }
@@ -7155,9 +7245,9 @@ mod tests {
     };
     use super::{
         MAX_NATIVE_CACHE_ENTRIES, MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, NativeCookieProfileEntry,
-        NativeCorsMode, NativeEngineConfig, NativeInlineCspKind, NativeNavigationMethod,
-        NativeNavigationPolicyKind, NativeNetworkState, NativeRequestBody, NativeResource,
-        NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
+        NativeCorsMode, NativeEngineConfig, NativeFetchMethod, NativeInlineCspKind,
+        NativeNavigationMethod, NativeNavigationPolicyKind, NativeNetworkState, NativeRequestBody,
+        NativeResource, NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
         cache_control_requires_revalidation, content_security_policy, cors_origin_header,
         cors_preflight_response_allowed, cors_response_allowed,
         csp_report_deliveries_for_declaration, csp_sources_allow, csp_sources_allow_for_redirect,
@@ -7175,6 +7265,22 @@ mod tests {
     use std::fs;
     use std::time::Instant;
     use url::Url;
+
+    #[test]
+    fn fetch_method_accepts_bounded_custom_http_tokens_without_widening_navigation() {
+        for (input, expected) in [("report", "REPORT"), ("X-Glass-Method", "X-GLASS-METHOD")] {
+            let method = NativeFetchMethod::from_fetch_method(input).unwrap();
+            assert_eq!(method.as_str(), expected);
+        }
+        for input in ["", "bad method", "CONNECT", "TRACE", "TRACK"] {
+            assert!(
+                NativeFetchMethod::from_fetch_method(input).is_err(),
+                "{input:?}"
+            );
+        }
+        assert!(NativeFetchMethod::from_fetch_method(&"A".repeat(65)).is_err());
+        assert!(NativeNavigationMethod::from_fetch_method("REPORT").is_err());
+    }
 
     #[test]
     fn binary_navigation_body_uses_compact_base64_wire_encoding() {

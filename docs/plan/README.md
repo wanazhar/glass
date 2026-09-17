@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-451`, following completed
 `native-engine-browser-450`, following completed
 `native-engine-browser-449`, following completed
 `native-engine-browser-448`, following completed
@@ -363,6 +364,14 @@ The completed page URL-setter normalization slice is
 `URL.pathname` and `URL.hash` writes now use the same bounded Rust canonicalizer
 as initial and worker URL handling, preserving query state while escaping and
 dot-normalizing setter values. Complete URL setter/Web IDL parity and the full
+browser scheme matrix remain issue #40 work.
+
+The completed general Fetch-method slice is
+[native-engine-browser-451](tasks/native-engine-browser-451.md): page,
+dedicated/SharedWorker, and Service Worker Fetch accept bounded valid HTTP
+method tokens such as `REPORT` through one native owner, while CORS, body,
+redirect, cache, and cookie policy remains bounded and navigation/form/XHR
+method contracts stay separate. Complete Fetch Web IDL parity and the full
 browser scheme matrix remain issue #40 work.
 
 The completed XHR realm-state mutator slice is

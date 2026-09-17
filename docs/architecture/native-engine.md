@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-451`, following completed
 `native-engine-browser-450`, following completed
 `native-engine-browser-449`, following completed
 `native-engine-browser-448`, following completed
@@ -219,6 +220,15 @@ canonicalizer as initial construction and worker mutation, preserving query
 state while escaping spaces, resolving path dot segments, and canonicalizing
 fragments. Complete URL setter and descriptor parity, blob/file-origin rules,
 and the full scheme matrix remain issue #40 work.
+
+Slice 451 removes the fixed seven-method ceiling from script Fetch. Page,
+dedicated/SharedWorker, and Service Worker Fetch now carry a bounded HTTP
+method token through the native loader, including extension methods such as
+`REPORT`, while the existing CORS simple-method, preflight, redirect, cookie,
+cache, and body rules remain active. Navigation/form methods and XHR keep their
+separate closed contracts; forbidden `CONNECT`, `TRACE`, and `TRACK` remain
+rejected. Complete Fetch Web IDL parity and the broader browser matrix remain
+issue #40 work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

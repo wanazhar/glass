@@ -1354,6 +1354,16 @@ enum InheritedTextDeclaration<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeFontVariantShorthand {
+    ligatures: InheritedTextDeclaration<NativeFontVariantLigatures>,
+    caps: InheritedTextDeclaration<NativeFontVariantCaps>,
+    position: InheritedTextDeclaration<NativeFontVariantPosition>,
+    alternates: InheritedTextDeclaration<NativeFontVariantAlternates>,
+    east_asian: InheritedTextDeclaration<NativeFontVariantEastAsian>,
+    numeric: InheritedTextDeclaration<NativeFontVariantNumeric>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalCascadeDeclaration<T> {
     Value(T),
     Inherit,
@@ -7140,6 +7150,7 @@ fn parse_declarations_with_diagnostics(
             "text-underline-offset" => parse_text_underline_offset(value).is_some(),
             "text-decoration-color" => parse_text_decoration_color(value).is_some(),
             "text-transform" => parse_text_transform_declaration(value).is_some(),
+            "font-variant" => parse_font_variant_shorthand_declaration(value).is_some(),
             "font-variant-ligatures" => parse_font_variant_ligatures_declaration(value).is_some(),
             "font-variant-caps" => parse_font_variant_caps_declaration(value).is_some(),
             "font-variant-position" => parse_font_variant_position_declaration(value).is_some(),
@@ -7338,6 +7349,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "text-underline-offset"
             | "text-decoration-color"
             | "text-transform"
+            | "font-variant"
             | "font-variant-ligatures"
             | "font-variant-caps"
             | "font-variant-position"
@@ -7758,6 +7770,22 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_text_transform_declaration(value) {
                     declarations.text_transform = Some(parsed);
                     declarations.text_importance.text_transform = important;
+                }
+            }
+            "font-variant" => {
+                if let Some(parsed) = parse_font_variant_shorthand_declaration(value) {
+                    declarations.font_variant_ligatures = Some(parsed.ligatures);
+                    declarations.font_variant_caps = Some(parsed.caps);
+                    declarations.font_variant_position = Some(parsed.position);
+                    declarations.font_variant_alternates = Some(parsed.alternates);
+                    declarations.font_variant_east_asian = Some(parsed.east_asian);
+                    declarations.font_variant_numeric = Some(parsed.numeric);
+                    declarations.text_importance.font_variant_ligatures = important;
+                    declarations.text_importance.font_variant_caps = important;
+                    declarations.text_importance.font_variant_position = important;
+                    declarations.text_importance.font_variant_alternates = important;
+                    declarations.text_importance.font_variant_east_asian = important;
+                    declarations.text_importance.font_variant_numeric = important;
                 }
             }
             "font-variant-ligatures" => {
@@ -12393,16 +12421,18 @@ fn parse_text_transform_declaration(
 fn parse_font_variant_ligatures(value: &str) -> Option<NativeFontVariantLigatures> {
     let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
     if tokens.len() == 1 {
-        return match tokens[0].to_ascii_lowercase().as_str() {
-            "normal" => Some(NativeFontVariantLigatures::default()),
-            "none" => Some(NativeFontVariantLigatures {
-                common: false,
-                discretionary: false,
-                historical: false,
-                contextual: false,
-            }),
-            _ => None,
-        };
+        match tokens[0].to_ascii_lowercase().as_str() {
+            "normal" => return Some(NativeFontVariantLigatures::default()),
+            "none" => {
+                return Some(NativeFontVariantLigatures {
+                    common: false,
+                    discretionary: false,
+                    historical: false,
+                    contextual: false,
+                });
+            }
+            _ => {}
+        }
     }
     if tokens.is_empty()
         || tokens
@@ -12568,6 +12598,192 @@ fn parse_font_variant_east_asian_declaration(
     value: &str,
 ) -> Option<InheritedTextDeclaration<NativeFontVariantEastAsian>> {
     parse_inherited_text_declaration(value, parse_font_variant_east_asian)
+}
+
+fn parse_font_variant_shorthand(value: &str) -> Option<NativeFontVariantShorthand> {
+    let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return None;
+    }
+    if tokens.len() == 1 {
+        match tokens[0].to_ascii_lowercase().as_str() {
+            "inherit" => {
+                return Some(NativeFontVariantShorthand {
+                    ligatures: InheritedTextDeclaration::Inherit,
+                    caps: InheritedTextDeclaration::Inherit,
+                    position: InheritedTextDeclaration::Inherit,
+                    alternates: InheritedTextDeclaration::Inherit,
+                    east_asian: InheritedTextDeclaration::Inherit,
+                    numeric: InheritedTextDeclaration::Inherit,
+                });
+            }
+            "initial" => {
+                return Some(NativeFontVariantShorthand {
+                    ligatures: InheritedTextDeclaration::Initial,
+                    caps: InheritedTextDeclaration::Initial,
+                    position: InheritedTextDeclaration::Initial,
+                    alternates: InheritedTextDeclaration::Initial,
+                    east_asian: InheritedTextDeclaration::Initial,
+                    numeric: InheritedTextDeclaration::Initial,
+                });
+            }
+            "unset" => {
+                return Some(NativeFontVariantShorthand {
+                    ligatures: InheritedTextDeclaration::Unset,
+                    caps: InheritedTextDeclaration::Unset,
+                    position: InheritedTextDeclaration::Unset,
+                    alternates: InheritedTextDeclaration::Unset,
+                    east_asian: InheritedTextDeclaration::Unset,
+                    numeric: InheritedTextDeclaration::Unset,
+                });
+            }
+            "revert" => {
+                return Some(NativeFontVariantShorthand {
+                    ligatures: InheritedTextDeclaration::Revert,
+                    caps: InheritedTextDeclaration::Revert,
+                    position: InheritedTextDeclaration::Revert,
+                    alternates: InheritedTextDeclaration::Revert,
+                    east_asian: InheritedTextDeclaration::Revert,
+                    numeric: InheritedTextDeclaration::Revert,
+                });
+            }
+            "revert-layer" => {
+                return Some(NativeFontVariantShorthand {
+                    ligatures: InheritedTextDeclaration::RevertLayer,
+                    caps: InheritedTextDeclaration::RevertLayer,
+                    position: InheritedTextDeclaration::RevertLayer,
+                    alternates: InheritedTextDeclaration::RevertLayer,
+                    east_asian: InheritedTextDeclaration::RevertLayer,
+                    numeric: InheritedTextDeclaration::RevertLayer,
+                });
+            }
+            "normal" => {
+                return Some(NativeFontVariantShorthand {
+                    ligatures: InheritedTextDeclaration::Value(
+                        NativeFontVariantLigatures::default(),
+                    ),
+                    caps: InheritedTextDeclaration::Value(NativeFontVariantCaps::Normal),
+                    position: InheritedTextDeclaration::Value(NativeFontVariantPosition::Normal),
+                    alternates: InheritedTextDeclaration::Value(
+                        NativeFontVariantAlternates::Normal,
+                    ),
+                    east_asian: InheritedTextDeclaration::Value(
+                        NativeFontVariantEastAsian::default(),
+                    ),
+                    numeric: InheritedTextDeclaration::Value(NativeFontVariantNumeric::default()),
+                });
+            }
+            "none" => {
+                return Some(NativeFontVariantShorthand {
+                    ligatures: InheritedTextDeclaration::Value(NativeFontVariantLigatures {
+                        common: false,
+                        discretionary: false,
+                        historical: false,
+                        contextual: false,
+                    }),
+                    caps: InheritedTextDeclaration::Value(NativeFontVariantCaps::Normal),
+                    position: InheritedTextDeclaration::Value(NativeFontVariantPosition::Normal),
+                    alternates: InheritedTextDeclaration::Value(
+                        NativeFontVariantAlternates::Normal,
+                    ),
+                    east_asian: InheritedTextDeclaration::Value(
+                        NativeFontVariantEastAsian::default(),
+                    ),
+                    numeric: InheritedTextDeclaration::Value(NativeFontVariantNumeric::default()),
+                });
+            }
+            _ => {}
+        }
+    }
+    if tokens.iter().any(|token| {
+        matches!(
+            token.to_ascii_lowercase().as_str(),
+            "normal" | "none" | "inherit" | "initial" | "unset" | "revert" | "revert-layer"
+        )
+    }) {
+        return None;
+    }
+
+    let mut ligature_tokens = Vec::new();
+    let mut caps_token = None;
+    let mut position_token = None;
+    let mut alternate_token = None;
+    let mut east_asian_tokens = Vec::new();
+    let mut numeric_tokens = Vec::new();
+    for token in tokens {
+        match token.to_ascii_lowercase().as_str() {
+            "common-ligatures"
+            | "no-common-ligatures"
+            | "discretionary-ligatures"
+            | "no-discretionary-ligatures"
+            | "historical-ligatures"
+            | "no-historical-ligatures"
+            | "contextual"
+            | "no-contextual" => ligature_tokens.push(token),
+            "small-caps" | "all-small-caps" | "petite-caps" | "all-petite-caps" | "unicase"
+            | "titling-caps" => {
+                if caps_token.is_some() {
+                    return None;
+                }
+                caps_token = Some(token);
+            }
+            "sub" | "super" => {
+                if position_token.is_some() {
+                    return None;
+                }
+                position_token = Some(token);
+            }
+            "historical-forms" => {
+                if alternate_token.is_some() {
+                    return None;
+                }
+                alternate_token = Some(token);
+            }
+            "jis78" | "jis83" | "jis90" | "jis04" | "simplified" | "traditional" | "full-width"
+            | "proportional-width" | "ruby" => east_asian_tokens.push(token),
+            "lining-nums" | "oldstyle-nums" | "proportional-nums" | "tabular-nums"
+            | "diagonal-fractions" | "stacked-fractions" | "ordinal" | "slashed-zero" => {
+                numeric_tokens.push(token)
+            }
+            _ => return None,
+        }
+    }
+    let ligatures = if ligature_tokens.is_empty() {
+        NativeFontVariantLigatures::default()
+    } else {
+        parse_font_variant_ligatures(&ligature_tokens.join(" "))?
+    };
+    let caps = caps_token.map_or(Some(NativeFontVariantCaps::Normal), parse_font_variant_caps)?;
+    let position = position_token.map_or(
+        Some(NativeFontVariantPosition::Normal),
+        parse_font_variant_position,
+    )?;
+    let alternates = alternate_token.map_or(
+        Some(NativeFontVariantAlternates::Normal),
+        parse_font_variant_alternates,
+    )?;
+    let east_asian = if east_asian_tokens.is_empty() {
+        NativeFontVariantEastAsian::default()
+    } else {
+        parse_font_variant_east_asian(&east_asian_tokens.join(" "))?
+    };
+    let numeric = if numeric_tokens.is_empty() {
+        NativeFontVariantNumeric::default()
+    } else {
+        parse_font_variant_numeric(&numeric_tokens.join(" "))?
+    };
+    Some(NativeFontVariantShorthand {
+        ligatures: InheritedTextDeclaration::Value(ligatures),
+        caps: InheritedTextDeclaration::Value(caps),
+        position: InheritedTextDeclaration::Value(position),
+        alternates: InheritedTextDeclaration::Value(alternates),
+        east_asian: InheritedTextDeclaration::Value(east_asian),
+        numeric: InheritedTextDeclaration::Value(numeric),
+    })
+}
+
+fn parse_font_variant_shorthand_declaration(value: &str) -> Option<NativeFontVariantShorthand> {
+    parse_font_variant_shorthand(value)
 }
 
 fn parse_font_variant_numeric(value: &str) -> Option<NativeFontVariantNumeric> {
@@ -22422,6 +22638,61 @@ mod tests {
     }
 
     #[test]
+    fn font_variant_shorthand_expands_existing_font_variant_controls() {
+        let parsed = parse_font_variant_shorthand(
+            "no-common-ligatures unicase super historical-forms jis83 full-width ruby oldstyle-nums tabular-nums",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.ligatures,
+            InheritedTextDeclaration::Value(NativeFontVariantLigatures {
+                common: false,
+                discretionary: false,
+                historical: false,
+                contextual: true,
+            })
+        );
+        assert_eq!(
+            parsed.caps,
+            InheritedTextDeclaration::Value(NativeFontVariantCaps::Unicase)
+        );
+        assert_eq!(
+            parsed.position,
+            InheritedTextDeclaration::Value(NativeFontVariantPosition::Super)
+        );
+        assert_eq!(
+            parsed.alternates,
+            InheritedTextDeclaration::Value(NativeFontVariantAlternates::HistoricalForms)
+        );
+        assert_eq!(
+            parsed.east_asian,
+            InheritedTextDeclaration::Value(NativeFontVariantEastAsian {
+                form: NativeFontVariantEastAsianForm::Jis83,
+                width: NativeFontVariantEastAsianWidth::Full,
+                ruby: true,
+            })
+        );
+        assert!(matches!(
+            parsed.numeric,
+            InheritedTextDeclaration::Value(NativeFontVariantNumeric {
+                figure: NativeFontVariantNumericFigure::Oldstyle,
+                spacing: NativeFontVariantNumericSpacing::Tabular,
+                fraction: NativeFontVariantNumericFraction::Normal,
+                ordinal: false,
+                slashed_zero: false,
+            })
+        ));
+        assert!(matches!(
+            parse_font_variant_shorthand("inherit").unwrap().caps,
+            InheritedTextDeclaration::Inherit
+        ));
+        assert!(parse_font_variant_shorthand("normal unicase").is_none());
+        assert!(parse_font_variant_shorthand("none ruby").is_none());
+        assert!(parse_font_variant_shorthand("small-caps small-caps").is_none());
+        assert!(parse_font_variant_shorthand("unknown").is_none());
+    }
+
+    #[test]
     fn font_variant_numeric_parser_keeps_one_value_per_group() {
         assert_eq!(
             parse_font_variant_numeric("normal"),
@@ -23843,6 +24114,91 @@ mod tests {
             NativeFontVariantEastAsian::default()
         );
         assert_eq!(style("invalid").font_variant_east_asian(), parent);
+    }
+
+    #[test]
+    fn font_variant_shorthand_resets_and_expands_with_normal_cascade() {
+        let document = NativeDocument::parse(
+            "<style>#parent { font-variant: no-common-ligatures unicase super historical-forms jis83 full-width ruby oldstyle-nums tabular-nums; } #child { font-variant: normal; font-variant-caps: petite-caps; } #inherit { font-variant: inherit; } #clear { font-variant: initial; } #none { font-variant: none; } #invalid { font-variant: jis78 jis83; }</style><div id='parent'><span id='child'>Child</span><span id='inherit'>Inherit</span><span id='clear'>Clear</span><span id='none'>None</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+        assert_eq!(
+            style("parent").font_variant_ligatures(),
+            NativeFontVariantLigatures {
+                common: false,
+                discretionary: false,
+                historical: false,
+                contextual: true,
+            }
+        );
+        assert_eq!(
+            style("parent").font_variant_caps(),
+            NativeFontVariantCaps::Unicase
+        );
+        assert_eq!(
+            style("parent").font_variant_position(),
+            NativeFontVariantPosition::Super
+        );
+        assert_eq!(
+            style("parent").font_variant_alternates(),
+            NativeFontVariantAlternates::HistoricalForms
+        );
+        assert_eq!(
+            style("parent").font_variant_east_asian(),
+            NativeFontVariantEastAsian {
+                form: NativeFontVariantEastAsianForm::Jis83,
+                width: NativeFontVariantEastAsianWidth::Full,
+                ruby: true,
+            }
+        );
+        assert_eq!(
+            style("parent").font_variant_numeric(),
+            NativeFontVariantNumeric {
+                figure: NativeFontVariantNumericFigure::Oldstyle,
+                spacing: NativeFontVariantNumericSpacing::Tabular,
+                fraction: NativeFontVariantNumericFraction::Normal,
+                ordinal: false,
+                slashed_zero: false,
+            }
+        );
+        assert_eq!(
+            style("child").font_variant_caps(),
+            NativeFontVariantCaps::PetiteCaps
+        );
+        assert_eq!(
+            style("child").font_variant_ligatures(),
+            NativeFontVariantLigatures::default()
+        );
+        assert_eq!(
+            style("inherit").font_variant_east_asian(),
+            style("parent").font_variant_east_asian()
+        );
+        assert_eq!(
+            style("clear").font_variant_numeric(),
+            NativeFontVariantNumeric::default()
+        );
+        assert_eq!(
+            style("none").font_variant_ligatures(),
+            NativeFontVariantLigatures {
+                common: false,
+                discretionary: false,
+                historical: false,
+                contextual: false,
+            }
+        );
+        assert_eq!(
+            style("none").font_variant_caps(),
+            NativeFontVariantCaps::Normal
+        );
+        assert_eq!(
+            style("invalid").font_variant_position(),
+            NativeFontVariantPosition::Super
+        );
     }
 
     #[test]

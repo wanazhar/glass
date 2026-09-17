@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-514`, following
+expansion checkpoint is completed `native-engine-browser-515`, following
+completed `native-engine-browser-514`, following
 completed `native-engine-browser-513`, following
 completed `native-engine-browser-512`, following
 completed `native-engine-browser-511`, following
@@ -304,6 +305,14 @@ authoritative. Character fallback and baseline metrics remain unchanged;
 numeric variants, variable axes, color rendering, WOFF2, font-display timing,
 mixed-script shaping, cross-realm FontFace projection, and complete
 FontFace/Web IDL parity remain open.
+
+Slice 515 carries the inherited `font-variant` shorthand over the
+already bounded ligature, caps, position, alternate, east-Asian, and numeric
+groups. CSS-wide resets apply to every expanded longhand, ordinary cascade
+order remains authoritative, and canonical CSSOM serialization omits defaults.
+The shorthand does not broaden longhand grammar; language-specific shaping,
+vertical writing, variable/color rendering, WOFF2, and complete FontFace/Web
+IDL parity remain open.
 
 Slice 514 carries inherited `font-variant-east-asian` for bounded form, width,
 and ruby controls through native CSSOM. The standard keywords map to the

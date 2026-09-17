@@ -17928,6 +17928,39 @@ mod native_font_face_tests {
     }
 
     #[test]
+    fn computed_style_projects_font_variant_shorthand() {
+        let runtime =
+            NativeJavaScriptRuntime::new_with_context_id("computed-font-variant-shorthand-test")
+                .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<style>#parent { font-variant: small-caps super historical-forms jis83 full-width ruby lining-nums; } #reset { font-variant: normal; }</style><div id='parent'>Parent</div><span id='reset'>Reset</span>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("font-variant shorthand fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const parent = getComputedStyle(document.getElementById("parent"));
+                  const reset = getComputedStyle(document.getElementById("reset"));
+                  return [parent.fontVariant, parent.getPropertyValue("font-variant"), reset.fontVariant];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("computed font-variant shorthand surface must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                "small-caps super historical-forms jis83 full-width ruby lining-nums",
+                "small-caps super historical-forms jis83 full-width ruby lining-nums",
+                "normal"
+            ])
+        );
+    }
+
+    #[test]
     fn computed_style_projects_font_variant_numeric() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-numeric-test")
             .expect("native JavaScript runtime must construct");
@@ -37407,6 +37440,22 @@ fn document_bootstrap(
     if (value.slashed_zero === true) values.push("slashed-zero");
     return values.length === 0 ? "normal" : values.join(" ");
   }};
+  const computedStyleFontVariant = (raw) => {{
+    const values = [];
+    const ligatures = computedStyleLigatures(raw.font_variant_ligatures);
+    if (ligatures !== "normal") values.push(ligatures);
+    const caps = computedStyleFontVariantCaps(raw.font_variant_caps);
+    if (caps !== "normal") values.push(caps);
+    const position = computedStyleEnumName(raw.font_variant_position, "normal");
+    if (position !== "normal") values.push(position);
+    const alternates = computedStyleFontVariantAlternates(raw.font_variant_alternates);
+    if (alternates !== "normal") values.push(alternates);
+    const eastAsian = computedStyleFontVariantEastAsian(raw.font_variant_east_asian);
+    if (eastAsian !== "normal") values.push(eastAsian);
+    const numeric = computedStyleFontVariantNumeric(raw.font_variant_numeric);
+    if (numeric !== "normal") values.push(numeric);
+    return values.length === 0 ? "normal" : values.join(" ");
+  }};
   const computedStyleFeatureSettings = (value) => {{
     if (!value || typeof value !== "object" || !Array.isArray(value.values)) return "normal";
     const count = Math.max(0, Math.min(value.values.length, Number(value.count) || 0));
@@ -37462,7 +37511,7 @@ fn document_bootstrap(
     "border-left-color", "border-radius", "overflow", "overflow-x", "overflow-y", "white-space",
     "text-align", "text-align-last", "text-justify", "text-indent", "text-transform", "text-overflow",
     "text-decoration", "text-decoration-style", "text-decoration-thickness", "text-underline-offset",
-    "font-weight", "font-style", "font-stretch", "font-variant-ligatures", "font-variant-caps", "font-variant-position", "font-variant-alternates", "font-variant-east-asian", "font-variant-numeric", "font-feature-settings", "font-kerning", "line-height", "word-break", "word-spacing", "letter-spacing",
+    "font-weight", "font-style", "font-stretch", "font-variant", "font-variant-ligatures", "font-variant-caps", "font-variant-position", "font-variant-alternates", "font-variant-east-asian", "font-variant-numeric", "font-feature-settings", "font-kerning", "line-height", "word-break", "word-spacing", "letter-spacing",
     "vertical-align", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
     "justify-content", "align-items", "align-self", "align-content", "gap", "row-gap", "column-gap",
     "order", "grid-template-columns", "grid-template-rows"
@@ -37555,6 +37604,7 @@ fn document_bootstrap(
     if (name === "font-weight") return computedStyleEnumName(raw.font_weight, "normal");
     if (name === "font-style") return computedStyleEnumName(raw.font_style, "normal");
     if (name === "font-stretch") return computedStyleStretch(raw.font_stretch);
+    if (name === "font-variant") return computedStyleFontVariant(raw);
     if (name === "font-variant-ligatures") return computedStyleLigatures(raw.font_variant_ligatures);
     if (name === "font-variant-caps") return computedStyleFontVariantCaps(raw.font_variant_caps);
     if (name === "font-variant-position") return computedStyleEnumName(raw.font_variant_position, "normal");

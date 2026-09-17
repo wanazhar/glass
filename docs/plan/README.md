@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-515`, following completed
 `native-engine-browser-514`, following completed
 `native-engine-browser-513`, following completed
 `native-engine-browser-512`, following completed
@@ -317,6 +318,11 @@ feature settings retaining precedence. Character fallback and typographic
 baseline metrics remain bounded; numeric variants, variable/color fonts,
 WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
 projection, and complete FontFace/Web IDL parity remain issue #40 gates.
+
+The completed bounded `font-variant` shorthand follow-up is
+[`native-engine-browser-515`](tasks/native-engine-browser-515.md): it expands
+the existing font-variant groups with CSS-wide reset semantics, ordinary
+cascade order, and canonical CSSOM serialization.
 
 The completed bounded `font-variant-east-asian` follow-up is
 [`native-engine-browser-514`](tasks/native-engine-browser-514.md): inherited

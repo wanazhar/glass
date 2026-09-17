@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-449`, following completed
 `native-engine-browser-448`, following completed
 `native-engine-browser-447`, following completed
 `native-engine-browser-446`, following completed
@@ -348,6 +349,13 @@ schemes, default ports, escaping, and dot-segment joining therefore share one
 canonical result across URL, Fetch, XHR, worker, and resource consumers.
 Complete URL setter/Web IDL parity and the full browser scheme matrix remain
 issue #40 work.
+
+The completed worker URL-mutability slice is
+[native-engine-browser-449](tasks/native-engine-browser-449.md):
+dedicated/SharedWorker `URL` instances now expose bounded mutable accessors and
+live `searchParams` synchronization, while worker `location` remains frozen
+and read-only. Complete URL setter/Web IDL parity and the full browser scheme
+matrix remain issue #40 work.
 
 The completed XHR realm-state mutator slice is
 [native-engine-browser-445](tasks/native-engine-browser-445.md): page and

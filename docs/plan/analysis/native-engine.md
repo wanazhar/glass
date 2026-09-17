@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-448`, following
+expansion checkpoint is completed `native-engine-browser-449`, following
+completed `native-engine-browser-448`, following
 completed `native-engine-browser-447`, following
 completed `native-engine-browser-446`, following
 completed `native-engine-browser-445`, following
@@ -260,6 +261,13 @@ dot-segment resolution now have one canonical result for URL, Fetch, XHR,
 worker, and resource consumers. Realm-local URL mutators remain in JavaScript;
 complete setter/descriptor parity, blob/file-origin rules, and the full scheme
 matrix remain issue #40 work.
+Slice 449 closes the worker URL-object mutability gap. Dedicated/SharedWorker
+`URL` instances now use private accessor-backed state with bounded authority,
+credential, protocol, port, path, query, and fragment mutation; their live
+`searchParams` owner updates the serialized query after mutation. Worker
+`location` remains a frozen read-only projection. Complete URL setter and
+descriptor parity, blob/file-origin rules, and the full scheme matrix remain
+issue #40 work.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-
@@ -6473,8 +6481,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-448.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-449.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-448.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-447.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-446.md` is the preceding completed browser
@@ -6660,7 +6670,7 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain starts at `native-engine-browser-448`.
+The current browser-slice evidence chain starts at `native-engine-browser-449`.
 Slices 440 through 356 are summarized in the current checkpoint paragraphs
 above; the historical continuation below begins with `native-engine-browser-355`,
 `native-engine-browser-354`,

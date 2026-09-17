@@ -16234,12 +16234,158 @@ fn worker_bootstrap(
   const WorkerURLNative = function(input, base) {{
     const source = input && input.__glassUrl === true ? input.href : input;
     const parts = workerUrlParts(workerUrlResolve(source, base));
-    const state = parts;
-    Object.defineProperty(this, "__glassUrl", {{ value: true }});
-    for (const name of ["href", "protocol", "host", "hostname", "port", "pathname", "search", "hash", "origin", "username", "password"]) {{
-      Object.defineProperty(this, name, {{ enumerable: true, get: () => state[name] }});
+    const state = {{
+      hasAuthority: Boolean(parts.authority),
+      prefix: parts.authority ? parts.protocol + "//" + parts.authority : parts.protocol,
+      origin: parts.origin,
+      protocol: parts.protocol,
+      username: parts.username,
+      password: parts.password,
+      host: parts.host,
+      hostname: parts.hostname,
+      port: parts.port,
+      pathname: parts.pathname,
+      search: parts.search,
+      hash: parts.hash,
+    }};
+    const searchParams = new WorkerURLSearchParamsNative(parts.search);
+    const updateParts = next => {{
+      state.hasAuthority = Boolean(next.authority);
+      state.prefix = next.authority ? next.protocol + "//" + next.authority : next.protocol;
+      state.origin = next.origin;
+      state.protocol = next.protocol;
+      state.username = next.username;
+      state.password = next.password;
+      state.host = next.host;
+      state.hostname = next.hostname;
+      state.port = next.port;
+      state.pathname = next.pathname;
+      state.search = next.search;
+      state.hash = next.hash;
+      searchParams._entries = new WorkerURLSearchParamsNative(next.search)._entries;
+    }};
+    const credentialsFor = (username, password) => username || password
+      ? username + (password ? ":" + password : "") + "@"
+      : "";
+    const currentCredentials = () => credentialsFor(state.username, state.password);
+    const currentAuthority = () => currentCredentials() + state.host;
+    const requireAuthority = () => {{
+      if (!state.hasAuthority) throw new TypeError("native Worker URL authority mutation requires a host");
+    }};
+    const replaceAuthority = (authority, protocol = state.protocol) => {{
+      requireAuthority();
+      updateParts(workerUrlParts(workerUrlResolve(protocol + "//" + authority + state.pathname + state.search + state.hash)));
+    }};
+    const validateHost = value => {{
+      const source = String(value);
+      if (!source || /[\/\?#@\s]/.test(source)) throw new TypeError("native Worker URL host is invalid");
+      if (!source.startsWith("[") && source.includes(":") && !/:[0-9]+$/.test(source))
+        throw new TypeError("native Worker URL host port is invalid");
+      const parsed = workerUrlParts(workerUrlResolve(state.protocol + "//" + source + "/"));
+      if (!parsed.host || (parsed.port && Number(parsed.port) > 65535))
+        throw new TypeError("native Worker URL host is invalid");
+      return parsed.host;
+    }};
+    const normalizeCredential = value => encodeURIComponent(String(value));
+    const currentHref = () => state.prefix + state.pathname + state.search + state.hash;
+    const syncSearch = () => {{
+      const encoded = searchParams.toString();
+      state.search = encoded ? "?" + encoded : "";
+    }};
+    for (const method of ["append", "set", "delete", "sort"]) {{
+      const original = searchParams[method];
+      searchParams[method] = function(...args) {{
+        const result = original.apply(searchParams, args);
+        syncSearch();
+        return result;
+      }};
     }}
-    this.searchParams = new WorkerURLSearchParamsNative(state.search);
+    Object.defineProperty(this, "__glassUrl", {{ value: true }});
+    Object.defineProperty(this, "href", {{
+      enumerable: true,
+      get: currentHref,
+      set: value => updateParts(workerUrlParts(workerUrlResolve(value, currentHref()))),
+    }});
+    const define = (name, getter) => Object.defineProperty(this, name, {{ enumerable: true, get: getter }});
+    define("origin", () => state.origin);
+    Object.defineProperty(this, "protocol", {{
+      enumerable: true,
+      get: () => state.protocol,
+      set: value => {{
+        const source = String(value).toLowerCase();
+        const protocol = source.endsWith(":") ? source : source + ":";
+        if (!["http:", "https:"].includes(protocol)) throw new TypeError("native Worker URL protocol is unsupported");
+        if (protocol !== state.protocol) replaceAuthority(currentAuthority(), protocol);
+      }},
+    }});
+    Object.defineProperty(this, "username", {{
+      enumerable: true,
+      get: () => state.username,
+      set: value => replaceAuthority(credentialsFor(normalizeCredential(value), state.password) + state.host),
+    }});
+    Object.defineProperty(this, "password", {{
+      enumerable: true,
+      get: () => state.password,
+      set: value => replaceAuthority(credentialsFor(state.username, normalizeCredential(value)) + state.host),
+    }});
+    Object.defineProperty(this, "host", {{
+      enumerable: true,
+      get: () => state.host,
+      set: value => replaceAuthority(currentCredentials() + validateHost(value)),
+    }});
+    Object.defineProperty(this, "hostname", {{
+      enumerable: true,
+      get: () => state.hostname,
+      set: value => {{
+        const source = String(value);
+        if (!source || /[\/\?#@\s]/.test(source) || (!source.startsWith("[") && source.includes(":")))
+          throw new TypeError("native Worker URL hostname is invalid");
+        if (source.startsWith("[") && !/^\[[^\]]+\]$/.test(source))
+          throw new TypeError("native Worker URL hostname is invalid");
+        const host = source + (state.port ? ":" + state.port : "");
+        replaceAuthority(currentCredentials() + validateHost(host));
+      }},
+    }});
+    Object.defineProperty(this, "port", {{
+      enumerable: true,
+      get: () => state.port,
+      set: value => {{
+        const source = String(value);
+        if (source && (!/^[0-9]+$/.test(source) || Number(source) > 65535))
+          throw new TypeError("native Worker URL port is invalid");
+        const host = state.hostname + (source ? ":" + source : "");
+        replaceAuthority(currentCredentials() + validateHost(host));
+      }},
+    }});
+    Object.defineProperty(this, "pathname", {{
+      enumerable: true,
+      get: () => state.pathname,
+      set: value => {{
+        const source = String(value).replace(/\\/g, "%5C").replace(/[\?#]/g, character => encodeURIComponent(character));
+        const path = source.startsWith("/") ? source : "/" + source;
+        const canonical = __glassNativeCanonicalUrl("http://glass.invalid" + path, undefined);
+        state.pathname = workerUrlParts(canonical).pathname;
+      }},
+    }});
+    Object.defineProperty(this, "search", {{
+      enumerable: true,
+      get: () => state.search,
+      set: value => {{
+        const source = String(value);
+        searchParams._entries = new WorkerURLSearchParamsNative(source)._entries;
+        syncSearch();
+      }},
+    }});
+    Object.defineProperty(this, "hash", {{
+      enumerable: true,
+      get: () => state.hash,
+      set: value => {{
+        const source = String(value);
+        const canonical = __glassNativeCanonicalUrl("http://glass.invalid/" + (!source ? "" : source.startsWith("#") ? source : "#" + source), undefined);
+        state.hash = workerUrlParts(canonical).hash;
+      }},
+    }});
+    define("searchParams", () => searchParams);
     Object.freeze(this);
   }};
   WorkerURLNative.prototype.toString = function() {{ return this.href; }};

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-449`, following completed
 `native-engine-browser-448`, following completed
 `native-engine-browser-447`, following completed
 `native-engine-browser-446`, following completed
@@ -203,6 +204,13 @@ host/path/query/fragment escaping, and dot-segment resolution no longer drift
 between JavaScript and native resource/policy consumers. The URL Web IDL
 objects retain their realm-local mutable surface; complete setter, descriptor,
 blob/file-origin, and full scheme-matrix parity remain issue #40 work.
+
+Slice 449 closes the worker URL-object mutability gap. Dedicated/SharedWorker
+`URL` instances now use private accessor-backed state, retain authority and
+credential validation, and keep `searchParams` live as query mutations are
+applied. Worker `location` remains a frozen read-only projection. Complete URL
+setter and descriptor parity, blob/file-origin rules, and the full scheme
+matrix remain issue #40 work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

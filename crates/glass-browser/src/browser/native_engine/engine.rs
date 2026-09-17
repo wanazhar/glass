@@ -39,6 +39,7 @@ use super::javascript::{
     read_storage_event_journal, register_storage_reader, save_web_storage_profile,
     storage_event_cursor, storage_key, unregister_service_worker_client_lease,
     unregister_storage_reader, validate_frame_script_command, validate_message_port_transfers,
+    validate_native_message_payload, validate_native_object_url_transfers,
     validate_page_message_port_command, validate_service_worker_client_states,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
@@ -2882,6 +2883,15 @@ impl NativeEngine {
             ));
         }
         validate_message_port_transfers(&message.transfer_ports)?;
+        validate_native_object_url_transfers(&message.object_urls)?;
+        validate_native_message_payload(
+            &serde_json::json!({
+                "data": &message.data,
+                "transfer_ports": &message.transfer_ports,
+                "object_urls": &message.object_urls,
+            }),
+            "native postMessage data",
+        )?;
         if message.source_context_id.is_empty() {
             message.source_context_id = self.config.context_id.clone();
         } else {
@@ -3334,9 +3344,11 @@ impl NativeEngine {
         source_origin: &str,
         data: &serde_json::Value,
         transfer_ports: &[NativeMessagePortTransfer],
+        object_urls: &[super::resource_loader::NativeObjectUrlTransfer],
     ) -> Result<(), NativeEngineError> {
         self.require_running("message event")?;
         validate_message_port_transfers(transfer_ports)?;
+        validate_native_object_url_transfers(object_urls)?;
         let mut page_events = NativePageEventBatch::default();
         page_events
             .post_message_events
@@ -3345,6 +3357,7 @@ impl NativeEngine {
                 source_origin: source_origin.to_owned(),
                 data: data.clone(),
                 transfer_ports: transfer_ports.to_vec(),
+                object_urls: object_urls.to_vec(),
             });
         self.evaluate_page_with_events_async("undefined;".into(), page_events)
             .await

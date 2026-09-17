@@ -3339,6 +3339,7 @@ impl NativeEngineBackend {
                     &message.source_origin,
                     &message.data,
                     &message.transfer_ports,
+                    &message.object_urls,
                 )
                 .await
                 .map_err(native_error)?;
@@ -3381,6 +3382,7 @@ impl NativeEngineBackend {
                 &message.source_origin,
                 &message.data,
                 &message.transfer_ports,
+                &message.object_urls,
             )
             .await
             .map_err(native_error)?;
@@ -5395,6 +5397,7 @@ async fn dispatch_post_message_to_native_frame(
             &message.source_origin,
             &message.data,
             &message.transfer_ports,
+            &message.object_urls,
         )
         .await
         .map_err(native_error)?;

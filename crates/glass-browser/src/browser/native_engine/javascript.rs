@@ -986,6 +986,10 @@ pub(crate) struct NativePageMessageEvent {
     pub(crate) data: serde_json::Value,
     #[serde(default)]
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
+    /// Blob URL snapshots captured in the source realm and installed before
+    /// structured-clone decoding in the destination realm.
+    #[serde(default)]
+    pub(crate) object_urls: Vec<NativeObjectUrlTransfer>,
 }
 
 /// A browser-owned page event delivered through the installed host dispatcher.
@@ -3587,6 +3591,9 @@ pub(crate) struct NativePostMessageRequest {
     pub(crate) target_context_id: Option<String>,
     #[serde(default)]
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
+    /// Blob URL snapshots captured while the source realm still owns the URL.
+    #[serde(default)]
+    pub(crate) object_urls: Vec<NativeObjectUrlTransfer>,
     #[serde(default, skip_serializing)]
     pub(crate) source_context_id: String,
     #[serde(default, skip_serializing)]
@@ -9738,8 +9745,9 @@ impl NativeJavaScriptRuntime {
     /// message itself contains only strings; finite resource copies are kept
     /// in a separate envelope so a destination realm can install them before
     /// its normal structured-clone decoder runs.
-    pub(crate) fn object_url_transfers(
+    fn object_url_transfers_in_context(
         &self,
+        ctx: &rquickjs::Ctx<'_>,
         data: &serde_json::Value,
     ) -> Result<Vec<NativeObjectUrlTransfer>, NativeEngineError> {
         const MAX_OBJECT_URL_SCAN_DEPTH: usize = 128;
@@ -9763,7 +9771,7 @@ impl NativeJavaScriptRuntime {
                         && Url::parse(href).is_ok()
                         && seen.insert(href.clone()) =>
                 {
-                    if let Some(resource) = self.object_url_resource(href)? {
+                    if let Some(resource) = self.object_url_resource_in_context(ctx, href)? {
                         transfers.push(NativeObjectUrlTransfer {
                             href: href.clone(),
                             resource,
@@ -9796,13 +9804,14 @@ impl NativeJavaScriptRuntime {
 
     fn attach_object_url_transfers(
         &self,
+        ctx: &rquickjs::Ctx<'_>,
         mut command: NativeScriptCommand,
     ) -> Result<NativeScriptCommand, NativeEngineError> {
         if let NativeScriptCommand::WorkerPostMessage {
             data, object_urls, ..
         } = &mut command
         {
-            *object_urls = self.object_url_transfers(data)?;
+            *object_urls = self.object_url_transfers_in_context(ctx, data)?;
         }
         Ok(command)
     }
@@ -9855,94 +9864,102 @@ impl NativeJavaScriptRuntime {
         href: &str,
     ) -> Result<Option<NativeObjectUrlResource>, NativeEngineError> {
         validate_url_text("native object URL", href)?;
-        self.context.with(|ctx| {
-            let getter: Function =
-                ctx.globals()
-                    .get("__glassGetObjectUrlResource")
-                    .map_err(|error| NativeEngineError::Worker {
-                        operation: "read native object URL".into(),
-                        reason: format!(
-                            "native object URL registry was unavailable: {}",
-                            CaughtError::from_error(&ctx, error)
-                        ),
-                    })?;
-            let value = getter
-                .call::<_, Value>((href.to_owned(),))
+        self.context
+            .with(|ctx| self.object_url_resource_in_context(&ctx, href))
+    }
+
+    fn object_url_resource_in_context(
+        &self,
+        ctx: &rquickjs::Ctx<'_>,
+        href: &str,
+    ) -> Result<Option<NativeObjectUrlResource>, NativeEngineError> {
+        validate_url_text("native object URL", href)?;
+        let getter: Function =
+            ctx.globals()
+                .get("__glassGetObjectUrlResource")
                 .map_err(|error| NativeEngineError::Worker {
                     operation: "read native object URL".into(),
                     reason: format!(
-                        "native object URL registry read failed: {}",
-                        CaughtError::from_error(&ctx, error)
+                        "native object URL registry was unavailable: {}",
+                        CaughtError::from_error(ctx, error)
                     ),
                 })?;
-            let json = ctx
-                .json_stringify(value)
-                .map_err(|error| NativeEngineError::Worker {
-                    operation: "serialize native object URL".into(),
-                    reason: format!(
-                        "native object URL could not be serialized: {}",
-                        CaughtError::from_error(&ctx, error)
-                    ),
-                })?;
-            let Some(json) = json else {
-                return Ok(None);
-            };
-            let json = json.to_string().map_err(|_| NativeEngineError::Worker {
+        let value = getter
+            .call::<_, Value>((href.to_owned(),))
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "read native object URL".into(),
+                reason: format!(
+                    "native object URL registry read failed: {}",
+                    CaughtError::from_error(ctx, error)
+                ),
+            })?;
+        let json = ctx
+            .json_stringify(value)
+            .map_err(|error| NativeEngineError::Worker {
                 operation: "serialize native object URL".into(),
-                reason: "native object URL could not be converted to UTF-8".into(),
+                reason: format!(
+                    "native object URL could not be serialized: {}",
+                    CaughtError::from_error(ctx, error)
+                ),
             })?;
-            if json == "null" {
-                return Ok(None);
+        let Some(json) = json else {
+            return Ok(None);
+        };
+        let json = json.to_string().map_err(|_| NativeEngineError::Worker {
+            operation: "serialize native object URL".into(),
+            reason: "native object URL could not be converted to UTF-8".into(),
+        })?;
+        if json == "null" {
+            return Ok(None);
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct NativeObjectUrlPayload {
+            #[serde(default)]
+            content_type: Option<String>,
+            body_base64: String,
+        }
+        let payload = serde_json::from_str::<NativeObjectUrlPayload>(&json).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: "decode native object URL".into(),
+                reason: "native object URL registry returned malformed data".into(),
             }
-            #[derive(Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct NativeObjectUrlPayload {
-                #[serde(default)]
-                content_type: Option<String>,
-                body_base64: String,
-            }
-            let payload = serde_json::from_str::<NativeObjectUrlPayload>(&json).map_err(|_| {
-                NativeEngineError::Worker {
-                    operation: "decode native object URL".into(),
-                    reason: "native object URL registry returned malformed data".into(),
-                }
+        })?;
+        if payload.body_base64.len() > MAX_NATIVE_SCRIPT_BYTES.saturating_mul(2) {
+            return Err(NativeEngineError::limit(
+                "native object URL payload",
+                MAX_NATIVE_SCRIPT_BYTES,
+                payload.body_base64.len(),
+            ));
+        }
+        let body = base64::engine::general_purpose::STANDARD
+            .decode(payload.body_base64)
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "decode native object URL".into(),
+                reason: "native object URL body was not valid base64".into(),
             })?;
-            if payload.body_base64.len() > MAX_NATIVE_SCRIPT_BYTES.saturating_mul(2) {
-                return Err(NativeEngineError::limit(
-                    "native object URL payload",
-                    MAX_NATIVE_SCRIPT_BYTES,
-                    payload.body_base64.len(),
-                ));
-            }
-            let body = base64::engine::general_purpose::STANDARD
-                .decode(payload.body_base64)
-                .map_err(|_| NativeEngineError::Worker {
-                    operation: "decode native object URL".into(),
-                    reason: "native object URL body was not valid base64".into(),
-                })?;
-            if body.len() > MAX_NATIVE_SCRIPT_BYTES {
-                return Err(NativeEngineError::limit(
-                    "native object URL payload",
-                    MAX_NATIVE_SCRIPT_BYTES,
-                    body.len(),
-                ));
-            }
-            if payload
-                .content_type
-                .as_ref()
-                .is_some_and(|content_type| content_type.len() > MAX_NATIVE_SCRIPT_BYTES)
-            {
-                return Err(NativeEngineError::limit(
-                    "native object URL content type",
-                    MAX_NATIVE_SCRIPT_BYTES,
-                    payload.content_type.as_ref().map_or(0, String::len),
-                ));
-            }
-            Ok(Some(NativeObjectUrlResource {
-                content_type: payload.content_type,
-                body,
-            }))
-        })
+        if body.len() > MAX_NATIVE_SCRIPT_BYTES {
+            return Err(NativeEngineError::limit(
+                "native object URL payload",
+                MAX_NATIVE_SCRIPT_BYTES,
+                body.len(),
+            ));
+        }
+        if payload
+            .content_type
+            .as_ref()
+            .is_some_and(|content_type| content_type.len() > MAX_NATIVE_SCRIPT_BYTES)
+        {
+            return Err(NativeEngineError::limit(
+                "native object URL content type",
+                MAX_NATIVE_SCRIPT_BYTES,
+                payload.content_type.as_ref().map_or(0, String::len),
+            ));
+        }
+        Ok(Some(NativeObjectUrlResource {
+            content_type: payload.content_type,
+            body,
+        }))
     }
 
     pub(crate) fn set_inline_script_policy(&self, policy: NativeInlineScriptPolicy) {
@@ -10426,6 +10443,7 @@ impl NativeJavaScriptRuntime {
 
     fn apply_window_navigation_command(
         &self,
+        ctx: &rquickjs::Ctx<'_>,
         command: &NativeScriptCommand,
     ) -> Result<bool, NativeEngineError> {
         let NativeScriptCommand::NavigateWindow {
@@ -10464,6 +10482,14 @@ impl NativeJavaScriptRuntime {
                 requests.len().saturating_add(1),
             ));
         }
+        let object_url = if href
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
+        {
+            self.object_url_resource_in_context(ctx, href)?
+        } else {
+            None
+        };
         requests.push(NativeWindowNavigationRequest {
             target: target.clone(),
             target_context_id: target_context_id.clone(),
@@ -10472,7 +10498,7 @@ impl NativeJavaScriptRuntime {
             body: None,
             body_content_type: None,
             replace: *replace,
-            object_url: self.object_url_resource(href)?,
+            object_url,
             source_context_id: String::new(),
         });
         Ok(true)
@@ -11028,6 +11054,7 @@ impl NativeJavaScriptRuntime {
 
     fn apply_popup_command(
         &self,
+        ctx: &rquickjs::Ctx<'_>,
         command: &NativeScriptCommand,
     ) -> Result<bool, NativeEngineError> {
         let NativeScriptCommand::OpenWindow {
@@ -11054,6 +11081,14 @@ impl NativeJavaScriptRuntime {
                 popups.len().saturating_add(1),
             ));
         }
+        let object_url = if href
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
+        {
+            self.object_url_resource_in_context(ctx, href)?
+        } else {
+            None
+        };
         popups.push(NativePopupRequest {
             url: href.clone(),
             target: target.clone(),
@@ -11061,7 +11096,7 @@ impl NativeJavaScriptRuntime {
             body: None,
             body_content_type: None,
             handle: handle.clone(),
-            object_url: self.object_url_resource(href)?,
+            object_url,
             source_context_id: String::new(),
         });
         Ok(true)
@@ -11069,6 +11104,7 @@ impl NativeJavaScriptRuntime {
 
     fn apply_worker_command(
         &self,
+        ctx: &rquickjs::Ctx<'_>,
         command: &NativeScriptCommand,
     ) -> Result<bool, NativeEngineError> {
         if !matches!(
@@ -11188,7 +11224,7 @@ impl NativeJavaScriptRuntime {
                 commands.len().saturating_add(1),
             ));
         }
-        commands.push(self.attach_object_url_transfers(command.clone())?);
+        commands.push(self.attach_object_url_transfers(ctx, command.clone())?);
         Ok(true)
     }
 
@@ -11381,6 +11417,7 @@ impl NativeJavaScriptRuntime {
 
     fn apply_post_message_command(
         &self,
+        ctx: &rquickjs::Ctx<'_>,
         command: &NativeScriptCommand,
     ) -> Result<bool, NativeEngineError> {
         let NativeScriptCommand::PostMessage {
@@ -11418,10 +11455,12 @@ impl NativeJavaScriptRuntime {
             ));
         }
         validate_message_port_transfers(transfer_ports)?;
+        let object_urls = self.object_url_transfers_in_context(ctx, data)?;
         validate_native_message_payload(
             &serde_json::json!({
                 "data": data,
                 "transfer_ports": transfer_ports,
+                "object_urls": &object_urls,
             }),
             "native postMessage data",
         )?;
@@ -11445,6 +11484,7 @@ impl NativeJavaScriptRuntime {
             data: data.clone(),
             target_context_id: target_context_id.clone(),
             transfer_ports: transfer_ports.clone(),
+            object_urls,
             source_context_id: String::new(),
             source_origin: String::new(),
             source_frame_id: self.frame_id(),
@@ -11760,7 +11800,7 @@ impl NativeJavaScriptRuntime {
                 if self.apply_dialog_command(&command)? {
                     continue;
                 }
-                if self.apply_popup_command(&command)? {
+                if self.apply_popup_command(&ctx, &command)? {
                     continue;
                 }
                 if self.apply_window_name_command(&command)? {
@@ -11769,13 +11809,13 @@ impl NativeJavaScriptRuntime {
                 if self.apply_window_close_command(&command)? {
                     continue;
                 }
-                if self.apply_window_navigation_command(&command)? {
+                if self.apply_window_navigation_command(&ctx, &command)? {
                     continue;
                 }
                 if self.apply_frame_script_command(&command)? {
                     continue;
                 }
-                if self.apply_post_message_command(&command)? {
+                if self.apply_post_message_command(&ctx, &command)? {
                     continue;
                 }
                 if self.apply_message_port_command(&command)? {
@@ -11784,7 +11824,7 @@ impl NativeJavaScriptRuntime {
                 if self.apply_service_worker_command(&command)? {
                     continue;
                 }
-                if self.apply_worker_command(&command)? {
+                if self.apply_worker_command(&ctx, &command)? {
                     continue;
                 }
                 document_commands.push(command);
@@ -12209,7 +12249,7 @@ impl NativeJavaScriptRuntime {
             let commands = read_script_commands(ctx.clone())?;
             let mut worker_commands = Vec::with_capacity(commands.len());
             for command in commands {
-                let command = self.attach_object_url_transfers(command)?;
+                let command = self.attach_object_url_transfers(&ctx, command)?;
                 if service_worker
                     && (is_service_worker_cache_command(&command)
                         || is_service_worker_lifecycle_command(&command)
@@ -12969,7 +13009,7 @@ impl NativeJavaScriptRuntime {
                 if self.apply_dialog_command(&command)? {
                     continue;
                 }
-                if self.apply_popup_command(&command)? {
+                if self.apply_popup_command(&ctx, &command)? {
                     continue;
                 }
                 if self.apply_window_name_command(&command)? {
@@ -12978,13 +13018,13 @@ impl NativeJavaScriptRuntime {
                 if self.apply_window_close_command(&command)? {
                     continue;
                 }
-                if self.apply_window_navigation_command(&command)? {
+                if self.apply_window_navigation_command(&ctx, &command)? {
                     continue;
                 }
                 if self.apply_frame_script_command(&command)? {
                     continue;
                 }
-                if self.apply_post_message_command(&command)? {
+                if self.apply_post_message_command(&ctx, &command)? {
                     continue;
                 }
                 if self.apply_message_port_command(&command)? {
@@ -12993,7 +13033,7 @@ impl NativeJavaScriptRuntime {
                 if self.apply_service_worker_command(&command)? {
                     continue;
                 }
-                if self.apply_worker_command(&command)? {
+                if self.apply_worker_command(&ctx, &command)? {
                     continue;
                 }
                 document_commands.push(command);
@@ -14296,14 +14336,14 @@ fn encode_native_message_payload(
     Ok(encoded)
 }
 
-fn validate_native_message_payload(
+pub(crate) fn validate_native_message_payload(
     payload: &serde_json::Value,
     operation: &str,
 ) -> Result<(), NativeEngineError> {
     encode_native_message_payload(payload, operation).map(|_| ())
 }
 
-fn validate_native_object_url_transfers(
+pub(crate) fn validate_native_object_url_transfers(
     transfers: &[NativeObjectUrlTransfer],
 ) -> Result<(), NativeEngineError> {
     if transfers.len() > MAX_NATIVE_OBJECT_URL_TRANSFERS {
@@ -14637,9 +14677,11 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
                 "source_origin": &message.source_origin,
                 "data": &message.data,
                 "transfer_ports": &message.transfer_ports,
+                "object_urls": &message.object_urls,
             }),
             "native page message event",
         )?;
+        validate_native_object_url_transfers(&message.object_urls)?;
     }
     for batch in &events.frame_event_batches {
         validate_context_id(&batch.frame_id)?;
@@ -14983,6 +15025,7 @@ fn dispatch_page_event_batch(
                 "source_origin": &message.source_origin,
                 "data": &message.data,
                 "transfer_ports": &message.transfer_ports,
+                "object_urls": &message.object_urls,
             }),
             "native page message event",
         )?;
@@ -35652,6 +35695,9 @@ fn document_bootstrap(
     queueWindowMessage("", host.context_id, message, targetOrigin, transfer);
   globalThis.__glassDispatchMessage = (descriptor) => {{
     const event = createEvent("message", {{ bubbles: false, cancelable: false }});
+    if (descriptor && Array.isArray(descriptor.object_urls)) {{
+      globalThis.__glassInstallObjectUrlTransfers(descriptor.object_urls);
+    }}
     const envelope = glassMessageDecodeEnvelope(descriptor || {{}});
     event.data = envelope.data;
     event.origin = String(descriptor && descriptor.source_origin || "null");

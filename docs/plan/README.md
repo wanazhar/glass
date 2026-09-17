@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-465`, following completed
 `native-engine-browser-464`, following completed
 `native-engine-browser-463`, following completed
 `native-engine-browser-462`, following completed
@@ -156,6 +157,17 @@ HTTP(S) content-process paths install the destination registry before clone
 decoding, without network/cache fallback; source revocation remains
 independent. Page-window, MessagePort, Service Worker client messaging,
 media, and remaining browser/Web IDL conformance remain issue #40 gates.
+
+The completed page-window message follow-up is
+[`native-engine-browser-465`](tasks/native-engine-browser-465.md): popup and
+`WindowProxy` messages carry bounded Blob URL snapshots through local,
+parked-target, frame, and HTTP(S) content-process routes, with destination
+registry installation before clone decoding. Bidirectional inline and HTTP(S)
+tests preserve origin and MIME behavior without network/cache fallback. The
+same slice makes ordinary popup/window navigation context-safe by avoiding a
+reentrant QuickJS registry lookup for non-Blob URLs. MessagePort, Service
+Worker client messaging, media, and remaining browser/Web IDL conformance
+remain issue #40 gates.
 
 The completed report-only navigation preflight slice is
 [native-engine-browser-413](tasks/native-engine-browser-413.md): the

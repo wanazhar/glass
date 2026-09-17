@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-465`, following completed
 `native-engine-browser-464`, following completed
 `native-engine-browser-463`, following completed
 `native-engine-browser-462`, following completed
@@ -323,6 +324,18 @@ object shared between realms. Source-realm revocation remains independent of
 the destination snapshot. Page-window, MessagePort, Service Worker client
 message, media, and remaining browser/Web IDL conformance consumers remain
 separate issue #40 work.
+
+Slice `native-engine-browser-465` closes the page-window Blob URL message
+boundary. `WindowProxy`/popup messages now carry the same bounded Blob
+snapshots through active-target, parked-target, frame, and content-process
+queues, and the destination installs them before structured-clone decoding.
+Inline fixture and HTTP(S) tests cover bidirectional parent/child exchange and
+origin/type preservation without network or cache fallback. Ordinary popup and
+window navigation also avoids re-entering the QuickJS context for non-Blob
+URLs, preventing an initialization deadlock while retaining the in-context
+Blob registry lookup. MessagePort, Service Worker client message, media, and
+remaining browser/Web IDL conformance consumers remain separate issue #40
+work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

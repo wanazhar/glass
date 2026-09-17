@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-464`, following
+expansion checkpoint is completed `native-engine-browser-465`, following
+completed `native-engine-browser-464`, following
 completed `native-engine-browser-463`, following
 completed `native-engine-browser-462`, following
 completed `native-engine-browser-461`, following
@@ -370,6 +371,16 @@ or network/cache fallback crosses the boundary, and source revocation remains
 independent. Page-window, MessagePort, Service Worker client messaging,
 media, and remaining browser/Web IDL conformance consumers remain separate
 owner work.
+Slice 465 closes the page-window Blob URL message boundary: `WindowProxy` and
+popup messages carry bounded Blob snapshots through active, parked, frame, and
+content-process routes, and the destination installs each snapshot before
+structured-clone decoding. Inline and HTTP(S) tests cover bidirectional
+parent/child exchange with origin and MIME preservation, without network/cache
+fallback. The slice also makes popup/window navigation context-safe by using
+the in-context Blob registry helper and skipping registry lookup for ordinary
+non-Blob URLs, which removes a reentrant QuickJS initialization deadlock.
+MessagePort, Service Worker client messaging, media, and remaining browser/Web
+IDL conformance consumers remain separate owner work.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-
@@ -6583,7 +6594,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-464.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-465.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-464.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-463.md` is the preceding completed
 browser task;
@@ -6802,7 +6815,7 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain starts at `native-engine-browser-464`.
+The current browser-slice evidence chain starts at `native-engine-browser-465`.
 Slices 440 through 356 are summarized in the current checkpoint paragraphs
 above; the historical continuation below begins with `native-engine-browser-355`,
 `native-engine-browser-354`,

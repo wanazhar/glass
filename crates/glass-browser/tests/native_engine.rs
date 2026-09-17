@@ -10597,6 +10597,46 @@ async fn native_post_message_round_trip_uses_window_proxy_and_origin_filter() {
 }
 
 #[tokio::test]
+async fn native_post_message_transfers_blob_urls_between_window_realms() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://blob-message-parent",
+            "<title>Blob message parent</title><script>globalThis.received = []; addEventListener('message', event => { try { const xhr = new XMLHttpRequest(); xhr.open('GET', event.data.url, false); xhr.send(); received.push([event.data.kind, xhr.responseText, xhr.getResponseHeader('content-type'), event.origin]); } catch (error) { received.push(['error', String(error)]); } }); globalThis.popup = window.open('fixture://blob-message-child', 'blob-message-child'); const blob = new Blob(['parent to child'], { type: 'text/parent' }); popup.postMessage({ kind: 'parent', url: URL.createObjectURL(blob) }, '*');</script><p>parent</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://blob-message-child",
+            "<title>Blob message child</title><script>globalThis.received = null; addEventListener('message', event => { try { const xhr = new XMLHttpRequest(); xhr.open('GET', event.data.url, false); xhr.send(); globalThis.received = [event.data.kind, xhr.responseText, xhr.getResponseHeader('content-type'), event.origin]; const blob = new Blob(['child to parent'], { type: 'text/child' }); event.source.postMessage({ kind: 'child', url: URL.createObjectURL(blob) }, '*'); } catch (error) { globalThis.received = ['error', String(error)]; } });</script><p>child</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://blob-message-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let child = session
+        .native_list_targets()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|target| !target.active)
+        .unwrap();
+    session.native_select_target(&child.id).await.unwrap();
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!(["parent", "parent to child", "text/parent", "null"])
+    );
+
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!([["child", "child to parent", "text/child", "null"]])
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_post_message_dispatch_keeps_large_data_out_of_script_source() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -10692,6 +10732,75 @@ async fn native_http_post_message_crosses_content_worker_and_replies() {
     assert_eq!(
         session.script("globalThis.portReply").await.unwrap().value,
         serde_json::json!(["port-reply", 9])
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_post_message_transfers_blob_urls_between_content_processes() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = match path {
+                "/blob-message-parent" => {
+                    "<title>HTTP Blob message parent</title><script>globalThis.received = []; addEventListener('message', event => { try { const xhr = new XMLHttpRequest(); xhr.open('GET', event.data.url, false); xhr.send(); received.push([event.data.kind, xhr.responseText, xhr.getResponseHeader('content-type'), event.origin]); } catch (error) { received.push(['error', String(error)]); } }); globalThis.popup = window.open('/blob-message-child', 'http-blob-message-child'); const blob = new Blob(['http parent to child'], { type: 'text/http-parent' }); popup.postMessage({ kind: 'http-parent', url: URL.createObjectURL(blob) }, '*');</script><p>parent</p>"
+                }
+                "/blob-message-child" => {
+                    "<title>HTTP Blob message child</title><script>globalThis.received = null; addEventListener('message', event => { try { const xhr = new XMLHttpRequest(); xhr.open('GET', event.data.url, false); xhr.send(); globalThis.received = [event.data.kind, xhr.responseText, xhr.getResponseHeader('content-type'), event.origin]; const blob = new Blob(['http child to parent'], { type: 'text/http-child' }); event.source.postMessage({ kind: 'http-child', url: URL.createObjectURL(blob) }, '*'); } catch (error) { globalThis.received = ['error', String(error)]; } });</script><p>child</p>"
+                }
+                other => panic!("unexpected postMessage request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/blob-message-parent")),
+    )
+    .await
+    .unwrap();
+    let child = session
+        .native_list_targets()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|target| !target.active)
+        .unwrap();
+    session.native_select_target(&child.id).await.unwrap();
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!([
+            "http-parent",
+            "http parent to child",
+            "text/http-parent",
+            format!("http://{address}")
+        ])
+    );
+
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!([[
+            "http-child",
+            "http child to parent",
+            "text/http-child",
+            format!("http://{address}")
+        ]])
     );
 
     session.close().await.unwrap();

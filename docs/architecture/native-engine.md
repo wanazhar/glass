@@ -1,6 +1,7 @@
 # Native browser engine
 
-Status: Browser-complete expansion has completed
+Status: Browser-complete expansion is active at completed
+`native-engine-browser-513`, following completed
 `native-engine-browser-512`, following completed
 `native-engine-browser-511`, following completed
 `native-engine-browser-510`, following completed
@@ -297,6 +298,15 @@ retains precedence. The character-by-character fallback and baseline metrics
 remain unchanged; numeric variants, variable/color tables, WOFF2,
 font-display timing, mixed-script shaping, cross-realm FontFace projection,
 and complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 513 wires the bounded inherited `font-variant-alternates` property into
+the native computed style, CSSOM, and HarfRust shaping path. `normal` and
+`historical-forms` are admitted, with the latter mapping to `hist`; an authored
+low-level `"hist"` setting retains precedence. Parameterized feature-value
+alternates remain rejected until a native `@font-feature-values` registry is
+implemented. Character fallback, variable/color tables, WOFF2, font-display
+timing, mixed-script shaping, cross-realm FontFace projection, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 512 wires inherited `font-variant-numeric` into the native computed
 style, CSSOM, and HarfRust shaping path. The five bounded control groups map

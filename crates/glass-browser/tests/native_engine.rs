@@ -1448,6 +1448,52 @@ async fn native_local_dynamic_blob_stylesheet_updates_style_after_late_attachmen
 }
 
 #[tokio::test]
+async fn native_local_dynamic_blob_images_load_and_paint_after_late_attachment() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://blob-dynamic-image",
+            "<html><head></head><body><div id='host'></div></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://blob-dynamic-image");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { globalThis.localBlobImageLog = []; const host = document.getElementById('host'); const image = document.createElement('img'); const surface = document.createElement('div'); surface.id = 'surface'; surface.style.cssText = 'width:2px;height:2px'; const url = URL.createObjectURL(new Blob(['<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2\" height=\"2\"><rect width=\"2\" height=\"2\" fill=\"red\"/></svg>'], { type: 'image/svg+xml' })); image.addEventListener('load', () => localBlobImageLog.push('loaded')); image.addEventListener('error', () => localBlobImageLog.push('error')); image.src = url; surface.style.backgroundImage = `url(\"${url}\")`; host.appendChild(image); host.appendChild(surface); globalThis.localBlobImage = image; return url; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("blob:null/glass-native-1")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = globalThis.localBlobImage; return [localBlobImageLog, image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([[
+            "loaded"
+        ], true, 2, 2, "blob:null/glass-native-1"])
+    );
+    assert_eq!(
+        engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .filter(|command| matches!(command, NativeDisplayCommand::Image { .. }))
+            .count(),
+        2
+    );
+
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_exposes_computed_style_and_media_queries() {
     let config = NativeEngineConfig::default()
         .with_fixture(

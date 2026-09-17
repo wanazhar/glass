@@ -4826,6 +4826,49 @@ impl NativeResourceLoader {
         Ok(())
     }
 
+    /// Load a Blob-backed image for a local document without entering the
+    /// asynchronous network or HTTP-cache path.
+    pub(crate) fn load_local_blob_image(
+        &mut self,
+        document_url: &str,
+        src: &str,
+        object_url: Option<&NativeObjectUrlResource>,
+    ) -> Result<Option<NativeImage>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("image URL", src)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "image owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        if is_network_url(document_url.as_str()) {
+            return Ok(None);
+        }
+        let Some(target_url) = resolve_subresource_url_with_blob(&document_url, src)? else {
+            return Ok(None);
+        };
+        if !target_url.scheme().eq_ignore_ascii_case("blob") {
+            return Ok(None);
+        }
+        let Some(object_url) = object_url else {
+            return Ok(None);
+        };
+        NativeOrigin::from_blob_url(without_fragment(target_url.as_str()))?;
+        let Some(media_type) = object_url
+            .content_type
+            .as_deref()
+            .and_then(supported_image_media_type_text)
+        else {
+            return Ok(None);
+        };
+        Ok(decode_image_bytes(
+            &object_url.body,
+            media_type,
+            MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+        ))
+    }
+
     /// Load a Blob-backed stylesheet for a local document without entering the
     /// asynchronous network or HTTP-cache path.
     pub(crate) fn load_local_blob_stylesheet(

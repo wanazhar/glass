@@ -2321,18 +2321,25 @@ impl NativeEngine {
         page_events
             .message_port_messages
             .extend(self.workers.take_message_port_messages());
-        let evaluation = self
-            .javascript
-            .as_ref()
-            .expect("local JavaScript runtime initialized")
-            .evaluate_with_page_events(
+        let evaluation = {
+            let javascript = self
+                .javascript
+                .as_ref()
+                .expect("local JavaScript runtime initialized");
+            javascript.set_sync_xhr_loader(&self.loader);
+            let result = javascript.evaluate_with_page_events(
                 &source,
                 &self.document,
                 &self.url,
                 &self.origin,
                 self.config.viewport,
                 &page_events,
-            )?;
+            );
+            if let Some(updated_loader) = javascript.take_sync_xhr_loader() {
+                self.loader.merge_fetch_task_state(updated_loader)?;
+            }
+            result?
+        };
         let worker_commands = self
             .javascript
             .as_ref()
@@ -4353,6 +4360,7 @@ impl NativeEngine {
                     &self.url,
                     "glass-dynamic-module",
                 );
+                javascript.set_sync_xhr_loader(&self.loader);
                 let dynamic_result = execute_dynamic_page_scripts(
                     &mut document,
                     javascript,
@@ -4362,7 +4370,11 @@ impl NativeEngine {
                     self.config.viewport,
                     &[],
                     &[],
-                )?;
+                );
+                if let Some(updated_loader) = javascript.take_sync_xhr_loader() {
+                    self.loader.merge_fetch_task_state(updated_loader)?;
+                }
+                let dynamic_result = dynamic_result?;
                 if !dynamic_result.pending_script_sources.is_empty() {
                     return Err(NativeEngineError::UnsupportedUrl {
                         reason: "dynamic external/module scripts require a process-backed HTTP(S) document"
@@ -5257,18 +5269,25 @@ impl NativeEngine {
             }],
             ..NativePageEventBatch::default()
         };
-        let evaluation = self
-            .javascript
-            .as_ref()
-            .expect("local JavaScript runtime is present")
-            .evaluate_with_page_events(
+        let evaluation = {
+            let javascript = self
+                .javascript
+                .as_ref()
+                .expect("local JavaScript runtime is present");
+            javascript.set_sync_xhr_loader(&self.loader);
+            let result = javascript.evaluate_with_page_events(
                 "undefined;",
                 &self.document,
                 new_url,
                 &self.origin,
                 self.config.viewport,
                 &page_events,
-            )?;
+            );
+            if let Some(updated_loader) = javascript.take_sync_xhr_loader() {
+                self.loader.merge_fetch_task_state(updated_loader)?;
+            }
+            result?
+        };
         let history_commands = extract_local_history_commands(&evaluation.commands);
         self.drain_local_popups()?;
         self.drain_local_dialogs()?;
@@ -5325,13 +5344,18 @@ impl NativeEngine {
         javascript.set_scroll_offset(self.scroll_offset);
         javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
         self.sync_javascript_history();
-        let evaluation = javascript.evaluate_with_host_events(
+        javascript.set_sync_xhr_loader(&self.loader);
+        let evaluation_result = javascript.evaluate_with_host_events(
             &event_batch,
             document,
             &self.url,
             &self.origin,
             self.config.viewport,
-        )?;
+        );
+        if let Some(updated_loader) = javascript.take_sync_xhr_loader() {
+            self.loader.merge_fetch_task_state(updated_loader)?;
+        }
+        let evaluation = evaluation_result?;
         self.drain_local_popups()?;
         self.drain_local_dialogs()?;
         self.persist_local_script_state()?;
@@ -5355,13 +5379,18 @@ impl NativeEngine {
         javascript.set_scroll_offset(self.scroll_offset);
         javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
         self.sync_javascript_history();
-        let evaluation = javascript.evaluate_with_host_events(
+        javascript.set_sync_xhr_loader(&self.loader);
+        let evaluation_result = javascript.evaluate_with_host_events(
             &event_batch,
             document,
             &self.url,
             &self.origin,
             self.config.viewport,
-        )?;
+        );
+        if let Some(updated_loader) = javascript.take_sync_xhr_loader() {
+            self.loader.merge_fetch_task_state(updated_loader)?;
+        }
+        let evaluation = evaluation_result?;
         self.drain_local_popups()?;
         self.drain_local_dialogs()?;
         self.persist_local_script_state()?;
@@ -5387,13 +5416,18 @@ impl NativeEngine {
         javascript.set_scroll_offset(self.scroll_offset);
         javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
         self.sync_javascript_history();
-        let evaluation = javascript.evaluate_with_host_events(
+        javascript.set_sync_xhr_loader(&self.loader);
+        let evaluation_result = javascript.evaluate_with_host_events(
             &event_batch,
             document,
             &self.url,
             &self.origin,
             self.config.viewport,
-        )?;
+        );
+        if let Some(updated_loader) = javascript.take_sync_xhr_loader() {
+            self.loader.merge_fetch_task_state(updated_loader)?;
+        }
+        let evaluation = evaluation_result?;
         self.drain_local_popups()?;
         self.drain_local_dialogs()?;
         self.persist_local_script_state()?;
@@ -6560,6 +6594,9 @@ impl NativeEngine {
         }
         let mut dialogs = std::mem::take(&mut prepared.dialogs);
         let page_navigation = if prepared.execute_inline_scripts {
+            if let Some(javascript) = javascript.as_ref() {
+                javascript.set_sync_xhr_loader(&self.loader);
+            }
             let result = execute_inline_scripts(
                 &mut prepared.document,
                 &mut javascript,
@@ -6570,7 +6607,13 @@ impl NativeEngine {
                 &storage_state,
                 &self.indexed_db,
                 &cookie,
-            )?;
+            );
+            if let Some(javascript) = javascript.as_ref()
+                && let Some(updated_loader) = javascript.take_sync_xhr_loader()
+            {
+                self.loader.merge_fetch_task_state(updated_loader)?;
+            }
+            let result = result?;
             dialogs.extend(result.dialogs);
             initial_events.extend(result.events);
             initial_scroll_commands.extend(result.scroll_commands);
@@ -6693,6 +6736,9 @@ impl NativeEngine {
         }
         let mut dialogs = std::mem::take(&mut prepared.dialogs);
         let page_navigation = if execute_page_scripts {
+            if let Some(javascript) = javascript.as_ref() {
+                javascript.set_sync_xhr_loader(&self.loader);
+            }
             let result = execute_inline_scripts(
                 &mut prepared.document,
                 &mut javascript,
@@ -6703,7 +6749,13 @@ impl NativeEngine {
                 &storage_state,
                 &self.indexed_db,
                 &cookie,
-            )?;
+            );
+            if let Some(javascript) = javascript.as_ref()
+                && let Some(updated_loader) = javascript.take_sync_xhr_loader()
+            {
+                self.loader.merge_fetch_task_state(updated_loader)?;
+            }
+            let result = result?;
             dialogs.extend(result.dialogs);
             initial_events.extend(result.events);
             initial_scroll_commands.extend(result.scroll_commands);

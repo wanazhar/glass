@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-438`, following completed
 `native-engine-browser-437`, following completed
 `native-engine-browser-436`, following completed
 `native-engine-browser-435`, following completed
@@ -261,6 +262,17 @@ bodies through the worker upload-demand loop before invoking the deterministic
 fixture loader with a replayable byte body. HTTP(S) workers retain their
 direct transport stream; synchronous XHR and complete XHR/Streams Web IDL
 parity remain issue #40 gates.
+
+The completed synchronous-XHR slice is
+[native-engine-browser-438](tasks/native-engine-browser-438.md): page and
+dedicated/SharedWorker `XMLHttpRequest.open(..., false)` requests now reuse the
+existing bounded fixture/HTTP(S) loader, request-body normalization, CORS,
+cookie/cache/CSP state, and response projections. The host call runs on a
+short-lived dedicated thread/runtime to preserve the blocking script-turn
+contract without deadlocking the async owner; non-zero sync timeouts and
+ReadableStream bodies fail closed. Responses are buffered and publish the
+bounded terminal lifecycle, while complete XHR/Streams Web IDL parity remains
+issue #40 work.
 
 The completed page XHR reopen-cancellation slice is
 [native-engine-browser-429](tasks/native-engine-browser-429.md): reopening a

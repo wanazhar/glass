@@ -4105,7 +4105,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut scroll_offset = NativePoint { x: 0, y: 0 };
     let mut nested_scroll_offsets = BTreeMap::new();
     let mut environment = NativeEnvironmentOverrides::default();
-    let mut resource_loader = None;
+    let mut resource_loader: Option<NativeResourceLoader> = None;
     let mut javascript_runtime: Option<NativeJavaScriptRuntime> = None;
     let mut workers = NativeWorkerRegistry::new_with_fetch_streams();
     let mut service_workers = NativeServiceWorkerRegistry::default();
@@ -4148,6 +4148,17 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             .get("kind")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if let (Some(runtime), Some(loader)) =
+            (javascript_runtime.as_ref(), resource_loader.as_mut())
+            && let Some(updated_loader) = runtime.take_sync_xhr_loader()
+        {
+            loader.merge_fetch_task_state(updated_loader)?;
+        }
+        if let (Some(runtime), Some(loader)) =
+            (javascript_runtime.as_ref(), resource_loader.as_ref())
+        {
+            runtime.set_sync_xhr_loader(loader);
+        }
         refresh_content_runtime_cookie(
             javascript_runtime.as_ref(),
             resource_loader.as_ref(),
@@ -4789,6 +4800,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         loader.inline_script_policy(&resource.url)?,
                                     );
                                 }
+                            }
+                            if let (Some(runtime), Some(loader)) =
+                                (script_runtime.as_ref(), resource_loader.as_ref())
+                            {
+                                runtime.set_sync_xhr_loader(loader);
                             }
                             let document_cookie = resource_loader
                                 .as_ref()
@@ -6779,6 +6795,11 @@ fn sync_content_runtime_state(
             String::new(),
         ));
     };
+    if let Some(loader) = resource_loader.as_mut()
+        && let Some(updated_loader) = runtime.take_sync_xhr_loader()
+    {
+        loader.merge_fetch_task_state(updated_loader)?;
+    }
     let before_indexed_db = indexed_db_state.clone();
     *storage_state = runtime.storage_state();
     let indexed_db_changes =
@@ -10799,7 +10820,7 @@ async fn fetch_opened_response_payload(
         Ok(mut opened)
             if !opened.response.opaque
                 && !opened.response.opaque_redirect
-                && (opened.body.is_some() || opened.cached_body.is_some()) =>
+                && opened.body.is_some() =>
         {
             if let std::collections::btree_map::Entry::Vacant(entry) =
                 fetch_stream_connections.entry(request_id)

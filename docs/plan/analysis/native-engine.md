@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-502`, following
+expansion checkpoint is completed `native-engine-browser-503`, following
+completed `native-engine-browser-502`, following
 completed `native-engine-browser-501`, following
 completed `native-engine-browser-500`, following
 completed `native-engine-browser-499`, following
@@ -205,6 +206,16 @@ FontFace resources share this normalizer, while source descriptor filtering
 now skips WOFF2, variation, color, EOT, and SVG formats rather than claiming
 support that the native parser/renderer does not have. WOFF2, variable/color
 rendering, and complete font-format/Web IDL parity remain open.
+
+Slice 503 adds bounded CSS `unicode-range` selection. The parser accepts
+codepoints, inclusive ranges, and trailing wildcards, merges adjacent/overlap
+ranges, and carries the normalized values through document resources and the
+content-process wire. Named families retain tied ranged faces, and glyph
+selection checks both the range and the underlying font coverage; un-ranged
+faces preserve the prior first-best selection. The page `document.fonts`
+projection exposes the canonical descriptor. Mixed-script shaping,
+font-stretch/variant, font-display timing, variable/color rendering, WOFF2,
+and complete FontFace/Web IDL parity remain open.
 
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
@@ -7029,7 +7040,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-502.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-503.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-502.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-501.md` is the preceding completed browser
 task;

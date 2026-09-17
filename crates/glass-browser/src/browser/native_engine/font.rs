@@ -1,6 +1,6 @@
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
-    NativeFontFamilyValue, NativeGenericFontFamily, font_family_hash,
+    NativeFontFamilyValue, NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
 };
 use std::fmt;
 use std::io::Read;
@@ -74,6 +74,7 @@ struct NativeFontFace {
     font: Arc<fontdue::Font>,
     font_data: Arc<[u8]>,
     shaper_data: Option<Arc<harfrust::ShaperData>>,
+    unicode_ranges: Arc<[NativeUnicodeRange]>,
 }
 
 impl PartialEq for NativeFontFace {
@@ -84,6 +85,7 @@ impl PartialEq for NativeFontFace {
             && self.weight == other.weight
             && self.style == other.style
             && self.font_data == other.font_data
+            && self.unicode_ranges == other.unicode_ranges
     }
 }
 
@@ -112,6 +114,7 @@ pub(crate) struct NativeFontFaceResource {
     pub(crate) weight: FontWeightValue,
     pub(crate) style: FontStyleValue,
     pub(crate) bytes: Arc<[u8]>,
+    pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
 }
 
 impl NativeFontFaceResource {
@@ -122,6 +125,7 @@ impl NativeFontFaceResource {
             weight: rule.weight,
             style: rule.style,
             bytes: Arc::from(bytes),
+            unicode_ranges: rule.unicode_ranges.clone(),
         }
     }
 }
@@ -889,6 +893,7 @@ impl NativeFontBook {
                 font: Arc::new(font),
                 font_data,
                 shaper_data,
+                unicode_ranges: Arc::from(resource.unicode_ranges.clone()),
             });
         }
         book.faces.extend(system_font_book().faces.iter().cloned());
@@ -903,19 +908,25 @@ impl NativeFontBook {
     ) -> Vec<Arc<NativeFontFace>> {
         let mut selected = Vec::new();
         for family in families.iter() {
-            let mut best = None;
-            let mut best_score = u8::MAX;
-            for face in &self.faces {
-                if !family_matches(family, face) {
-                    continue;
-                }
-                let score = face_score(face, weight, style);
-                if score < best_score {
-                    best_score = score;
-                    best = Some(face);
-                }
-            }
-            if let Some(face) = best {
+            let matching = self
+                .faces
+                .iter()
+                .filter(|face| family_matches(family, face))
+                .collect::<Vec<_>>();
+            let Some(best_score) = matching
+                .iter()
+                .map(|face| face_score(face, weight, style))
+                .min()
+            else {
+                continue;
+            };
+            let best = matching
+                .into_iter()
+                .filter(|face| face_score(face, weight, style) == best_score)
+                .collect::<Vec<_>>();
+            if best.iter().any(|face| !face.unicode_ranges.is_empty()) {
+                selected.extend(best.into_iter().map(|face| Arc::new(face.clone())));
+            } else if let Some(face) = best.into_iter().next() {
                 selected.push(Arc::new(face.clone()));
             }
         }
@@ -924,7 +935,13 @@ impl NativeFontBook {
 }
 
 fn has_glyph(face: &NativeFontFace, character: char) -> bool {
-    face.font.lookup_glyph_index(character) != 0
+    (face.unicode_ranges.is_empty()
+        || face
+            .unicode_ranges
+            .iter()
+            .copied()
+            .any(|range| range.contains(character)))
+        && face.font.lookup_glyph_index(character) != 0
 }
 
 fn system_font_book() -> &'static NativeFontBook {
@@ -1050,6 +1067,7 @@ fn insert_font_face(
         font: Arc::new(font),
         font_data,
         shaper_data,
+        unicode_ranges: Arc::from(Vec::<NativeUnicodeRange>::new()),
     });
     true
 }
@@ -1644,6 +1662,7 @@ mod tests {
             weight: FontWeightValue::Normal,
             style: FontStyleValue::Normal,
             bytes: Arc::from(compressed),
+            unicode_ranges: Vec::new(),
         };
         let book = NativeFontBook::from_resources(&[resource]);
         assert_eq!(
@@ -1651,6 +1670,44 @@ mod tests {
             Some("WOFF Face")
         );
         assert_ne!(book.faces.first().unwrap().font_data.as_ref(), b"wOFF");
+    }
+
+    #[test]
+    fn unicode_ranges_select_the_matching_document_font_face() {
+        let Some(system_face) = system_font_book().faces.first() else {
+            return;
+        };
+        if !has_glyph(system_face, 'A') || !has_glyph(system_face, 'B') {
+            return;
+        }
+        let resources = ['A', 'B']
+            .into_iter()
+            .map(|character| NativeFontFaceResource {
+                family: "Range Face".into(),
+                family_key: font_family_hash("Range Face"),
+                weight: FontWeightValue::Normal,
+                style: FontStyleValue::Normal,
+                bytes: system_face.font_data.clone(),
+                unicode_ranges: vec![NativeUnicodeRange {
+                    start: u32::from(character),
+                    end: u32::from(character),
+                }],
+            })
+            .collect::<Vec<_>>();
+        let book = NativeFontBook::from_resources(&resources);
+        let families = NativeFontFamilyList::parse("Range Face").unwrap();
+        let metrics = NativeTextMetrics::for_style_with_book(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            DirectionValue::Ltr,
+            &book,
+        );
+        assert_eq!(metrics.faces.len(), 2);
+        assert_eq!(metrics.face_index_for_character('A'), Some(0));
+        assert_eq!(metrics.face_index_for_character('B'), Some(1));
+        assert_eq!(metrics.face_index_for_character('C'), None);
     }
 
     #[test]
@@ -1687,6 +1744,7 @@ mod tests {
             weight: FontWeightValue::Normal,
             style: FontStyleValue::Normal,
             bytes: system_face.font_data.clone(),
+            unicode_ranges: Vec::new(),
         };
         let book = NativeFontBook::from_resources(&[resource]);
         let families = NativeFontFamilyList::parse("Embedded Sans").unwrap();

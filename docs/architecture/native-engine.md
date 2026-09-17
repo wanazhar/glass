@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-503`, following completed
 `native-engine-browser-502`, following completed
 `native-engine-browser-501`, following completed
 `native-engine-browser-500`, following completed
@@ -200,6 +201,16 @@ normalizer is shared by document resources and script-created FontFace
 installs. Page source filtering now advertises only WOFF, TrueType, OpenType,
 and collection formats that this parser can consume; WOFF2, variable/color,
 EOT, SVG, and complete font-format/Web IDL parity remain issue #40 gates.
+
+Slice 503 adds bounded CSS `unicode-range` selection. Codepoint, inclusive
+range, and trailing-wildcard forms are normalized, sorted, and merged under a
+32-range limit; omitted ranges retain the full scalar range. Ranges travel
+through document resources and the content-process wire snapshot, and tied
+named-family faces are retained so glyph lookup can choose the first face that
+both admits the codepoint and contains the glyph. The CSS `document.fonts`
+projection exposes the canonical range string. Mixed-script shaping,
+font-stretch/variant, font-display timing, variable/color fonts, WOFF2, and
+complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between

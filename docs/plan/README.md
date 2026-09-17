@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-478`, following completed
 `native-engine-browser-477`, following completed
 `native-engine-browser-476`, following completed
 `native-engine-browser-475`, following completed
@@ -253,6 +254,16 @@ owning stylesheet closed. Media/layer/supports import conditions, escaped CSS
 URL grammar, file fonts, other CSS resource types, network stylesheet URL-base
 parity, complete file-origin semantics, and complete Web IDL parity remain
 issue #40 gates.
+
+The completed rooted-file-worker follow-up is
+[`native-engine-browser-478`](tasks/native-engine-browser-478.md): file
+documents can now create dedicated and shared classic or module workers with
+credential-free rooted `file:` URLs. Existing bounded worker graph loaders
+resolve relative `importScripts()` and module dependencies against each
+worker's file URL while preserving isolated realms, message/error delivery,
+and root/symlink/UTF-8/size checks; fixture and HTTP(S) workers are unchanged.
+File-origin service workers, worklets, import maps, complete file-origin
+semantics, and full worker Web IDL parity remain issue #40 gates.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

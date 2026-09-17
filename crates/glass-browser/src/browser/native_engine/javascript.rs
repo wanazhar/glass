@@ -3506,7 +3506,10 @@ fn resolve_worker_module_specifier(
 ) -> Result<String, NativeEngineError> {
     let is_absolute = specifier.starts_with("http://")
         || specifier.starts_with("https://")
-        || specifier.starts_with("fixture://");
+        || specifier.starts_with("fixture://")
+        || specifier
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"));
     if !is_absolute
         && !specifier.starts_with("./")
         && !specifier.starts_with("../")
@@ -3535,9 +3538,10 @@ fn resolve_worker_module_specifier(
         });
     }
     target.set_fragment(None);
-    if !matches!(target.scheme(), "http" | "https" | "fixture") {
+    if !matches!(target.scheme(), "http" | "https" | "fixture" | "file") {
         return Err(NativeEngineError::UnsupportedUrl {
-            reason: "Worker module URL must use HTTP(S) or a registered fixture".into(),
+            reason: "Worker module URL must use HTTP(S), a registered fixture, or a rooted file"
+                .into(),
         });
     }
     Ok(target.to_string())
@@ -36402,9 +36406,11 @@ fn document_bootstrap(
       throw new TypeError("native Worker type must be classic or module");
     const source = input && input.__glassUrl === true ? input.href : input;
     const resolved = new URLNative(String(source), locationUrl.href);
-    if (!["http:", "https:", "fixture:"].includes(resolved.protocol)
-        || resolved.username || resolved.password || !resolved.host)
-      throw new SyntaxError("native Worker URL must use HTTP(S) or a registered fixture");
+    const rootedFile = resolved.protocol === "file:" && locationUrl.protocol === "file:" && !resolved.host;
+    if (!["http:", "https:", "fixture:", "file:"].includes(resolved.protocol)
+        || resolved.username || resolved.password
+        || (resolved.protocol === "file:" ? !rootedFile : !resolved.host))
+      throw new SyntaxError("native Worker URL must use HTTP(S), a registered fixture, or the owning rooted file");
     const workerId = nextWorkerId;
     nextWorkerId += 1;
     globalThis.__glassNextWorkerId = nextWorkerId;
@@ -36465,10 +36471,12 @@ fn document_bootstrap(
       throw new TypeError("native SharedWorker name is invalid");
     const source = input && input.__glassUrl === true ? input.href : input;
     const resolved = new URLNative(String(source), locationUrl.href);
-    if (!["http:", "https:", "fixture:"].includes(resolved.protocol)
-        || resolved.username || resolved.password || !resolved.host)
-      throw new DOMExceptionNative("native SharedWorker URL must use a same-origin HTTP(S) resource", "SecurityError");
-    if (resolved.protocol !== "fixture:" && resolved.origin !== locationUrl.origin)
+    const rootedFile = resolved.protocol === "file:" && locationUrl.protocol === "file:" && !resolved.host;
+    if (!["http:", "https:", "fixture:", "file:"].includes(resolved.protocol)
+        || resolved.username || resolved.password
+        || (resolved.protocol === "file:" ? !rootedFile : !resolved.host))
+      throw new DOMExceptionNative("native SharedWorker URL must use a same-origin HTTP(S), fixture, or rooted file resource", "SecurityError");
+    if (resolved.protocol !== "fixture:" && !rootedFile && resolved.origin !== locationUrl.origin)
       throw new DOMExceptionNative("native SharedWorker URL must be same-origin", "SecurityError");
     if (sharedWorkers.size >= {max_timers})
       throw new DOMExceptionNative("native SharedWorker connection limit exceeded", "QuotaExceededError");

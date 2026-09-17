@@ -2019,6 +2019,106 @@ async fn native_file_stylesheet_import_rejects_unrooted_dependency() {
 }
 
 #[tokio::test]
+async fn native_file_document_runs_dedicated_and_shared_workers() {
+    let root =
+        std::env::temp_dir().join(format!("glass-native-file-workers-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let page_path = root.join("index.html");
+    let worker_path = root.join("worker.js");
+    let worker_dependency_path = root.join("worker-dependency.js");
+    let module_worker_path = root.join("module-worker.js");
+    let module_dependency_path = root.join("module-worker-dependency.js");
+    let shared_worker_path = root.join("shared-worker.js");
+    let shared_dependency_path = root.join("shared-worker-dependency.js");
+    fs::write(
+        &worker_path,
+        "importScripts('./worker-dependency.js'); postMessage({ kind: 'ready', href: self.location.href }); self.onmessage = event => postMessage({ kind: 'reply', value: fileWorkerDependency + event.data });",
+    )
+    .unwrap();
+    fs::write(
+        &worker_dependency_path,
+        "globalThis.fileWorkerDependency = 3;",
+    )
+    .unwrap();
+    fs::write(
+        &module_worker_path,
+        "import { value } from './module-worker-dependency.js'; postMessage({ kind: 'module-ready', value }); self.onmessage = event => postMessage({ kind: 'module-reply', value: value + event.data });",
+    )
+    .unwrap();
+    fs::write(&module_dependency_path, "export const value = 7;").unwrap();
+    fs::write(
+        &shared_worker_path,
+        "importScripts('./shared-worker-dependency.js'); let connections = 0; onconnect = event => { const port = event.ports[0]; const connection = ++connections; port.onmessage = message => port.postMessage({ kind: 'shared-reply', value: fileSharedDependency + Number(message.data) + connection }); port.start(); port.postMessage({ kind: 'shared-ready', value: fileSharedDependency, connection }); };",
+    )
+    .unwrap();
+    fs::write(
+        &shared_dependency_path,
+        "globalThis.fileSharedDependency = 9;",
+    )
+    .unwrap();
+    fs::write(
+        &page_path,
+        "<html><body><script>globalThis.fileWorkerMessages = []; globalThis.fileModuleMessages = []; globalThis.fileSharedMessages = []; globalThis.fileWorker = new Worker('worker.js'); fileWorker.onmessage = event => fileWorkerMessages.push(event.data); globalThis.fileModuleWorker = new Worker('module-worker.js', { type: 'module' }); fileModuleWorker.onmessage = event => fileModuleMessages.push(event.data); globalThis.fileShared = new SharedWorker('shared-worker.js', { name: 'file-shared' }); fileShared.port.onmessage = event => fileSharedMessages.push(event.data); fileShared.port.start();</script></body></html>",
+    )
+    .unwrap();
+    let page_url = native_test_file_url(&page_path);
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url)
+        .with_allowed_file_root(root.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[fileWorkerMessages, fileModuleMessages, fileSharedMessages, fileWorker.url, fileModuleWorker.url, fileShared.url]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            [{
+                "kind": "ready",
+                "href": native_test_file_url(&worker_path),
+            }],
+            [{ "kind": "module-ready", "value": 7 }],
+            [{ "kind": "shared-ready", "value": 9, "connection": 1 }],
+            native_test_file_url(&worker_path),
+            native_test_file_url(&module_worker_path),
+            native_test_file_url(&shared_worker_path),
+        ])
+    );
+    engine
+        .evaluate_async(
+            "fileWorker.postMessage(4); fileModuleWorker.postMessage(6); fileShared.port.postMessage(5); true",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("[fileWorkerMessages, fileModuleMessages, fileSharedMessages]")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            [
+                { "kind": "ready", "href": native_test_file_url(&worker_path) },
+                { "kind": "reply", "value": 7 },
+            ],
+            [
+                { "kind": "module-ready", "value": 7 },
+                { "kind": "module-reply", "value": 13 },
+            ],
+            [
+                { "kind": "shared-ready", "value": 9, "connection": 1 },
+                { "kind": "shared-reply", "value": 15 },
+            ],
+        ])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn native_file_module_graph_rejects_unrooted_dependencies() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-module-root-{}",

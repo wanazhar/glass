@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-505`, following completed
 `native-engine-browser-504`, following completed
 `native-engine-browser-503`, following completed
 `native-engine-browser-502`, following completed
@@ -238,6 +239,17 @@ retain unrestricted coverage for compatibility. Mixed-script shaping,
 font-stretch and variant descriptors, font-display timing, variable/color
 fonts, WOFF2, cross-realm FontFace projection, and complete FontFace/Web IDL
 parity remain issue #40 gates.
+
+The completed `font-stretch` descriptor follow-up is
+[`native-engine-browser-505`](tasks/native-engine-browser-505.md): bounded
+named and 50%–200% percentage ranges now cross CSS and script-created
+FontFace resource boundaries, content-process wire snapshots, and the
+`document.fonts` projection. Invalid or reversed values fail before byte
+admission and older payloads default to `normal`. The computed CSS property,
+face-range matching, and horizontal glyph scaling remain the next rendering
+gate; font-variant, font-display timing, variable/color fonts, WOFF2,
+cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
+issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

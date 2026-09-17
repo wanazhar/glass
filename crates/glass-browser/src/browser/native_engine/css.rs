@@ -1116,6 +1116,23 @@ impl NativeUnicodeRange {
     }
 }
 
+/// A bounded `font-stretch` descriptor range stored as percentage tenths.
+/// `1000` represents `100%`, preserving the named CSS values without floats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeFontStretchRange {
+    pub(crate) min: u16,
+    pub(crate) max: u16,
+}
+
+impl Default for NativeFontStretchRange {
+    fn default() -> Self {
+        Self {
+            min: 1000,
+            max: 1000,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeFontFaceRule {
     pub(crate) family: String,
@@ -1123,6 +1140,7 @@ pub(crate) struct NativeFontFaceRule {
     pub(crate) sources: Vec<NativeFontFaceSource>,
     pub(crate) weight: FontWeightValue,
     pub(crate) style: FontStyleValue,
+    pub(crate) stretch: NativeFontStretchRange,
     pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
 }
 
@@ -6210,6 +6228,7 @@ fn parse_font_face_rule(
     let mut font_sources = None;
     let mut weight = FontWeightValue::Normal;
     let mut style = FontStyleValue::Normal;
+    let mut stretch = NativeFontStretchRange::default();
     let mut unicode_ranges = Vec::new();
     for (declaration_offset, declaration) in split_css_declarations(source) {
         let offset = open.saturating_add(1).saturating_add(declaration_offset);
@@ -6274,6 +6293,15 @@ fn parse_font_face_rule(
                     "font-face-style",
                 ),
             },
+            "font-stretch" => match parse_font_stretch_range(value) {
+                Some(parsed) => stretch = parsed,
+                None => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-face-stretch",
+                ),
+            },
             "unicode-range" => match parse_font_face_unicode_range(value) {
                 Some(parsed) => unicode_ranges = parsed,
                 None => context.diagnostics.push(
@@ -6322,6 +6350,7 @@ fn parse_font_face_rule(
         sources,
         weight,
         style,
+        stretch,
         unicode_ranges,
     });
     Ok(())
@@ -11401,6 +11430,81 @@ fn parse_font_style(value: &str) -> Option<FontStyleValue> {
         "normal" => Some(FontStyleValue::Normal),
         "italic" => Some(FontStyleValue::Italic),
         _ => None,
+    }
+}
+
+fn parse_font_stretch_token(value: &str) -> Option<u16> {
+    let value = value.trim();
+    let keyword = match value.to_ascii_lowercase().as_str() {
+        "ultra-condensed" => Some(500),
+        "extra-condensed" => Some(625),
+        "condensed" => Some(750),
+        "semi-condensed" => Some(875),
+        "normal" => Some(1000),
+        "semi-expanded" => Some(1125),
+        "expanded" => Some(1250),
+        "extra-expanded" => Some(1500),
+        "ultra-expanded" => Some(2000),
+        _ => None,
+    };
+    if let Some(keyword) = keyword {
+        return Some(keyword);
+    }
+    let number = value.strip_suffix('%')?;
+    let scaled_milli = parse_decimal_milli(number)?;
+    let scaled_tenths = scaled_milli.saturating_add(50) / 100;
+    let scaled_tenths = u16::try_from(scaled_tenths).ok()?;
+    (500..=2000)
+        .contains(&scaled_tenths)
+        .then_some(scaled_tenths)
+}
+
+pub(crate) fn parse_font_stretch_range(value: &str) -> Option<NativeFontStretchRange> {
+    let mut values = value.split_ascii_whitespace();
+    let min = parse_font_stretch_token(values.next()?)?;
+    let max = match values.next() {
+        Some(value) => parse_font_stretch_token(value)?,
+        None => min,
+    };
+    if values.next().is_some() || min > max {
+        return None;
+    }
+    Some(NativeFontStretchRange { min, max })
+}
+
+pub(crate) fn format_font_stretch_range(range: NativeFontStretchRange) -> String {
+    if range.min == range.max {
+        let keyword = match range.min {
+            500 => Some("ultra-condensed"),
+            625 => Some("extra-condensed"),
+            750 => Some("condensed"),
+            875 => Some("semi-condensed"),
+            1000 => Some("normal"),
+            1125 => Some("semi-expanded"),
+            1250 => Some("expanded"),
+            1500 => Some("extra-expanded"),
+            2000 => Some("ultra-expanded"),
+            _ => None,
+        };
+        if let Some(keyword) = keyword {
+            return keyword.into();
+        }
+    }
+    let format_percentage = |value: u16| {
+        if value % 10 == 0 {
+            format!("{}%", value / 10)
+        } else {
+            format!("{}.{}%", value / 10, value % 10)
+        }
+    };
+    if range.min == range.max {
+        format_percentage(range.min)
+    } else {
+        format!(
+            "{} {}",
+            format_percentage(range.min),
+            format_percentage(range.max)
+        )
     }
 }
 
@@ -21211,6 +21315,31 @@ mod tests {
     }
 
     #[test]
+    fn font_stretch_parser_normalizes_keywords_percentages_and_ranges() {
+        assert_eq!(
+            parse_font_stretch_range("condensed"),
+            Some(NativeFontStretchRange { min: 750, max: 750 })
+        );
+        assert_eq!(
+            parse_font_stretch_range("62.5% 125%"),
+            Some(NativeFontStretchRange {
+                min: 625,
+                max: 1250
+            })
+        );
+        assert_eq!(
+            format_font_stretch_range(NativeFontStretchRange {
+                min: 625,
+                max: 1250,
+            }),
+            "62.5% 125%"
+        );
+        assert!(parse_font_stretch_range("201%").is_none());
+        assert!(parse_font_stretch_range("125% 62.5%").is_none());
+        assert!(parse_font_stretch_range("normal expanded extra-expanded").is_none());
+    }
+
+    #[test]
     fn font_family_parser_keeps_ordered_bounded_fallbacks() {
         let families = parse_font_family("\"Missing Face\", sans-serif, monospace").unwrap();
         assert_eq!(families.len, 3);
@@ -21239,6 +21368,7 @@ mod tests {
                 src: local("missing"), url("data:font/ttf;base64,AAECAw==") format("truetype");
                 font-weight: 700;
                 font-style: italic;
+                font-stretch: condensed;
             }
             #text { font-family: "Embedded Sans"; }"#
                 .into(),
@@ -21257,6 +21387,7 @@ mod tests {
         );
         assert_eq!(rule.weight, FontWeightValue::Bold);
         assert_eq!(rule.style, FontStyleValue::Italic);
+        assert_eq!(rule.stretch, NativeFontStretchRange { min: 750, max: 750 });
         assert_eq!(stylesheet.rules.len(), 1);
     }
 

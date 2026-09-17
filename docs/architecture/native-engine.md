@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-457`, following completed
 `native-engine-browser-456`, following completed
 `native-engine-browser-455`, following completed
 `native-engine-browser-454`, following completed
@@ -264,9 +265,14 @@ subresources remain separate resource-owner work. Slice 456 closes the page
 image portion of that boundary for process-backed documents: runtime-verified
 Blob URLs can feed `<img>` and CSS background image consumers, preserving the
 existing MIME decoder, intrinsic dimensions, paint resource, and load/error
-event path without entering network transport or the HTTP image cache.
-Stylesheet, script, media, popup/window, and cross-realm object-URL consumers
-remain separate resource-owner work.
+event path without entering network transport or the HTTP image cache. The
+completed script follow-up is `native-engine-browser-457`: process-backed page
+mutations can resolve a runtime-owned Blob URL as a classic external script,
+apply the document CSP, content-type, integrity, size, and UTF-8 gates,
+execute it without HTTP/cache fallback, and deliver its normal `load`/`error`
+target through stable DOM event ownership. Stylesheet, module dependency
+graphs, media, popup/window, and cross-realm object-URL consumers remain
+separate resource-owner work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

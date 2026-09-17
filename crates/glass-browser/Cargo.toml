@@ -39,6 +39,7 @@ visual-compare = []
 fuzzing = []
 native-engine = [
     "dep:fontdue",
+    "dep:harfrust",
     "dep:jpeg-encoder",
     "dep:regex",
     "dep:rquickjs",
@@ -48,6 +49,7 @@ native-engine = [
 [dependencies]
 base64 = "0.22"
 fontdue = { version = "0.9.4", optional = true, default-features = false, features = ["simd", "std"] }
+harfrust = { version = "0.13.3", optional = true, default-features = false, features = ["std"] }
 aes = "0.8"
 aes-gcm = "0.10"
 tokio = {

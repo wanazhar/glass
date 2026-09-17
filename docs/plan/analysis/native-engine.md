@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-485`, following
+expansion checkpoint is completed `native-engine-browser-486`, following
+completed `native-engine-browser-485`, following
 completed `native-engine-browser-484`, following
 completed `native-engine-browser-483`, following
 completed `native-engine-browser-482`, following
@@ -542,7 +543,7 @@ bytes, duplicate/cycle admission, and false-condition pre-resolution remain
 bounded; file fonts and other CSS resource types, complete file-origin
 semantics, and full Web IDL parity remain issue #40 work.
 
-Slice 485 adds the first real font metrics and rasterization boundary. The
+Slice 485 added the first real font metrics and rasterization boundary. The
 native CSS owner carries a bounded inherited family list and positive integer
 pixel size; explicit supported generic/named families select a deterministic
 platform candidate through a cached Rust font book. Fontdue provides measured
@@ -550,10 +551,23 @@ advances, kerning, horizontal line metrics, and glyph coverage; layout uses
 those metrics and paint emits immutable `GlyphRun` data consumed by the
 existing clipping, decoration, scrolling, and PNG replay owners. The default
 no-family path remains fixed-cell so existing deterministic fixtures do not
-change accidentally. This is intentionally character-by-character placement:
-`@font-face`, arbitrary font discovery, relative/non-pixel size computation,
-variable-font selection, complex-script shaping, grapheme-safe line breaking,
-bidi, and browser text-rendering parity remain issue #40 work.
+change accidentally. At the 485 boundary, placement was intentionally
+character-by-character: `@font-face`, arbitrary font discovery,
+relative/non-pixel size computation, variable-font selection, complex-script
+shaping, grapheme-safe line breaking, bidi, and browser text-rendering parity
+remained issue #40 work.
+
+Slice 486 adds the first shaped real-font path. HarfRust now supplies LTR
+cluster order, glyph IDs, and fractional advances for explicit supported
+system faces; spacing is assigned at shaped cluster boundaries so ligatures
+and positioned marks do not receive accidental per-glyph breaks. Fontdue
+rasterizes the selected glyph IDs, while the existing character-by-character
+path remains a recovery route when HarfRust rejects a face or the run's
+direction is unsupported. This slice does not yet propagate CSS direction or
+writing mode, perform full bidi or language/script negotiation, select
+fallback faces for missing glyphs, load `@font-face` resources, select
+variable-font instances, or provide grapheme-safe line breaking and full
+browser text parity.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads

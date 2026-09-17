@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-486`, following completed
 `native-engine-browser-485`, following completed
 `native-engine-browser-484`, following completed
 `native-engine-browser-483`, following completed
@@ -503,7 +504,7 @@ positions. Per-graph entry/byte limits and duplicate/cycle suppression remain
 active; file fonts and other CSS resource types, complete file-origin
 semantics, and full Web IDL parity remain issue #40 work.
 
-Slice `native-engine-browser-485` adds the first real font metrics and
+Slice `native-engine-browser-485` added the first real font metrics and
 rasterization owner. Bounded inherited `font-family` lists and positive pixel
 `font-size` values now select an allowlisted system face when available;
 fontdue supplies measured advances, kerning, line metrics, and per-glyph
@@ -513,7 +514,20 @@ existing fixed-cell fixtures retain the deterministic 5x7 fallback contract.
 The font source list is intentionally deterministic and platform-specific;
 `@font-face`, arbitrary installed-font discovery, relative/non-pixel size
 units, variable fonts, complex-script shaping, grapheme-safe line breaking,
-bidi, and complete text-rendering parity remain issue #40 work.
+bidi, and complete text-rendering parity remained issue #40 work at that
+checkpoint.
+
+Slice `native-engine-browser-486` adds HarfRust shaping for explicit supported
+system faces. LTR runs now retain HarfRust's cluster order, glyph IDs, and
+fractional advances, apply spacing at shaped cluster boundaries, rasterize
+the selected IDs through fontdue's indexed path, and preserve whitespace
+ranges for justification and decoration. If either parser cannot safely
+admit a face or a run has unsupported directionality, the existing
+character-by-character fontdue path remains the bounded recovery path.
+Font fallback across missing glyphs, direction and writing-mode propagation,
+full bidi and language/script negotiation, `@font-face` resources, variable
+font selection, grapheme-safe line breaking, and complete text-rendering
+parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

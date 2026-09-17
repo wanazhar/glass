@@ -341,6 +341,18 @@ fallback. `@font-face`, arbitrary font discovery, relative/non-pixel sizes,
 variable fonts, complex shaping, grapheme-safe line breaking, bidi, and full
 text-rendering parity remain issue #40 work.
 
+The completed LTR shaping follow-up is
+[`native-engine-browser-486`](tasks/native-engine-browser-486.md): explicit
+supported system faces now retain HarfRust cluster order, glyph IDs, and
+fractional advances, apply spacing at shaped cluster boundaries, and use
+fontdue's indexed rasterization for ligatures and positioned marks. Whitespace
+ranges continue to feed justification and decoration. A face that HarfRust
+cannot parse, or a run with unsupported directionality, uses the bounded
+character-by-character fontdue recovery path. Font fallback across missing
+glyphs, direction/writing-mode propagation, full bidi and language/script
+negotiation, `@font-face` resources, variable-font selection, grapheme-safe
+line breaking, and complete text-rendering parity remain issue #40 gates.
+
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and
 dynamic local media plus HTTP(S) content-process media now admit bounded

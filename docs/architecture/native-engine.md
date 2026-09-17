@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-494`, following completed
 `native-engine-browser-493`, following completed
 `native-engine-browser-492`, following completed
 `native-engine-browser-491`, following completed
@@ -83,9 +84,18 @@ native host exports bounded CSS-face descriptors; `document.fonts` persists its
 CSS faces across document snapshots and exposes status, ready, size, check,
 load, add/delete/clear, iteration, and loading/loadingdone/loadingerror events.
 Known CSS faces report the host-admitted loaded/error state, while unknown
-families retain the normal fallback result. Script-created font loading remains
-explicitly fail-closed until a host command can validate and admit its source;
-platform-wide installed-font discovery, font-display timing, variable/color
+families retain the normal fallback result.
+
+Slice 494 admits script-created `FontFace.load()` sources. Bounded
+`local()` lookups use the deterministic system font book; `data:` and runtime
+Blob URLs are decoded in the page realm; and other URL sources use the existing
+native Fetch event-loop bridge before their bounded bytes cross the
+`FontFaceInstall` command into the document-owned font book. The native owner
+validates the family, descriptor pair, size, base64 envelope, and font parser
+before rebuilding rendering resources. URL sources currently inherit Fetch's
+`connect-src` transport policy; dedicated `font-src` enforcement and an
+acknowledged host response remain the next issue #40 conformance gate.
+Platform-wide installed-font discovery, font-display timing, variable/color
 fonts, cross-realm FontFace projection, and complete text/Web IDL parity remain
 issue #40 gates.
 

@@ -8,7 +8,7 @@ use super::content_process::{
     NativeContentLoad, NativeContentLoadResult, NativeContentMutation, NativeContentNavigation,
     NativeContentProcess, NativeContentScriptResult,
 };
-use super::css::absolutize_file_stylesheet_urls;
+use super::css::{absolutize_file_stylesheet_urls, static_css_imports};
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{
     NativeDocument, NativeNodeId, NativePageScriptSource, NativeScriptDocumentSnapshot,
@@ -8209,27 +8209,42 @@ fn load_local_dynamic_stylesheets(
         {
             continue;
         }
-        let body = match if is_blob {
+        if let Some((_, previous_body)) = states.get(&node_index)
+            && let Some(previous_body) = previous_body
+        {
+            loaded_bytes = loaded_bytes.saturating_sub(previous_body.len());
+        }
+        let body = if is_blob {
             let object_url = runtime.object_url_resource(&href)?;
-            loader.load_local_blob_stylesheet(
+            match loader.load_local_blob_stylesheet(
                 document_url,
                 &href,
                 integrity.as_deref(),
                 object_url.as_ref(),
-            )
-        } else {
-            loader.load_local_file_stylesheet(document_url, &href, integrity.as_deref())
-        } {
-            Ok(Some(stylesheet)) => {
-                let next_len = loaded_bytes.saturating_add(stylesheet.len());
-                if next_len <= MAX_NATIVE_LOCAL_STYLESHEET_BYTES {
-                    loaded_bytes = next_len;
-                    Some(stylesheet)
-                } else {
-                    None
+            ) {
+                Ok(Some(stylesheet)) => {
+                    let next_len = loaded_bytes.saturating_add(stylesheet.len());
+                    if next_len <= MAX_NATIVE_LOCAL_STYLESHEET_BYTES {
+                        loaded_bytes = next_len;
+                        Some(stylesheet)
+                    } else {
+                        None
+                    }
                 }
+                Ok(None) | Err(_) => None,
             }
-            Ok(None) | Err(_) => None,
+        } else {
+            match loader.load_local_file_stylesheet(document_url, &href, integrity.as_deref()) {
+                Ok(Some(stylesheet)) => expand_local_file_stylesheet_imports(
+                    loader,
+                    document_url,
+                    &href,
+                    stylesheet,
+                    &mut loaded_bytes,
+                )
+                .ok(),
+                Ok(None) | Err(_) => None,
+            }
         };
         let event_kind = body
             .as_ref()
@@ -8401,15 +8416,14 @@ fn load_local_initial_file_stylesheets(
     {
         let body =
             match loader.load_local_file_stylesheet(document_url, &href, integrity.as_deref()) {
-                Ok(Some(stylesheet)) => {
-                    let next_len = loaded_bytes.saturating_add(stylesheet.len());
-                    if next_len <= MAX_NATIVE_LOCAL_STYLESHEET_BYTES {
-                        loaded_bytes = next_len;
-                        Some(stylesheet)
-                    } else {
-                        None
-                    }
-                }
+                Ok(Some(stylesheet)) => expand_local_file_stylesheet_imports(
+                    loader,
+                    document_url,
+                    &href,
+                    stylesheet,
+                    &mut loaded_bytes,
+                )
+                .ok(),
                 Ok(None) | Err(_) => None,
             };
         let event_kind = body
@@ -8419,6 +8433,152 @@ fn load_local_initial_file_stylesheets(
         events.push((node_index, event_kind));
     }
     Ok((states, events))
+}
+
+fn expand_local_file_stylesheet_imports(
+    loader: &NativeResourceLoader,
+    document_url: &str,
+    stylesheet_href: &str,
+    stylesheet: String,
+    loaded_bytes: &mut usize,
+) -> Result<String, NativeEngineError> {
+    let stylesheet_url = resolve_local_file_stylesheet_url(document_url, stylesheet_href)?;
+    let mut graph_entries = 0usize;
+    let mut graph_bytes = 0usize;
+    let mut active = BTreeSet::new();
+    let mut loaded = BTreeSet::from([stylesheet_url.clone()]);
+    let expanded = expand_local_file_stylesheet_body(
+        loader,
+        document_url,
+        &stylesheet_url,
+        stylesheet,
+        &mut graph_entries,
+        &mut graph_bytes,
+        &mut active,
+        &mut loaded,
+    )?;
+    let next_bytes = loaded_bytes.saturating_add(graph_bytes);
+    if next_bytes > MAX_NATIVE_LOCAL_STYLESHEET_BYTES {
+        return Err(NativeEngineError::limit(
+            "native file stylesheet bytes",
+            MAX_NATIVE_LOCAL_STYLESHEET_BYTES,
+            next_bytes,
+        ));
+    }
+    *loaded_bytes = next_bytes;
+    Ok(expanded)
+}
+
+fn expand_local_file_stylesheet_body(
+    loader: &NativeResourceLoader,
+    document_url: &str,
+    stylesheet_url: &str,
+    stylesheet: String,
+    graph_entries: &mut usize,
+    graph_bytes: &mut usize,
+    active: &mut BTreeSet<String>,
+    loaded: &mut BTreeSet<String>,
+) -> Result<String, NativeEngineError> {
+    *graph_entries = graph_entries.saturating_add(1);
+    if *graph_entries > MAX_NATIVE_LOCAL_STYLESHEETS {
+        return Err(NativeEngineError::limit(
+            "native file stylesheet graph entries",
+            MAX_NATIVE_LOCAL_STYLESHEETS,
+            *graph_entries,
+        ));
+    }
+    *graph_bytes = graph_bytes.saturating_add(stylesheet.len());
+    if *graph_bytes > MAX_NATIVE_LOCAL_STYLESHEET_BYTES {
+        return Err(NativeEngineError::limit(
+            "native file stylesheet graph bytes",
+            MAX_NATIVE_LOCAL_STYLESHEET_BYTES,
+            *graph_bytes,
+        ));
+    }
+    active.insert(stylesheet_url.to_owned());
+    let imports =
+        static_css_imports(&stylesheet).map_err(|reason| NativeEngineError::UnsupportedUrl {
+            reason: format!("file stylesheet import: {reason}"),
+        })?;
+    let mut expanded = String::with_capacity(stylesheet.len());
+    let mut cursor = 0usize;
+    for (start, end, specifier) in imports {
+        expanded.push_str(&stylesheet[cursor..start]);
+        let target = resolve_local_file_stylesheet_url(stylesheet_url, &specifier)?;
+        if active.contains(&target) || !loaded.insert(target.clone()) {
+            cursor = end;
+            continue;
+        }
+        let dependency = loader
+            .load_local_file_stylesheet(document_url, &target, None)?
+            .ok_or_else(|| NativeEngineError::Network {
+                operation: "file stylesheet dependency".into(),
+                reason: format!(
+                    "file stylesheet dependency {specifier:?} was blocked or unavailable"
+                ),
+            })?;
+        let dependency = expand_local_file_stylesheet_body(
+            loader,
+            document_url,
+            &target,
+            dependency,
+            graph_entries,
+            graph_bytes,
+            active,
+            loaded,
+        )?;
+        expanded.push_str(&dependency);
+        cursor = end;
+    }
+    expanded.push_str(&stylesheet[cursor..]);
+    active.remove(stylesheet_url);
+    Ok(absolutize_file_stylesheet_urls(
+        &expanded,
+        document_url,
+        stylesheet_url,
+    ))
+}
+
+fn resolve_local_file_stylesheet_url(
+    owner_url: &str,
+    href: &str,
+) -> Result<String, NativeEngineError> {
+    validate_url_text("file stylesheet import URL", href)?;
+    let owner_url = url::Url::parse(without_fragment(owner_url)).map_err(|_| {
+        NativeEngineError::UnsupportedUrl {
+            reason: "file stylesheet owner URL is not valid URL syntax".into(),
+        }
+    })?;
+    if !owner_url.scheme().eq_ignore_ascii_case("file") {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "file stylesheet owner URL must use the file scheme".into(),
+        });
+    }
+    let mut target = owner_url
+        .join(href)
+        .map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "file stylesheet import URL could not be resolved against its owner".into(),
+        })?;
+    if !target.scheme().eq_ignore_ascii_case("file") {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "file stylesheet imports must use the file scheme".into(),
+        });
+    }
+    if !target.username().is_empty() || target.password().is_some() {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "file stylesheet imports must not contain credentials".into(),
+        });
+    }
+    if target
+        .host_str()
+        .is_some_and(|host| !host.eq_ignore_ascii_case("localhost"))
+    {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "file stylesheet imports must use an empty or localhost host".into(),
+        });
+    }
+    target.set_fragment(None);
+    Ok(target.to_string())
 }
 
 fn load_local_initial_file_images(

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-476`, following
+expansion checkpoint is completed `native-engine-browser-477`, following
+completed `native-engine-browser-476`, following
 completed `native-engine-browser-475`, following
 completed `native-engine-browser-474`, following
 completed `native-engine-browser-473`, following
@@ -452,9 +453,22 @@ tokens against each stylesheet's own file URL before the existing cascade
 creates background-image source identities. Nested stylesheet/image
 directories therefore pass through the same allowed-root and native decoder/
 paint owners; comments and quoted non-URL text are preserved, and non-file
-owners stay on their existing paths. CSS `@import`, file fonts, other CSS
-resource types, URL escape grammar, network stylesheet URL-base parity,
-complete file-origin semantics, and full Web IDL parity remain issue #40 gates.
+owners stay on their existing paths. File fonts, other CSS resource types, URL
+escape grammar, network stylesheet URL-base parity, complete file-origin
+semantics, and full Web IDL parity remain issue #40 gates.
+
+Slice 477 closes bounded rooted-file CSS import graphs. Static and dynamic
+file stylesheet owners now discover literal quoted or `url(...)` `@import`
+targets, load each dependency through the configured file-root and existing
+UTF-8/integrity/size gates, and splice the recursively expanded source at its
+import position before the native CSS cascade. Each imported stylesheet keeps
+its own URL base for nested CSS resource tokens. Duplicate targets are
+admitted once, cycles terminate, aggregate bytes and graph entries are
+bounded, and malformed, missing, credential-bearing, unsupported, or
+out-of-root imports fail the owning stylesheet closed. Media/layer/supports
+conditions, escaped CSS URL grammar, file fonts, other CSS resource types,
+network stylesheet URL-base parity, complete file-origin semantics, and full
+Web IDL parity remain issue #40 gates.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads

@@ -1772,8 +1772,12 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
     let module_dependency_path = root.join("module-dependency.js");
     let stylesheet_dir = root.join("styles");
     fs::create_dir_all(&stylesheet_dir).unwrap();
+    let stylesheet_theme_dir = stylesheet_dir.join("theme");
+    fs::create_dir_all(&stylesheet_theme_dir).unwrap();
     let stylesheet_path = stylesheet_dir.join("style.css");
-    let stylesheet_image_path = stylesheet_dir.join("css-dot.png");
+    let imported_stylesheet_path = stylesheet_theme_dir.join("theme.css");
+    let cycle_stylesheet_path = stylesheet_dir.join("cycle.css");
+    let stylesheet_image_path = stylesheet_theme_dir.join("theme.png");
     let image_path = root.join("dot.png");
     fs::write(
         &script_path,
@@ -1792,9 +1796,15 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
     .unwrap();
     fs::write(
         &stylesheet_path,
-        "#target { width: 2px; height: 2px; color: rgb(1, 2, 3); background-image: url('css-dot.png'); background-repeat: no-repeat; }",
+        "@import 'theme/theme.css'; @import url('theme/theme.css');",
     )
     .unwrap();
+    fs::write(
+        &imported_stylesheet_path,
+        "@import '../cycle.css'; #target { width: 2px; height: 2px; color: rgb(1, 2, 3); background-image: url('theme.png'); background-repeat: no-repeat; }",
+    )
+    .unwrap();
+    fs::write(&cycle_stylesheet_path, "@import 'theme/theme.css';").unwrap();
     fs::write(&stylesheet_image_path, native_test_png_bytes()).unwrap();
     fs::write(&image_path, native_test_png_bytes()).unwrap();
     fs::write(
@@ -1857,6 +1867,7 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
     let stylesheet_dir = root.join("styles");
     fs::create_dir_all(&stylesheet_dir).unwrap();
     let stylesheet_path = stylesheet_dir.join("late.css");
+    let imported_stylesheet_path = stylesheet_dir.join("theme.css");
     let image_path = stylesheet_dir.join("late.png");
     fs::write(
         &script_path,
@@ -1873,8 +1884,9 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
         "export const value = 'module-executed';",
     )
     .unwrap();
+    fs::write(&stylesheet_path, "@import 'theme.css';").unwrap();
     fs::write(
-        &stylesheet_path,
+        &imported_stylesheet_path,
         "#target { width: 2px; height: 2px; color: rgb(4, 5, 6); background-image: url('late.png'); background-repeat: no-repeat; }",
     )
     .unwrap();
@@ -1958,6 +1970,52 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
     );
     engine.close_async().await.unwrap();
     fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn native_file_stylesheet_import_rejects_unrooted_dependency() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-stylesheet-import-root-{}",
+        std::process::id()
+    ));
+    let outside_path = std::env::temp_dir().join(format!(
+        "glass-native-file-stylesheet-import-outside-{}.css",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_file(&outside_path);
+    fs::create_dir_all(&root).unwrap();
+    let page_path = root.join("index.html");
+    let stylesheet_path = root.join("style.css");
+    fs::write(&outside_path, "#target { color: rgb(9, 8, 7); }").unwrap();
+    let outside_url = native_test_file_url(&outside_path);
+    fs::write(
+        &stylesheet_path,
+        format!("@import {outside_url:?}; #target {{ color: rgb(9, 8, 7); }}"),
+    )
+    .unwrap();
+    fs::write(
+        &page_path,
+        "<html><head><link id='style' rel='stylesheet' href='style.css'></head><body><div id='target'>rooted</div></body></html>",
+    )
+    .unwrap();
+    let page_url = native_test_file_url(&page_path);
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url)
+        .with_allowed_file_root(root.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async("getComputedStyle(document.getElementById('target')).color")
+            .await
+            .unwrap(),
+        serde_json::json!("rgb(0, 0, 0)")
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_file(outside_path).unwrap();
 }
 
 #[tokio::test]

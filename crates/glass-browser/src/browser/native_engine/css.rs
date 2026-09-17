@@ -8581,6 +8581,140 @@ pub(crate) fn absolutize_file_stylesheet_urls(
     rewritten
 }
 
+/// Return literal CSS `@import` statements as `(start, end, specifier)`
+/// spans. The caller owns URL resolution and graph limits; this pass only
+/// discovers bounded quoted or `url(...)` targets outside comments/strings.
+/// A malformed import is rejected instead of being silently left for the
+/// ordinary CSS parser, so a rooted stylesheet cannot partially apply around
+/// a failed dependency.
+pub(crate) fn static_css_imports(
+    source: &str,
+) -> Result<Vec<(usize, usize, String)>, &'static str> {
+    let bytes = source.as_bytes();
+    let mut imports = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        if bytes[cursor] == b'/' && bytes.get(cursor + 1) == Some(&b'*') {
+            cursor = css_comment_end(bytes, cursor);
+            continue;
+        }
+        if matches!(bytes[cursor], b'\'' | b'"') {
+            cursor = css_quoted_end(bytes, cursor);
+            continue;
+        }
+        const IMPORT: &[u8] = b"@import";
+        let keyword_end = cursor.saturating_add(IMPORT.len());
+        if keyword_end <= bytes.len()
+            && bytes[cursor..keyword_end].eq_ignore_ascii_case(IMPORT)
+            && (cursor == 0 || !is_css_identifier_byte(bytes[cursor - 1]))
+            && (keyword_end == bytes.len() || !is_css_identifier_byte(bytes[keyword_end]))
+            && let Some(statement_end) = css_statement_end(bytes, keyword_end)
+        {
+            let specifier = css_import_specifier(&source[keyword_end..statement_end])
+                .ok_or("CSS @import statement has no supported literal URL")?;
+            imports.push((cursor, statement_end + 1, specifier));
+            cursor = statement_end + 1;
+            continue;
+        }
+        if keyword_end <= bytes.len()
+            && bytes[cursor..keyword_end].eq_ignore_ascii_case(IMPORT)
+            && (cursor == 0 || !is_css_identifier_byte(bytes[cursor - 1]))
+            && (keyword_end == bytes.len() || !is_css_identifier_byte(bytes[keyword_end]))
+        {
+            return Err("CSS @import statement is missing a terminating semicolon");
+        }
+        cursor += 1;
+    }
+    Ok(imports)
+}
+
+fn css_comment_end(bytes: &[u8], start: usize) -> usize {
+    bytes[start + 2..]
+        .windows(2)
+        .position(|window| window == b"*/")
+        .map(|offset| start + 2 + offset + 2)
+        .unwrap_or(bytes.len())
+}
+
+fn css_quoted_end(bytes: &[u8], start: usize) -> usize {
+    let quote = bytes[start];
+    let mut escaped = false;
+    let mut cursor = start + 1;
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        cursor += 1;
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if byte == quote {
+            break;
+        }
+    }
+    cursor
+}
+
+fn css_statement_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut parentheses = 0usize;
+    let mut cursor = start;
+    while cursor < bytes.len() {
+        if bytes[cursor] == b'/' && bytes.get(cursor + 1) == Some(&b'*') {
+            cursor = css_comment_end(bytes, cursor);
+            continue;
+        }
+        if matches!(bytes[cursor], b'\'' | b'"') {
+            cursor = css_quoted_end(bytes, cursor);
+            continue;
+        }
+        match bytes[cursor] {
+            b'(' => parentheses = parentheses.saturating_add(1),
+            b')' => parentheses = parentheses.saturating_sub(1),
+            b';' if parentheses == 0 => return Some(cursor),
+            _ => {}
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn css_import_specifier(statement: &str) -> Option<String> {
+    let statement = statement.trim_start();
+    if statement.is_empty() {
+        return None;
+    }
+    if matches!(statement.as_bytes().first(), Some(b'\'' | b'"')) {
+        let end = css_quoted_end(statement.as_bytes(), 0);
+        if end <= 1
+            || statement.as_bytes().get(end.saturating_sub(1)) != statement.as_bytes().first()
+        {
+            return None;
+        }
+        return Some(statement[1..end - 1].to_owned());
+    }
+    let open = css_url_function_open(statement.as_bytes(), 0)?;
+    let close = css_url_function_close(statement.as_bytes(), open + 1)?;
+    let mut value_start = open + 1;
+    while value_start < close && statement.as_bytes()[value_start].is_ascii_whitespace() {
+        value_start += 1;
+    }
+    let mut value_end = close;
+    while value_end > value_start && statement.as_bytes()[value_end - 1].is_ascii_whitespace() {
+        value_end -= 1;
+    }
+    if value_start == value_end {
+        return None;
+    }
+    let token = &statement[value_start..value_end];
+    if matches!(token.as_bytes().first(), Some(b'\'' | b'"')) {
+        if token.len() < 2 || token.as_bytes().last() != token.as_bytes().first() {
+            return None;
+        }
+        Some(token[1..token.len() - 1].to_owned())
+    } else {
+        Some(token.to_owned())
+    }
+}
+
 fn file_stylesheet_base_url(document_url: &str, stylesheet_href: &str) -> Option<Url> {
     let document_url = Url::parse(document_url).ok()?;
     if !document_url.scheme().eq_ignore_ascii_case("file") {
@@ -10808,6 +10942,25 @@ mod tests {
             bottom: side,
             left: side,
         }
+    }
+
+    #[test]
+    fn static_css_imports_ignore_comments_and_strings_and_reject_malformed_rules() {
+        let source = r#"/* @import 'comment.css'; */
+            .text { content: "@import 'string.css';"; }
+            @IMPORT 'theme.css' screen;
+            @import url("nested.css") layer(theme);"#;
+        let imports = static_css_imports(source).unwrap();
+        assert_eq!(
+            imports
+                .into_iter()
+                .map(|(_, _, specifier)| specifier)
+                .collect::<Vec<_>>(),
+            vec!["theme.css", "nested.css"]
+        );
+        assert!(static_css_imports("@import 'missing-semicolon.css'").is_err());
+        assert!(static_css_imports("@import url(\"unterminated.css); ").is_err());
+        assert!(static_css_imports("@import unsupported.css;").is_err());
     }
 
     fn border_color_value(color: NativeColor) -> NativeBorderColorValue {

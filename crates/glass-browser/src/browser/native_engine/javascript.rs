@@ -3555,6 +3555,8 @@ pub(crate) struct NativePopupRequest {
     pub(crate) body_content_type: Option<String>,
     #[serde(default)]
     pub(crate) handle: Option<String>,
+    #[serde(default)]
+    pub(crate) object_url: Option<NativeObjectUrlResource>,
     #[serde(default, skip_serializing)]
     pub(crate) source_context_id: String,
 }
@@ -3602,6 +3604,8 @@ pub(crate) struct NativeWindowNavigationRequest {
     pub(crate) body_content_type: Option<String>,
     #[serde(default)]
     pub(crate) replace: bool,
+    #[serde(default)]
+    pub(crate) object_url: Option<NativeObjectUrlResource>,
     #[serde(default, skip_serializing)]
     pub(crate) source_context_id: String,
 }
@@ -10339,6 +10343,7 @@ impl NativeJavaScriptRuntime {
             body: None,
             body_content_type: None,
             replace: *replace,
+            object_url: self.object_url_resource(href)?,
             source_context_id: String::new(),
         });
         Ok(true)
@@ -10927,6 +10932,7 @@ impl NativeJavaScriptRuntime {
             body: None,
             body_content_type: None,
             handle: handle.clone(),
+            object_url: self.object_url_resource(href)?,
             source_context_id: String::new(),
         });
         Ok(true)

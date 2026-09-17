@@ -2787,6 +2787,7 @@ impl NativeEngine {
             body: None,
             body_content_type: None,
             handle: None,
+            object_url: None,
             source_context_id: String::new(),
         })
     }
@@ -2812,6 +2813,19 @@ impl NativeEngine {
         )?;
         if let Some(handle) = popup.handle.as_deref() {
             validate_url_text("popup window handle", handle)?;
+        }
+        if popup.object_url.is_none()
+            && popup
+                .url
+                .get(..5)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
+        {
+            popup.object_url = self
+                .javascript
+                .as_ref()
+                .map(|javascript| javascript.object_url_resource(&popup.url))
+                .transpose()?
+                .flatten();
         }
         if popup.source_context_id.is_empty() {
             popup.source_context_id = self.config.context_id.clone();
@@ -3054,6 +3068,7 @@ impl NativeEngine {
                     body: navigation.body.clone(),
                     body_content_type: navigation.body_content_type.clone(),
                     handle: None,
+                    object_url: navigation.object_url.clone(),
                     source_context_id: String::new(),
                 })?;
                 return Ok(true);
@@ -3073,6 +3088,7 @@ impl NativeEngine {
             body: navigation.body.clone(),
             body_content_type: navigation.body_content_type.clone(),
             replace: navigation.replace_history,
+            object_url: navigation.object_url.clone(),
             source_context_id: String::new(),
         })?;
         Ok(true)

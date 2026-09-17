@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-446`, following completed
 `native-engine-browser-445`, following completed
 `native-engine-browser-444`, following completed
 `native-engine-browser-443`, following completed
@@ -333,6 +334,15 @@ page synchronous XHR rejects `timeout` and nonempty `responseType` settings,
 worker synchronous XHR permits those settings, and worker `document`
 responseType assignment is ignored. Case-insensitive response-type canonical
 values and bounded timeout validation remain active.
+
+The completed XHR `open()` admission slice is
+[native-engine-browser-446](tasks/native-engine-browser-446.md): page and
+dedicated/SharedWorker XHR resolve relative URLs and URL objects against the
+owning document/worker URL, apply the optional authority credentials
+overload, use Boolean conversion for `async`, and return standards-shaped
+method errors before cancelling an existing request. The existing bounded
+method set remains explicit; broader HTTP methods, full URL parsing, and
+complete XHR/Web IDL parity remain issue #40 work.
 
 The completed XHR request-side slice is
 [native-engine-browser-439](tasks/native-engine-browser-439.md): page and

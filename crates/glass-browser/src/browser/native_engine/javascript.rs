@@ -20082,6 +20082,40 @@ fn worker_bootstrap(
       return "application/octet-stream";
     return text;
   }};
+  const workerXhrOpenMethod = (method) => {{
+    const normalized = String(method).toUpperCase();
+    if (!workerRequestHeaderName.test(normalized))
+      throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest method is invalid", "SyntaxError");
+    if (["CONNECT", "TRACE", "TRACK"].includes(normalized))
+      throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest method is forbidden", "SecurityError");
+    if (!workerRequestMethods.includes(normalized))
+      throw new TypeError("native Worker XMLHttpRequest method is unsupported");
+    return normalized;
+  }};
+  const workerXhrOpenUrl = (value, username, password) => {{
+    const source = value && value.__glassUrl === true ? value.href : String(value);
+    let parts;
+    try {{
+      parts = workerUrlParts(workerUrlResolve(source, workerUrl));
+    }} catch (_) {{
+      throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest URL is invalid", "SyntaxError");
+    }}
+    if (parts.authority && (username !== undefined && username !== null
+        || password !== undefined && password !== null)) {{
+      const nextUsername = username === undefined || username === null
+        ? parts.username
+        : encodeURIComponent(String(username));
+      const nextPassword = password === undefined || password === null
+        ? parts.password
+        : encodeURIComponent(String(password));
+      const credentials = nextUsername || nextPassword
+        ? nextUsername + (nextPassword ? ":" + nextPassword : "") + "@"
+        : "";
+      parts.href = parts.protocol + "//" + credentials + parts.host
+        + parts.pathname + parts.search + parts.hash;
+    }}
+    return parts.href;
+  }};
   const workerXhrApplySyncResponse = (xhr, payload, responseType) => {{
     const fail = (error, eventType) => {{
       xhr._controller = null;
@@ -20251,21 +20285,19 @@ fn worker_bootstrap(
       throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest MIME type cannot change after loading", "InvalidStateError");
     this._overrideMimeType = workerXhrNormalizeOverrideMimeType(value);
   }};
-  WorkerXMLHttpRequestNative.prototype.open = function(method, url, async) {{
+  WorkerXMLHttpRequestNative.prototype.open = function(method, url, async, username, password) {{
+    const normalizedMethod = workerXhrOpenMethod(method);
+    const resolvedUrl = workerXhrOpenUrl(url, username, password);
+    const nextAsync = async === undefined ? true : Boolean(async);
     const previousController = this._controller;
     const previousReader = this._responseReader;
     this._controller = null;
     this._responseReader = null;
     if (previousController) previousController.abort();
     if (previousReader) {{ try {{ previousReader.cancel(); }} catch (_) {{}} }}
-    const normalizedMethod = String(method).toUpperCase();
-    if (!workerRequestMethods.includes(normalizedMethod))
-      throw new TypeError("native Worker XMLHttpRequest method is unsupported");
-    const source = url && url.__glassUrl === true ? url.href : url;
-    if (typeof source !== "string") throw new TypeError("native Worker XMLHttpRequest URL must be text");
     this._method = normalizedMethod;
-    this._url = source;
-    this._async = async !== false;
+    this._url = resolvedUrl;
+    this._async = nextAsync;
     this._headers = new WorkerHeadersNative();
     this._responseHeaders = new WorkerHeadersNative();
     this._aborted = false;
@@ -29180,6 +29212,40 @@ fn document_bootstrap(
       return "application/octet-stream";
     return text;
   }};
+  const nativeXhrOpenMethod = (method) => {{
+    const normalized = String(method).toUpperCase();
+    if (!requestHeaderNameNative.test(normalized))
+      throw new DOMExceptionNative("native XMLHttpRequest method is invalid", "SyntaxError");
+    if (["CONNECT", "TRACE", "TRACK"].includes(normalized))
+      throw new DOMExceptionNative("native XMLHttpRequest method is forbidden", "SecurityError");
+    if (!nativeRequestMethods.includes(normalized))
+      throw new TypeError("native XMLHttpRequest method is unsupported");
+    return normalized;
+  }};
+  const nativeXhrOpenUrl = (value, username, password) => {{
+    const source = value && value.__glassUrl === true ? value.href : String(value);
+    let parts;
+    try {{
+      parts = nativeUrlParts(nativeUrlResolve(source, host.url));
+    }} catch (_) {{
+      throw new DOMExceptionNative("native XMLHttpRequest URL is invalid", "SyntaxError");
+    }}
+    if (parts.authority && (username !== undefined && username !== null
+        || password !== undefined && password !== null)) {{
+      const nextUsername = username === undefined || username === null
+        ? parts.username
+        : encodeURIComponent(String(username));
+      const nextPassword = password === undefined || password === null
+        ? parts.password
+        : encodeURIComponent(String(password));
+      const credentials = nextUsername || nextPassword
+        ? nextUsername + (nextPassword ? ":" + nextPassword : "") + "@"
+        : "";
+      parts.href = parts.protocol + "//" + credentials + parts.host
+        + parts.pathname + parts.search + parts.hash;
+    }}
+    return parts.href;
+  }};
   const nativeXhrApplySyncResponse = (xhr, payload, responseType) => {{
     const fail = (error, eventType) => {{
       xhr._controller = null;
@@ -29363,22 +29429,20 @@ fn document_bootstrap(
       throw new DOMExceptionNative("native XMLHttpRequest MIME type cannot change after loading", "InvalidStateError");
     this._overrideMimeType = nativeXhrNormalizeOverrideMimeType(value);
   }};
-  XMLHttpRequestNative.prototype.open = function(method, url, async) {{
+  XMLHttpRequestNative.prototype.open = function(method, url, async, username, password) {{
+    const normalizedMethod = nativeXhrOpenMethod(method);
+    const resolvedUrl = nativeXhrOpenUrl(url, username, password);
+    const nextAsync = async === undefined ? true : Boolean(async);
+    if (!nextAsync && (this._timeout !== 0 || this._responseType !== ""))
+      throw new DOMExceptionNative("native synchronous XMLHttpRequest configuration is invalid", "InvalidAccessError");
     const previousController = this._controller;
     const previousReader = this._responseReader;
     this._controller = null;
     this._responseReader = null;
     if (previousController) previousController.abort();
     if (previousReader) {{ try {{ previousReader.cancel(); }} catch (_) {{}} }}
-    const normalizedMethod = String(method).toUpperCase();
-    if (!nativeRequestMethods.includes(normalizedMethod))
-      throw new TypeError("native XMLHttpRequest method is unsupported");
-    if (typeof url !== "string") throw new TypeError("native XMLHttpRequest URL must be text");
-    const nextAsync = async !== false;
-    if (!nextAsync && (this._timeout !== 0 || this._responseType !== ""))
-      throw new DOMExceptionNative("native synchronous XMLHttpRequest configuration is invalid", "InvalidAccessError");
     this._method = normalizedMethod;
-    this._url = url;
+    this._url = resolvedUrl;
     this._async = nextAsync;
     this._headers = new HeadersNative();
     this._controller = null;

@@ -55043,6 +55043,11 @@ globalThis.pageResponseTypePromise = new Promise(resolve => {
   let loadingError = '';
   let doneError = '';
   let credentialsDoneError = '';
+  let forbiddenMethod = '';
+  let invalidMethod = '';
+  const methodProbe = new XMLHttpRequest();
+  try { methodProbe.open('TRACE', 'unused'); } catch (error) { forbiddenMethod = error.name; }
+  try { methodProbe.open('GET\n', 'unused'); } catch (error) { invalidMethod = error.name; }
   const credentials = new XMLHttpRequest();
   credentials.withCredentials = 'false';
   const credentialsBeforeOpen = credentials.withCredentials;
@@ -55055,12 +55060,18 @@ globalThis.pageResponseTypePromise = new Promise(resolve => {
   let syncOpenError = '';
   try { responseTypeSync.open('GET', '/unused', false); } catch (error) { syncOpenError = error.name; }
   const sync = new XMLHttpRequest();
-  sync.open('GET', '/unused', false);
+  sync.open('GET', '/unused', 0);
   let syncTimeoutError = '';
   let syncResponseTypeError = '';
   try { sync.timeout = 1; } catch (error) { syncTimeoutError = error.name; }
   try { sync.responseType = 'json'; } catch (error) { syncResponseTypeError = error.name; }
-  xhr.open('GET', '/type-page');
+  xhr.open('GET', 'type-page');
+  const urlObjectProbe = new XMLHttpRequest();
+  urlObjectProbe.open('GET', new URL('type-page', location.href));
+  const urlObjectState = urlObjectProbe.readyState;
+  const credentialProbe = new XMLHttpRequest();
+  credentialProbe.open('GET', new URL('type-page', location.href), true, 'user name', 'p@ss');
+  const credentialUrl = credentialProbe._url;
   try { xhr.responseType = 'unsupported'; } catch (error) { invalidType = error.name; }
   xhr.responseType = 'JSON';
   xhr.onreadystatechange = () => {
@@ -55081,6 +55092,7 @@ globalThis.pageResponseTypePromise = new Promise(resolve => {
       doneError,
       credentials: [credentialsBeforeOpen, credentialsAfterOpen, credentialsAfterSet],
       credentialsDoneError,
+      open: [forbiddenMethod, invalidMethod, urlObjectState, credentialUrl.includes('user%20name:p%40ss@')],
       sync: [syncOpenError, syncTimeoutError, syncResponseTypeError],
     });
   };
@@ -55101,6 +55113,11 @@ let invalidType = '';
 let loadingError = '';
 let doneError = '';
 let credentialsDoneError = '';
+let forbiddenMethod = '';
+let invalidMethod = '';
+const methodProbe = new XMLHttpRequest();
+try { methodProbe.open('TRACE', 'unused'); } catch (error) { forbiddenMethod = error.name; }
+try { methodProbe.open('GET\n', 'unused'); } catch (error) { invalidMethod = error.name; }
 const credentials = new XMLHttpRequest();
 credentials.withCredentials = 'false';
 const credentialsBeforeOpen = credentials.withCredentials;
@@ -55109,10 +55126,16 @@ const credentialsAfterOpen = credentials.withCredentials;
 credentials.withCredentials = 0;
 const credentialsAfterSet = credentials.withCredentials;
 const sync = new XMLHttpRequest();
-sync.open('GET', '/type-worker', false);
+sync.open('GET', 'type-worker', false);
 sync.timeout = 10;
 sync.responseType = 'json';
-xhr.open('GET', '/type-worker');
+xhr.open('GET', 'type-worker');
+const urlObjectProbe = new XMLHttpRequest();
+urlObjectProbe.open('GET', new URL('type-worker', location.href));
+const urlObjectState = urlObjectProbe.readyState;
+const credentialProbe = new XMLHttpRequest();
+credentialProbe.open('GET', new URL('type-worker', location.href), true, 'worker name', 'p@ss');
+const credentialUrl = credentialProbe._url;
 try { xhr.responseType = 'unsupported'; } catch (error) { invalidType = error.name; }
 xhr.responseType = 'DOCUMENT';
 const documentIgnored = xhr.responseType;
@@ -55136,6 +55159,7 @@ xhr.onload = () => {
     doneError,
     credentials: [credentialsBeforeOpen, credentialsAfterOpen, credentialsAfterSet],
     credentialsDoneError,
+    open: [forbiddenMethod, invalidMethod, urlObjectState, credentialUrl.includes('worker%20name:p%40ss@')],
     sync: [sync.timeout, sync.responseType],
   });
 };
@@ -55175,6 +55199,7 @@ xhr.send();"#,
                 "doneError": "InvalidStateError",
                 "credentials": [true, true, false],
                 "credentialsDoneError": "InvalidStateError",
+                "open": ["SecurityError", "SyntaxError", 1, true],
                 "sync": ["InvalidAccessError", "InvalidAccessError", "InvalidAccessError"],
             },
             {
@@ -55186,6 +55211,7 @@ xhr.send();"#,
                 "doneError": "InvalidStateError",
                 "credentials": [true, true, false],
                 "credentialsDoneError": "InvalidStateError",
+                "open": ["SecurityError", "SyntaxError", 1, true],
                 "sync": [10, "json"],
             },
         ])

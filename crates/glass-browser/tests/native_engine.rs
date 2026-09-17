@@ -1759,6 +1759,141 @@ async fn native_file_media_rejects_paths_outside_configured_root() {
 }
 
 #[tokio::test]
+async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-subresources-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let page_path = root.join("index.html");
+    let script_path = root.join("app.js");
+    let stylesheet_path = root.join("style.css");
+    let image_path = root.join("dot.png");
+    fs::write(
+        &script_path,
+        "globalThis.fileScriptValue = getComputedStyle(document.getElementById('target')).color;",
+    )
+    .unwrap();
+    fs::write(&stylesheet_path, "#target { color: rgb(1, 2, 3); }").unwrap();
+    fs::write(&image_path, native_test_png_bytes()).unwrap();
+    fs::write(
+        &page_path,
+        "<html><head><link rel='stylesheet' href='style.css'></head><body><div id='target'>rooted</div><img id='image' src='dot.png'><script src='app.js'></script><script>globalThis.fileScriptEvents = []; document.querySelector('script[src]').addEventListener('load', () => fileScriptEvents.push('load'));</script></body></html>",
+    )
+    .unwrap();
+    let page_url = native_test_file_url(&page_path);
+    let image_url = native_test_file_url(&image_path);
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url)
+        .with_allowed_file_root(root.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('image'); return [fileScriptValue, fileScriptEvents, getComputedStyle(document.getElementById('target')).color, image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "rgb(1, 2, 3)",
+            ["load"],
+            "rgb(1, 2, 3)",
+            true,
+            2,
+            2,
+            image_url
+        ])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn native_file_document_loads_rooted_dynamic_subresources() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-dynamic-resources-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let page_path = root.join("index.html");
+    let script_path = root.join("late.js");
+    let stylesheet_path = root.join("late.css");
+    let image_path = root.join("late.png");
+    fs::write(
+        &script_path,
+        "globalThis.dynamicFileScriptValue = 'executed';",
+    )
+    .unwrap();
+    fs::write(&stylesheet_path, "#target { color: rgb(4, 5, 6); }").unwrap();
+    fs::write(&image_path, native_test_png_bytes()).unwrap();
+    fs::write(
+        &page_path,
+        "<html><body><div id='host'></div><div id='target'>rooted</div><script>globalThis.dynamicFileEvents = [];</script></body></html>",
+    )
+    .unwrap();
+    let page_url = native_test_file_url(&page_path);
+    let script_url = native_test_file_url(&script_path);
+    let stylesheet_url = native_test_file_url(&stylesheet_path);
+    let image_url = native_test_file_url(&image_path);
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url)
+        .with_allowed_file_root(root.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let script_literal = serde_json::to_string(&script_url).unwrap();
+    let stylesheet_literal = serde_json::to_string(&stylesheet_url).unwrap();
+    let image_literal = serde_json::to_string(&image_url).unwrap();
+    engine
+        .evaluate_async(format!(
+            r#"(() => {{
+                const host = document.getElementById('host');
+                const script = document.createElement('script');
+                script.src = {script_literal};
+                script.addEventListener('load', () => dynamicFileEvents.push('script-load'));
+                script.addEventListener('error', () => dynamicFileEvents.push('script-error'));
+                const link = document.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = {stylesheet_literal};
+                link.addEventListener('load', () => dynamicFileEvents.push('style-load'));
+                link.addEventListener('error', () => dynamicFileEvents.push('style-error'));
+                const image = document.createElement('img');
+                image.src = {image_literal};
+                image.addEventListener('load', () => dynamicFileEvents.push('image-load'));
+                image.addEventListener('error', () => dynamicFileEvents.push('image-error'));
+                host.append(script, link, image);
+                globalThis.dynamicFileImage = image;
+                return true;
+            }})()"#,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[dynamicFileScriptValue, dynamicFileEvents, getComputedStyle(document.getElementById('target')).color, dynamicFileImage.complete, dynamicFileImage.naturalWidth, dynamicFileImage.currentSrc]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "executed",
+            ["script-load", "style-load", "image-load"],
+            "rgb(4, 5, 6)",
+            true,
+            2,
+            image_url
+        ])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn native_local_dynamic_blob_media_play_resolves_for_known_duration() {
     let config = NativeEngineConfig::default()
         .with_fixture(

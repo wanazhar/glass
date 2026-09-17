@@ -421,6 +421,16 @@ local files through this path. File-backed script/style/image/font/worker
 resources, downloads, and complete file-origin/Web IDL parity remain issue #40
 gates.
 
+Slice 474 closes the first rooted file subresource boundary. Static file CSS
+is admitted before local layout; classic and module file scripts execute
+through the native page scheduler; and file-backed `<img>` plus CSS background
+images use the existing bounded decoder and resource state. Dynamic file
+script/style/image attachment uses the same root, integrity, UTF-8, size,
+event, and paint owners. Network/data/blob targets remain outside this local
+path. File fonts, workers, downloads, CSS URL base parity, module dependency
+graphs, complete file-origin semantics, and full Web IDL parity remain issue
+#40 gates.
+
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads
 through base64 or percent decoding, explicit MIME or bounded sniffing, and the

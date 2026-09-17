@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-474`, following completed
 `native-engine-browser-473`, following completed
 `native-engine-browser-472`, following completed
 `native-engine-browser-471`, following completed
@@ -205,6 +206,15 @@ metadata, and content-process root transfer/sandbox bindings. Network pages
 cannot use this path to read local files. File-backed scripts, stylesheets,
 images, fonts, workers, downloads, and complete file-origin/Web IDL parity
 remain issue #40 gates.
+
+The completed rooted-file-subresources follow-up is
+[`native-engine-browser-474`](tasks/native-engine-browser-474.md): rooted file
+documents can load bounded external CSS before layout, execute classic/module
+file scripts, and decode file-backed `<img>` and CSS background images.
+Dynamic file script, stylesheet, and image attachment shares the same
+canonical root, integrity, size, event, and paint/resource owners. File fonts,
+workers, downloads, CSS URL base parity, module dependency graphs, complete
+file-origin semantics, and complete Web IDL parity remain issue #40 gates.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

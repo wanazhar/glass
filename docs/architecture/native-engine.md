@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-452`, following completed
 `native-engine-browser-451`, following completed
 `native-engine-browser-450`, following completed
 `native-engine-browser-449`, following completed
@@ -229,6 +230,14 @@ cache, and body rules remain active. Navigation/form methods and XHR keep their
 separate closed contracts; forbidden `CONNECT`, `TRACE`, and `TRACK` remain
 rejected. Complete Fetch Web IDL parity and the broader browser matrix remain
 issue #40 work.
+
+Slice 452 removes the fixed seven-method ceiling from XMLHttpRequest. Page and
+worker XHR `open()` now accept bounded valid HTTP extension tokens such as
+`REPORT`, and synchronous and asynchronous XHR share the native method owner
+and loader while retaining XHR-specific error categories, body, timeout, and
+response-state rules. Document navigation/form methods remain closed, and
+`CONNECT`, `TRACE`, and `TRACK` remain forbidden. Complete XHR Web IDL parity
+and the broader browser matrix remain issue #40 work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

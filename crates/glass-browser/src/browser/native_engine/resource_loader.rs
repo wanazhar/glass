@@ -223,9 +223,9 @@ impl NativeNavigationMethod {
     }
 }
 
-/// A script-Fetch HTTP method token. Document navigation keeps its
+/// A bounded native HTTP method token. Document navigation keeps its
 /// deliberately closed method enum because forms and history have a smaller
-/// contract; script Fetch must be able to carry any valid HTTP token.
+/// contract; Fetch and XHR can carry any valid HTTP token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeFetchMethod(String);
 

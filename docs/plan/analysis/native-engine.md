@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-451`, following
+expansion checkpoint is completed `native-engine-browser-452`, following
+completed `native-engine-browser-451`, following
 completed `native-engine-browser-450`, following
 completed `native-engine-browser-449`, following
 completed `native-engine-browser-448`, following
@@ -283,6 +284,12 @@ method token through the native loader, including extension methods such as
 and body policy remain explicit. Navigation/form methods and XHR retain their
 closed contracts, and `CONNECT`, `TRACE`, and `TRACK` remain rejected. Complete
 Fetch Web IDL parity and the broader browser matrix remain issue #40 work.
+Slice 452 removes the fixed seven-method ceiling from XMLHttpRequest. Page and
+worker XHR `open()` plus synchronous XHR now accept bounded valid HTTP method
+tokens such as `REPORT` through the native method owner and loader, while
+XHR-specific invalid/forbidden errors, body, timeout, and response-state rules
+remain explicit. Document navigation/form methods stay closed; complete XHR
+Web IDL parity and the broader browser matrix remain issue #40 work.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-
@@ -6496,6 +6503,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-browser-452.md` is the latest completed browser
+task;
 `docs/plan/tasks/native-engine-browser-451.md` is the latest completed browser
 task;
 `docs/plan/tasks/native-engine-browser-450.md` is the latest completed browser
@@ -6689,7 +6698,7 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain starts at `native-engine-browser-451`.
+The current browser-slice evidence chain starts at `native-engine-browser-452`.
 Slices 440 through 356 are summarized in the current checkpoint paragraphs
 above; the historical continuation below begins with `native-engine-browser-355`,
 `native-engine-browser-354`,

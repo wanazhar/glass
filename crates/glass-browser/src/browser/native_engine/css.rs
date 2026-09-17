@@ -1032,6 +1032,40 @@ pub(crate) enum NativeFontVariantPosition {
     Super,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeFontVariantNumericFigure {
+    #[default]
+    Normal,
+    Lining,
+    Oldstyle,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeFontVariantNumericSpacing {
+    #[default]
+    Normal,
+    Proportional,
+    Tabular,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeFontVariantNumericFraction {
+    #[default]
+    Normal,
+    Diagonal,
+    Stacked,
+}
+
+/// The bounded OpenType numeric controls exposed by `font-variant-numeric`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeFontVariantNumeric {
+    pub(crate) figure: NativeFontVariantNumericFigure,
+    pub(crate) spacing: NativeFontVariantNumericSpacing,
+    pub(crate) fraction: NativeFontVariantNumericFraction,
+    pub(crate) ordinal: bool,
+    pub(crate) slashed_zero: bool,
+}
+
 const MAX_NATIVE_FONT_FEATURES: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1397,6 +1431,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) font_variant_ligatures: NativeFontVariantLigatures,
     pub(crate) font_variant_caps: NativeFontVariantCaps,
     pub(crate) font_variant_position: NativeFontVariantPosition,
+    pub(crate) font_variant_numeric: NativeFontVariantNumeric,
     pub(crate) font_feature_settings: NativeFontFeatureSettings,
     pub(crate) font_kerning: NativeFontKerning,
     pub(crate) font_weight: FontWeightValue,
@@ -1462,6 +1497,7 @@ impl Default for NativeInheritedStyle {
             font_variant_ligatures: NativeFontVariantLigatures::default(),
             font_variant_caps: NativeFontVariantCaps::Normal,
             font_variant_position: NativeFontVariantPosition::Normal,
+            font_variant_numeric: NativeFontVariantNumeric::default(),
             font_feature_settings: NativeFontFeatureSettings::default(),
             font_kerning: NativeFontKerning::Auto,
             font_weight: FontWeightValue::Normal,
@@ -1629,6 +1665,8 @@ pub(crate) struct NativeComputedStyle {
     font_variant_caps: NativeFontVariantCaps,
     #[serde(default)]
     font_variant_position: NativeFontVariantPosition,
+    #[serde(default)]
+    font_variant_numeric: NativeFontVariantNumeric,
     #[serde(default)]
     font_feature_settings: NativeFontFeatureSettings,
     #[serde(default)]
@@ -1828,6 +1866,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn font_variant_position(self) -> NativeFontVariantPosition {
         self.font_variant_position
+    }
+
+    pub(crate) const fn font_variant_numeric(self) -> NativeFontVariantNumeric {
+        self.font_variant_numeric
     }
 
     pub(crate) const fn font_feature_settings(self) -> NativeFontFeatureSettings {
@@ -2161,6 +2203,7 @@ impl NativeStylesheet {
         let mut font_variant_ligatures = &mut scratch.font_variant_ligatures;
         let mut font_variant_caps = &mut scratch.font_variant_caps;
         let mut font_variant_position = &mut scratch.font_variant_position;
+        let mut font_variant_numeric = &mut scratch.font_variant_numeric;
         let mut font_feature_settings = &mut scratch.font_feature_settings;
         let mut font_kerning = &mut scratch.font_kerning;
         let mut font_weight = &mut scratch.font_weight;
@@ -2434,6 +2477,14 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.text_importance.font_variant_position,
                 &mut font_variant_position,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.font_variant_numeric,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.font_variant_numeric,
+                &mut font_variant_numeric,
             );
             apply_text_cascade_declaration(
                 rule.declarations.font_feature_settings,
@@ -3065,6 +3116,14 @@ impl NativeStylesheet {
                 &mut font_variant_position,
             );
             apply_text_cascade_declaration(
+                declarations.font_variant_numeric,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.font_variant_numeric,
+                &mut font_variant_numeric,
+            );
+            apply_text_cascade_declaration(
                 declarations.font_feature_settings,
                 u16::MAX,
                 usize::MAX,
@@ -3663,6 +3722,11 @@ impl NativeStylesheet {
                 inherited.font_variant_position,
                 NativeFontVariantPosition::Normal,
             ),
+            font_variant_numeric: resolve_inherited_text_declaration(
+                *font_variant_numeric,
+                inherited.font_variant_numeric,
+                NativeFontVariantNumeric::default(),
+            ),
             font_feature_settings: resolve_inherited_text_declaration(
                 *font_feature_settings,
                 inherited.font_feature_settings,
@@ -3869,6 +3933,7 @@ struct NativeCascadeScratch {
     font_variant_ligatures: NativeTextCascadeCandidates<NativeFontVariantLigatures>,
     font_variant_caps: NativeTextCascadeCandidates<NativeFontVariantCaps>,
     font_variant_position: NativeTextCascadeCandidates<NativeFontVariantPosition>,
+    font_variant_numeric: NativeTextCascadeCandidates<NativeFontVariantNumeric>,
     font_feature_settings: NativeTextCascadeCandidates<NativeFontFeatureSettings>,
     font_kerning: NativeTextCascadeCandidates<NativeFontKerning>,
     font_weight: NativeTextCascadeCandidates<FontWeightValue>,
@@ -3966,6 +4031,7 @@ impl NativeCascadeScratch {
             initialize!(font_variant_ligatures);
             initialize!(font_variant_caps);
             initialize!(font_variant_position);
+            initialize!(font_variant_numeric);
             initialize!(font_feature_settings);
             initialize!(font_kerning);
             initialize!(font_weight);
@@ -6112,6 +6178,7 @@ struct NativeTextDeclarationImportance {
     font_variant_ligatures: bool,
     font_variant_caps: bool,
     font_variant_position: bool,
+    font_variant_numeric: bool,
     font_feature_settings: bool,
     font_kerning: bool,
     font_weight: bool,
@@ -6176,6 +6243,7 @@ struct NativeDeclarations {
     font_variant_ligatures: Option<InheritedTextDeclaration<NativeFontVariantLigatures>>,
     font_variant_caps: Option<InheritedTextDeclaration<NativeFontVariantCaps>>,
     font_variant_position: Option<InheritedTextDeclaration<NativeFontVariantPosition>>,
+    font_variant_numeric: Option<InheritedTextDeclaration<NativeFontVariantNumeric>>,
     font_feature_settings: Option<InheritedTextDeclaration<NativeFontFeatureSettings>>,
     font_kerning: Option<InheritedTextDeclaration<NativeFontKerning>>,
     font_weight: Option<InheritedTextDeclaration<FontWeightValue>>,
@@ -6733,6 +6801,7 @@ fn parse_style_rule(
         || declarations.font_variant_ligatures.is_some()
         || declarations.font_variant_caps.is_some()
         || declarations.font_variant_position.is_some()
+        || declarations.font_variant_numeric.is_some()
         || declarations.font_feature_settings.is_some()
         || declarations.font_kerning.is_some()
         || declarations.font_weight.is_some()
@@ -6967,6 +7036,7 @@ fn parse_declarations_with_diagnostics(
             "font-variant-ligatures" => parse_font_variant_ligatures_declaration(value).is_some(),
             "font-variant-caps" => parse_font_variant_caps_declaration(value).is_some(),
             "font-variant-position" => parse_font_variant_position_declaration(value).is_some(),
+            "font-variant-numeric" => parse_font_variant_numeric_declaration(value).is_some(),
             "font-feature-settings" => parse_font_feature_settings_declaration(value).is_some(),
             "font-kerning" => parse_font_kerning_declaration(value).is_some(),
             "font-weight" => parse_font_weight_declaration(value).is_some(),
@@ -7162,6 +7232,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "font-variant-ligatures"
             | "font-variant-caps"
             | "font-variant-position"
+            | "font-variant-numeric"
             | "font-feature-settings"
             | "font-kerning"
             | "font-weight"
@@ -7594,6 +7665,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_font_variant_position_declaration(value) {
                     declarations.font_variant_position = Some(parsed);
                     declarations.text_importance.font_variant_position = important;
+                }
+            }
+            "font-variant-numeric" => {
+                if let Some(parsed) = parse_font_variant_numeric_declaration(value) {
+                    declarations.font_variant_numeric = Some(parsed);
+                    declarations.text_importance.font_variant_numeric = important;
                 }
             }
             "font-feature-settings" => {
@@ -12291,6 +12368,61 @@ fn parse_font_variant_position_declaration(
     value: &str,
 ) -> Option<InheritedTextDeclaration<NativeFontVariantPosition>> {
     parse_inherited_text_declaration(value, parse_font_variant_position)
+}
+
+fn parse_font_variant_numeric(value: &str) -> Option<NativeFontVariantNumeric> {
+    let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
+    if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("normal") {
+        return Some(NativeFontVariantNumeric::default());
+    }
+    if tokens.is_empty()
+        || tokens
+            .iter()
+            .any(|token| token.eq_ignore_ascii_case("normal"))
+    {
+        return None;
+    }
+
+    let mut result = NativeFontVariantNumeric::default();
+    let mut groups = [false; 3];
+    for token in tokens {
+        match token.to_ascii_lowercase().as_str() {
+            "lining-nums" if !groups[0] => {
+                groups[0] = true;
+                result.figure = NativeFontVariantNumericFigure::Lining;
+            }
+            "oldstyle-nums" if !groups[0] => {
+                groups[0] = true;
+                result.figure = NativeFontVariantNumericFigure::Oldstyle;
+            }
+            "proportional-nums" if !groups[1] => {
+                groups[1] = true;
+                result.spacing = NativeFontVariantNumericSpacing::Proportional;
+            }
+            "tabular-nums" if !groups[1] => {
+                groups[1] = true;
+                result.spacing = NativeFontVariantNumericSpacing::Tabular;
+            }
+            "diagonal-fractions" if !groups[2] => {
+                groups[2] = true;
+                result.fraction = NativeFontVariantNumericFraction::Diagonal;
+            }
+            "stacked-fractions" if !groups[2] => {
+                groups[2] = true;
+                result.fraction = NativeFontVariantNumericFraction::Stacked;
+            }
+            "ordinal" if !result.ordinal => result.ordinal = true,
+            "slashed-zero" if !result.slashed_zero => result.slashed_zero = true,
+            _ => return None,
+        }
+    }
+    Some(result)
+}
+
+fn parse_font_variant_numeric_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<NativeFontVariantNumeric>> {
+    parse_inherited_text_declaration(value, parse_font_variant_numeric)
 }
 
 fn parse_font_feature_settings(value: &str) -> Option<NativeFontFeatureSettings> {
@@ -22046,6 +22178,40 @@ mod tests {
     }
 
     #[test]
+    fn font_variant_numeric_parser_keeps_one_value_per_group() {
+        assert_eq!(
+            parse_font_variant_numeric("normal"),
+            Some(NativeFontVariantNumeric::default())
+        );
+        assert_eq!(
+            parse_font_variant_numeric(
+                "oldstyle-nums tabular-nums stacked-fractions ordinal slashed-zero"
+            ),
+            Some(NativeFontVariantNumeric {
+                figure: NativeFontVariantNumericFigure::Oldstyle,
+                spacing: NativeFontVariantNumericSpacing::Tabular,
+                fraction: NativeFontVariantNumericFraction::Stacked,
+                ordinal: true,
+                slashed_zero: true,
+            })
+        );
+        assert_eq!(
+            parse_font_variant_numeric("LINING-NUMS PROPORTIONAL-NUMS DIAGONAL-FRACTIONS"),
+            Some(NativeFontVariantNumeric {
+                figure: NativeFontVariantNumericFigure::Lining,
+                spacing: NativeFontVariantNumericSpacing::Proportional,
+                fraction: NativeFontVariantNumericFraction::Diagonal,
+                ordinal: false,
+                slashed_zero: false,
+            })
+        );
+        assert!(parse_font_variant_numeric("normal ordinal").is_none());
+        assert!(parse_font_variant_numeric("lining-nums oldstyle-nums").is_none());
+        assert!(parse_font_variant_numeric("ordinal ordinal").is_none());
+        assert!(parse_font_variant_numeric("unknown").is_none());
+    }
+
+    #[test]
     fn font_family_parser_keeps_ordered_bounded_fallbacks() {
         let families = parse_font_family("\"Missing Face\", sans-serif, monospace").unwrap();
         assert_eq!(families.len, 3);
@@ -23369,6 +23535,41 @@ mod tests {
             style("invalid").font_variant_position(),
             NativeFontVariantPosition::Super
         );
+    }
+
+    #[test]
+    fn font_variant_numeric_is_inherited_and_css_wide_resets_are_bounded() {
+        let document = NativeDocument::parse(
+            "<style>#parent { font-variant-numeric: oldstyle-nums tabular-nums stacked-fractions ordinal slashed-zero; } #child { font-variant-numeric: lining-nums proportional-nums diagonal-fractions; } #inherit { font-variant-numeric: inherit; } #clear { font-variant-numeric: initial; } #invalid { font-variant-numeric: lining-nums oldstyle-nums; }</style><div id='parent'><span id='child'>Child</span><span id='inherit'>Inherit</span><span id='clear'>Clear</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+        let parent = NativeFontVariantNumeric {
+            figure: NativeFontVariantNumericFigure::Oldstyle,
+            spacing: NativeFontVariantNumericSpacing::Tabular,
+            fraction: NativeFontVariantNumericFraction::Stacked,
+            ordinal: true,
+            slashed_zero: true,
+        };
+        let child = NativeFontVariantNumeric {
+            figure: NativeFontVariantNumericFigure::Lining,
+            spacing: NativeFontVariantNumericSpacing::Proportional,
+            fraction: NativeFontVariantNumericFraction::Diagonal,
+            ordinal: false,
+            slashed_zero: false,
+        };
+        assert_eq!(style("parent").font_variant_numeric(), parent);
+        assert_eq!(style("child").font_variant_numeric(), child);
+        assert_eq!(style("inherit").font_variant_numeric(), parent);
+        assert_eq!(
+            style("clear").font_variant_numeric(),
+            NativeFontVariantNumeric::default()
+        );
+        assert_eq!(style("invalid").font_variant_numeric(), parent);
     }
 
     #[test]

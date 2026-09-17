@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-512`, following completed
 `native-engine-browser-511`, following completed
 `native-engine-browser-510`, following completed
 `native-engine-browser-509`, following completed
@@ -314,6 +315,15 @@ feature settings retaining precedence. Character fallback and typographic
 baseline metrics remain bounded; numeric variants, variable/color fonts,
 WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
 projection, and complete FontFace/Web IDL parity remain issue #40 gates.
+
+The completed `font-variant-numeric` follow-up is
+[`native-engine-browser-512`](tasks/native-engine-browser-512.md): inherited
+numeric figure, spacing, fraction, ordinal, and slashed-zero controls now
+cross native CSSOM and map to bounded HarfRust OpenType tags, with explicit
+low-level feature settings retaining precedence. Character fallback remains
+bounded; numeric feature-specific shaping, variable/color fonts, WOFF2,
+font-display timing, mixed-script shaping, cross-realm FontFace projection,
+and complete FontFace/Web IDL parity remain issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

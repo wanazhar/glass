@@ -9,7 +9,7 @@ use super::config::{
     MAX_NATIVE_NODES, NativeEngineLimits, Viewport, is_file_url, is_network_url,
     validate_context_id, validate_url_text, validate_window_name, without_fragment,
 };
-use super::css::absolutize_file_stylesheet_urls;
+use super::css::absolutize_stylesheet_urls;
 use super::dom::{
     NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource,
     NativePageScriptTiming,
@@ -7454,7 +7454,7 @@ async fn load_content_resource(
         .iter()
         .filter_map(|(_, href, body)| {
             body.as_ref()
-                .map(|body| absolutize_file_stylesheet_urls(body, &resource.url, href))
+                .map(|body| absolutize_stylesheet_urls(body, &resource.url, href))
         })
         .collect::<Vec<_>>();
     let mut document = NativeDocument::parse_with_stylesheets_and_inline_style_policy(

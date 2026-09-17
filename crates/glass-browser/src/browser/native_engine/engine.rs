@@ -9,7 +9,7 @@ use super::content_process::{
     NativeContentProcess, NativeContentScriptResult,
 };
 use super::css::{
-    absolutize_file_stylesheet_urls, css_import_matches, decode_css_url_value, static_css_imports,
+    absolutize_stylesheet_urls, css_import_matches, decode_css_url_value, static_css_imports,
 };
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{
@@ -6662,7 +6662,7 @@ impl NativeEngine {
                 .iter()
                 .filter_map(|(_, href, body)| {
                     body.as_ref()
-                        .map(|body| absolutize_file_stylesheet_urls(body, &resource.url, href))
+                        .map(|body| absolutize_stylesheet_urls(body, &resource.url, href))
                 })
                 .collect::<Vec<_>>();
             document = NativeDocument::parse_with_stylesheets(
@@ -8560,7 +8560,7 @@ fn expand_local_file_stylesheet_body(
     }
     expanded.push_str(&stylesheet[cursor..]);
     active.remove(stylesheet_url);
-    Ok(absolutize_file_stylesheet_urls(
+    Ok(absolutize_stylesheet_urls(
         &expanded,
         document_url,
         stylesheet_url,

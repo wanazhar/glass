@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-481`, following
+expansion checkpoint is completed `native-engine-browser-482`, following
+completed `native-engine-browser-481`, following
 completed `native-engine-browser-480`, following
 completed `native-engine-browser-479`, following
 completed `native-engine-browser-478`, following
@@ -511,6 +512,15 @@ remain inert across initial and dynamic stylesheet loads. Complex media
 features, complete CSS Supports/layer grammar, file fonts and other CSS
 resource types, network stylesheet URL-base parity, complete file-origin
 semantics, and full Web IDL parity remain issue #40 gates.
+
+Slice 482 closes direct network stylesheet URL-base resolution. The shared CSS
+URL canonicalizer now admits HTTP(S) stylesheet owners and resolves relative
+`url(...)` tokens against the stylesheet URL before background-image/resource
+discovery. Rooted file owners retain the canonical file-root path, while
+data/blob/fixture/unsupported owners remain unchanged. Redirect-final
+stylesheet URL tracking, network CSS `@import` fetching, file fonts and other
+CSS resource types, complete file-origin semantics, and full Web IDL parity
+remain issue #40 work.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads

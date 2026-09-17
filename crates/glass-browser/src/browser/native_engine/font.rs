@@ -1,7 +1,7 @@
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
-    NativeFontFamilyValue, NativeFontStretchRange, NativeGenericFontFamily, NativeUnicodeRange,
-    font_family_hash,
+    NativeFontFamilyValue, NativeFontStretchRange, NativeFontVariantLigatures,
+    NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
 };
 use std::fmt;
 use std::io::Read;
@@ -141,21 +141,38 @@ pub(crate) struct NativeTextMetrics {
     faces: Vec<Arc<NativeFontFace>>,
     font_size: u32,
     stretch: u16,
+    ligatures: NativeFontVariantLigatures,
     ascent: u32,
     line_height: u32,
     direction: DirectionValue,
 }
 
 impl NativeTextMetrics {
+    #[cfg(test)]
     pub(crate) fn fallback_with_stretch(
         font_size: u32,
         stretch: u16,
+        direction: DirectionValue,
+    ) -> Self {
+        Self::fallback_with_stretch_and_ligatures(
+            font_size,
+            stretch,
+            NativeFontVariantLigatures::default(),
+            direction,
+        )
+    }
+
+    pub(crate) fn fallback_with_stretch_and_ligatures(
+        font_size: u32,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
         direction: DirectionValue,
     ) -> Self {
         Self {
             faces: Vec::new(),
             font_size: font_size.clamp(1, MAX_NATIVE_FONT_SIZE),
             stretch: stretch.clamp(500, 2000),
+            ligatures,
             ascent: FALLBACK_LINE_HEIGHT.saturating_sub(5),
             line_height: FALLBACK_LINE_HEIGHT,
             direction,
@@ -194,6 +211,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn for_style_with_book_and_stretch(
         families: NativeFontFamilyList,
         font_size: u32,
@@ -203,11 +221,35 @@ impl NativeTextMetrics {
         direction: DirectionValue,
         book: &NativeFontBook,
     ) -> Self {
+        Self::for_style_with_book_and_stretch_and_ligatures(
+            families,
+            font_size,
+            weight,
+            style,
+            stretch,
+            NativeFontVariantLigatures::default(),
+            direction,
+            book,
+        )
+    }
+
+    pub(crate) fn for_style_with_book_and_stretch_and_ligatures(
+        families: NativeFontFamilyList,
+        font_size: u32,
+        weight: FontWeightValue,
+        style: FontStyleValue,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        direction: DirectionValue,
+        book: &NativeFontBook,
+    ) -> Self {
         let font_size = font_size.clamp(1, MAX_NATIVE_FONT_SIZE);
         let stretch = stretch.clamp(500, 2000);
         let faces = book.faces_for(families, weight, style, stretch);
         let Some(face) = faces.first() else {
-            return Self::fallback_with_stretch(font_size, stretch, direction);
+            return Self::fallback_with_stretch_and_ligatures(
+                font_size, stretch, ligatures, direction,
+            );
         };
         let line_metrics = face.font.horizontal_line_metrics(font_size as f32);
         let ascent = line_metrics
@@ -221,6 +263,7 @@ impl NativeTextMetrics {
             faces,
             font_size,
             stretch,
+            ligatures,
             ascent,
             line_height,
             direction,
@@ -345,7 +388,42 @@ impl NativeTextMetrics {
         buffer.set_direction(direction);
         let scale = i32::try_from(self.font_size.saturating_mul(FONT_SHAPE_SCALE)).ok()?;
         let shaper = shaper_data.shaper(&font).build();
-        let shaped = shaper.shape(buffer, harfrust::ShapeOptions::new().scale(Some(scale)));
+        let mut features = Vec::with_capacity(5);
+        for tag in [
+            if self.ligatures.common {
+                "liga"
+            } else {
+                "-liga"
+            },
+            if self.ligatures.common {
+                "clig"
+            } else {
+                "-clig"
+            },
+            if self.ligatures.discretionary {
+                "dlig"
+            } else {
+                "-dlig"
+            },
+            if self.ligatures.historical {
+                "hlig"
+            } else {
+                "-hlig"
+            },
+            if self.ligatures.contextual {
+                "calt"
+            } else {
+                "-calt"
+            },
+        ] {
+            features.push(tag.parse::<harfrust::Feature>().ok()?);
+        }
+        let shaped = shaper.shape(
+            buffer,
+            harfrust::ShapeOptions::new()
+                .scale(Some(scale))
+                .features(&features),
+        );
         let infos = shaped.glyph_infos();
         let positions = shaped.glyph_positions();
         if infos.len() != positions.len() {
@@ -1975,6 +2053,46 @@ mod tests {
         assert!(expanded.measure_text("AAAA", 0, 0) > normal_width);
         let run = expanded.rasterize("AAAA", 0, 0, 0).unwrap();
         assert!(run.width > normal.rasterize("AAAA", 0, 0, 0).unwrap().width);
+    }
+
+    #[test]
+    fn font_variant_ligatures_toggle_common_shaping_features() {
+        let families = NativeFontFamilyList::single(NativeFontFamilyValue::Generic(
+            NativeGenericFontFamily::SansSerif,
+        ));
+        let default_metrics = NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            1000,
+            NativeFontVariantLigatures::default(),
+            DirectionValue::Ltr,
+            system_font_book(),
+        );
+        let no_common_metrics = NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            1000,
+            NativeFontVariantLigatures {
+                common: false,
+                ..NativeFontVariantLigatures::default()
+            },
+            DirectionValue::Ltr,
+            system_font_book(),
+        );
+        let Some(default_shape) = default_metrics.shape("fi", 0, 0) else {
+            return;
+        };
+        let Some(no_common_shape) = no_common_metrics.shape("fi", 0, 0) else {
+            return;
+        };
+        if default_shape.glyphs.len() >= 2 {
+            return;
+        }
+        assert!(no_common_shape.glyphs.len() > default_shape.glyphs.len());
     }
 
     #[test]

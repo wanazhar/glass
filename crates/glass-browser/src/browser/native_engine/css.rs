@@ -986,6 +986,28 @@ pub(crate) enum TextTransformValue {
     Lowercase,
 }
 
+/// The bounded OpenType ligature controls exposed by
+/// `font-variant-ligatures`. The initial value enables common and contextual
+/// ligatures, while discretionary and historical ligatures remain opt-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeFontVariantLigatures {
+    pub(crate) common: bool,
+    pub(crate) discretionary: bool,
+    pub(crate) historical: bool,
+    pub(crate) contextual: bool,
+}
+
+impl Default for NativeFontVariantLigatures {
+    fn default() -> Self {
+        Self {
+            common: true,
+            discretionary: false,
+            historical: false,
+            contextual: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum FontWeightValue {
     #[default]
@@ -1296,6 +1318,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) text_decoration_thickness: u32,
     pub(crate) text_underline_offset: i32,
     pub(crate) text_transform: TextTransformValue,
+    pub(crate) font_variant_ligatures: NativeFontVariantLigatures,
     pub(crate) font_weight: FontWeightValue,
     pub(crate) font_style: FontStyleValue,
     pub(crate) font_stretch: NativeFontStretchRange,
@@ -1356,6 +1379,7 @@ impl Default for NativeInheritedStyle {
             text_decoration_thickness: 1,
             text_underline_offset: 0,
             text_transform: TextTransformValue::None,
+            font_variant_ligatures: NativeFontVariantLigatures::default(),
             font_weight: FontWeightValue::Normal,
             font_style: FontStyleValue::Normal,
             font_stretch: NativeFontStretchRange::default(),
@@ -1515,6 +1539,8 @@ pub(crate) struct NativeComputedStyle {
     text_underline_offset: i32,
     text_decoration_color: Option<NativeColor>,
     text_transform: TextTransformValue,
+    #[serde(default)]
+    font_variant_ligatures: NativeFontVariantLigatures,
     font_weight: FontWeightValue,
     font_style: FontStyleValue,
     font_stretch: NativeFontStretchRange,
@@ -1698,6 +1724,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn text_transform(self) -> TextTransformValue {
         self.text_transform
+    }
+
+    pub(crate) const fn font_variant_ligatures(self) -> NativeFontVariantLigatures {
+        self.font_variant_ligatures
     }
 
     pub(crate) const fn font_weight(self) -> FontWeightValue {
@@ -2020,6 +2050,7 @@ impl NativeStylesheet {
         let mut text_underline_offset = &mut scratch.text_underline_offset;
         let mut text_decoration_color = &mut scratch.text_decoration_color;
         let mut text_transform = &mut scratch.text_transform;
+        let mut font_variant_ligatures = &mut scratch.font_variant_ligatures;
         let mut font_weight = &mut scratch.font_weight;
         let mut font_style = &mut scratch.font_style;
         let mut font_stretch = &mut scratch.font_stretch;
@@ -2267,6 +2298,14 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.text_importance.text_transform,
                 &mut text_transform,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.font_variant_ligatures,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.font_variant_ligatures,
+                &mut font_variant_ligatures,
             );
             apply_text_cascade_declaration(
                 rule.declarations.font_weight,
@@ -2858,6 +2897,14 @@ impl NativeStylesheet {
                 &mut text_transform,
             );
             apply_text_cascade_declaration(
+                declarations.font_variant_ligatures,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.font_variant_ligatures,
+                &mut font_variant_ligatures,
+            );
+            apply_text_cascade_declaration(
                 declarations.font_weight,
                 u16::MAX,
                 usize::MAX,
@@ -3425,6 +3472,11 @@ impl NativeStylesheet {
                 inherited.text_transform,
                 TextTransformValue::None,
             ),
+            font_variant_ligatures: resolve_inherited_text_declaration(
+                *font_variant_ligatures,
+                inherited.font_variant_ligatures,
+                NativeFontVariantLigatures::default(),
+            ),
             font_weight: resolve_inherited_text_declaration(
                 *font_weight,
                 inherited.font_weight,
@@ -3618,6 +3670,7 @@ struct NativeCascadeScratch {
     text_underline_offset: NativeTextDeclarationCandidates<NativeTextUnderlineOffsetDeclaration>,
     text_decoration_color: NativePaintDeclarationCandidates<NativeTextDecorationColorDeclaration>,
     text_transform: NativeTextCascadeCandidates<TextTransformValue>,
+    font_variant_ligatures: NativeTextCascadeCandidates<NativeFontVariantLigatures>,
     font_weight: NativeTextCascadeCandidates<FontWeightValue>,
     font_style: NativeTextCascadeCandidates<FontStyleValue>,
     font_stretch: NativeTextCascadeCandidates<NativeFontStretchRange>,
@@ -3710,6 +3763,7 @@ impl NativeCascadeScratch {
             initialize!(text_underline_offset);
             initialize!(text_decoration_color);
             initialize!(text_transform);
+            initialize!(font_variant_ligatures);
             initialize!(font_weight);
             initialize!(font_style);
             initialize!(font_stretch);
@@ -5851,6 +5905,7 @@ struct NativeTextDeclarationImportance {
     text_decoration_thickness: bool,
     text_underline_offset: bool,
     text_transform: bool,
+    font_variant_ligatures: bool,
     font_weight: bool,
     font_style: bool,
     font_stretch: bool,
@@ -5910,6 +5965,7 @@ struct NativeDeclarations {
     text_decoration_color: Option<NativeTextDecorationColorDeclaration>,
     text_decoration_color_important: bool,
     text_transform: Option<InheritedTextDeclaration<TextTransformValue>>,
+    font_variant_ligatures: Option<InheritedTextDeclaration<NativeFontVariantLigatures>>,
     font_weight: Option<InheritedTextDeclaration<FontWeightValue>>,
     font_style: Option<InheritedTextDeclaration<FontStyleValue>>,
     font_stretch: Option<InheritedTextDeclaration<NativeFontStretchRange>>,
@@ -6462,6 +6518,7 @@ fn parse_style_rule(
         || declarations.text_underline_offset.is_some()
         || declarations.text_decoration_color.is_some()
         || declarations.text_transform.is_some()
+        || declarations.font_variant_ligatures.is_some()
         || declarations.font_weight.is_some()
         || declarations.font_style.is_some()
         || declarations.font_stretch.is_some()
@@ -6691,6 +6748,7 @@ fn parse_declarations_with_diagnostics(
             "text-underline-offset" => parse_text_underline_offset(value).is_some(),
             "text-decoration-color" => parse_text_decoration_color(value).is_some(),
             "text-transform" => parse_text_transform_declaration(value).is_some(),
+            "font-variant-ligatures" => parse_font_variant_ligatures_declaration(value).is_some(),
             "font-weight" => parse_font_weight_declaration(value).is_some(),
             "font-style" => parse_font_style_declaration(value).is_some(),
             "font-stretch" => parse_font_stretch_declaration(value).is_some(),
@@ -6881,6 +6939,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "text-underline-offset"
             | "text-decoration-color"
             | "text-transform"
+            | "font-variant-ligatures"
             | "font-weight"
             | "font-style"
             | "font-stretch"
@@ -7293,6 +7352,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_text_transform_declaration(value) {
                     declarations.text_transform = Some(parsed);
                     declarations.text_importance.text_transform = important;
+                }
+            }
+            "font-variant-ligatures" => {
+                if let Some(parsed) = parse_font_variant_ligatures_declaration(value) {
+                    declarations.font_variant_ligatures = Some(parsed);
+                    declarations.text_importance.font_variant_ligatures = important;
                 }
             }
             "font-weight" => {
@@ -11875,6 +11940,75 @@ fn parse_text_transform_declaration(
     value: &str,
 ) -> Option<InheritedTextDeclaration<TextTransformValue>> {
     parse_inherited_text_declaration(value, parse_text_transform)
+}
+
+fn parse_font_variant_ligatures(value: &str) -> Option<NativeFontVariantLigatures> {
+    let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
+    if tokens.len() == 1 {
+        return match tokens[0].to_ascii_lowercase().as_str() {
+            "normal" => Some(NativeFontVariantLigatures::default()),
+            "none" => Some(NativeFontVariantLigatures {
+                common: false,
+                discretionary: false,
+                historical: false,
+                contextual: false,
+            }),
+            _ => None,
+        };
+    }
+    if tokens.is_empty()
+        || tokens
+            .iter()
+            .any(|token| matches!(token.to_ascii_lowercase().as_str(), "normal" | "none"))
+    {
+        return None;
+    }
+    let mut result = NativeFontVariantLigatures::default();
+    let mut groups = [false; 4];
+    for token in tokens {
+        match token.to_ascii_lowercase().as_str() {
+            "common-ligatures" if !groups[0] => {
+                groups[0] = true;
+                result.common = true;
+            }
+            "no-common-ligatures" if !groups[0] => {
+                groups[0] = true;
+                result.common = false;
+            }
+            "discretionary-ligatures" if !groups[1] => {
+                groups[1] = true;
+                result.discretionary = true;
+            }
+            "no-discretionary-ligatures" if !groups[1] => {
+                groups[1] = true;
+                result.discretionary = false;
+            }
+            "historical-ligatures" if !groups[2] => {
+                groups[2] = true;
+                result.historical = true;
+            }
+            "no-historical-ligatures" if !groups[2] => {
+                groups[2] = true;
+                result.historical = false;
+            }
+            "contextual" if !groups[3] => {
+                groups[3] = true;
+                result.contextual = true;
+            }
+            "no-contextual" if !groups[3] => {
+                groups[3] = true;
+                result.contextual = false;
+            }
+            _ => return None,
+        }
+    }
+    Some(result)
+}
+
+fn parse_font_variant_ligatures_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<NativeFontVariantLigatures>> {
+    parse_inherited_text_declaration(value, parse_font_variant_ligatures)
 }
 
 fn parse_font_weight_declaration(value: &str) -> Option<InheritedTextDeclaration<FontWeightValue>> {
@@ -21424,6 +21558,36 @@ mod tests {
     }
 
     #[test]
+    fn font_variant_ligatures_parser_keeps_one_value_per_feature_group() {
+        let normal = NativeFontVariantLigatures::default();
+        assert_eq!(parse_font_variant_ligatures("normal"), Some(normal));
+        assert_eq!(
+            parse_font_variant_ligatures("none"),
+            Some(NativeFontVariantLigatures {
+                common: false,
+                discretionary: false,
+                historical: false,
+                contextual: false,
+            })
+        );
+        assert_eq!(
+            parse_font_variant_ligatures(
+                "no-common-ligatures discretionary-ligatures historical-ligatures no-contextual"
+            ),
+            Some(NativeFontVariantLigatures {
+                common: false,
+                discretionary: true,
+                historical: true,
+                contextual: false,
+            })
+        );
+        assert!(parse_font_variant_ligatures("common-ligatures no-common-ligatures").is_none());
+        assert!(parse_font_variant_ligatures("normal common-ligatures").is_none());
+        assert!(parse_font_variant_ligatures("none contextual").is_none());
+        assert!(parse_font_variant_ligatures("unknown").is_none());
+    }
+
+    #[test]
     fn font_family_parser_keeps_ordered_bounded_fallbacks() {
         let families = parse_font_family("\"Missing Face\", sans-serif, monospace").unwrap();
         assert_eq!(families.len, 3);
@@ -22544,6 +22708,58 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(invalid).text_transform(),
             TextTransformValue::Uppercase
+        );
+    }
+
+    #[test]
+    fn font_variant_ligatures_is_inherited_and_css_wide_resets_are_bounded() {
+        let normal = NativeFontVariantLigatures::default();
+        let document = NativeDocument::parse(
+            "<style>#parent { font-variant-ligatures: no-common-ligatures discretionary-ligatures; } #clear { font-variant-ligatures: initial; } #inherit { font-variant-ligatures: inherit; } #invalid { font-variant-ligatures: common-ligatures no-common-ligatures; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='inherit'>Inherit</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let clear = document.resolve_target("id=clear").unwrap();
+        let inherit = document.resolve_target("id=inherit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let disabled_common = NativeFontVariantLigatures {
+            common: false,
+            discretionary: true,
+            historical: false,
+            contextual: true,
+        };
+
+        assert_eq!(
+            document
+                .computed_style_for_layout(parent)
+                .font_variant_ligatures(),
+            disabled_common
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(child)
+                .font_variant_ligatures(),
+            disabled_common
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(clear)
+                .font_variant_ligatures(),
+            normal
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(inherit)
+                .font_variant_ligatures(),
+            disabled_common
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .font_variant_ligatures(),
+            disabled_common
         );
     }
 

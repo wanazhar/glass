@@ -8,7 +8,9 @@ use super::content_process::{
     NativeContentLoad, NativeContentLoadResult, NativeContentMutation, NativeContentNavigation,
     NativeContentProcess, NativeContentScriptResult,
 };
-use super::css::{absolutize_file_stylesheet_urls, decode_css_url_value, static_css_imports};
+use super::css::{
+    absolutize_file_stylesheet_urls, css_import_matches, decode_css_url_value, static_css_imports,
+};
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{
     NativeDocument, NativeNodeId, NativePageScriptSource, NativeScriptDocumentSnapshot,
@@ -4458,6 +4460,7 @@ impl NativeEngine {
                     javascript,
                     &mut self.loader,
                     &self.url,
+                    self.config.viewport,
                 )?;
                 let image_events = load_local_dynamic_images(
                     &mut document,
@@ -6649,8 +6652,12 @@ impl NativeEngine {
         let mut document =
             NativeDocument::parse_with_generation(&resource.body, &self.config.limits, generation)?;
         let initial_events = if is_file_url(&resource.url) {
-            let (stylesheet_states, mut events) =
-                load_local_initial_file_stylesheets(&document, &self.loader, &resource.url)?;
+            let (stylesheet_states, mut events) = load_local_initial_file_stylesheets(
+                &document,
+                &self.loader,
+                &resource.url,
+                self.config.viewport,
+            )?;
             let external_stylesheets = stylesheet_states
                 .iter()
                 .filter_map(|(_, href, body)| {
@@ -8166,6 +8173,7 @@ fn load_local_dynamic_stylesheets(
     runtime: &NativeJavaScriptRuntime,
     loader: &mut NativeResourceLoader,
     document_url: &str,
+    viewport: Viewport,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
     let links = document
         .external_stylesheet_links()
@@ -8241,6 +8249,7 @@ fn load_local_dynamic_stylesheets(
                     &href,
                     stylesheet,
                     &mut loaded_bytes,
+                    viewport,
                 )
                 .ok(),
                 Ok(None) | Err(_) => None,
@@ -8399,6 +8408,7 @@ fn load_local_initial_file_stylesheets(
     document: &NativeDocument,
     loader: &NativeResourceLoader,
     document_url: &str,
+    viewport: Viewport,
 ) -> Result<
     (
         Vec<(u32, String, Option<String>)>,
@@ -8422,6 +8432,7 @@ fn load_local_initial_file_stylesheets(
                     &href,
                     stylesheet,
                     &mut loaded_bytes,
+                    viewport,
                 )
                 .ok(),
                 Ok(None) | Err(_) => None,
@@ -8441,6 +8452,7 @@ fn expand_local_file_stylesheet_imports(
     stylesheet_href: &str,
     stylesheet: String,
     loaded_bytes: &mut usize,
+    viewport: Viewport,
 ) -> Result<String, NativeEngineError> {
     let stylesheet_url = resolve_local_file_stylesheet_url(document_url, stylesheet_href)?;
     let mut graph_entries = 0usize;
@@ -8456,6 +8468,7 @@ fn expand_local_file_stylesheet_imports(
         &mut graph_bytes,
         &mut active,
         &mut loaded,
+        viewport,
     )?;
     let next_bytes = loaded_bytes.saturating_add(graph_bytes);
     if next_bytes > MAX_NATIVE_LOCAL_STYLESHEET_BYTES {
@@ -8478,6 +8491,7 @@ fn expand_local_file_stylesheet_body(
     graph_bytes: &mut usize,
     active: &mut BTreeSet<String>,
     loaded: &mut BTreeSet<String>,
+    viewport: Viewport,
 ) -> Result<String, NativeEngineError> {
     *graph_entries = graph_entries.saturating_add(1);
     if *graph_entries > MAX_NATIVE_LOCAL_STYLESHEETS {
@@ -8502,11 +8516,15 @@ fn expand_local_file_stylesheet_body(
         })?;
     let mut expanded = String::with_capacity(stylesheet.len());
     let mut cursor = 0usize;
-    for (start, end, specifier) in imports {
-        expanded.push_str(&stylesheet[cursor..start]);
-        let target = resolve_local_file_stylesheet_url(stylesheet_url, &specifier)?;
+    for import in imports {
+        expanded.push_str(&stylesheet[cursor..import.start]);
+        if !css_import_matches(&import, viewport) {
+            cursor = import.end;
+            continue;
+        }
+        let target = resolve_local_file_stylesheet_url(stylesheet_url, &import.specifier)?;
         if active.contains(&target) || !loaded.insert(target.clone()) {
-            cursor = end;
+            cursor = import.end;
             continue;
         }
         let dependency = loader
@@ -8514,7 +8532,8 @@ fn expand_local_file_stylesheet_body(
             .ok_or_else(|| NativeEngineError::Network {
                 operation: "file stylesheet dependency".into(),
                 reason: format!(
-                    "file stylesheet dependency {specifier:?} was blocked or unavailable"
+                    "file stylesheet dependency {:?} was blocked or unavailable",
+                    import.specifier
                 ),
             })?;
         let dependency = expand_local_file_stylesheet_body(
@@ -8526,9 +8545,18 @@ fn expand_local_file_stylesheet_body(
             graph_bytes,
             active,
             loaded,
+            viewport,
         )?;
-        expanded.push_str(&dependency);
-        cursor = end;
+        if let Some(layer) = import.layer {
+            expanded.push_str("@layer ");
+            expanded.push_str(&layer);
+            expanded.push_str(" { ");
+            expanded.push_str(&dependency);
+            expanded.push_str(" }");
+        } else {
+            expanded.push_str(&dependency);
+        }
+        cursor = import.end;
     }
     expanded.push_str(&stylesheet[cursor..]);
     active.remove(stylesheet_url);

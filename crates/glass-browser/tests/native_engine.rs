@@ -1796,7 +1796,7 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
     .unwrap();
     fs::write(
         &stylesheet_path,
-        "@import 'theme/theme\\2e css'; @import url('theme/theme\\2e css');",
+        "@import 'theme/theme\\2e css' layer(theme) supports(display: grid) screen and (min-width: 1000px); @import 'missing-print.css' print; @import 'missing-narrow.css' screen and (max-width: 600px); @import url('theme/theme\\2e css');",
     )
     .unwrap();
     fs::write(

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-480`, following completed
 `native-engine-browser-479`, following completed
 `native-engine-browser-478`, following completed
 `native-engine-browser-477`, following completed
@@ -275,6 +276,16 @@ targets fail closed; HTTP(S) downloads remain on their existing fetch and
 navigation path. Content-Disposition precedence, resumable/background
 downloads, file-origin service workers, and complete download/Web IDL parity
 remain issue #40 gates.
+
+The completed escaped-CSS-URL follow-up is
+[`native-engine-browser-480`](tasks/native-engine-browser-480.md): rooted file
+stylesheet `url(...)` and literal `@import` targets now decode bounded CSS
+hex/simple escapes and line continuations before URL resolution, while escaped
+closing parentheses remain inside unquoted tokens and invalid trailing escapes
+fail closed. Non-file stylesheet owners retain their existing path. Import
+media/layer/supports evaluation, file fonts, other CSS resource types, network
+stylesheet URL-base parity, complete file-origin semantics, and complete Web
+IDL parity remain issue #40 gates.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

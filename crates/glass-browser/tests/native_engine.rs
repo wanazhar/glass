@@ -1796,12 +1796,12 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
     .unwrap();
     fs::write(
         &stylesheet_path,
-        "@import 'theme/theme.css'; @import url('theme/theme.css');",
+        "@import 'theme/theme\\2e css'; @import url('theme/theme\\2e css');",
     )
     .unwrap();
     fs::write(
         &imported_stylesheet_path,
-        "@import '../cycle.css'; #target { width: 2px; height: 2px; color: rgb(1, 2, 3); background-image: url('theme.png'); background-repeat: no-repeat; }",
+        "@import '../cycle.css'; #target { width: 2px; height: 2px; color: rgb(1, 2, 3); background-image: url('theme\\2e png'); background-repeat: no-repeat; }",
     )
     .unwrap();
     fs::write(&cycle_stylesheet_path, "@import 'theme/theme.css';").unwrap();

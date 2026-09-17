@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-480`, following completed
 `native-engine-browser-479`, following completed
 `native-engine-browser-478`, following completed
 `native-engine-browser-477`, following completed
@@ -449,6 +450,16 @@ surface. Missing, directory, credential-bearing, and out-of-root sources stay
 denied; HTTP(S) downloads retain their existing fetch/navigation owner. File
 origin service workers, resumable/background downloads, Content-Disposition
 precedence, and full download/Web IDL parity remain issue #40 work.
+
+Slice `native-engine-browser-480` closes CSS URL escape handling for rooted
+file stylesheets. Hexadecimal CSS escapes, simple escaped delimiters, and
+line continuations in `url(...)` and literal `@import` targets are decoded
+before URL resolution; an escaped closing parenthesis remains part of an
+unquoted token, and invalid trailing escapes fail closed. The existing
+canonical file-root, stylesheet URL-base, and background-image owners remain
+unchanged for non-file stylesheets. Import media/layer/supports evaluation,
+file fonts, other CSS resource types, network stylesheet URL-base parity,
+complete file-origin semantics, and full Web IDL parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-479`, following
+expansion checkpoint is completed `native-engine-browser-480`, following
+completed `native-engine-browser-479`, following
 completed `native-engine-browser-478`, following
 completed `native-engine-browser-477`, following
 completed `native-engine-browser-476`, following
@@ -490,6 +491,15 @@ on the fetch/navigation owner. Missing, directory, credential-bearing, and
 out-of-root targets fail closed; Content-Disposition precedence,
 resumable/background downloads, file-origin service workers, and complete
 download/Web IDL parity remain issue #40 gates.
+
+Slice 480 closes escaped CSS URL grammar for rooted file stylesheets. A shared
+bounded decoder handles hexadecimal escapes, simple escaped delimiters, and
+line continuations in `url(...)` and literal `@import` targets before URL
+resolution; the scanner also preserves escaped closing parentheses in
+unquoted tokens. Invalid trailing escapes fail closed, and non-file stylesheet
+owners remain unchanged. Import media/layer/supports evaluation, file fonts,
+other CSS resource types, network stylesheet URL-base parity, complete
+file-origin semantics, and full Web IDL parity remain issue #40 gates.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads

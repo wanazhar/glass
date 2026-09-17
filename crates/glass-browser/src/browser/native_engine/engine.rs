@@ -8,7 +8,7 @@ use super::content_process::{
     NativeContentLoad, NativeContentLoadResult, NativeContentMutation, NativeContentNavigation,
     NativeContentProcess, NativeContentScriptResult,
 };
-use super::css::{absolutize_file_stylesheet_urls, static_css_imports};
+use super::css::{absolutize_file_stylesheet_urls, decode_css_url_value, static_css_imports};
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{
     NativeDocument, NativeNodeId, NativePageScriptSource, NativeScriptDocumentSnapshot,
@@ -8544,6 +8544,9 @@ fn resolve_local_file_stylesheet_url(
     href: &str,
 ) -> Result<String, NativeEngineError> {
     validate_url_text("file stylesheet import URL", href)?;
+    let href = decode_css_url_value(href).ok_or_else(|| NativeEngineError::UnsupportedUrl {
+        reason: "file stylesheet import URL contains an invalid CSS escape".into(),
+    })?;
     let owner_url = url::Url::parse(without_fragment(owner_url)).map_err(|_| {
         NativeEngineError::UnsupportedUrl {
             reason: "file stylesheet owner URL is not valid URL syntax".into(),
@@ -8555,7 +8558,7 @@ fn resolve_local_file_stylesheet_url(
         });
     }
     let mut target = owner_url
-        .join(href)
+        .join(&href)
         .map_err(|_| NativeEngineError::UnsupportedUrl {
             reason: "file stylesheet import URL could not be resolved against its owner".into(),
         })?;

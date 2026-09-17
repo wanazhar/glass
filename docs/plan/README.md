@@ -178,8 +178,9 @@ Worker `Client.postMessage()` now carries bounded Blob URL snapshots through
 the worker, content-process, and page event owners, installing the destination
 registry before structured-clone decoding. HTTP(S) coverage fetches the
 delivered Blob without network/cache fallback and preserves source-worker
-revocation independence. MessagePort event-origin metadata, media, and
-remaining browser/Web IDL conformance remain issue #40 gates.
+revocation independence. Channel-message events retain the HTML default empty
+`origin`; media and remaining browser/Web IDL conformance remain issue #40
+gates.
 
 The completed MessagePort follow-up is
 [`native-engine-browser-466`](tasks/native-engine-browser-466.md): page,
@@ -187,10 +188,11 @@ dedicated/shared-worker, popup/`WindowProxy`, and Service Worker MessagePort
 delivery carry bounded Blob URL snapshots through local and HTTP(S)
 content-process routes, installing the destination registry before clone
 decoding. Bidirectional tests cover inline, content-process, popup, and
-service-worker owners without network/cache fallback. MessagePort event-origin
-metadata, Service Worker client-message Blob transfer, media, and remaining
-browser/Web IDL conformance remained issue #40 gates at that checkpoint; the
-client-message Blob transfer gate is now closed by slice 467.
+service-worker owners without network/cache fallback. Channel-message events
+retain the HTML default empty `origin`; Service Worker client-message Blob
+transfer, media, and remaining browser/Web IDL conformance remained issue #40
+gates at that checkpoint. The client-message Blob transfer gate is now closed
+by slice 467.
 
 The completed report-only navigation preflight slice is
 [native-engine-browser-413](tasks/native-engine-browser-413.md): the

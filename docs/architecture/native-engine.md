@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-445`, following completed
 `native-engine-browser-444`, following completed
 `native-engine-browser-443`, following completed
 `native-engine-browser-442`, following completed
@@ -145,7 +146,7 @@ asynchronous requests without changing the bounded transport owner.
 
 Slice 444 closes the XHR MIME-override projection boundary. Page and
 dedicated/SharedWorker XHR now expose `overrideMimeType()` with bounded MIME
-essence validation, maps malformed values to `application/octet-stream`, and
+essence validation, map malformed values to `application/octet-stream`, and
 raises `InvalidStateError` after loading has begun or completed. An override set
 before `open()` survives that reset as required, while each new response
 projection starts with a clean response-content slot. The page uses the
@@ -154,6 +155,18 @@ responses use it for their MIME type; `getResponseHeader()` and
 `getAllResponseHeaders()` still report the actual wire headers. Async and
 synchronous XHR share this contract; full MIME-parameter parsing and complete
 XHR/Web IDL parity remain issue #40 gates.
+
+Slice 445 closes the XHR realm-aware mutator boundary. Page and
+dedicated/SharedWorker XHR now expose Boolean-backed `withCredentials` state
+with `InvalidStateError` outside `UNSENT`/`OPENED`, preserve it across
+`open()`, and keep it private from script shadowing. Page synchronous XHR now
+rejects `timeout` and nonempty `responseType` mutation with
+`InvalidAccessError`, rejects incompatible synchronous `open()` configuration,
+and the worker permits those synchronous settings. Worker `responseType =
+"document"` is ignored as specified; supported response types remain
+case-insensitively canonical. Numeric timeout bounds and the existing loader
+credential policy remain unchanged. Full XHR/Web IDL descriptor parity remains
+issue #40 work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

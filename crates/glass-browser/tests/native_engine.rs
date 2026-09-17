@@ -55042,6 +55042,24 @@ globalThis.pageResponseTypePromise = new Promise(resolve => {
   let invalidType = '';
   let loadingError = '';
   let doneError = '';
+  let credentialsDoneError = '';
+  const credentials = new XMLHttpRequest();
+  credentials.withCredentials = 'false';
+  const credentialsBeforeOpen = credentials.withCredentials;
+  credentials.open('GET', '/unused');
+  const credentialsAfterOpen = credentials.withCredentials;
+  credentials.withCredentials = 0;
+  const credentialsAfterSet = credentials.withCredentials;
+  const responseTypeSync = new XMLHttpRequest();
+  responseTypeSync.responseType = 'json';
+  let syncOpenError = '';
+  try { responseTypeSync.open('GET', '/unused', false); } catch (error) { syncOpenError = error.name; }
+  const sync = new XMLHttpRequest();
+  sync.open('GET', '/unused', false);
+  let syncTimeoutError = '';
+  let syncResponseTypeError = '';
+  try { sync.timeout = 1; } catch (error) { syncTimeoutError = error.name; }
+  try { sync.responseType = 'json'; } catch (error) { syncResponseTypeError = error.name; }
   xhr.open('GET', '/type-page');
   try { xhr.responseType = 'unsupported'; } catch (error) { invalidType = error.name; }
   xhr.responseType = 'JSON';
@@ -55053,7 +55071,19 @@ globalThis.pageResponseTypePromise = new Promise(resolve => {
       try { xhr.responseType = 'text'; } catch (error) { doneError = error.name; }
     }
   };
-  xhr.onload = () => resolve({ canonical: xhr.responseType, data: xhr.response, invalidType, loadingError, doneError });
+  xhr.onload = () => {
+    try { xhr.withCredentials = true; } catch (error) { credentialsDoneError = error.name; }
+    resolve({
+      canonical: xhr.responseType,
+      data: xhr.response,
+      invalidType,
+      loadingError,
+      doneError,
+      credentials: [credentialsBeforeOpen, credentialsAfterOpen, credentialsAfterSet],
+      credentialsDoneError,
+      sync: [syncOpenError, syncTimeoutError, syncResponseTypeError],
+    });
+  };
   xhr.onerror = () => resolve({ error: 'page-xhr' });
   xhr.send();
 });
@@ -55070,8 +55100,22 @@ globalThis.workerResponseTypePromise = new Promise(resolve => {
 let invalidType = '';
 let loadingError = '';
 let doneError = '';
+let credentialsDoneError = '';
+const credentials = new XMLHttpRequest();
+credentials.withCredentials = 'false';
+const credentialsBeforeOpen = credentials.withCredentials;
+credentials.open('GET', '/unused');
+const credentialsAfterOpen = credentials.withCredentials;
+credentials.withCredentials = 0;
+const credentialsAfterSet = credentials.withCredentials;
+const sync = new XMLHttpRequest();
+sync.open('GET', '/type-worker', false);
+sync.timeout = 10;
+sync.responseType = 'json';
 xhr.open('GET', '/type-worker');
 try { xhr.responseType = 'unsupported'; } catch (error) { invalidType = error.name; }
+xhr.responseType = 'DOCUMENT';
+const documentIgnored = xhr.responseType;
 xhr.responseType = 'TEXT';
 xhr.onreadystatechange = () => {
   if (xhr.readyState === 3) {
@@ -55081,7 +55125,20 @@ xhr.onreadystatechange = () => {
     try { xhr.responseType = 'json'; } catch (error) { doneError = error.name; }
   }
 };
-xhr.onload = () => postMessage({ canonical: xhr.responseType, data: xhr.response, invalidType, loadingError, doneError });
+xhr.onload = () => {
+  try { xhr.withCredentials = true; } catch (error) { credentialsDoneError = error.name; }
+  postMessage({
+    canonical: xhr.responseType,
+    data: xhr.response,
+    invalidType,
+    documentIgnored,
+    loadingError,
+    doneError,
+    credentials: [credentialsBeforeOpen, credentialsAfterOpen, credentialsAfterSet],
+    credentialsDoneError,
+    sync: [sync.timeout, sync.responseType],
+  });
+};
 xhr.onerror = () => postMessage({ error: 'worker-xhr' });
 xhr.send();"#,
                 ),
@@ -55116,13 +55173,20 @@ xhr.send();"#,
                 "invalidType": "TypeError",
                 "loadingError": "InvalidStateError",
                 "doneError": "InvalidStateError",
+                "credentials": [true, true, false],
+                "credentialsDoneError": "InvalidStateError",
+                "sync": ["InvalidAccessError", "InvalidAccessError", "InvalidAccessError"],
             },
             {
                 "canonical": "text",
                 "data": "worker-response",
                 "invalidType": "TypeError",
+                "documentIgnored": "",
                 "loadingError": "InvalidStateError",
                 "doneError": "InvalidStateError",
+                "credentials": [true, true, false],
+                "credentialsDoneError": "InvalidStateError",
+                "sync": [10, "json"],
             },
         ])
     );

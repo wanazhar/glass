@@ -17866,6 +17866,39 @@ mod native_font_face_tests {
     }
 
     #[test]
+    fn computed_style_projects_font_variant_numeric() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-numeric-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<style>#parent { font-variant-numeric: oldstyle-nums tabular-nums stacked-fractions ordinal slashed-zero; } #child { font-variant-numeric: lining-nums proportional-nums diagonal-fractions; } #reset { font-variant-numeric: initial; }</style><div id='parent'><span id='child'>Child</span><span id='reset'>Reset</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("font-variant-numeric fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const parent = getComputedStyle(document.getElementById("parent"));
+                  const child = getComputedStyle(document.getElementById("child"));
+                  const reset = getComputedStyle(document.getElementById("reset"));
+                  return [parent.fontVariantNumeric, child.getPropertyValue("font-variant-numeric"), reset.fontVariantNumeric];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("computed font-variant-numeric surface must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                "oldstyle-nums tabular-nums stacked-fractions ordinal slashed-zero",
+                "lining-nums proportional-nums diagonal-fractions",
+                "normal"
+            ])
+        );
+    }
+
+    #[test]
     fn css_font_face_refresh_dispatches_loading_error_for_new_rules() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-refresh-test")
             .expect("native JavaScript runtime must construct");
@@ -37284,6 +37317,22 @@ fn document_bootstrap(
     ].join(" ");
   }};
   const computedStyleFontVariantCaps = (value) => computedStyleEnumName(value, "normal");
+  const computedStyleFontVariantNumeric = (value) => {{
+    if (!value || typeof value !== "object") return "normal";
+    const values = [];
+    const figure = computedStyleEnumName(value.figure, "normal");
+    const spacing = computedStyleEnumName(value.spacing, "normal");
+    const fraction = computedStyleEnumName(value.fraction, "normal");
+    if (figure === "lining") values.push("lining-nums");
+    if (figure === "oldstyle") values.push("oldstyle-nums");
+    if (spacing === "proportional") values.push("proportional-nums");
+    if (spacing === "tabular") values.push("tabular-nums");
+    if (fraction === "diagonal") values.push("diagonal-fractions");
+    if (fraction === "stacked") values.push("stacked-fractions");
+    if (value.ordinal === true) values.push("ordinal");
+    if (value.slashed_zero === true) values.push("slashed-zero");
+    return values.length === 0 ? "normal" : values.join(" ");
+  }};
   const computedStyleFeatureSettings = (value) => {{
     if (!value || typeof value !== "object" || !Array.isArray(value.values)) return "normal";
     const count = Math.max(0, Math.min(value.values.length, Number(value.count) || 0));
@@ -37339,7 +37388,7 @@ fn document_bootstrap(
     "border-left-color", "border-radius", "overflow", "overflow-x", "overflow-y", "white-space",
     "text-align", "text-align-last", "text-justify", "text-indent", "text-transform", "text-overflow",
     "text-decoration", "text-decoration-style", "text-decoration-thickness", "text-underline-offset",
-    "font-weight", "font-style", "font-stretch", "font-variant-ligatures", "font-variant-caps", "font-variant-position", "font-feature-settings", "font-kerning", "line-height", "word-break", "word-spacing", "letter-spacing",
+    "font-weight", "font-style", "font-stretch", "font-variant-ligatures", "font-variant-caps", "font-variant-position", "font-variant-numeric", "font-feature-settings", "font-kerning", "line-height", "word-break", "word-spacing", "letter-spacing",
     "vertical-align", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
     "justify-content", "align-items", "align-self", "align-content", "gap", "row-gap", "column-gap",
     "order", "grid-template-columns", "grid-template-rows"
@@ -37435,6 +37484,7 @@ fn document_bootstrap(
     if (name === "font-variant-ligatures") return computedStyleLigatures(raw.font_variant_ligatures);
     if (name === "font-variant-caps") return computedStyleFontVariantCaps(raw.font_variant_caps);
     if (name === "font-variant-position") return computedStyleEnumName(raw.font_variant_position, "normal");
+    if (name === "font-variant-numeric") return computedStyleFontVariantNumeric(raw.font_variant_numeric);
     if (name === "font-feature-settings") return computedStyleFeatureSettings(raw.font_feature_settings);
     if (name === "font-kerning") return computedStyleEnumName(raw.font_kerning, "auto");
     if (name === "line-height") return computedStylePixels(raw.line_height, "normal");

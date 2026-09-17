@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-511`, following
+expansion checkpoint is completed `native-engine-browser-512`, following
+completed `native-engine-browser-511`, following
 completed `native-engine-browser-510`, following
 completed `native-engine-browser-509`, following
 completed `native-engine-browser-508`, following
@@ -301,6 +302,14 @@ authoritative. Character fallback and baseline metrics remain unchanged;
 numeric variants, variable axes, color rendering, WOFF2, font-display timing,
 mixed-script shaping, cross-realm FontFace projection, and complete
 FontFace/Web IDL parity remain open.
+
+Slice 512 carries inherited `font-variant-numeric` through native computed
+style and CSSOM, then supplies bounded HarfRust `lnum`, `onum`, `pnum`, `tnum`,
+`frac`, `afrc`, `ordn`, or `zero` tags for the selected numeric controls. An
+explicit low-level tag remains authoritative. Character fallback stays
+unchanged; numeric feature-specific shaping, variable axes, color rendering,
+WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
+projection, and complete FontFace/Web IDL parity remain open.
 
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target

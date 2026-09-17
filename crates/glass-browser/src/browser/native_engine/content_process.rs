@@ -106,6 +106,7 @@ const MAX_NATIVE_EVENTSOURCE_CONNECTIONS: usize = MAX_NATIVE_EFFECTS;
 const MAX_CONTENT_STYLESHEETS: usize = 16;
 const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
 const MAX_CONTENT_IMAGES: usize = 64;
+const MAX_CONTENT_MEDIA: usize = 64;
 const MAX_CONTENT_FRAME_SOURCES: usize = 64;
 const MAX_CONTENT_NAVIGATION_SOURCES: usize = 64;
 
@@ -7435,6 +7436,7 @@ async fn load_content_resource(
     document.mark_content_security_policy_meta_processed();
     resource_events
         .extend(load_external_images(&mut document, None, loader, &resource.url, viewport).await?);
+    resource_events.extend(load_external_media(&mut document, None, loader, &resource.url).await?);
     let (script_sources, script_resource_events) =
         load_page_script_sources(&document, loader, &resource.url).await?;
     resource_events.extend(script_resource_events);
@@ -7700,6 +7702,50 @@ async fn load_external_images(
         }
     }
     Ok(image_events)
+}
+
+async fn load_external_media(
+    document: &mut NativeDocument,
+    runtime: Option<&NativeJavaScriptRuntime>,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
+    let Some(runtime) = runtime else {
+        return Ok(Vec::new());
+    };
+    let mut media_events = Vec::new();
+    for (node_index, source) in document
+        .external_media_links()
+        .into_iter()
+        .take(MAX_CONTENT_MEDIA)
+    {
+        if !source
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
+        {
+            continue;
+        }
+        let node_id = NativeNodeId::from_parts(document.generation(), node_index);
+        if document.has_media_resource_for_node(node_id) {
+            continue;
+        }
+        document.mark_media_load(node_index, source.clone())?;
+        let object_url = runtime.object_url_resource(&source)?;
+        let metadata = loader.load_local_blob_media(document_url, &source, object_url.as_ref())?;
+        let event_kind = match metadata {
+            Some(metadata) => {
+                document.set_media_resource(node_index, source, metadata)?;
+                NativeEventKind::Load
+            }
+            None => {
+                document.set_media_error(node_index, source)?;
+                NativeEventKind::Error
+            }
+        };
+        media_events.push((node_index, event_kind));
+    }
+    document.refresh_media_loads();
+    Ok(media_events)
 }
 
 async fn load_dynamic_external_stylesheets(
@@ -9931,6 +9977,37 @@ async fn mutate_script_document(
         ));
     }
     next.refresh_image_loads(viewport);
+    let media_events = if let Some(loader) = loader.as_deref_mut() {
+        load_external_media(&mut next, Some(runtime), loader, &document_url).await?
+    } else {
+        Vec::new()
+    };
+    for (node_index, event_kind) in media_events {
+        let Some(event_batch) = host_event_batch(&[(node_index, event_kind)])? else {
+            continue;
+        };
+        let evaluation = runtime.evaluate_with_host_events(
+            &event_batch,
+            &next,
+            &document_url,
+            document_origin,
+            viewport,
+        )?;
+        apply_content_event_history(
+            &evaluation.commands,
+            &mut document_url,
+            document_origin,
+            runtime,
+            &mut history,
+        )?;
+        scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
+        events.extend(next.apply_script_commands(&evaluation.commands)?);
+        events.push((
+            NativeNodeId::from_parts(next.generation(), node_index),
+            event_kind,
+        ));
+    }
+    next.refresh_media_loads();
     if let Some(loader) = loader.as_deref_mut() {
         apply_pending_meta_content_security_policies(&mut next, loader, &document_url)?;
         refresh_inline_style_policy(&mut next, loader, &document_url)?;

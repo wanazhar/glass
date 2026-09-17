@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-468`, following completed
 `native-engine-browser-467`, following completed
 `native-engine-browser-466`, following completed
 `native-engine-browser-465`, following completed
@@ -181,6 +182,15 @@ delivered Blob without network/cache fallback and preserves source-worker
 revocation independence. Channel-message events retain the HTML default empty
 `origin`; media and remaining browser/Web IDL conformance remain issue #40
 gates.
+
+The completed bounded media-resource follow-up is
+[`native-engine-browser-468`](tasks/native-engine-browser-468.md): local
+fixture and HTTP(S) content-process documents can resolve runtime-owned Blob
+URLs selected by `<audio>` and `<video>`, enforce `media-src`/`default-src`,
+validate bounded supported media payloads, expose WAV duration metadata, and
+deliver selected-source readiness/error state plus load/error events through
+the native DOM and event paths. Codec/decoder playback, static HTTP media
+loading, and complete media/Web IDL parity remain issue #40 gates.
 
 The completed MessagePort follow-up is
 [`native-engine-browser-466`](tasks/native-engine-browser-466.md): page,

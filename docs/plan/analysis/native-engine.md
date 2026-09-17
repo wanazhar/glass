@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-467`, following
+expansion checkpoint is completed `native-engine-browser-468`, following
+completed `native-engine-browser-467`, following
 completed `native-engine-browser-466`, following
 completed `native-engine-browser-465`, following
 completed `native-engine-browser-464`, following
@@ -394,6 +395,18 @@ proving no network/cache fallback and preserving source-worker revocation
 ownership. Channel-message events intentionally retain the HTML default empty
 `origin`; media and remaining browser/Web IDL conformance consumers remain
 separate owner work.
+
+Slice 468 closes the first bounded media-resource admission boundary. Local
+fixture and HTTP(S) content-process documents resolve runtime-owned Blob URLs
+selected by `<audio>` and `<video>`, apply the document `media-src`/
+`default-src` policy, validate bounded supported MIME/payload metadata, and
+project WAV duration where the bounded header permits it. The persistent DOM
+snapshot carries selected source and readiness/network/error state; the JS
+surface exposes media constants, source selection, time ranges, `load()`,
+`canPlayType()`, and the existing load/error event path. This is resource
+admission and metadata, not codec decoding or playback. Static HTTP media,
+decoder-backed playback, and complete media/Web IDL parity remain issue #40
+gates.
 
 Slice 466 closes the cross-realm Blob URL MessagePort boundary: page,
 dedicated/shared-worker, popup/`WindowProxy`, and Service Worker port messages
@@ -6618,7 +6631,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-467.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-468.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-467.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-466.md` is the preceding completed
 browser task;

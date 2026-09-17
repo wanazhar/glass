@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-468`, following completed
 `native-engine-browser-467`, following completed
 `native-engine-browser-466`, following completed
 `native-engine-browser-465`, following completed
@@ -349,6 +350,19 @@ the source worker retains independent revocation ownership. Channel-message
 events intentionally retain the HTML default empty `origin`; media and
 remaining browser/Web IDL conformance consumers remain separate issue #40
 work.
+
+Slice `native-engine-browser-468` closes the first bounded media-resource
+admission boundary. Local fixture documents and HTTP(S) content-process
+documents can resolve runtime-owned Blob URLs selected by `<audio>` and
+`<video>` elements, enforce the document `media-src`/`default-src` policy,
+validate supported MIME types and bounded bytes, and expose native resource
+metadata including WAV duration. The DOM projection now carries selected
+source, readiness/network state, duration, current time ranges, error code,
+`canPlayType()`, `load()`, and load/error event ownership through the existing
+script command and event paths. This slice deliberately does not claim a
+codec/decoder or playback implementation, static HTTP media loading, or full
+media/Web IDL parity; those and the remaining browser certification gates stay
+open under issue #40.
 
 Slice `native-engine-browser-466` closes the cross-realm Blob URL MessagePort
 boundary. Page, dedicated/shared-worker, popup/`WindowProxy`, and Service

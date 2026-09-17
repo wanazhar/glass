@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-515`, following
+expansion checkpoint is completed `native-engine-browser-516`, following
+completed `native-engine-browser-515`, following
 completed `native-engine-browser-514`, following
 completed `native-engine-browser-513`, following
 completed `native-engine-browser-512`, following
@@ -305,6 +306,16 @@ authoritative. Character fallback and baseline metrics remain unchanged;
 numeric variants, variable axes, color rendering, WOFF2, font-display timing,
 mixed-script shaping, cross-realm FontFace projection, and complete
 FontFace/Web IDL parity remain open.
+
+Slice 516 carries inherited `font-language-override` through the native
+computed-style chain, CSSOM, and HarfRust shaping owner. The bounded parser
+accepts `normal` or a quoted four-byte printable OpenType tag with only
+trailing padding, preserves CSS-wide reset and cascade semantics, and keeps
+the exact padded tag in canonical CSSOM. The shaping owner trims OpenType
+padding before constructing HarfRust's language value; character fallback
+remains unchanged. Full language negotiation, mixed-script and vertical
+shaping, variable/color rendering, WOFF2, and complete FontFace/Web IDL
+parity remain open.
 
 Slice 515 carries the inherited `font-variant` shorthand over the
 already bounded ligature, caps, position, alternate, east-Asian, and numeric

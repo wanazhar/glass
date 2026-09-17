@@ -17928,6 +17928,35 @@ mod native_font_face_tests {
     }
 
     #[test]
+    fn computed_style_projects_font_language_override() {
+        let runtime =
+            NativeJavaScriptRuntime::new_with_context_id("computed-font-language-override-test")
+                .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            r#"<style>#parent { font-language-override: "ENG "; } #reset { font-language-override: normal; }</style><div id="parent">Parent</div><span id="reset">Reset</span>"#,
+            &NativeEngineLimits::default(),
+        )
+        .expect("font-language-override fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const parent = getComputedStyle(document.getElementById("parent"));
+                  const reset = getComputedStyle(document.getElementById("reset"));
+                  return [parent.fontLanguageOverride, parent.getPropertyValue("font-language-override"), reset.fontLanguageOverride];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("computed font-language-override surface must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["\"ENG \"", "\"ENG \"", "normal"])
+        );
+    }
+
+    #[test]
     fn computed_style_projects_font_variant_shorthand() {
         let runtime =
             NativeJavaScriptRuntime::new_with_context_id("computed-font-variant-shorthand-test")
@@ -37413,6 +37442,12 @@ fn document_bootstrap(
   }};
     const computedStyleFontVariantCaps = (value) => computedStyleEnumName(value, "normal");
   const computedStyleFontVariantAlternates = (value) => computedStyleEnumName(value, "normal");
+  const computedStyleFontLanguageOverride = (value) => {{
+    if (!value || typeof value !== "object" || !Array.isArray(value.tag) || value.tag.length !== 4) return "normal";
+    const bytes = value.tag.map((byte) => Number(byte));
+    if (!bytes.every((byte) => Number.isInteger(byte) && byte >= 32 && byte <= 126)) return "normal";
+    return '"' + String.fromCharCode(...bytes) + '"';
+  }};
   const computedStyleFontVariantEastAsian = (value) => {{
     if (!value || typeof value !== "object") return "normal";
     const values = [];
@@ -37511,7 +37546,7 @@ fn document_bootstrap(
     "border-left-color", "border-radius", "overflow", "overflow-x", "overflow-y", "white-space",
     "text-align", "text-align-last", "text-justify", "text-indent", "text-transform", "text-overflow",
     "text-decoration", "text-decoration-style", "text-decoration-thickness", "text-underline-offset",
-    "font-weight", "font-style", "font-stretch", "font-variant", "font-variant-ligatures", "font-variant-caps", "font-variant-position", "font-variant-alternates", "font-variant-east-asian", "font-variant-numeric", "font-feature-settings", "font-kerning", "line-height", "word-break", "word-spacing", "letter-spacing",
+    "font-weight", "font-style", "font-stretch", "font-variant", "font-variant-ligatures", "font-variant-caps", "font-variant-position", "font-variant-alternates", "font-language-override", "font-variant-east-asian", "font-variant-numeric", "font-feature-settings", "font-kerning", "line-height", "word-break", "word-spacing", "letter-spacing",
     "vertical-align", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
     "justify-content", "align-items", "align-self", "align-content", "gap", "row-gap", "column-gap",
     "order", "grid-template-columns", "grid-template-rows"
@@ -37609,6 +37644,7 @@ fn document_bootstrap(
     if (name === "font-variant-caps") return computedStyleFontVariantCaps(raw.font_variant_caps);
     if (name === "font-variant-position") return computedStyleEnumName(raw.font_variant_position, "normal");
     if (name === "font-variant-alternates") return computedStyleFontVariantAlternates(raw.font_variant_alternates);
+    if (name === "font-language-override") return computedStyleFontLanguageOverride(raw.font_language_override);
     if (name === "font-variant-east-asian") return computedStyleFontVariantEastAsian(raw.font_variant_east_asian);
     if (name === "font-variant-numeric") return computedStyleFontVariantNumeric(raw.font_variant_numeric);
     if (name === "font-feature-settings") return computedStyleFeatureSettings(raw.font_feature_settings);

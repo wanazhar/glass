@@ -2,10 +2,11 @@
 use super::css::NativeFontFeature;
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
-    NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning, NativeFontStretchRange,
-    NativeFontVariantAlternates, NativeFontVariantCaps, NativeFontVariantEastAsian,
-    NativeFontVariantEastAsianForm, NativeFontVariantEastAsianWidth, NativeFontVariantLigatures,
-    NativeFontVariantNumeric, NativeFontVariantNumericFigure, NativeFontVariantNumericFraction,
+    NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning,
+    NativeFontLanguageOverride, NativeFontStretchRange, NativeFontVariantAlternates,
+    NativeFontVariantCaps, NativeFontVariantEastAsian, NativeFontVariantEastAsianForm,
+    NativeFontVariantEastAsianWidth, NativeFontVariantLigatures, NativeFontVariantNumeric,
+    NativeFontVariantNumericFigure, NativeFontVariantNumericFraction,
     NativeFontVariantNumericSpacing, NativeFontVariantPosition, NativeGenericFontFamily,
     NativeUnicodeRange, font_family_hash,
 };
@@ -151,6 +152,7 @@ pub(crate) struct NativeTextMetrics {
     variant_caps: NativeFontVariantCaps,
     variant_position: NativeFontVariantPosition,
     variant_alternates: NativeFontVariantAlternates,
+    language_override: NativeFontLanguageOverride,
     variant_east_asian: NativeFontVariantEastAsian,
     variant_numeric: NativeFontVariantNumeric,
     feature_settings: NativeFontFeatureSettings,
@@ -196,6 +198,20 @@ fn font_variant_alternates_tag(alternates: NativeFontVariantAlternates) -> Optio
         NativeFontVariantAlternates::Normal => None,
         NativeFontVariantAlternates::HistoricalForms => Some(*b"hist"),
     }
+}
+
+fn font_language_override_language(
+    language_override: NativeFontLanguageOverride,
+) -> Option<harfrust::Language> {
+    let tag = language_override.tag?;
+    let end = tag
+        .iter()
+        .position(|byte| *byte == b' ')
+        .unwrap_or(tag.len());
+    if end == 0 || !tag[end..].iter().all(|byte| *byte == b' ') {
+        return None;
+    }
+    harfrust::Language::new(&tag[..end])
 }
 
 fn font_variant_east_asian_tags(
@@ -427,6 +443,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian(
         font_size: u32,
         stretch: u16,
@@ -440,6 +457,36 @@ impl NativeTextMetrics {
         variant_east_asian: NativeFontVariantEastAsian,
         direction: DirectionValue,
     ) -> Self {
+        Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language(
+            font_size,
+            stretch,
+            ligatures,
+            feature_settings,
+            kerning,
+            variant_caps,
+            variant_position,
+            variant_numeric,
+            variant_alternates,
+            variant_east_asian,
+            NativeFontLanguageOverride::default(),
+            direction,
+        )
+    }
+
+    pub(crate) fn fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language(
+        font_size: u32,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
+        kerning: NativeFontKerning,
+        variant_caps: NativeFontVariantCaps,
+        variant_position: NativeFontVariantPosition,
+        variant_numeric: NativeFontVariantNumeric,
+        variant_alternates: NativeFontVariantAlternates,
+        variant_east_asian: NativeFontVariantEastAsian,
+        language_override: NativeFontLanguageOverride,
+        direction: DirectionValue,
+    ) -> Self {
         Self {
             faces: Vec::new(),
             font_size: font_size.clamp(1, MAX_NATIVE_FONT_SIZE),
@@ -448,6 +495,7 @@ impl NativeTextMetrics {
             variant_caps,
             variant_position,
             variant_alternates,
+            language_override,
             variant_east_asian,
             variant_numeric,
             feature_settings,
@@ -722,6 +770,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian(
         families: NativeFontFamilyList,
         font_size: u32,
@@ -739,11 +788,49 @@ impl NativeTextMetrics {
         direction: DirectionValue,
         book: &NativeFontBook,
     ) -> Self {
+        Self::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language(
+            families,
+            font_size,
+            weight,
+            style,
+            stretch,
+            ligatures,
+            feature_settings,
+            kerning,
+            variant_caps,
+            variant_position,
+            variant_numeric,
+            variant_alternates,
+            variant_east_asian,
+            NativeFontLanguageOverride::default(),
+            direction,
+            book,
+        )
+    }
+
+    pub(crate) fn for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language(
+        families: NativeFontFamilyList,
+        font_size: u32,
+        weight: FontWeightValue,
+        style: FontStyleValue,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
+        kerning: NativeFontKerning,
+        variant_caps: NativeFontVariantCaps,
+        variant_position: NativeFontVariantPosition,
+        variant_numeric: NativeFontVariantNumeric,
+        variant_alternates: NativeFontVariantAlternates,
+        variant_east_asian: NativeFontVariantEastAsian,
+        language_override: NativeFontLanguageOverride,
+        direction: DirectionValue,
+        book: &NativeFontBook,
+    ) -> Self {
         let font_size = font_size.clamp(1, MAX_NATIVE_FONT_SIZE);
         let stretch = stretch.clamp(500, 2000);
         let faces = book.faces_for(families, weight, style, stretch);
         let Some(face) = faces.first() else {
-            return Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian(
+            return Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language(
                 font_size,
                 stretch,
                 ligatures,
@@ -754,6 +841,7 @@ impl NativeTextMetrics {
                 variant_numeric,
                 variant_alternates,
                 variant_east_asian,
+                language_override,
                 direction,
             );
         };
@@ -773,6 +861,7 @@ impl NativeTextMetrics {
             variant_caps,
             variant_position,
             variant_alternates,
+            language_override,
             variant_east_asian,
             variant_numeric,
             feature_settings,
@@ -894,6 +983,9 @@ impl NativeTextMetrics {
             harfrust::BufferFlags::BEGINNING_OF_TEXT | harfrust::BufferFlags::END_OF_TEXT,
         );
         buffer.guess_segment_properties();
+        if let Some(language) = font_language_override_language(self.language_override) {
+            buffer.set_language(language);
+        }
         let direction = match self.direction {
             DirectionValue::Ltr => harfrust::Direction::LeftToRight,
             DirectionValue::Rtl => harfrust::Direction::RightToLeft,
@@ -2864,6 +2956,25 @@ mod tests {
             push_feature_if_not_explicit(&mut admitted, settings, tag, 1);
         }
         assert!(admitted.is_empty());
+    }
+
+    #[test]
+    fn font_language_override_maps_padded_open_type_tag_for_harfrust() {
+        assert_eq!(
+            font_language_override_language(NativeFontLanguageOverride::default()),
+            None
+        );
+        let language = font_language_override_language(NativeFontLanguageOverride {
+            tag: Some(*b"ENG "),
+        })
+        .expect("padded OpenType language tag must map to a HarfRust language");
+        assert_eq!(language.as_bytes(), b"eng");
+        assert_eq!(
+            font_language_override_language(NativeFontLanguageOverride {
+                tag: Some(*b"EN G"),
+            }),
+            None
+        );
     }
 
     #[test]

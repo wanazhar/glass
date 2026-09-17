@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-516`, following completed
 `native-engine-browser-515`, following completed
 `native-engine-browser-514`, following completed
 `native-engine-browser-513`, following completed
@@ -300,6 +301,17 @@ retains precedence. The character-by-character fallback and baseline metrics
 remain unchanged; numeric variants, variable/color tables, WOFF2,
 font-display timing, mixed-script shaping, cross-realm FontFace projection,
 and complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 516 carries bounded inherited `font-language-override` through native
+computed style, CSSOM, and the HarfRust shaping path. `normal` and quoted
+four-byte printable OpenType tags with optional trailing padding are parsed
+atomically, inherited, and serialized as the exact canonical quoted value;
+the shaper receives the normalized unpadded language tag. Missing serialized
+fields default to `normal` for content-process compatibility, while malformed
+values and the existing character fallback path remain bounded. Full language
+negotiation, mixed-script and vertical shaping, variable/color tables, WOFF2,
+font-display timing, cross-realm FontFace projection, and complete FontFace/Web
+IDL parity remain issue #40 gates.
 
 Slice 515 wires the bounded inherited `font-variant` shorthand across the
 already implemented font-variant groups. CSS-wide values expand to every

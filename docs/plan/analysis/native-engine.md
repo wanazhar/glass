@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-501`, following
+expansion checkpoint is completed `native-engine-browser-502`, following
+completed `native-engine-browser-501`, following
 completed `native-engine-browser-500`, following
 completed `native-engine-browser-499`, following
 completed `native-engine-browser-498`, following
@@ -195,6 +196,15 @@ available to local CSS and script-created FontFace candidates, at the cost of
 bounded eager startup I/O and retained font data. Variable/color tables,
 font-display timing, WOFF/WOFF2, and complete FontFace/Web IDL parity remain
 open.
+
+Slice 502 adds bounded WOFF 1.0 admission. WOFF headers, table ranges,
+compression expansion, aggregate decoded size, and supported SFNT flavors are
+validated before zlib tables are expanded; the reconstructed directory is
+sorted and its `head.checkSumAdjustment` is repaired. Document and script
+FontFace resources share this normalizer, while source descriptor filtering
+now skips WOFF2, variation, color, EOT, and SVG formats rather than claiming
+support that the native parser/renderer does not have. WOFF2, variable/color
+rendering, and complete font-format/Web IDL parity remain open.
 
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
@@ -7019,7 +7029,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-501.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-502.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-501.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-500.md` is the preceding completed browser
 task;

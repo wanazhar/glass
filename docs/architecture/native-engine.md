@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-502`, following completed
 `native-engine-browser-501`, following completed
 `native-engine-browser-500`, following completed
 `native-engine-browser-499`, following completed
@@ -190,6 +191,15 @@ per-face limit; unreadable, malformed, duplicate, and unsupported entries are
 skipped without failing the book. Eager startup I/O, conservative metadata
 mapping, variable/color tables, WOFF/WOFF2, font-display timing, and complete
 FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 502 admits bounded WOFF 1.0 font sources. The native font owner validates
+the WOFF header and non-overlapping table ranges, decodes uncompressed or zlib
+compressed tables, reconstructs a sorted SFNT directory, and repairs the
+`head.checkSumAdjustment` before existing fontdue/HarfRust admission. The
+normalizer is shared by document resources and script-created FontFace
+installs. Page source filtering now advertises only WOFF, TrueType, OpenType,
+and collection formats that this parser can consume; WOFF2, variable/color,
+EOT, SVG, and complete font-format/Web IDL parity remain issue #40 gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between

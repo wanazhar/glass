@@ -3,6 +3,7 @@ use super::css::{
     NativeFontFamilyValue, NativeGenericFontFamily, font_family_hash,
 };
 use std::fmt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -25,6 +26,9 @@ const MAX_NATIVE_SYSTEM_FONT_FILES: usize = 512;
 const MAX_NATIVE_SYSTEM_FONT_FACES: usize = 64;
 const MAX_NATIVE_SYSTEM_FONT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_NATIVE_SYSTEM_COLLECTION_FACES: u32 = 32;
+const MAX_WOFF_TABLES: usize = 256;
+const WOFF_HEADER_BYTES: usize = 44;
+const WOFF_TABLE_BYTES: usize = 20;
 
 /// One coverage bitmap and placement produced by the selected font face.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -571,6 +575,246 @@ struct NativeShapedRun {
     width_fixed: i64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct WoffTable {
+    tag: u32,
+    offset: usize,
+    compressed_len: usize,
+    original_len: usize,
+    checksum: u32,
+}
+
+fn read_u16_be(bytes: &[u8], offset: usize) -> Option<u16> {
+    let value = bytes.get(offset..offset.checked_add(2)?)?;
+    Some(u16::from_be_bytes(value.try_into().ok()?))
+}
+
+fn read_u32_be(bytes: &[u8], offset: usize) -> Option<u32> {
+    let value = bytes.get(offset..offset.checked_add(4)?)?;
+    Some(u32::from_be_bytes(value.try_into().ok()?))
+}
+
+fn write_u16_be(bytes: &mut [u8], offset: usize, value: u16) {
+    if let Some(slot) = bytes.get_mut(offset..offset.saturating_add(2)) {
+        if slot.len() == 2 {
+            slot.copy_from_slice(&value.to_be_bytes());
+        }
+    }
+}
+
+fn write_u32_be(bytes: &mut [u8], offset: usize, value: u32) {
+    if let Some(slot) = bytes.get_mut(offset..offset.saturating_add(4)) {
+        if slot.len() == 4 {
+            slot.copy_from_slice(&value.to_be_bytes());
+        }
+    }
+}
+
+fn supported_woff_flavor(flavor: u32) -> bool {
+    matches!(
+        flavor,
+        0x0001_0000 | 0x4f54_544f | 0x7472_7565 | 0x7479_7031 | 0x7474_6366
+    )
+}
+
+fn valid_woff_range(offset: usize, length: usize, total_length: usize) -> bool {
+    offset
+        .checked_add(length)
+        .is_some_and(|end| offset <= total_length && end <= total_length)
+}
+
+fn sfnt_checksum(bytes: &[u8]) -> u32 {
+    bytes
+        .chunks(4)
+        .map(|chunk| {
+            let mut word = [0; 4];
+            word[..chunk.len()].copy_from_slice(chunk);
+            u32::from_be_bytes(word)
+        })
+        .fold(0, u32::wrapping_add)
+}
+
+/// Convert a bounded WOFF 1.0 container to the SFNT bytes consumed by the
+/// existing fontdue/HarfRust owners. WOFF2 and unsupported payloads remain
+/// fail-closed until their decompressor and renderer paths are implemented.
+fn decode_woff(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < WOFF_HEADER_BYTES || bytes.len() > MAX_NATIVE_FONT_BYTES {
+        return None;
+    }
+    let flavor = read_u32_be(bytes, 4)?;
+    if !supported_woff_flavor(flavor) {
+        return None;
+    }
+    let declared_length = usize::try_from(read_u32_be(bytes, 8)?).ok()?;
+    if declared_length != bytes.len() {
+        return None;
+    }
+    let table_count = usize::from(read_u16_be(bytes, 12)?);
+    if table_count == 0 || table_count > MAX_WOFF_TABLES {
+        return None;
+    }
+    let total_sfnt_size = usize::try_from(read_u32_be(bytes, 16)?).ok()?;
+    if total_sfnt_size == 0 || total_sfnt_size > MAX_NATIVE_FONT_BYTES {
+        return None;
+    }
+    for (offset_index, length_index) in [(24, 28), (36, 40)] {
+        let offset = usize::try_from(read_u32_be(bytes, offset_index)?).ok()?;
+        let length = usize::try_from(read_u32_be(bytes, length_index)?).ok()?;
+        if length > 0 && !valid_woff_range(offset, length, declared_length) {
+            return None;
+        }
+    }
+    let table_directory_end =
+        WOFF_HEADER_BYTES.checked_add(table_count.checked_mul(WOFF_TABLE_BYTES)?)?;
+    if table_directory_end > declared_length {
+        return None;
+    }
+    let mut tables = Vec::with_capacity(table_count);
+    for index in 0..table_count {
+        let entry = WOFF_HEADER_BYTES.checked_add(index.checked_mul(WOFF_TABLE_BYTES)?)?;
+        let offset = usize::try_from(read_u32_be(bytes, entry.checked_add(4)?)?).ok()?;
+        let compressed_len = usize::try_from(read_u32_be(bytes, entry.checked_add(8)?)?).ok()?;
+        let original_len = usize::try_from(read_u32_be(bytes, entry.checked_add(12)?)?).ok()?;
+        if compressed_len == 0
+            || original_len == 0
+            || compressed_len > original_len
+            || offset < table_directory_end
+            || !valid_woff_range(offset, compressed_len, declared_length)
+        {
+            return None;
+        }
+        tables.push(WoffTable {
+            tag: read_u32_be(bytes, entry)?,
+            offset,
+            compressed_len,
+            original_len,
+            checksum: read_u32_be(bytes, entry.checked_add(16)?)?,
+        });
+    }
+    let mut ranges = tables
+        .iter()
+        .map(|table| {
+            Some((
+                table.offset,
+                table.offset.checked_add(table.compressed_len)?,
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    ranges.sort_unstable();
+    if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+        return None;
+    }
+    tables.sort_unstable_by_key(|table| table.tag);
+
+    let directory_size = 12usize.checked_add(table_count.checked_mul(16)?)?;
+    if directory_size > total_sfnt_size {
+        return None;
+    }
+    let original_table_bytes = tables
+        .iter()
+        .try_fold(0usize, |total, table| total.checked_add(table.original_len))?;
+    if original_table_bytes > total_sfnt_size.saturating_sub(directory_size) {
+        return None;
+    }
+    let mut max_power_of_two = 1usize;
+    let mut entry_selector = 0u16;
+    while max_power_of_two
+        .checked_mul(2)
+        .is_some_and(|value| value <= table_count)
+    {
+        max_power_of_two = max_power_of_two.saturating_mul(2);
+        entry_selector = entry_selector.saturating_add(1);
+    }
+    let search_range = u16::try_from(max_power_of_two.checked_mul(16)?).ok()?;
+    let range_shift = u16::try_from(
+        table_count
+            .checked_mul(16)?
+            .saturating_sub(usize::from(search_range)),
+    )
+    .ok()?;
+    let mut output = vec![0; directory_size];
+    write_u32_be(&mut output, 0, flavor);
+    write_u16_be(&mut output, 4, u16::try_from(table_count).ok()?);
+    write_u16_be(&mut output, 6, search_range);
+    write_u16_be(&mut output, 8, entry_selector);
+    write_u16_be(&mut output, 10, range_shift);
+    let mut head_offset = None;
+    for (index, table) in tables.iter().enumerate() {
+        let end = table.offset.checked_add(table.compressed_len)?;
+        let mut decoded = Vec::with_capacity(table.original_len);
+        if table.compressed_len == table.original_len {
+            decoded.extend_from_slice(bytes.get(table.offset..end)?);
+        } else {
+            let compressed = bytes.get(table.offset..end)?;
+            let decoder = flate2::read::ZlibDecoder::new(compressed);
+            decoder
+                .take(u64::try_from(table.original_len.saturating_add(1)).ok()?)
+                .read_to_end(&mut decoded)
+                .ok()?;
+        }
+        if decoded.len() != table.original_len {
+            return None;
+        }
+        let aligned_length = output
+            .len()
+            .checked_add(3)?
+            .checked_div(4)?
+            .checked_mul(4)?;
+        if aligned_length > total_sfnt_size {
+            return None;
+        }
+        output.resize(aligned_length, 0);
+        if decoded.len() > total_sfnt_size.saturating_sub(output.len()) {
+            return None;
+        }
+        let data_offset = output.len();
+        output.extend_from_slice(&decoded);
+        if output.len() > total_sfnt_size {
+            return None;
+        }
+        let directory_entry = 12usize.checked_add(index.checked_mul(16)?)?;
+        write_u32_be(&mut output, directory_entry, table.tag);
+        write_u32_be(&mut output, directory_entry.checked_add(4)?, table.checksum);
+        write_u32_be(
+            &mut output,
+            directory_entry.checked_add(8)?,
+            u32::try_from(data_offset).ok()?,
+        );
+        write_u32_be(
+            &mut output,
+            directory_entry.checked_add(12)?,
+            u32::try_from(table.original_len).ok()?,
+        );
+        if table.tag == u32::from_be_bytes(*b"head") {
+            head_offset = Some(data_offset);
+        }
+    }
+    if output.len() != total_sfnt_size {
+        return None;
+    }
+    if let Some(head_offset) = head_offset
+        && head_offset
+            .checked_add(12)
+            .is_some_and(|end| end <= output.len())
+    {
+        write_u32_be(&mut output, head_offset.checked_add(8)?, 0);
+        let adjustment = 0xb1b0_afbau32.wrapping_sub(sfnt_checksum(&output));
+        write_u32_be(&mut output, head_offset.checked_add(8)?, adjustment);
+    }
+    Some(output)
+}
+
+fn normalize_font_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.is_empty() || bytes.len() > MAX_NATIVE_FONT_BYTES {
+        return None;
+    }
+    match read_u32_be(bytes, 0)? {
+        0x774f_4646 => decode_woff(bytes),
+        0x774f_4632 => None,
+        _ => Some(bytes.to_vec()),
+    }
+}
+
 impl NativeFontBook {
     pub(crate) fn system() -> Self {
         system_font_book().clone()
@@ -581,11 +825,11 @@ impl NativeFontBook {
     /// historical wire-snapshot behavior intentionally skips malformed
     /// entries instead of rejecting the whole document.
     pub(crate) fn is_parseable_font_bytes(bytes: &[u8]) -> bool {
-        if bytes.is_empty() || bytes.len() > MAX_NATIVE_FONT_BYTES {
+        let Some(bytes) = normalize_font_bytes(bytes) else {
             return false;
-        }
+        };
         fontdue::Font::from_bytes(
-            bytes.to_vec(),
+            bytes,
             fontdue::FontSettings {
                 collection_index: 0,
                 scale: FONT_PARSE_SCALE,
@@ -619,11 +863,11 @@ impl NativeFontBook {
     pub(crate) fn from_resources(resources: &[NativeFontFaceResource]) -> Self {
         let mut book = Self::default();
         for resource in resources.iter().take(MAX_NATIVE_FONT_FACES) {
-            if resource.bytes.is_empty() || resource.bytes.len() > MAX_NATIVE_FONT_BYTES {
+            let Some(font_data) = normalize_font_bytes(resource.bytes.as_ref()) else {
                 continue;
-            }
+            };
             let Ok(font) = fontdue::Font::from_bytes(
-                resource.bytes.as_ref().to_vec(),
+                font_data.clone(),
                 fontdue::FontSettings {
                     collection_index: 0,
                     scale: FONT_PARSE_SCALE,
@@ -632,7 +876,7 @@ impl NativeFontBook {
             ) else {
                 continue;
             };
-            let font_data = resource.bytes.clone();
+            let font_data: Arc<[u8]> = Arc::from(font_data);
             let shaper_data = harfrust::FontRef::new(font_data.as_ref())
                 .ok()
                 .map(|font| Arc::new(harfrust::ShaperData::new(&font)));
@@ -1299,6 +1543,114 @@ mod tests {
                 && face.style == style
                 && face.font_data.as_ref() == bytes.as_slice()
         }));
+    }
+
+    fn test_woff_from_sfnt(sfnt: &[u8], compress_tables: bool) -> Option<(Vec<u8>, bool)> {
+        let flavor = read_u32_be(sfnt, 0)?;
+        let table_count = usize::from(read_u16_be(sfnt, 4)?);
+        if table_count == 0 || table_count > MAX_WOFF_TABLES {
+            return None;
+        }
+        let mut tables = Vec::with_capacity(table_count);
+        let mut compressed_any = false;
+        for index in 0..table_count {
+            let entry = 12usize.checked_add(index.checked_mul(16)?)?;
+            let offset = usize::try_from(read_u32_be(sfnt, entry.checked_add(8)?)?).ok()?;
+            let length = usize::try_from(read_u32_be(sfnt, entry.checked_add(12)?)?).ok()?;
+            let table_bytes = sfnt.get(offset..offset.checked_add(length)?)?;
+            if table_bytes.is_empty() {
+                return None;
+            }
+            let compressed = if compress_tables {
+                let mut encoder =
+                    flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+                std::io::Write::write_all(&mut encoder, table_bytes).ok()?;
+                let candidate = encoder.finish().ok()?;
+                if candidate.len() < table_bytes.len() {
+                    compressed_any = true;
+                    candidate
+                } else {
+                    table_bytes.to_vec()
+                }
+            } else {
+                table_bytes.to_vec()
+            };
+            tables.push((
+                read_u32_be(sfnt, entry)?,
+                compressed,
+                length,
+                read_u32_be(sfnt, entry.checked_add(4)?)?,
+            ));
+        }
+        tables.sort_unstable_by_key(|table| table.0);
+        let header_size =
+            WOFF_HEADER_BYTES.checked_add(table_count.checked_mul(WOFF_TABLE_BYTES)?)?;
+        let mut woff = vec![0; header_size];
+        write_u32_be(&mut woff, 0, 0x774f_4646);
+        write_u32_be(&mut woff, 4, flavor);
+        write_u16_be(&mut woff, 12, u16::try_from(table_count).ok()?);
+        write_u32_be(&mut woff, 16, u32::try_from(sfnt.len()).ok()?);
+        write_u16_be(&mut woff, 20, 1);
+        for (index, (tag, table_bytes, original_len, checksum)) in tables.iter().enumerate() {
+            while woff.len() % 4 != 0 {
+                woff.push(0);
+            }
+            let offset = woff.len();
+            woff.extend_from_slice(table_bytes);
+            let entry = WOFF_HEADER_BYTES.checked_add(index.checked_mul(WOFF_TABLE_BYTES)?)?;
+            write_u32_be(&mut woff, entry, *tag);
+            write_u32_be(
+                &mut woff,
+                entry.checked_add(4)?,
+                u32::try_from(offset).ok()?,
+            );
+            write_u32_be(
+                &mut woff,
+                entry.checked_add(8)?,
+                u32::try_from(table_bytes.len()).ok()?,
+            );
+            write_u32_be(
+                &mut woff,
+                entry.checked_add(12)?,
+                u32::try_from(*original_len).ok()?,
+            );
+            write_u32_be(&mut woff, entry.checked_add(16)?, *checksum);
+        }
+        let woff_length = u32::try_from(woff.len()).ok()?;
+        write_u32_be(&mut woff, 8, woff_length);
+        Some((woff, compressed_any))
+    }
+
+    #[test]
+    fn woff_sources_are_normalized_before_native_font_admission() {
+        let Some(sfnt) = system_font_candidates()
+            .iter()
+            .find_map(|candidate| std::fs::read(candidate.0).ok())
+        else {
+            return;
+        };
+        let Some((uncompressed, _)) = test_woff_from_sfnt(&sfnt, false) else {
+            return;
+        };
+        assert!(NativeFontBook::is_parseable_font_bytes(&uncompressed));
+        let Some((compressed, compressed_any)) = test_woff_from_sfnt(&sfnt, true) else {
+            return;
+        };
+        assert!(compressed_any);
+        assert!(NativeFontBook::is_parseable_font_bytes(&compressed));
+        let resource = NativeFontFaceResource {
+            family: "WOFF Face".into(),
+            family_key: font_family_hash("WOFF Face"),
+            weight: FontWeightValue::Normal,
+            style: FontStyleValue::Normal,
+            bytes: Arc::from(compressed),
+        };
+        let book = NativeFontBook::from_resources(&[resource]);
+        assert_eq!(
+            book.faces.first().map(|face| face.family.as_str()),
+            Some("WOFF Face")
+        );
+        assert_ne!(book.faces.first().unwrap().font_data.as_ref(), b"wOFF");
     }
 
     #[test]

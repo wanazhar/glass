@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-460`, following completed
 `native-engine-browser-459`, following completed
 `native-engine-browser-458`, following completed
 `native-engine-browser-457`, following completed
@@ -283,9 +284,13 @@ absolute runtime-owned Blob module imports through the bounded module-graph
 owner. Dependency snapshots reuse the existing CSP, Blob-origin, MIME, size,
 UTF-8, deduplication, and graph-limit gates, and missing or blocked entries
 fail without HTTP/cache fallback. Relative Blob-derived dependency naming and
-parser-created cross-realm Blob modules remain separate owner work. Media,
-popup/window, local-inline dynamic consumers, and cross-realm object-URL
-consumers remain separate resource-owner work.
+parser-created cross-realm Blob modules remain separate owner work. The
+completed local dynamic-script follow-up is `native-engine-browser-460`:
+fixture and other non-network documents can load a runtime-owned Blob URL as a
+dynamic classic script through the local owner, preserving bounded MIME, size,
+UTF-8, integrity, and load/error event checks without creating a network path.
+Media, popup/window, and cross-realm object-URL consumers remain separate
+resource-owner work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

@@ -7817,6 +7817,7 @@ async fn load_page_script_source_list(
                     &source,
                     timing,
                     loader,
+                    runtime,
                     &mut sources,
                     &mut seen,
                     &mut total_bytes,
@@ -7916,6 +7917,7 @@ async fn load_page_script_source_list(
                                 &source,
                                 timing,
                                 loader,
+                                runtime,
                                 &mut sources,
                                 &mut seen,
                                 &mut total_bytes,
@@ -8028,6 +8030,7 @@ async fn load_module_dependencies(
     source: &str,
     timing: NativePageScriptTiming,
     loader: &mut NativeResourceLoader,
+    runtime: Option<&NativeJavaScriptRuntime>,
     scripts: &mut Vec<(NativePageScriptTiming, NativePageScript)>,
     seen: &mut BTreeSet<String>,
     total_bytes: &mut usize,
@@ -8040,10 +8043,29 @@ async fn load_module_dependencies(
             let Some(target) = resolve_module_specifier(&current_url, &specifier)? else {
                 continue;
             };
-            let Some(resource) = loader
-                .load_script_async(owner_url, &target, MAX_NATIVE_SCRIPT_BYTES)
-                .await?
-            else {
+            let object_url = runtime
+                .map(|runtime| runtime.object_url_resource(&target))
+                .transpose()?
+                .flatten();
+            let resource = if let Some(object_url) = object_url.as_ref() {
+                loader
+                    .load_script_async_with_metadata_and_object_url(
+                        owner_url,
+                        &target,
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        true,
+                        None,
+                        None,
+                        None,
+                        Some(object_url),
+                    )
+                    .await?
+            } else {
+                loader
+                    .load_script_async(owner_url, &target, MAX_NATIVE_SCRIPT_BYTES)
+                    .await?
+            };
+            let Some(resource) = resource else {
                 return Err(NativeEngineError::Network {
                     operation: "module dependency".into(),
                     reason: "module dependency could not be loaded".into(),
@@ -8101,8 +8123,12 @@ fn resolve_module_specifier(
     module_url: &str,
     specifier: &str,
 ) -> Result<Option<String>, NativeEngineError> {
-    let is_absolute = specifier.starts_with("http://") || specifier.starts_with("https://");
-    if !is_absolute
+    let is_absolute_network = specifier.starts_with("http://") || specifier.starts_with("https://");
+    let is_absolute_blob = specifier
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"));
+    if !is_absolute_network
+        && !is_absolute_blob
         && !specifier.starts_with("./")
         && !specifier.starts_with("../")
         && !specifier.starts_with('/')
@@ -8116,7 +8142,7 @@ fn resolve_module_specifier(
             reason: "module owner URL is not valid URL syntax".into(),
         }
     })?;
-    let mut target = if is_absolute {
+    let mut target = if is_absolute_network || is_absolute_blob {
         Url::parse(specifier)
     } else {
         base.join(specifier)
@@ -8125,7 +8151,7 @@ fn resolve_module_specifier(
         reason: "module specifier could not be resolved against its owner".into(),
     })?;
     target.set_fragment(None);
-    if !is_network_url(target.as_str()) {
+    if !is_network_url(target.as_str()) && !target.scheme().eq_ignore_ascii_case("blob") {
         return Ok(None);
     }
     Ok(Some(target.to_string()))

@@ -48116,6 +48116,49 @@ async fn native_content_process_blocks_csp_disallowed_blob_stylesheet_subresourc
 }
 
 #[tokio::test]
+async fn native_content_process_loads_blob_object_url_module_dependencies() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<head></head><body><main>Blob module</main></body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: script-src blob:\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { globalThis.blobModuleLoaded = false; const dependency = URL.createObjectURL(new Blob(['export const value = 7;'], { type: 'text/javascript' })); const source = \"import { value } from '\" + dependency + \"'; globalThis.blobModuleValue = value;\"; const root = URL.createObjectURL(new Blob([source], { type: 'text/javascript' })); const script = document.createElement('script'); script.type = 'module'; script.src = root; script.addEventListener('load', () => { globalThis.blobModuleLoaded = true; }); document.head.appendChild(script); globalThis.blobModuleRoot = root; return root; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(format!("blob:http://{address}/glass-native-2"))
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("[globalThis.blobModuleValue, globalThis.blobModuleLoaded]")
+            .await
+            .unwrap(),
+        serde_json::json!([7, true])
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_reuses_cacheable_external_png_for_duplicate_images() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

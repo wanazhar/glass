@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-513`, following completed
 `native-engine-browser-512`, following completed
 `native-engine-browser-511`, following completed
 `native-engine-browser-510`, following completed
@@ -315,6 +316,13 @@ feature settings retaining precedence. Character fallback and typographic
 baseline metrics remain bounded; numeric variants, variable/color fonts,
 WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
 projection, and complete FontFace/Web IDL parity remain issue #40 gates.
+
+The completed bounded `font-variant-alternates` follow-up is
+[`native-engine-browser-513`](tasks/native-engine-browser-513.md): inherited
+`normal` and `historical-forms` values now cross native CSSOM and map the latter
+to the unambiguous `hist` OpenType feature, with explicit low-level feature
+precedence. Parameterized feature-value alternates remain rejected until the
+native `@font-feature-values` registry exists.
 
 The completed `font-variant-numeric` follow-up is
 [`native-engine-browser-512`](tasks/native-engine-browser-512.md): inherited

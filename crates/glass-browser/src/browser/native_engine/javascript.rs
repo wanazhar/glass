@@ -17866,6 +17866,35 @@ mod native_font_face_tests {
     }
 
     #[test]
+    fn computed_style_projects_font_variant_alternates() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-alternates-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<style>#parent { font-variant-alternates: historical-forms; } #child { font-variant-alternates: normal; } #reset { font-variant-alternates: initial; }</style><div id='parent'><span id='child'>Child</span><span id='reset'>Reset</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("font-variant-alternates fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const parent = getComputedStyle(document.getElementById("parent"));
+                  const child = getComputedStyle(document.getElementById("child"));
+                  const reset = getComputedStyle(document.getElementById("reset"));
+                  return [parent.fontVariantAlternates, child.getPropertyValue("font-variant-alternates"), reset.fontVariantAlternates];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("computed font-variant-alternates surface must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["historical-forms", "normal", "normal"])
+        );
+    }
+
+    #[test]
     fn computed_style_projects_font_variant_numeric() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-numeric-test")
             .expect("native JavaScript runtime must construct");
@@ -37317,6 +37346,7 @@ fn document_bootstrap(
     ].join(" ");
   }};
   const computedStyleFontVariantCaps = (value) => computedStyleEnumName(value, "normal");
+  const computedStyleFontVariantAlternates = (value) => computedStyleEnumName(value, "normal");
   const computedStyleFontVariantNumeric = (value) => {{
     if (!value || typeof value !== "object") return "normal";
     const values = [];
@@ -37388,7 +37418,7 @@ fn document_bootstrap(
     "border-left-color", "border-radius", "overflow", "overflow-x", "overflow-y", "white-space",
     "text-align", "text-align-last", "text-justify", "text-indent", "text-transform", "text-overflow",
     "text-decoration", "text-decoration-style", "text-decoration-thickness", "text-underline-offset",
-    "font-weight", "font-style", "font-stretch", "font-variant-ligatures", "font-variant-caps", "font-variant-position", "font-variant-numeric", "font-feature-settings", "font-kerning", "line-height", "word-break", "word-spacing", "letter-spacing",
+    "font-weight", "font-style", "font-stretch", "font-variant-ligatures", "font-variant-caps", "font-variant-position", "font-variant-alternates", "font-variant-numeric", "font-feature-settings", "font-kerning", "line-height", "word-break", "word-spacing", "letter-spacing",
     "vertical-align", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
     "justify-content", "align-items", "align-self", "align-content", "gap", "row-gap", "column-gap",
     "order", "grid-template-columns", "grid-template-rows"
@@ -37484,6 +37514,7 @@ fn document_bootstrap(
     if (name === "font-variant-ligatures") return computedStyleLigatures(raw.font_variant_ligatures);
     if (name === "font-variant-caps") return computedStyleFontVariantCaps(raw.font_variant_caps);
     if (name === "font-variant-position") return computedStyleEnumName(raw.font_variant_position, "normal");
+    if (name === "font-variant-alternates") return computedStyleFontVariantAlternates(raw.font_variant_alternates);
     if (name === "font-variant-numeric") return computedStyleFontVariantNumeric(raw.font_variant_numeric);
     if (name === "font-feature-settings") return computedStyleFeatureSettings(raw.font_feature_settings);
     if (name === "font-kerning") return computedStyleEnumName(raw.font_kerning, "auto");

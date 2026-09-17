@@ -31,12 +31,12 @@ use super::{
         FlexDirectionValue, FlexWrapValue, FontStyleValue, FontWeightValue, JustifyContentValue,
         NativeBorderRadius, NativeBorderStyleValue, NativeBoxSizing, NativeColor,
         NativeComputedStyle, NativeFontFamilyList, NativeFontFeatureSettings, NativeFontKerning,
-        NativeFontVariantCaps, NativeFontVariantLigatures, NativeFontVariantNumeric,
-        NativeFontVariantPosition, NativeInheritedStyle, NativeMarginValue, NativeOrderValue,
-        NativePointerEventsValue, NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces,
-        NativeTextDecorationStyle, OverflowValue, TextAlignLastValue, TextAlignValue,
-        TextDecorationValue, TextJustifyValue, TextOverflowValue, TextTransformValue,
-        VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+        NativeFontVariantAlternates, NativeFontVariantCaps, NativeFontVariantLigatures,
+        NativeFontVariantNumeric, NativeFontVariantPosition, NativeInheritedStyle,
+        NativeMarginValue, NativeOrderValue, NativePointerEventsValue, NativeTextDecorationSkipInk,
+        NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, OverflowValue,
+        TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
+        TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
 use base64::Engine as _;
@@ -6532,6 +6532,7 @@ impl NativeDocument {
         let mut inherited_font_variant_ligatures = NativeFontVariantLigatures::default();
         let mut inherited_font_variant_caps = NativeFontVariantCaps::Normal;
         let mut inherited_font_variant_position = NativeFontVariantPosition::Normal;
+        let mut inherited_font_variant_alternates = NativeFontVariantAlternates::Normal;
         let mut inherited_font_variant_numeric = NativeFontVariantNumeric::default();
         let mut inherited_font_feature_settings = NativeFontFeatureSettings::default();
         let mut inherited_font_kerning = NativeFontKerning::Auto;
@@ -6601,6 +6602,7 @@ impl NativeDocument {
                     font_variant_ligatures: inherited_font_variant_ligatures,
                     font_variant_caps: inherited_font_variant_caps,
                     font_variant_position: inherited_font_variant_position,
+                    font_variant_alternates: inherited_font_variant_alternates,
                     font_variant_numeric: inherited_font_variant_numeric,
                     font_feature_settings: inherited_font_feature_settings,
                     font_kerning: inherited_font_kerning,
@@ -6671,6 +6673,7 @@ impl NativeDocument {
             inherited_font_variant_ligatures = style.font_variant_ligatures();
             inherited_font_variant_caps = style.font_variant_caps();
             inherited_font_variant_position = style.font_variant_position();
+            inherited_font_variant_alternates = style.font_variant_alternates();
             inherited_font_variant_numeric = style.font_variant_numeric();
             inherited_font_feature_settings = style.font_feature_settings();
             inherited_font_kerning = style.font_kerning();
@@ -6706,7 +6709,7 @@ impl NativeDocument {
             .iter()
             .any(|family| !matches!(family, super::css::NativeFontFamilyValue::Fallback))
         {
-            NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric(
+            NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates(
                 style.font_family(),
                 style.font_size(),
                 style.font_weight(),
@@ -6718,11 +6721,12 @@ impl NativeDocument {
                 style.font_variant_caps(),
                 style.font_variant_position(),
                 style.font_variant_numeric(),
+                style.font_variant_alternates(),
                 style.direction(),
                 &self.font_book,
             )
         } else {
-            NativeTextMetrics::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric(
+            NativeTextMetrics::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates(
                 style.font_size(),
                 style.font_stretch().min,
                 style.font_variant_ligatures(),
@@ -6731,6 +6735,7 @@ impl NativeDocument {
                 style.font_variant_caps(),
                 style.font_variant_position(),
                 style.font_variant_numeric(),
+                style.font_variant_alternates(),
                 style.direction(),
             )
         }

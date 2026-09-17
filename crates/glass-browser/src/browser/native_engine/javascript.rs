@@ -32011,10 +32011,24 @@ fn document_bootstrap(
         if (typeof state.mediaLoad === "function") state.mediaLoad();
         dispatchMediaEvent("loadstart");
       }};
-      element.play = () => Promise.reject(new DOMExceptionNative(
-        "The native media decoder is not implemented",
-        "NotSupportedError",
-      ));
+      element.play = () => {{
+        const state = mediaState();
+        if (state.errorCode !== null && state.errorCode !== undefined
+          || state.readyState < 1
+          || !Number.isFinite(mediaDuration())) {{
+          return Promise.reject(new DOMExceptionNative(
+            "The native media resource cannot be played",
+            "NotSupportedError",
+          ));
+        }}
+        if (mediaPaused) {{
+          mediaPaused = false;
+          mediaEnded = false;
+          dispatchMediaEvent("play");
+          dispatchMediaEvent("playing");
+        }}
+        return Promise.resolve();
+      }};
       element.pause = () => {{
         if (!mediaPaused) {{
           mediaPaused = true;

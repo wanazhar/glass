@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-470`, following completed
 `native-engine-browser-469`, following completed
 `native-engine-browser-468`, following completed
 `native-engine-browser-467`, following completed
@@ -364,6 +365,15 @@ script command and event paths. This slice deliberately does not claim a
 codec/decoder or playback implementation, static HTTP media loading, or full
 media/Web IDL parity; those and the remaining browser certification gates stay
 open under issue #40.
+
+Slice `native-engine-browser-470` closes the first media play-admission
+boundary. Loaded, error-free media with a finite duration now resolves
+`play()` and dispatches `play` followed by `playing`; `pause()` returns the
+element to paused and dispatches `pause`. Error, missing-resource, and
+unknown-duration media reject with `NotSupportedError`, so MIME/metadata
+admission is not presented as decoder support. Playback-clock progression,
+`timeupdate`/`ended`, decoded audio/video output, range-backed seeking, and
+complete media/Web IDL parity remain issue #40 work.
 
 Slice `native-engine-browser-469` closes the static HTTP media-resource
 boundary. Initial and dynamic media loads in HTTP(S) content processes now

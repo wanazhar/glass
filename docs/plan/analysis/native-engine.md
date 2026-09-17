@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-469`, following
+expansion checkpoint is completed `native-engine-browser-470`, following
+completed `native-engine-browser-469`, following
 completed `native-engine-browser-468`, following
 completed `native-engine-browser-467`, following
 completed `native-engine-browser-466`, following
@@ -408,6 +409,14 @@ surface exposes media constants, source selection, time ranges, `load()`,
 admission and metadata, not codec decoding or playback. Static HTTP media,
 decoder-backed playback, and complete media/Web IDL parity remain issue #40
 gates.
+
+Slice 470 closes the first media play-admission boundary. Loaded, error-free
+media with a finite duration resolves `play()` and dispatches `play` followed
+by `playing`; `pause()` returns the element to paused and dispatches `pause`.
+Error, missing-resource, and unknown-duration media reject with
+`NotSupportedError`, preserving an explicit decoder boundary. Playback-clock
+progression, `timeupdate`/`ended`, decoded audio/video output, range-backed
+seeking, and complete media/Web IDL parity remain issue #40 gates.
 
 Slice 469 closes the static HTTP media-resource boundary. Initial and dynamic
 HTTP(S) media loads now use a bounded native GET owner with mixed-content,
@@ -6640,7 +6649,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-469.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-470.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-469.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-468.md` is the preceding completed browser
 task;

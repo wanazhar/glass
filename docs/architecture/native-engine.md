@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-472`, following completed
 `native-engine-browser-471`, following completed
 `native-engine-browser-470`, following completed
 `native-engine-browser-469`, following completed
@@ -366,6 +367,14 @@ script command and event paths. This slice deliberately does not claim a
 codec/decoder or playback implementation, static HTTP media loading, or full
 media/Web IDL parity; those and the remaining browser certification gates stay
 open under issue #40.
+
+Slice `native-engine-browser-472` closes the embedded data-media boundary.
+Static and dynamic local media plus HTTP(S) content-process media now admit
+bounded `data:` payloads through base64 or percent decoding, explicit MIME or
+bounded sniffing, and the existing policy/resource/event owner. Embedded media
+never enters network or cache transport. File URLs, decoder/frame output,
+independent media task-source scheduling, range transport, and complete media
+Web IDL parity remain issue #40 work.
 
 Slice `native-engine-browser-471` closes the bounded media timeline boundary.
 Finite-duration media advances `currentTime` against the native monotonic

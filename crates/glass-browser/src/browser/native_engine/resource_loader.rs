@@ -5583,6 +5583,31 @@ impl NativeResourceLoader {
             .await
     }
 
+    /// Load a data URL media resource without entering the network owner.
+    /// Embedded bytes remain subject to the same bounded media metadata
+    /// admission as Blob and HTTP(S) resources.
+    pub(crate) fn load_data_media(
+        &self,
+        document_url: &str,
+        src: &str,
+    ) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("media URL", src)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "media owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        let Some(target_url) = resolve_media_url(&document_url, src)? else {
+            return Ok(None);
+        };
+        if !target_url.scheme().eq_ignore_ascii_case("data") {
+            return Ok(None);
+        }
+        data_media_metadata(&target_url)
+    }
+
     pub(crate) async fn load_media_async_with_object_url(
         &mut self,
         document_url: &str,
@@ -5593,16 +5618,18 @@ impl NativeResourceLoader {
         validate_url_text("media URL", src)?;
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
             NativeEngineError::UnsupportedUrl {
-                reason: "media owner URL is not valid HTTP(S) syntax".into(),
+                reason: "media owner URL is not valid URL syntax".into(),
             }
         })?;
-        if !is_network_url(document_url.as_str()) {
-            return Ok(None);
-        }
         reject_credentials(&document_url)?;
-        let Some(target_url) = resolve_subresource_url_with_blob(&document_url, src)? else {
+        let Some(target_url) = resolve_media_url(&document_url, src)? else {
             return Ok(None);
         };
+        if !is_network_url(document_url.as_str())
+            && !target_url.scheme().eq_ignore_ascii_case("data")
+        {
+            return Ok(None);
+        }
         if !mixed_content_allowed(&document_url, &target_url) {
             return Ok(None);
         }
@@ -5620,6 +5647,9 @@ impl NativeResourceLoader {
         );
         if !policy.allows(NativeSubresourceKind::Media, &document_url, &target_url) {
             return Ok(None);
+        }
+        if target_url.scheme().eq_ignore_ascii_case("data") {
+            return data_media_metadata(&target_url);
         }
         if target_url.scheme().eq_ignore_ascii_case("blob") {
             let Some(object_url) = object_url else {
@@ -6543,6 +6573,22 @@ fn resolve_subresource_url_with_blob(
     Ok(Some(target_url))
 }
 
+fn resolve_media_url(document_url: &Url, href: &str) -> Result<Option<Url>, NativeEngineError> {
+    let target_url = document_url
+        .join(href)
+        .map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "media URL could not be resolved against the document".into(),
+        })?;
+    reject_credentials(&target_url)?;
+    if !is_network_url(without_fragment(target_url.as_str()))
+        && !target_url.scheme().eq_ignore_ascii_case("blob")
+        && !target_url.scheme().eq_ignore_ascii_case("data")
+    {
+        return Ok(None);
+    }
+    Ok(Some(target_url))
+}
+
 pub(crate) fn mixed_content_allowed(document_url: &Url, resource_url: &Url) -> bool {
     !(document_url.scheme().eq_ignore_ascii_case("https")
         && resource_url.scheme().eq_ignore_ascii_case("http"))
@@ -7000,6 +7046,32 @@ fn media_metadata_from_bytes(
         byte_length: bytes.len(),
         duration_millis,
     }))
+}
+
+fn data_media_metadata(url: &Url) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
+    let data =
+        url.as_str()
+            .strip_prefix("data:")
+            .ok_or_else(|| NativeEngineError::UnsupportedUrl {
+                reason: "media data URL has an invalid scheme".into(),
+            })?;
+    let Some((metadata, payload)) = data.split_once(',') else {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "media data URL is missing its comma-separated payload".into(),
+        });
+    };
+    let mut metadata_parts = metadata.split(';');
+    let declared_type = metadata_parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let is_base64 = metadata_parts.any(|part| part.eq_ignore_ascii_case("base64"));
+    let bytes = if is_base64 {
+        decode_base64_bytes(payload, MAX_NATIVE_MEDIA_BYTES, "base64 media payload")?
+    } else {
+        percent_decode_bytes(payload, MAX_NATIVE_MEDIA_BYTES)?
+    };
+    media_metadata_from_bytes(declared_type, &bytes)
 }
 
 fn supported_media_type_text(value: &str) -> Option<&'static str> {
@@ -7980,11 +8052,15 @@ fn fixture_navigation_url(canonical: &str, original: &str) -> String {
     )
 }
 
-fn decode_base64(payload: &str, max_document_bytes: usize) -> Result<String, NativeEngineError> {
-    let max_encoded_bytes = (max_document_bytes.saturating_add(2) / 3).saturating_mul(4);
+fn decode_base64_bytes(
+    payload: &str,
+    max_bytes: usize,
+    resource_name: &'static str,
+) -> Result<Vec<u8>, NativeEngineError> {
+    let max_encoded_bytes = (max_bytes.saturating_add(2) / 3).saturating_mul(4);
     if payload.len() > max_encoded_bytes {
         return Err(NativeEngineError::limit(
-            "base64 data payload",
+            resource_name,
             max_encoded_bytes,
             payload.len(),
         ));
@@ -7994,25 +8070,44 @@ fn decode_base64(payload: &str, max_document_bytes: usize) -> Result<String, Nat
         .map_err(|_| NativeEngineError::UnsupportedUrl {
             reason: "data URL contains an invalid standard base64 payload".into(),
         })?;
-    if decoded.len() > max_document_bytes {
+    if decoded.len() > max_bytes {
         return Err(NativeEngineError::limit(
-            "data document",
-            max_document_bytes,
+            resource_name,
+            max_bytes,
             decoded.len(),
         ));
     }
+    Ok(decoded)
+}
+
+fn decode_base64(payload: &str, max_document_bytes: usize) -> Result<String, NativeEngineError> {
+    let decoded = decode_base64_bytes(payload, max_document_bytes, "base64 data payload")?;
     String::from_utf8(decoded).map_err(|_| NativeEngineError::UnsupportedUrl {
         reason: "base64 data URL payload is not valid UTF-8 HTML".into(),
     })
 }
 
 fn percent_decode(value: &str) -> Result<String, NativeEngineError> {
+    let decoded = percent_decode_bytes(value, usize::MAX)?;
+    String::from_utf8(decoded).map_err(|_| NativeEngineError::UnsupportedUrl {
+        reason: "data URL payload is not valid UTF-8 HTML".into(),
+    })
+}
+
+fn percent_decode_bytes(value: &str, max_bytes: usize) -> Result<Vec<u8>, NativeEngineError> {
     let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut decoded = Vec::with_capacity(bytes.len().min(max_bytes));
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] != b'%' {
             decoded.push(bytes[index]);
+            if decoded.len() > max_bytes {
+                return Err(NativeEngineError::limit(
+                    "percent-encoded media payload",
+                    max_bytes,
+                    decoded.len(),
+                ));
+            }
             index += 1;
             continue;
         }
@@ -8032,11 +8127,16 @@ fn percent_decode(value: &str) -> Result<String, NativeEngineError> {
             });
         };
         decoded.push((high << 4) | low);
+        if decoded.len() > max_bytes {
+            return Err(NativeEngineError::limit(
+                "percent-encoded media payload",
+                max_bytes,
+                decoded.len(),
+            ));
+        }
         index += 3;
     }
-    String::from_utf8(decoded).map_err(|_| NativeEngineError::UnsupportedUrl {
-        reason: "data URL payload is not valid UTF-8 HTML".into(),
-    })
+    Ok(decoded)
 }
 
 fn hex_value(value: u8) -> Option<u8> {
@@ -8061,10 +8161,10 @@ mod tests {
         NativeSubresourceKind, cache_control_max_age, cache_control_requires_revalidation,
         content_security_policy, cors_origin_header, cors_preflight_response_allowed,
         cors_response_allowed, csp_report_deliveries_for_declaration, csp_sources_allow,
-        csp_sources_allow_for_redirect, decode_html_body, document_cache_fresh_until,
-        document_cache_storage_allowed, media_metadata_from_bytes, mixed_content_allowed,
-        referrer_for_navigation, resolve_subresource_url, subresource_integrity_matches,
-        supported_media_type_text,
+        csp_sources_allow_for_redirect, data_media_metadata, decode_html_body,
+        document_cache_fresh_until, document_cache_storage_allowed, media_metadata_from_bytes,
+        mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
+        subresource_integrity_matches, supported_media_type_text,
     };
     use base64::Engine as _;
     use reqwest::header::{
@@ -8156,6 +8256,29 @@ mod tests {
             None
         );
         assert!(media_metadata_from_bytes(None, &vec![0_u8; MAX_NATIVE_MEDIA_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn data_media_decodes_bounded_binary_payloads() {
+        let url = Url::parse(
+            "data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA",
+        )
+        .unwrap();
+        let metadata = data_media_metadata(&url).unwrap().unwrap();
+        assert_eq!(metadata.content_type, "audio/wav");
+        assert_eq!(metadata.byte_length, 45);
+        assert_eq!(metadata.duration_millis, Some(0));
+
+        let sniffed = Url::parse("data:;base64,T2dnUw==").unwrap();
+        assert_eq!(
+            data_media_metadata(&sniffed).unwrap().unwrap().content_type,
+            "application/ogg"
+        );
+        assert!(
+            data_media_metadata(&Url::parse("data:application/octet-stream,%00").unwrap())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

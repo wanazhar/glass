@@ -1415,6 +1415,39 @@ async fn native_local_dynamic_blob_classic_script_runs_after_late_attachment() {
 }
 
 #[tokio::test]
+async fn native_local_dynamic_blob_stylesheet_updates_style_after_late_attachment() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://blob-dynamic-style",
+            "<html><head></head><body><p id='target'>Native</p></body></html>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://blob-dynamic-style");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { globalThis.localBlobStyleLog = []; const link = document.createElement('link'); link.rel = 'stylesheet'; const url = URL.createObjectURL(new Blob(['#target { color: rgb(1, 2, 3); }'], { type: 'text/css' })); link.href = url; link.addEventListener('load', () => localBlobStyleLog.push('loaded')); link.addEventListener('error', () => localBlobStyleLog.push('error')); document.head.appendChild(link); return url; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("blob:null/glass-native-1")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[localBlobStyleLog, getComputedStyle(document.getElementById('target')).color]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([["loaded"], "rgb(1, 2, 3)"])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_exposes_computed_style_and_media_queries() {
     let config = NativeEngineConfig::default()
         .with_fixture(

@@ -60,7 +60,7 @@ use crate::browser::session::{
 };
 use crate::browser_backend::{PromptDecision, PromptResult, StorageOperation, StorageScope};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
@@ -73,6 +73,8 @@ const MAX_NATIVE_COMPLETED_DOWNLOAD_IDS: usize = 8;
 const MAX_NATIVE_DOWNLOAD_FILENAME_BYTES: usize = 128;
 const MAX_NATIVE_DOWNLOAD_DEADLINE: Duration = Duration::from_secs(30);
 const MAX_NATIVE_HISTORY_DELTA: i32 = 1024;
+const MAX_NATIVE_LOCAL_STYLESHEETS: usize = 16;
+const MAX_NATIVE_LOCAL_STYLESHEET_BYTES: usize = 512 * 1024;
 
 #[derive(Debug)]
 struct NativeRequestLedger {
@@ -4401,6 +4403,24 @@ impl NativeEngine {
             let dialog_url = self.url.clone();
             self.install_dialogs(dynamic_dialogs, &dialog_url)?;
         }
+        if let Some(javascript) = self.javascript.as_ref() {
+            let stylesheet_events = load_local_dynamic_blob_stylesheets(
+                &mut document,
+                javascript,
+                &mut self.loader,
+                &self.url,
+            )?;
+            for (node_index, event_kind) in stylesheet_events {
+                let node_id = NativeNodeId::from_parts(document.generation(), node_index);
+                if let Some(evaluation) =
+                    self.evaluate_local_events(&document, &[(node_id, event_kind)])?
+                {
+                    scroll_commands.extend(extract_local_scroll_commands(&evaluation.commands));
+                    events.extend(document.apply_script_commands(&evaluation.commands)?);
+                }
+                events.push((node_id, event_kind));
+            }
+        }
         let validation_events = events
             .iter()
             .filter(|(_, kind)| *kind == NativeEventKind::Invalid)
@@ -7948,6 +7968,89 @@ fn load_local_dynamic_page_script_sources(
         }
     }
     Ok((scripts, resource_events))
+}
+
+fn load_local_dynamic_blob_stylesheets(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
+    let links = document
+        .external_stylesheet_links()
+        .into_iter()
+        .take(MAX_NATIVE_LOCAL_STYLESHEETS)
+        .collect::<Vec<_>>();
+    let previous_states = document.external_stylesheet_states();
+    let live_blob_nodes = links
+        .iter()
+        .filter(|(_, href, _, _)| {
+            href.get(..5)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
+        })
+        .map(|(node_index, _, _, _)| *node_index)
+        .collect::<BTreeSet<_>>();
+    let mut states = document
+        .external_stylesheet_states()
+        .into_iter()
+        .map(|(node_index, href, body)| (node_index, (href, body)))
+        .collect::<BTreeMap<_, _>>();
+    states.retain(|node_index, _| live_blob_nodes.contains(node_index));
+    let mut loaded_bytes = states
+        .values()
+        .filter_map(|(_, body)| body.as_ref())
+        .map(String::len)
+        .sum::<usize>();
+    let mut events = Vec::new();
+
+    for (node_index, href, integrity, _) in links {
+        if !href
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
+        {
+            continue;
+        }
+        if states
+            .get(&node_index)
+            .is_some_and(|(loaded_href, _)| loaded_href == &href)
+        {
+            continue;
+        }
+        let object_url = runtime.object_url_resource(&href)?;
+        let body = match loader.load_local_blob_stylesheet(
+            document_url,
+            &href,
+            integrity.as_deref(),
+            object_url.as_ref(),
+        )? {
+            Some(stylesheet) => {
+                let next_len = loaded_bytes.saturating_add(stylesheet.len());
+                if next_len <= MAX_NATIVE_LOCAL_STYLESHEET_BYTES {
+                    loaded_bytes = next_len;
+                    Some(stylesheet)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        let event_kind = body
+            .as_ref()
+            .map_or(NativeEventKind::Error, |_| NativeEventKind::Load);
+        states.insert(node_index, (href, body));
+        events.push((node_index, event_kind));
+    }
+
+    let next_states = states
+        .into_iter()
+        .map(|(node_index, (href, body))| (node_index, href, body))
+        .collect::<Vec<_>>();
+    if previous_states != next_states {
+        document.set_external_stylesheet_states(next_states);
+        document.rebuild_external_stylesheet()?;
+        document.refresh_background_image_sources();
+    }
+    Ok(events)
 }
 
 fn extract_local_scroll_commands(commands: &[NativeScriptCommand]) -> Vec<NativeScriptCommand> {

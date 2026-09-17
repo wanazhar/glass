@@ -4826,6 +4826,63 @@ impl NativeResourceLoader {
         Ok(())
     }
 
+    /// Load a Blob-backed stylesheet for a local document without entering the
+    /// asynchronous network or HTTP-cache path.
+    pub(crate) fn load_local_blob_stylesheet(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        integrity: Option<&str>,
+        object_url: Option<&NativeObjectUrlResource>,
+    ) -> Result<Option<String>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("stylesheet URL", href)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "stylesheet owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        if is_network_url(document_url.as_str()) {
+            return Ok(None);
+        }
+        let Some(target_url) = resolve_subresource_url_with_blob(&document_url, href)? else {
+            return Ok(None);
+        };
+        if !target_url.scheme().eq_ignore_ascii_case("blob") {
+            return Ok(None);
+        }
+        let Some(object_url) = object_url else {
+            return Ok(None);
+        };
+        NativeOrigin::from_blob_url(without_fragment(target_url.as_str()))?;
+        if object_url
+            .content_type
+            .as_deref()
+            .is_some_and(|content_type| {
+                !content_type.is_empty() && !stylesheet_content_type_text_allowed(content_type)
+            })
+        {
+            return Ok(None);
+        }
+        if object_url.body.len() > self.max_document_bytes {
+            return Err(NativeEngineError::limit(
+                "Blob CSS subresource",
+                self.max_document_bytes,
+                object_url.body.len(),
+            ));
+        }
+        if !subresource_integrity_matches(integrity, &object_url.body) {
+            return Ok(None);
+        }
+        let body =
+            String::from_utf8(object_url.body.clone()).map_err(|_| NativeEngineError::Network {
+                operation: "Blob CSS subresource decoding".into(),
+                reason: "Blob CSS subresource is not valid UTF-8".into(),
+            })?;
+        Ok(Some(body))
+    }
+
     pub(crate) async fn load_stylesheet_async(
         &mut self,
         document_url: &str,

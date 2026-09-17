@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-439`, following
+expansion checkpoint is completed `native-engine-browser-440`, following
+completed `native-engine-browser-439`, following
 completed `native-engine-browser-438`, following
 completed `native-engine-browser-437`, following
 completed `native-engine-browser-436`, following
@@ -174,6 +175,15 @@ interfaces and prototypes, and commit their pending-send state only after
 body validation. Terminal, abort, timeout, and synchronous validation paths
 restore reusable state while existing event delivery remains unchanged.
 Complete raw-header and XHR/Web IDL descriptor parity remain open.
+Slice 440 closes the response-metadata XHR gap. Native HTTP reason phrases
+survive local, content-process, worker, Service Worker, Fetch, and synchronous
+XHR payload boundaries as `statusText`, while synthetic fixture responses use
+`OK`. Page and worker response-header views use response-name validation rather
+than request-name restrictions, combine duplicates, produce deterministic
+sorted `getAllResponseHeaders()` output, filter `Set-Cookie`, and raise
+`SyntaxError` for malformed names. The loader remains the CORS/exposure and
+response-policy owner; raw invalid wire-header bytes and complete XHR/Web IDL
+descriptor parity remain open.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-
@@ -6387,7 +6397,27 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-390.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-440.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-439.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-438.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-437.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-436.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-435.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-434.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-433.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-432.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-431.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-390.md` is an earlier completed browser
 task;
 `docs/plan/tasks/native-engine-browser-389.md` is the preceding completed
 browser task;
@@ -6461,7 +6491,7 @@ browser task;
 browser task;
 `docs/plan/tasks/native-engine-browser-350.md` is the preceding completed browser
 task;
-`docs/plan/tasks/native-engine-browser-349.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-349.md` is an earlier completed browser
 task;
 `docs/plan/tasks/native-engine-browser-348.md` is the preceding completed browser
 task;
@@ -6538,8 +6568,8 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain starts at `native-engine-browser-390`.
-Slices 390 through 356 are summarized in the current checkpoint paragraphs
+The current browser-slice evidence chain starts at `native-engine-browser-440`.
+Slices 440 through 356 are summarized in the current checkpoint paragraphs
 above; the historical continuation below begins with `native-engine-browser-355`,
 `native-engine-browser-354`,
 `native-engine-browser-353`, `native-engine-browser-352`,

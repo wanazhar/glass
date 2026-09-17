@@ -3263,6 +3263,7 @@ fn service_worker_fetch_payload(response: NativeFetchResponse) -> Value {
     json!({
         "url": response.url,
         "status": response.status,
+        "statusText": response.status_text,
         "contentType": response.content_type,
         "headers": response.headers,
         "body": String::from_utf8_lossy(&response.body),
@@ -3356,6 +3357,11 @@ fn decode_service_worker_response(
             .unwrap_or(fallback_url)
             .to_owned(),
         status,
+        status_text: value
+            .get("statusText")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
         content_type: value
             .get("contentType")
             .and_then(|value| (!value.is_null()).then_some(value))

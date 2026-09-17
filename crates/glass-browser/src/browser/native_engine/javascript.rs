@@ -3494,6 +3494,7 @@ fn worker_fetch_response_payload(
         Ok(response) => serde_json::json!({
             "url": response.url,
             "status": response.status,
+            "statusText": response.status_text,
             "contentType": response.content_type,
             "headers": response.headers,
             "body": String::from_utf8_lossy(&response.body),
@@ -13536,7 +13537,7 @@ fn run_native_sync_xhr(
                 "error": false,
                 "url": response.url,
                 "status": response.status,
-                "statusText": response.status.to_string(),
+                "statusText": response.status_text,
                 "contentType": response.content_type,
                 "headers": response.headers,
                 "bodyBase64": base64::engine::general_purpose::STANDARD.encode(response.body),
@@ -17824,9 +17825,13 @@ fn worker_bootstrap(
     const byName = new Map();
     if (Array.isArray(rawEntries)) for (const rawEntry of rawEntries) {{
       if (!Array.isArray(rawEntry) || rawEntry.length !== 2) continue;
-      const name = String(rawEntry[0]).toLowerCase();
-      if (!name) continue;
+      const rawName = String(rawEntry[0]);
+      const name = rawName.toLowerCase();
       const value = String(rawEntry[1]);
+      if (!workerRequestHeaderName.test(rawName)
+          || name.length > {fetch_header_name_limit}
+          || value.length > {fetch_header_value_limit}
+          || /[\u0000-\u0008\u000a-\u001f\u007f]/.test(value)) continue;
       const existing = byName.get(name);
       if (existing) existing[1] += ", " + value;
       else {{
@@ -17835,10 +17840,21 @@ fn worker_bootstrap(
         entries.push(entry);
       }}
     }}
-    if (!byName.has("content-type") && contentType !== null && contentType !== undefined)
-      entries.push(["content-type", String(contentType)]);
+    if (!byName.has("content-type") && contentType !== null && contentType !== undefined) {{
+      const value = String(contentType);
+      if (value.length <= {fetch_header_value_limit}
+          && !/[\u0000-\u0008\u000a-\u001f\u007f]/.test(value))
+        entries.push(["content-type", value]);
+    }}
+    entries.sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0);
     const headers = new WorkerHeadersNative();
     headers._entries = entries;
+    headers.get = function(name) {{
+      const normalized = workerResponseHeaderNameForRead(name);
+      const entry = this._entries.find(candidate => candidate[0] === normalized);
+      return entry ? entry[1] : null;
+    }};
+    headers.has = function(name) {{ return this.get(name) !== null; }};
     Object.defineProperty(headers, "__glassWorkerHeadersImmutable", {{ value: true }});
     Object.freeze(headers);
     return headers;
@@ -17848,6 +17864,13 @@ fn worker_bootstrap(
     const normalized = value.toLowerCase();
     if (!workerRequestHeaderName.test(value) || normalized.length > {fetch_header_name_limit})
       throw new TypeError("native Worker Headers name is invalid");
+    return normalized;
+  }};
+  const workerResponseHeaderNameForRead = (name) => {{
+    const value = String(name);
+    const normalized = value.toLowerCase();
+    if (!workerRequestHeaderName.test(value) || normalized.length > {fetch_header_name_limit})
+      throw new WorkerDOMExceptionNative("native Worker response header name is invalid", "SyntaxError");
     return normalized;
   }};
   const workerHeaderEntryForRequest = (name, value) => {{
@@ -27226,9 +27249,13 @@ fn document_bootstrap(
     const byName = new Map();
     if (Array.isArray(rawEntries)) for (const rawEntry of rawEntries) {{
       if (!Array.isArray(rawEntry) || rawEntry.length !== 2) continue;
-      const name = String(rawEntry[0]).toLowerCase();
+      const rawName = String(rawEntry[0]);
+      const name = rawName.toLowerCase();
       const value = String(rawEntry[1]);
-      if (!name) continue;
+      if (!requestHeaderNameNative.test(rawName)
+          || name.length > {fetch_header_name_limit}
+          || value.length > {fetch_header_value_limit}
+          || /[\u0000-\u0008\u000a-\u001f\u007f]/.test(value)) continue;
       const existing = byName.get(name);
       if (existing) existing[1] += ", " + value;
       else {{
@@ -27242,7 +27269,15 @@ fn document_bootstrap(
       byName.set("content-type", entry);
       entries.push(entry);
     }}
+    entries.sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0);
     const iterator = values => values[Symbol.iterator]();
+    const responseHeaderName = (name) => {{
+      const value = String(name);
+      const normalized = value.toLowerCase();
+      if (!requestHeaderNameNative.test(value) || normalized.length > {fetch_header_name_limit})
+        throw new DOMExceptionNative("native response header name is invalid", "SyntaxError");
+      return normalized;
+    }};
     const headers = Object.create(HeadersNative.prototype);
     Object.defineProperty(headers, "__glassHeaders", {{ value: true }});
     Object.defineProperty(headers, "_entries", {{ value: entries }});
@@ -27252,7 +27287,7 @@ fn document_bootstrap(
     headers.delete = readOnly;
     Object.assign(headers, {{
       get(name) {{
-        const key = String(name).toLowerCase();
+        const key = responseHeaderName(name);
         const entry = entries.find(candidate => candidate[0] === key);
         return entry ? entry[1] : null;
       }},
@@ -29419,7 +29454,7 @@ fn document_bootstrap(
     request.then(response => {{
       if (this._controller !== controller || this._aborted) return null;
       this.status = response.status;
-      this.statusText = String(response.status);
+      this.statusText = response.statusText;
       this.responseURL = response.url;
       this._responseContentType = response.headers.get("content-type");
       this._responseHeaders = response.headers;

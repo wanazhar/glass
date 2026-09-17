@@ -583,6 +583,10 @@ pub(crate) fn schedule_native_csp_report_deliveries(deliveries: Vec<NativeCspRep
 pub struct NativeFetchResponse {
     pub url: String,
     pub status: u16,
+    /// The HTTP reason phrase, or an empty string for synthetic responses.
+    /// This is kept separate from the numeric status so Fetch and XHR can
+    /// expose the platform's status text without manufacturing one.
+    pub status_text: String,
     pub content_type: Option<String>,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
@@ -4040,6 +4044,7 @@ impl NativeResourceLoader {
                 response: NativeFetchResponse {
                     url: target_url,
                     status: 200,
+                    status_text: "OK".into(),
                     content_type: None,
                     headers: Vec::new(),
                     body: Vec::new(),
@@ -4301,6 +4306,11 @@ impl NativeResourceLoader {
                     response: NativeFetchResponse {
                         url: without_fragment(current_url.as_str()).to_owned(),
                         status: response.status().as_u16(),
+                        status_text: response
+                            .status()
+                            .canonical_reason()
+                            .unwrap_or_default()
+                            .to_owned(),
                         content_type: None,
                         headers: Vec::new(),
                         body: Vec::new(),
@@ -4396,6 +4406,11 @@ impl NativeResourceLoader {
         };
         let final_url = current_url;
         let status = response.status().as_u16();
+        let status_text = response
+            .status()
+            .canonical_reason()
+            .unwrap_or_default()
+            .to_owned();
         let response_headers = response.headers().clone();
         let has_set_cookie = !pending_cookies.is_empty();
         if response.status() == reqwest::StatusCode::NOT_MODIFIED {
@@ -4480,6 +4495,7 @@ impl NativeResourceLoader {
         let mut fetch_response = NativeFetchResponse {
             url: without_fragment(final_url.as_str()).to_owned(),
             status,
+            status_text,
             content_type,
             headers,
             body: Vec::new(),

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-458`, following completed
 `native-engine-browser-457`, following completed
 `native-engine-browser-456`, following completed
 `native-engine-browser-455`, following completed
@@ -270,9 +271,14 @@ completed script follow-up is `native-engine-browser-457`: process-backed page
 mutations can resolve a runtime-owned Blob URL as a classic external script,
 apply the document CSP, content-type, integrity, size, and UTF-8 gates,
 execute it without HTTP/cache fallback, and deliver its normal `load`/`error`
-target through stable DOM event ownership. Stylesheet, module dependency
-graphs, media, popup/window, and cross-realm object-URL consumers remain
-separate resource-owner work.
+target through stable DOM event ownership. The completed stylesheet follow-up
+is `native-engine-browser-458`: process-backed dynamic stylesheet links
+retain bounded per-link resource state, resolve runtime-owned Blob CSS through
+the document CSP, MIME, size, UTF-8, and SRI gates, rebuild the native
+stylesheet/background-source owner, and deliver the link `load`/`error`
+event without HTTP/cache fallback. Module dependency graphs, media,
+popup/window, local-inline dynamic consumers, and cross-realm object-URL
+consumers remain separate resource-owner work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

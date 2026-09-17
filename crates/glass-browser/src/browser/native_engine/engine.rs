@@ -9,7 +9,9 @@ use super::content_process::{
     NativeContentProcess, NativeContentScriptResult,
 };
 use super::diagnostics::NativeDiagnostic;
-use super::dom::{NativeDocument, NativeNodeId, NativeScriptDocumentSnapshot};
+use super::dom::{
+    NativeDocument, NativeNodeId, NativePageScriptSource, NativeScriptDocumentSnapshot,
+};
 use super::environment::{NativeEnvironmentOverrides, NativeGeolocation, NativeNetworkConditions};
 use super::error::NativeEngineError;
 use super::error::NativeWorkerFailureKind;
@@ -24,8 +26,8 @@ use super::javascript::{
     NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
     NativeHashChangeEvent, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
     NativeMessagePortPageMessage, NativeMessagePortTransfer, NativePageEventBatch,
-    NativePageMessageEvent, NativePageMessagePortCommand, NativePageNavigation, NativePopupRequest,
-    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
+    NativePageMessageEvent, NativePageMessagePortCommand, NativePageNavigation, NativePageScript,
+    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
     NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
@@ -34,10 +36,9 @@ use super::javascript::{
     execute_inline_scripts, frame_event_batch, host_event_batch,
     host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
     load_service_worker_client_leases, load_web_storage_profile, new_storage_writer_id,
-    page_script_sources_to_scripts, read_storage_event_journal, register_storage_reader,
-    save_web_storage_profile, storage_event_cursor, storage_key,
-    unregister_service_worker_client_lease, unregister_storage_reader,
-    validate_frame_script_command, validate_message_port_transfers,
+    read_storage_event_journal, register_storage_reader, save_web_storage_profile,
+    storage_event_cursor, storage_key, unregister_service_worker_client_lease,
+    unregister_storage_reader, validate_frame_script_command, validate_message_port_transfers,
     validate_page_message_port_command, validate_service_worker_client_states,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
@@ -4344,23 +4345,12 @@ impl NativeEngine {
                 MAX_NATIVE_SCRIPT_BYTES,
             );
             if !dynamic_sources.is_empty() {
-                if dynamic_sources.iter().any(|source| {
-                    matches!(
-                        source,
-                        super::dom::NativePageScriptSource::External { .. }
-                            | super::dom::NativePageScriptSource::ModuleExternal { .. }
-                    )
-                }) {
-                    return Err(NativeEngineError::UnsupportedUrl {
-                        reason: "dynamic external/module scripts require a process-backed HTTP(S) document"
-                            .into(),
-                    });
-                }
-                let dynamic_scripts = page_script_sources_to_scripts(
+                let (dynamic_scripts, resource_events) = load_local_dynamic_page_script_sources(
                     dynamic_sources,
+                    javascript,
+                    &mut self.loader,
                     &self.url,
-                    "glass-dynamic-module",
-                );
+                )?;
                 javascript.set_sync_xhr_loader(&self.loader);
                 let dynamic_result = execute_dynamic_page_scripts(
                     &mut document,
@@ -4369,7 +4359,7 @@ impl NativeEngine {
                     &self.url,
                     &self.origin,
                     self.config.viewport,
-                    &[],
+                    &resource_events,
                     &[],
                 );
                 if let Some(updated_loader) = javascript.take_sync_xhr_loader() {
@@ -7889,6 +7879,75 @@ fn extract_local_history_commands(commands: &[NativeScriptCommand]) -> Vec<Nativ
         })
         .cloned()
         .collect()
+}
+
+fn load_local_dynamic_page_script_sources(
+    sources: Vec<NativePageScriptSource>,
+    runtime: &NativeJavaScriptRuntime,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
+    let mut scripts = Vec::new();
+    let mut resource_events = Vec::new();
+    for (index, source) in sources.into_iter().enumerate() {
+        match source {
+            NativePageScriptSource::Inline {
+                source, node_index, ..
+            } => scripts.push(NativePageScript::Classic {
+                source,
+                node_index: Some(node_index),
+            }),
+            NativePageScriptSource::ModuleInline {
+                source, node_index, ..
+            } => scripts.push(NativePageScript::Module {
+                name: format!("{document_url}#glass-local-dynamic-module-{node_index}-{index}"),
+                source,
+                node_index: Some(node_index),
+            }),
+            NativePageScriptSource::External {
+                href,
+                node_index,
+                integrity,
+                ..
+            } => {
+                if !href
+                    .get(..5)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
+                {
+                    return Err(NativeEngineError::UnsupportedUrl {
+                        reason:
+                            "dynamic external scripts require a process-backed HTTP(S) document"
+                                .into(),
+                    });
+                }
+                let object_url = runtime.object_url_resource(&href)?;
+                match loader.load_local_blob_script(
+                    document_url,
+                    &href,
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    integrity.as_deref(),
+                    object_url.as_ref(),
+                )? {
+                    Some(resource) => {
+                        scripts.push(NativePageScript::Classic {
+                            source: resource.body,
+                            node_index: Some(node_index),
+                        });
+                        resource_events.push((node_index, NativeEventKind::Load));
+                    }
+                    None => resource_events.push((node_index, NativeEventKind::Error)),
+                }
+            }
+            NativePageScriptSource::ModuleExternal { .. } => {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason:
+                        "dynamic external/module scripts require a process-backed HTTP(S) document"
+                            .into(),
+                });
+            }
+        }
+    }
+    Ok((scripts, resource_events))
 }
 
 fn extract_local_scroll_commands(commands: &[NativeScriptCommand]) -> Vec<NativeScriptCommand> {

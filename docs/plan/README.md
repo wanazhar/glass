@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-493`, following completed
 `native-engine-browser-492`, following completed
 `native-engine-browser-491`, following completed
 `native-engine-browser-490`, following completed
@@ -108,6 +109,15 @@ matching deterministic system faces before trying later admitted sources, so a
 missing local face no longer prevents URL fallback. Full installed-font
 discovery, FontFace/FontFaceSet event timing, variable/color fonts, and
 complete text/Web IDL parity remain open issue #40 gates.
+
+Slice 493 adds the page-realm `FontFace`/`FontFaceSet` surface. Host-projected
+CSS descriptors now back persistent `document.fonts` faces across document
+snapshots, including status/ready/size, family-aware check/load, dynamic-set
+add/delete/clear and iteration, plus loading/loadingdone/loadingerror events
+for newly observed CSS faces. Script-created font loading is intentionally
+fail-closed until its source can cross a native loader command; installed-font
+discovery, font-display timing, variable/color fonts, cross-realm FontFace
+projection, and complete text/Web IDL parity remain open issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

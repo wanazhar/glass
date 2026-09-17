@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-494`, following
+expansion checkpoint is completed `native-engine-browser-495`, following
+completed `native-engine-browser-494`, following
 completed `native-engine-browser-493`, following
 completed `native-engine-browser-492`, following
 completed `native-engine-browser-491`, following
@@ -106,6 +107,19 @@ host acknowledgement after the realm marks the face loaded. Those are explicit
 follow-up gates, along with installed-font discovery, font-display timing,
 variable/color fonts, cross-realm FontFace projection, and complete text/Web
 IDL parity.
+
+Slice 495 routes the dynamic FontFace URL branch through a private `font` Fetch
+destination. The page bootstrap emits that destination only from the
+FontFace loader; the content owner validates that it is a bodyless GET with
+same-origin credentials, CORS mode, follow redirects, and no upload stream,
+then calls the existing `load_font_async` owner. This restores the document
+`font-src`, mixed-content, redirect, CORS, cookie, cache, MIME, and byte-limit
+checks already used by CSS fonts while preserving the existing bounded Fetch
+resolver and `FontFaceInstall` transfer. The destination is rejected for
+worker and Service Worker commands. Service Worker interception, host
+acknowledgement after native install admission, final URL/response-header
+fidelity, and the remaining FontFace/Web IDL gates stay explicit rather than
+being inferred from the generic Fetch contract.
 
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target

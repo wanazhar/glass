@@ -572,6 +572,27 @@ impl NativeFontBook {
         system_font_book().clone()
     }
 
+    pub(crate) fn local_font_bytes(
+        &self,
+        family: &str,
+        weight: FontWeightValue,
+        style: FontStyleValue,
+    ) -> Option<Vec<u8>> {
+        let mut best = None;
+        let mut best_score = u8::MAX;
+        for face in &self.faces {
+            if !face.family.eq_ignore_ascii_case(family) {
+                continue;
+            }
+            let score = face_score(face, weight, style);
+            if score < best_score {
+                best_score = score;
+                best = Some(face);
+            }
+        }
+        best.map(|face| face.font_data.as_ref().to_vec())
+    }
+
     pub(crate) fn from_resources(resources: &[NativeFontFaceResource]) -> Self {
         let mut book = Self::default();
         for resource in resources.iter().take(MAX_NATIVE_FONT_FACES) {
@@ -957,6 +978,31 @@ mod tests {
         assert_eq!(
             candidates[1].generic_family,
             Some(NativeGenericFontFamily::Serif)
+        );
+    }
+
+    #[test]
+    fn local_font_lookup_matches_system_family_case_insensitively() {
+        let Some(face) = system_font_book().faces.first() else {
+            return;
+        };
+        let family = face.family.to_ascii_uppercase();
+        let bytes = system_font_book()
+            .local_font_bytes(&family, face.weight, face.style)
+            .expect("the system font book must resolve its own first face");
+        assert_eq!(bytes.as_slice(), face.font_data.as_ref());
+    }
+
+    #[test]
+    fn local_font_lookup_rejects_unknown_family() {
+        assert!(
+            system_font_book()
+                .local_font_bytes(
+                    "Glass Missing Local Font",
+                    FontWeightValue::Normal,
+                    FontStyleValue::Normal
+                )
+                .is_none()
         );
     }
 

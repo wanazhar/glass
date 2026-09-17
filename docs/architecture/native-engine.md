@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-463`, following completed
 `native-engine-browser-462`, following completed
 `native-engine-browser-461`, following completed
 `native-engine-browser-460`, following completed
@@ -303,8 +304,13 @@ resource-owner work. The completed local image follow-up is
 Blob URL for a dynamically attached `<img>` and CSS background-image consumer
 through the bounded native decoder, retain intrinsic dimensions and paint
 resources, and deliver the image `load`/`error` event without network or
-HTTP-cache fallback. Media, popup/window, and cross-realm object-URL
-consumers remain separate resource-owner work.
+HTTP-cache fallback. Media and cross-realm object-URL consumers remain
+separate resource-owner work. The completed popup/window follow-up is
+`native-engine-browser-463`: popup and `WindowProxy` navigation requests now
+carry a bounded runtime-owned Blob snapshot through local and content-process
+browser-effect queues, bootstrap the target from `about:blank`, and commit the
+Blob document without network or HTTP-cache fallback. Media and cross-realm
+object-URL consumers remain separate resource-owner work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

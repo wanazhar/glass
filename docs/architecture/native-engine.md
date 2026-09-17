@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-505`, following completed
 `native-engine-browser-504`, following completed
 `native-engine-browser-503`, following completed
 `native-engine-browser-502`, following completed
@@ -221,6 +222,17 @@ unchanged and use the existing rejection acknowledgement. An omitted command
 field remains unrestricted for compatibility, while accepted ranges persist in
 document resources and content-process snapshots. Mixed-script shaping,
 font-stretch/variant, font-display timing, variable/color fonts, WOFF2,
+cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
+issue #40 gates.
+
+Slice 505 preserves bounded `font-stretch` descriptors. CSS `@font-face` and
+script-created `FontFace` values accept named forms and 50%–200% percentage
+ranges, store percentage tenths, and carry them through native resources,
+content-process wire snapshots, and the `document.fonts` projection. Invalid or
+reversed values fail at the parser or native admission boundary, and older
+payloads default to `normal`. The computed CSS `font-stretch` property,
+font-face range matching, and horizontal glyph scaling remain the next
+rendering gate; font-variant, font-display timing, variable/color fonts, WOFF2,
 cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
 issue #40 gates.
 

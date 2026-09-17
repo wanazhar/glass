@@ -1,6 +1,7 @@
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
-    NativeFontFamilyValue, NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
+    NativeFontFamilyValue, NativeFontStretchRange, NativeGenericFontFamily, NativeUnicodeRange,
+    font_family_hash,
 };
 use std::fmt;
 use std::io::Read;
@@ -71,6 +72,7 @@ struct NativeFontFace {
     generic_family: Option<NativeGenericFontFamily>,
     weight: FontWeightValue,
     style: FontStyleValue,
+    stretch: NativeFontStretchRange,
     font: Arc<fontdue::Font>,
     font_data: Arc<[u8]>,
     shaper_data: Option<Arc<harfrust::ShaperData>>,
@@ -84,6 +86,7 @@ impl PartialEq for NativeFontFace {
             && self.generic_family == other.generic_family
             && self.weight == other.weight
             && self.style == other.style
+            && self.stretch == other.stretch
             && self.font_data == other.font_data
             && self.unicode_ranges == other.unicode_ranges
     }
@@ -98,6 +101,7 @@ impl fmt::Debug for NativeFontFace {
             .field("family", &self.family)
             .field("weight", &self.weight)
             .field("style", &self.style)
+            .field("stretch", &self.stretch)
             .finish_non_exhaustive()
     }
 }
@@ -113,6 +117,7 @@ pub(crate) struct NativeFontFaceResource {
     pub(crate) family_key: u64,
     pub(crate) weight: FontWeightValue,
     pub(crate) style: FontStyleValue,
+    pub(crate) stretch: NativeFontStretchRange,
     pub(crate) bytes: Arc<[u8]>,
     pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
 }
@@ -124,6 +129,7 @@ impl NativeFontFaceResource {
             family_key: rule.family_key,
             weight: rule.weight,
             style: rule.style,
+            stretch: rule.stretch,
             bytes: Arc::from(bytes),
             unicode_ranges: rule.unicode_ranges.clone(),
         }
@@ -890,6 +896,7 @@ impl NativeFontBook {
                 generic_family: None,
                 weight: resource.weight,
                 style: resource.style,
+                stretch: resource.stretch,
                 font: Arc::new(font),
                 font_data,
                 shaper_data,
@@ -1064,6 +1071,7 @@ fn insert_font_face(
         generic_family,
         weight,
         style,
+        stretch: NativeFontStretchRange::default(),
         font: Arc::new(font),
         font_data,
         shaper_data,
@@ -1661,6 +1669,7 @@ mod tests {
             family_key: font_family_hash("WOFF Face"),
             weight: FontWeightValue::Normal,
             style: FontStyleValue::Normal,
+            stretch: NativeFontStretchRange::default(),
             bytes: Arc::from(compressed),
             unicode_ranges: Vec::new(),
         };
@@ -1687,6 +1696,7 @@ mod tests {
                 family_key: font_family_hash("Range Face"),
                 weight: FontWeightValue::Normal,
                 style: FontStyleValue::Normal,
+                stretch: NativeFontStretchRange::default(),
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: vec![NativeUnicodeRange {
                     start: u32::from(character),
@@ -1743,6 +1753,7 @@ mod tests {
             family_key: font_family_hash("Embedded Sans"),
             weight: FontWeightValue::Normal,
             style: FontStyleValue::Normal,
+            stretch: NativeFontStretchRange::default(),
             bytes: system_face.font_data.clone(),
             unicode_ranges: Vec::new(),
         };

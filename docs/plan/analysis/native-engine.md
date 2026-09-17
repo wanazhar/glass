@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-504`, following
+expansion checkpoint is completed `native-engine-browser-505`, following
+completed `native-engine-browser-504`, following
 completed `native-engine-browser-503`, following
 completed `native-engine-browser-502`, following
 completed `native-engine-browser-501`, following
@@ -228,6 +229,16 @@ face through its normal error path. Accepted ranges persist through document
 resources and content-process snapshots. Mixed-script shaping, font-stretch/
 variant, font-display timing, variable/color rendering, WOFF2, cross-realm
 FontFace projection, and complete FontFace/Web IDL parity remain open.
+
+Slice 505 preserves bounded `font-stretch` descriptors for CSS `@font-face`
+and script-created `FontFace` resources. Named values and 50%–200% percentage
+ranges are represented as integer percentage tenths, carried through native
+resources, content-process wire snapshots, and the `document.fonts` projection,
+and validated before byte admission; missing fields default to `normal` for
+older payloads. The computed CSS `font-stretch` property, face-range matching,
+and horizontal glyph scaling remain the next rendering slice. Font-variant,
+font-display timing, variable/color rendering, WOFF2, cross-realm FontFace
+projection, and complete FontFace/Web IDL parity remain open.
 
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
@@ -7052,8 +7063,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-504.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-505.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-504.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-503.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-502.md` is the preceding completed browser

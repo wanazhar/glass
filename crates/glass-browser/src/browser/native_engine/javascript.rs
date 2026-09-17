@@ -281,6 +281,8 @@ pub(crate) enum NativeScriptCommand {
         weight: String,
         style: String,
         #[serde(default)]
+        stretch: String,
+        #[serde(default)]
         unicode_range: String,
         body_base64: String,
     },
@@ -9679,6 +9681,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     String(descriptor && descriptor.family || ""),
     String(descriptor && descriptor.weight || "400"),
     String(descriptor && descriptor.style || "normal"),
+    String(descriptor && descriptor.stretch || "normal"),
   ].join("\u0000");
   const nativeFontFaceSettledPromise = (face, status) => {
     const promise = status === "loaded"
@@ -9874,6 +9877,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
               family: state.family,
               weight: state.weight,
               style: state.style,
+              stretch: state.stretch,
               unicode_range: state.unicodeRange,
               body_base64: encodeBase64(bytes, nativeFontFaceByteLimit),
             });
@@ -10048,6 +10052,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
         FontFaceNative.call(face, String(descriptor.family || ""), "", {
           weight: descriptor.weight === "700" ? "bold" : "normal",
           style: descriptor.style === "italic" ? "italic" : "normal",
+          stretch: String(descriptor.stretch || "normal"),
           unicodeRange: String(descriptor.unicodeRange || "U+0-10FFFF"),
         });
         const faceState = nativeFontFaceState(face);
@@ -17616,7 +17621,9 @@ mod native_timer_probe_tests {
 #[cfg(test)]
 mod native_font_face_tests {
     use super::super::config::NativeEngineLimits;
-    use super::super::css::{FontStyleValue, FontWeightValue, NativeUnicodeRange};
+    use super::super::css::{
+        FontStyleValue, FontWeightValue, NativeFontStretchRange, NativeUnicodeRange,
+    };
     use super::super::font::NativeFontBook;
     use super::*;
 
@@ -17625,7 +17632,7 @@ mod native_font_face_tests {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-test")
             .expect("native JavaScript runtime must construct");
         let document = NativeDocument::parse(
-            "<style>@font-face { font-family: 'Missing Face'; src: local('Missing Face'); unicode-range: U+41-5A; }</style>",
+            "<style>@font-face { font-family: 'Missing Face'; src: local('Missing Face'); font-stretch: condensed; unicode-range: U+41-5A; }</style>",
             &NativeEngineLimits::default(),
         )
         .expect("font-face fixture must parse");
@@ -17638,6 +17645,7 @@ mod native_font_face_tests {
                     document.fonts.status,
                     document.fonts.size,
                     cssFace.family,
+                    cssFace.stretch,
                     cssFace.unicodeRange,
                     cssFace.status,
                     document.fonts.check("16px 'Missing Face'"),
@@ -17663,6 +17671,7 @@ mod native_font_face_tests {
                     "loaded",
                     1,
                     "Missing Face",
+                    "condensed",
                     "U+41-5A",
                     "error",
                     false,
@@ -17736,7 +17745,7 @@ mod native_font_face_tests {
             .evaluate(
                 &format!(
                     r#"(() => {{
-                      const face = new FontFace("Inline Sans", {source}, {{ unicodeRange: "U+41-5A" }});
+                      const face = new FontFace("Inline Sans", {source}, {{ stretch: "condensed", unicodeRange: "U+41-5A" }});
                       globalThis.__inlineFontFace = face;
                       document.fonts.add(face);
                       face.load().then(() => {{ document.body.textContent = "accepted"; }});
@@ -17794,18 +17803,24 @@ mod native_font_face_tests {
                 family,
                 weight,
                 style,
+                stretch,
                 unicode_range,
                 body_base64,
                 ..
             } if family == "Inline Sans"
                 && weight == "normal"
                 && style == "normal"
+                && stretch == "condensed"
                 && unicode_range == "U+41-5A"
                 && !body_base64.is_empty()
         ));
         let wire = document.to_content_wire();
         assert_eq!(wire.font_resources.len(), 1);
         assert_eq!(wire.font_resources[0].family, "Inline Sans");
+        assert_eq!(
+            wire.font_resources[0].stretch,
+            NativeFontStretchRange { min: 750, max: 750 }
+        );
         assert_eq!(
             wire.font_resources[0].unicode_ranges,
             vec![NativeUnicodeRange {

@@ -4,7 +4,7 @@ use super::config::{
 use super::css::{
     NativeFontFaceRule, NativeStylesheet, NativeUnicodeRange, absolutize_stylesheet_urls,
     collect_background_image_sources, font_family_hash, format_font_face_unicode_ranges,
-    parse_font_face_unicode_range,
+    format_font_stretch_range, parse_font_face_unicode_range, parse_font_stretch_range,
 };
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
@@ -219,6 +219,8 @@ pub(crate) struct NativeFontFaceResourceWire {
     pub(crate) weight: FontWeightValue,
     pub(crate) style: FontStyleValue,
     #[serde(default)]
+    pub(crate) stretch: super::css::NativeFontStretchRange,
+    #[serde(default)]
     pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
     pub(crate) data_base64: String,
 }
@@ -229,6 +231,7 @@ pub(crate) struct NativeFontFaceScriptDescriptor {
     pub(crate) family: String,
     pub(crate) weight: String,
     pub(crate) style: String,
+    pub(crate) stretch: String,
     pub(crate) unicode_range: String,
     pub(crate) status: String,
 }
@@ -1340,6 +1343,7 @@ impl NativeDocument {
                     FontStyleValue::Normal => "normal".into(),
                     FontStyleValue::Italic => "italic".into(),
                 },
+                stretch: format_font_stretch_range(rule.stretch),
                 unicode_range: format_font_face_unicode_ranges(&rule.unicode_ranges),
                 status: if self.font_resources.iter().any(|resource| {
                     resource.family_key == rule.family_key
@@ -1367,6 +1371,12 @@ impl NativeDocument {
         }
         let total_bytes = resources.iter().try_fold(0usize, |total, resource| {
             if resource.family.is_empty() || resource.family.len() > MAX_ATTRIBUTE_BYTES {
+                return None;
+            }
+            if resource.stretch.min < 500
+                || resource.stretch.min > resource.stretch.max
+                || resource.stretch.max > 2000
+            {
                 return None;
             }
             if resource.bytes.is_empty() || resource.bytes.len() > MAX_NATIVE_FONT_BYTES {
@@ -1402,6 +1412,7 @@ impl NativeDocument {
         family: &str,
         weight: &str,
         style: &str,
+        stretch: &str,
         unicode_range: &str,
         body_base64: &str,
     ) -> Result<(), NativeEngineError> {
@@ -1440,6 +1451,16 @@ impl NativeDocument {
                     "must be normal or italic",
                 ));
             }
+        };
+        let stretch = if stretch.trim().is_empty() {
+            super::css::NativeFontStretchRange::default()
+        } else {
+            parse_font_stretch_range(stretch).ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native FontFace stretch",
+                    "must be a bounded CSS font-stretch value",
+                )
+            })?
         };
         let unicode_ranges = if unicode_range.trim().is_empty() {
             Vec::new()
@@ -1482,6 +1503,7 @@ impl NativeDocument {
             family_key: font_family_hash(family),
             weight,
             style,
+            stretch,
             bytes: Arc::from(bytes),
             unicode_ranges,
         };
@@ -1500,6 +1522,7 @@ impl NativeDocument {
                 family,
                 weight,
                 style,
+                stretch,
                 unicode_range,
                 body_base64,
             } = command
@@ -1511,6 +1534,7 @@ impl NativeDocument {
                 family,
                 weight,
                 style,
+                stretch,
                 unicode_range,
                 body_base64,
             )?;
@@ -2330,6 +2354,7 @@ impl NativeDocument {
                 family_key: resource.family_key,
                 weight: resource.weight,
                 style: resource.style,
+                stretch: resource.stretch,
                 unicode_ranges: resource.unicode_ranges.clone(),
                 data_base64: base64::engine::general_purpose::STANDARD
                     .encode(resource.bytes.as_ref()),
@@ -2410,6 +2435,9 @@ impl NativeDocument {
                 || resource.family.len() > MAX_ATTRIBUTE_BYTES
                 || resource.family.bytes().any(|byte| byte.is_ascii_control())
                 || resource.family_key != super::css::font_family_hash(&resource.family)
+                || resource.stretch.min < 500
+                || resource.stretch.min > resource.stretch.max
+                || resource.stretch.max > 2000
                 || resource.unicode_ranges.len() > super::css::MAX_NATIVE_FONT_FACE_UNICODE_RANGES
                 || resource
                     .unicode_ranges
@@ -2448,6 +2476,7 @@ impl NativeDocument {
                 family_key: resource.family_key,
                 weight: resource.weight,
                 style: resource.style,
+                stretch: resource.stretch,
                 unicode_ranges: resource.unicode_ranges,
                 bytes: Arc::from(bytes),
             });
@@ -4775,6 +4804,7 @@ impl NativeDocument {
                     family,
                     weight,
                     style,
+                    stretch,
                     unicode_range,
                     body_base64,
                 } => {
@@ -4783,6 +4813,7 @@ impl NativeDocument {
                         family,
                         weight,
                         style,
+                        stretch,
                         unicode_range,
                         body_base64,
                     )?;
@@ -9823,6 +9854,7 @@ mod tests {
                 family_key: super::super::css::font_family_hash("Embedded Sans"),
                 weight: FontWeightValue::Normal,
                 style: FontStyleValue::Normal,
+                stretch: super::super::css::NativeFontStretchRange::default(),
                 bytes: Arc::from(vec![0_u8, 1, 2, 3]),
                 unicode_ranges: Vec::new(),
             }])
@@ -9830,6 +9862,8 @@ mod tests {
         let wire = document.to_content_wire();
         assert_eq!(wire.font_resources.len(), 1);
         assert_eq!(wire.font_resources[0].data_base64, "AAECAw==");
+        assert_eq!(wire.font_resources[0].stretch.min, 1000);
+        assert_eq!(wire.font_resources[0].stretch.max, 1000);
         let restored =
             NativeDocument::from_content_wire(wire, &limits, document.generation()).unwrap();
         assert_eq!(restored.font_resources.len(), 1);
@@ -9846,6 +9880,7 @@ mod tests {
                 family: "Rejected Range".into(),
                 weight: "normal".into(),
                 style: "normal".into(),
+                stretch: "normal".into(),
                 unicode_range: "U+4?A".into(),
                 body_base64: "AA==".into(),
             }])
@@ -9855,6 +9890,29 @@ mod tests {
             error,
             NativeEngineError::InvalidConfiguration { field, .. }
                 if field == "native FontFace unicodeRange"
+        ));
+        assert!(document.font_resources.is_empty());
+    }
+
+    #[test]
+    fn script_font_face_install_rejects_malformed_stretch() {
+        let mut document = NativeDocument::empty();
+        let error = document
+            .apply_script_font_face_installs(&[NativeScriptCommand::FontFaceInstall {
+                request_id: 1,
+                family: "Rejected Stretch".into(),
+                weight: "normal".into(),
+                style: "normal".into(),
+                stretch: "201%".into(),
+                unicode_range: String::new(),
+                body_base64: "AA==".into(),
+            }])
+            .expect_err("malformed script stretch must be rejected");
+
+        assert!(matches!(
+            error,
+            NativeEngineError::InvalidConfiguration { field, .. }
+                if field == "native FontFace stretch"
         ));
         assert!(document.font_resources.is_empty());
     }

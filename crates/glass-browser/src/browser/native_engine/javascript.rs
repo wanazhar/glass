@@ -17717,6 +17717,39 @@ mod native_font_face_tests {
     }
 
     #[test]
+    fn computed_style_projects_font_variant_ligatures() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-variant-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<style>#parent { font-variant-ligatures: none; } #child { font-variant-ligatures: discretionary-ligatures contextual; } #reset { font-variant-ligatures: initial; }</style><div id='parent'><span id='child'>Child</span><span id='reset'>Reset</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("font-variant-ligatures fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const parent = getComputedStyle(document.getElementById("parent"));
+                  const child = getComputedStyle(document.getElementById("child"));
+                  const reset = getComputedStyle(document.getElementById("reset"));
+                  return [parent.fontVariantLigatures, child.getPropertyValue("font-variant-ligatures"), reset.fontVariantLigatures];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("computed font-variant-ligatures surface must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                "none",
+                "common-ligatures discretionary-ligatures no-historical-ligatures contextual",
+                "normal"
+            ])
+        );
+    }
+
+    #[test]
     fn css_font_face_refresh_dispatches_loading_error_for_new_rules() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-refresh-test")
             .expect("native JavaScript runtime must construct");
@@ -37119,6 +37152,21 @@ fn document_bootstrap(
     if (!Number.isFinite(number) || number < 500 || number > 2000) return fallback;
     return String(number / 10).replace(/\.0$/, "") + "%";
   }};
+  const computedStyleLigatures = (value) => {{
+    if (!value || typeof value !== "object") return "normal";
+    const common = value.common === true;
+    const discretionary = value.discretionary === true;
+    const historical = value.historical === true;
+    const contextual = value.contextual === true;
+    if (common && !discretionary && !historical && contextual) return "normal";
+    if (!common && !discretionary && !historical && !contextual) return "none";
+    return [
+      common ? "common-ligatures" : "no-common-ligatures",
+      discretionary ? "discretionary-ligatures" : "no-discretionary-ligatures",
+      historical ? "historical-ligatures" : "no-historical-ligatures",
+      contextual ? "contextual" : "no-contextual",
+    ].join(" ");
+  }};
   const computedStyleColor = (value, fallback = "rgba(0, 0, 0, 0)") => {{
     if (!value || typeof value !== "object") return fallback;
     const red = Number(value.red);
@@ -37158,7 +37206,7 @@ fn document_bootstrap(
     "border-left-color", "border-radius", "overflow", "overflow-x", "overflow-y", "white-space",
     "text-align", "text-align-last", "text-justify", "text-indent", "text-transform", "text-overflow",
     "text-decoration", "text-decoration-style", "text-decoration-thickness", "text-underline-offset",
-    "font-weight", "font-style", "font-stretch", "line-height", "word-break", "word-spacing", "letter-spacing",
+    "font-weight", "font-style", "font-stretch", "font-variant-ligatures", "line-height", "word-break", "word-spacing", "letter-spacing",
     "vertical-align", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
     "justify-content", "align-items", "align-self", "align-content", "gap", "row-gap", "column-gap",
     "order", "grid-template-columns", "grid-template-rows"
@@ -37251,6 +37299,7 @@ fn document_bootstrap(
     if (name === "font-weight") return computedStyleEnumName(raw.font_weight, "normal");
     if (name === "font-style") return computedStyleEnumName(raw.font_style, "normal");
     if (name === "font-stretch") return computedStyleStretch(raw.font_stretch);
+    if (name === "font-variant-ligatures") return computedStyleLigatures(raw.font_variant_ligatures);
     if (name === "line-height") return computedStylePixels(raw.line_height, "normal");
     if (name === "word-spacing") return String(Number(raw.word_spacing) || 0) + "px";
     if (name === "letter-spacing") return String(Number(raw.letter_spacing) || 0) + "px";

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-507`, following completed
 `native-engine-browser-506`, following completed
 `native-engine-browser-505`, following completed
 `native-engine-browser-504`, following completed
@@ -247,6 +248,17 @@ use a normal-width synthetic baseline until a real variation-axis owner exists;
 variable/color tables, WOFF2, font-display timing, mixed-script shaping,
 cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
 issue #40 gates.
+
+Slice 507 wires `font-variant-ligatures` into the inherited computed-style and
+native text owners. `normal`, `none`, and one value from each bounded common,
+discretionary, historical, and contextual group are normalized through the
+CSS cascade and projected through native CSSOM. HarfRust receives explicit
+`liga`/`clig`, `dlig`, `hlig`, and `calt` settings before measuring and
+rasterizing, so disabling or opting into a ligature group changes both layout
+width and glyph output. The broader `font-variant` family,
+`font-feature-settings`, variable/color tables, WOFF2, font-display timing,
+mixed-script shaping, cross-realm FontFace projection, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between

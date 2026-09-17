@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-507`, following completed
 `native-engine-browser-506`, following completed
 `native-engine-browser-505`, following completed
 `native-engine-browser-504`, following completed
@@ -262,6 +263,16 @@ descriptor ranges remain on a normal-width synthetic baseline until a real
 variation-axis owner exists. Variable/color tables, WOFF2, font-display timing,
 mixed-script shaping, cross-realm FontFace projection, and complete FontFace/Web
 IDL parity remain issue #40 gates.
+
+The completed ligature-shaping follow-up is
+[`native-engine-browser-507`](tasks/native-engine-browser-507.md):
+`font-variant-ligatures` now inherits through the native cascade, projects as a
+canonical CSSOM value, and controls HarfRust's common, discretionary,
+historical, and contextual OpenType features during measurement and
+rasterization. The broader `font-variant` family, explicit
+`font-feature-settings`, variable/color fonts, WOFF2, font-display timing,
+mixed-script shaping, cross-realm FontFace projection, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

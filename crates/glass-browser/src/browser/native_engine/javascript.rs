@@ -9674,6 +9674,14 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     const set = state.set;
     if (set) nativeFontFaceBegin(set, this);
     state.status = "loading";
+    const nativeFontFaceFail = (error) => {
+      state.status = "error";
+      const rejection = Promise.reject(error);
+      rejection.catch(() => {});
+      state.loadedPromise = rejection;
+      if (set) nativeFontFaceFinish(set, this, error);
+      return rejection;
+    };
     const sourcePromise = Promise.resolve().then(() => {
       if (state.staticFace) {
         if (state.staticStatus === "loaded") return null;
@@ -9737,15 +9745,8 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
         state.loadedPromise = Promise.resolve(this);
         if (set) nativeFontFaceFinish(set, this, null);
         return this;
-      });
-    }, (error) => {
-      state.status = "error";
-      const rejection = Promise.reject(error);
-      rejection.catch(() => {});
-      state.loadedPromise = rejection;
-      if (set) nativeFontFaceFinish(set, this, error);
-      throw error;
-    });
+      }, nativeFontFaceFail);
+    }, nativeFontFaceFail);
     state.loadedPromise = promise;
     return promise;
   };
@@ -10016,8 +10017,6 @@ pub(crate) fn apply_page_script_evaluation(
         if commands.is_empty() {
             continue;
         }
-        let mut next = document.clone();
-        let effects = next.apply_script_commands(&commands)?;
         let request_ids = commands
             .iter()
             .filter_map(|command| match command {
@@ -10025,7 +10024,21 @@ pub(crate) fn apply_page_script_evaluation(
                 _ => None,
             })
             .collect::<Vec<_>>();
-        *document = next;
+        let (effects, acknowledgement_payload) = if request_ids.is_empty() {
+            (document.apply_script_commands(&commands)?, None)
+        } else {
+            let mut next = document.clone();
+            match next.apply_script_commands(&commands) {
+                Ok(effects) => {
+                    *document = next;
+                    (effects, Some(font_face_install_success_payload()))
+                }
+                Err(_error) if font_face_install_admission_failed(document, &commands) => {
+                    (Vec::new(), Some(font_face_install_error_payload()))
+                }
+                Err(error) => return Err(error),
+            }
+        };
         events.extend(effects.into_iter().map(|(node, kind)| (node.index(), kind)));
         for request_id in request_ids {
             acknowledgements = acknowledgements.saturating_add(1);
@@ -10036,7 +10049,9 @@ pub(crate) fn apply_page_script_evaluation(
                     acknowledgements,
                 ));
             }
-            let payload = serde_json::json!({"ok": true});
+            let payload = acknowledgement_payload
+                .as_ref()
+                .expect("FontFace acknowledgement payload initialized");
             let acknowledgement = runtime.resolve_font_face_install(
                 request_id,
                 &payload,
@@ -10094,11 +10109,34 @@ pub(crate) fn apply_document_commands_with_font_face_ack(
                 _ => None,
             })
             .collect::<Vec<_>>();
-        events.extend(if allow_script_navigation {
-            document.apply_script_commands_allowing_links(&batch)?
+        let (effects, acknowledgement_payload) = if request_ids.is_empty() {
+            (
+                if allow_script_navigation {
+                    document.apply_script_commands_allowing_links(&batch)?
+                } else {
+                    document.apply_script_commands(&batch)?
+                },
+                None,
+            )
         } else {
-            document.apply_script_commands(&batch)?
-        });
+            let mut next = document.clone();
+            let applied = if allow_script_navigation {
+                next.apply_script_commands_allowing_links(&batch)
+            } else {
+                next.apply_script_commands(&batch)
+            };
+            match applied {
+                Ok(effects) => {
+                    *document = next;
+                    (effects, Some(font_face_install_success_payload()))
+                }
+                Err(_error) if font_face_install_admission_failed(document, &batch) => {
+                    (Vec::new(), Some(font_face_install_error_payload()))
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        events.extend(effects);
         for request_id in request_ids {
             acknowledgements = acknowledgements.saturating_add(1);
             if acknowledgements > super::interaction::MAX_NATIVE_EFFECTS {
@@ -10108,7 +10146,9 @@ pub(crate) fn apply_document_commands_with_font_face_ack(
                     acknowledgements,
                 ));
             }
-            let payload = serde_json::json!({"ok": true});
+            let payload = acknowledgement_payload
+                .as_ref()
+                .expect("FontFace acknowledgement payload initialized");
             let acknowledgement = runtime.resolve_font_face_install(
                 request_id,
                 &payload,
@@ -10130,6 +10170,22 @@ pub(crate) fn apply_document_commands_with_font_face_ack(
         }
     }
     Ok((events, follow_up_commands))
+}
+
+fn font_face_install_success_payload() -> serde_json::Value {
+    serde_json::json!({"ok": true})
+}
+
+fn font_face_install_error_payload() -> serde_json::Value {
+    serde_json::json!({"error": "native FontFace install was rejected"})
+}
+
+fn font_face_install_admission_failed(
+    document: &NativeDocument,
+    commands: &[NativeScriptCommand],
+) -> bool {
+    let mut probe = document.clone();
+    probe.apply_script_font_face_installs(commands).is_err()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -17633,6 +17689,65 @@ mod native_font_face_tests {
                 && redirect == "follow"
                 && cache == "default"
         )));
+    }
+
+    #[test]
+    fn script_font_face_rejection_acknowledges_admission_failure() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-reject-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse("<body></body>", &NativeEngineLimits::default())
+            .expect("font-face document must parse");
+        let started = runtime
+            .evaluate(
+                r#"(() => {
+                  const face = new FontFace("Rejected Face", "url(data:font/ttf;base64,AA==)");
+                  globalThis.__rejectedFontFace = face;
+                  document.fonts.add(face);
+                  face.load().then(
+                    () => { document.body.textContent = "unexpected-success"; },
+                    error => { document.body.textContent = `${error.name}:${face.status}`; },
+                  );
+                  return true;
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("invalid FontFace source must evaluate");
+        let mut pending_fetches = Vec::new();
+        let mut websocket_commands = Vec::new();
+        let mut event_source_commands = Vec::new();
+        let mut scroll_commands = Vec::new();
+        let mut navigation = None;
+        apply_page_script_evaluation(
+            &mut document,
+            &runtime,
+            "about:blank",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+            started,
+            &mut pending_fetches,
+            &mut websocket_commands,
+            &mut event_source_commands,
+            &mut scroll_commands,
+            &mut navigation,
+        )
+        .expect("invalid FontFace admission must be acknowledged");
+        let evaluation = runtime
+            .evaluate(
+                "[globalThis.__rejectedFontFace.status, document.fonts.status, document.body.textContent]",
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("FontFace rejection state must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["error", "loaded", "NetworkError:error"])
+        );
+        assert!(document.to_content_wire().font_resources.is_empty());
     }
 
     #[test]

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-497`, following completed
 `native-engine-browser-496`, following completed
 `native-engine-browser-495`, following completed
 `native-engine-browser-494`, following completed
@@ -153,6 +154,17 @@ standalone content user-event mutations remain outside that response contract.
 Service Worker interception, final response metadata, broader FontFace sources,
 installed-font discovery, font-display timing, variable/color fonts,
 cross-realm projection, and complete text/Web IDL parity remain issue #40 gates.
+
+The completed FontFace admission-rejection follow-up is
+[`native-engine-browser-497`](tasks/native-engine-browser-497.md): failed
+parser, descriptor, byte, or aggregate-resource admission leaves the live
+document font book unchanged and returns a bounded error acknowledgement. The
+page face now transitions to `error`, rejects `load()`, and settles its
+`FontFaceSet` loading cycle; unrelated DOM command failures remain errors at
+their original owner boundary. Broader FontFace sources, Service Worker
+interception, response metadata, installed-font discovery, font-display
+timing, variable/color fonts, cross-realm projection, and complete FontFace/Web
+IDL parity remain issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

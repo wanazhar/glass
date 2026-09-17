@@ -1473,6 +1473,26 @@ impl NativeDocument {
         self.set_font_resources(resources)
     }
 
+    pub(crate) fn apply_script_font_face_installs(
+        &mut self,
+        commands: &[NativeScriptCommand],
+    ) -> Result<(), NativeEngineError> {
+        for command in commands {
+            let NativeScriptCommand::FontFaceInstall {
+                request_id,
+                family,
+                weight,
+                style,
+                body_base64,
+            } = command
+            else {
+                continue;
+            };
+            self.apply_script_font_face_install(*request_id, family, weight, style, body_base64)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn external_stylesheet_states(
         &self,
     ) -> Vec<(u32, String, Option<String>, Option<String>)> {

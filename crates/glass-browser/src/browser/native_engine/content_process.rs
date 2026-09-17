@@ -174,6 +174,7 @@ type NativeScriptFetch = (
     Option<Duration>,
     Option<u32>,
     bool,
+    bool,
 );
 
 pub(crate) struct NativeContentLoad {
@@ -11341,6 +11342,7 @@ fn fetch_commands(
                 cache,
                 timeout_ms,
                 upload_stream_id,
+                destination,
                 ..
             } => Some((
                 *request_id,
@@ -11356,6 +11358,7 @@ fn fetch_commands(
                 *timeout_ms,
                 *upload_stream_id,
                 *credentials,
+                destination.clone(),
             )),
             _ => None,
         })
@@ -11374,6 +11377,7 @@ fn fetch_commands(
                 timeout_ms,
                 upload_stream_id,
                 credentials,
+                destination,
             )| {
                 if timeout_ms.is_some_and(|value| value > MAX_NATIVE_XHR_TIMEOUT_MS) {
                     return Err(NativeEngineError::invalid(
@@ -11433,6 +11437,16 @@ fn fetch_commands(
                     }
                     None => body.map(NativeRequestBody::Text),
                 };
+                let font_destination = match destination.as_deref() {
+                    None | Some("") => false,
+                    Some("font") => true,
+                    Some(_) => {
+                        return Err(NativeEngineError::invalid(
+                            "script fetch destination",
+                            "must be empty or font",
+                        ));
+                    }
+                };
                 Ok((
                     request_id,
                     href,
@@ -11446,6 +11460,7 @@ fn fetch_commands(
                     timeout,
                     upload_stream_id,
                     credentials,
+                    font_destination,
                 ))
             },
         )
@@ -11473,6 +11488,30 @@ fn fetch_response_payload(result: Result<NativeFetchResponse, NativeEngineError>
                 NativeEngineError::Network { reason, .. } if reason == "request timed out"
             ),
         }),
+    }
+}
+
+fn font_fetch_response_payload(
+    href: &str,
+    result: Result<Option<Vec<u8>>, NativeEngineError>,
+) -> Value {
+    match result {
+        Ok(Some(body)) => fetch_response_payload(Ok(NativeFetchResponse {
+            url: href.to_owned(),
+            status: 200,
+            status_text: "OK".into(),
+            content_type: None,
+            headers: Vec::new(),
+            body,
+            redirected: false,
+            opaque: false,
+            opaque_redirect: false,
+        })),
+        Ok(None) => fetch_response_payload(Err(NativeEngineError::Network {
+            operation: "font fetch".into(),
+            reason: "font resource was blocked or unavailable".into(),
+        })),
+        Err(error) => fetch_response_payload(Err(error)),
     }
 }
 
@@ -11860,6 +11899,7 @@ async fn resolve_script_fetches(
             timeout,
             upload_stream_id,
             credentials,
+            font_destination,
         )) = selected_fetch.take()
         {
             resolved_count = resolved_count.saturating_add(1);
@@ -11876,6 +11916,52 @@ async fn resolve_script_fetches(
                     reason: "content process has no resource loader".into(),
                 });
             };
+            if font_destination {
+                if method.as_str() != "GET"
+                    || !headers.is_empty()
+                    || body.is_some()
+                    || content_type.is_some()
+                    || cors_mode != NativeCorsMode::Cors
+                    || redirect_mode != NativeFetchRedirectMode::Follow
+                    || cache_mode != NativeFetchCacheMode::Default
+                    || !credentials
+                    || upload_stream_id.is_some()
+                {
+                    return Err(NativeEngineError::invalid(
+                        "font fetch request",
+                        "must be a bodyless credentialed CORS GET with follow redirects and default cache",
+                    ));
+                }
+                let object_url = runtime.object_url_resource(&href)?;
+                let payload = font_fetch_response_payload(
+                    &href,
+                    loader
+                        .load_font_async(&current_url, &href, object_url.as_ref())
+                        .await,
+                );
+                process_page_fetch_resolution(
+                    request_id,
+                    payload,
+                    runtime,
+                    service_workers,
+                    websocket_connections,
+                    fetch_stream_connections,
+                    fetch_upload_connections,
+                    event_source_connections,
+                    loader,
+                    &mut next,
+                    &mut mutation,
+                    &mut current_url,
+                    document_origin,
+                    viewport,
+                    top_level_await_pending,
+                    &mut resolved_value,
+                    &mut pump_background_events,
+                    &mut pending,
+                )
+                .await?;
+                continue;
+            }
             if let Some(upload_stream_id) = upload_stream_id {
                 if upload_stream_id != request_id {
                     return Err(NativeEngineError::invalid(
@@ -12974,6 +13060,33 @@ fn worker_binary_path() -> Result<PathBuf, NativeEngineError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn fetch_commands_accept_only_the_private_font_destination() {
+        let command = |destination: Option<&str>| NativeScriptCommand::Fetch {
+            request_id: 1,
+            worker_id: None,
+            href: "https://fonts.test/example.woff2".into(),
+            credentials: true,
+            method: "GET".into(),
+            headers: BTreeMap::new(),
+            body: None,
+            body_base64: None,
+            content_type: None,
+            mode: Some("cors".into()),
+            redirect: Some("follow".into()),
+            cache: Some("default".into()),
+            timeout_ms: None,
+            upload_stream_id: None,
+            destination: destination.map(str::to_owned),
+        };
+
+        let mut font = fetch_commands(&[command(Some("font"))]).unwrap();
+        assert!(font.pop_front().is_some_and(|request| request.12));
+        let mut ordinary = fetch_commands(&[command(None)]).unwrap();
+        assert!(!ordinary.pop_front().unwrap().12);
+        assert!(fetch_commands(&[command(Some("image"))]).is_err());
+    }
+
     #[tokio::test]
     async fn refresh_health_detects_an_exited_content_worker() {
         let mut process = NativeContentProcess::spawn(None, &[]).await.unwrap();
@@ -12985,5 +13098,88 @@ mod tests {
             process.failure_kind(),
             Some(NativeWorkerFailureKind::Exited)
         );
+    }
+
+    #[tokio::test]
+    async fn content_process_font_destination_uses_the_native_font_loader() {
+        #[cfg(not(target_os = "linux"))]
+        return;
+
+        let Ok(font_bytes) =
+            std::fs::read("/usr/share/fonts/truetype/noto/NotoSansLycian-Regular.ttf")
+        else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "glass-native-font-destination-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock must be after the Unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).expect("font test root must be created");
+        let font_path = root.join("face.ttf");
+        std::fs::write(&font_path, font_bytes).expect("font test fixture must be written");
+        let document_url = Url::from_file_path(root.join("index.html"))
+            .expect("font test document URL must be created")
+            .to_string();
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("font-destination-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::empty();
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const face = new FontFace("File Face", "url(face.ttf)");
+                  document.fonts.add(face);
+                  face.load();
+                  return true;
+                })()"#,
+                &document,
+                &document_url,
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("file FontFace source must evaluate");
+        assert!(evaluation.commands.iter().any(|command| matches!(
+            command,
+            NativeScriptCommand::Fetch {
+                destination: Some(destination),
+                ..
+            } if destination == "font"
+        )));
+
+        let limits = NativeEngineLimits::default();
+        let mut loader = NativeResourceLoader::for_content_process(
+            limits.max_document_bytes,
+            None,
+            std::slice::from_ref(&root),
+        )
+        .expect("font test loader must construct");
+        let mut service_workers = NativeServiceWorkerRegistry::default();
+        let mut websocket_connections = BTreeMap::new();
+        let mut fetch_stream_connections = BTreeMap::new();
+        let mut fetch_upload_connections = BTreeMap::new();
+        let mut event_source_connections = BTreeMap::new();
+        let (next, _mutation, _resolved_value) = resolve_script_fetches(
+            &document,
+            &runtime,
+            Some(&mut loader),
+            &mut service_workers,
+            &mut websocket_connections,
+            &mut fetch_stream_connections,
+            &mut fetch_upload_connections,
+            &mut event_source_connections,
+            &document_url,
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+            false,
+            evaluation,
+        )
+        .await
+        .expect("content-process font destination must resolve");
+        assert_eq!(next.to_content_wire().font_resources.len(), 1);
+        assert_eq!(next.to_content_wire().font_resources[0].family, "File Face");
+        std::fs::remove_dir_all(root).expect("font test root must be removed");
     }
 }

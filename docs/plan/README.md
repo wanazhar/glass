@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-495`, following completed
 `native-engine-browser-494`, following completed
 `native-engine-browser-493`, following completed
 `native-engine-browser-492`, following completed
@@ -127,6 +128,17 @@ dedicated `font-src` loader policy, and has no host acknowledgement after
 installation; both are explicit next issue #40 gates. Installed-font discovery,
 font-display timing, variable/color fonts, cross-realm FontFace projection,
 and complete text/Web IDL parity remain open issue #40 gates.
+
+Slice 495 routes dynamic FontFace URL sources through a private `font` Fetch
+destination. The content owner validates the destination and invokes the
+existing native font loader, restoring document `font-src`, mixed-content,
+redirect, CORS, cookie, cache, MIME, and bounded-byte enforcement before
+projecting the admitted bytes through the existing Fetch resolver and
+`FontFaceInstall` command. Service Worker interception for dynamic FontFace
+requests, host acknowledgement of install admission, final URL/response-header
+fidelity, installed-font discovery, font-display timing, variable/color fonts,
+cross-realm FontFace projection, and complete text/Web IDL parity remain open
+issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

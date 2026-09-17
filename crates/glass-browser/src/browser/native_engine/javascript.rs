@@ -266,6 +266,11 @@ pub(crate) enum NativeScriptCommand {
         timeout_ms: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         upload_stream_id: Option<u32>,
+        /// An internal request destination. This is never user-configurable
+        /// through the public Fetch API; the page FontFace loader uses
+        /// `font` so the content owner can apply font-specific policy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<String>,
     },
     /// Install bytes loaded by a page-realm `FontFace`. The fetch or inline
     /// source resolution happens in JavaScript first; this bounded command
@@ -3131,6 +3136,7 @@ impl NativeWorkerRegistry {
             cache,
             timeout_ms,
             upload_stream_id,
+            destination,
         } = command
         else {
             return Err(NativeEngineError::invalid(
@@ -3142,6 +3148,12 @@ impl NativeWorkerRegistry {
             return Err(NativeEngineError::invalid(
                 "native Worker fetch command",
                 "worker id does not match the owning worker",
+            ));
+        }
+        if destination.is_some() {
+            return Err(NativeEngineError::invalid(
+                "native Worker fetch destination",
+                "worker fetch destinations are not supported",
             ));
         }
         if request_id == 0 {
@@ -9612,7 +9624,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
       const href = source.href;
       const inlineBytes = nativeFontFaceInlineBytes(href);
       if (inlineBytes !== null) return inlineBytes;
-      return fetch(href, { credentials: "same-origin", mode: "cors" }).then((response) => {
+      return fetchNative(href, { credentials: "same-origin", mode: "cors" }, "font").then((response) => {
         if (!response || response.ok !== true)
           throw nativeFontFaceError("FontFace source response was not successful", "NetworkError");
         const contentType = response.headers && response.headers.get
@@ -17325,6 +17337,45 @@ mod native_font_face_tests {
         let wire = document.to_content_wire();
         assert_eq!(wire.font_resources.len(), 1);
         assert_eq!(wire.font_resources[0].family, "Inline Sans");
+    }
+
+    #[test]
+    fn script_font_face_url_emits_private_font_destination() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-url-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::empty();
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const face = new FontFace("Remote Face", "url(https://fonts.test/face.woff2)");
+                  document.fonts.add(face);
+                  face.load();
+                  return true;
+                })()"#,
+                &document,
+                "https://app.test/index.html",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("URL FontFace source must evaluate");
+        assert!(evaluation.commands.iter().any(|command| matches!(
+            command,
+            NativeScriptCommand::Fetch {
+                destination: Some(destination),
+                href,
+                method,
+                credentials: true,
+                mode: Some(mode),
+                redirect: Some(redirect),
+                cache: Some(cache),
+                ..
+            } if destination == "font"
+                && href == "https://fonts.test/face.woff2"
+                && method == "GET"
+                && mode == "cors"
+                && redirect == "follow"
+                && cache == "default"
+        )));
     }
 
     #[test]
@@ -28945,11 +28996,16 @@ fn document_bootstrap(
   const clearFetchAbortListener = (pending) => {{
     if (pending.signal && pending.abortListener) pending.signal.removeEventListener("abort", pending.abortListener);
   }};
-  const fetchNativeDispatch = (input, options, streamedBodyBytes, streamedBodyStream) => {{
+  const fetchNativeDispatch = (input, options, streamedBodyBytes, streamedBodyStream, internalDestination) => {{
     const sourceRequest = input && input.__glassRequest === true ? input : null;
     const sourceUrl = input && input.__glassUrl === true ? input : null;
     if (typeof input !== "string" && !sourceRequest && !sourceUrl) throw new TypeError("native fetch requires a URL string, URL, or Request");
     const href = nativeRequestUrl(sourceRequest ? sourceRequest.url : sourceUrl || input);
+    const destination = internalDestination === undefined || internalDestination === null
+      ? null
+      : String(internalDestination);
+    if (destination !== null && destination !== "font")
+      throw new TypeError("native fetch destination is unsupported");
     const hasBodyOverride = options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "body");
     const sourceBodyPayload = (() => {{
       const payload = sourceRequest && !hasBodyOverride && sourceRequest.body !== null
@@ -29147,7 +29203,7 @@ fn document_bootstrap(
       fetchRequests.set(requestId, pending);
       if (signal) signal.addEventListener("abort", abort);
       if (!fetchRequests.has(requestId)) return;
-      pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, cache, timeout_ms: timeoutMs, upload_stream_id: hasStreamedBody ? requestId : null }});
+      pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, cache, timeout_ms: timeoutMs, upload_stream_id: hasStreamedBody ? requestId : null, destination }});
     }});
   }};
   const responseHeaders = (rawEntries, contentType) => {{
@@ -30637,7 +30693,7 @@ fn document_bootstrap(
     );
     return readNext();
   }};
-  const fetchNative = (input, options) => {{
+  const fetchNative = (input, options, internalDestination) => {{
     const sourceRequest = input && input.__glassRequest === true ? input : null;
     const sourceUrl = input && input.__glassUrl === true ? input : null;
     if (typeof input !== "string" && !sourceRequest && !sourceUrl)
@@ -30646,7 +30702,7 @@ fn document_bootstrap(
     const sourceBody = sourceRequest && !hasBodyOverride ? sourceRequest.body : null;
     if (sourceBody && sourceBody.__glassReadableStream === true) {{
       if (!nativeRequestBodyUse(sourceRequest)) return Promise.reject(new TypeError("native Request body is unusable"));
-      return fetchNativeDispatch(input, options, undefined, sourceBody);
+      return fetchNativeDispatch(input, options, undefined, sourceBody, internalDestination);
     }}
     const settings = Object.assign(
       {{}},
@@ -30655,8 +30711,8 @@ fn document_bootstrap(
     );
     const body = settings.body;
     if (body && body.__glassReadableStream === true)
-      return fetchNativeDispatch(input, options, undefined, body);
-    return fetchNativeDispatch(input, options);
+      return fetchNativeDispatch(input, options, undefined, body, internalDestination);
+    return fetchNativeDispatch(input, options, undefined, undefined, internalDestination);
   }};
   RequestNative.prototype.text = function() {{
     return nativeRequestBodyPromise(this, bytes => utf8TextFromBytes(bytes));

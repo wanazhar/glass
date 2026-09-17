@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-495`, following completed
 `native-engine-browser-494`, following completed
 `native-engine-browser-493`, following completed
 `native-engine-browser-492`, following completed
@@ -98,6 +99,18 @@ acknowledged host response remain the next issue #40 conformance gate.
 Platform-wide installed-font discovery, font-display timing, variable/color
 fonts, cross-realm FontFace projection, and complete text/Web IDL parity remain
 issue #40 gates.
+
+Slice 495 routes the page-realm URL branch of `FontFace.load()` through a
+private, host-validated `font` Fetch destination. The content owner rejects
+bodyful, non-GET, worker-owned, or otherwise forged font requests and invokes
+the existing native font loader, restoring its document `font-src`,
+mixed-content, redirect, CORS, cookie, cache, MIME, and byte-limit policy
+instead of the generic `connect-src` Fetch path. The response is projected
+back through the existing bounded Fetch resolver, so successful bytes retain
+the established `FontFaceInstall` admission boundary. Service Worker
+interception for dynamic FontFace requests, host acknowledgement of install
+admission, and final URL/response-header fidelity remain explicit follow-up
+gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between

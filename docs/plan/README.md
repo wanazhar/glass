@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-442`, following completed
 `native-engine-browser-441`, following completed
 `native-engine-browser-440`, following completed
 `native-engine-browser-439`, following completed
@@ -296,6 +297,15 @@ drive the existing bounded lifecycle. Page handler attributes use the shared
 owner-backed event store and worker handler attributes use the isolated worker
 store; synthetic dispatch invokes both handler and listener callbacks. Full
 descriptor and broader platform Web IDL parity remain issue #40 gates.
+
+The completed XHR read-only-state slice is
+[native-engine-browser-442](tasks/native-engine-browser-442.md): page and
+dedicated/SharedWorker XHR expose non-enumerable prototype getters for
+`readyState`, `status`, `statusText`, `responseURL`, `response`, and `upload`,
+while internal lifecycle paths update private slots. Script mutation cannot
+corrupt transport state; existing response-type, timeout, response-text, and
+response-XML validators remain in force. Broader platform Web IDL descriptor
+parity remains issue #40 work.
 
 The completed XHR request-side slice is
 [native-engine-browser-439](tasks/native-engine-browser-439.md): page and

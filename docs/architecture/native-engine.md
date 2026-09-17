@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-442`, following completed
 `native-engine-browser-441`, following completed
 `native-engine-browser-440`, following completed
 `native-engine-browser-439`, following completed
@@ -123,6 +124,15 @@ and broader platform Web IDL parity remain issue #40 gates.
 The capability inventory's broader `no live Web IDL identity` qualifier now
 refers to the remaining platform interfaces; it does not describe the page
 and worker XHR or upload targets covered by this slice.
+
+Slice 442 closes the public XHR-state mutability gap. Page and
+dedicated/SharedWorker XHR now expose prototype getters for `readyState`,
+`status`, `statusText`, `responseURL`, `response`, and `upload`; native
+transport, response, sync, streaming, abort, and timeout paths update private
+slots instead. Script assignments cannot corrupt those values, while the
+existing writable `responseType`/`timeout` validators and gated
+`responseText`/`responseXML` projections remain unchanged. Full Web IDL
+descriptor parity for the remaining platform surface remains issue #40 work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

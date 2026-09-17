@@ -2,8 +2,8 @@ use super::config::{
     NativeEngineLimits, validate_url_text, validate_window_name, without_fragment,
 };
 use super::css::{
-    NativeFontFaceRule, NativeStylesheet, absolutize_stylesheet_urls,
-    collect_background_image_sources, font_family_hash,
+    NativeFontFaceRule, NativeStylesheet, NativeUnicodeRange, absolutize_stylesheet_urls,
+    collect_background_image_sources, font_family_hash, format_font_face_unicode_ranges,
 };
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
@@ -217,6 +217,8 @@ pub(crate) struct NativeFontFaceResourceWire {
     pub(crate) family_key: u64,
     pub(crate) weight: FontWeightValue,
     pub(crate) style: FontStyleValue,
+    #[serde(default)]
+    pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
     pub(crate) data_base64: String,
 }
 
@@ -226,6 +228,7 @@ pub(crate) struct NativeFontFaceScriptDescriptor {
     pub(crate) family: String,
     pub(crate) weight: String,
     pub(crate) style: String,
+    pub(crate) unicode_range: String,
     pub(crate) status: String,
 }
 
@@ -1336,6 +1339,7 @@ impl NativeDocument {
                     FontStyleValue::Normal => "normal".into(),
                     FontStyleValue::Italic => "italic".into(),
                 },
+                unicode_range: format_font_face_unicode_ranges(&rule.unicode_ranges),
                 status: if self.font_resources.iter().any(|resource| {
                     resource.family_key == rule.family_key
                         && resource.weight == rule.weight
@@ -1467,6 +1471,7 @@ impl NativeDocument {
             weight,
             style,
             bytes: Arc::from(bytes),
+            unicode_ranges: Vec::new(),
         };
         let mut resources = self.font_resources.clone();
         resources.push(resource);
@@ -2305,6 +2310,7 @@ impl NativeDocument {
                 family_key: resource.family_key,
                 weight: resource.weight,
                 style: resource.style,
+                unicode_ranges: resource.unicode_ranges.clone(),
                 data_base64: base64::engine::general_purpose::STANDARD
                     .encode(resource.bytes.as_ref()),
             })
@@ -2384,6 +2390,11 @@ impl NativeDocument {
                 || resource.family.len() > MAX_ATTRIBUTE_BYTES
                 || resource.family.bytes().any(|byte| byte.is_ascii_control())
                 || resource.family_key != super::css::font_family_hash(&resource.family)
+                || resource.unicode_ranges.len() > super::css::MAX_NATIVE_FONT_FACE_UNICODE_RANGES
+                || resource
+                    .unicode_ranges
+                    .iter()
+                    .any(|range| range.start > range.end || range.end > 0x10_FFFF)
                 || resource.data_base64.len() > max_encoded_font_bytes
             {
                 return Err(NativeEngineError::Parse {
@@ -2417,6 +2428,7 @@ impl NativeDocument {
                 family_key: resource.family_key,
                 weight: resource.weight,
                 style: resource.style,
+                unicode_ranges: resource.unicode_ranges,
                 bytes: Arc::from(bytes),
             });
         }
@@ -9790,6 +9802,7 @@ mod tests {
                 weight: FontWeightValue::Normal,
                 style: FontStyleValue::Normal,
                 bytes: Arc::from(vec![0_u8, 1, 2, 3]),
+                unicode_ranges: Vec::new(),
             }])
             .unwrap();
         let wire = document.to_content_wire();

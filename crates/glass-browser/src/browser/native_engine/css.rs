@@ -24,6 +24,7 @@ const MAX_SELECTOR_BYTES: usize = 256;
 const MAX_SELECTOR_PARTS: usize = 8;
 const MAX_NATIVE_FONT_FACE_SOURCE_BYTES: usize = 512 * 1024;
 const MAX_NATIVE_FONT_FACE_SOURCES: usize = 8;
+pub(crate) const MAX_NATIVE_FONT_FACE_UNICODE_RANGES: usize = 32;
 const MAX_NATIVE_NAMED_CASCADE_LAYERS: usize = 15;
 const UNLAYERED_CASCADE_LAYER: u16 = MAX_NATIVE_NAMED_CASCADE_LAYERS as u16;
 const CASCADE_SPECIFICITY_BITS: u32 = 12;
@@ -1102,6 +1103,19 @@ pub(crate) enum NativeFontFaceSource {
     Url(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeUnicodeRange {
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+impl NativeUnicodeRange {
+    pub(crate) fn contains(self, character: char) -> bool {
+        let code_point = u32::from(character);
+        (self.start..=self.end).contains(&code_point)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeFontFaceRule {
     pub(crate) family: String,
@@ -1109,6 +1123,7 @@ pub(crate) struct NativeFontFaceRule {
     pub(crate) sources: Vec<NativeFontFaceSource>,
     pub(crate) weight: FontWeightValue,
     pub(crate) style: FontStyleValue,
+    pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -6195,6 +6210,7 @@ fn parse_font_face_rule(
     let mut font_sources = None;
     let mut weight = FontWeightValue::Normal;
     let mut style = FontStyleValue::Normal;
+    let mut unicode_ranges = Vec::new();
     for (declaration_offset, declaration) in split_css_declarations(source) {
         let offset = open.saturating_add(1).saturating_add(declaration_offset);
         let declaration = declaration.trim();
@@ -6258,6 +6274,15 @@ fn parse_font_face_rule(
                     "font-face-style",
                 ),
             },
+            "unicode-range" => match parse_font_face_unicode_range(value) {
+                Some(parsed) => unicode_ranges = parsed,
+                None => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-face-unicode-range",
+                ),
+            },
             _ => context.diagnostics.push(
                 NativeDiagnosticCode::UnsupportedCssProperty,
                 context.diagnostic_source,
@@ -6297,6 +6322,7 @@ fn parse_font_face_rule(
         sources,
         weight,
         style,
+        unicode_ranges,
     });
     Ok(())
 }
@@ -11376,6 +11402,96 @@ fn parse_font_style(value: &str) -> Option<FontStyleValue> {
         "italic" => Some(FontStyleValue::Italic),
         _ => None,
     }
+}
+
+fn parse_font_face_unicode_range(value: &str) -> Option<Vec<NativeUnicodeRange>> {
+    let mut ranges = Vec::new();
+    for token in value.split(',') {
+        let token = token.trim();
+        if token.is_empty() || token.len() > 16 {
+            return None;
+        }
+        let prefix = token.get(..2)?;
+        if !prefix.eq_ignore_ascii_case("u+") {
+            return None;
+        }
+        let value = &token[2..];
+        let (start, end) = if let Some((start, end)) = value.split_once('-') {
+            if start.is_empty() || end.is_empty() {
+                return None;
+            }
+            (
+                u32::from_str_radix(start, 16).ok()?,
+                u32::from_str_radix(end, 16).ok()?,
+            )
+        } else if value.contains('?') {
+            let mut saw_question = false;
+            let mut start_text = String::with_capacity(value.len());
+            let mut end_text = String::with_capacity(value.len());
+            for character in value.chars() {
+                if character == '?' {
+                    saw_question = true;
+                    start_text.push('0');
+                    end_text.push('F');
+                } else {
+                    if saw_question || !character.is_ascii_hexdigit() {
+                        return None;
+                    }
+                    start_text.push(character);
+                    end_text.push(character);
+                }
+            }
+            if start_text.is_empty() {
+                return None;
+            }
+            (
+                u32::from_str_radix(&start_text, 16).ok()?,
+                u32::from_str_radix(&end_text, 16).ok()?,
+            )
+        } else {
+            let point = u32::from_str_radix(value, 16).ok()?;
+            (point, point)
+        };
+        if start > end || end > 0x10_FFFF {
+            return None;
+        }
+        ranges.push(NativeUnicodeRange { start, end });
+        if ranges.len() > MAX_NATIVE_FONT_FACE_UNICODE_RANGES {
+            return None;
+        }
+    }
+    if ranges.is_empty() {
+        return None;
+    }
+    ranges.sort_unstable_by_key(|range| (range.start, range.end));
+    let mut merged: Vec<NativeUnicodeRange> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if let Some(previous) = merged.last_mut()
+            && range.start <= previous.end.saturating_add(1)
+        {
+            previous.end = previous.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    Some(merged)
+}
+
+pub(crate) fn format_font_face_unicode_ranges(ranges: &[NativeUnicodeRange]) -> String {
+    if ranges.is_empty() {
+        return "U+0-10FFFF".into();
+    }
+    ranges
+        .iter()
+        .map(|range| {
+            if range.start == range.end {
+                format!("U+{:X}", range.start)
+            } else {
+                format!("U+{:X}-{:X}", range.start, range.end)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn parse_font_family(value: &str) -> Option<NativeFontFamilyList> {
@@ -21142,6 +21258,39 @@ mod tests {
         assert_eq!(rule.weight, FontWeightValue::Bold);
         assert_eq!(rule.style, FontStyleValue::Italic);
         assert_eq!(stylesheet.rules.len(), 1);
+    }
+
+    #[test]
+    fn font_face_unicode_range_parser_normalizes_hex_wildcards_and_merges() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            r#"@font-face {
+                font-family: "Range Face";
+                src: url("data:font/ttf;base64,AAECAw==");
+                unicode-range: U+0041, U+42-43, U+0044, u+4??, U+0045;
+            }"#
+            .into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            stylesheet.font_face_rules()[0].unicode_ranges,
+            vec![
+                NativeUnicodeRange {
+                    start: 0x41,
+                    end: 0x45,
+                },
+                NativeUnicodeRange {
+                    start: 0x400,
+                    end: 0x4ff,
+                },
+            ]
+        );
+        assert_eq!(
+            format_font_face_unicode_ranges(&stylesheet.font_face_rules()[0].unicode_ranges),
+            "U+41-45, U+400-4FF"
+        );
+        assert!(parse_font_face_unicode_range("U+110000").is_none());
+        assert!(parse_font_face_unicode_range("U+4?A").is_none());
+        assert!(parse_font_face_unicode_range("U+0-FFFF, ").is_none());
     }
 
     #[test]

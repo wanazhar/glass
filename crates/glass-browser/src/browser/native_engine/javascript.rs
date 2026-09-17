@@ -10045,6 +10045,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
         FontFaceNative.call(face, String(descriptor.family || ""), "", {
           weight: descriptor.weight === "700" ? "bold" : "normal",
           style: descriptor.style === "italic" ? "italic" : "normal",
+          unicodeRange: String(descriptor.unicodeRange || "U+0-10FFFF"),
         });
         const faceState = nativeFontFaceState(face);
         faceState.staticFace = true;
@@ -17621,7 +17622,7 @@ mod native_font_face_tests {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-test")
             .expect("native JavaScript runtime must construct");
         let document = NativeDocument::parse(
-            "<style>@font-face { font-family: 'Missing Face'; src: local('Missing Face'); }</style>",
+            "<style>@font-face { font-family: 'Missing Face'; src: local('Missing Face'); unicode-range: U+41-5A; }</style>",
             &NativeEngineLimits::default(),
         )
         .expect("font-face fixture must parse");
@@ -17634,6 +17635,7 @@ mod native_font_face_tests {
                     document.fonts.status,
                     document.fonts.size,
                     cssFace.family,
+                    cssFace.unicodeRange,
                     cssFace.status,
                     document.fonts.check("16px 'Missing Face'"),
                     document.fonts.check("16px Arial"),
@@ -17653,7 +17655,16 @@ mod native_font_face_tests {
         assert_eq!(
             evaluation.value,
             serde_json::json!([
-                [true, "loaded", 1, "Missing Face", "error", false, true],
+                [
+                    true,
+                    "loaded",
+                    1,
+                    "Missing Face",
+                    "U+41-5A",
+                    "error",
+                    false,
+                    true
+                ],
                 [2, "unloaded", false],
                 true,
                 1,

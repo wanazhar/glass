@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-503`, following completed
 `native-engine-browser-502`, following completed
 `native-engine-browser-501`, following completed
 `native-engine-browser-500`, following completed
@@ -216,6 +217,15 @@ shaping owners. The page source filter now fails closed for WOFF2, variation,
 color, EOT, and SVG formats that the native renderer does not yet implement.
 Decoded-size limits, WOFF2, variable/color rendering, and complete font-format
 and FontFace/Web IDL parity remain issue #40 gates.
+
+The completed CSS unicode-range selection follow-up is
+[`native-engine-browser-503`](tasks/native-engine-browser-503.md): bounded
+codepoint, range, and wildcard descriptors are normalized and carried through
+the page/content font-resource boundary, while tied named-family faces are
+selected by both range membership and glyph coverage. The `document.fonts`
+projection exposes the canonical range. Mixed-script shaping, font-stretch and
+variant descriptors, font-display timing, variable/color fonts, WOFF2, and
+complete FontFace/Web IDL parity remain issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

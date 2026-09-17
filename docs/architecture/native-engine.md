@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-493`, following completed
 `native-engine-browser-492`, following completed
 `native-engine-browser-491`, following completed
 `native-engine-browser-490`, following completed
@@ -76,6 +77,17 @@ therefore do not discard a valid URL fallback, and local bytes never cross the
 network or object-URL policy path. Broad installed-font discovery,
 FontFace/FontFaceSet event timing, variable/color fonts, and complete text/Web
 IDL parity remain issue #40 gates.
+
+Slice 493 adds the page-realm `FontFace` and `FontFaceSet` projection. The
+native host exports bounded CSS-face descriptors; `document.fonts` persists its
+CSS faces across document snapshots and exposes status, ready, size, check,
+load, add/delete/clear, iteration, and loading/loadingdone/loadingerror events.
+Known CSS faces report the host-admitted loaded/error state, while unknown
+families retain the normal fallback result. Script-created font loading remains
+explicitly fail-closed until a host command can validate and admit its source;
+platform-wide installed-font discovery, font-display timing, variable/color
+fonts, cross-realm FontFace projection, and complete text/Web IDL parity remain
+issue #40 gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between

@@ -7653,6 +7653,7 @@ async fn load_page_script_sources(
         loader,
         document_url,
         "glass-inline-module",
+        None,
     )
     .await
 }
@@ -7661,8 +7662,16 @@ async fn load_dynamic_page_script_sources(
     sources: Vec<NativePageScriptSource>,
     loader: &mut NativeResourceLoader,
     document_url: &str,
+    runtime: &NativeJavaScriptRuntime,
 ) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
-    load_page_script_source_list(sources, loader, document_url, "glass-dynamic-module").await
+    load_page_script_source_list(
+        sources,
+        loader,
+        document_url,
+        "glass-dynamic-module",
+        Some(runtime),
+    )
+    .await
 }
 
 async fn load_page_script_source_list(
@@ -7670,6 +7679,7 @@ async fn load_page_script_source_list(
     loader: &mut NativeResourceLoader,
     document_url: &str,
     module_name_prefix: &str,
+    runtime: Option<&NativeJavaScriptRuntime>,
 ) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
     let mut sources = Vec::new();
     let mut resource_events = Vec::new();
@@ -7742,8 +7752,12 @@ async fn load_page_script_source_list(
                 crossorigin,
                 parser_inserted,
             } => {
+                let object_url = runtime
+                    .map(|runtime| runtime.object_url_resource(&href))
+                    .transpose()?
+                    .flatten();
                 match loader
-                    .load_script_async_with_metadata(
+                    .load_script_async_with_metadata_and_object_url(
                         document_url,
                         &href,
                         MAX_NATIVE_SCRIPT_BYTES,
@@ -7751,6 +7765,7 @@ async fn load_page_script_source_list(
                         nonce.as_deref(),
                         integrity.as_deref(),
                         crossorigin.as_deref(),
+                        object_url.as_ref(),
                     )
                     .await
                 {
@@ -7779,8 +7794,12 @@ async fn load_page_script_source_list(
                 crossorigin,
                 parser_inserted,
             } => {
+                let object_url = runtime
+                    .map(|runtime| runtime.object_url_resource(&href))
+                    .transpose()?
+                    .flatten();
                 match loader
-                    .load_script_async_with_metadata(
+                    .load_script_async_with_metadata_and_object_url(
                         document_url,
                         &href,
                         MAX_NATIVE_SCRIPT_BYTES,
@@ -7788,6 +7807,7 @@ async fn load_page_script_source_list(
                         nonce.as_deref(),
                         integrity.as_deref(),
                         crossorigin.as_deref(),
+                        object_url.as_ref(),
                     )
                     .await
                 {
@@ -7870,7 +7890,7 @@ async fn execute_dynamic_page_scripts_with_loader(
             ));
         }
         let (scripts, resource_events) =
-            load_dynamic_page_script_sources(sources, loader, document_url).await?;
+            load_dynamic_page_script_sources(sources, loader, document_url, runtime).await?;
         let csp_violations = loader.take_csp_violations();
         let mut result = execute_dynamic_page_scripts(
             document,

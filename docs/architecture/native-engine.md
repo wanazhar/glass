@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-459`, following completed
 `native-engine-browser-458`, following completed
 `native-engine-browser-457`, following completed
 `native-engine-browser-456`, following completed
@@ -276,7 +277,13 @@ is `native-engine-browser-458`: process-backed dynamic stylesheet links
 retain bounded per-link resource state, resolve runtime-owned Blob CSS through
 the document CSP, MIME, size, UTF-8, and SRI gates, rebuild the native
 stylesheet/background-source owner, and deliver the link `load`/`error`
-event without HTTP/cache fallback. Module dependency graphs, media,
+event without HTTP/cache fallback. The completed module-dependency follow-up
+is `native-engine-browser-459`: process-backed page module scripts can resolve
+absolute runtime-owned Blob module imports through the bounded module-graph
+owner. Dependency snapshots reuse the existing CSP, Blob-origin, MIME, size,
+UTF-8, deduplication, and graph-limit gates, and missing or blocked entries
+fail without HTTP/cache fallback. Relative Blob-derived dependency naming and
+parser-created cross-realm Blob modules remain separate owner work. Media,
 popup/window, local-inline dynamic consumers, and cross-realm object-URL
 consumers remain separate resource-owner work.
 

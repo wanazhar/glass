@@ -9312,6 +9312,418 @@ const NATIVE_CANVAS_SCRIPT: &str = r###"
   };
 "###;
 
+const NATIVE_FONT_FACE_SCRIPT: &str = r###"
+  const nativeFontFaceError = (message, name = "InvalidStateError") => {
+    const error = new Error(String(message));
+    error.name = name;
+    return error;
+  };
+  const nativeFontFaceStates = globalThis.__glassFontFaceStates instanceof WeakMap
+    ? globalThis.__glassFontFaceStates
+    : new WeakMap();
+  globalThis.__glassFontFaceStates = nativeFontFaceStates;
+  const nativeFontFaceSetStates = globalThis.__glassFontFaceSetStates instanceof WeakMap
+    ? globalThis.__glassFontFaceSetStates
+    : new WeakMap();
+  globalThis.__glassFontFaceSetStates = nativeFontFaceSetStates;
+  const nativeFontFaceDescriptorDefaults = {
+    style: "normal",
+    weight: "normal",
+    stretch: "normal",
+    unicodeRange: "U+0-10FFFF",
+    variant: "normal",
+    featureSettings: "normal",
+    variationSettings: "normal",
+    display: "auto",
+    ascentOverride: "normal",
+    descentOverride: "normal",
+    lineGapOverride: "normal",
+    sizeAdjust: "100%",
+  };
+  const nativeFontFaceDescriptorNames = Object.keys(nativeFontFaceDescriptorDefaults);
+  const nativeFontFaceNormalizeFamily = (value) => String(value).trim()
+    .replace(/^("|')(.*)\1$/, "$2");
+  const nativeFontFaceDescriptorKey = (descriptor, index) => [
+    Number(index),
+    String(descriptor && descriptor.family || ""),
+    String(descriptor && descriptor.weight || "400"),
+    String(descriptor && descriptor.style || "normal"),
+  ].join("\u0000");
+  const nativeFontFaceSettledPromise = (face, status) => {
+    const promise = status === "loaded"
+      ? Promise.resolve(face)
+      : Promise.reject(nativeFontFaceError("native CSS font face failed to load", "NetworkError"));
+    promise.catch(() => {});
+    return promise;
+  };
+  const nativeFontFaceSetState = (set) => {
+    let state = nativeFontFaceSetStates.get(set);
+    if (state) return state;
+    state = {
+      faces: new Set(),
+      cssFaces: new Map(),
+      dynamicFaces: new Set(),
+      pending: new Set(),
+      cycleFaces: new Set(),
+      cycleErrors: new Set(),
+      status: "loaded",
+      readyPromise: Promise.resolve(set),
+      readyResolve: null,
+      initialized: false,
+    };
+    nativeFontFaceSetStates.set(set, state);
+    return state;
+  };
+  const nativeFontFaceState = (face) => nativeFontFaceStates.get(face) || null;
+  const nativeFontFaceDispatch = (set, type, faces) => {
+    if (typeof createEvent !== "function" || typeof dispatchTarget !== "function") return;
+    const event = createEvent(type);
+    event.fontfaces = Array.from(faces || []);
+    try { dispatchTarget(set, event); } catch (_error) {}
+  };
+  const nativeFontFaceResetReady = (set, state) => {
+    state.readyPromise = new Promise((resolve) => { state.readyResolve = resolve; });
+    return state.readyPromise;
+  };
+  const nativeFontFaceBegin = (set, face) => {
+    const state = nativeFontFaceSetState(set);
+    const idle = state.pending.size === 0;
+    state.pending.add(face);
+    state.cycleFaces.add(face);
+    if (idle) {
+      state.cycleErrors.clear();
+      state.status = "loading";
+      nativeFontFaceResetReady(set, state);
+      nativeFontFaceDispatch(set, "loading", [face]);
+    }
+  };
+  const nativeFontFaceFinish = (set, face, error) => {
+    const state = nativeFontFaceSetState(set);
+    if (!state.pending.delete(face)) return;
+    if (error) state.cycleErrors.add(face);
+    if (state.pending.size !== 0) return;
+    state.status = "loaded";
+    const faces = Array.from(state.cycleFaces);
+    const errors = Array.from(state.cycleErrors);
+    const loaded = faces.filter((candidate) => !state.cycleErrors.has(candidate));
+    if (state.readyResolve) state.readyResolve(set);
+    state.readyResolve = null;
+    if (loaded.length > 0) nativeFontFaceDispatch(set, "loadingdone", loaded);
+    if (errors.length > 0) nativeFontFaceDispatch(set, "loadingerror", errors);
+    state.cycleFaces.clear();
+    state.cycleErrors.clear();
+  };
+  const FontFaceNative = typeof globalThis.__glassFontFaceConstructor === "function"
+    ? globalThis.__glassFontFaceConstructor
+    : function FontFace(family, source, descriptors) {
+        if (!(this instanceof FontFaceNative)) throw new TypeError("FontFace requires new");
+        const normalizedFamily = nativeFontFaceNormalizeFamily(family);
+        if (!normalizedFamily) throw nativeFontFaceError("FontFace family must not be empty", "SyntaxError");
+        const settings = descriptors && typeof descriptors === "object" ? descriptors : {};
+        const state = {
+          family: normalizedFamily,
+          source,
+          status: "unloaded",
+          loadedPromise: null,
+          staticFace: false,
+          staticStatus: null,
+          set: null,
+        };
+        for (const name of nativeFontFaceDescriptorNames) {
+          state[name] = settings[name] === undefined
+            ? nativeFontFaceDescriptorDefaults[name]
+            : String(settings[name]);
+        }
+        nativeFontFaceStates.set(this, state);
+      };
+  const nativeFontFaceDescriptor = (name) => ({
+    enumerable: true,
+    configurable: true,
+    get() {
+      const state = nativeFontFaceState(this);
+      if (!state) throw new TypeError("Illegal FontFace receiver");
+      return state[name];
+    },
+    set(value) {
+      const state = nativeFontFaceState(this);
+      if (!state) throw new TypeError("Illegal FontFace receiver");
+      state[name] = String(value);
+    },
+  });
+  Object.defineProperty(FontFaceNative.prototype, "family", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      const state = nativeFontFaceState(this);
+      if (!state) throw new TypeError("Illegal FontFace receiver");
+      return state.family;
+    },
+    set(value) {
+      const state = nativeFontFaceState(this);
+      if (!state) throw new TypeError("Illegal FontFace receiver");
+      const family = nativeFontFaceNormalizeFamily(value);
+      if (!family) throw nativeFontFaceError("FontFace family must not be empty", "SyntaxError");
+      state.family = family;
+    },
+  });
+  for (const name of nativeFontFaceDescriptorNames) {
+    Object.defineProperty(FontFaceNative.prototype, name, nativeFontFaceDescriptor(name));
+  }
+  Object.defineProperty(FontFaceNative.prototype, "status", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      const state = nativeFontFaceState(this);
+      if (!state) throw new TypeError("Illegal FontFace receiver");
+      return state.status;
+    },
+  });
+  Object.defineProperty(FontFaceNative.prototype, "loaded", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      const state = nativeFontFaceState(this);
+      if (!state) throw new TypeError("Illegal FontFace receiver");
+      if (!state.loadedPromise) state.loadedPromise = nativeFontFaceSettledPromise(this, state.status);
+      return state.loadedPromise;
+    },
+  });
+  const nativeFontFaceLoad = function() {
+    const state = nativeFontFaceState(this);
+    if (!state) return Promise.reject(new TypeError("Illegal FontFace receiver"));
+    if (state.status === "loaded" && state.loadedPromise) return state.loadedPromise;
+    if (state.status === "loading" && state.loadedPromise) return state.loadedPromise;
+    const set = state.set;
+    if (set) nativeFontFaceBegin(set, this);
+    state.status = "loading";
+    const promise = Promise.resolve().then(() => {
+      if (state.staticFace && state.staticStatus === "loaded") return this;
+      throw nativeFontFaceError(
+        "script-created FontFace loading requires a native font loader",
+        "NotSupportedError",
+      );
+    }).then((face) => {
+      state.status = "loaded";
+      state.loadedPromise = Promise.resolve(face);
+      if (set) nativeFontFaceFinish(set, this, null);
+      return face;
+    }, (error) => {
+      state.status = "error";
+      const rejection = Promise.reject(error);
+      rejection.catch(() => {});
+      state.loadedPromise = rejection;
+      if (set) nativeFontFaceFinish(set, this, error);
+      throw error;
+    });
+    state.loadedPromise = promise;
+    return promise;
+  };
+  FontFaceNative.prototype.load = nativeFontFaceLoad;
+  FontFaceNative.prototype.toString = function() { return "[object FontFace]"; };
+  try { Object.setPrototypeOf(FontFaceNative.prototype, Object.prototype); } catch (_error) {}
+  globalThis.__glassFontFaceConstructor = FontFaceNative;
+  globalThis.FontFace = FontFaceNative;
+
+  const nativeFontFaceAdd = (set, face) => {
+    const setState = nativeFontFaceSetState(set);
+    const faceState = nativeFontFaceState(face);
+    if (!faceState) throw new TypeError("FontFaceSet.add requires a FontFace");
+    if (faceState.set && faceState.set !== set) {
+      throw nativeFontFaceError("FontFace is already in another FontFaceSet", "InvalidModificationError");
+    }
+    if (faceState.set === set) return set;
+    if (setState.faces.size >= 256) throw new RangeError("native FontFaceSet limit exceeded");
+    faceState.set = set;
+    faceState.staticFace = false;
+    setState.dynamicFaces.add(face);
+    setState.faces.add(face);
+    return set;
+  };
+  const FontFaceSetNative = typeof globalThis.__glassFontFaceSetConstructor === "function"
+    ? globalThis.__glassFontFaceSetConstructor
+    : function FontFaceSet(fonts) {
+        if (!(this instanceof FontFaceSetNative)) throw new TypeError("FontFaceSet requires new");
+        if (nativeFontFaceSetStates.has(this)) return this;
+        EventTargetNative.call(this);
+        nativeFontFaceSetState(this);
+        if (fonts !== undefined && fonts !== null) {
+          if (typeof fonts[Symbol.iterator] !== "function") throw new TypeError("FontFaceSet fonts must be iterable");
+          for (const face of fonts) nativeFontFaceAdd(this, face);
+        }
+      };
+  try { Object.setPrototypeOf(FontFaceSetNative.prototype, EventTargetNative.prototype); } catch (_error) {}
+  FontFaceSetNative.prototype.constructor = FontFaceSetNative;
+  Object.defineProperty(FontFaceSetNative.prototype, "status", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      const state = nativeFontFaceSetStates.get(this);
+      if (!state) throw new TypeError("Illegal FontFaceSet receiver");
+      return state.status;
+    },
+  });
+  Object.defineProperty(FontFaceSetNative.prototype, "ready", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      const state = nativeFontFaceSetStates.get(this);
+      if (!state) throw new TypeError("Illegal FontFaceSet receiver");
+      return state.readyPromise;
+    },
+  });
+  Object.defineProperty(FontFaceSetNative.prototype, "size", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      const state = nativeFontFaceSetStates.get(this);
+      if (!state) throw new TypeError("Illegal FontFaceSet receiver");
+      return state.faces.size;
+    },
+  });
+  FontFaceSetNative.prototype.add = function(face) { return nativeFontFaceAdd(this, face); };
+  FontFaceSetNative.prototype.delete = function(face) {
+    const state = nativeFontFaceSetStates.get(this);
+    const faceState = nativeFontFaceState(face);
+    if (!state || !faceState || faceState.set !== this || faceState.staticFace) return false;
+    state.dynamicFaces.delete(face);
+    state.faces.delete(face);
+    faceState.set = null;
+    return true;
+  };
+  FontFaceSetNative.prototype.clear = function() {
+    const state = nativeFontFaceSetStates.get(this);
+    if (!state) throw new TypeError("Illegal FontFaceSet receiver");
+    for (const face of Array.from(state.dynamicFaces)) this.delete(face);
+  };
+  FontFaceSetNative.prototype.forEach = function(callback, thisArg) {
+    const state = nativeFontFaceSetStates.get(this);
+    if (!state) throw new TypeError("Illegal FontFaceSet receiver");
+    if (typeof callback !== "function") throw new TypeError("FontFaceSet.forEach callback must be callable");
+    for (const face of Array.from(state.faces)) callback.call(thisArg, face, face, this);
+  };
+  FontFaceSetNative.prototype.values = function() {
+    const state = nativeFontFaceSetStates.get(this);
+    if (!state) throw new TypeError("Illegal FontFaceSet receiver");
+    return state.faces.values();
+  };
+  FontFaceSetNative.prototype.keys = FontFaceSetNative.prototype.values;
+  FontFaceSetNative.prototype.entries = function() {
+    const state = nativeFontFaceSetStates.get(this);
+    if (!state) throw new TypeError("Illegal FontFaceSet receiver");
+    return Array.from(state.faces, (face) => [face, face])[Symbol.iterator]();
+  };
+  FontFaceSetNative.prototype[Symbol.iterator] = FontFaceSetNative.prototype.values;
+  const nativeFontFaceFamilies = (font) => {
+    const source = String(font).trim();
+    const size = source.match(/\b\d+(?:\.\d+)?(?:px|pt|pc|in|cm|mm|em|rem|ex|ch|vw|vh|vmin|vmax|%)\b/i);
+    if (!size) throw nativeFontFaceError("invalid CSS font shorthand", "SyntaxError");
+    let familyText = source.slice(size.index + size[0].length)
+      .replace(/^\s*\/\s*[^\s]+\s*/, "")
+      .trim();
+    if (!familyText) throw nativeFontFaceError("invalid CSS font family list", "SyntaxError");
+    return familyText.split(",").map(nativeFontFaceNormalizeFamily).filter(Boolean);
+  };
+  const nativeFontFaceMatches = (face, families) => {
+    const state = nativeFontFaceState(face);
+    if (!state) return false;
+    const family = nativeFontFaceNormalizeFamily(state.family).toLowerCase();
+    return families.some((candidate) => nativeFontFaceNormalizeFamily(candidate).toLowerCase() === family);
+  };
+  FontFaceSetNative.prototype.check = function(font, _text) {
+    const state = nativeFontFaceSetStates.get(this);
+    if (!state) throw new TypeError("Illegal FontFaceSet receiver");
+    const families = nativeFontFaceFamilies(font);
+    const matching = Array.from(state.faces).filter((face) => nativeFontFaceMatches(face, families));
+    return matching.length === 0 || matching.every((face) => nativeFontFaceState(face).status === "loaded");
+  };
+  FontFaceSetNative.prototype.load = function(font, _text) {
+    const state = nativeFontFaceSetStates.get(this);
+    if (!state) return Promise.reject(new TypeError("Illegal FontFaceSet receiver"));
+    let families;
+    try { families = nativeFontFaceFamilies(font); }
+    catch (error) { return Promise.reject(error); }
+    const matching = Array.from(state.faces).filter((face) => nativeFontFaceMatches(face, families));
+    if (matching.length === 0) return Promise.resolve([]);
+    return Promise.all(matching.map((face) => {
+      const faceState = nativeFontFaceState(face);
+      if (faceState.status === "loaded") return face;
+      return face.load();
+    })).then(() => matching);
+  };
+  globalThis.__glassFontFaceSetConstructor = FontFaceSetNative;
+  globalThis.FontFaceSet = FontFaceSetNative;
+  const fontFaceSet = globalThis.__glassFontFaceSet
+    && nativeFontFaceSetStates.has(globalThis.__glassFontFaceSet)
+    ? globalThis.__glassFontFaceSet
+    : new FontFaceSetNative();
+  globalThis.__glassFontFaceSet = fontFaceSet;
+  const nativeFontFaceRefresh = () => {
+    const setState = nativeFontFaceSetState(fontFaceSet);
+    const descriptors = (Array.isArray(host.font_faces) ? host.font_faces : []).slice(0, 256);
+    const ordered = [];
+    const changed = [];
+    const currentKeys = new Set();
+    for (let index = 0; index < descriptors.length; index += 1) {
+      const descriptor = descriptors[index] || {};
+      const key = nativeFontFaceDescriptorKey(descriptor, index);
+      currentKeys.add(key);
+      let face = setState.cssFaces.get(key);
+      if (!face) {
+        face = Object.create(FontFaceNative.prototype);
+        FontFaceNative.call(face, String(descriptor.family || ""), "", {
+          weight: descriptor.weight === "700" ? "bold" : "normal",
+          style: descriptor.style === "italic" ? "italic" : "normal",
+        });
+        const faceState = nativeFontFaceState(face);
+        faceState.staticFace = true;
+        faceState.staticStatus = descriptor.status === "loaded" ? "loaded" : "error";
+        faceState.status = faceState.staticStatus;
+        faceState.set = fontFaceSet;
+        faceState.loadedPromise = nativeFontFaceSettledPromise(face, faceState.status);
+        setState.cssFaces.set(key, face);
+        if (setState.initialized) changed.push([face, faceState.staticStatus]);
+      } else {
+        const faceState = nativeFontFaceState(face);
+        const nextStatus = descriptor.status === "loaded" ? "loaded" : "error";
+        if (faceState.staticStatus !== nextStatus) {
+          faceState.staticStatus = nextStatus;
+          faceState.status = nextStatus;
+          faceState.loadedPromise = nativeFontFaceSettledPromise(face, nextStatus);
+          if (setState.initialized) changed.push([face, nextStatus]);
+        }
+      }
+      ordered.push(face);
+    }
+    for (const [key, face] of Array.from(setState.cssFaces.entries())) {
+      if (currentKeys.has(key)) continue;
+      setState.cssFaces.delete(key);
+      const faceState = nativeFontFaceState(face);
+      if (faceState) faceState.set = null;
+    }
+    setState.faces = new Set([...ordered, ...Array.from(setState.dynamicFaces)]);
+    globalThis.__glassFontFaceDescriptors = descriptors.map((descriptor, index) => ({
+      key: nativeFontFaceDescriptorKey(descriptor, index),
+    }));
+    if (!setState.initialized) {
+      setState.initialized = true;
+      setState.status = "loaded";
+      setState.readyPromise = Promise.resolve(fontFaceSet);
+      setState.readyResolve = null;
+      return;
+    }
+    if (changed.length === 0) return;
+    for (const [face] of changed) nativeFontFaceBegin(fontFaceSet, face);
+    for (const [face, status] of changed) {
+      nativeFontFaceFinish(fontFaceSet, face, status !== "loaded" ? nativeFontFaceError("native CSS font face failed to load", "NetworkError") : null);
+    }
+  };
+  globalThis.__glassRefreshFontFaces = nativeFontFaceRefresh;
+"###;
+
+fn native_font_face_script() -> &'static str {
+    NATIVE_FONT_FACE_SCRIPT
+}
+
 fn is_ignorable_page_script_error(error: &NativeEngineError) -> bool {
     matches!(
         error,
@@ -16563,6 +16975,99 @@ mod native_timer_probe_tests {
             .next_worker_timer_delay_ms()
             .expect("worker timer delay must be inspectable");
         assert!(delay.is_some_and(|delay| delay <= 25));
+    }
+}
+
+#[cfg(test)]
+mod native_font_face_tests {
+    use super::super::config::NativeEngineLimits;
+    use super::*;
+
+    #[test]
+    fn document_fonts_projects_css_faces_and_supports_set_operations() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<style>@font-face { font-family: 'Missing Face'; src: local('Missing Face'); }</style>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("font-face fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const cssFace = [...document.fonts][0];
+                  const initial = [
+                    document.fonts instanceof FontFaceSet,
+                    document.fonts.status,
+                    document.fonts.size,
+                    cssFace.family,
+                    cssFace.status,
+                    document.fonts.check("16px 'Missing Face'"),
+                    document.fonts.check("16px Arial"),
+                  ];
+                  const dynamicFace = new FontFace("Dynamic Face", "url(dynamic.woff2)", { weight: "700" });
+                  document.fonts.add(dynamicFace);
+                  const added = [document.fonts.size, dynamicFace.status, document.fonts.check("16px Dynamic Face")];
+                  const deleted = document.fonts.delete(dynamicFace);
+                  return [initial, added, deleted, document.fonts.size, [...document.fonts].length];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("FontFaceSet surface must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                [true, "loaded", 1, "Missing Face", "error", false, true],
+                [2, "unloaded", false],
+                true,
+                1,
+                1,
+            ])
+        );
+    }
+
+    #[test]
+    fn css_font_face_refresh_dispatches_loading_error_for_new_rules() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-refresh-test")
+            .expect("native JavaScript runtime must construct");
+        let empty = NativeDocument::empty();
+        runtime
+            .evaluate(
+                r#"globalThis.__fontFaceEvents = [];
+                document.fonts.addEventListener("loading", event => {
+                  __fontFaceEvents.push(["loading", event.fontfaces.length]);
+                });
+                document.fonts.addEventListener("loadingerror", event => {
+                  __fontFaceEvents.push(["loadingerror", event.fontfaces.length]);
+                });
+                true"#,
+                &empty,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("FontFaceSet listeners must install");
+        let styled = NativeDocument::parse(
+            "<style>@font-face { font-family: 'Late Face'; src: local('Late Face'); }</style>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("font-face fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                "[document.fonts.size, document.fonts.status, __fontFaceEvents, [...document.fonts][0].status]",
+                &styled,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("FontFaceSet refresh must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([1, "loaded", [["loading", 1], ["loadingerror", 1]], "error"])
+        );
     }
 }
 
@@ -25532,6 +26037,7 @@ fn document_bootstrap(
         "opener_url": opener_url,
         "origin": origin.serialized(),
         "state": state,
+        "font_faces": document.font_face_script_descriptors(),
         "history_state": history_state,
         "history_length": history_length,
         "now_ms": now_ms,
@@ -25562,6 +26068,7 @@ fn document_bootstrap(
     let message_channel_script = message_channel_bootstrap();
     let service_worker_page_script = service_worker_page_script();
     let xml_document_script = native_xml_document_script();
+    let font_face_script = native_font_face_script();
     Ok(format!(
         r###"(() => {{
   const host = {serialized};
@@ -35726,6 +36233,7 @@ fn document_bootstrap(
     for (const root of rootChildren) visit(root);
     return values;
   }};
+  {font_face_script}
   let documentCookie = typeof host.cookie === "string" ? host.cookie : "";
   const previewCookieSet = (current, value) => {{
     const pair = String(value).split(";", 1)[0].trim();
@@ -35768,6 +36276,7 @@ fn document_bootstrap(
     }},
     body,
     documentElement,
+    fonts: fontFaceSet,
     nodeType: 9,
     nodeName: "#document",
     URL: host.url,
@@ -36010,6 +36519,7 @@ fn document_bootstrap(
   globalThis.__glassHostCommands = commands;
   globalThis.__glassHostCommandBuffer = commands;
   globalThis.document = document;
+  if (typeof globalThis.__glassRefreshFontFaces === "function") globalThis.__glassRefreshFontFaces();
   const locationUrl = new URLNative(host.url);
   const navigateLocation = (value, replaceHistory) => {{
     const next = new URLNative(value, locationUrl.href);

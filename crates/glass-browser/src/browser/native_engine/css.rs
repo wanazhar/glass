@@ -11404,7 +11404,7 @@ fn parse_font_style(value: &str) -> Option<FontStyleValue> {
     }
 }
 
-fn parse_font_face_unicode_range(value: &str) -> Option<Vec<NativeUnicodeRange>> {
+pub(crate) fn parse_font_face_unicode_range(value: &str) -> Option<Vec<NativeUnicodeRange>> {
     let mut ranges = Vec::new();
     for token in value.split(',') {
         let token = token.trim();

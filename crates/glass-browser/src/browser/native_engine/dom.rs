@@ -4,6 +4,7 @@ use super::config::{
 use super::css::{
     NativeFontFaceRule, NativeStylesheet, NativeUnicodeRange, absolutize_stylesheet_urls,
     collect_background_image_sources, font_family_hash, format_font_face_unicode_ranges,
+    parse_font_face_unicode_range,
 };
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
@@ -1401,6 +1402,7 @@ impl NativeDocument {
         family: &str,
         weight: &str,
         style: &str,
+        unicode_range: &str,
         body_base64: &str,
     ) -> Result<(), NativeEngineError> {
         if request_id == 0 {
@@ -1439,6 +1441,16 @@ impl NativeDocument {
                 ));
             }
         };
+        let unicode_ranges = if unicode_range.trim().is_empty() {
+            Vec::new()
+        } else {
+            parse_font_face_unicode_range(unicode_range).ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native FontFace unicodeRange",
+                    "must be a bounded CSS unicode range list",
+                )
+            })?
+        };
         let max_encoded_bytes = (MAX_NATIVE_FONT_BYTES.saturating_add(2) / 3).saturating_mul(4);
         if body_base64.len() > max_encoded_bytes {
             return Err(NativeEngineError::limit(
@@ -1471,7 +1483,7 @@ impl NativeDocument {
             weight,
             style,
             bytes: Arc::from(bytes),
-            unicode_ranges: Vec::new(),
+            unicode_ranges,
         };
         let mut resources = self.font_resources.clone();
         resources.push(resource);
@@ -1488,12 +1500,20 @@ impl NativeDocument {
                 family,
                 weight,
                 style,
+                unicode_range,
                 body_base64,
             } = command
             else {
                 continue;
             };
-            self.apply_script_font_face_install(*request_id, family, weight, style, body_base64)?;
+            self.apply_script_font_face_install(
+                *request_id,
+                family,
+                weight,
+                style,
+                unicode_range,
+                body_base64,
+            )?;
         }
         Ok(())
     }
@@ -4755,6 +4775,7 @@ impl NativeDocument {
                     family,
                     weight,
                     style,
+                    unicode_range,
                     body_base64,
                 } => {
                     self.apply_script_font_face_install(
@@ -4762,6 +4783,7 @@ impl NativeDocument {
                         family,
                         weight,
                         style,
+                        unicode_range,
                         body_base64,
                     )?;
                 }
@@ -9813,6 +9835,28 @@ mod tests {
         assert_eq!(restored.font_resources.len(), 1);
         assert_eq!(restored.font_resources[0].family, "Embedded Sans");
         assert_eq!(restored.font_resources[0].bytes.as_ref(), &[0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn script_font_face_install_rejects_malformed_unicode_range() {
+        let mut document = NativeDocument::empty();
+        let error = document
+            .apply_script_font_face_installs(&[NativeScriptCommand::FontFaceInstall {
+                request_id: 1,
+                family: "Rejected Range".into(),
+                weight: "normal".into(),
+                style: "normal".into(),
+                unicode_range: "U+4?A".into(),
+                body_base64: "AA==".into(),
+            }])
+            .expect_err("malformed script unicodeRange must be rejected");
+
+        assert!(matches!(
+            error,
+            NativeEngineError::InvalidConfiguration { field, .. }
+                if field == "native FontFace unicodeRange"
+        ));
+        assert!(document.font_resources.is_empty());
     }
 
     #[test]

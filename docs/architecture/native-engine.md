@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-504`, following completed
 `native-engine-browser-503`, following completed
 `native-engine-browser-502`, following completed
 `native-engine-browser-501`, following completed
@@ -211,6 +212,17 @@ both admits the codepoint and contains the glyph. The CSS `document.fonts`
 projection exposes the canonical range string. Mixed-script shaping,
 font-stretch/variant, font-display timing, variable/color fonts, WOFF2, and
 complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 504 carries the page-realm `FontFace` constructor's `unicodeRange` through
+the bounded `FontFaceInstall` command. The native document owner reuses the
+CSS parser and its normalization, merge, codepoint, and 32-range limits before
+font bytes are decoded or admitted; malformed descriptors leave the font book
+unchanged and use the existing rejection acknowledgement. An omitted command
+field remains unrestricted for compatibility, while accepted ranges persist in
+document resources and content-process snapshots. Mixed-script shaping,
+font-stretch/variant, font-display timing, variable/color fonts, WOFF2,
+cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
+issue #40 gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between

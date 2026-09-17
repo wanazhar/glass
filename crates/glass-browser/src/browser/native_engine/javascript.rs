@@ -280,6 +280,8 @@ pub(crate) enum NativeScriptCommand {
         family: String,
         weight: String,
         style: String,
+        #[serde(default)]
+        unicode_range: String,
         body_base64: String,
     },
     ServiceWorkerRegister {
@@ -9872,6 +9874,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
               family: state.family,
               weight: state.weight,
               style: state.style,
+              unicode_range: state.unicodeRange,
               body_base64: encodeBase64(bytes, nativeFontFaceByteLimit),
             });
           } catch (error) {
@@ -17613,7 +17616,7 @@ mod native_timer_probe_tests {
 #[cfg(test)]
 mod native_font_face_tests {
     use super::super::config::NativeEngineLimits;
-    use super::super::css::{FontStyleValue, FontWeightValue};
+    use super::super::css::{FontStyleValue, FontWeightValue, NativeUnicodeRange};
     use super::super::font::NativeFontBook;
     use super::*;
 
@@ -17733,7 +17736,7 @@ mod native_font_face_tests {
             .evaluate(
                 &format!(
                     r#"(() => {{
-                      const face = new FontFace("Inline Sans", {source});
+                      const face = new FontFace("Inline Sans", {source}, {{ unicodeRange: "U+41-5A" }});
                       globalThis.__inlineFontFace = face;
                       document.fonts.add(face);
                       face.load().then(() => {{ document.body.textContent = "accepted"; }});
@@ -17791,16 +17794,25 @@ mod native_font_face_tests {
                 family,
                 weight,
                 style,
+                unicode_range,
                 body_base64,
                 ..
             } if family == "Inline Sans"
                 && weight == "normal"
                 && style == "normal"
+                && unicode_range == "U+41-5A"
                 && !body_base64.is_empty()
         ));
         let wire = document.to_content_wire();
         assert_eq!(wire.font_resources.len(), 1);
         assert_eq!(wire.font_resources[0].family, "Inline Sans");
+        assert_eq!(
+            wire.font_resources[0].unicode_ranges,
+            vec![NativeUnicodeRange {
+                start: 0x41,
+                end: 0x5A,
+            }]
+        );
     }
 
     #[test]

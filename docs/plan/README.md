@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-504`, following completed
 `native-engine-browser-503`, following completed
 `native-engine-browser-502`, following completed
 `native-engine-browser-501`, following completed
@@ -226,6 +227,17 @@ selected by both range membership and glyph coverage. The `document.fonts`
 projection exposes the canonical range. Mixed-script shaping, font-stretch and
 variant descriptors, font-display timing, variable/color fonts, WOFF2, and
 complete FontFace/Web IDL parity remain issue #40 gates.
+
+The completed dynamic FontFace unicode-range follow-up is
+[`native-engine-browser-504`](tasks/native-engine-browser-504.md): the page
+realm now carries `FontFace`'s `unicodeRange` through the bounded install
+command, and the native document owner applies the shared parser, normalized
+range storage, and 32-range admission limit before font bytes are installed.
+Malformed descriptors are rejected transactionally; omitted command fields
+retain unrestricted coverage for compatibility. Mixed-script shaping,
+font-stretch and variant descriptors, font-display timing, variable/color
+fonts, WOFF2, cross-realm FontFace projection, and complete FontFace/Web IDL
+parity remain issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

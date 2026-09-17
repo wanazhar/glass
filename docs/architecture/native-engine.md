@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-450`, following completed
 `native-engine-browser-449`, following completed
 `native-engine-browser-448`, following completed
 `native-engine-browser-447`, following completed
@@ -211,6 +212,13 @@ credential validation, and keep `searchParams` live as query mutations are
 applied. Worker `location` remains a frozen read-only projection. Complete URL
 setter and descriptor parity, blob/file-origin rules, and the full scheme
 matrix remain issue #40 work.
+
+Slice 450 closes the remaining page-side URL setter drift. Page
+`URL.pathname` and `URL.hash` writes now use the same bounded Rust
+canonicalizer as initial construction and worker mutation, preserving query
+state while escaping spaces, resolving path dot segments, and canonicalizing
+fragments. Complete URL setter and descriptor parity, blob/file-origin rules,
+and the full scheme matrix remain issue #40 work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

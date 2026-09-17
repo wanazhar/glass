@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-450`, following completed
 `native-engine-browser-449`, following completed
 `native-engine-browser-448`, following completed
 `native-engine-browser-447`, following completed
@@ -356,6 +357,13 @@ dedicated/SharedWorker `URL` instances now expose bounded mutable accessors and
 live `searchParams` synchronization, while worker `location` remains frozen
 and read-only. Complete URL setter/Web IDL parity and the full browser scheme
 matrix remain issue #40 work.
+
+The completed page URL-setter normalization slice is
+[native-engine-browser-450](tasks/native-engine-browser-450.md): page
+`URL.pathname` and `URL.hash` writes now use the same bounded Rust canonicalizer
+as initial and worker URL handling, preserving query state while escaping and
+dot-normalizing setter values. Complete URL setter/Web IDL parity and the full
+browser scheme matrix remain issue #40 work.
 
 The completed XHR realm-state mutator slice is
 [native-engine-browser-445](tasks/native-engine-browser-445.md): page and

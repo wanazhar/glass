@@ -47953,6 +47953,9 @@ async fn native_local_url_resolution_uses_canonical_url_parser() {
                     const absoluteSpecial = new URL('http:example.com/');
                     const baseSpecial = new URL('http:example.com/', 'http://example.org/foo/bar');
                     const opaque = new URL('data:text/plain,hello world');
+                    const mutable = new URL('http://example.test/base/start?x=1');
+                    mutable.pathname = '/changed/../new path';
+                    mutable.hash = 'part with space';
                     let invalid = '';
                     try { new URL('http://bad host/'); } catch (error) { invalid = error.name; }
                     return {
@@ -47961,6 +47964,7 @@ async fn native_local_url_resolution_uses_canonical_url_parser() {
                         schemeRelative: [schemeRelative.href, schemeRelative.origin],
                         special: [absoluteSpecial.href, baseSpecial.href],
                         opaque: [opaque.href, opaque.origin, opaque.pathname],
+                        mutable: [mutable.href, mutable.pathname, mutable.search, mutable.hash],
                         invalid,
                     };
                 })()"#,
@@ -47987,6 +47991,12 @@ async fn native_local_url_resolution_uses_canonical_url_parser() {
                 "http://example.org/foo/example.com/",
             ],
             "opaque": ["data:text/plain,hello world", "null", "text/plain,hello world"],
+            "mutable": [
+                "http://example.test/new%20path?x=1#part%20with%20space",
+                "/new%20path",
+                "?x=1",
+                "#part%20with%20space",
+            ],
             "invalid": "TypeError",
         })
     );

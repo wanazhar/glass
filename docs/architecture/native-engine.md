@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-508`, following completed
 `native-engine-browser-507`, following completed
 `native-engine-browser-506`, following completed
 `native-engine-browser-505`, following completed
@@ -233,10 +234,11 @@ ranges, store percentage tenths, and carry them through native resources,
 content-process wire snapshots, and the `document.fonts` projection. Invalid or
 reversed values fail at the parser or native admission boundary, and older
 payloads default to `normal`. The computed CSS `font-stretch` property,
-font-face range matching, and horizontal glyph scaling remain the next
-rendering gate; font-variant, font-display timing, variable/color fonts, WOFF2,
-cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
-issue #40 gates.
+font-face range matching, horizontal glyph scaling, inherited
+`font-variant-ligatures`, and bounded `font-feature-settings` remain implemented
+rendering gates; font-display timing, variable/color fonts, WOFF2, cross-realm
+FontFace projection, and complete FontFace/Web IDL parity remain issue #40
+gates.
 
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
 property is exposed as a canonical percentage, face matching considers the
@@ -255,8 +257,16 @@ discretionary, historical, and contextual group are normalized through the
 CSS cascade and projected through native CSSOM. HarfRust receives explicit
 `liga`/`clig`, `dlig`, `hlig`, and `calt` settings before measuring and
 rasterizing, so disabling or opting into a ligature group changes both layout
-width and glyph output. The broader `font-variant` family,
-`font-feature-settings`, variable/color tables, WOFF2, font-display timing,
+width and glyph output. The broader `font-variant` family, variable/color
+tables, WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
+projection, and complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 508 wires bounded `font-feature-settings` into the inherited computed
+style, CSSOM, and HarfRust shaping path. Quoted four-byte OpenType tags accept
+bounded `on`/`off` or non-negative integer values, duplicate tags normalize
+last-wins, and explicit `liga`/`clig`/`dlig`/`hlig`/`calt` settings override the
+native ligature defaults. The fixed feature-list cap and escape-free parser
+are deliberate boundaries; variable/color tables, WOFF2, font-display timing,
 mixed-script shaping, cross-realm FontFace projection, and complete
 FontFace/Web IDL parity remain issue #40 gates.
 

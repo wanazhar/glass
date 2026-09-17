@@ -1,7 +1,9 @@
+#[cfg(test)]
+use super::css::NativeFontFeature;
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
-    NativeFontFamilyValue, NativeFontStretchRange, NativeFontVariantLigatures,
-    NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
+    NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontStretchRange,
+    NativeFontVariantLigatures, NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
 };
 use std::fmt;
 use std::io::Read;
@@ -142,6 +144,7 @@ pub(crate) struct NativeTextMetrics {
     font_size: u32,
     stretch: u16,
     ligatures: NativeFontVariantLigatures,
+    feature_settings: NativeFontFeatureSettings,
     ascent: u32,
     line_height: u32,
     direction: DirectionValue,
@@ -162,10 +165,27 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn fallback_with_stretch_and_ligatures(
         font_size: u32,
         stretch: u16,
         ligatures: NativeFontVariantLigatures,
+        direction: DirectionValue,
+    ) -> Self {
+        Self::fallback_with_stretch_and_ligatures_and_features(
+            font_size,
+            stretch,
+            ligatures,
+            NativeFontFeatureSettings::default(),
+            direction,
+        )
+    }
+
+    pub(crate) fn fallback_with_stretch_and_ligatures_and_features(
+        font_size: u32,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
         direction: DirectionValue,
     ) -> Self {
         Self {
@@ -173,6 +193,7 @@ impl NativeTextMetrics {
             font_size: font_size.clamp(1, MAX_NATIVE_FONT_SIZE),
             stretch: stretch.clamp(500, 2000),
             ligatures,
+            feature_settings,
             ascent: FALLBACK_LINE_HEIGHT.saturating_sub(5),
             line_height: FALLBACK_LINE_HEIGHT,
             direction,
@@ -233,6 +254,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn for_style_with_book_and_stretch_and_ligatures(
         families: NativeFontFamilyList,
         font_size: u32,
@@ -243,12 +265,40 @@ impl NativeTextMetrics {
         direction: DirectionValue,
         book: &NativeFontBook,
     ) -> Self {
+        Self::for_style_with_book_and_stretch_and_ligatures_and_features(
+            families,
+            font_size,
+            weight,
+            style,
+            stretch,
+            ligatures,
+            NativeFontFeatureSettings::default(),
+            direction,
+            book,
+        )
+    }
+
+    pub(crate) fn for_style_with_book_and_stretch_and_ligatures_and_features(
+        families: NativeFontFamilyList,
+        font_size: u32,
+        weight: FontWeightValue,
+        style: FontStyleValue,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
+        direction: DirectionValue,
+        book: &NativeFontBook,
+    ) -> Self {
         let font_size = font_size.clamp(1, MAX_NATIVE_FONT_SIZE);
         let stretch = stretch.clamp(500, 2000);
         let faces = book.faces_for(families, weight, style, stretch);
         let Some(face) = faces.first() else {
-            return Self::fallback_with_stretch_and_ligatures(
-                font_size, stretch, ligatures, direction,
+            return Self::fallback_with_stretch_and_ligatures_and_features(
+                font_size,
+                stretch,
+                ligatures,
+                feature_settings,
+                direction,
             );
         };
         let line_metrics = face.font.horizontal_line_metrics(font_size as f32);
@@ -264,6 +314,7 @@ impl NativeTextMetrics {
             font_size,
             stretch,
             ligatures,
+            feature_settings,
             ascent,
             line_height,
             direction,
@@ -388,35 +439,31 @@ impl NativeTextMetrics {
         buffer.set_direction(direction);
         let scale = i32::try_from(self.font_size.saturating_mul(FONT_SHAPE_SCALE)).ok()?;
         let shaper = shaper_data.shaper(&font).build();
-        let mut features = Vec::with_capacity(5);
-        for tag in [
-            if self.ligatures.common {
-                "liga"
-            } else {
-                "-liga"
-            },
-            if self.ligatures.common {
-                "clig"
-            } else {
-                "-clig"
-            },
-            if self.ligatures.discretionary {
-                "dlig"
-            } else {
-                "-dlig"
-            },
-            if self.ligatures.historical {
-                "hlig"
-            } else {
-                "-hlig"
-            },
-            if self.ligatures.contextual {
-                "calt"
-            } else {
-                "-calt"
-            },
+        let mut features = Vec::with_capacity(5 + self.feature_settings.values().len());
+        for (tag, value) in [
+            (*b"liga", u32::from(self.ligatures.common)),
+            (*b"clig", u32::from(self.ligatures.common)),
+            (*b"dlig", u32::from(self.ligatures.discretionary)),
+            (*b"hlig", u32::from(self.ligatures.historical)),
+            (*b"calt", u32::from(self.ligatures.contextual)),
         ] {
-            features.push(tag.parse::<harfrust::Feature>().ok()?);
+            if !self.feature_settings.contains_tag(&tag) {
+                features.push(harfrust::Feature::new(harfrust::Tag::new(&tag), value, ..));
+            }
+        }
+        let explicit_features = self.feature_settings.values();
+        for (index, feature) in explicit_features.iter().enumerate() {
+            if explicit_features[index.saturating_add(1)..]
+                .iter()
+                .any(|later| later.tag == feature.tag)
+            {
+                continue;
+            }
+            features.push(harfrust::Feature::new(
+                harfrust::Tag::new(&feature.tag),
+                feature.value,
+                ..,
+            ));
         }
         let shaped = shaper.shape(
             buffer,
@@ -2093,6 +2140,32 @@ mod tests {
             return;
         }
         assert!(no_common_shape.glyphs.len() > default_shape.glyphs.len());
+
+        let mut explicit_off_settings = NativeFontFeatureSettings::default();
+        explicit_off_settings.values[0] = NativeFontFeature {
+            tag: *b"liga",
+            value: 0,
+        };
+        explicit_off_settings.count = 1;
+        let explicit_off_metrics =
+            NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features(
+                families,
+                DEFAULT_NATIVE_FONT_SIZE,
+                FontWeightValue::Normal,
+                FontStyleValue::Normal,
+                1000,
+                NativeFontVariantLigatures::default(),
+                explicit_off_settings,
+                DirectionValue::Ltr,
+                system_font_book(),
+            );
+        let Some(explicit_off_shape) = explicit_off_metrics.shape("fi", 0, 0) else {
+            return;
+        };
+        assert_eq!(
+            explicit_off_shape.glyphs.len(),
+            no_common_shape.glyphs.len()
+        );
     }
 
     #[test]

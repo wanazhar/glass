@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-508`, following completed
 `native-engine-browser-507`, following completed
 `native-engine-browser-506`, following completed
 `native-engine-browser-505`, following completed
@@ -248,10 +249,10 @@ named and 50%–200% percentage ranges now cross CSS and script-created
 FontFace resource boundaries, content-process wire snapshots, and the
 `document.fonts` projection. Invalid or reversed values fail before byte
 admission and older payloads default to `normal`. The computed CSS property,
-face-range matching, and horizontal glyph scaling remain the next rendering
-gate; font-variant, font-display timing, variable/color fonts, WOFF2,
-cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
-issue #40 gates.
+face-range matching, horizontal glyph scaling, and inherited font-variant
+controls are now represented in the native rendering path; font-display
+timing, variable/color fonts, WOFF2, cross-realm FontFace projection, and
+complete FontFace/Web IDL parity remain issue #40 gates.
 
 The completed rendering follow-up is
 [`native-engine-browser-506`](tasks/native-engine-browser-506.md): computed
@@ -269,10 +270,19 @@ The completed ligature-shaping follow-up is
 `font-variant-ligatures` now inherits through the native cascade, projects as a
 canonical CSSOM value, and controls HarfRust's common, discretionary,
 historical, and contextual OpenType features during measurement and
-rasterization. The broader `font-variant` family, explicit
-`font-feature-settings`, variable/color fonts, WOFF2, font-display timing,
-mixed-script shaping, cross-realm FontFace projection, and complete
-FontFace/Web IDL parity remain issue #40 gates.
+rasterization. The broader `font-variant` family, variable/color fonts, WOFF2,
+font-display timing, mixed-script shaping, cross-realm FontFace projection, and
+complete FontFace/Web IDL parity remain issue #40 gates.
+
+The completed low-level feature-settings follow-up is
+[`native-engine-browser-508`](tasks/native-engine-browser-508.md):
+`font-feature-settings` now inherits through the native cascade, projects as a
+canonical CSSOM list, and supplies bounded quoted OpenType tags to HarfRust
+for measurement and rasterization. Duplicate tags normalize last-wins, and
+explicit ligature-tag values override the native `font-variant-ligatures`
+defaults. The fixed cap, escape-free parser, variable/color fonts, WOFF2,
+font-display timing, mixed-script shaping, cross-realm FontFace projection,
+and complete FontFace/Web IDL parity remain issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

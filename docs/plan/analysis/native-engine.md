@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-507`, following
+expansion checkpoint is completed `native-engine-browser-508`, following
+completed `native-engine-browser-507`, following
 completed `native-engine-browser-506`, following
 completed `native-engine-browser-505`, following
 completed `native-engine-browser-504`, following
@@ -259,9 +260,19 @@ CSS-wide reset semantics, carried through the parent-style chain, and exposed
 as canonical CSSOM. The HarfRust owner receives explicit `liga`/`clig`,
 `dlig`, `hlig`, and `calt` feature settings before measuring and rasterizing,
 so a ligature control changes both layout and glyph output. The broader
-`font-variant` family, `font-feature-settings`, variable/color rendering,
-WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
-projection, and complete FontFace/Web IDL parity remain open.
+`font-variant` family, variable/color rendering, WOFF2, font-display timing,
+mixed-script shaping, cross-realm FontFace projection, and complete
+FontFace/Web IDL parity remain open.
+
+Slice 508 wires bounded `font-feature-settings` into the native shaping owner.
+The inherited property accepts a fixed-size comma-separated list of quoted
+four-byte OpenType tags with `on`/`off` or non-negative integer values, then
+projects the normalized last-wins list through CSSOM and HarfRust measurement
+and rasterization. Explicit settings for `liga`, `clig`, `dlig`, `hlig`, and
+`calt` replace the corresponding ligature defaults. Escape syntax, negative or
+unbounded values, feature ranges, variable/color rendering, WOFF2,
+font-display timing, mixed-script shaping, cross-realm FontFace projection,
+and complete FontFace/Web IDL parity remain open.
 
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
@@ -7086,9 +7097,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-507.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-508.md` is the latest completed browser
 task;
-`docs/plan/tasks/native-engine-browser-506.md` is the preceding completed browser
+`docs/plan/tasks/native-engine-browser-507.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-505.md` is the preceding completed
 browser task;

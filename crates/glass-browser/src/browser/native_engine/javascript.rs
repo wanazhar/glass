@@ -17750,6 +17750,35 @@ mod native_font_face_tests {
     }
 
     #[test]
+    fn computed_style_projects_font_feature_settings() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-feature-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            r#"<style>#parent { font-feature-settings: "liga" off, "kern" on; } #child { font-feature-settings: "liga" 1, "liga" 0, "dlig" on; } #reset { font-feature-settings: initial; }</style><div id='parent'><span id='child'>Child</span><span id='reset'>Reset</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .expect("font-feature-settings fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const parent = getComputedStyle(document.getElementById("parent"));
+                  const child = getComputedStyle(document.getElementById("child"));
+                  const reset = getComputedStyle(document.getElementById("reset"));
+                  return [parent.fontFeatureSettings, child.getPropertyValue("font-feature-settings"), reset.fontFeatureSettings];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("computed font-feature-settings surface must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["\"liga\" 0, \"kern\" 1", "\"liga\" 0, \"dlig\" 1", "normal"])
+        );
+    }
+
+    #[test]
     fn css_font_face_refresh_dispatches_loading_error_for_new_rules() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-refresh-test")
             .expect("native JavaScript runtime must construct");
@@ -37167,6 +37196,22 @@ fn document_bootstrap(
       contextual ? "contextual" : "no-contextual",
     ].join(" ");
   }};
+  const computedStyleFeatureSettings = (value) => {{
+    if (!value || typeof value !== "object" || !Array.isArray(value.values)) return "normal";
+    const count = Math.max(0, Math.min(value.values.length, Number(value.count) || 0));
+    const features = [];
+    for (let index = 0; index < count; index += 1) {{
+      const feature = value.values[index];
+      if (!feature || !Array.isArray(feature.tag) || feature.tag.length !== 4) continue;
+      const tag = feature.tag.map((byte) => Number(byte)).every((byte) => Number.isInteger(byte) && byte >= 32 && byte <= 126)
+        ? String.fromCharCode(...feature.tag.map((byte) => Number(byte)))
+        : null;
+      const featureValue = Number(feature.value);
+      if (tag === null || !Number.isInteger(featureValue) || featureValue < 0) continue;
+      features.push('"' + tag + '" ' + String(featureValue));
+    }}
+    return features.length === 0 ? "normal" : features.join(", ");
+  }};
   const computedStyleColor = (value, fallback = "rgba(0, 0, 0, 0)") => {{
     if (!value || typeof value !== "object") return fallback;
     const red = Number(value.red);
@@ -37206,7 +37251,7 @@ fn document_bootstrap(
     "border-left-color", "border-radius", "overflow", "overflow-x", "overflow-y", "white-space",
     "text-align", "text-align-last", "text-justify", "text-indent", "text-transform", "text-overflow",
     "text-decoration", "text-decoration-style", "text-decoration-thickness", "text-underline-offset",
-    "font-weight", "font-style", "font-stretch", "font-variant-ligatures", "line-height", "word-break", "word-spacing", "letter-spacing",
+    "font-weight", "font-style", "font-stretch", "font-variant-ligatures", "font-feature-settings", "line-height", "word-break", "word-spacing", "letter-spacing",
     "vertical-align", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
     "justify-content", "align-items", "align-self", "align-content", "gap", "row-gap", "column-gap",
     "order", "grid-template-columns", "grid-template-rows"
@@ -37300,6 +37345,7 @@ fn document_bootstrap(
     if (name === "font-style") return computedStyleEnumName(raw.font_style, "normal");
     if (name === "font-stretch") return computedStyleStretch(raw.font_stretch);
     if (name === "font-variant-ligatures") return computedStyleLigatures(raw.font_variant_ligatures);
+    if (name === "font-feature-settings") return computedStyleFeatureSettings(raw.font_feature_settings);
     if (name === "line-height") return computedStylePixels(raw.line_height, "normal");
     if (name === "word-spacing") return String(Number(raw.word_spacing) || 0) + "px";
     if (name === "letter-spacing") return String(Number(raw.letter_spacing) || 0) + "px";

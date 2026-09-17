@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use url::Url;
 
 pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
+pub(crate) const MAX_NATIVE_FONT_FACE_RULES: usize = 16;
 pub(crate) const MAX_NATIVE_GRID_TRACKS: usize = 8;
 pub(crate) const MIN_NATIVE_FLEX_ITEM_ORDER: i32 = -1024;
 pub(crate) const MAX_NATIVE_FLEX_ITEM_ORDER: i32 = 1024;
@@ -21,6 +22,7 @@ pub(crate) const NATIVE_BACKGROUND_PERCENT_SCALE: i32 = 1_000;
 const MAX_NATIVE_BACKGROUND_PERCENT: i32 = 100_000;
 const MAX_SELECTOR_BYTES: usize = 256;
 const MAX_SELECTOR_PARTS: usize = 8;
+const MAX_NATIVE_FONT_FACE_SOURCE_BYTES: usize = 512 * 1024;
 const MAX_NATIVE_NAMED_CASCADE_LAYERS: usize = 15;
 const UNLAYERED_CASCADE_LAYER: u16 = MAX_NATIVE_NAMED_CASCADE_LAYERS as u16;
 const CASCADE_SPECIFICITY_BITS: u32 = 12;
@@ -1090,6 +1092,19 @@ impl NativeFontFamilyList {
     }
 }
 
+/// A bounded `@font-face` descriptor set. The native font loader currently
+/// admits data URLs; keeping the source URL here lets the resource owner
+/// enforce CSP and decode it without giving CSS parsing access to filesystem
+/// or network capabilities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeFontFaceRule {
+    pub(crate) family: String,
+    pub(crate) family_key: u64,
+    pub(crate) source: String,
+    pub(crate) weight: FontWeightValue,
+    pub(crate) style: FontStyleValue,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum WordBreakValue {
     #[default]
@@ -1809,6 +1824,7 @@ impl NativeComputedStyle {
 pub(crate) struct NativeStylesheet {
     rules: Vec<NativeStyleRule>,
     background_image_sources: BTreeMap<u32, String>,
+    font_face_rules: Vec<NativeFontFaceRule>,
 }
 
 impl NativeStylesheet {
@@ -1836,6 +1852,7 @@ impl NativeStylesheet {
                 diagnostics,
                 &mut layers,
                 &mut stylesheet.background_image_sources,
+                &mut stylesheet.font_face_rules,
             )?;
         }
         Ok(stylesheet)
@@ -1843,6 +1860,10 @@ impl NativeStylesheet {
 
     pub(crate) fn background_image_sources(&self) -> &BTreeMap<u32, String> {
         &self.background_image_sources
+    }
+
+    pub(crate) fn font_face_rules(&self) -> &[NativeFontFaceRule] {
+        &self.font_face_rules
     }
 
     #[cfg(test)]
@@ -6028,6 +6049,7 @@ fn parse_source(
     diagnostics: &mut NativeDiagnosticSink,
     layers: &mut Vec<String>,
     background_image_sources: &mut BTreeMap<u32, String>,
+    font_face_rules: &mut Vec<NativeFontFaceRule>,
 ) -> Result<(), NativeEngineError> {
     let source = strip_comments(source);
     let end = source.len();
@@ -6039,6 +6061,7 @@ fn parse_source(
         diagnostics,
         layers,
         background_image_sources,
+        font_face_rules,
     };
     parse_source_block(&mut context, 0, end, None)
 }
@@ -6051,6 +6074,7 @@ struct NativeCssParseContext<'a> {
     diagnostics: &'a mut NativeDiagnosticSink,
     layers: &'a mut Vec<String>,
     background_image_sources: &'a mut BTreeMap<u32, String>,
+    font_face_rules: &'a mut Vec<NativeFontFaceRule>,
 }
 
 fn parse_source_block(
@@ -6107,7 +6131,9 @@ fn parse_source_block(
             return Ok(());
         };
         let header = &context.source[cursor..open];
-        if let Some(layer_header) = parse_layer_header(header) {
+        if is_font_face_header(header) {
+            parse_font_face_rule(context, cursor, open, close)?;
+        } else if let Some(layer_header) = parse_layer_header(header) {
             if current_layer.is_some() {
                 context.diagnostics.push(
                     NativeDiagnosticCode::UnsupportedCssValue,
@@ -6143,6 +6169,129 @@ fn parse_source_block(
         }
         cursor = close + 1;
     }
+    Ok(())
+}
+
+fn is_font_face_header(source: &str) -> bool {
+    let source = source.trim();
+    const KEYWORD: &str = "@font-face";
+    source.len() == KEYWORD.len() && source.as_bytes().eq_ignore_ascii_case(KEYWORD.as_bytes())
+}
+
+fn parse_font_face_rule(
+    context: &mut NativeCssParseContext<'_>,
+    selector_start: usize,
+    open: usize,
+    close: usize,
+) -> Result<(), NativeEngineError> {
+    let source = &context.source[open + 1..close];
+    let mut family = None;
+    let mut font_source = None;
+    let mut weight = FontWeightValue::Normal;
+    let mut style = FontStyleValue::Normal;
+    for (declaration_offset, declaration) in split_css_declarations(source) {
+        let offset = open.saturating_add(1).saturating_add(declaration_offset);
+        let declaration = declaration.trim();
+        if declaration.is_empty() {
+            continue;
+        }
+        let Some((property, value)) = declaration.split_once(':') else {
+            context.diagnostics.push(
+                NativeDiagnosticCode::MalformedCss,
+                context.diagnostic_source,
+                offset,
+                "font-face-missing-colon",
+            );
+            continue;
+        };
+        let property = property.trim().to_ascii_lowercase();
+        let (value, _) = strip_important_suffix(value.trim());
+        if value.is_empty() {
+            context.diagnostics.push(
+                NativeDiagnosticCode::MalformedCss,
+                context.diagnostic_source,
+                offset,
+                "font-face-empty-value",
+            );
+            continue;
+        }
+        match property.as_str() {
+            "font-family" => match parse_font_face_family(value) {
+                Some(parsed) => family = Some(parsed),
+                None => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-face-family",
+                ),
+            },
+            "src" => match parse_font_face_src(value) {
+                Some(parsed) => font_source = Some(parsed),
+                None => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-face-src",
+                ),
+            },
+            "font-weight" => match parse_font_weight(value) {
+                Some(parsed) => weight = parsed,
+                None => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-face-weight",
+                ),
+            },
+            "font-style" => match parse_font_style(value) {
+                Some(parsed) => style = parsed,
+                None => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-face-style",
+                ),
+            },
+            _ => context.diagnostics.push(
+                NativeDiagnosticCode::UnsupportedCssProperty,
+                context.diagnostic_source,
+                offset,
+                &property,
+            ),
+        }
+    }
+    let Some(family) = family else {
+        context.diagnostics.push(
+            NativeDiagnosticCode::UnsupportedCssValue,
+            context.diagnostic_source,
+            selector_start,
+            "font-face-family",
+        );
+        return Ok(());
+    };
+    let Some(source) = font_source else {
+        context.diagnostics.push(
+            NativeDiagnosticCode::UnsupportedCssValue,
+            context.diagnostic_source,
+            selector_start,
+            "font-face-src",
+        );
+        return Ok(());
+    };
+    if context.font_face_rules.len() >= MAX_NATIVE_FONT_FACE_RULES {
+        return Err(NativeEngineError::limit(
+            "CSS @font-face rules",
+            MAX_NATIVE_FONT_FACE_RULES,
+            context.font_face_rules.len().saturating_add(1),
+        ));
+    }
+    context.font_face_rules.push(NativeFontFaceRule {
+        family_key: font_family_hash(&family),
+        family,
+        source,
+        weight,
+        style,
+    });
     Ok(())
 }
 
@@ -11221,6 +11370,72 @@ fn parse_font_style(value: &str) -> Option<FontStyleValue> {
 
 fn parse_font_family(value: &str) -> Option<NativeFontFamilyList> {
     NativeFontFamilyList::parse(value)
+}
+
+fn parse_font_face_family(value: &str) -> Option<String> {
+    let value = value.trim();
+    let family = if value.len() >= 2
+        && matches!(value.as_bytes().first(), Some(b'"' | b'\''))
+        && value.as_bytes().last() == value.as_bytes().first()
+    {
+        value[1..value.len().saturating_sub(1)].trim()
+    } else {
+        value
+    };
+    let families = parse_font_family(value)?;
+    let mut parsed = families.iter();
+    if !matches!(parsed.next(), Some(NativeFontFamilyValue::Named(_)))
+        || parsed.next().is_some()
+        || family.is_empty()
+        || family.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return None;
+    }
+    Some(family.to_owned())
+}
+
+fn parse_font_face_src(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        let Some(open) = css_url_function_open(bytes, cursor) else {
+            let character = value[cursor..]
+                .chars()
+                .next()
+                .expect("CSS source cursor must point at a character");
+            cursor = cursor.saturating_add(character.len_utf8());
+            continue;
+        };
+        let close = css_url_function_close(bytes, open.saturating_add(1))?;
+        let mut start = open.saturating_add(1);
+        while start < close && bytes[start].is_ascii_whitespace() {
+            start += 1;
+        }
+        let mut end = close;
+        while end > start && bytes[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+        let token = value.get(start..end)?;
+        let token = if token.len() >= 2
+            && matches!(token.as_bytes().first(), Some(b'"' | b'\''))
+            && token.as_bytes().last() == token.as_bytes().first()
+        {
+            &token[1..token.len().saturating_sub(1)]
+        } else {
+            token
+        };
+        let token = decode_css_url_value(token)?;
+        if token
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+            && !token.bytes().any(|byte| byte.is_ascii_control())
+            && token.len() <= MAX_NATIVE_FONT_FACE_SOURCE_BYTES
+        {
+            return Some(token);
+        }
+        cursor = close.saturating_add(1);
+    }
+    None
 }
 
 fn parse_font_family_name(value: &str) -> Option<NativeFontFamilyValue> {
@@ -20856,6 +21071,52 @@ mod tests {
         assert!(parse_font_family("sans-serif, ").is_none());
         assert!(parse_font_family("'unterminated").is_none());
         assert!(parse_font_family(", sans-serif").is_none());
+    }
+
+    #[test]
+    fn font_face_parser_collects_named_data_sources_without_creating_style_rules() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            r#"@font-face {
+                font-family: "Embedded Sans";
+                src: local("missing"), url("data:font/ttf;base64,AAECAw==") format("truetype");
+                font-weight: 700;
+                font-style: italic;
+            }
+            #text { font-family: "Embedded Sans"; }"#
+                .into(),
+        ])
+        .unwrap();
+        assert_eq!(stylesheet.font_face_rules().len(), 1);
+        let rule = &stylesheet.font_face_rules()[0];
+        assert_eq!(rule.family, "Embedded Sans");
+        assert_eq!(rule.family_key, font_family_hash("Embedded Sans"));
+        assert_eq!(rule.source, "data:font/ttf;base64,AAECAw==");
+        assert_eq!(rule.weight, FontWeightValue::Bold);
+        assert_eq!(rule.style, FontStyleValue::Italic);
+        assert_eq!(stylesheet.rules.len(), 1);
+    }
+
+    #[test]
+    fn font_face_parser_rejects_generic_and_external_sources() {
+        let mut diagnostics = NativeDiagnosticSink::default();
+        let stylesheet = NativeStylesheet::from_sources_with_diagnostics(
+            vec![
+                "@font-face { font-family: sans-serif; src: url(font.ttf); }".into(),
+                "@font-face { font-family: Embedded; src: url(font.ttf); }".into(),
+            ],
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert!(stylesheet.font_face_rules().is_empty());
+        let (diagnostics, _) = diagnostics.finish();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == "font-face-family"
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+                && diagnostic.detail == "font-face-src"
+        }));
     }
 
     #[test]

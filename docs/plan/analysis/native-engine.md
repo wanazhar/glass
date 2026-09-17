@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-488`, following
+expansion checkpoint is completed `native-engine-browser-489`, following
+completed `native-engine-browser-488`, following
 completed `native-engine-browser-487`, following
 completed `native-engine-browser-486`, following
 completed `native-engine-browser-485`, following
@@ -589,6 +590,19 @@ same face. Missing glyphs still use a bounded primary-face replacement rather
 than expanding filesystem discovery. `@font-face` resources, arbitrary font
 discovery, variable-font selection, mixed bidi, writing modes, grapheme-safe
 line breaking, and complete browser text parity remain open.
+
+Slice 489 adds the first document-owned `@font-face` resource path. Valid
+rules carry one named family and a bounded `data:` source through the existing
+CSS parser and resource owner. Supported font MIME types use bounded base64 or
+percent decoding; document `font-src` policy and report-only diagnostics are
+honored, invalid or oversized payloads fail closed, and admitted bytes are
+rebuilt into a document-local font book ahead of the deterministic system
+faces. The content-process document wire is protocol version 13 and validates
+family hashes, encoded sizes, per-face bytes, aggregate bytes, and the face
+count before constructing the book. Existing HarfRust/fontdue metrics,
+rasterization, ordered fallback, display-list, and PNG replay consumers are
+unchanged. File/network/blob sources, `local()` resolution, font-loading
+events, variable/color fonts, and complete browser text parity remain open.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads
@@ -6845,6 +6859,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-browser-489.md` is the latest completed browser
+task;
 `docs/plan/tasks/native-engine-browser-488.md` is the latest completed browser
 task;
 `docs/plan/tasks/native-engine-browser-487.md` is the preceding completed

@@ -18,6 +18,7 @@ use super::dom::{
 use super::environment::{NativeEnvironmentOverrides, NativeGeolocation, NativeNetworkConditions};
 use super::error::NativeEngineError;
 use super::error::NativeWorkerFailureKind;
+use super::font::{MAX_NATIVE_FONT_FACES, NativeFontFaceResource};
 use super::history::{NativeHistory, NativeHistoryDirection};
 use super::interaction::{
     MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind, parse_native_shortcut,
@@ -6589,7 +6590,7 @@ impl NativeEngine {
         self.runtime.trace()
     }
 
-    fn prepare_navigation(&self, url: &str) -> Result<PreparedNavigation, NativeEngineError> {
+    fn prepare_navigation(&mut self, url: &str) -> Result<PreparedNavigation, NativeEngineError> {
         let resource = self.loader.load(url)?;
         self.prepare_navigation_resource(resource)
     }
@@ -6634,7 +6635,7 @@ impl NativeEngine {
     }
 
     fn prepare_navigation_resource(
-        &self,
+        &mut self,
         resource: NativeResource,
     ) -> Result<PreparedNavigation, NativeEngineError> {
         let next_revision = self.next_revision()?;
@@ -6642,7 +6643,7 @@ impl NativeEngine {
     }
 
     fn prepare_navigation_resource_at_revision(
-        &self,
+        &mut self,
         resource: NativeResource,
         revision: u64,
     ) -> Result<PreparedNavigation, NativeEngineError> {
@@ -6689,6 +6690,7 @@ impl NativeEngine {
         } else {
             load_local_initial_media(&mut document, &self.loader, &resource.url)?
         };
+        load_data_font_faces(&mut document, &mut self.loader, &resource.url)?;
         let frame_sources = self.loader.frame_sources_for_document(&resource.url)?;
         let navigate_to_sources = self.loader.navigation_sources_for_document(
             &resource.url,
@@ -8271,6 +8273,7 @@ fn load_local_dynamic_stylesheets(
     if previous_states != next_states {
         document.set_external_stylesheet_states(next_states);
         document.rebuild_external_stylesheet(document_url)?;
+        load_data_font_faces(document, loader, document_url)?;
         document.refresh_background_image_sources();
     }
     Ok(events)
@@ -8721,6 +8724,24 @@ fn is_file_subresource_source(document_url: &str, source: &str) -> bool {
         && base
             .join(source)
             .is_ok_and(|target| target.scheme().eq_ignore_ascii_case("file"))
+}
+
+fn load_data_font_faces(
+    document: &mut NativeDocument,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+) -> Result<(), NativeEngineError> {
+    let mut resources = Vec::new();
+    for rule in document
+        .font_face_rules()
+        .iter()
+        .take(MAX_NATIVE_FONT_FACES)
+    {
+        if let Ok(Some(bytes)) = loader.load_data_font(document_url, &rule.source) {
+            resources.push(NativeFontFaceResource::from_rule(rule, bytes));
+        }
+    }
+    document.set_font_resources(resources)
 }
 
 fn extract_local_scroll_commands(commands: &[NativeScriptCommand]) -> Vec<NativeScriptCommand> {

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-489`, following completed
 `native-engine-browser-488`, following completed
 `native-engine-browser-487`, following completed
 `native-engine-browser-486`, following completed
@@ -550,6 +551,17 @@ same indexed raster and display-list owners, while mixed-coverage runs use the
 bounded character recovery path without changing the run's security or
 resource ownership. `@font-face` resources, arbitrary discovery, variable
 fonts, and complete text-rendering parity remain issue #40 work.
+
+Slice `native-engine-browser-489` adds bounded document-owned `@font-face` data
+URL loading. The CSS owner accepts one named family per valid rule and only
+supported `src:url(data:...)` sources; font payloads are MIME-checked,
+base64/percent-decoded, capped per face and in aggregate, and admitted through
+the existing document CSP `font-src` policy. Loaded bytes cross content-process
+protocol v13 in the document wire, build a document-local font book ahead of
+system faces, and feed the existing HarfRust/fontdue metrics, rasterization,
+and ordered fallback paths. File/network/blob sources, `local()` resolution,
+font-loading events, variable/color fonts, and complete text-rendering parity
+remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

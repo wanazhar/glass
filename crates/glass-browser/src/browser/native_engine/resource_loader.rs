@@ -4,6 +4,7 @@ use super::config::{
 };
 use super::environment::NativeEnvironmentOverrides;
 use super::error::NativeEngineError;
+use super::font::MAX_NATIVE_FONT_BYTES;
 use super::image::{MAX_NATIVE_IMAGE_TRANSFER_BYTES, NativeImage, decode_image_bytes};
 use super::interaction::MAX_NATIVE_FORM_BODY_BYTES;
 use super::javascript::{
@@ -5929,6 +5930,51 @@ impl NativeResourceLoader {
         data_media_metadata(&target_url)
     }
 
+    /// Load a bounded data URL selected by a native `@font-face` rule. The
+    /// resource is decoded here, where the document URL and CSP policy are
+    /// still available; the font parser only receives admitted bytes.
+    pub(crate) fn load_data_font(
+        &mut self,
+        document_url: &str,
+        src: &str,
+    ) -> Result<Option<Vec<u8>>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("font URL", src)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "font owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        let Some(target_url) = resolve_media_url(&document_url, src)? else {
+            return Ok(None);
+        };
+        if !target_url.scheme().eq_ignore_ascii_case("data") {
+            return Ok(None);
+        }
+        if is_network_url(document_url.as_str()) {
+            if !mixed_content_allowed(&document_url, &target_url) {
+                return Ok(None);
+            }
+            let policy = self
+                .network
+                .document_policies
+                .get(&cache_key(&document_url))
+                .cloned()
+                .unwrap_or_default();
+            self.record_report_only_url_violations(
+                &policy,
+                NativeSubresourceKind::Font,
+                &document_url,
+                &target_url,
+            );
+            if !policy.allows(NativeSubresourceKind::Font, &document_url, &target_url) {
+                return Ok(None);
+            }
+        }
+        data_font_bytes(&target_url)
+    }
+
     pub(crate) async fn load_media_async_with_object_url(
         &mut self,
         document_url: &str,
@@ -7469,6 +7515,49 @@ fn data_media_metadata(url: &Url) -> Result<Option<NativeMediaMetadata>, NativeE
     media_metadata_from_bytes(declared_type, &bytes)
 }
 
+fn data_font_bytes(url: &Url) -> Result<Option<Vec<u8>>, NativeEngineError> {
+    let data = url
+        .as_str()
+        .split_once(':')
+        .and_then(|(_, data)| Some(data))
+        .ok_or_else(|| NativeEngineError::UnsupportedUrl {
+            reason: "font data URL has an invalid scheme".into(),
+        })?;
+    let Some((metadata, payload)) = data.split_once(',') else {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "font data URL is missing its comma-separated payload".into(),
+        });
+    };
+    let mut metadata_parts = metadata.split(';');
+    let declared_type = metadata_parts.next().map(str::trim).unwrap_or_default();
+    if !supported_font_media_type_text(declared_type) {
+        return Ok(None);
+    }
+    let is_base64 = metadata_parts.any(|part| part.eq_ignore_ascii_case("base64"));
+    let bytes = if is_base64 {
+        decode_base64_bytes(payload, MAX_NATIVE_FONT_BYTES, "base64 font payload")?
+    } else {
+        percent_decode_bytes(payload, MAX_NATIVE_FONT_BYTES)?
+    };
+    (!bytes.is_empty())
+        .then_some(bytes)
+        .map_or(Ok(None), |bytes| Ok(Some(bytes)))
+}
+
+fn supported_font_media_type_text(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "" | "font/ttf"
+            | "font/otf"
+            | "font/woff"
+            | "font/woff2"
+            | "application/font-woff"
+            | "application/x-font-ttf"
+            | "application/x-font-opentype"
+            | "application/vnd.ms-fontobject"
+    )
+}
+
 fn supported_media_type_text(value: &str) -> Option<&'static str> {
     let value = value.split(';').next().unwrap_or_default().trim();
     match value.to_ascii_lowercase().as_str() {
@@ -8556,7 +8645,7 @@ mod tests {
         NativeSubresourceKind, cache_control_max_age, cache_control_requires_revalidation,
         content_security_policy, cors_origin_header, cors_preflight_response_allowed,
         cors_response_allowed, csp_report_deliveries_for_declaration, csp_sources_allow,
-        csp_sources_allow_for_redirect, data_media_metadata, decode_html_body,
+        csp_sources_allow_for_redirect, data_font_bytes, data_media_metadata, decode_html_body,
         document_cache_fresh_until, document_cache_storage_allowed, media_metadata_from_bytes,
         mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
         subresource_integrity_matches, supported_media_type_text,
@@ -8710,6 +8799,39 @@ mod tests {
         );
         assert!(
             data_media_metadata(&Url::parse("data:application/octet-stream,%00").unwrap())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn data_font_decoding_is_bounded_and_csp_aware() {
+        let payload = base64::engine::general_purpose::STANDARD.encode([0_u8, 1, 2, 3]);
+        let url = Url::parse(&format!("data:font/ttf;base64,{payload}")).unwrap();
+        assert_eq!(data_font_bytes(&url).unwrap(), Some(vec![0, 1, 2, 3]));
+        assert!(
+            data_font_bytes(&Url::parse("data:application/octet-stream,AAAA").unwrap())
+                .unwrap()
+                .is_none()
+        );
+
+        let config = NativeEngineConfig::default();
+        let mut loader = NativeResourceLoader::new(&config).unwrap();
+        assert_eq!(
+            loader
+                .load_data_font("https://app.test/index.html", url.as_str())
+                .unwrap(),
+            Some(vec![0, 1, 2, 3])
+        );
+        loader
+            .set_document_content_security_policy_from_pairs(
+                "https://app.test/index.html",
+                &[("Content-Security-Policy".into(), "font-src 'none'".into())],
+            )
+            .unwrap();
+        assert!(
+            loader
+                .load_data_font("https://app.test/index.html", url.as_str())
                 .unwrap()
                 .is_none()
         );

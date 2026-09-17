@@ -28,6 +28,10 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-489`, following completed
+`native-engine-browser-488`, following completed
+`native-engine-browser-487`, following completed
+`native-engine-browser-486`, following completed
 `native-engine-browser-485`, following completed
 `native-engine-browser-484`, following completed
 `native-engine-browser-483`, following completed
@@ -373,6 +377,16 @@ each selected face. Mixed-coverage runs use the bounded character recovery
 path while preserving the existing indexed raster/display-list owners.
 `@font-face` resources, arbitrary discovery, variable-font selection, and
 complete text-rendering parity remain issue #40 gates.
+
+The completed document-font follow-up is
+[`native-engine-browser-489`](tasks/native-engine-browser-489.md): valid
+named-family `@font-face` rules may admit bounded `data:` font sources after
+MIME, decoding, size, and document CSP `font-src` checks. Admitted bytes are
+transferred through content-process protocol v13 and placed ahead of system
+faces in the document-local font book used by the existing HarfRust/fontdue
+metrics and raster paths. File/network/blob sources, `local()` resolution,
+font-loading events, variable/color fonts, and complete text-rendering parity
+remain issue #40 gates.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

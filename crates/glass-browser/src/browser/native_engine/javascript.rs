@@ -8,6 +8,7 @@ use super::config::{
     MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, is_file_url, is_network_url, validate_context_id,
     validate_url_text, validate_window_name, without_fragment,
 };
+use super::css::{FontStyleValue, FontWeightValue};
 use super::dom::{
     NativeDocument, NativePageScriptSource, NativePageScriptTiming, NativeScriptDocumentSnapshot,
     NativeScriptElementSnapshot,
@@ -20,6 +21,7 @@ use super::fetch_stream::{
     NativeFetchUploadEvent, spawn_native_fetch_bytes_stream, spawn_native_fetch_stream,
     spawn_native_fetch_upload_source,
 };
+use super::font::{MAX_NATIVE_FONT_BYTES, NativeFontBook};
 use super::interaction::{
     MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FORM_BODY_BYTES, MAX_NATIVE_SCRIPT_COMMAND_BYTES,
     NativeEventKind, validate_native_key,
@@ -264,6 +266,16 @@ pub(crate) enum NativeScriptCommand {
         timeout_ms: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         upload_stream_id: Option<u32>,
+    },
+    /// Install bytes loaded by a page-realm `FontFace`. The fetch or inline
+    /// source resolution happens in JavaScript first; this bounded command
+    /// transfers only the admitted font bytes to the native document owner.
+    FontFaceInstall {
+        request_id: u32,
+        family: String,
+        weight: String,
+        style: String,
+        body_base64: String,
     },
     ServiceWorkerRegister {
         request_id: u32,
@@ -9341,6 +9353,92 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     sizeAdjust: "100%",
   };
   const nativeFontFaceDescriptorNames = Object.keys(nativeFontFaceDescriptorDefaults);
+  const nativeFontFaceByteLimit = 4 * 1024 * 1024;
+  const nativeFontFaceMediaTypes = new Set([
+    "", "font/ttf", "font/otf", "font/woff", "font/woff2",
+    "application/font-woff", "application/x-font-ttf",
+    "application/x-font-opentype", "application/vnd.ms-fontobject",
+  ]);
+  const nativeFontFaceContentTypeAllowed = (value) => {
+    const mediaType = String(value || "").split(";", 1)[0].trim().toLowerCase();
+    return nativeFontFaceMediaTypes.has(mediaType);
+  };
+  const nativeFontFaceHexDigit = (value) => {
+    const code = String(value || "").charCodeAt(0);
+    if (code >= 48 && code <= 57) return code - 48;
+    if (code >= 65 && code <= 70) return code - 65 + 10;
+    if (code >= 97 && code <= 102) return code - 97 + 10;
+    return -1;
+  };
+  const nativeFontFaceDataBytes = (href) => {
+    const data = String(href).slice(5);
+    const comma = data.indexOf(",");
+    if (comma < 0) throw nativeFontFaceError("FontFace data URL is malformed", "NetworkError");
+    const metadata = data.slice(0, comma);
+    const payload = data.slice(comma + 1);
+    const mediaType = metadata.split(";", 1)[0].trim().toLowerCase();
+    if (!nativeFontFaceMediaTypes.has(mediaType))
+      throw nativeFontFaceError("FontFace data URL has an unsupported media type", "NetworkError");
+    const isBase64 = metadata.split(";").slice(1).some((part) => part.trim().toLowerCase() === "base64");
+    if (isBase64) {
+      let encoded;
+      try { encoded = decodeURIComponent(payload); }
+      catch (_error) { throw nativeFontFaceError("FontFace data URL base64 is malformed", "NetworkError"); }
+      try { return decodeBase64(encoded, nativeFontFaceByteLimit); }
+      catch (error) { throw nativeFontFaceError(String(error), "NetworkError"); }
+    }
+    const bytes = [];
+    for (let index = 0; index < payload.length;) {
+      if (payload[index] === "%") {
+        if (index + 2 >= payload.length) throw nativeFontFaceError("FontFace data URL is malformed", "NetworkError");
+        const high = nativeFontFaceHexDigit(payload[index + 1]);
+        const low = nativeFontFaceHexDigit(payload[index + 2]);
+        if (high < 0 || low < 0) throw nativeFontFaceError("FontFace data URL is malformed", "NetworkError");
+        bytes.push((high << 4) | low);
+        index += 3;
+        continue;
+      }
+      const codePoint = payload.codePointAt(index);
+      if (codePoint === undefined) break;
+      const character = String.fromCodePoint(codePoint);
+      bytes.push(...blobUtf8Bytes(character));
+      index += character.length;
+      if (bytes.length > nativeFontFaceByteLimit)
+        throw nativeFontFaceError("FontFace data URL exceeds its byte limit", "NetworkError");
+    }
+    if (bytes.length === 0) throw nativeFontFaceError("FontFace data URL is empty", "NetworkError");
+    return bytes;
+  };
+  const nativeFontFaceInlineBytes = (href) => {
+    const normalized = String(href);
+    if (normalized.slice(0, 5).toLowerCase() === "data:") return nativeFontFaceDataBytes(normalized);
+    const entry = typeof nativeObjectUrlRegistry !== "undefined"
+      ? nativeObjectUrlRegistry.get(normalized)
+      : null;
+    if (!entry) return null;
+    const contentType = entry.blob && entry.blob.type ? entry.blob.type : "";
+    if (!nativeFontFaceContentTypeAllowed(contentType))
+      throw nativeFontFaceError("FontFace Blob has an unsupported media type", "NetworkError");
+    const bytes = blobBytes(entry.blob);
+    if (bytes.length === 0) throw nativeFontFaceError("FontFace Blob is empty", "NetworkError");
+    if (bytes.length > nativeFontFaceByteLimit)
+      throw nativeFontFaceError("FontFace Blob exceeds its byte limit", "NetworkError");
+    return bytes;
+  };
+  const nativeFontFaceSource = (source) => {
+    const text = String(source === undefined || source === null ? "" : source).trim();
+    const match = text.match(/^(url|local)\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)/i);
+    if (!match) {
+      throw nativeFontFaceError("FontFace source must contain url() or local()", "SyntaxError");
+    }
+    const value = String(match[2] === undefined ? match[3] === undefined ? match[4] : match[3] : match[2]).trim();
+    if (!value) throw nativeFontFaceError("FontFace URL source must not be empty", "SyntaxError");
+    if (String(match[1]).toLowerCase() === "local") return { kind: "local", family: value };
+    return { kind: "url", href: new URLNative(value, host.url).href };
+  };
+  let nextFontFaceRequestId = Number.isSafeInteger(globalThis.__glassNextFontFaceRequestId)
+    ? globalThis.__glassNextFontFaceRequestId
+    : 1;
   const nativeFontFaceNormalizeFamily = (value) => String(value).trim()
     .replace(/^("|')(.*)\1$/, "$2");
   const nativeFontFaceDescriptorKey = (descriptor, index) => [
@@ -9422,7 +9520,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
         const settings = descriptors && typeof descriptors === "object" ? descriptors : {};
         const state = {
           family: normalizedFamily,
-          source,
+          source: String(source === undefined || source === null ? "" : source),
           status: "unloaded",
           loadedPromise: null,
           staticFace: false,
@@ -9496,17 +9594,59 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     const set = state.set;
     if (set) nativeFontFaceBegin(set, this);
     state.status = "loading";
-    const promise = Promise.resolve().then(() => {
-      if (state.staticFace && state.staticStatus === "loaded") return this;
-      throw nativeFontFaceError(
-        "script-created FontFace loading requires a native font loader",
-        "NotSupportedError",
-      );
-    }).then((face) => {
+    const sourcePromise = Promise.resolve().then(() => {
+      if (state.staticFace) {
+        if (state.staticStatus === "loaded") return null;
+        throw nativeFontFaceError("native CSS font face failed to load", "NetworkError");
+      }
+      const source = nativeFontFaceSource(state.source);
+      if (source.kind === "local") {
+        let encoded;
+        try { encoded = globalThis.__glassNativeLocalFont(source.family, state.weight, state.style); }
+        catch (_error) { encoded = null; }
+        if (typeof encoded !== "string" || !encoded)
+          throw nativeFontFaceError("FontFace local() source was not found", "NetworkError");
+        try { return decodeBase64(encoded, nativeFontFaceByteLimit); }
+        catch (error) { throw nativeFontFaceError(String(error), "NetworkError"); }
+      }
+      const href = source.href;
+      const inlineBytes = nativeFontFaceInlineBytes(href);
+      if (inlineBytes !== null) return inlineBytes;
+      return fetch(href, { credentials: "same-origin", mode: "cors" }).then((response) => {
+        if (!response || response.ok !== true)
+          throw nativeFontFaceError("FontFace source response was not successful", "NetworkError");
+        const contentType = response.headers && response.headers.get
+          ? response.headers.get("content-type") || ""
+          : "";
+        if (!nativeFontFaceContentTypeAllowed(contentType))
+          throw nativeFontFaceError("FontFace source has an unsupported media type", "NetworkError");
+        return response.arrayBuffer().then((buffer) => {
+          const bytes = Array.from(new Uint8Array(buffer));
+          if (bytes.length === 0) throw nativeFontFaceError("FontFace source is empty", "NetworkError");
+          if (bytes.length > nativeFontFaceByteLimit)
+            throw nativeFontFaceError("FontFace source exceeds its byte limit", "NetworkError");
+          return bytes;
+        });
+      });
+    });
+    const promise = sourcePromise.then((bytes) => {
+      if (bytes !== null) {
+        const requestId = nextFontFaceRequestId;
+        nextFontFaceRequestId += 1;
+        globalThis.__glassNextFontFaceRequestId = nextFontFaceRequestId;
+        pushCommand({
+          kind: "fontFaceInstall",
+          request_id: requestId,
+          family: state.family,
+          weight: state.weight,
+          style: state.style,
+          body_base64: encodeBase64(bytes, nativeFontFaceByteLimit),
+        });
+      }
       state.status = "loaded";
-      state.loadedPromise = Promise.resolve(face);
+      state.loadedPromise = Promise.resolve(this);
       if (set) nativeFontFaceFinish(set, this, null);
-      return face;
+      return this;
     }, (error) => {
       state.status = "error";
       const rejection = Promise.reject(error);
@@ -12300,6 +12440,7 @@ impl NativeJavaScriptRuntime {
                 Arc::clone(&self.sync_xhr_loader),
                 Arc::clone(&self.sync_xhr_loader_used),
             )?;
+            install_native_local_font_source(ctx.clone())?;
             install_native_url_source(ctx.clone())?;
             install_native_inline_script_policy(
                 ctx.clone(),
@@ -14596,6 +14737,49 @@ fn install_native_sync_xhr_source<'js>(
         .map_err(|_| NativeEngineError::Worker {
             operation: "publish native synchronous XHR source".into(),
             reason: "native synchronous XHR source could not be published".into(),
+        })
+}
+
+fn install_native_local_font_source<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), NativeEngineError> {
+    let source = Function::new(
+        ctx.clone(),
+        |family: String,
+         weight: String,
+         style: String|
+         -> std::result::Result<Option<String>, Error> {
+            let family = family.trim();
+            if family.is_empty() || family.len() > MAX_NATIVE_SCRIPT_BYTES {
+                return Err(Error::Unknown);
+            }
+            let weight = match weight.trim().to_ascii_lowercase().as_str() {
+                "normal" | "400" => FontWeightValue::Normal,
+                "bold" | "700" => FontWeightValue::Bold,
+                _ => return Err(Error::Unknown),
+            };
+            let style = match style.trim().to_ascii_lowercase().as_str() {
+                "normal" => FontStyleValue::Normal,
+                "italic" => FontStyleValue::Italic,
+                _ => return Err(Error::Unknown),
+            };
+            let bytes = NativeFontBook::system().local_font_bytes(family, weight, style);
+            if bytes
+                .as_ref()
+                .is_some_and(|bytes| bytes.len() > MAX_NATIVE_FONT_BYTES)
+            {
+                return Err(Error::Unknown);
+            }
+            Ok(bytes.map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)))
+        },
+    )
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install native local font source".into(),
+        reason: "native local font source could not be installed".into(),
+    })?;
+    ctx.globals()
+        .set("__glassNativeLocalFont", source)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "publish native local font source".into(),
+            reason: "native local font source could not be published".into(),
         })
 }
 
@@ -16981,6 +17165,8 @@ mod native_timer_probe_tests {
 #[cfg(test)]
 mod native_font_face_tests {
     use super::super::config::NativeEngineLimits;
+    use super::super::css::{FontStyleValue, FontWeightValue};
+    use super::super::font::NativeFontBook;
     use super::*;
 
     #[test]
@@ -17068,6 +17254,128 @@ mod native_font_face_tests {
             evaluation.value,
             serde_json::json!([1, "loaded", [["loading", 1], ["loadingerror", 1]], "error"])
         );
+    }
+
+    #[test]
+    fn script_font_face_load_installs_bounded_inline_bytes() {
+        #[cfg(not(target_os = "linux"))]
+        return;
+        let Ok(bytes) = std::fs::read("/usr/share/fonts/truetype/noto/NotoSansLycian-Regular.ttf")
+        else {
+            return;
+        };
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let source = serde_json::to_string(&format!("url(data:font/ttf;base64,{encoded})"))
+            .expect("font source must serialize");
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-inline-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::empty();
+        let started = runtime
+            .evaluate(
+                &format!(
+                    r#"(() => {{
+                      const face = new FontFace("Inline Sans", {source});
+                      globalThis.__inlineFontFace = face;
+                      document.fonts.add(face);
+                      face.load();
+                      return true;
+                    }})()"#
+                ),
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("inline FontFace source must evaluate");
+        document
+            .apply_script_commands(&started.commands)
+            .expect("initial FontFace commands must apply");
+        let evaluation = runtime
+            .evaluate(
+                "[globalThis.__inlineFontFace.status, document.fonts.status, document.fonts.size]",
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("inline FontFace completion must evaluate");
+        assert_eq!(evaluation.value, serde_json::json!(["loaded", "loaded", 1]));
+        let install = started
+            .commands
+            .iter()
+            .chain(evaluation.commands.iter())
+            .find(|command| matches!(command, NativeScriptCommand::FontFaceInstall { .. }))
+            .expect("FontFace load must emit a native installation command");
+        assert!(matches!(
+            install,
+            NativeScriptCommand::FontFaceInstall {
+                family,
+                weight,
+                style,
+                body_base64,
+                ..
+            } if family == "Inline Sans"
+                && weight == "normal"
+                && style == "normal"
+                && !body_base64.is_empty()
+        ));
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("native document must admit inline FontFace bytes");
+        let wire = document.to_content_wire();
+        assert_eq!(wire.font_resources.len(), 1);
+        assert_eq!(wire.font_resources[0].family, "Inline Sans");
+    }
+
+    #[test]
+    fn script_font_face_load_resolves_local_system_faces() {
+        #[cfg(not(target_os = "linux"))]
+        return;
+        if NativeFontBook::system()
+            .local_font_bytes(
+                "DejaVu Sans",
+                FontWeightValue::Normal,
+                FontStyleValue::Normal,
+            )
+            .is_none()
+        {
+            return;
+        }
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-local-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::empty();
+        let started = runtime
+            .evaluate(
+                r#"(() => {
+                  const face = new FontFace("Local Alias", "local('DejaVu Sans')");
+                  globalThis.__localFontFace = face;
+                  document.fonts.add(face);
+                  face.load();
+                  return true;
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("local FontFace source must evaluate");
+        document
+            .apply_script_commands(&started.commands)
+            .expect("local FontFace commands must apply");
+        let evaluation = runtime
+            .evaluate(
+                "[globalThis.__localFontFace.status, document.fonts.status]",
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("local FontFace completion must evaluate");
+        assert_eq!(evaluation.value, serde_json::json!(["loaded", "loaded"]));
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("local FontFace bytes must apply");
+        assert_eq!(document.to_content_wire().font_resources.len(), 1);
     }
 }
 
@@ -30127,8 +30435,8 @@ fn document_bootstrap(
     if (descriptor.byte_mode === true) source.type = "bytes";
     return new ReadableStreamNative(source);
   }};
-  const responseBodyBytes = (payload) => typeof payload.bodyBase64 === "string"
-    ? decodeBase64(payload.bodyBase64)
+  const responseBodyBytes = (payload, maxBytes = nativeFormBodyLimit) => typeof payload.bodyBase64 === "string"
+    ? decodeBase64(payload.bodyBase64, maxBytes)
     : blobUtf8Bytes(String(payload.body || ""));
   const responseBodyBlob = (payload) => {{
     const blob = new BlobNative([], {{ type: payload.contentType || "" }});

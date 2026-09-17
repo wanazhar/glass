@@ -572,6 +572,25 @@ impl NativeFontBook {
         system_font_book().clone()
     }
 
+    /// Check whether a bounded payload can be consumed by the native font
+    /// rasterizer. This is kept separate from `from_resources`, whose
+    /// historical wire-snapshot behavior intentionally skips malformed
+    /// entries instead of rejecting the whole document.
+    pub(crate) fn is_parseable_font_bytes(bytes: &[u8]) -> bool {
+        if bytes.is_empty() || bytes.len() > MAX_NATIVE_FONT_BYTES {
+            return false;
+        }
+        fontdue::Font::from_bytes(
+            bytes.to_vec(),
+            fontdue::FontSettings {
+                collection_index: 0,
+                scale: FONT_PARSE_SCALE,
+                load_substitutions: true,
+            },
+        )
+        .is_ok()
+    }
+
     pub(crate) fn local_font_bytes(
         &self,
         family: &str,

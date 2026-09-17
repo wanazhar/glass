@@ -220,6 +220,15 @@ pub(crate) struct NativeFontFaceResourceWire {
     pub(crate) data_base64: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeFontFaceScriptDescriptor {
+    pub(crate) family: String,
+    pub(crate) weight: String,
+    pub(crate) style: String,
+    pub(crate) status: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeBackgroundImageSourceWire {
     pub(crate) source_id: u32,
@@ -1311,6 +1320,33 @@ impl NativeDocument {
 
     pub(crate) fn font_face_rules(&self) -> &[NativeFontFaceRule] {
         self.stylesheet.font_face_rules()
+    }
+
+    pub(crate) fn font_face_script_descriptors(&self) -> Vec<NativeFontFaceScriptDescriptor> {
+        self.stylesheet
+            .font_face_rules()
+            .iter()
+            .map(|rule| NativeFontFaceScriptDescriptor {
+                family: rule.family.clone(),
+                weight: match rule.weight {
+                    FontWeightValue::Normal => "400".into(),
+                    FontWeightValue::Bold => "700".into(),
+                },
+                style: match rule.style {
+                    FontStyleValue::Normal => "normal".into(),
+                    FontStyleValue::Italic => "italic".into(),
+                },
+                status: if self.font_resources.iter().any(|resource| {
+                    resource.family_key == rule.family_key
+                        && resource.weight == rule.weight
+                        && resource.style == rule.style
+                }) {
+                    "loaded".into()
+                } else {
+                    "error".into()
+                },
+            })
+            .collect()
     }
 
     pub(crate) fn set_font_resources(

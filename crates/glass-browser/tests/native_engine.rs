@@ -1564,6 +1564,47 @@ async fn native_local_dynamic_blob_media_exposes_metadata_and_load_event() {
 }
 
 #[tokio::test]
+async fn native_local_data_media_loads_during_navigation() {
+    let mut wav = vec![0_u8; 44 + 320];
+    wav[0..4].copy_from_slice(b"RIFF");
+    wav[4..8].copy_from_slice(&(356_u32).to_le_bytes());
+    wav[8..12].copy_from_slice(b"WAVE");
+    wav[12..16].copy_from_slice(b"fmt ");
+    wav[16..20].copy_from_slice(&(16_u32).to_le_bytes());
+    wav[20..22].copy_from_slice(&(1_u16).to_le_bytes());
+    wav[22..24].copy_from_slice(&(1_u16).to_le_bytes());
+    wav[24..28].copy_from_slice(&(8000_u32).to_le_bytes());
+    wav[28..32].copy_from_slice(&(8000_u32).to_le_bytes());
+    wav[32..34].copy_from_slice(&(1_u16).to_le_bytes());
+    wav[34..36].copy_from_slice(&(8_u16).to_le_bytes());
+    wav[36..40].copy_from_slice(b"data");
+    wav[40..44].copy_from_slice(&(320_u32).to_le_bytes());
+    wav[44..].fill(128);
+    let data_url = format!(
+        "data:audio/wav;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&wav)
+    );
+    let html = format!("<audio id='audio' src='{data_url}'></audio>");
+    let config = NativeEngineConfig::default()
+        .with_fixture("fixture://data-media", html)
+        .unwrap()
+        .with_initial_url("fixture://data-media");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const audio = document.getElementById('audio'); return [audio.readyState, audio.networkState, audio.currentSrc, audio.duration, audio.error, audio.canPlayType('audio/wav')]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([1, 1, data_url, 0.04, serde_json::Value::Null, "maybe"])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_dynamic_blob_media_play_resolves_for_known_duration() {
     let config = NativeEngineConfig::default()
         .with_fixture(

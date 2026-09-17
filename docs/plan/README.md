@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-472`, following completed
 `native-engine-browser-471`, following completed
 `native-engine-browser-470`, following completed
 `native-engine-browser-469`, following completed
@@ -194,6 +195,15 @@ validate bounded supported media payloads, expose WAV duration metadata, and
 deliver selected-source readiness/error state plus load/error events through
 the native DOM and event paths. Codec/decoder playback, static HTTP media
 loading, and complete media/Web IDL parity remain issue #40 gates.
+
+The completed data-media follow-up is
+[`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and
+dynamic local media plus HTTP(S) content-process media now admit bounded
+`data:` payloads through base64 or percent decoding, explicit MIME/sniffing,
+and the existing policy/resource/event path. Embedded media never enters
+network or cache transport. File URLs, decoder output, independent media task
+source scheduling, range transport, and complete media/Web IDL parity remain
+issue #40 gates.
 
 The completed media timeline follow-up is
 [`native-engine-browser-471`](tasks/native-engine-browser-471.md): finite

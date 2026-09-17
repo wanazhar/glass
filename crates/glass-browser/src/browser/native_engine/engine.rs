@@ -6633,8 +6633,10 @@ impl NativeEngine {
         let generation = u32::try_from(revision).map_err(|_| {
             NativeEngineError::limit("document generations", u32::MAX as usize, usize::MAX)
         })?;
-        let document =
+        let mut document =
             NativeDocument::parse_with_generation(&resource.body, &self.config.limits, generation)?;
+        let initial_events =
+            load_local_initial_data_media(&mut document, &self.loader, &resource.url)?;
         let frame_sources = self.loader.frame_sources_for_document(&resource.url)?;
         let navigate_to_sources = self.loader.navigation_sources_for_document(
             &resource.url,
@@ -6646,7 +6648,7 @@ impl NativeEngine {
             frame_sources,
             navigate_to_sources,
             dialogs: Vec::new(),
-            initial_events: Vec::new(),
+            initial_events,
             initial_scroll_commands: Vec::new(),
             execute_inline_scripts: true,
         })
@@ -8201,10 +8203,13 @@ fn load_local_dynamic_blob_media(
         .into_iter()
         .take(MAX_NATIVE_LOCAL_MEDIA)
     {
-        if !source
+        let is_blob = source
             .get(..5)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
-        {
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"));
+        let is_data = source
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"));
+        if !is_blob && !is_data {
             continue;
         }
         let node_id = NativeNodeId::from_parts(document.generation(), node_index);
@@ -8212,9 +8217,43 @@ fn load_local_dynamic_blob_media(
             continue;
         }
         document.mark_media_load(node_index, source.clone())?;
-        let object_url = runtime.object_url_resource(&source)?;
-        let metadata = loader.load_local_blob_media(document_url, &source, object_url.as_ref())?;
+        let metadata = if is_blob {
+            let object_url = runtime.object_url_resource(&source)?;
+            loader.load_local_blob_media(document_url, &source, object_url.as_ref())?
+        } else {
+            loader.load_data_media(document_url, &source)?
+        };
         let event_kind = match metadata {
+            Some(metadata) => {
+                document.set_media_resource(node_index, source, metadata)?;
+                NativeEventKind::Load
+            }
+            None => {
+                document.set_media_error(node_index, source)?;
+                NativeEventKind::Error
+            }
+        };
+        events.push((node_index, event_kind));
+    }
+    document.refresh_media_loads();
+    Ok(events)
+}
+
+fn load_local_initial_data_media(
+    document: &mut NativeDocument,
+    loader: &NativeResourceLoader,
+    document_url: &str,
+) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
+    let mut events = Vec::new();
+    for (node_index, source) in document.external_media_links() {
+        if !source
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+        {
+            continue;
+        }
+        document.mark_media_load(node_index, source.clone())?;
+        let event_kind = match loader.load_data_media(document_url, &source)? {
             Some(metadata) => {
                 document.set_media_resource(node_index, source, metadata)?;
                 NativeEventKind::Load

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-461`, following completed
 `native-engine-browser-460`, following completed
 `native-engine-browser-459`, following completed
 `native-engine-browser-458`, following completed
@@ -290,6 +291,12 @@ fixture and other non-network documents can load a runtime-owned Blob URL as a
 dynamic classic script through the local owner, preserving bounded MIME, size,
 UTF-8, integrity, and load/error event checks without creating a network path.
 Media, popup/window, and cross-realm object-URL consumers remain separate
+resource-owner work.
+The completed local stylesheet follow-up is `native-engine-browser-461`:
+non-network documents can attach a runtime-owned Blob stylesheet, retain
+bounded per-link success/failure state, rebuild the native CSS and background
+source owners, and deliver `load`/`error` without HTTP/cache fallback. Media,
+popup/window, and cross-realm object-URL consumers remain separate
 resource-owner work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete

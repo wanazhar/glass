@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-466`, following completed
 `native-engine-browser-465`, following completed
 `native-engine-browser-464`, following completed
 `native-engine-browser-463`, following completed
@@ -321,9 +322,9 @@ dedicated/shared worker installs each snapshot before structured-clone
 decoding. The contract is covered by both inline fixture and HTTP(S)
 content-process tests, with no network/cache lookup and no live JavaScript
 object shared between realms. Source-realm revocation remains independent of
-the destination snapshot. Page-window, MessagePort, Service Worker client
-message, media, and remaining browser/Web IDL conformance consumers remain
-separate issue #40 work.
+the destination snapshot. At that checkpoint, page-window, MessagePort,
+Service Worker client message, media, and remaining browser/Web IDL
+conformance consumers remained separate issue #40 work.
 
 Slice `native-engine-browser-465` closes the page-window Blob URL message
 boundary. `WindowProxy`/popup messages now carry the same bounded Blob
@@ -333,9 +334,19 @@ Inline fixture and HTTP(S) tests cover bidirectional parent/child exchange and
 origin/type preservation without network or cache fallback. Ordinary popup and
 window navigation also avoids re-entering the QuickJS context for non-Blob
 URLs, preventing an initialization deadlock while retaining the in-context
-Blob registry lookup. MessagePort, Service Worker client message, media, and
-remaining browser/Web IDL conformance consumers remain separate issue #40
-work.
+Blob registry lookup. MessagePort was subsequently closed by slice 466;
+Service Worker client message, media, and remaining browser/Web IDL
+conformance consumers remain separate issue #40 work.
+
+Slice `native-engine-browser-466` closes the cross-realm Blob URL MessagePort
+boundary. Page, dedicated/shared-worker, popup/`WindowProxy`, and Service
+Worker port messages now carry bounded Blob snapshots through active,
+parked-target, frame, and content-process routes; each destination installs
+the snapshot before structured-clone decoding. Inline and HTTP(S) tests cover
+both directions, including service-worker ports, with no network/cache
+fallback and independent source revocation. MessagePort event-origin metadata,
+Service Worker client-message Blob transfer, media, and remaining browser/Web
+IDL conformance consumers remain separate issue #40 work.
 
 At the 431 checkpoint, page Fetch uploads, synchronous XHR, and complete
 XHR/Streams Web IDL parity remained separate gates; page upload streaming is

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-466`, following completed
 `native-engine-browser-465`, following completed
 `native-engine-browser-464`, following completed
 `native-engine-browser-463`, following completed
@@ -155,8 +156,9 @@ typed envelope for dedicated/shared workers, and worker-owned Blob URLs use
 the same envelope on their way back to the page. Both inline fixture and
 HTTP(S) content-process paths install the destination registry before clone
 decoding, without network/cache fallback; source revocation remains
-independent. Page-window, MessagePort, Service Worker client messaging,
-media, and remaining browser/Web IDL conformance remain issue #40 gates.
+independent. At that checkpoint, page-window, MessagePort, Service Worker
+client messaging, media, and remaining browser/Web IDL conformance remained
+issue #40 gates.
 
 The completed page-window message follow-up is
 [`native-engine-browser-465`](tasks/native-engine-browser-465.md): popup and
@@ -165,9 +167,19 @@ parked-target, frame, and HTTP(S) content-process routes, with destination
 registry installation before clone decoding. Bidirectional inline and HTTP(S)
 tests preserve origin and MIME behavior without network/cache fallback. The
 same slice makes ordinary popup/window navigation context-safe by avoiding a
-reentrant QuickJS registry lookup for non-Blob URLs. MessagePort, Service
-Worker client messaging, media, and remaining browser/Web IDL conformance
-remain issue #40 gates.
+reentrant QuickJS registry lookup for non-Blob URLs. MessagePort was
+subsequently closed by slice 466; Service Worker client messaging, media, and
+remaining browser/Web IDL conformance remain issue #40 gates.
+
+The completed MessagePort follow-up is
+[`native-engine-browser-466`](tasks/native-engine-browser-466.md): page,
+dedicated/shared-worker, popup/`WindowProxy`, and Service Worker MessagePort
+delivery carry bounded Blob URL snapshots through local and HTTP(S)
+content-process routes, installing the destination registry before clone
+decoding. Bidirectional tests cover inline, content-process, popup, and
+service-worker owners without network/cache fallback; MessagePort
+event-origin metadata, Service Worker client-message Blob transfer, media,
+and remaining browser/Web IDL conformance remain issue #40 gates.
 
 The completed report-only navigation preflight slice is
 [native-engine-browser-413](tasks/native-engine-browser-413.md): the

@@ -2157,6 +2157,89 @@ async fn native_message_ports_transfer_between_page_and_worker_realms() {
 }
 
 #[tokio::test]
+async fn native_message_ports_transfer_blob_urls_between_page_and_worker_realms() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://message-port-blob-page",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://message-port-blob-worker",
+            "self.onmessage = event => { const port = event.ports[0]; port.onmessage = message => { try { const xhr = new XMLHttpRequest(); xhr.open('GET', message.data.url, false); xhr.send(); const blob = new Blob(['worker-port-body'], { type: 'text/worker-port' }); port.postMessage({ kind: 'worker-read', text: xhr.responseText, contentType: xhr.getResponseHeader('content-type'), url: URL.createObjectURL(blob) }); } catch (error) { port.postMessage({ kind: 'worker-error', error: String(error) }); } }; port.start(); port.postMessage({ kind: 'worker-ready' }); };",
+        )
+        .unwrap()
+        .with_initial_url("fixture://message-port-blob-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    globalThis.portEvents = [];
+                    globalThis.channel = new MessageChannel();
+                    channel.port2.onmessage = event => {
+                        if (event.data.kind === 'worker-ready') {
+                            portEvents.push([event.data.kind]);
+                            return;
+                        }
+                        if (event.data.kind !== 'worker-read') {
+                            portEvents.push([event.data.kind, event.data.error]);
+                            return;
+                        }
+                        try {
+                            const xhr = new XMLHttpRequest();
+                            xhr.open('GET', event.data.url, false);
+                            xhr.send();
+                            portEvents.push([event.data.kind, event.data.text,
+                                event.data.contentType, xhr.responseText,
+                                xhr.getResponseHeader('content-type')]);
+                        } catch (error) {
+                            portEvents.push(['page-error', String(error)]);
+                        }
+                    };
+                    channel.port2.start();
+                    globalThis.worker = new Worker('fixture://message-port-blob-worker');
+                    worker.postMessage({ kind: 'connect' }, [channel.port1]);
+                    return true;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("portEvents").await.unwrap(),
+        serde_json::json!([["worker-ready"]])
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "const blob = new Blob(['page-port-body'], { type: 'text/page-port' }); channel.port2.postMessage({ url: URL.createObjectURL(blob) }); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("portEvents").await.unwrap(),
+        serde_json::json!([
+            ["worker-ready",],
+            [
+                "worker-read",
+                "page-port-body",
+                "text/page-port",
+                "worker-port-body",
+                "text/worker-port",
+            ]
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_worker_timers_run_on_the_next_page_turn() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -4812,6 +4895,71 @@ async fn native_content_process_transfers_message_ports_between_page_and_worker_
 }
 
 #[tokio::test]
+async fn native_content_process_message_ports_transfer_blob_urls_between_page_and_worker() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            (
+                "/message-port-blob-page",
+                "text/html",
+                "<script>globalThis.portEvents = []; globalThis.channel = new MessageChannel(); channel.port2.onmessage = event => { if (event.data.kind === 'worker-ready') { portEvents.push([event.data.kind]); return; } if (event.data.kind !== 'worker-read') { portEvents.push([event.data.kind, event.data.error]); return; } try { const xhr = new XMLHttpRequest(); xhr.open('GET', event.data.url, false); xhr.send(); portEvents.push([event.data.kind, event.data.text, event.data.contentType, xhr.responseText, xhr.getResponseHeader('content-type')]); } catch (error) { portEvents.push(['page-error', String(error)]); } }; channel.port2.start(); globalThis.worker = new Worker('/message-port-blob-worker.js'); worker.postMessage({ kind: 'connect' }, [channel.port1]);</script><main>Native</main>",
+            ),
+            (
+                "/message-port-blob-worker.js",
+                "text/javascript",
+                "self.onmessage = event => { const port = event.ports[0]; port.onmessage = message => { try { const xhr = new XMLHttpRequest(); xhr.open('GET', message.data.url, false); xhr.send(); const blob = new Blob(['http-worker-port-body'], { type: 'text/http-worker-port' }); port.postMessage({ kind: 'worker-read', text: xhr.responseText, contentType: xhr.getResponseHeader('content-type'), url: URL.createObjectURL(blob) }); } catch (error) { port.postMessage({ kind: 'worker-error', error: String(error) }); } }; port.start(); port.postMessage({ kind: 'worker-ready' }); };",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/message-port-blob-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("portEvents").await.unwrap(),
+        serde_json::json!([["worker-ready"]])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "const blob = new Blob(['http-page-port-body'], { type: 'text/http-page-port' }); channel.port2.postMessage({ url: URL.createObjectURL(blob) }); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine.evaluate_async("portEvents").await.unwrap(),
+        serde_json::json!([
+            ["worker-ready",],
+            [
+                "worker-read",
+                "http-page-port-body",
+                "text/http-page-port",
+                "http-worker-port-body",
+                "text/http-worker-port",
+            ]
+        ])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_transfers_array_buffers_between_page_and_worker_realms() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -6994,7 +7142,7 @@ async fn native_content_process_service_worker_transfers_message_port_round_trip
             (
                 "/sw.js",
                 "application/javascript",
-                "self.addEventListener('message', event => { const port = event.ports[0]; if (!port) return; port.onmessage = message => port.postMessage({ kind: 'reply', value: Number(message.data.value) + 1 }); port.start(); port.postMessage({ kind: 'ready', value: 1 }); });",
+                "self.addEventListener('message', event => { const port = event.ports[0]; if (!port) return; port.onmessage = message => { try { const xhr = new XMLHttpRequest(); xhr.open('GET', message.data.url, false); xhr.send(); const blob = new Blob(['sw-port-body'], { type: 'text/sw-port' }); port.postMessage({ kind: 'reply', value: Number(message.data.value) + 1, sourceText: xhr.responseText, sourceType: xhr.getResponseHeader('content-type'), url: URL.createObjectURL(blob) }); } catch (error) { port.postMessage({ kind: 'error', error: String(error) }); } }; port.start(); port.postMessage({ kind: 'ready', value: 1 }); });",
             ),
         ] {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -7016,7 +7164,7 @@ async fn native_content_process_service_worker_transfers_message_port_round_trip
     assert_eq!(
         engine
             .evaluate_async(
-                "await registrationPromise.then(reg => { globalThis.channel = new MessageChannel(); channel.port2.onmessage = event => swEvents.push({ kind: event.data.kind, value: event.data.value, portCount: event.ports.length }); channel.port2.start(); reg.active.postMessage({ kind: 'connect' }, [channel.port1]); let detachedError = ''; try { channel.port1.postMessage({}); } catch (error) { detachedError = error.name; } return { detachedError, port2: channel.port2 instanceof MessagePort }; })",
+                "await registrationPromise.then(reg => { globalThis.channel = new MessageChannel(); channel.port2.onmessage = event => { const result = { kind: event.data.kind, value: event.data.value, portCount: event.ports.length }; if (event.data.url) { try { const xhr = new XMLHttpRequest(); xhr.open('GET', event.data.url, false); xhr.send(); result.responseText = xhr.responseText; result.responseType = xhr.getResponseHeader('content-type'); } catch (error) { result.error = String(error); } } if (event.data.sourceText) { result.sourceText = event.data.sourceText; result.sourceType = event.data.sourceType; } swEvents.push(result); }; channel.port2.start(); reg.active.postMessage({ kind: 'connect' }, [channel.port1]); let detachedError = ''; try { channel.port1.postMessage({}); } catch (error) { detachedError = error.name; } return { detachedError, port2: channel.port2 instanceof MessagePort }; })",
             )
             .await
             .unwrap(),
@@ -7030,7 +7178,7 @@ async fn native_content_process_service_worker_transfers_message_port_round_trip
     );
     assert_eq!(
         engine
-            .evaluate_async("channel.port2.postMessage({ value: 4 }); true")
+            .evaluate_async("const blob = new Blob(['page-sw-port-body'], { type: 'text/page-sw-port' }); channel.port2.postMessage({ value: 4, url: URL.createObjectURL(blob) }); true")
             .await
             .unwrap(),
         serde_json::json!(true)
@@ -7040,7 +7188,15 @@ async fn native_content_process_service_worker_transfers_message_port_round_trip
         serde_json::json!({
             "swEvents": [
                 {"kind": "ready", "value": 1, "portCount": 0},
-                {"kind": "reply", "value": 5, "portCount": 0},
+                {
+                    "kind": "reply",
+                    "value": 5,
+                    "portCount": 0,
+                    "responseText": "sw-port-body",
+                    "responseType": "text/sw-port",
+                    "sourceText": "page-sw-port-body",
+                    "sourceType": "text/page-sw-port",
+                },
             ],
         })
     );
@@ -11019,6 +11175,123 @@ async fn native_window_proxy_message_port_round_trip_reaches_original_peer() {
         serde_json::json!(["ack", 8])
     );
     session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_window_proxy_message_port_transfers_blob_urls_between_page_realms() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://window-port-blob-parent",
+            "<title>Window port Blob parent</title><script>globalThis.replies = []; const channel = new MessageChannel(); channel.port2.onmessage = event => { try { const xhr = new XMLHttpRequest(); xhr.open('GET', event.data.url, false); xhr.send(); replies.push([event.data.kind, xhr.responseText, xhr.getResponseHeader('content-type'), event.origin]); } catch (error) { replies.push(['error', String(error)]); } }; channel.port2.start(); globalThis.child = window.open('fixture://window-port-blob-child', 'window-port-blob-child'); const blob = new Blob(['parent-window-port-body'], { type: 'text/window-parent' }); child.postMessage({ kind: 'parent-to-child', url: URL.createObjectURL(blob) }, '*', [channel.port1]);</script><p>parent</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://window-port-blob-child",
+            "<title>Window port Blob child</title><script>globalThis.received = []; addEventListener('message', event => { try { const xhr = new XMLHttpRequest(); xhr.open('GET', event.data.url, false); xhr.send(); received.push([event.data.kind, xhr.responseText, xhr.getResponseHeader('content-type'), event.origin]); const blob = new Blob(['child-window-port-body'], { type: 'text/window-child' }); event.ports[0].postMessage({ kind: 'child-to-parent', url: URL.createObjectURL(blob) }); } catch (error) { received.push(['error', String(error)]); } });</script><p>child</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://window-port-blob-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let child = session
+        .native_list_targets()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|target| !target.active)
+        .unwrap();
+    session.native_select_target(&child.id).await.unwrap();
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!([[
+            "parent-to-child",
+            "parent-window-port-body",
+            "text/window-parent",
+            "null",
+        ]])
+    );
+
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("globalThis.replies").await.unwrap().value,
+        serde_json::json!([[
+            "child-to-parent",
+            "child-window-port-body",
+            "text/window-child",
+            "",
+        ]])
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_window_proxy_message_port_transfers_blob_urls_between_page_realms() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (path, body) in [
+            (
+                "/window-port-blob-parent",
+                "<title>HTTP window port Blob parent</title><script>globalThis.replies = []; const channel = new MessageChannel(); channel.port2.onmessage = event => { try { const xhr = new XMLHttpRequest(); xhr.open('GET', event.data.url, false); xhr.send(); replies.push([event.data.kind, xhr.responseText, xhr.getResponseHeader('content-type'), event.origin]); } catch (error) { replies.push(['error', String(error)]); } }; channel.port2.start(); globalThis.child = window.open('/window-port-blob-child', 'http-window-port-blob-child'); const blob = new Blob(['http-parent-window-port-body'], { type: 'text/http-window-parent' }); child.postMessage({ kind: 'http-parent-to-child', url: URL.createObjectURL(blob) }, '*', [channel.port1]);</script><p>parent</p>",
+            ),
+            (
+                "/window-port-blob-child",
+                "<title>HTTP window port Blob child</title><script>globalThis.received = []; addEventListener('message', event => { try { const xhr = new XMLHttpRequest(); xhr.open('GET', event.data.url, false); xhr.send(); received.push([event.data.kind, xhr.responseText, xhr.getResponseHeader('content-type'), event.origin]); const blob = new Blob(['http-child-window-port-body'], { type: 'text/http-window-child' }); event.ports[0].postMessage({ kind: 'http-child-to-parent', url: URL.createObjectURL(blob) }); } catch (error) { received.push(['error', String(error)]); } });</script><p>child</p>",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/window-port-blob-parent")),
+    )
+    .await
+    .unwrap();
+    let child = session
+        .native_list_targets()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|target| !target.active)
+        .unwrap();
+    session.native_select_target(&child.id).await.unwrap();
+    assert_eq!(
+        session.script("globalThis.received").await.unwrap().value,
+        serde_json::json!([[
+            "http-parent-to-child",
+            "http-parent-window-port-body",
+            "text/http-window-parent",
+            format!("http://{address}"),
+        ]])
+    );
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("globalThis.replies").await.unwrap().value,
+        serde_json::json!([[
+            "http-child-to-parent",
+            "http-child-window-port-body",
+            "text/http-window-child",
+            "",
+        ]])
+    );
+    session.close().await.unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test]

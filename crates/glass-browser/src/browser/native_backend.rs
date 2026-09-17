@@ -5410,7 +5410,12 @@ async fn dispatch_page_message_port_to_native_frame(
 ) -> Result<NativeFrameRuntimeEffects, BrowserBackendError> {
     let previous_revision = engine.revision();
     engine
-        .dispatch_page_message_port(&command.bridge_key, &command.data, &command.transfer_ports)
+        .dispatch_page_message_port(
+            &command.bridge_key,
+            &command.data,
+            &command.transfer_ports,
+            &command.object_urls,
+        )
         .await
         .map_err(native_error)?;
     take_native_frame_runtime_effects(engine, previous_revision)

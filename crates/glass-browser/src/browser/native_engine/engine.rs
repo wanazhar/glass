@@ -49,8 +49,9 @@ use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
     NativeCspViolation, NativeFetchResponse, NativeNavigationMethod, NativeNavigationPolicyKind,
-    NativeNavigationRequest, NativeResource, NativeResourceLoader, csp_sources_allow,
-    csp_sources_allow_for_redirect, referrer_for_navigation, validate_target_navigation_payload,
+    NativeNavigationRequest, NativeObjectUrlTransfer, NativeResource, NativeResourceLoader,
+    csp_sources_allow, csp_sources_allow_for_redirect, referrer_for_navigation,
+    validate_target_navigation_payload,
 };
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
@@ -3369,12 +3370,14 @@ impl NativeEngine {
         bridge_key: &str,
         data: &serde_json::Value,
         transfer_ports: &[NativeMessagePortTransfer],
+        object_urls: &[NativeObjectUrlTransfer],
     ) -> Result<(), NativeEngineError> {
         self.require_running("MessagePort event")?;
         let command = NativePageMessagePortCommand {
             bridge_key: bridge_key.to_owned(),
             data: data.clone(),
             transfer_ports: transfer_ports.to_vec(),
+            object_urls: object_urls.to_vec(),
             source_context_id: String::new(),
             source_frame_id: String::new(),
         };
@@ -3386,6 +3389,7 @@ impl NativeEngine {
                 bridge_key: command.bridge_key,
                 data: command.data,
                 transfer_ports: command.transfer_ports,
+                object_urls: command.object_urls,
             });
         self.evaluate_page_with_events_async("undefined;".into(), page_events)
             .await

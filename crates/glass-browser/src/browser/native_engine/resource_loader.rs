@@ -2488,6 +2488,19 @@ fn file_media_type(path: &Path) -> Option<&'static str> {
     }
 }
 
+fn file_image_media_type(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => Some("image/png"),
+        "apng" => Some("image/apng"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        "svg" => Some("image/svg+xml"),
+        _ => None,
+    }
+}
+
 impl NativeResourceLoader {
     pub(crate) fn new(config: &NativeEngineConfig) -> Result<Self, NativeEngineError> {
         config.validate()?;
@@ -2562,6 +2575,28 @@ impl NativeResourceLoader {
             });
         }
         Ok(canonical_path)
+    }
+
+    fn local_file_subresource_path(
+        &self,
+        document_url: &str,
+        href: &str,
+        resource_name: &str,
+    ) -> Result<Option<(Url, PathBuf)>, NativeEngineError> {
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: format!("{resource_name} owner URL is not valid URL syntax"),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        if !is_file_url(document_url.as_str()) {
+            return Ok(None);
+        }
+        let Some(target_url) = resolve_local_file_subresource_url(&document_url, href)? else {
+            return Ok(None);
+        };
+        let path = self.allowed_file_path(&target_url, resource_name)?;
+        Ok(Some((target_url, path)))
     }
 
     pub(crate) fn set_environment(
@@ -5038,6 +5073,31 @@ impl NativeResourceLoader {
         ))
     }
 
+    /// Load a rooted file image for a local file document. The path is
+    /// canonicalized before reading so symlink escapes cannot widen the
+    /// configured filesystem capability.
+    pub(crate) fn load_local_file_image(
+        &self,
+        document_url: &str,
+        src: &str,
+    ) -> Result<Option<NativeImage>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("image URL", src)?;
+        let Some((_, path)) = self.local_file_subresource_path(document_url, src, "file image")?
+        else {
+            return Ok(None);
+        };
+        let bytes = read_bounded_file(&path, MAX_NATIVE_IMAGE_TRANSFER_BYTES, "file image")?;
+        let Some(media_type) = file_image_media_type(&path) else {
+            return Ok(None);
+        };
+        Ok(decode_image_bytes(
+            &bytes,
+            media_type,
+            MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+        ))
+    }
+
     /// Load a Blob-backed stylesheet for a local document without entering the
     /// asynchronous network or HTTP-cache path.
     pub(crate) fn load_local_blob_stylesheet(
@@ -5092,6 +5152,34 @@ impl NativeResourceLoader {
                 operation: "Blob CSS subresource decoding".into(),
                 reason: "Blob CSS subresource is not valid UTF-8".into(),
             })?;
+        Ok(Some(body))
+    }
+
+    /// Load a bounded rooted file stylesheet for a local file document.
+    /// Local files do not carry an HTTP response MIME header, so the
+    /// stylesheet link's resource type is represented by the caller and the
+    /// bytes are admitted as UTF-8 CSS after the root and integrity checks.
+    pub(crate) fn load_local_file_stylesheet(
+        &self,
+        document_url: &str,
+        href: &str,
+        integrity: Option<&str>,
+    ) -> Result<Option<String>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("stylesheet URL", href)?;
+        let Some((_, path)) =
+            self.local_file_subresource_path(document_url, href, "file stylesheet")?
+        else {
+            return Ok(None);
+        };
+        let bytes = read_bounded_file(&path, self.max_document_bytes, "file CSS subresource")?;
+        if !subresource_integrity_matches(integrity, &bytes) {
+            return Ok(None);
+        }
+        let body = String::from_utf8(bytes).map_err(|_| NativeEngineError::Network {
+            operation: "file CSS subresource decoding".into(),
+            reason: "file CSS subresource is not valid UTF-8".into(),
+        })?;
         Ok(Some(body))
     }
 
@@ -6049,6 +6137,43 @@ impl NativeResourceLoader {
         }))
     }
 
+    /// Load a bounded rooted file script for a local file document. File
+    /// scripts are text resources owned by the configured root; they do not
+    /// enter the HTTP cache or network transport.
+    pub(crate) fn load_local_file_script(
+        &self,
+        document_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        integrity: Option<&str>,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("script URL", href)?;
+        if max_source_bytes == 0 {
+            return Err(NativeEngineError::invalid(
+                "script source limit",
+                "must be positive",
+            ));
+        }
+        let Some((target_url, path)) =
+            self.local_file_subresource_path(document_url, href, "file script")?
+        else {
+            return Ok(None);
+        };
+        let bytes = read_bounded_file(&path, max_source_bytes, "file script subresource")?;
+        if !subresource_integrity_matches(integrity, &bytes) {
+            return Ok(None);
+        }
+        let body = String::from_utf8(bytes).map_err(|_| NativeEngineError::Network {
+            operation: "file script subresource decoding".into(),
+            reason: "file script subresource is not valid UTF-8".into(),
+        })?;
+        Ok(Some(NativeScriptResource {
+            url: target_url.to_string(),
+            body,
+        }))
+    }
+
     pub(crate) async fn load_script_async(
         &mut self,
         document_url: &str,
@@ -6759,6 +6884,22 @@ fn resolve_subresource_url_with_blob(
     if !is_network_url(without_fragment(target_url.as_str()))
         && !target_url.scheme().eq_ignore_ascii_case("blob")
     {
+        return Ok(None);
+    }
+    Ok(Some(target_url))
+}
+
+fn resolve_local_file_subresource_url(
+    document_url: &Url,
+    href: &str,
+) -> Result<Option<Url>, NativeEngineError> {
+    let target_url = document_url
+        .join(href)
+        .map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "file subresource URL could not be resolved against the document".into(),
+        })?;
+    reject_credentials(&target_url)?;
+    if !target_url.scheme().eq_ignore_ascii_case("file") {
         return Ok(None);
     }
     Ok(Some(target_url))

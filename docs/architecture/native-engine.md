@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-474`, following completed
 `native-engine-browser-473`, following completed
 `native-engine-browser-472`, following completed
 `native-engine-browser-471`, following completed
@@ -379,6 +380,17 @@ The roots cross the content-process IPC start message and are bound read-only
 by the Linux/macOS sandbox. Network documents cannot use this path to read a
 local file. File-backed scripts, stylesheets, images, fonts, workers,
 downloads, and complete file-origin/Web IDL parity remain issue #40 work.
+
+Slice `native-engine-browser-474` makes rooted file documents useful as
+multi-resource pages. Static file CSS is loaded before local layout, file
+classic/module scripts execute through the existing page scheduler, and
+`<img>` plus CSS background images use the bounded native decoder. Dynamic
+file script, stylesheet, and image attachment uses the same canonical root,
+integrity, UTF-8, size, event, and paint/resource state owners. Network,
+`data:`, `blob:`, and unconfigured file targets remain denied in this local
+path. File fonts, workers, downloads, CSS URL base parity, module dependency
+graphs, complete file-origin semantics, and full Web IDL parity remain issue
+#40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

@@ -5,8 +5,8 @@
 //! capability has an explicit resource and security contract.
 
 use super::config::{
-    MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, is_network_url, validate_context_id, validate_url_text,
-    validate_window_name, without_fragment,
+    MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, is_file_url, is_network_url, validate_context_id,
+    validate_url_text, validate_window_name, without_fragment,
 };
 use super::dom::{
     NativeDocument, NativePageScriptSource, NativePageScriptTiming, NativeScriptDocumentSnapshot,
@@ -6828,7 +6828,9 @@ pub(crate) fn execute_inline_scripts(
     storage_state: &NativeWebStorageState,
     indexed_db_state: &NativeIndexedDbState,
     cookie: &str,
+    loader: &mut NativeResourceLoader,
 ) -> Result<NativePageScriptResult, NativeEngineError> {
+    let mut resource_events = Vec::new();
     let sources = document
         .page_script_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_BYTES)
         .into_iter()
@@ -6861,6 +6863,65 @@ pub(crate) fn execute_inline_scripts(
                     node_index: Some(node_index),
                 },
             )),
+            NativePageScriptSource::External {
+                href,
+                timing,
+                node_index,
+                integrity,
+                ..
+            } if is_file_url(document_url) => {
+                match loader.load_local_file_script(
+                    document_url,
+                    &href,
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    integrity.as_deref(),
+                ) {
+                    Ok(Some(resource)) => {
+                        resource_events.push((node_index, NativeEventKind::Load));
+                        Some((
+                            timing,
+                            NativePageScript::Classic {
+                                source: resource.body,
+                                node_index: Some(node_index),
+                            },
+                        ))
+                    }
+                    Ok(None) | Err(_) => {
+                        resource_events.push((node_index, NativeEventKind::Error));
+                        None
+                    }
+                }
+            }
+            NativePageScriptSource::ModuleExternal {
+                href,
+                timing,
+                node_index,
+                integrity,
+                ..
+            } if is_file_url(document_url) => {
+                match loader.load_local_file_script(
+                    document_url,
+                    &href,
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    integrity.as_deref(),
+                ) {
+                    Ok(Some(resource)) => {
+                        resource_events.push((node_index, NativeEventKind::Load));
+                        Some((
+                            timing,
+                            NativePageScript::Module {
+                                name: resource.url,
+                                source: resource.body,
+                                node_index: Some(node_index),
+                            },
+                        ))
+                    }
+                    Ok(None) | Err(_) => {
+                        resource_events.push((node_index, NativeEventKind::Error));
+                        None
+                    }
+                }
+            }
             NativePageScriptSource::External { .. }
             | NativePageScriptSource::ModuleExternal { .. } => None,
         })
@@ -6877,8 +6938,8 @@ pub(crate) fn execute_inline_scripts(
         storage_state,
         indexed_db_state,
         cookie,
-        &[],
-        &[],
+        &resource_events,
+        &loader.take_csp_violations(),
     )
 }
 

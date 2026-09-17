@@ -4451,13 +4451,13 @@ impl NativeEngine {
         }
         let (stylesheet_events, image_events, media_events) =
             if let Some(javascript) = self.javascript.as_ref() {
-                let stylesheet_events = load_local_dynamic_blob_stylesheets(
+                let stylesheet_events = load_local_dynamic_stylesheets(
                     &mut document,
                     javascript,
                     &mut self.loader,
                     &self.url,
                 )?;
-                let image_events = load_local_dynamic_blob_images(
+                let image_events = load_local_dynamic_images(
                     &mut document,
                     javascript,
                     &mut self.loader,
@@ -6646,7 +6646,35 @@ impl NativeEngine {
         })?;
         let mut document =
             NativeDocument::parse_with_generation(&resource.body, &self.config.limits, generation)?;
-        let initial_events = load_local_initial_media(&mut document, &self.loader, &resource.url)?;
+        let initial_events = if is_file_url(&resource.url) {
+            let (stylesheet_states, mut events) =
+                load_local_initial_file_stylesheets(&document, &self.loader, &resource.url)?;
+            let external_stylesheets = stylesheet_states
+                .iter()
+                .filter_map(|(_, _, body)| body.clone())
+                .collect::<Vec<_>>();
+            document = NativeDocument::parse_with_stylesheets(
+                &resource.body,
+                &self.config.limits,
+                &external_stylesheets,
+                generation,
+            )?;
+            document.set_external_stylesheet_states(stylesheet_states);
+            events.extend(load_local_initial_file_images(
+                &mut document,
+                &self.loader,
+                &resource.url,
+                self.config.viewport,
+            )?);
+            events.extend(load_local_initial_media(
+                &mut document,
+                &self.loader,
+                &resource.url,
+            )?);
+            events
+        } else {
+            load_local_initial_media(&mut document, &self.loader, &resource.url)?
+        };
         let frame_sources = self.loader.frame_sources_for_document(&resource.url)?;
         let navigate_to_sources = self.loader.navigation_sources_for_document(
             &resource.url,
@@ -6723,6 +6751,7 @@ impl NativeEngine {
                 &storage_state,
                 &self.indexed_db,
                 &cookie,
+                &mut self.loader,
             );
             if let Some(javascript) = javascript.as_ref()
                 && let Some(updated_loader) = javascript.take_sync_xhr_loader()
@@ -6865,6 +6894,7 @@ impl NativeEngine {
                 &storage_state,
                 &self.indexed_db,
                 &cookie,
+                &mut self.loader,
             );
             if let Some(javascript) = javascript.as_ref()
                 && let Some(updated_loader) = javascript.take_sync_xhr_loader()
@@ -8014,47 +8044,97 @@ fn load_local_dynamic_page_script_sources(
                 integrity,
                 ..
             } => {
-                if !href
+                let is_blob = href
                     .get(..5)
-                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
-                {
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"));
+                let is_file = is_file_subresource_source(document_url, &href);
+                if !is_blob && !is_file {
                     return Err(NativeEngineError::UnsupportedUrl {
                         reason:
-                            "dynamic external scripts require a process-backed HTTP(S) document"
+                            "dynamic external scripts require a rooted file or process-backed HTTP(S) document"
                                 .into(),
                     });
                 }
-                let object_url = runtime.object_url_resource(&href)?;
-                match loader.load_local_blob_script(
-                    document_url,
-                    &href,
-                    MAX_NATIVE_SCRIPT_BYTES,
-                    integrity.as_deref(),
-                    object_url.as_ref(),
-                )? {
-                    Some(resource) => {
+                let resource = if is_blob {
+                    let object_url = runtime.object_url_resource(&href)?;
+                    loader.load_local_blob_script(
+                        document_url,
+                        &href,
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        integrity.as_deref(),
+                        object_url.as_ref(),
+                    )
+                } else {
+                    loader.load_local_file_script(
+                        document_url,
+                        &href,
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        integrity.as_deref(),
+                    )
+                };
+                match resource {
+                    Ok(Some(resource)) => {
                         scripts.push(NativePageScript::Classic {
                             source: resource.body,
                             node_index: Some(node_index),
                         });
                         resource_events.push((node_index, NativeEventKind::Load));
                     }
-                    None => resource_events.push((node_index, NativeEventKind::Error)),
+                    Ok(None) | Err(_) => resource_events.push((node_index, NativeEventKind::Error)),
                 }
             }
-            NativePageScriptSource::ModuleExternal { .. } => {
-                return Err(NativeEngineError::UnsupportedUrl {
-                    reason:
-                        "dynamic external/module scripts require a process-backed HTTP(S) document"
-                            .into(),
-                });
+            NativePageScriptSource::ModuleExternal {
+                href,
+                node_index,
+                integrity,
+                ..
+            } => {
+                let is_blob = href
+                    .get(..5)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"));
+                let is_file = is_file_subresource_source(document_url, &href);
+                if !is_blob && !is_file {
+                    return Err(NativeEngineError::UnsupportedUrl {
+                        reason:
+                            "dynamic external module scripts require a rooted file or process-backed HTTP(S) document"
+                                .into(),
+                    });
+                }
+                let resource = if is_blob {
+                    let object_url = runtime.object_url_resource(&href)?;
+                    loader.load_local_blob_script(
+                        document_url,
+                        &href,
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        integrity.as_deref(),
+                        object_url.as_ref(),
+                    )
+                } else {
+                    loader.load_local_file_script(
+                        document_url,
+                        &href,
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        integrity.as_deref(),
+                    )
+                };
+                match resource {
+                    Ok(Some(resource)) => {
+                        scripts.push(NativePageScript::Module {
+                            name: resource.url,
+                            source: resource.body,
+                            node_index: Some(node_index),
+                        });
+                        resource_events.push((node_index, NativeEventKind::Load));
+                    }
+                    Ok(None) | Err(_) => resource_events.push((node_index, NativeEventKind::Error)),
+                }
             }
         }
     }
     Ok((scripts, resource_events))
 }
 
-fn load_local_dynamic_blob_stylesheets(
+fn load_local_dynamic_stylesheets(
     document: &mut NativeDocument,
     runtime: &NativeJavaScriptRuntime,
     loader: &mut NativeResourceLoader,
@@ -8066,11 +8146,12 @@ fn load_local_dynamic_blob_stylesheets(
         .take(MAX_NATIVE_LOCAL_STYLESHEETS)
         .collect::<Vec<_>>();
     let previous_states = document.external_stylesheet_states();
-    let live_blob_nodes = links
+    let live_local_nodes = links
         .iter()
         .filter(|(_, href, _, _)| {
             href.get(..5)
                 .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
+                || is_file_subresource_source(document_url, href)
         })
         .map(|(node_index, _, _, _)| *node_index)
         .collect::<BTreeSet<_>>();
@@ -8079,7 +8160,7 @@ fn load_local_dynamic_blob_stylesheets(
         .into_iter()
         .map(|(node_index, href, body)| (node_index, (href, body)))
         .collect::<BTreeMap<_, _>>();
-    states.retain(|node_index, _| live_blob_nodes.contains(node_index));
+    states.retain(|node_index, _| live_local_nodes.contains(node_index));
     let mut loaded_bytes = states
         .values()
         .filter_map(|(_, body)| body.as_ref())
@@ -8088,10 +8169,11 @@ fn load_local_dynamic_blob_stylesheets(
     let mut events = Vec::new();
 
     for (node_index, href, integrity, _) in links {
-        if !href
+        let is_blob = href
             .get(..5)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
-        {
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"));
+        let is_file = is_file_subresource_source(document_url, &href);
+        if !is_blob && !is_file {
             continue;
         }
         if states
@@ -8100,14 +8182,18 @@ fn load_local_dynamic_blob_stylesheets(
         {
             continue;
         }
-        let object_url = runtime.object_url_resource(&href)?;
-        let body = match loader.load_local_blob_stylesheet(
-            document_url,
-            &href,
-            integrity.as_deref(),
-            object_url.as_ref(),
-        )? {
-            Some(stylesheet) => {
+        let body = match if is_blob {
+            let object_url = runtime.object_url_resource(&href)?;
+            loader.load_local_blob_stylesheet(
+                document_url,
+                &href,
+                integrity.as_deref(),
+                object_url.as_ref(),
+            )
+        } else {
+            loader.load_local_file_stylesheet(document_url, &href, integrity.as_deref())
+        } {
+            Ok(Some(stylesheet)) => {
                 let next_len = loaded_bytes.saturating_add(stylesheet.len());
                 if next_len <= MAX_NATIVE_LOCAL_STYLESHEET_BYTES {
                     loaded_bytes = next_len;
@@ -8116,7 +8202,7 @@ fn load_local_dynamic_blob_stylesheets(
                     None
                 }
             }
-            None => None,
+            Ok(None) | Err(_) => None,
         };
         let event_kind = body
             .as_ref()
@@ -8137,7 +8223,7 @@ fn load_local_dynamic_blob_stylesheets(
     Ok(events)
 }
 
-fn load_local_dynamic_blob_images(
+fn load_local_dynamic_images(
     document: &mut NativeDocument,
     runtime: &NativeJavaScriptRuntime,
     loader: &mut NativeResourceLoader,
@@ -8150,10 +8236,11 @@ fn load_local_dynamic_blob_images(
         .into_iter()
         .take(MAX_NATIVE_LOCAL_IMAGES)
     {
-        if !source
+        let is_blob = source
             .get(..5)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
-        {
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"));
+        let is_file = is_file_subresource_source(document_url, &source);
+        if !is_blob && !is_file {
             continue;
         }
         let node_id = NativeNodeId::from_parts(document.generation(), node_index);
@@ -8161,8 +8248,15 @@ fn load_local_dynamic_blob_images(
             continue;
         }
         document.mark_image_load(node_index, source.clone(), viewport)?;
-        let object_url = runtime.object_url_resource(&source)?;
-        let image = loader.load_local_blob_image(document_url, &source, object_url.as_ref())?;
+        let image = if is_blob {
+            let object_url = runtime.object_url_resource(&source)?;
+            loader.load_local_blob_image(document_url, &source, object_url.as_ref())?
+        } else {
+            match loader.load_local_file_image(document_url, &source) {
+                Ok(image) => image,
+                Err(_) => None,
+            }
+        };
         let event_kind = match image {
             Some(image) => {
                 document.set_image_resource(node_index, source, image)?;
@@ -8178,10 +8272,11 @@ fn load_local_dynamic_blob_images(
         .into_iter()
         .take(MAX_NATIVE_LOCAL_IMAGES)
     {
-        if !source
+        let is_blob = source
             .get(..5)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
-        {
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"));
+        let is_file = is_file_subresource_source(document_url, &source);
+        if !is_blob && !is_file {
             continue;
         }
         let node_id = NativeNodeId::from_parts(document.generation(), node_index);
@@ -8191,10 +8286,16 @@ fn load_local_dynamic_blob_images(
         {
             continue;
         }
-        let object_url = runtime.object_url_resource(&source)?;
-        if let Some(image) =
+        let image = if is_blob {
+            let object_url = runtime.object_url_resource(&source)?;
             loader.load_local_blob_image(document_url, &source, object_url.as_ref())?
-        {
+        } else {
+            match loader.load_local_file_image(document_url, &source) {
+                Ok(image) => image,
+                Err(_) => None,
+            }
+        };
+        if let Some(image) = image {
             document.set_background_image_resource(node_index, source, image)?;
         }
     }
@@ -8219,7 +8320,7 @@ fn load_local_dynamic_blob_media(
         let is_data = source
             .get(..5)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"));
-        let is_file = is_file_media_source(document_url, &source);
+        let is_file = is_file_subresource_source(document_url, &source);
         if !is_blob && !is_data && !is_file {
             continue;
         }
@@ -8252,6 +8353,104 @@ fn load_local_dynamic_blob_media(
     Ok(events)
 }
 
+fn load_local_initial_file_stylesheets(
+    document: &NativeDocument,
+    loader: &NativeResourceLoader,
+    document_url: &str,
+) -> Result<
+    (
+        Vec<(u32, String, Option<String>)>,
+        Vec<(u32, NativeEventKind)>,
+    ),
+    NativeEngineError,
+> {
+    let mut states = Vec::new();
+    let mut events = Vec::new();
+    let mut loaded_bytes = 0usize;
+    for (node_index, href, integrity, _) in document
+        .external_stylesheet_links()
+        .into_iter()
+        .take(MAX_NATIVE_LOCAL_STYLESHEETS)
+    {
+        let body =
+            match loader.load_local_file_stylesheet(document_url, &href, integrity.as_deref()) {
+                Ok(Some(stylesheet)) => {
+                    let next_len = loaded_bytes.saturating_add(stylesheet.len());
+                    if next_len <= MAX_NATIVE_LOCAL_STYLESHEET_BYTES {
+                        loaded_bytes = next_len;
+                        Some(stylesheet)
+                    } else {
+                        None
+                    }
+                }
+                Ok(None) | Err(_) => None,
+            };
+        let event_kind = body
+            .as_ref()
+            .map_or(NativeEventKind::Error, |_| NativeEventKind::Load);
+        states.push((node_index, href, body));
+        events.push((node_index, event_kind));
+    }
+    Ok((states, events))
+}
+
+fn load_local_initial_file_images(
+    document: &mut NativeDocument,
+    loader: &NativeResourceLoader,
+    document_url: &str,
+    viewport: super::config::Viewport,
+) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
+    let mut events = Vec::new();
+    for (node_index, source) in document
+        .external_image_links(viewport)
+        .into_iter()
+        .take(MAX_NATIVE_LOCAL_IMAGES)
+    {
+        let node_id = NativeNodeId::from_parts(document.generation(), node_index);
+        if document.image_resource_for_node(node_id).is_some() {
+            continue;
+        }
+        document.mark_image_load(node_index, source.clone(), viewport)?;
+        let image = if is_file_subresource_source(document_url, &source) {
+            match loader.load_local_file_image(document_url, &source) {
+                Ok(image) => image,
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        let event_kind = match image {
+            Some(image) => {
+                document.set_image_resource(node_index, source, image)?;
+                NativeEventKind::Load
+            }
+            None => NativeEventKind::Error,
+        };
+        events.push((node_index, event_kind));
+    }
+    document.refresh_background_image_sources();
+    for (node_index, source) in document
+        .external_background_image_links()
+        .into_iter()
+        .take(MAX_NATIVE_LOCAL_IMAGES)
+    {
+        if !is_file_subresource_source(document_url, &source) {
+            continue;
+        }
+        let node_id = NativeNodeId::from_parts(document.generation(), node_index);
+        if document
+            .background_image_resource_for_node(node_id)
+            .is_some()
+        {
+            continue;
+        }
+        if let Some(image) = loader.load_local_file_image(document_url, &source)? {
+            document.set_background_image_resource(node_index, source, image)?;
+        }
+    }
+    Ok(events)
+}
+
 fn load_local_initial_media(
     document: &mut NativeDocument,
     loader: &NativeResourceLoader,
@@ -8262,7 +8461,7 @@ fn load_local_initial_media(
         let is_data = source
             .get(..5)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"));
-        let is_file = is_file_media_source(document_url, &source);
+        let is_file = is_file_subresource_source(document_url, &source);
         if !is_data && !is_file {
             continue;
         }
@@ -8288,7 +8487,7 @@ fn load_local_initial_media(
     Ok(events)
 }
 
-fn is_file_media_source(document_url: &str, source: &str) -> bool {
+fn is_file_subresource_source(document_url: &str, source: &str) -> bool {
     if source
         .get(..5)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"))

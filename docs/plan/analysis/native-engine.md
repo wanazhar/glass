@@ -212,13 +212,13 @@ the XHR target/current-target identity and preserves the existing upload,
 response, cancellation, and terminal ordering.
 Slice 444 closes the XHR MIME-override projection boundary. Page and
 dedicated/SharedWorker XHR now validate a bounded MIME essence in
-`overrideMimeType()`, reject malformed values with `SyntaxError`, reject
-mutation during `LOADING`/`DONE` with `InvalidStateError`, and preserve the
-override across `open()`. The page applies the override to XML/HTML document
-selection and parsing; page and worker Blob projections use the override while
-response-header views retain the actual wire content type. Async and
-synchronous response owners share the same rule; full MIME-parameter parsing
-and complete XHR/Web IDL parity remain issue #40 gates.
+`overrideMimeType()`, map malformed values to `application/octet-stream`,
+reject mutation during `LOADING`/`DONE` with `InvalidStateError`, and preserve
+the override across `open()`. The page applies the override to XML/HTML
+document selection and parsing; page and worker Blob projections use the
+override while response-header views retain the actual wire content type. Async
+and synchronous response owners share the same rule; full MIME-parameter
+parsing and complete XHR/Web IDL parity remain issue #40 gates.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

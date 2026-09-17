@@ -160,6 +160,15 @@ transactional host acknowledgement. `tech()` descriptors, BufferSource
 constructor inputs, richer CSS tokenization, variable/color negotiation,
 installed-font discovery, and complete FontFace/Web IDL parity remain open.
 
+Slice 499 adds BufferSource inputs to the page-realm FontFace constructor.
+`ArrayBuffer` and `ArrayBufferView` values are copied before face state is
+stored, preserving only a view's selected byte range. The copied bytes bypass
+URL resolution and use the same bounded `FontFaceInstall` command and 497
+transactional host acknowledgement as other sources. Empty, oversized, and
+detached buffers fail explicitly. Typed-array identity, `tech()` descriptors,
+richer CSS tokenization, variable/color negotiation, installed-font discovery,
+and complete FontFace/Web IDL parity remain open.
+
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
 navigation effects. New POST targets avoid a duplicate GET by bootstrapping
@@ -6983,11 +6992,11 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-498.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-499.md` is the latest completed browser
 task;
-`docs/plan/tasks/native-engine-browser-497.md` is the preceding completed
+`docs/plan/tasks/native-engine-browser-498.md` is the preceding completed
 browser task;
-`docs/plan/tasks/native-engine-browser-496.md` is the preceding completed
+`docs/plan/tasks/native-engine-browser-497.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-492.md` is the preceding completed
 browser task;

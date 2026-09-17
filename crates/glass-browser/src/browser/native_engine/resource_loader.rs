@@ -6289,7 +6289,7 @@ impl NativeResourceLoader {
         }
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
             NativeEngineError::UnsupportedUrl {
-                reason: "script owner URL is not valid HTTP(S) syntax".into(),
+                reason: "script owner URL is not valid URL syntax".into(),
             }
         })?;
         reject_credentials(&document_url)?;
@@ -6301,7 +6301,10 @@ impl NativeResourceLoader {
                 .map_err(|_| NativeEngineError::UnsupportedUrl {
                     reason: "worker URL could not be resolved against the document".into(),
                 })?;
-            (target_url.scheme() == "fixture").then_some(target_url)
+            (target_url.scheme().eq_ignore_ascii_case("fixture")
+                || (target_url.scheme().eq_ignore_ascii_case("file")
+                    && document_url.scheme().eq_ignore_ascii_case("file")))
+            .then_some(target_url)
         } else {
             resolve_subresource_url_with_blob(&document_url, href)?
         };
@@ -6309,7 +6312,8 @@ impl NativeResourceLoader {
             return Ok(None);
         };
         if !is_network_url(document_url.as_str()) {
-            if subresource_kind == NativeSubresourceKind::Worker && target_url.scheme() == "fixture"
+            if subresource_kind == NativeSubresourceKind::Worker
+                && target_url.scheme().eq_ignore_ascii_case("fixture")
             {
                 let resource = self.load(target_url.as_str())?;
                 if resource.body.len() > max_source_bytes {
@@ -6323,6 +6327,16 @@ impl NativeResourceLoader {
                     url: resource.url,
                     body: resource.body,
                 }));
+            }
+            if subresource_kind == NativeSubresourceKind::Worker
+                && target_url.scheme().eq_ignore_ascii_case("file")
+            {
+                return self.load_local_file_script(
+                    document_url.as_str(),
+                    target_url.as_str(),
+                    max_source_bytes,
+                    None,
+                );
             }
             return Ok(None);
         }

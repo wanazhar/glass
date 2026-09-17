@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-477`, following
+expansion checkpoint is completed `native-engine-browser-478`, following
+completed `native-engine-browser-477`, following
 completed `native-engine-browser-476`, following
 completed `native-engine-browser-475`, following
 completed `native-engine-browser-474`, following
@@ -469,6 +470,16 @@ out-of-root imports fail the owning stylesheet closed. Media/layer/supports
 conditions, escaped CSS URL grammar, file fonts, other CSS resource types,
 network stylesheet URL-base parity, complete file-origin semantics, and full
 Web IDL parity remain issue #40 gates.
+
+Slice 478 closes rooted-file worker source loading. The existing native worker
+registry now accepts dedicated and shared classic or module workers from a
+file document after the JS facade admits credential-free rooted `file:` URLs.
+The resource loader serves the root through the configured file owner, and
+the existing bounded worker graph owners resolve classic `importScripts()` and
+module dependencies relative to each worker file. Isolated realms, message
+queues, and error handling remain shared with fixture/HTTP(S) workers; service
+workers on file origins, worklets, import maps, complete file-origin
+semantics, and full worker Web IDL parity remain issue #40 gates.
 
 Slice 472 closes the embedded data-media boundary. Static and dynamic local
 media plus HTTP(S) content-process media now admit bounded `data:` payloads

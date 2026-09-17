@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-478`, following completed
 `native-engine-browser-477`, following completed
 `native-engine-browser-476`, following completed
 `native-engine-browser-475`, following completed
@@ -429,6 +430,15 @@ Non-file stylesheet owners remain unchanged. Media/layer/supports import
 conditions, escaped CSS URL grammar, file fonts, other CSS resource types,
 network stylesheet URL-base parity, complete file-origin semantics, and full
 Web IDL parity remain issue #40 work.
+
+Slice `native-engine-browser-478` closes rooted-file worker source loading.
+Dedicated and shared `Worker` constructors now admit credential-free rooted
+`file:` URLs when owned by a file document. Classic workers can load bounded
+relative `importScripts()` graphs and module workers can load bounded file
+dependencies through the same isolated native worker realms, message queues,
+and root/symlink/UTF-8/size checks already used by file scripts. Fixture and
+HTTP(S) workers remain unchanged; file-origin service workers, worklets,
+import maps, and full worker Web IDL parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

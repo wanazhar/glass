@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-509`, following
+expansion checkpoint is completed `native-engine-browser-510`, following
+completed `native-engine-browser-509`, following
 completed `native-engine-browser-508`, following
 completed `native-engine-browser-507`, following
 completed `native-engine-browser-506`, following
@@ -283,6 +284,14 @@ style chain and CSSOM, while character fallback keeps its bounded advances.
 Variable axes, color rendering, WOFF2, font-display timing, mixed-script
 shaping, cross-realm FontFace projection, and complete FontFace/Web IDL parity
 remain open.
+
+Slice 510 carries inherited `font-variant-caps` through the native computed
+style and CSSOM, then supplies the bounded HarfRust `smcp`, `c2sc`, `pcap`,
+`c2pc`, `unic`, or `titl` feature tags for the selected capitalization mode.
+An explicit low-level tag remains authoritative, and the existing
+character-by-character fallback is unchanged. Variable axes, color rendering,
+WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
+projection, and complete FontFace/Web IDL parity remain open.
 
 Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
@@ -7107,6 +7116,8 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
+`docs/plan/tasks/native-engine-browser-510.md` is the latest completed browser
+task;
 `docs/plan/tasks/native-engine-browser-509.md` is the latest completed browser
 task;
 `docs/plan/tasks/native-engine-browser-508.md` is the preceding completed browser

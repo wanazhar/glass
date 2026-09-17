@@ -3,7 +3,8 @@ use super::css::NativeFontFeature;
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
     NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning, NativeFontStretchRange,
-    NativeFontVariantLigatures, NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
+    NativeFontVariantCaps, NativeFontVariantLigatures, NativeGenericFontFamily, NativeUnicodeRange,
+    font_family_hash,
 };
 use std::fmt;
 use std::io::Read;
@@ -144,11 +145,35 @@ pub(crate) struct NativeTextMetrics {
     font_size: u32,
     stretch: u16,
     ligatures: NativeFontVariantLigatures,
+    variant_caps: NativeFontVariantCaps,
     feature_settings: NativeFontFeatureSettings,
     kerning: NativeFontKerning,
     ascent: u32,
     line_height: u32,
     direction: DirectionValue,
+}
+
+fn push_feature_if_not_explicit(
+    features: &mut Vec<harfrust::Feature>,
+    settings: NativeFontFeatureSettings,
+    tag: [u8; 4],
+    value: u32,
+) {
+    if !settings.contains_tag(&tag) {
+        features.push(harfrust::Feature::new(harfrust::Tag::new(&tag), value, ..));
+    }
+}
+
+fn font_variant_caps_tags(caps: NativeFontVariantCaps) -> ([Option<[u8; 4]>; 2], usize) {
+    match caps {
+        NativeFontVariantCaps::Normal => ([None, None], 0),
+        NativeFontVariantCaps::SmallCaps => ([Some(*b"smcp"), None], 1),
+        NativeFontVariantCaps::AllSmallCaps => ([Some(*b"c2sc"), Some(*b"smcp")], 2),
+        NativeFontVariantCaps::PetiteCaps => ([Some(*b"pcap"), None], 1),
+        NativeFontVariantCaps::AllPetiteCaps => ([Some(*b"c2pc"), Some(*b"pcap")], 2),
+        NativeFontVariantCaps::Unicase => ([Some(*b"unic"), None], 1),
+        NativeFontVariantCaps::TitlingCaps => ([Some(*b"titl"), None], 1),
+    }
 }
 
 impl NativeTextMetrics {
@@ -208,11 +233,32 @@ impl NativeTextMetrics {
         kerning: NativeFontKerning,
         direction: DirectionValue,
     ) -> Self {
+        Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps(
+            font_size,
+            stretch,
+            ligatures,
+            feature_settings,
+            kerning,
+            NativeFontVariantCaps::Normal,
+            direction,
+        )
+    }
+
+    pub(crate) fn fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps(
+        font_size: u32,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
+        kerning: NativeFontKerning,
+        variant_caps: NativeFontVariantCaps,
+        direction: DirectionValue,
+    ) -> Self {
         Self {
             faces: Vec::new(),
             font_size: font_size.clamp(1, MAX_NATIVE_FONT_SIZE),
             stretch: stretch.clamp(500, 2000),
             ligatures,
+            variant_caps,
             feature_settings,
             kerning,
             ascent: FALLBACK_LINE_HEIGHT.saturating_sub(5),
@@ -337,16 +383,45 @@ impl NativeTextMetrics {
         direction: DirectionValue,
         book: &NativeFontBook,
     ) -> Self {
+        Self::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps(
+            families,
+            font_size,
+            weight,
+            style,
+            stretch,
+            ligatures,
+            feature_settings,
+            kerning,
+            NativeFontVariantCaps::Normal,
+            direction,
+            book,
+        )
+    }
+
+    pub(crate) fn for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps(
+        families: NativeFontFamilyList,
+        font_size: u32,
+        weight: FontWeightValue,
+        style: FontStyleValue,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
+        kerning: NativeFontKerning,
+        variant_caps: NativeFontVariantCaps,
+        direction: DirectionValue,
+        book: &NativeFontBook,
+    ) -> Self {
         let font_size = font_size.clamp(1, MAX_NATIVE_FONT_SIZE);
         let stretch = stretch.clamp(500, 2000);
         let faces = book.faces_for(families, weight, style, stretch);
         let Some(face) = faces.first() else {
-            return Self::fallback_with_stretch_and_ligatures_and_features_and_kerning(
+            return Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps(
                 font_size,
                 stretch,
                 ligatures,
                 feature_settings,
                 kerning,
+                variant_caps,
                 direction,
             );
         };
@@ -363,6 +438,7 @@ impl NativeTextMetrics {
             font_size,
             stretch,
             ligatures,
+            variant_caps,
             feature_settings,
             kerning,
             ascent,
@@ -489,7 +565,7 @@ impl NativeTextMetrics {
         buffer.set_direction(direction);
         let scale = i32::try_from(self.font_size.saturating_mul(FONT_SHAPE_SCALE)).ok()?;
         let shaper = shaper_data.shaper(&font).build();
-        let mut features = Vec::with_capacity(6 + self.feature_settings.values().len());
+        let mut features = Vec::with_capacity(8 + self.feature_settings.values().len());
         for (tag, value) in [
             (*b"liga", u32::from(self.ligatures.common)),
             (*b"clig", u32::from(self.ligatures.common)),
@@ -510,6 +586,10 @@ impl NativeTextMetrics {
                 value,
                 ..,
             ));
+        }
+        let (caps_tags, caps_count) = font_variant_caps_tags(self.variant_caps);
+        for tag in caps_tags.into_iter().take(caps_count).flatten() {
+            push_feature_if_not_explicit(&mut features, self.feature_settings, tag, 1);
         }
         let explicit_features = self.feature_settings.values();
         for (index, feature) in explicit_features.iter().enumerate() {
@@ -2292,6 +2372,38 @@ mod tests {
             return;
         };
         assert_eq!(explicit_off_shape.width_fixed, off_shape.width_fixed);
+    }
+
+    #[test]
+    fn font_variant_caps_maps_to_bounded_opentype_feature_tags() {
+        assert_eq!(
+            font_variant_caps_tags(NativeFontVariantCaps::Normal),
+            ([None, None], 0)
+        );
+        assert_eq!(
+            font_variant_caps_tags(NativeFontVariantCaps::SmallCaps),
+            ([Some(*b"smcp"), None], 1)
+        );
+        assert_eq!(
+            font_variant_caps_tags(NativeFontVariantCaps::AllSmallCaps),
+            ([Some(*b"c2sc"), Some(*b"smcp")], 2)
+        );
+        assert_eq!(
+            font_variant_caps_tags(NativeFontVariantCaps::PetiteCaps),
+            ([Some(*b"pcap"), None], 1)
+        );
+        assert_eq!(
+            font_variant_caps_tags(NativeFontVariantCaps::AllPetiteCaps),
+            ([Some(*b"c2pc"), Some(*b"pcap")], 2)
+        );
+        assert_eq!(
+            font_variant_caps_tags(NativeFontVariantCaps::Unicase),
+            ([Some(*b"unic"), None], 1)
+        );
+        assert_eq!(
+            font_variant_caps_tags(NativeFontVariantCaps::TitlingCaps),
+            ([Some(*b"titl"), None], 1)
+        );
     }
 
     #[test]

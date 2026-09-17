@@ -8492,18 +8492,18 @@ pub(crate) fn collect_background_image_sources(
     }
 }
 
-/// Resolve relative CSS `url(...)` tokens against a loaded rooted file
-/// stylesheet. The CSS parser stores background-image identities as source
-/// strings, so canonicalizing before parsing gives each stylesheet its own
-/// URL base without changing the declaration/cascade model. Non-file owners
-/// are returned byte-for-byte unchanged and continue through their existing
-/// loader paths.
-pub(crate) fn absolutize_file_stylesheet_urls(
+/// Resolve relative CSS `url(...)` tokens against the loaded stylesheet URL.
+/// The CSS parser stores background-image identities as source strings, so
+/// canonicalizing before parsing gives each stylesheet its own URL base
+/// without changing the declaration/cascade model. File and HTTP(S) owners
+/// are kept on their corresponding resource paths; blob, data, fixture, and
+/// unsupported owners are returned byte-for-byte unchanged.
+pub(crate) fn absolutize_stylesheet_urls(
     source: &str,
     document_url: &str,
     stylesheet_href: &str,
 ) -> String {
-    let Some(base_url) = file_stylesheet_base_url(document_url, stylesheet_href) else {
+    let Some(base_url) = stylesheet_base_url(document_url, stylesheet_href) else {
         return source.to_owned();
     };
     let bytes = source.as_bytes();
@@ -8569,7 +8569,7 @@ pub(crate) fn absolutize_file_stylesheet_urls(
         rewritten.push_str(&source[cursor..value_start]);
         if value_start < value_end {
             let token = &source[value_start..value_end];
-            if let Some(resolved) = resolve_file_css_url_token(token, &base_url) {
+            if let Some(resolved) = resolve_css_url_token(token, &base_url) {
                 rewritten.push_str(&resolved);
             } else {
                 rewritten.push_str(token);
@@ -9190,13 +9190,30 @@ fn css_top_level_words(source: &str) -> Option<Vec<&str>> {
     Some(words)
 }
 
-fn file_stylesheet_base_url(document_url: &str, stylesheet_href: &str) -> Option<Url> {
+fn stylesheet_base_url(document_url: &str, stylesheet_href: &str) -> Option<Url> {
     let document_url = Url::parse(document_url).ok()?;
-    if !document_url.scheme().eq_ignore_ascii_case("file") {
+    let document_is_file = document_url.scheme().eq_ignore_ascii_case("file");
+    let document_is_network = matches!(
+        document_url.scheme().to_ascii_lowercase().as_str(),
+        "http" | "https"
+    );
+    if !document_is_file && !document_is_network {
+        return None;
+    }
+    if !document_url.username().is_empty() || document_url.password().is_some() {
         return None;
     }
     let mut stylesheet_url = document_url.join(stylesheet_href).ok()?;
-    if !stylesheet_url.scheme().eq_ignore_ascii_case("file")
+    let stylesheet_is_file = stylesheet_url.scheme().eq_ignore_ascii_case("file");
+    let stylesheet_is_network = matches!(
+        stylesheet_url.scheme().to_ascii_lowercase().as_str(),
+        "http" | "https"
+    );
+    if !stylesheet_is_file && !stylesheet_is_network {
+        return None;
+    }
+    if document_is_file != stylesheet_is_file
+        || document_is_network != stylesheet_is_network
         || !stylesheet_url.username().is_empty()
         || stylesheet_url.password().is_some()
     {
@@ -9309,7 +9326,7 @@ pub(crate) fn decode_css_url_value(value: &str) -> Option<String> {
     Some(decoded)
 }
 
-fn resolve_file_css_url_token(token: &str, base_url: &Url) -> Option<String> {
+fn resolve_css_url_token(token: &str, base_url: &Url) -> Option<String> {
     let (quoted, value) = if token.len() >= 2
         && matches!(token.as_bytes().first(), Some(b'\'' | b'"'))
         && token.as_bytes().last() == token.as_bytes().first()
@@ -9326,7 +9343,14 @@ fn resolve_file_css_url_token(token: &str, base_url: &Url) -> Option<String> {
         return None;
     }
     let target = Url::parse(&value).or_else(|_| base_url.join(&value)).ok()?;
-    if !target.scheme().eq_ignore_ascii_case("file")
+    let base_is_file = base_url.scheme().eq_ignore_ascii_case("file");
+    let target_is_file = target.scheme().eq_ignore_ascii_case("file");
+    let target_is_network = matches!(
+        target.scheme().to_ascii_lowercase().as_str(),
+        "http" | "https"
+    );
+    if (base_is_file != target_is_file)
+        || (!base_is_file && !target_is_network)
         || !target.username().is_empty()
         || target.password().is_some()
     {
@@ -11550,6 +11574,43 @@ mod tests {
         );
         assert_eq!(decode_css_url_value(r"trailing\"), None);
         assert_eq!(decode_css_url_value(r"nul\0"), Some("nul\u{fffd}".into()));
+    }
+
+    #[test]
+    fn stylesheet_urls_use_the_loaded_file_or_network_sheet_base() {
+        let source = "#target { background-image: url('../assets/dot.png'); mask-image: url(\"/mask.svg\"); }";
+        let network = absolutize_stylesheet_urls(
+            source,
+            "http://example.test/page",
+            "/styles/theme/main.css",
+        );
+        assert!(network.contains("url('http://example.test/styles/assets/dot.png')"));
+        assert!(network.contains("url(\"http://example.test/mask.svg\")"));
+
+        let file = absolutize_stylesheet_urls(
+            source,
+            "file:///tmp/site/page.html",
+            "styles/theme/main.css",
+        );
+        assert!(file.contains("url('file:///tmp/site/styles/assets/dot.png')"));
+        assert!(file.contains("url(\"file:///mask.svg\")"));
+
+        assert_eq!(
+            absolutize_stylesheet_urls(
+                "#target { background-image: url(data:image/png;base64,AAAA); }",
+                "http://example.test/page",
+                "/styles/main.css",
+            ),
+            "#target { background-image: url(data:image/png;base64,AAAA); }"
+        );
+        assert_eq!(
+            absolutize_stylesheet_urls(
+                source,
+                "file:///tmp/site/page.html",
+                "https://cdn.test/main.css",
+            ),
+            source
+        );
     }
 
     fn border_color_value(color: NativeColor) -> NativeBorderColorValue {

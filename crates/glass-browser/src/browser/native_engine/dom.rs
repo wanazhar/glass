@@ -1,9 +1,7 @@
 use super::config::{
     NativeEngineLimits, validate_url_text, validate_window_name, without_fragment,
 };
-use super::css::{
-    NativeStylesheet, absolutize_file_stylesheet_urls, collect_background_image_sources,
-};
+use super::css::{NativeStylesheet, absolutize_stylesheet_urls, collect_background_image_sources};
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
 use super::image::{
@@ -1290,15 +1288,16 @@ impl NativeDocument {
         &mut self,
         document_url: &str,
     ) -> Result<(), NativeEngineError> {
-        let external_sources =
-            self.external_stylesheet_states
-                .values()
-                .filter_map(|state| {
-                    state.body.as_ref().map(|body| {
-                        absolutize_file_stylesheet_urls(body, document_url, &state.href)
-                    })
-                })
-                .collect::<Vec<_>>();
+        let external_sources = self
+            .external_stylesheet_states
+            .values()
+            .filter_map(|state| {
+                state
+                    .body
+                    .as_ref()
+                    .map(|body| absolutize_stylesheet_urls(body, document_url, &state.href))
+            })
+            .collect::<Vec<_>>();
         let mut style_sources = self
             .nodes
             .iter()

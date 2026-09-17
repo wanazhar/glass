@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-482`, following completed
 `native-engine-browser-481`, following completed
 `native-engine-browser-480`, following completed
 `native-engine-browser-479`, following completed
@@ -296,6 +297,16 @@ wrapped in the existing cascade-layer owner. Complex media features, full
 CSS Supports/layer grammar, file fonts and other CSS resource types, network
 stylesheet URL-base parity, complete file-origin semantics, and complete Web
 IDL parity remain issue #40 gates.
+
+The completed network stylesheet URL-base follow-up is
+[`native-engine-browser-482`](tasks/native-engine-browser-482.md): direct
+HTTP(S) stylesheet bodies now canonicalize relative CSS `url(...)` tokens
+against the loaded stylesheet URL before the existing background-image and
+resource loader paths. Rooted file sheets retain their file owner, and
+data/blob/unsupported stylesheet owners remain byte-for-byte unchanged.
+Redirect-final URL tracking, network `@import` fetching, file fonts and other
+CSS resource types, complete file-origin semantics, and full Web IDL parity
+remain issue #40 gates.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

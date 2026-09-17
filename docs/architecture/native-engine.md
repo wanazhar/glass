@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-482`, following completed
 `native-engine-browser-481`, following completed
 `native-engine-browser-480`, following completed
 `native-engine-browser-479`, following completed
@@ -471,6 +472,15 @@ declaration cannot fail the owning stylesheet. Complex media features,
 complete CSS Supports/layer grammar, file fonts and other CSS resource types,
 network stylesheet URL-base parity, complete file-origin semantics, and full
 Web IDL parity remain issue #40 work.
+
+Slice `native-engine-browser-482` closes direct network stylesheet URL-base
+resolution for CSS `url(...)` tokens. HTTP(S) stylesheets now canonicalize
+relative resource URLs against the stylesheet URL before the existing native
+background-image/resource loader, while rooted file sheets keep their file
+owner and data/blob/unsupported owners remain unchanged. Redirect-final
+stylesheet URL tracking, network CSS import fetching, file fonts and other CSS
+resource types, complete file-origin semantics, and full Web IDL parity remain
+issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

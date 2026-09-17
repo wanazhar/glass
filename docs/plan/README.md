@@ -364,6 +364,16 @@ segmentation, Unicode bidi reordering, vertical writing modes,
 language/script negotiation, missing-glyph font fallback, and complete
 text-rendering parity remain issue #40 gates.
 
+The completed ordered font fallback follow-up is
+[`native-engine-browser-488`](tasks/native-engine-browser-488.md): the cached
+font book now retains the best matching face for each declared family. A run
+covered by one face keeps HarfRust shaping; unsupported characters select the
+first declared face with a real cmap glyph, and kerning is retained within
+each selected face. Mixed-coverage runs use the bounded character recovery
+path while preserving the existing indexed raster/display-list owners.
+`@font-face` resources, arbitrary discovery, variable-font selection, and
+complete text-rendering parity remain issue #40 gates.
+
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and
 dynamic local media plus HTTP(S) content-process media now admit bounded

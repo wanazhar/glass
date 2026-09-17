@@ -1054,7 +1054,7 @@ impl NativeFontFamilyList {
         }
     }
 
-    fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         let mut families = [NativeFontFamilyValue::Fallback; 4];
         let mut len = 0usize;
         for raw_family in value.split(',') {

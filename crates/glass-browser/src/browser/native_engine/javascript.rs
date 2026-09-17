@@ -11420,6 +11420,16 @@ impl NativeJavaScriptRuntime {
                                 CaughtError::from_error(&ctx, error)
                             ),
                         })?;
+                    // A local promise (for example, a Blob object-URL fetch)
+                    // has no host event to wake the outer evaluator. Drain
+                    // the bounded QuickJS job queue once before classifying
+                    // it as genuinely host-pending; network-backed promises
+                    // remain pending and continue through the host loop.
+                    for _ in 0..MAX_NATIVE_MODULE_IMPORTS {
+                        if !ctx.execute_pending_job() {
+                            break;
+                        }
+                    }
                     match promise.finish::<Value>() {
                         Ok(value) => (value, true),
                         Err(Error::WouldBlock) => {
@@ -16385,6 +16395,35 @@ fn worker_bootstrap(
   WorkerURLNative.prototype.toString = function() {{ return this.href; }};
   WorkerURLNative.prototype.toJSON = function() {{ return this.href; }};
   globalThis.URL = WorkerURLNative;
+  const workerObjectUrlRegistry = globalThis.__glassWorkerObjectUrlRegistry instanceof Map
+    ? globalThis.__glassWorkerObjectUrlRegistry
+    : new Map();
+  let workerNextObjectUrlId = Number.isSafeInteger(globalThis.__glassWorkerNextObjectUrlId)
+    ? globalThis.__glassWorkerNextObjectUrlId
+    : 1;
+  const workerObjectUrlOrigin = () => {{
+    try {{ return workerUrlParts(workerUrlResolve(workerUrl, undefined)).origin; }}
+    catch (_) {{ return "null"; }}
+  }};
+  WorkerURLNative.createObjectURL = function(object) {{
+    if (!object || object.__glassWorkerBlob !== true)
+      throw new TypeError("native Worker URL.createObjectURL requires a Blob");
+    if (workerObjectUrlRegistry.size >= {max_commands})
+      throw new RangeError("native Worker object URL limit exceeded");
+    const origin = workerObjectUrlOrigin();
+    let url;
+    do {{
+      url = "blob:" + origin + "/glass-worker-" + workerNextObjectUrlId;
+      workerNextObjectUrlId += 1;
+    }} while (workerObjectUrlRegistry.has(url));
+    workerObjectUrlRegistry.set(url, {{ blob: object, origin }});
+    globalThis.__glassWorkerNextObjectUrlId = workerNextObjectUrlId;
+    return url;
+  }};
+  WorkerURLNative.revokeObjectURL = function(value) {{
+    workerObjectUrlRegistry.delete(String(value));
+  }};
+  globalThis.__glassWorkerObjectUrlRegistry = workerObjectUrlRegistry;
   const workerLocationUrl = new WorkerURLNative(workerUrl);
   const workerLocation = {{}};
   for (const name of ["href", "protocol", "host", "hostname", "port", "pathname", "search", "hash", "origin"]) {{
@@ -20007,6 +20046,29 @@ fn worker_bootstrap(
       delete requestHeaders["content-type"];
     }}
     if (contentType === null && payload.contentType) contentType = payload.contentType;
+    const objectUrlEntry = workerObjectUrlRegistry.get(href);
+    if (objectUrlEntry) {{
+      if (!payload.bodyNull || !["GET", "HEAD"].includes(method))
+        return Promise.reject(new TypeError("native Worker object URL fetches support only GET and HEAD"));
+      const objectBytes = workerBlobBytes(objectUrlEntry.blob);
+      const responseBytes = method === "HEAD" ? [] : objectBytes;
+      const objectContentType = objectUrlEntry.blob.type || null;
+      const objectHeaders = [["content-length", String(objectBytes.length)]];
+      if (objectContentType) objectHeaders.unshift(["content-type", objectContentType]);
+      return Promise.resolve(responseFromWorkerFetch({{
+        url: href,
+        status: 200,
+        statusText: "OK",
+        headers: objectHeaders,
+        contentType: objectContentType,
+        body: workerUtf8Text(responseBytes),
+        bodyBase64: encodeWorkerBase64(responseBytes, {fetch_body_limit}),
+        bodyNull: method === "HEAD",
+        redirected: false,
+        opaque: false,
+        opaqueRedirect: false,
+      }}));
+    }}
     const dispatchRequest = (bytes, streamedBody) => {{
       if (signal && signal.aborted)
         return Promise.reject(signal.reason === undefined ? nativeWorkerAbortError() : signal.reason);
@@ -20556,6 +20618,23 @@ fn worker_bootstrap(
       this._sent = true;
       this._aborted = false;
       workerXhrStartUpload(this, requestBody);
+      const objectUrlEntry = workerObjectUrlRegistry.get(this._url);
+      if (objectUrlEntry && ["GET", "HEAD"].includes(this._method) && requestBody === null) {{
+        const objectBytes = this._method === "HEAD" ? [] : workerBlobBytes(objectUrlEntry.blob);
+        const objectContentType = objectUrlEntry.blob.type || null;
+        const objectHeaders = [["content-length", String(objectUrlEntry.blob.size)]];
+        if (objectContentType) objectHeaders.unshift(["content-type", objectContentType]);
+        workerXhrApplySyncResponse(this, {{
+          error: false,
+          url: this._url,
+          status: 200,
+          statusText: "OK",
+          contentType: objectContentType,
+          headers: objectHeaders,
+          bodyBase64: encodeWorkerBase64(objectBytes, {fetch_body_limit}),
+        }}, responseType);
+        return;
+      }}
       let payload;
       try {{
         payload = JSON.parse(globalThis.__glassSyncXhr(JSON.stringify(request)));
@@ -26990,6 +27069,35 @@ fn document_bootstrap(
   URLNative.prototype.toString = function() {{ return this.href; }};
   URLNative.prototype.toJSON = function() {{ return this.href; }};
   globalThis.URL = URLNative;
+  const nativeObjectUrlRegistry = globalThis.__glassObjectUrlRegistry instanceof Map
+    ? globalThis.__glassObjectUrlRegistry
+    : new Map();
+  let nativeNextObjectUrlId = Number.isSafeInteger(globalThis.__glassNextObjectUrlId)
+    ? globalThis.__glassNextObjectUrlId
+    : 1;
+  const nativeObjectUrlOrigin = () => {{
+    try {{ return nativeUrlParts(nativeUrlResolve(host.url, undefined)).origin; }}
+    catch (_) {{ return "null"; }}
+  }};
+  URLNative.createObjectURL = function(object) {{
+    if (!object || object.__glassNativeBlob !== true)
+      throw new TypeError("native URL.createObjectURL requires a Blob");
+    if (nativeObjectUrlRegistry.size >= {max_commands})
+      throw new RangeError("native object URL limit exceeded");
+    const origin = nativeObjectUrlOrigin();
+    let url;
+    do {{
+      url = "blob:" + origin + "/glass-native-" + nativeNextObjectUrlId;
+      nativeNextObjectUrlId += 1;
+    }} while (nativeObjectUrlRegistry.has(url));
+    nativeObjectUrlRegistry.set(url, {{ blob: object, origin }});
+    globalThis.__glassNextObjectUrlId = nativeNextObjectUrlId;
+    return url;
+  }};
+  URLNative.revokeObjectURL = function(value) {{
+    nativeObjectUrlRegistry.delete(String(value));
+  }};
+  globalThis.__glassObjectUrlRegistry = nativeObjectUrlRegistry;
   const requestHeaderNameNative = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
   const nativeFetchMethod = (value) => {{
     const method = String(value).toUpperCase();
@@ -27444,6 +27552,31 @@ fn document_bootstrap(
     if (nativeBodylessMethods.includes(method) && (body !== null || hasStreamedBody)) {{
       return Promise.reject(new TypeError(method + " fetch requests must not have a body"));
     }}
+    const objectUrlEntry = nativeObjectUrlRegistry.get(href);
+    if (objectUrlEntry) {{
+      if (!nativeBodylessMethods.includes(method))
+        return Promise.reject(new TypeError("native object URL fetches support only GET and HEAD"));
+      const objectBytes = blobBytes(objectUrlEntry.blob);
+      const responseBytes = method === "HEAD" ? [] : objectBytes;
+      const objectContentType = objectUrlEntry.blob.type || null;
+      const objectHeaders = [["content-length", String(objectBytes.length)]];
+      if (objectContentType) objectHeaders.unshift(["content-type", objectContentType]);
+      return Promise.resolve(responseFromFetch({{
+        url: href,
+        status: 200,
+        statusText: "OK",
+        headers: objectHeaders,
+        contentType: objectContentType,
+        body: utf8TextFromBytes(responseBytes),
+        bodyBase64: encodeBase64(responseBytes),
+        bodyNull: method === "HEAD",
+        redirected: false,
+        opaque: false,
+        opaqueRedirect: false,
+      }}));
+    }}
+    if (href.startsWith("blob:"))
+      return Promise.reject(new TypeError("native object URL is revoked or unavailable"));
     nextFetchRequestId += 1;
     globalThis.__glassNextFetchRequestId = nextFetchRequestId;
     const credentials = settings.credentials !== "omit";
@@ -29692,6 +29825,23 @@ fn document_bootstrap(
       this._sent = true;
       nativeXhrStartUpload(this, requestBody);
       this._aborted = false;
+      const objectUrlEntry = nativeObjectUrlRegistry.get(this._url);
+      if (objectUrlEntry && nativeBodylessMethods.includes(this._method) && requestBody === null) {{
+        const objectBytes = this._method === "HEAD" ? [] : blobBytes(objectUrlEntry.blob);
+        const objectContentType = objectUrlEntry.blob.type || null;
+        const objectHeaders = [["content-length", String(objectUrlEntry.blob.size)]];
+        if (objectContentType) objectHeaders.unshift(["content-type", objectContentType]);
+        nativeXhrApplySyncResponse(this, {{
+          error: false,
+          url: this._url,
+          status: 200,
+          statusText: "OK",
+          contentType: objectContentType,
+          headers: objectHeaders,
+          bodyBase64: encodeBase64(objectBytes),
+        }}, responseType);
+        return;
+      }}
       let payload;
       try {{
         payload = JSON.parse(globalThis.__glassSyncXhr(JSON.stringify(request)));

@@ -295,6 +295,12 @@ Both realm implementations now honor the optional value filter while retaining
 name-only lookup, insertion order, live URL synchronization, and bounded
 entry/value limits. Complete URLSearchParams Web IDL descriptor and encoding
 parity remain issue #40 work.
+Slice 454 adds bounded realm-owned Blob object URLs. Page and worker
+`URL.createObjectURL()` retain Blob bytes behind an origin-labelled `blob:` URL;
+native Fetch and synchronous/asynchronous XHR serve GET and HEAD reads from the
+same registry, while `revokeObjectURL()` removes the entry and causes later
+reads to fail. Navigation and generic subresource object-URL loading remain
+separate resource-owner work.
 Slice 346 closes bounded document-navigation HTTP cache
 freshness and validator revalidation: `Cache-Control` freshness deadlines,
 `ETag`/`Last-Modified` request validators, validated `304` reuse, and privacy-

@@ -78,6 +78,14 @@ non-matching values, aligning both realms while preserving name-only lookup,
 live URL synchronization, insertion order, and bounded limits. Complete URL
 SearchParams Web IDL descriptor and encoding parity remain issue #40 gates.
 
+The completed Blob object-URL slice is
+[native-engine-browser-454](tasks/native-engine-browser-454.md): page and
+worker `URL.createObjectURL()` retain bounded Blob bytes behind an origin-
+labelled `blob:` URL, and native Fetch plus synchronous/asynchronous XHR serve
+GET/HEAD reads from that registry. `revokeObjectURL()` removes the entry and
+later reads fail. Navigation and generic subresource object-URL loading remain
+separate issue #40 gates.
+
 The completed report-only navigation preflight slice is
 [native-engine-browser-413](tasks/native-engine-browser-413.md): the
 process-backed child reports its live `navigate-to` observations through a

@@ -4212,8 +4212,9 @@ fn decode_document_wire(
     })
 }
 
-fn load_data_font_faces(
+async fn load_font_faces(
     document: &mut NativeDocument,
+    runtime: Option<&NativeJavaScriptRuntime>,
     loader: &mut NativeResourceLoader,
     document_url: &str,
 ) -> Result<(), NativeEngineError> {
@@ -4223,7 +4224,14 @@ fn load_data_font_faces(
         .iter()
         .take(MAX_NATIVE_FONT_FACES)
     {
-        if let Ok(Some(bytes)) = loader.load_data_font(document_url, &rule.source) {
+        let object_url = runtime
+            .map(|runtime| runtime.object_url_resource(&rule.source))
+            .transpose()?
+            .flatten();
+        if let Ok(Some(bytes)) = loader
+            .load_font_async(document_url, &rule.source, object_url.as_ref())
+            .await
+        {
             resources.push(NativeFontFaceResource::from_rule(rule, bytes));
         }
     }
@@ -7509,7 +7517,7 @@ async fn load_content_resource(
     document.set_external_stylesheet_states(external_stylesheet_states);
     document.mark_inline_style_reports_seen();
     document.mark_content_security_policy_meta_processed();
-    load_data_font_faces(&mut document, loader, &resource.url)?;
+    load_font_faces(&mut document, None, loader, &resource.url).await?;
     resource_events
         .extend(load_external_images(&mut document, None, loader, &resource.url, viewport).await?);
     resource_events.extend(load_external_media(&mut document, None, loader, &resource.url).await?);
@@ -8064,7 +8072,7 @@ async fn load_dynamic_external_stylesheets(
     if previous_states != next_states {
         document.set_external_stylesheet_states(next_states);
         document.rebuild_external_stylesheet(document_url)?;
-        load_data_font_faces(document, loader, document_url)?;
+        load_font_faces(document, Some(runtime), loader, document_url).await?;
         document.refresh_background_image_sources();
     }
     Ok(events)

@@ -1092,10 +1092,9 @@ impl NativeFontFamilyList {
     }
 }
 
-/// A bounded `@font-face` descriptor set. The native font loader currently
-/// admits data URLs; keeping the source URL here lets the resource owner
-/// enforce CSP and decode it without giving CSS parsing access to filesystem
-/// or network capabilities.
+/// A bounded `@font-face` descriptor set. Keeping the source URL here lets the
+/// resource owner resolve and admit it without giving CSS parsing access to
+/// filesystem or network capabilities.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeFontFaceRule {
     pub(crate) family: String,
@@ -11425,9 +11424,7 @@ fn parse_font_face_src(value: &str) -> Option<String> {
             token
         };
         let token = decode_css_url_value(token)?;
-        if token
-            .get(..5)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+        if is_admissible_font_face_source(&token)
             && !token.bytes().any(|byte| byte.is_ascii_control())
             && token.len() <= MAX_NATIVE_FONT_FACE_SOURCE_BYTES
         {
@@ -11436,6 +11433,21 @@ fn parse_font_face_src(value: &str) -> Option<String> {
         cursor = close.saturating_add(1);
     }
     None
+}
+
+fn is_admissible_font_face_source(value: &str) -> bool {
+    if value.is_empty() || value.starts_with('#') || value.bytes().any(|byte| byte == 0) {
+        return false;
+    }
+    let Ok(url) = url::Url::parse(value) else {
+        // Relative URLs and protocol-relative URLs are resolved by the
+        // document's resource owner after stylesheet URL canonicalization.
+        return !value.contains(':');
+    };
+    matches!(
+        url.scheme().to_ascii_lowercase().as_str(),
+        "blob" | "data" | "file" | "http" | "https"
+    )
 }
 
 fn parse_font_family_name(value: &str) -> Option<NativeFontFamilyValue> {
@@ -21097,17 +21109,19 @@ mod tests {
     }
 
     #[test]
-    fn font_face_parser_rejects_generic_and_external_sources() {
+    fn font_face_parser_rejects_generic_and_missing_sources() {
         let mut diagnostics = NativeDiagnosticSink::default();
         let stylesheet = NativeStylesheet::from_sources_with_diagnostics(
             vec![
                 "@font-face { font-family: sans-serif; src: url(font.ttf); }".into(),
                 "@font-face { font-family: Embedded; src: url(font.ttf); }".into(),
+                "@font-face { font-family: Embedded; src: local(\"missing\"); }".into(),
             ],
             &mut diagnostics,
         )
         .unwrap();
-        assert!(stylesheet.font_face_rules().is_empty());
+        assert_eq!(stylesheet.font_face_rules().len(), 1);
+        assert_eq!(stylesheet.font_face_rules()[0].source, "font.ttf");
         let (diagnostics, _) = diagnostics.finish();
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue

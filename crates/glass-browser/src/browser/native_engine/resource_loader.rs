@@ -5930,13 +5930,15 @@ impl NativeResourceLoader {
         data_media_metadata(&target_url)
     }
 
-    /// Load a bounded data URL selected by a native `@font-face` rule. The
-    /// resource is decoded here, where the document URL and CSP policy are
-    /// still available; the font parser only receives admitted bytes.
-    pub(crate) fn load_data_font(
+    /// Load a non-network font source selected by a native `@font-face` rule.
+    /// The resource is admitted here, where the document URL, file roots,
+    /// object-URL registry, and CSP policy are still available; the font
+    /// parser only receives bounded bytes.
+    pub(crate) fn load_font(
         &mut self,
         document_url: &str,
         src: &str,
+        object_url: Option<&NativeObjectUrlResource>,
     ) -> Result<Option<Vec<u8>>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text("font URL", src)?;
@@ -5949,30 +5951,264 @@ impl NativeResourceLoader {
         let Some(target_url) = resolve_media_url(&document_url, src)? else {
             return Ok(None);
         };
-        if !target_url.scheme().eq_ignore_ascii_case("data") {
+        if target_url.scheme().eq_ignore_ascii_case("data") {
+            if is_network_url(document_url.as_str()) {
+                if !mixed_content_allowed(&document_url, &target_url) {
+                    return Ok(None);
+                }
+                let policy = self
+                    .network
+                    .document_policies
+                    .get(&cache_key(&document_url))
+                    .cloned()
+                    .unwrap_or_default();
+                self.record_report_only_url_violations(
+                    &policy,
+                    NativeSubresourceKind::Font,
+                    &document_url,
+                    &target_url,
+                );
+                if !policy.allows(NativeSubresourceKind::Font, &document_url, &target_url) {
+                    return Ok(None);
+                }
+            }
+            return data_font_bytes(&target_url);
+        }
+        if target_url.scheme().eq_ignore_ascii_case("file") {
+            if !is_file_url(document_url.as_str()) {
+                return Ok(None);
+            }
+            let path = self.allowed_file_path(&target_url, "file font")?;
+            let bytes = read_bounded_file(&path, MAX_NATIVE_FONT_BYTES, "file font")?;
+            return Ok((!bytes.is_empty()).then_some(bytes));
+        }
+        if target_url.scheme().eq_ignore_ascii_case("blob") {
+            if is_network_url(document_url.as_str()) {
+                let policy = self
+                    .network
+                    .document_policies
+                    .get(&cache_key(&document_url))
+                    .cloned()
+                    .unwrap_or_default();
+                self.record_report_only_url_violations(
+                    &policy,
+                    NativeSubresourceKind::Font,
+                    &document_url,
+                    &target_url,
+                );
+                if !policy.allows(NativeSubresourceKind::Font, &document_url, &target_url) {
+                    return Ok(None);
+                }
+            }
+            let Some(object_url) = object_url else {
+                return Ok(None);
+            };
+            NativeOrigin::from_blob_url(without_fragment(target_url.as_str()))?;
+            if object_url
+                .content_type
+                .as_deref()
+                .is_some_and(|content_type| !font_content_type_text_allowed(content_type))
+            {
+                return Ok(None);
+            }
+            if object_url.body.is_empty() {
+                return Ok(None);
+            }
+            if object_url.body.len() > MAX_NATIVE_FONT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "Blob font",
+                    MAX_NATIVE_FONT_BYTES,
+                    object_url.body.len(),
+                ));
+            }
+            return Ok(Some(object_url.body.clone()));
+        }
+        Ok(None)
+    }
+
+    /// Load a font source for an HTTP(S) document. Local sources reuse the
+    /// synchronous owner above; network sources use a bounded redirect and
+    /// response loop with font-specific CSP and CORS checks.
+    pub(crate) async fn load_font_async(
+        &mut self,
+        document_url: &str,
+        src: &str,
+        object_url: Option<&NativeObjectUrlResource>,
+    ) -> Result<Option<Vec<u8>>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("font URL", src)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "font owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        let Some(target_url) = resolve_media_url(&document_url, src)? else {
+            return Ok(None);
+        };
+        if !is_network_url(target_url.as_str()) {
+            return self.load_font(document_url.as_str(), src, object_url);
+        }
+        self.load_network_font_async(&document_url, &target_url)
+            .await
+    }
+
+    async fn load_network_font_async(
+        &mut self,
+        document_url: &Url,
+        target_url: &Url,
+    ) -> Result<Option<Vec<u8>>, NativeEngineError> {
+        if !is_network_url(document_url.as_str())
+            || !is_network_url(without_fragment(target_url.as_str()))
+            || !mixed_content_allowed(document_url, target_url)
+        {
             return Ok(None);
         }
-        if is_network_url(document_url.as_str()) {
-            if !mixed_content_allowed(&document_url, &target_url) {
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(document_url))
+            .cloned()
+            .unwrap_or_default();
+        self.record_report_only_url_violations(
+            &policy,
+            NativeSubresourceKind::Font,
+            document_url,
+            target_url,
+        );
+        if !policy.allows(NativeSubresourceKind::Font, document_url, target_url) {
+            return Ok(None);
+        }
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(NATIVE_NETWORK_TIMEOUT)
+            .build()
+            .map_err(|error| network_error("font client construction", error))?;
+        let mut current_url = target_url.clone();
+        current_url.set_fragment(None);
+        let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
+        let mut redirects = 0;
+        let mut pending_cookies = Vec::new();
+        let response = loop {
+            let mut request_url = current_url.clone();
+            request_url.set_fragment(None);
+            let mut request = self.apply_environment_headers(client.get(request_url).header(
+                reqwest::header::ACCEPT,
+                "font/woff2,font/woff,font/otf,font/ttf,application/font-woff,*/*;q=0.1",
+            ));
+            if let Some(referrer) = request_referrer.as_deref() {
+                request = request.header(reqwest::header::REFERER, referrer);
+            }
+            if current_url.origin() == document_url.origin()
+                && let Some(cookie) = self.network.cookie_header_for_request(
+                    &current_url,
+                    Some(document_url),
+                    false,
+                    NativeNavigationMethod::Get,
+                )
+            {
+                request = request.header(reqwest::header::COOKIE, cookie);
+            }
+            self.before_request(0).await?;
+            let response = request
+                .send()
+                .await
+                .map_err(|error| network_error("font subresource request", error))?;
+            for value in response
+                .headers()
+                .get_all(reqwest::header::SET_COOKIE)
+                .iter()
+            {
+                if let Ok(cookie) = value.to_str() {
+                    pending_cookies.push((current_url.clone(), cookie.to_owned()));
+                }
+            }
+            if !is_http_redirect(response.status()) {
+                break response;
+            }
+            if redirects >= MAX_NATIVE_NETWORK_REDIRECTS {
                 return Ok(None);
             }
-            let policy = self
-                .network
-                .document_policies
-                .get(&cache_key(&document_url))
-                .cloned()
-                .unwrap_or_default();
-            self.record_report_only_url_violations(
+            let Some(location) = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| !value.is_empty())
+            else {
+                return Ok(None);
+            };
+            let next_url = current_url
+                .join(location)
+                .map_err(|_| NativeEngineError::Network {
+                    operation: "font redirect".into(),
+                    reason: "font redirect location is not valid URL syntax".into(),
+                })?;
+            reject_credentials(&next_url)?;
+            self.record_report_only_url_violations_for_redirect(
                 &policy,
                 NativeSubresourceKind::Font,
-                &document_url,
-                &target_url,
+                document_url,
+                &next_url,
+                true,
+                None,
             );
-            if !policy.allows(NativeSubresourceKind::Font, &document_url, &target_url) {
+            if !is_network_url(without_fragment(next_url.as_str()))
+                || !mixed_content_allowed(document_url, &next_url)
+                || !policy.allows_redirect(NativeSubresourceKind::Font, document_url, &next_url)
+            {
                 return Ok(None);
             }
+            request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            current_url = next_url;
+            redirects += 1;
+        };
+        if !response.status().is_success() {
+            return Ok(None);
         }
-        data_font_bytes(&target_url)
+        if document_url.origin() != current_url.origin()
+            && !cors_response_allowed(response.headers(), document_url, &current_url, false)
+        {
+            return Ok(None);
+        }
+        if response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| !font_content_type_text_allowed(value))
+        {
+            return Ok(None);
+        }
+        if response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .is_some_and(|value| value.to_str().is_err())
+        {
+            return Ok(None);
+        }
+        let content_length = response.content_length();
+        if content_length.is_some_and(|length| length > MAX_NATIVE_FONT_BYTES as u64) {
+            return Ok(None);
+        }
+        let mut stream = response.bytes_stream();
+        let mut bytes = Vec::with_capacity(
+            content_length
+                .unwrap_or_default()
+                .min(MAX_NATIVE_FONT_BYTES as u64) as usize,
+        );
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| network_error("font subresource body", error))?;
+            self.after_response_chunk(chunk.len()).await;
+            let next_len = bytes.len().saturating_add(chunk.len());
+            if next_len > MAX_NATIVE_FONT_BYTES {
+                return Ok(None);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        for (cookie_url, cookie) in pending_cookies {
+            self.cookie_changes
+                .extend(self.network.store_cookie(&cookie_url, &cookie));
+        }
+        Ok((!bytes.is_empty()).then_some(bytes))
     }
 
     pub(crate) async fn load_media_async_with_object_url(
@@ -7558,6 +7794,11 @@ fn supported_font_media_type_text(value: &str) -> bool {
     )
 }
 
+fn font_content_type_text_allowed(value: &str) -> bool {
+    let media_type = value.split(';').next().unwrap_or_default().trim();
+    supported_font_media_type_text(media_type)
+}
+
 fn supported_media_type_text(value: &str) -> Option<&'static str> {
     let value = value.split(';').next().unwrap_or_default().trim();
     match value.to_ascii_lowercase().as_str() {
@@ -8641,14 +8882,15 @@ mod tests {
         MAX_NATIVE_CACHE_ENTRIES, MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, MAX_NATIVE_MEDIA_BYTES,
         NativeCookieProfileEntry, NativeCorsMode, NativeEngineConfig, NativeEngineError,
         NativeFetchMethod, NativeInlineCspKind, NativeNavigationMethod, NativeNavigationPolicyKind,
-        NativeNetworkState, NativeRequestBody, NativeResource, NativeResourceLoader,
-        NativeSubresourceKind, cache_control_max_age, cache_control_requires_revalidation,
-        content_security_policy, cors_origin_header, cors_preflight_response_allowed,
-        cors_response_allowed, csp_report_deliveries_for_declaration, csp_sources_allow,
-        csp_sources_allow_for_redirect, data_font_bytes, data_media_metadata, decode_html_body,
-        document_cache_fresh_until, document_cache_storage_allowed, media_metadata_from_bytes,
-        mixed_content_allowed, referrer_for_navigation, resolve_subresource_url,
-        subresource_integrity_matches, supported_media_type_text,
+        NativeNetworkState, NativeObjectUrlResource, NativeRequestBody, NativeResource,
+        NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
+        cache_control_requires_revalidation, content_security_policy, cors_origin_header,
+        cors_preflight_response_allowed, cors_response_allowed,
+        csp_report_deliveries_for_declaration, csp_sources_allow, csp_sources_allow_for_redirect,
+        data_font_bytes, data_media_metadata, decode_html_body, document_cache_fresh_until,
+        document_cache_storage_allowed, media_metadata_from_bytes, mixed_content_allowed,
+        referrer_for_navigation, resolve_subresource_url, subresource_integrity_matches,
+        supported_media_type_text,
     };
     use base64::Engine as _;
     use reqwest::header::{
@@ -8659,6 +8901,8 @@ mod tests {
     use sha2::{Digest, Sha256, Sha384, Sha512};
     use std::fs;
     use std::time::Instant;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
     use url::Url;
 
     #[test]
@@ -8819,7 +9063,7 @@ mod tests {
         let mut loader = NativeResourceLoader::new(&config).unwrap();
         assert_eq!(
             loader
-                .load_data_font("https://app.test/index.html", url.as_str())
+                .load_font("https://app.test/index.html", url.as_str(), None)
                 .unwrap(),
             Some(vec![0, 1, 2, 3])
         );
@@ -8831,10 +9075,81 @@ mod tests {
             .unwrap();
         assert!(
             loader
-                .load_data_font("https://app.test/index.html", url.as_str())
+                .load_font("https://app.test/index.html", url.as_str(), None)
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rooted_file_and_blob_font_sources_are_bounded() {
+        let root = std::path::PathBuf::from("/usr/share/fonts/truetype/dejavu");
+        if !root.is_dir() || !root.join("DejaVuSans.ttf").is_file() {
+            return;
+        }
+        let page_url = Url::from_file_path(root.join("index.html"))
+            .unwrap()
+            .to_string();
+        let config = NativeEngineConfig::default().with_allowed_file_root(root);
+        let mut loader = NativeResourceLoader::new(&config).unwrap();
+        let file_bytes = loader
+            .load_font(&page_url, "DejaVuSans.ttf", None)
+            .unwrap()
+            .unwrap();
+        assert!(!file_bytes.is_empty());
+        assert!(
+            loader
+                .load_font("https://app.test/index.html", "file:///etc/hosts", None)
+                .unwrap()
+                .is_none()
+        );
+
+        let object_url = NativeObjectUrlResource {
+            content_type: Some("font/ttf".into()),
+            body: vec![1, 2, 3, 4],
+        };
+        assert_eq!(
+            loader
+                .load_font(
+                    "fixture://app.test/index.html",
+                    "blob:https://app.test/native-font",
+                    Some(&object_url),
+                )
+                .unwrap(),
+            Some(vec![1, 2, 3, 4])
+        );
+    }
+
+    #[tokio::test]
+    async fn network_font_source_requires_font_cors_and_admits_bounded_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).await.unwrap();
+            let response = concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Content-Type: font/ttf\r\n",
+                "Access-Control-Allow-Origin: *\r\n",
+                "Content-Length: 4\r\n",
+                "Connection: close\r\n\r\n",
+                "font"
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let config = NativeEngineConfig::default();
+        let mut loader = NativeResourceLoader::new(&config).unwrap();
+        let source = format!("http://{address}/font.ttf");
+        assert_eq!(
+            loader
+                .load_font_async("http://app.test/index.html", &source, None)
+                .await
+                .unwrap(),
+            Some(b"font".to_vec())
+        );
+        server.await.unwrap();
     }
 
     #[test]

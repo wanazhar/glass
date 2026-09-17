@@ -9,7 +9,8 @@ use super::content_process::{
     NativeContentProcess, NativeContentScriptResult,
 };
 use super::css::{
-    absolutize_stylesheet_urls, css_import_matches, decode_css_url_value, static_css_imports,
+    NativeFontFaceSource, absolutize_stylesheet_urls, css_import_matches, decode_css_url_value,
+    static_css_imports,
 };
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{
@@ -18,7 +19,7 @@ use super::dom::{
 use super::environment::{NativeEnvironmentOverrides, NativeGeolocation, NativeNetworkConditions};
 use super::error::NativeEngineError;
 use super::error::NativeWorkerFailureKind;
-use super::font::{MAX_NATIVE_FONT_FACES, NativeFontFaceResource};
+use super::font::{MAX_NATIVE_FONT_FACES, NativeFontBook, NativeFontFaceResource};
 use super::history::{NativeHistory, NativeHistoryDirection};
 use super::interaction::{
     MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind, parse_native_shortcut,
@@ -8733,17 +8734,32 @@ fn load_font_faces(
     document_url: &str,
 ) -> Result<(), NativeEngineError> {
     let mut resources = Vec::new();
+    let system_fonts = NativeFontBook::system();
     for rule in document
         .font_face_rules()
         .iter()
         .take(MAX_NATIVE_FONT_FACES)
     {
-        let object_url = runtime
-            .map(|runtime| runtime.object_url_resource(&rule.source))
-            .transpose()?
-            .flatten();
-        if let Ok(Some(bytes)) = loader.load_font(document_url, &rule.source, object_url.as_ref()) {
-            resources.push(NativeFontFaceResource::from_rule(rule, bytes));
+        for source in &rule.sources {
+            let bytes = match source {
+                NativeFontFaceSource::Local(family) => {
+                    system_fonts.local_font_bytes(family, rule.weight, rule.style)
+                }
+                NativeFontFaceSource::Url(source) => {
+                    let object_url = runtime
+                        .map(|runtime| runtime.object_url_resource(source))
+                        .transpose()?
+                        .flatten();
+                    loader
+                        .load_font(document_url, source, object_url.as_ref())
+                        .ok()
+                        .flatten()
+                }
+            };
+            if let Some(bytes) = bytes {
+                resources.push(NativeFontFaceResource::from_rule(rule, bytes));
+                break;
+            }
         }
     }
     document.set_font_resources(resources)

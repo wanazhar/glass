@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-491`, following
+expansion checkpoint is completed `native-engine-browser-492`, following
+completed `native-engine-browser-491`, following
 completed `native-engine-browser-490`, following
 completed `native-engine-browser-489`, following
 completed `native-engine-browser-488`, following
@@ -72,7 +73,16 @@ cookie and message-channel policy, Service Worker/SharedWorker ownership, and
 CacheStorage request matching, CacheStorage response admission and atomic
 batching, Service Worker client enumeration, and Service Worker client
 messaging covered by the native owner across local and
-HTTP(S) paths. Slice 416 carries bounded form POST method/body/content-type
+HTTP(S) paths.
+
+Slice 492 adds ordered `@font-face` source resolution. The native parser keeps
+bounded `local()` and URL candidates in CSS order; both browser owners resolve
+matching deterministic system faces before trying later admitted sources, so a
+missing local face no longer prevents URL fallback. Full installed-font
+discovery, FontFace/FontFaceSet event timing, variable/color fonts, and
+complete text/Web IDL parity remain open issue #40 gates.
+
+Slice 416 carries bounded form POST method/body/content-type
 payloads through local and content-process frame, popup, and named-target
 navigation effects. New POST targets avoid a duplicate GET by bootstrapping
 from `about:blank`; the parent validates the transferred request against its

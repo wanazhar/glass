@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-492`, following completed
 `native-engine-browser-491`, following completed
 `native-engine-browser-490`, following completed
 `native-engine-browser-489`, following completed
@@ -100,6 +101,13 @@ the authoritative epic is
 module decomposition, integration enumeration, and tradeoffs are in the
 [native-engine architecture](../architecture/native-engine.md) and
 [native-engine analysis](analysis/native-engine.md).
+
+Slice 492 adds ordered `@font-face` source resolution. The native parser keeps
+bounded `local()` and URL candidates in CSS order; both browser owners resolve
+matching deterministic system faces before trying later admitted sources, so a
+missing local face no longer prevents URL fallback. Full installed-font
+discovery, FontFace/FontFaceSet event timing, variable/color fonts, and
+complete text/Web IDL parity remain open issue #40 gates.
 
 The completed bounded XHR XML-document response slice is
 [native-engine-browser-423](tasks/native-engine-browser-423.md): page XHR

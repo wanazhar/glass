@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-492`, following completed
 `native-engine-browser-491`, following completed
 `native-engine-browser-490`, following completed
 `native-engine-browser-489`, following completed
@@ -66,6 +67,15 @@ Status: Browser-complete expansion has completed
 `native-engine-browser-422` and `native-engine-browser-420`. The native runtime is now the primary
 feature-enabled product path; issue #40 still owns Core Web Profile
 conformance and production certification gates.
+
+Slice 492 adds ordered `@font-face` source candidates. The native CSS owner
+preserves bounded `local()` and URL candidates in declaration order; the
+inline and content-process owners resolve a matching deterministic system face
+before trying later admitted URL/data/file/Blob sources. Missing local faces
+therefore do not discard a valid URL fallback, and local bytes never cross the
+network or object-URL policy path. Broad installed-font discovery,
+FontFace/FontFaceSet event timing, variable/color fonts, and complete text/Web
+IDL parity remain issue #40 gates.
 
 Slice 430 closes the content-process worker-XHR response-streaming gate. The
 content owner now shares the bounded demand-driven response transport between

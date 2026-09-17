@@ -26,17 +26,19 @@ use super::{
         AlignContentValue, AlignItemsValue, AlignSelfValue, DirectionValue, FlexBasisValue,
         FlexDirectionValue, FlexWrapValue, FontStyleValue, FontWeightValue, JustifyContentValue,
         NativeBorderRadius, NativeBorderStyleValue, NativeBoxSizing, NativeColor,
-        NativeComputedStyle, NativeInheritedStyle, NativeMarginValue, NativeOrderValue,
-        NativePointerEventsValue, NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces,
-        NativeTextDecorationStyle, OverflowValue, TextAlignLastValue, TextAlignValue,
-        TextDecorationValue, TextJustifyValue, TextOverflowValue, TextTransformValue,
-        VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+        NativeComputedStyle, NativeFontFamilyList, NativeInheritedStyle, NativeMarginValue,
+        NativeOrderValue, NativePointerEventsValue, NativeTextDecorationSkipInk,
+        NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, OverflowValue,
+        TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
+        TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use url::Url;
+
+use super::font::NativeTextMetrics;
 
 const MAX_ATTRIBUTE_BYTES: usize = 1024;
 const MAX_LOCATOR_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
@@ -6169,6 +6171,8 @@ impl NativeDocument {
         let mut inherited_text_transform = TextTransformValue::None;
         let mut inherited_font_weight = FontWeightValue::Normal;
         let mut inherited_font_style = FontStyleValue::Normal;
+        let mut inherited_font_family = NativeFontFamilyList::default();
+        let mut inherited_font_size = super::font::DEFAULT_NATIVE_FONT_SIZE;
         let mut inherited_word_break = WordBreakValue::Normal;
         let mut inherited_text_overflow = TextOverflowValue::Clip;
         let mut inherited_overflow_x = OverflowValue::Other;
@@ -6229,6 +6233,8 @@ impl NativeDocument {
                     text_transform: inherited_text_transform,
                     font_weight: inherited_font_weight,
                     font_style: inherited_font_style,
+                    font_family: inherited_font_family,
+                    font_size: inherited_font_size,
                     word_break: inherited_word_break,
                     text_overflow: inherited_text_overflow,
                     overflow_x: inherited_overflow_x,
@@ -6290,6 +6296,8 @@ impl NativeDocument {
             inherited_text_transform = style.text_transform();
             inherited_font_weight = style.font_weight();
             inherited_font_style = style.font_style();
+            inherited_font_family = style.font_family();
+            inherited_font_size = style.font_size();
             inherited_word_break = style.word_break();
             inherited_text_overflow = style.text_overflow();
             inherited_overflow_x = style.overflow_x();
@@ -6308,6 +6316,28 @@ impl NativeDocument {
 
     pub(crate) fn is_hidden_for_layout(&self, id: NativeNodeId) -> bool {
         self.is_hidden(id)
+    }
+
+    pub(crate) fn text_metrics_for_layout(&self, id: NativeNodeId) -> NativeTextMetrics {
+        let style = self.computed_style_for_layout(id);
+        if style
+            .font_family()
+            .iter()
+            .any(|family| !matches!(family, super::css::NativeFontFamilyValue::Fallback))
+        {
+            NativeTextMetrics::for_style(
+                style.font_family(),
+                style.font_size(),
+                style.font_weight(),
+                style.font_style(),
+            )
+        } else {
+            NativeTextMetrics::fallback(style.font_size())
+        }
+    }
+
+    pub(crate) fn text_line_height_for_layout(&self, id: NativeNodeId) -> u32 {
+        self.text_metrics_for_layout(id).line_height()
     }
 
     pub(crate) fn raw_text_for_layout(&self, id: NativeNodeId) -> Option<String> {

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
+`native-engine-browser-485`, following completed
 `native-engine-browser-484`, following completed
 `native-engine-browser-483`, following completed
 `native-engine-browser-482`, following completed
@@ -501,6 +502,18 @@ stylesheet's final URL base, and splice admitted rules at their import
 positions. Per-graph entry/byte limits and duplicate/cycle suppression remain
 active; file fonts and other CSS resource types, complete file-origin
 semantics, and full Web IDL parity remain issue #40 work.
+
+Slice `native-engine-browser-485` adds the first real font metrics and
+rasterization owner. Bounded inherited `font-family` lists and positive pixel
+`font-size` values now select an allowlisted system face when available;
+fontdue supplies measured advances, kerning, line metrics, and per-glyph
+coverage for immutable `GlyphRun` display commands and clipped software
+replay. Pages without an explicit supported family, unavailable faces, and
+existing fixed-cell fixtures retain the deterministic 5x7 fallback contract.
+The font source list is intentionally deterministic and platform-specific;
+`@font-face`, arbitrary installed-font discovery, relative/non-pixel size
+units, variable fonts, complex-script shaping, grapheme-safe line breaking,
+bidi, and complete text-rendering parity remain issue #40 work.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit

@@ -996,6 +996,100 @@ pub(crate) enum FontStyleValue {
     Italic,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeGenericFontFamily {
+    SansSerif,
+    Serif,
+    Monospace,
+    Cursive,
+    Fantasy,
+    SystemUi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeFontFamilyValue {
+    /// Preserve the legacy fixed-cell path when no native font declaration
+    /// has opted the element into real-font metrics yet.
+    Fallback,
+    Generic(NativeGenericFontFamily),
+    Named(u64),
+}
+
+impl Default for NativeFontFamilyValue {
+    fn default() -> Self {
+        Self::Fallback
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct NativeFontFamilyList {
+    values: [NativeFontFamilyValue; 4],
+    len: u8,
+}
+
+impl PartialEq for NativeFontFamilyList {
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len
+            && self
+                .values
+                .iter()
+                .take(usize::from(self.len))
+                .eq(other.values.iter().take(usize::from(other.len)))
+    }
+}
+
+impl Eq for NativeFontFamilyList {}
+
+impl Default for NativeFontFamilyList {
+    fn default() -> Self {
+        Self::single(NativeFontFamilyValue::Fallback)
+    }
+}
+
+impl NativeFontFamilyList {
+    pub(crate) const fn single(value: NativeFontFamilyValue) -> Self {
+        Self {
+            values: [value; 4],
+            len: 1,
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        let mut families = [NativeFontFamilyValue::Fallback; 4];
+        let mut len = 0usize;
+        for raw_family in value.split(',') {
+            let family = raw_family.trim();
+            if family.is_empty() || len == families.len() {
+                return None;
+            }
+            let unquoted = if (family.starts_with('"') && family.ends_with('"'))
+                || (family.starts_with('\'') && family.ends_with('\''))
+            {
+                let family = &family[1..family.len().saturating_sub(1)];
+                if family.is_empty() || family.contains(['"', '\'']) {
+                    return None;
+                }
+                family
+            } else if family.contains(['"', '\'']) {
+                return None;
+            } else {
+                family
+            };
+            families[len] = parse_font_family_name(unquoted)?;
+            len += 1;
+        }
+        (len > 0).then_some(Self {
+            values: families,
+            len: u8::try_from(len).ok()?,
+        })
+    }
+
+    pub(crate) fn iter(self) -> impl Iterator<Item = NativeFontFamilyValue> {
+        let len = usize::from(self.len);
+        self.values.into_iter().take(len)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum WordBreakValue {
     #[default]
@@ -1127,6 +1221,8 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) text_transform: TextTransformValue,
     pub(crate) font_weight: FontWeightValue,
     pub(crate) font_style: FontStyleValue,
+    pub(crate) font_family: NativeFontFamilyList,
+    pub(crate) font_size: u32,
     pub(crate) word_break: WordBreakValue,
     pub(crate) text_overflow: TextOverflowValue,
     pub(crate) overflow_x: OverflowValue,
@@ -1184,6 +1280,8 @@ impl Default for NativeInheritedStyle {
             text_transform: TextTransformValue::None,
             font_weight: FontWeightValue::Normal,
             font_style: FontStyleValue::Normal,
+            font_family: NativeFontFamilyList::default(),
+            font_size: super::font::DEFAULT_NATIVE_FONT_SIZE,
             word_break: WordBreakValue::Normal,
             text_overflow: TextOverflowValue::Clip,
             overflow_x: OverflowValue::Other,
@@ -1340,6 +1438,8 @@ pub(crate) struct NativeComputedStyle {
     text_transform: TextTransformValue,
     font_weight: FontWeightValue,
     font_style: FontStyleValue,
+    font_family: NativeFontFamilyList,
+    font_size: u32,
     word_break: WordBreakValue,
     text_overflow: TextOverflowValue,
     vertical_align: VerticalAlignValue,
@@ -1526,6 +1626,14 @@ impl NativeComputedStyle {
 
     pub(crate) const fn font_style(self) -> FontStyleValue {
         self.font_style
+    }
+
+    pub(crate) const fn font_family(self) -> NativeFontFamilyList {
+        self.font_family
+    }
+
+    pub(crate) const fn font_size(self) -> u32 {
+        self.font_size
     }
 
     pub(crate) const fn word_break(self) -> WordBreakValue {
@@ -1824,6 +1932,8 @@ impl NativeStylesheet {
         let mut text_transform = &mut scratch.text_transform;
         let mut font_weight = &mut scratch.font_weight;
         let mut font_style = &mut scratch.font_style;
+        let mut font_family = &mut scratch.font_family;
+        let mut font_size = &mut scratch.font_size;
         let mut word_break = &mut scratch.word_break;
         let mut text_overflow = &mut scratch.text_overflow;
         let mut vertical_align = &mut scratch.vertical_align;
@@ -2082,6 +2192,22 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.text_importance.font_style,
                 &mut font_style,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.font_family,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.font_family,
+                &mut font_family,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.font_size,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.font_size,
+                &mut font_size,
             );
             apply_text_cascade_declaration(
                 rule.declarations.word_break,
@@ -2649,6 +2775,22 @@ impl NativeStylesheet {
                 &mut font_style,
             );
             apply_text_cascade_declaration(
+                declarations.font_family,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.font_family,
+                &mut font_family,
+            );
+            apply_text_cascade_declaration(
+                declarations.font_size,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.font_size,
+                &mut font_size,
+            );
+            apply_text_cascade_declaration(
                 declarations.word_break,
                 u16::MAX,
                 usize::MAX,
@@ -3186,6 +3328,16 @@ impl NativeStylesheet {
                 inherited.font_style,
                 FontStyleValue::Normal,
             ),
+            font_family: resolve_inherited_text_declaration(
+                *font_family,
+                inherited.font_family,
+                NativeFontFamilyList::default(),
+            ),
+            font_size: resolve_inherited_text_declaration(
+                *font_size,
+                inherited.font_size,
+                super::font::DEFAULT_NATIVE_FONT_SIZE,
+            ),
             word_break: resolve_inherited_text_declaration(
                 *word_break,
                 inherited.word_break,
@@ -3356,6 +3508,8 @@ struct NativeCascadeScratch {
     text_transform: NativeTextCascadeCandidates<TextTransformValue>,
     font_weight: NativeTextCascadeCandidates<FontWeightValue>,
     font_style: NativeTextCascadeCandidates<FontStyleValue>,
+    font_family: NativeTextCascadeCandidates<NativeFontFamilyList>,
+    font_size: NativeTextCascadeCandidates<u32>,
     word_break: NativeTextCascadeCandidates<WordBreakValue>,
     text_overflow: NativeTextLocalCascadeCandidates<TextOverflowValue>,
     vertical_align: NativeTextCascadeCandidates<VerticalAlignValue>,
@@ -3445,6 +3599,8 @@ impl NativeCascadeScratch {
             initialize!(text_transform);
             initialize!(font_weight);
             initialize!(font_style);
+            initialize!(font_family);
+            initialize!(font_size);
             initialize!(word_break);
             initialize!(text_overflow);
             initialize!(vertical_align);
@@ -5583,6 +5739,8 @@ struct NativeTextDeclarationImportance {
     text_transform: bool,
     font_weight: bool,
     font_style: bool,
+    font_family: bool,
+    font_size: bool,
     word_break: bool,
     text_overflow: bool,
     vertical_align: bool,
@@ -5639,6 +5797,8 @@ struct NativeDeclarations {
     text_transform: Option<InheritedTextDeclaration<TextTransformValue>>,
     font_weight: Option<InheritedTextDeclaration<FontWeightValue>>,
     font_style: Option<InheritedTextDeclaration<FontStyleValue>>,
+    font_family: Option<InheritedTextDeclaration<NativeFontFamilyList>>,
+    font_size: Option<InheritedTextDeclaration<u32>>,
     word_break: Option<InheritedTextDeclaration<WordBreakValue>>,
     text_overflow: Option<LocalCascadeDeclaration<TextOverflowValue>>,
     vertical_align: Option<InheritedTextDeclaration<VerticalAlignValue>>,
@@ -6038,6 +6198,8 @@ fn parse_style_rule(
         || declarations.text_transform.is_some()
         || declarations.font_weight.is_some()
         || declarations.font_style.is_some()
+        || declarations.font_family.is_some()
+        || declarations.font_size.is_some()
         || declarations.word_break.is_some()
         || declarations.text_overflow.is_some()
         || declarations.vertical_align.is_some()
@@ -6264,6 +6426,8 @@ fn parse_declarations_with_diagnostics(
             "text-transform" => parse_text_transform_declaration(value).is_some(),
             "font-weight" => parse_font_weight_declaration(value).is_some(),
             "font-style" => parse_font_style_declaration(value).is_some(),
+            "font-family" => parse_font_family_declaration(value).is_some(),
+            "font-size" => parse_font_size_declaration(value).is_some(),
             "word-break" => parse_word_break_declaration(value).is_some(),
             "text-overflow" => parse_text_overflow_declaration(value).is_some(),
             "vertical-align" => parse_vertical_align_declaration(value).is_some(),
@@ -6872,6 +7036,18 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_font_style_declaration(value) {
                     declarations.font_style = Some(parsed);
                     declarations.text_importance.font_style = important;
+                }
+            }
+            "font-family" => {
+                if let Some(parsed) = parse_font_family_declaration(value) {
+                    declarations.font_family = Some(parsed);
+                    declarations.text_importance.font_family = important;
+                }
+            }
+            "font-size" => {
+                if let Some(parsed) = parse_font_size_declaration(value) {
+                    declarations.font_size = Some(parsed);
+                    declarations.text_importance.font_size = important;
                 }
             }
             "word-break" => {
@@ -11043,6 +11219,52 @@ fn parse_font_style(value: &str) -> Option<FontStyleValue> {
     }
 }
 
+fn parse_font_family(value: &str) -> Option<NativeFontFamilyList> {
+    NativeFontFamilyList::parse(value)
+}
+
+fn parse_font_family_name(value: &str) -> Option<NativeFontFamilyValue> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "sans-serif" | "ui-sans-serif" => Some(NativeFontFamilyValue::Generic(
+            NativeGenericFontFamily::SansSerif,
+        )),
+        "serif" | "ui-serif" => Some(NativeFontFamilyValue::Generic(
+            NativeGenericFontFamily::Serif,
+        )),
+        "monospace" | "ui-monospace" => Some(NativeFontFamilyValue::Generic(
+            NativeGenericFontFamily::Monospace,
+        )),
+        "cursive" => Some(NativeFontFamilyValue::Generic(
+            NativeGenericFontFamily::Cursive,
+        )),
+        "fantasy" => Some(NativeFontFamilyValue::Generic(
+            NativeGenericFontFamily::Fantasy,
+        )),
+        "system-ui" => Some(NativeFontFamilyValue::Generic(
+            NativeGenericFontFamily::SystemUi,
+        )),
+        _ => (!value.trim().is_empty())
+            .then_some(NativeFontFamilyValue::Named(font_family_hash(value))),
+    }
+}
+
+pub(crate) fn font_family_hash(value: &str) -> u64 {
+    let mut hash = 1469598103934665603u64;
+    for byte in value
+        .trim()
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+    {
+        hash ^= u64::from(byte.to_ascii_lowercase());
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    hash
+}
+
+fn parse_font_size(value: &str) -> Option<u32> {
+    parse_dimension(value).filter(|value| (1..=256).contains(value))
+}
+
 fn parse_word_break(value: &str) -> Option<WordBreakValue> {
     match value.trim().to_ascii_lowercase().as_str() {
         "normal" => Some(WordBreakValue::Normal),
@@ -11111,6 +11333,16 @@ fn parse_font_weight_declaration(value: &str) -> Option<InheritedTextDeclaration
 
 fn parse_font_style_declaration(value: &str) -> Option<InheritedTextDeclaration<FontStyleValue>> {
     parse_inherited_text_declaration(value, parse_font_style)
+}
+
+fn parse_font_family_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<NativeFontFamilyList>> {
+    parse_inherited_text_declaration(value, parse_font_family)
+}
+
+fn parse_font_size_declaration(value: &str) -> Option<InheritedTextDeclaration<u32>> {
+    parse_inherited_text_declaration(value, parse_font_size)
 }
 
 fn parse_word_break_declaration(value: &str) -> Option<InheritedTextDeclaration<WordBreakValue>> {
@@ -20606,6 +20838,36 @@ mod tests {
     }
 
     #[test]
+    fn font_family_parser_keeps_ordered_bounded_fallbacks() {
+        let families = parse_font_family("\"Missing Face\", sans-serif, monospace").unwrap();
+        assert_eq!(families.len, 3);
+        assert!(matches!(
+            families.values[0],
+            NativeFontFamilyValue::Named(_)
+        ));
+        assert_eq!(
+            families.values[1],
+            NativeFontFamilyValue::Generic(NativeGenericFontFamily::SansSerif)
+        );
+        assert_eq!(
+            families.values[2],
+            NativeFontFamilyValue::Generic(NativeGenericFontFamily::Monospace)
+        );
+        assert!(parse_font_family("sans-serif, ").is_none());
+        assert!(parse_font_family("'unterminated").is_none());
+        assert!(parse_font_family(", sans-serif").is_none());
+    }
+
+    #[test]
+    fn font_size_parser_accepts_bounded_positive_pixels_only() {
+        assert_eq!(parse_font_size("16px"), Some(16));
+        assert_eq!(parse_font_size("256px"), Some(256));
+        assert_eq!(parse_font_size("0px"), None);
+        assert_eq!(parse_font_size("257px"), None);
+        assert_eq!(parse_font_size("1.5em"), None);
+    }
+
+    #[test]
     fn word_break_parser_accepts_only_normal_and_break_all() {
         assert_eq!(parse_word_break("normal"), Some(WordBreakValue::Normal));
         assert_eq!(
@@ -21685,6 +21947,49 @@ mod tests {
             document.computed_style_for_layout(invalid).font_style(),
             FontStyleValue::Italic
         );
+    }
+
+    #[test]
+    fn font_family_and_size_are_inherited_with_css_wide_resets() {
+        let document = NativeDocument::parse(
+            "<style>#parent { font-family: sans-serif; font-size: 24px; } #clear { font-family: initial; font-size: initial; } #inherit { font-family: inherit; font-size: inherit; } #invalid { font-family: sans-serif,; font-size: 400px; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='inherit'>Inherit</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let clear = document.resolve_target("id=clear").unwrap();
+        let inherit = document.resolve_target("id=inherit").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let sans = NativeFontFamilyList::single(NativeFontFamilyValue::Generic(
+            NativeGenericFontFamily::SansSerif,
+        ));
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).font_family(),
+            sans
+        );
+        assert_eq!(document.computed_style_for_layout(parent).font_size(), 24);
+        assert_eq!(
+            document.computed_style_for_layout(child).font_family(),
+            sans
+        );
+        assert_eq!(document.computed_style_for_layout(child).font_size(), 24);
+        assert_eq!(
+            document.computed_style_for_layout(clear).font_family(),
+            NativeFontFamilyList::default()
+        );
+        assert_eq!(document.computed_style_for_layout(clear).font_size(), 16);
+        assert_eq!(
+            document.computed_style_for_layout(inherit).font_family(),
+            sans
+        );
+        assert_eq!(document.computed_style_for_layout(inherit).font_size(), 24);
+        assert_eq!(
+            document.computed_style_for_layout(invalid).font_family(),
+            sans
+        );
+        assert_eq!(document.computed_style_for_layout(invalid).font_size(), 24);
     }
 
     #[test]

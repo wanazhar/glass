@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-485`, following completed
 `native-engine-browser-484`, following completed
 `native-engine-browser-483`, following completed
 `native-engine-browser-482`, following completed
@@ -328,6 +329,17 @@ final URL base, and splice active rules at their import positions. Duplicate
 and cyclic dependencies are suppressed within each graph, with bounded entry
 and byte totals; file fonts and other CSS resource types, complete file-origin
 semantics, and full Web IDL parity remain issue #40 gates.
+
+The completed real-font metrics follow-up is
+[`native-engine-browser-485`](tasks/native-engine-browser-485.md): bounded
+inherited `font-family` lists and positive pixel `font-size` values now select
+deterministic allowlisted system faces when available. Fontdue supplies real
+advances, kerning, line metrics, and per-glyph coverage through immutable
+`GlyphRun` display commands and the clipped software raster path; pages with
+no explicit supported family or no available face retain the fixed-cell
+fallback. `@font-face`, arbitrary font discovery, relative/non-pixel sizes,
+variable fonts, complex shaping, grapheme-safe line breaking, bidi, and full
+text-rendering parity remain issue #40 work.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

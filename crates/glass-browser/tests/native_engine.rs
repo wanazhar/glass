@@ -1770,7 +1770,10 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
     let script_path = root.join("app.js");
     let module_path = root.join("module.js");
     let module_dependency_path = root.join("module-dependency.js");
-    let stylesheet_path = root.join("style.css");
+    let stylesheet_dir = root.join("styles");
+    fs::create_dir_all(&stylesheet_dir).unwrap();
+    let stylesheet_path = stylesheet_dir.join("style.css");
+    let stylesheet_image_path = stylesheet_dir.join("css-dot.png");
     let image_path = root.join("dot.png");
     fs::write(
         &script_path,
@@ -1787,11 +1790,16 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
         "export const value = 'module-loaded';",
     )
     .unwrap();
-    fs::write(&stylesheet_path, "#target { color: rgb(1, 2, 3); }").unwrap();
+    fs::write(
+        &stylesheet_path,
+        "#target { width: 2px; height: 2px; color: rgb(1, 2, 3); background-image: url('css-dot.png'); background-repeat: no-repeat; }",
+    )
+    .unwrap();
+    fs::write(&stylesheet_image_path, native_test_png_bytes()).unwrap();
     fs::write(&image_path, native_test_png_bytes()).unwrap();
     fs::write(
         &page_path,
-        "<html><head><link rel='stylesheet' href='style.css'></head><body><div id='target'>rooted</div><img id='image' src='dot.png'><script src='app.js'></script><script type='module' src='module.js'></script><script>globalThis.fileScriptEvents = []; document.querySelector('script[src]').addEventListener('load', () => fileScriptEvents.push('load'));</script></body></html>",
+        "<html><head><link rel='stylesheet' href='styles/style.css'></head><body><div id='target'>rooted</div><img id='image' src='dot.png'><script src='app.js'></script><script type='module' src='module.js'></script><script>globalThis.fileScriptEvents = []; document.querySelector('script[src]').addEventListener('load', () => fileScriptEvents.push('load'));</script></body></html>",
     )
     .unwrap();
     let page_url = native_test_file_url(&page_path);
@@ -1820,6 +1828,16 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
             image_url
         ])
     );
+    assert_eq!(
+        engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .filter(|command| matches!(command, NativeDisplayCommand::Image { .. }))
+            .count(),
+        2
+    );
     engine.close_async().await.unwrap();
     fs::remove_dir_all(root).unwrap();
 }
@@ -1836,8 +1854,10 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
     let script_path = root.join("late.js");
     let module_path = root.join("late-module.js");
     let module_dependency_path = root.join("late-module-dependency.js");
-    let stylesheet_path = root.join("late.css");
-    let image_path = root.join("late.png");
+    let stylesheet_dir = root.join("styles");
+    fs::create_dir_all(&stylesheet_dir).unwrap();
+    let stylesheet_path = stylesheet_dir.join("late.css");
+    let image_path = stylesheet_dir.join("late.png");
     fs::write(
         &script_path,
         "globalThis.dynamicFileScriptValue = 'executed';",
@@ -1853,7 +1873,11 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
         "export const value = 'module-executed';",
     )
     .unwrap();
-    fs::write(&stylesheet_path, "#target { color: rgb(4, 5, 6); }").unwrap();
+    fs::write(
+        &stylesheet_path,
+        "#target { width: 2px; height: 2px; color: rgb(4, 5, 6); background-image: url('late.png'); background-repeat: no-repeat; }",
+    )
+    .unwrap();
     fs::write(&image_path, native_test_png_bytes()).unwrap();
     fs::write(
         &page_path,
@@ -1921,6 +1945,16 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
             2,
             image_url
         ])
+    );
+    assert_eq!(
+        engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .filter(|command| matches!(command, NativeDisplayCommand::Image { .. }))
+            .count(),
+        2
     );
     engine.close_async().await.unwrap();
     fs::remove_dir_all(root).unwrap();

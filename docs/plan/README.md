@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-476`, following completed
 `native-engine-browser-475`, following completed
 `native-engine-browser-474`, following completed
 `native-engine-browser-473`, following completed
@@ -228,6 +229,17 @@ enforced before evaluation. The page and worker URL facades also preserve
 canonical `file:///` URLs. Import maps, non-literal dynamic imports, file
 fonts/workers/downloads, complete file-origin semantics, and complete Web IDL
 parity remain issue #40 gates.
+
+The completed rooted-file-CSS-URL-base follow-up is
+[`native-engine-browser-476`](tasks/native-engine-browser-476.md): static and
+dynamic rooted file stylesheets now canonicalize relative `url(...)` tokens
+against the stylesheet's own file URL before the existing CSS cascade and
+background-image resource path. Nested stylesheet/image directories therefore
+use the same allowed-root, integrity, size, and native decode/paint owners;
+comments and quoted non-URL text are preserved, and non-file owners are
+unchanged. CSS `@import`, file fonts, other CSS resource types, URL escape
+grammar, network stylesheet URL-base parity, complete file-origin semantics,
+and complete Web IDL parity remain issue #40 gates.
 
 The completed data-media follow-up is
 [`native-engine-browser-472`](tasks/native-engine-browser-472.md): static and

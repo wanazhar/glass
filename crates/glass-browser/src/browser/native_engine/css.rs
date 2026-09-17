@@ -4,6 +4,7 @@ use super::dom::{NativeDocument, NativeNode, NativeNodeId};
 use super::error::NativeEngineError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use url::Url;
 
 pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
 pub(crate) const MAX_NATIVE_GRID_TRACKS: usize = 8;
@@ -8489,6 +8490,183 @@ pub(crate) fn collect_background_image_sources(
             }
         }
     }
+}
+
+/// Resolve relative CSS `url(...)` tokens against a loaded rooted file
+/// stylesheet. The CSS parser stores background-image identities as source
+/// strings, so canonicalizing before parsing gives each stylesheet its own
+/// URL base without changing the declaration/cascade model. Non-file owners
+/// are returned byte-for-byte unchanged and continue through their existing
+/// loader paths.
+pub(crate) fn absolutize_file_stylesheet_urls(
+    source: &str,
+    document_url: &str,
+    stylesheet_href: &str,
+) -> String {
+    let Some(base_url) = file_stylesheet_base_url(document_url, stylesheet_href) else {
+        return source.to_owned();
+    };
+    let bytes = source.as_bytes();
+    let mut rewritten = String::with_capacity(source.len());
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        if bytes[cursor] == b'/' && bytes.get(cursor + 1) == Some(&b'*') {
+            let end = source[cursor + 2..]
+                .find("*/")
+                .map(|offset| cursor + 2 + offset + 2)
+                .unwrap_or(bytes.len());
+            rewritten.push_str(&source[cursor..end]);
+            cursor = end;
+            continue;
+        }
+        if matches!(bytes[cursor], b'\'' | b'"') {
+            let quote = bytes[cursor];
+            let mut end = cursor + 1;
+            let mut escaped = false;
+            while end < bytes.len() {
+                let byte = bytes[end];
+                end += 1;
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == quote {
+                    break;
+                }
+            }
+            rewritten.push_str(&source[cursor..end]);
+            cursor = end;
+            continue;
+        }
+        let Some(open) = css_url_function_open(bytes, cursor) else {
+            let character = source[cursor..]
+                .chars()
+                .next()
+                .expect("CSS cursor must point at a character");
+            let end = cursor + character.len_utf8();
+            rewritten.push_str(&source[cursor..end]);
+            cursor = end;
+            continue;
+        };
+        let Some(close) = css_url_function_close(bytes, open + 1) else {
+            let character = source[cursor..]
+                .chars()
+                .next()
+                .expect("CSS cursor must point at a character");
+            let end = cursor + character.len_utf8();
+            rewritten.push_str(&source[cursor..end]);
+            cursor = end;
+            continue;
+        };
+        let mut value_start = open + 1;
+        while value_start < close && bytes[value_start].is_ascii_whitespace() {
+            value_start += 1;
+        }
+        let mut value_end = close;
+        while value_end > value_start && bytes[value_end - 1].is_ascii_whitespace() {
+            value_end -= 1;
+        }
+        rewritten.push_str(&source[cursor..value_start]);
+        if value_start < value_end {
+            let token = &source[value_start..value_end];
+            if let Some(resolved) = resolve_file_css_url_token(token, &base_url) {
+                rewritten.push_str(&resolved);
+            } else {
+                rewritten.push_str(token);
+            }
+        }
+        rewritten.push_str(&source[value_end..=close]);
+        cursor = close + 1;
+    }
+    rewritten
+}
+
+fn file_stylesheet_base_url(document_url: &str, stylesheet_href: &str) -> Option<Url> {
+    let document_url = Url::parse(document_url).ok()?;
+    if !document_url.scheme().eq_ignore_ascii_case("file") {
+        return None;
+    }
+    let mut stylesheet_url = document_url.join(stylesheet_href).ok()?;
+    if !stylesheet_url.scheme().eq_ignore_ascii_case("file")
+        || !stylesheet_url.username().is_empty()
+        || stylesheet_url.password().is_some()
+    {
+        return None;
+    }
+    stylesheet_url.set_fragment(None);
+    Some(stylesheet_url)
+}
+
+fn css_url_function_open(bytes: &[u8], cursor: usize) -> Option<usize> {
+    let end = cursor.checked_add(3)?;
+    if end > bytes.len()
+        || !bytes[cursor..end].eq_ignore_ascii_case(b"url")
+        || (cursor > 0 && is_css_identifier_byte(bytes[cursor - 1]))
+        || (end < bytes.len() && is_css_identifier_byte(bytes[end]))
+    {
+        return None;
+    }
+    let mut open = end;
+    while open < bytes.len() && bytes[open].is_ascii_whitespace() {
+        open += 1;
+    }
+    (bytes.get(open) == Some(&b'(')).then_some(open)
+}
+
+fn css_url_function_close(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut quote = None;
+    let mut escaped = false;
+    for (offset, byte) in bytes.iter().enumerate().skip(start) {
+        if let Some(expected) = quote {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == expected {
+                quote = None;
+            }
+            continue;
+        }
+        match *byte {
+            b'\'' | b'"' => quote = Some(*byte),
+            b')' => return Some(offset),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn is_css_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+}
+
+fn resolve_file_css_url_token(token: &str, base_url: &Url) -> Option<String> {
+    let (quoted, value) = if token.len() >= 2
+        && matches!(token.as_bytes().first(), Some(b'\'' | b'"'))
+        && token.as_bytes().last() == token.as_bytes().first()
+    {
+        (
+            Some(token.as_bytes()[0] as char),
+            &token[1..token.len() - 1],
+        )
+    } else {
+        (None, token)
+    };
+    if value.is_empty() || value.starts_with('#') || value.bytes().any(|byte| byte == 0) {
+        return None;
+    }
+    let target = Url::parse(value).or_else(|_| base_url.join(value)).ok()?;
+    if !target.scheme().eq_ignore_ascii_case("file")
+        || !target.username().is_empty()
+        || target.password().is_some()
+    {
+        return None;
+    }
+    let target = target.to_string();
+    quoted.map_or_else(
+        || Some(target.clone()),
+        |quote| Some(format!("{quote}{target}{quote}")),
+    )
 }
 
 fn register_background_image_source(

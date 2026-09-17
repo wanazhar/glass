@@ -9,6 +9,7 @@ use super::config::{
     MAX_NATIVE_NODES, NativeEngineLimits, Viewport, is_file_url, is_network_url,
     validate_context_id, validate_url_text, validate_window_name, without_fragment,
 };
+use super::css::absolutize_file_stylesheet_urls;
 use super::dom::{
     NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource,
     NativePageScriptTiming,
@@ -7451,7 +7452,10 @@ async fn load_content_resource(
     }
     let external_stylesheets = external_stylesheet_states
         .iter()
-        .filter_map(|(_, _, body)| body.clone())
+        .filter_map(|(_, href, body)| {
+            body.as_ref()
+                .map(|body| absolutize_file_stylesheet_urls(body, &resource.url, href))
+        })
         .collect::<Vec<_>>();
     let mut document = NativeDocument::parse_with_stylesheets_and_inline_style_policy(
         &resource.body,
@@ -7847,7 +7851,7 @@ async fn load_dynamic_external_stylesheets(
         .collect::<Vec<_>>();
     if previous_states != next_states {
         document.set_external_stylesheet_states(next_states);
-        document.rebuild_external_stylesheet()?;
+        document.rebuild_external_stylesheet(document_url)?;
         document.refresh_background_image_sources();
     }
     Ok(events)

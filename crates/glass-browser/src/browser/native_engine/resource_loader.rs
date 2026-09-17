@@ -4833,6 +4833,18 @@ impl NativeResourceLoader {
         integrity: Option<&str>,
         crossorigin: Option<&str>,
     ) -> Result<Option<String>, NativeEngineError> {
+        self.load_stylesheet_async_with_object_url(document_url, href, integrity, crossorigin, None)
+            .await
+    }
+
+    pub(crate) async fn load_stylesheet_async_with_object_url(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        integrity: Option<&str>,
+        crossorigin: Option<&str>,
+        object_url: Option<&NativeObjectUrlResource>,
+    ) -> Result<Option<String>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text("stylesheet URL", href)?;
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
@@ -4844,7 +4856,7 @@ impl NativeResourceLoader {
             return Ok(None);
         }
         reject_credentials(&document_url)?;
-        let Some(target_url) = resolve_subresource_url(&document_url, href)? else {
+        let Some(target_url) = resolve_subresource_url_with_blob(&document_url, href)? else {
             return Ok(None);
         };
         if !mixed_content_allowed(&document_url, &target_url) {
@@ -4868,6 +4880,38 @@ impl NativeResourceLoader {
         );
         if !policy.allows(NativeSubresourceKind::Style, &document_url, &target_url) {
             return Ok(None);
+        }
+        if target_url.scheme().eq_ignore_ascii_case("blob") {
+            let Some(object_url) = object_url else {
+                return Ok(None);
+            };
+            NativeOrigin::from_blob_url(without_fragment(target_url.as_str()))?;
+            if object_url
+                .content_type
+                .as_deref()
+                .is_some_and(|content_type| {
+                    !content_type.is_empty() && !stylesheet_content_type_text_allowed(content_type)
+                })
+            {
+                return Ok(None);
+            }
+            if object_url.body.len() > self.max_document_bytes {
+                return Err(NativeEngineError::limit(
+                    "Blob CSS subresource",
+                    self.max_document_bytes,
+                    object_url.body.len(),
+                ));
+            }
+            if !subresource_integrity_matches(integrity, &object_url.body) {
+                return Ok(None);
+            }
+            let body = String::from_utf8(object_url.body.clone()).map_err(|_| {
+                NativeEngineError::Network {
+                    operation: "Blob CSS subresource decoding".into(),
+                    reason: "Blob CSS subresource is not valid UTF-8".into(),
+                }
+            })?;
+            return Ok(Some(body));
         }
         let requested_cache_key = cache_key(&target_url);
         let stale_cached_stylesheet = self
@@ -6452,6 +6496,15 @@ fn content_type_is(
         .unwrap_or_default()
         .trim()
         .eq_ignore_ascii_case(expected))
+}
+
+fn stylesheet_content_type_text_allowed(value: &str) -> bool {
+    value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .eq_ignore_ascii_case("text/css")
 }
 
 fn supported_image_media_type(

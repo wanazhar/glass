@@ -48025,6 +48025,97 @@ async fn native_content_process_loads_blob_object_url_classic_script_subresource
 }
 
 #[tokio::test]
+async fn native_content_process_loads_blob_object_url_stylesheet_subresources() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<head></head><body><div id='target'>Blob stylesheet</div></body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: style-src blob:\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { globalThis.blobStyleLoaded = false; const link = document.createElement('link'); link.setAttribute('rel', 'stylesheet'); const url = URL.createObjectURL(new Blob(['#target { color: rgb(1, 2, 3); }'], { type: 'text/css' })); link.href = url; link.addEventListener('load', () => { globalThis.blobStyleLoaded = true; }); document.head.appendChild(link); globalThis.blobStyleUrl = url; return url; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(format!("blob:http://{address}/glass-native-1"))
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const target = document.getElementById('target'); const link = document.querySelector('link'); return [blobStyleLoaded, getComputedStyle(target).color, link.href]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            true,
+            "rgb(1, 2, 3)",
+            format!("blob:http://{address}/glass-native-1")
+        ])
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_blocks_csp_disallowed_blob_stylesheet_subresources() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<head></head><body><div id='target'>Blocked stylesheet</div></body>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: style-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "(() => { globalThis.blobStyleError = 0; const link = document.createElement('link'); link.setAttribute('rel', 'stylesheet'); const url = URL.createObjectURL(new Blob(['#target { color: rgb(1, 2, 3); }'], { type: 'text/css' })); link.href = url; link.addEventListener('error', () => { globalThis.blobStyleError += 1; }); document.head.appendChild(link); return true; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const target = document.getElementById('target'); return [blobStyleError, getComputedStyle(target).color]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([1, "rgb(0, 0, 0)"])
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_reuses_cacheable_external_png_for_duplicate_images() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

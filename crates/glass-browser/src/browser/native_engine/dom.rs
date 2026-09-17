@@ -621,6 +621,7 @@ pub struct NativeDocument {
     max_dom_depth: usize,
     nodes: Vec<NativeNode>,
     stylesheet: NativeStylesheet,
+    external_stylesheet_states: BTreeMap<u32, NativeExternalStylesheetState>,
     computed_styles: Option<Vec<NativeComputedStyle>>,
     diagnostics: Vec<NativeDiagnostic>,
     diagnostics_truncated: bool,
@@ -635,6 +636,12 @@ pub struct NativeDocument {
     canvas_resources: BTreeMap<u32, NativeCanvasResource>,
     inline_style_element_reports: BTreeMap<u32, (String, Option<String>)>,
     inline_style_attribute_reports: BTreeMap<u32, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeExternalStylesheetState {
+    href: String,
+    body: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -839,6 +846,7 @@ impl NativeDocument {
                 state: NativeElementState::default(),
             }],
             stylesheet: NativeStylesheet::default(),
+            external_stylesheet_states: BTreeMap::new(),
             computed_styles: None,
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
@@ -1206,6 +1214,72 @@ impl NativeDocument {
             }
         }
         self.computed_styles = None;
+    }
+
+    pub(crate) fn set_external_stylesheet_states(
+        &mut self,
+        states: impl IntoIterator<Item = (u32, String, Option<String>)>,
+    ) {
+        self.external_stylesheet_states = states
+            .into_iter()
+            .map(|(node_index, href, body)| {
+                (node_index, NativeExternalStylesheetState { href, body })
+            })
+            .collect();
+    }
+
+    pub(crate) fn external_stylesheet_states(&self) -> Vec<(u32, String, Option<String>)> {
+        self.external_stylesheet_states
+            .iter()
+            .map(|(node_index, state)| (*node_index, state.href.clone(), state.body.clone()))
+            .collect()
+    }
+
+    pub(crate) fn rebuild_external_stylesheet(&mut self) -> Result<(), NativeEngineError> {
+        let external_sources = self
+            .external_stylesheet_states
+            .values()
+            .filter_map(|state| state.body.clone())
+            .collect::<Vec<_>>();
+        let mut style_sources = self
+            .nodes
+            .iter()
+            .filter(|node| node.element_name() == Some("style") && node.inline_style_allowed())
+            .map(|node| {
+                let mut source = String::new();
+                self.collect_raw_text(node.id(), &mut source);
+                source
+            })
+            .collect::<Vec<_>>();
+        style_sources.extend(external_sources);
+        let mut diagnostics = NativeDiagnosticSink::default();
+        let stylesheet =
+            NativeStylesheet::from_sources_with_diagnostics(style_sources, &mut diagnostics)?;
+        let mut background_image_sources = stylesheet.background_image_sources().clone();
+        for node in &self.nodes {
+            if !node.inline_style_allowed() {
+                continue;
+            }
+            let Some(inline_style) = node.attribute("style") else {
+                continue;
+            };
+            collect_background_image_sources(inline_style, &mut background_image_sources);
+            super::css::collect_declaration_diagnostics(
+                inline_style,
+                NativeDiagnosticSource::InlineStyle {
+                    node_index: node.id().index(),
+                },
+                0,
+                &mut diagnostics,
+            );
+        }
+        let (diagnostics, diagnostics_truncated) = diagnostics.finish();
+        self.stylesheet = stylesheet;
+        self.background_image_sources = background_image_sources;
+        self.diagnostics = diagnostics;
+        self.diagnostics_truncated = diagnostics_truncated;
+        self.computed_styles = None;
+        Ok(())
     }
 
     pub(crate) fn external_stylesheet_links(
@@ -2326,6 +2400,7 @@ impl NativeDocument {
             max_dom_depth: limits.max_dom_depth,
             nodes,
             stylesheet: NativeStylesheet::default(),
+            external_stylesheet_states: BTreeMap::new(),
             computed_styles: Some(wire.computed_styles),
             diagnostics,
             diagnostics_truncated,
@@ -2405,6 +2480,7 @@ impl NativeDocument {
                 state: NativeElementState::default(),
             }],
             stylesheet: NativeStylesheet::default(),
+            external_stylesheet_states: BTreeMap::new(),
             computed_styles: None,
             diagnostics: Vec::new(),
             diagnostics_truncated: false,

@@ -6824,8 +6824,36 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-472.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-486.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-485.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-484.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-483.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-482.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-481.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-480.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-479.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-478.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-477.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-476.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-475.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-474.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-473.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-472.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-471.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-470.md` is the preceding completed browser
@@ -6866,11 +6894,11 @@ task;
 browser task;
 `docs/plan/tasks/native-engine-browser-452.md` is the preceding completed
 browser task;
-`docs/plan/tasks/native-engine-browser-451.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-451.md` is the preceding completed browser
 task;
-`docs/plan/tasks/native-engine-browser-450.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-450.md` is the preceding completed browser
 task;
-`docs/plan/tasks/native-engine-browser-449.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-449.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-448.md` is the preceding completed
 browser task;
@@ -7059,7 +7087,7 @@ task;
 `docs/plan/tasks/native-engine-198.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-197.md` is the preceding completed task;
 `docs/plan/tasks/native-engine-196.md` is the preceding completed task;
-The current browser-slice evidence chain starts at `native-engine-browser-467`.
+The current browser-slice evidence chain starts at `native-engine-browser-486`.
 Slices 440 through 356 are summarized in the current checkpoint paragraphs
 above; the historical continuation below begins with `native-engine-browser-355`,
 `native-engine-browser-354`,

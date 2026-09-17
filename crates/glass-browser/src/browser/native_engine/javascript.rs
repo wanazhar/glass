@@ -20160,7 +20160,7 @@ fn worker_bootstrap(
     this._responseXML = null;
     this._overrideMimeType = null;
     this._responseContentType = null;
-    this.withCredentials = false;
+    this._withCredentials = false;
     this.onreadystatechange = null;
     this.onprogress = null;
     this.onload = null;
@@ -20206,6 +20206,15 @@ fn worker_bootstrap(
       this._timeout = Math.trunc(numeric);
     }},
   }});
+  Object.defineProperty(WorkerXMLHttpRequestNative.prototype, "withCredentials", {{
+    configurable: true,
+    get() {{ return this._withCredentials; }},
+    set(value) {{
+      if ((this.readyState !== 0 && this.readyState !== 1) || this._sent)
+        throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest credentials cannot change after opening", "InvalidStateError");
+      this._withCredentials = Boolean(value);
+    }},
+  }});
   Object.defineProperty(WorkerXMLHttpRequestNative.prototype, "responseText", {{
     configurable: true,
     get() {{
@@ -20219,9 +20228,10 @@ fn worker_bootstrap(
     configurable: true,
     get() {{ return this._responseType; }},
     set(value) {{
+      const normalized = String(value).toLowerCase();
+      if (normalized === "document") return;
       if (this.readyState === 3 || this.readyState === 4)
         throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest responseType cannot change after loading", "InvalidStateError");
-      const normalized = String(value).toLowerCase();
       if (!["", "text", "json", "arraybuffer", "blob"].includes(normalized))
         throw new TypeError("native Worker XMLHttpRequest responseType is unsupported");
       this._responseType = normalized;
@@ -29265,7 +29275,7 @@ fn document_bootstrap(
     this._responseXML = null;
     this._responseType = "";
     this._overrideMimeType = null;
-    this.withCredentials = false;
+    this._withCredentials = false;
     for (const type of nativeXhrEventTypes) installEventHandlerProperty(this, type);
     this._method = "GET";
     this._url = "";
@@ -29299,10 +29309,21 @@ fn document_bootstrap(
   Object.defineProperty(XMLHttpRequestNative.prototype, "timeout", {{
     get() {{ return this._timeout; }},
     set(value) {{
+      if (!this._async)
+        throw new DOMExceptionNative("native synchronous XMLHttpRequest cannot use timeout", "InvalidAccessError");
       const numeric = Number(value);
       if (!Number.isFinite(numeric) || numeric < 0 || numeric > {max_native_xhr_timeout_ms})
         throw new RangeError("native XMLHttpRequest timeout is outside the bounded range");
       this._timeout = Math.trunc(numeric);
+    }},
+  }});
+  Object.defineProperty(XMLHttpRequestNative.prototype, "withCredentials", {{
+    configurable: true,
+    get() {{ return this._withCredentials; }},
+    set(value) {{
+      if ((this.readyState !== 0 && this.readyState !== 1) || this._sent)
+        throw new DOMExceptionNative("native XMLHttpRequest credentials cannot change after opening", "InvalidStateError");
+      this._withCredentials = Boolean(value);
     }},
   }});
   Object.defineProperty(XMLHttpRequestNative.prototype, "responseText", {{
@@ -29320,6 +29341,8 @@ fn document_bootstrap(
     set(value) {{
       if (this.readyState === 3 || this.readyState === 4)
         throw new DOMExceptionNative("native XMLHttpRequest responseType cannot change after loading", "InvalidStateError");
+      if (!this._async)
+        throw new DOMExceptionNative("native synchronous XMLHttpRequest cannot set responseType", "InvalidAccessError");
       const normalized = String(value).toLowerCase();
       if (!["", "text", "json", "arraybuffer", "blob", "document"].includes(normalized))
         throw new TypeError("native XMLHttpRequest responseType is unsupported");
@@ -29351,9 +29374,12 @@ fn document_bootstrap(
     if (!nativeRequestMethods.includes(normalizedMethod))
       throw new TypeError("native XMLHttpRequest method is unsupported");
     if (typeof url !== "string") throw new TypeError("native XMLHttpRequest URL must be text");
+    const nextAsync = async !== false;
+    if (!nextAsync && (this._timeout !== 0 || this._responseType !== ""))
+      throw new DOMExceptionNative("native synchronous XMLHttpRequest configuration is invalid", "InvalidAccessError");
     this._method = normalizedMethod;
     this._url = url;
-    this._async = async !== false;
+    this._async = nextAsync;
     this._headers = new HeadersNative();
     this._controller = null;
     this._aborted = false;

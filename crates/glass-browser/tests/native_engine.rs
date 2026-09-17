@@ -7271,6 +7271,31 @@ globalThis.pageHeaderPromise = new Promise(resolve => {
     Object.getPrototypeOf(XMLHttpRequestUpload.prototype) === EventTarget.prototype,
     xhr.upload.addEventListener === EventTarget.prototype.addEventListener,
   ];
+  const readOnly = (() => {
+    const probe = new XMLHttpRequest();
+    const upload = probe.upload;
+    const attempt = (name, value) => {
+      try { probe[name] = value; } catch (_) {}
+    };
+    attempt('readyState', 99);
+    attempt('status', 599);
+    attempt('statusText', 'changed');
+    attempt('responseURL', 'changed');
+    attempt('response', 'changed');
+    attempt('upload', null);
+    const descriptor = name => Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, name);
+    return [
+      probe.readyState === 0,
+      probe.status === 0,
+      probe.statusText === '',
+      probe.responseURL === '',
+      probe.response === '',
+      probe.upload === upload,
+      !Object.prototype.hasOwnProperty.call(probe, 'status'),
+      ['readyState', 'status', 'statusText', 'responseURL', 'response', 'upload']
+        .every(name => descriptor(name).set === undefined && descriptor(name).enumerable === false),
+    ];
+  })();
   const synthetic = new XMLHttpRequest();
   const dispatchEvents = [];
   synthetic.onload = () => dispatchEvents.push('handler');
@@ -7283,6 +7308,7 @@ globalThis.pageHeaderPromise = new Promise(resolve => {
       status: xhr.status,
       statusText: xhr.statusText,
       identity,
+      readOnly,
       dispatch: [dispatchResult, dispatchEvents],
       multi: xhr.getResponseHeader('X-Multi'),
       hidden: xhr.getResponseHeader('set-cookie'),
@@ -7317,6 +7343,31 @@ const identity = [
   Object.getPrototypeOf(XMLHttpRequestUpload.prototype) === EventTarget.prototype,
   xhr.upload.addEventListener === EventTarget.prototype.addEventListener,
 ];
+const readOnly = (() => {
+  const probe = new XMLHttpRequest();
+  const upload = probe.upload;
+  const attempt = (name, value) => {
+    try { probe[name] = value; } catch (_) {}
+  };
+  attempt('readyState', 99);
+  attempt('status', 599);
+  attempt('statusText', 'changed');
+  attempt('responseURL', 'changed');
+  attempt('response', 'changed');
+  attempt('upload', null);
+  const descriptor = name => Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, name);
+  return [
+    probe.readyState === 0,
+    probe.status === 0,
+    probe.statusText === '',
+    probe.responseURL === '',
+    probe.response === '',
+    probe.upload === upload,
+    !Object.prototype.hasOwnProperty.call(probe, 'status'),
+    ['readyState', 'status', 'statusText', 'responseURL', 'response', 'upload']
+      .every(name => descriptor(name).set === undefined && descriptor(name).enumerable === false),
+  ];
+})();
 const synthetic = new XMLHttpRequest();
 const dispatchEvents = [];
 synthetic.onload = () => dispatchEvents.push('handler');
@@ -7328,6 +7379,7 @@ xhr.onload = () => {
   postMessage({
     status: xhr.status,
     statusText: xhr.statusText,
+    readOnly,
     identity,
     dispatch: [dispatchResult, dispatchEvents],
     multi: xhr.getResponseHeader('x-multi'),
@@ -7377,6 +7429,7 @@ xhr.send();"#,
                 "status": 201,
                 "statusText": "Created",
                 "identity": [true, true, true, true, true, true, true, true],
+                "readOnly": [true, true, true, true, true, true, true, true],
                 "dispatch": [true, ["handler", "listener"]],
                 "multi": "first, second",
                 "hidden": null,
@@ -7388,6 +7441,7 @@ xhr.send();"#,
                 "status": 202,
                 "statusText": "Accepted",
                 "identity": [true, true, true, true, true, true, true, true],
+                "readOnly": [true, true, true, true, true, true, true, true],
                 "dispatch": [true, ["handler", "listener"]],
                 "multi": "worker, second",
                 "hidden": null,

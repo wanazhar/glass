@@ -19988,7 +19988,7 @@ fn worker_bootstrap(
         ? workerResponseBytes(response.__glassPayload)
         : [];
       workerXhrAppendResponseText(xhr, responseType, bytes, true);
-      xhr.readyState = 3;
+      xhr._readyState = 3;
       xhr._notifyReadyState();
       if (xhr._controller !== controller || xhr._aborted) return Promise.resolve(null);
       workerXhrResponseProgress(xhr, null, bytes.length);
@@ -20013,7 +20013,7 @@ fn worker_bootstrap(
           if (result.done) {{
             workerXhrAppendResponseText(xhr, responseType, [], true);
             if (bytes.length === 0) {{
-              xhr.readyState = 3;
+              xhr._readyState = 3;
               xhr._notifyReadyState();
               workerXhrResponseProgress(xhr, null, 0);
             }}
@@ -20026,7 +20026,7 @@ fn worker_bootstrap(
           if (chunk.length === 0) return readNext();
           bytes.push(...chunk);
           workerXhrAppendResponseText(xhr, responseType, chunk, false);
-          xhr.readyState = 3;
+          xhr._readyState = 3;
           xhr._notifyReadyState();
           if (xhr._controller !== controller || xhr._aborted) {{
             release();
@@ -20072,16 +20072,16 @@ fn worker_bootstrap(
     const fail = (error, eventType) => {{
       xhr._controller = null;
       xhr._responseReader = null;
-      xhr.status = 0;
-      xhr.statusText = "";
+      xhr._status = 0;
+      xhr._statusText = "";
       xhr._responseText = "";
       xhr._responseUtf8Pending = [];
-      xhr.responseURL = "";
-      xhr.response = "";
-      xhr.responseXML = null;
+      xhr._responseURL = "";
+      xhr._response = "";
+      xhr._responseXML = null;
       xhr._responseHeaders = new WorkerHeadersNative();
       xhr._sent = false;
-      xhr.readyState = 4;
+      xhr._readyState = 4;
       xhr._notifyReadyState();
       workerXhrFinishUpload(xhr, eventType);
       workerXhrDispatch(xhr, eventType, {{ error }});
@@ -20099,14 +20099,14 @@ fn worker_bootstrap(
       const contentType = payload.contentType === null || payload.contentType === undefined
         ? null
         : String(payload.contentType);
-      xhr.status = Number(payload.status) || 0;
-      xhr.statusText = payload.statusText === undefined ? String(xhr.status) : String(payload.statusText);
-      xhr.responseURL = payload.url === undefined ? "" : String(payload.url);
+      xhr._status = Number(payload.status) || 0;
+      xhr._statusText = payload.statusText === undefined ? String(xhr._status) : String(payload.statusText);
+      xhr._responseURL = payload.url === undefined ? "" : String(payload.url);
       xhr._responseHeaders = workerResponseHeaders(payload.headers, contentType);
       xhr._responseText = responseType === "" || responseType === "text"
         ? workerUtf8Text(bytes)
         : "";
-      xhr.response = responseType === "json"
+      xhr._response = responseType === "json"
         ? JSON.parse(workerUtf8Text(bytes))
         : responseType === "arraybuffer"
           ? new Uint8Array(bytes).buffer
@@ -20120,7 +20120,7 @@ fn worker_bootstrap(
     xhr._controller = null;
     xhr._responseReader = null;
     xhr._sent = false;
-    xhr.readyState = 4;
+    xhr._readyState = 4;
     xhr._notifyReadyState();
     workerXhrFinishUpload(xhr, "load");
     workerXhrDispatch(xhr, "load", {{}});
@@ -20132,15 +20132,15 @@ fn worker_bootstrap(
     if (!(this instanceof WorkerXMLHttpRequestNative))
       throw new TypeError("native Worker XMLHttpRequest requires new");
     WorkerEventTargetNative.call(this);
-    this.readyState = 0;
-    this.status = 0;
-    this.statusText = "";
+    this._readyState = 0;
+    this._status = 0;
+    this._statusText = "";
     this._responseText = "";
     this._responseUtf8Pending = [];
-    this.responseURL = "";
-    this.response = "";
+    this._responseURL = "";
+    this._response = "";
     this._responseType = "";
-    this.responseXML = null;
+    this._responseXML = null;
     this.withCredentials = false;
     this.onreadystatechange = null;
     this.onprogress = null;
@@ -20160,7 +20160,7 @@ fn worker_bootstrap(
     this._sent = false;
     this._token = 0;
     this._timeout = 0;
-    this.upload = new WorkerXMLHttpRequestUpload();
+    this._upload = new WorkerXMLHttpRequestUpload();
     this._uploadStarted = false;
     this._uploadFinished = false;
     this._uploadTotal = null;
@@ -20169,6 +20169,14 @@ fn worker_bootstrap(
   WorkerXMLHttpRequestNative.prototype._notifyReadyState = function() {{
     workerXhrDispatch(this, "readystatechange", {{}});
   }};
+  Object.defineProperties(WorkerXMLHttpRequestNative.prototype, {{
+    readyState: {{ configurable: true, get() {{ return this._readyState; }} }},
+    status: {{ configurable: true, get() {{ return this._status; }} }},
+    statusText: {{ configurable: true, get() {{ return this._statusText; }} }},
+    responseURL: {{ configurable: true, get() {{ return this._responseURL; }} }},
+    response: {{ configurable: true, get() {{ return this._response; }} }},
+    upload: {{ configurable: true, get() {{ return this._upload; }} }},
+  }});
   Object.defineProperty(WorkerXMLHttpRequestNative.prototype, "timeout", {{
     configurable: true,
     get() {{ return this._timeout; }},
@@ -20200,6 +20208,15 @@ fn worker_bootstrap(
       this._responseType = normalized;
     }},
   }});
+  Object.defineProperty(WorkerXMLHttpRequestNative.prototype, "responseXML", {{
+    configurable: true,
+    get() {{
+      const responseType = String(this.responseType || "").toLowerCase();
+      if (!['', 'document'].includes(responseType))
+        throw new WorkerDOMExceptionNative("native Worker XMLHttpRequest responseXML is unavailable for this response type", "InvalidStateError");
+      return this.readyState === 4 ? this._responseXML : null;
+    }},
+  }});
   WorkerXMLHttpRequestNative.prototype.open = function(method, url, async) {{
     const previousController = this._controller;
     const previousReader = this._responseReader;
@@ -20221,19 +20238,19 @@ fn worker_bootstrap(
     this._sent = false;
     this._controller = null;
     this._responseReader = null;
-    this.status = 0;
-    this.statusText = "";
+    this._status = 0;
+    this._statusText = "";
     this._responseText = "";
     this._responseUtf8Pending = [];
-    this.responseURL = "";
-    this.response = "";
-    this.responseXML = null;
+    this._responseURL = "";
+    this._response = "";
+    this._responseXML = null;
     this._token += 1;
     this._uploadStarted = false;
     this._uploadFinished = false;
     this._uploadTotal = null;
     this._uploadLoaded = 0;
-    this.readyState = 1;
+    this._readyState = 1;
     this._notifyReadyState();
   }};
   WorkerXMLHttpRequestNative.prototype.setRequestHeader = function(name, value) {{
@@ -20263,14 +20280,14 @@ fn worker_bootstrap(
     if (reader) {{ try {{ reader.cancel(); }} catch (_) {{}} }}
     if (!active) return;
     this._sent = false;
-    this.readyState = 0;
-    this.status = 0;
-    this.statusText = "";
+    this._readyState = 0;
+    this._status = 0;
+    this._statusText = "";
     this._responseText = "";
     this._responseUtf8Pending = [];
-    this.responseURL = "";
-    this.response = "";
-    this.responseXML = null;
+    this._responseURL = "";
+    this._response = "";
+    this._responseXML = null;
     this._responseHeaders = new WorkerHeadersNative();
     this._notifyReadyState();
     workerXhrFinishUpload(this, "abort");
@@ -20318,11 +20335,11 @@ fn worker_bootstrap(
       __glassTimeoutMs: this._timeout,
     }}).then(response => {{
       if (this._token !== token || this._aborted) return null;
-      this.status = response.status;
-      this.statusText = response.statusText;
-      this.responseURL = response.url;
+      this._status = response.status;
+      this._statusText = response.statusText;
+      this._responseURL = response.url;
       this._responseHeaders = response.headers;
-      this.readyState = 2;
+      this._readyState = 2;
       this._notifyReadyState();
       return workerXhrReadResponse(this, response, responseType, controller);
     }}).then(value => {{
@@ -20338,9 +20355,9 @@ fn worker_bootstrap(
             : workerUtf8Text(bytes);
       this._controller = null;
       this._responseText = typeof responseValue === "string" ? responseValue : this._responseText;
-      this.response = responseValue;
+      this._response = responseValue;
       this._sent = false;
-      this.readyState = 4;
+      this._readyState = 4;
       this._notifyReadyState();
       workerXhrFinishUpload(this, "load");
       workerXhrDispatch(this, "load", {{}});
@@ -20350,15 +20367,15 @@ fn worker_bootstrap(
       this._controller = null;
       this._responseReader = null;
       this._sent = false;
-      this.status = 0;
-      this.statusText = "";
+      this._status = 0;
+      this._statusText = "";
       this._responseText = "";
       this._responseUtf8Pending = [];
-      this.responseURL = "";
-      this.response = "";
-      this.responseXML = null;
+      this._responseURL = "";
+      this._response = "";
+      this._responseXML = null;
       this._responseHeaders = new WorkerHeadersNative();
-      this.readyState = 4;
+      this._readyState = 4;
       this._notifyReadyState();
       if (error && error.name === "TimeoutError") {{
         workerXhrFinishUpload(this, "timeout");
@@ -29031,7 +29048,7 @@ fn document_bootstrap(
         ? responseBodyBytes(response.__glassPayload)
         : [];
       nativeXhrAppendResponseText(xhr, responseType, bytes, true);
-      xhr.readyState = 3;
+      xhr._readyState = 3;
       xhr._notifyReadyState();
       if (xhr._controller !== controller || xhr._aborted) return Promise.resolve(null);
       nativeXhrResponseProgress(xhr, null, bytes.length);
@@ -29056,7 +29073,7 @@ fn document_bootstrap(
         if (result.done) {{
           nativeXhrAppendResponseText(xhr, responseType, [], true);
           if (bytes.length === 0) {{
-            xhr.readyState = 3;
+            xhr._readyState = 3;
             xhr._notifyReadyState();
             nativeXhrResponseProgress(xhr, null, 0);
           }}
@@ -29069,7 +29086,7 @@ fn document_bootstrap(
         if (chunk.length === 0) return readNext();
         bytes.push(...chunk);
         nativeXhrAppendResponseText(xhr, responseType, chunk, false);
-        xhr.readyState = 3;
+        xhr._readyState = 3;
         xhr._notifyReadyState();
         if (xhr._controller !== controller || xhr._aborted) {{
           release();
@@ -29116,16 +29133,16 @@ fn document_bootstrap(
       xhr._controller = null;
       xhr._responseReader = null;
       xhr._sent = false;
-      xhr.status = 0;
-      xhr.statusText = "";
+      xhr._status = 0;
+      xhr._statusText = "";
       xhr._responseText = "";
       xhr._responseUtf8Pending = [];
-      xhr.responseURL = "";
-      xhr.response = "";
+      xhr._responseURL = "";
+      xhr._response = "";
       xhr._responseXML = null;
       xhr._responseContentType = null;
       xhr._responseHeaders = responseHeaders([], null);
-      xhr.readyState = 4;
+      xhr._readyState = 4;
       xhr._notifyReadyState();
       nativeXhrFinishUpload(xhr, eventType);
       nativeXhrDispatch(xhr, eventType, {{ error }});
@@ -29143,9 +29160,9 @@ fn document_bootstrap(
       const contentType = payload.contentType === null || payload.contentType === undefined
         ? null
         : String(payload.contentType);
-      xhr.status = Number(payload.status) || 0;
-      xhr.statusText = payload.statusText === undefined ? String(xhr.status) : String(payload.statusText);
-      xhr.responseURL = payload.url === undefined ? "" : String(payload.url);
+      xhr._status = Number(payload.status) || 0;
+      xhr._statusText = payload.statusText === undefined ? String(xhr._status) : String(payload.statusText);
+      xhr._responseURL = payload.url === undefined ? "" : String(payload.url);
       xhr._responseContentType = contentType;
       xhr._responseHeaders = responseHeaders(payload.headers, contentType);
       const value = responseType === "json"
@@ -29169,17 +29186,17 @@ fn document_bootstrap(
           ? parseDocument(utf8TextFromBytes(bytes), xhr.responseURL, contentType)
           : null;
         xhr._responseText = "";
-        xhr.response = xhr._responseXML;
+        xhr._response = xhr._responseXML;
       }} else if (responseType === "" && xmlContent) {{
         xhr._responseXML = typeof globalThis.__glassParseXmlDocument === "function"
           ? globalThis.__glassParseXmlDocument(utf8TextFromBytes(bytes), xhr.responseURL, contentType)
           : null;
         xhr._responseText = utf8TextFromBytes(bytes);
-        xhr.response = value;
+        xhr._response = value;
       }} else {{
         xhr._responseXML = null;
         xhr._responseText = typeof value === "string" ? value : "";
-        xhr.response = value;
+        xhr._response = value;
       }}
     }} catch (error) {{
       fail(error, "error");
@@ -29188,7 +29205,7 @@ fn document_bootstrap(
     xhr._controller = null;
     xhr._responseReader = null;
     xhr._sent = false;
-    xhr.readyState = 4;
+    xhr._readyState = 4;
     xhr._notifyReadyState();
     nativeXhrFinishUpload(xhr, "load");
     nativeXhrDispatch(xhr, "load");
@@ -29196,12 +29213,12 @@ fn document_bootstrap(
   }};
   const XMLHttpRequestNative = function() {{
     EventTargetNative.call(this);
-    this.readyState = 0;
-    this.status = 0;
-    this.statusText = "";
+    this._readyState = 0;
+    this._status = 0;
+    this._statusText = "";
     this._responseText = "";
-    this.responseURL = "";
-    this.response = "";
+    this._responseURL = "";
+    this._response = "";
     this._responseXML = null;
     this._responseType = "";
     this.withCredentials = false;
@@ -29218,7 +29235,7 @@ fn document_bootstrap(
     this._aborted = false;
     this._sent = false;
     this._timeout = 0;
-    this.upload = new NativeXMLHttpRequestUpload();
+    this._upload = new NativeXMLHttpRequestUpload();
     this._uploadStarted = false;
     this._uploadFinished = false;
     this._uploadTotal = 0;
@@ -29227,6 +29244,14 @@ fn document_bootstrap(
   XMLHttpRequestNative.prototype._notifyReadyState = function() {{
     nativeXhrDispatch(this, "readystatechange");
   }};
+  Object.defineProperties(XMLHttpRequestNative.prototype, {{
+    readyState: {{ configurable: true, get() {{ return this._readyState; }} }},
+    status: {{ configurable: true, get() {{ return this._status; }} }},
+    statusText: {{ configurable: true, get() {{ return this._statusText; }} }},
+    responseURL: {{ configurable: true, get() {{ return this._responseURL; }} }},
+    response: {{ configurable: true, get() {{ return this._response; }} }},
+    upload: {{ configurable: true, get() {{ return this._upload; }} }},
+  }});
   Object.defineProperty(XMLHttpRequestNative.prototype, "timeout", {{
     get() {{ return this._timeout; }},
     set(value) {{
@@ -29284,12 +29309,12 @@ fn document_bootstrap(
     this._controller = null;
     this._aborted = false;
     this._sent = false;
-    this.status = 0;
-    this.statusText = "";
+    this._status = 0;
+    this._statusText = "";
     this._responseText = "";
     this._responseUtf8Pending = [];
-    this.responseURL = "";
-    this.response = "";
+    this._responseURL = "";
+    this._response = "";
     this._responseXML = null;
     this._responseContentType = null;
     this._responseHeaders = responseHeaders([], null);
@@ -29297,7 +29322,7 @@ fn document_bootstrap(
     this._uploadFinished = false;
     this._uploadTotal = 0;
     this._uploadLoaded = 0;
-    this.readyState = 1;
+    this._readyState = 1;
     this._notifyReadyState();
   }};
   XMLHttpRequestNative.prototype.setRequestHeader = function(name, value) {{
@@ -29316,13 +29341,13 @@ fn document_bootstrap(
     if (controller) controller.abort();
     if (reader) {{ try {{ reader.cancel(); }} catch (_) {{}} }}
     if (!active) return;
-    this.readyState = 0;
-    this.status = 0;
-    this.statusText = "";
+    this._readyState = 0;
+    this._status = 0;
+    this._statusText = "";
     this._responseText = "";
     this._responseUtf8Pending = [];
-    this.responseURL = "";
-    this.response = "";
+    this._responseURL = "";
+    this._response = "";
     this._responseXML = null;
     this._responseContentType = null;
     this._responseHeaders = responseHeaders([], null);
@@ -29383,12 +29408,12 @@ fn document_bootstrap(
     }});
     request.then(response => {{
       if (this._controller !== controller || this._aborted) return null;
-      this.status = response.status;
-      this.statusText = response.statusText;
-      this.responseURL = response.url;
+      this._status = response.status;
+      this._statusText = response.statusText;
+      this._responseURL = response.url;
       this._responseContentType = response.headers.get("content-type");
       this._responseHeaders = response.headers;
-      this.readyState = 2;
+      this._readyState = 2;
       this._notifyReadyState();
       return nativeXhrReadResponse(this, response, responseType, controller);
     }}).then(bytes => {{
@@ -29415,20 +29440,20 @@ fn document_bootstrap(
           ? parseDocument(utf8TextFromBytes(bytes), this.responseURL, this._responseContentType)
           : null;
         this._responseText = "";
-        this.response = this._responseXML;
+        this._response = this._responseXML;
       }} else if (responseType === "" && xmlContent) {{
         this._responseXML = typeof globalThis.__glassParseXmlDocument === "function"
           ? globalThis.__glassParseXmlDocument(utf8TextFromBytes(bytes), this.responseURL, this._responseContentType)
           : null;
         this._responseText = utf8TextFromBytes(bytes);
-        this.response = value;
+        this._response = value;
       }} else {{
         this._responseXML = null;
         this._responseText = typeof value === "string" ? value : "";
-        this.response = value;
+        this._response = value;
       }}
       this._sent = false;
-      this.readyState = 4;
+      this._readyState = 4;
       this._notifyReadyState();
       nativeXhrFinishUpload(this, "load");
       nativeXhrDispatch(this, "load");
@@ -29438,16 +29463,16 @@ fn document_bootstrap(
       this._controller = null;
       if (error && error.name === "TimeoutError") {{
       this._sent = false;
-      this.status = 0;
-      this.statusText = "";
+      this._status = 0;
+      this._statusText = "";
       this._responseText = "";
       this._responseUtf8Pending = [];
-      this.responseURL = "";
-        this.response = "";
+      this._responseURL = "";
+        this._response = "";
         this._responseXML = null;
         this._responseContentType = null;
         this._responseHeaders = responseHeaders([], null);
-        this.readyState = 4;
+        this._readyState = 4;
         this._notifyReadyState();
         nativeXhrFinishUpload(this, "timeout");
         nativeXhrDispatch(this, "timeout");
@@ -29455,7 +29480,7 @@ fn document_bootstrap(
         return;
       }}
       this._sent = false;
-      this.readyState = 4;
+      this._readyState = 4;
       this._notifyReadyState();
       nativeXhrFinishUpload(this, "error");
       nativeXhrDispatch(this, "error", {{ error }});

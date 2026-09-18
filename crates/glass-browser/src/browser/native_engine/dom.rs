@@ -6798,7 +6798,9 @@ impl NativeDocument {
                 style.direction(),
             )
         };
-        metrics.with_optical_sizing(style.font_optical_sizing())
+        metrics
+            .with_optical_sizing(style.font_optical_sizing())
+            .with_palette_index(0)
     }
 
     pub(crate) fn text_line_height_for_layout(&self, id: NativeNodeId) -> u32 {

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-536`, following
+expansion checkpoint is completed `native-engine-browser-537`, following
+completed `native-engine-browser-536`, following
 completed `native-engine-browser-535`, following
 completed `native-engine-browser-534`, following
 completed `native-engine-browser-533`, following
@@ -351,6 +352,15 @@ and variation-aware outline rasterization, while static faces and `none` retain
 their existing behavior. Custom axes, hinting, color tables, and complete
 FontFace/Web IDL parity remain issue #40 gates.
 
+Slice 537 removes the hard-coded palette-zero boundary from native COLR/CPAL
+painting. A bounded face-local `u16` palette index now travels with text
+metrics into the color-glyph rasterizer, which validates it against the
+font's admitted CPAL palette count before invoking `ttf-parser`. Invalid
+indices fail closed to the existing monochrome path without changing shaping,
+metrics, variation coordinates, or surface budgets. Palette zero remains the
+default until the CSS `font-palette` and `@font-palette-values` APIs are
+wired; those public palette surfaces remain issue #40 gates.
+
 Slice 536 removes the conformal-transform boundary for COLRv1 sweep
 gradients. Sweep centers and angle endpoints remain in gradient space while a
 bounded finite nonsingular `NativeGradientTransform` carries paint,
@@ -358,7 +368,7 @@ synthetic-stretch, and glyph-local pixel mappings. Raster samples inverse-map
 through the composed transform before evaluating the authored angle span, so
 skew, non-uniform scale, rotation, reflection, and translation preserve sweep
 semantics without approximation. Invalid transforms fail closed; SVG-in-font
-sources, palette selection, bitmap variation axes, hinting, font-display
+sources, public palette APIs, bitmap variation axes, hinting, font-display
 timing, and complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 535 removes the identity-transform-only clip-box boundary. Each
@@ -403,7 +413,7 @@ limits. Offsets and strike scaling are preserved; color pixels carry straight
 RGBA and embedded alpha through the existing glyph/compositor path, while
 grayscale images reuse text-paint coverage. Malformed, unsupported, oversized,
 or over-stretched bitmap data falls back to the existing outline paths.
-SVG-in-font sources, palette selection, bitmap variation axes, hinting,
+SVG-in-font sources, public palette APIs, bitmap variation axes, hinting,
 font-display timing, and complete FontFace/Web IDL parity remain issue #40
 gates.
 

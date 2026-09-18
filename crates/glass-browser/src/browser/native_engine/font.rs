@@ -1497,6 +1497,7 @@ pub(crate) struct NativeTextMetrics {
     feature_settings: NativeFontFeatureSettings,
     kerning: NativeFontKerning,
     optical_sizing: NativeFontOpticalSizing,
+    palette_index: u16,
     ascent: u32,
     line_height: u32,
     direction: DirectionValue,
@@ -1895,6 +1896,7 @@ impl NativeTextMetrics {
             feature_settings,
             kerning,
             optical_sizing: NativeFontOpticalSizing::Auto,
+            palette_index: 0,
             ascent: FALLBACK_LINE_HEIGHT.saturating_sub(5),
             line_height: FALLBACK_LINE_HEIGHT,
             direction,
@@ -2306,6 +2308,7 @@ impl NativeTextMetrics {
             feature_settings,
             kerning,
             optical_sizing: NativeFontOpticalSizing::Auto,
+            palette_index: 0,
             ascent,
             line_height,
             direction,
@@ -2314,6 +2317,11 @@ impl NativeTextMetrics {
 
     pub(crate) fn with_optical_sizing(mut self, optical_sizing: NativeFontOpticalSizing) -> Self {
         self.optical_sizing = optical_sizing;
+        self
+    }
+
+    pub(crate) fn with_palette_index(mut self, palette_index: u16) -> Self {
+        self.palette_index = palette_index;
         self
     }
 
@@ -2803,6 +2811,7 @@ impl NativeTextMetrics {
             glyph_id,
             self.font_size,
             variation_settings,
+            self.palette_index,
         ) {
             return Some(layers);
         }
@@ -3268,6 +3277,7 @@ fn rasterize_color_glyph(
     glyph_id: u16,
     font_size: u32,
     variation_settings: NativeFontVariationSettings,
+    palette_index: u16,
 ) -> Option<Vec<NativeRasterizedGlyph>> {
     let mut face = ttf_parser::Face::parse(font_data, 0).ok()?;
     for variation in variation_settings.values() {
@@ -3277,13 +3287,13 @@ fn rasterize_color_glyph(
         );
     }
     let glyph_id = ttf_parser::GlyphId(glyph_id);
-    if !face.is_color_glyph(glyph_id) {
+    if !face.is_color_glyph(glyph_id) || palette_index >= face.color_palettes()?.get() {
         return None;
     }
     let mut painter = NativeColorPainter::new(face.clone());
     face.paint_color_glyph(
         glyph_id,
-        0,
+        palette_index,
         ttf_parser::RgbaColor::new(0, 0, 0, u8::MAX),
         &mut painter,
     )?;
@@ -4671,6 +4681,7 @@ mod tests {
             glyph_id.0,
             32,
             NativeFontVariationSettings::default(),
+            0,
         )
         .expect("COLR glyph must rasterize");
         assert_eq!(layers.len(), 2);
@@ -4711,12 +4722,59 @@ mod tests {
                 glyph_id.0,
                 32,
                 NativeFontVariationSettings::default(),
+                0,
             )
             .expect("bounded COLRv1 gradient must rasterize");
             assert!(layers.iter().any(|layer| {
                 layer.gradient.is_some() && layer.coverage.iter().any(|coverage| *coverage > 0)
             }));
         }
+    }
+
+    #[test]
+    fn colr_v1_non_default_palette_changes_rasterized_layer_colors() {
+        let bytes = include_bytes!("../../../tests/fixtures/colr-1.ttf");
+        let face = ttf_parser::Face::parse(bytes, 0).expect("COLRv1 fixture must parse");
+        assert_eq!(face.color_palettes().map(|count| count.get()), Some(3));
+        let glyph_id = ttf_parser::GlyphId(86);
+        assert!(face.is_color_glyph(glyph_id));
+
+        let default_layers = rasterize_color_glyph(
+            bytes,
+            glyph_id.0,
+            32,
+            NativeFontVariationSettings::default(),
+            0,
+        )
+        .expect("default COLRv1 palette must rasterize");
+        let alternate_layers = rasterize_color_glyph(
+            bytes,
+            glyph_id.0,
+            32,
+            NativeFontVariationSettings::default(),
+            1,
+        )
+        .expect("alternate COLRv1 palette must rasterize");
+        assert_eq!(default_layers.len(), alternate_layers.len());
+        let default_colors = default_layers
+            .iter()
+            .map(|layer| layer.color)
+            .collect::<Vec<_>>();
+        let alternate_colors = alternate_layers
+            .iter()
+            .map(|layer| layer.color)
+            .collect::<Vec<_>>();
+        assert_ne!(default_colors, alternate_colors);
+        assert!(
+            rasterize_color_glyph(
+                bytes,
+                glyph_id.0,
+                32,
+                NativeFontVariationSettings::default(),
+                3,
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -5284,6 +5342,7 @@ mod tests {
                 glyph_id.0,
                 32,
                 NativeFontVariationSettings::default(),
+                0,
             )
             .is_none()
         );
@@ -5300,6 +5359,7 @@ mod tests {
             glyph_id.0,
             32,
             NativeFontVariationSettings::default(),
+            0,
         )
         .expect("bounded solid transform must rasterize");
         assert!(!layers.is_empty());
@@ -5321,6 +5381,7 @@ mod tests {
             glyph_id.0,
             32,
             NativeFontVariationSettings::default(),
+            0,
         )
         .expect("bounded solid composite must rasterize");
         assert_eq!(layers.len(), 2);

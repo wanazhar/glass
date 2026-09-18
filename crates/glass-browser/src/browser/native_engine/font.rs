@@ -1196,6 +1196,7 @@ impl NativeTextMetrics {
                 b"wght" => Some(match self.weight {
                     FontWeightValue::Normal => 400_000,
                     FontWeightValue::Bold => 700_000,
+                    FontWeightValue::Numeric(value) => i32::from(value).saturating_mul(1_000),
                 }),
                 b"wdth" => Some(i32::from(self.stretch).saturating_mul(100)),
                 _ => None,
@@ -2505,10 +2506,13 @@ fn face_score(
     style: FontStyleValue,
     stretch: u16,
 ) -> u16 {
-    let weight_score = u16::from(face.weight != weight);
+    let weight_score = face
+        .weight
+        .numeric()
+        .abs_diff(weight.numeric())
+        .saturating_mul(8);
     let style_score = u16::from(face.style != style);
     weight_score
-        .saturating_mul(4000)
         .saturating_add(style_score.saturating_mul(2000))
         .saturating_add(face.stretch.distance(stretch))
 }

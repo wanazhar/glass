@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-521`, following completed
 `native-engine-browser-520`, following completed
 `native-engine-browser-517`, following completed
 `native-engine-browser-516`, following completed
@@ -331,6 +332,17 @@ variation-aware outline rasterizer; descriptor and authored coordinates retain
 priority, and synthetic scaling remains for compatibility. Numeric weight
 ranges, optical sizing, custom axes, hinting, color tables, WOFF2, and complete
 FontFace/Web IDL parity remain issue #40 gates.
+
+The completed numeric font-weight follow-up is
+[`native-engine-browser-521`](tasks/native-engine-browser-521.md): CSS integer
+weights from 1 through 1000 now survive parsing, inheritance, cascade,
+`@font-face` and script-created `FontFace` descriptors, local-font selection,
+CSSOM, face scoring, and paint selection. Numeric requests feed an advertised
+variable `wght` axis, while `normal` and `bold` retain their canonical 400 and
+700 aliases and explicit variation coordinates retain priority. Relative
+`lighter`/`bolder`, descriptor ranges, optical sizing, custom axes, hinting,
+color tables, WOFF2, and complete FontFace/Web IDL parity remain issue #40
+gates.
 
 The completed variation-aware glyph-rasterization follow-up is
 [`native-engine-browser-519`](tasks/native-engine-browser-519.md): non-default

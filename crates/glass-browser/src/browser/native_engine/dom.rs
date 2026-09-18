@@ -4,8 +4,9 @@ use super::config::{
 use super::css::{
     NativeFontFaceRule, NativeStylesheet, NativeUnicodeRange, absolutize_stylesheet_urls,
     collect_background_image_sources, font_family_hash, format_font_face_unicode_ranges,
-    format_font_stretch_range, format_font_variation_settings, parse_font_face_unicode_range,
-    parse_font_stretch_range, parse_font_variation_settings,
+    format_font_stretch_range, format_font_variation_settings, format_font_weight,
+    parse_font_face_unicode_range, parse_font_stretch_range, parse_font_variation_settings,
+    parse_font_weight,
 };
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
@@ -1342,10 +1343,7 @@ impl NativeDocument {
             .iter()
             .map(|rule| NativeFontFaceScriptDescriptor {
                 family: rule.family.clone(),
-                weight: match rule.weight {
-                    FontWeightValue::Normal => "400".into(),
-                    FontWeightValue::Bold => "700".into(),
-                },
+                weight: format_font_weight(rule.weight),
                 style: match rule.style {
                     FontStyleValue::Normal => "normal".into(),
                     FontStyleValue::Italic => "italic".into(),
@@ -1445,16 +1443,12 @@ impl NativeDocument {
                 "must be a bounded non-empty name",
             ));
         }
-        let weight = match weight.trim().to_ascii_lowercase().as_str() {
-            "normal" | "400" => FontWeightValue::Normal,
-            "bold" | "700" => FontWeightValue::Bold,
-            _ => {
-                return Err(NativeEngineError::invalid(
-                    "native FontFace weight",
-                    "must be normal, 400, bold, or 700",
-                ));
-            }
-        };
+        let weight = parse_font_weight(weight).ok_or_else(|| {
+            NativeEngineError::invalid(
+                "native FontFace weight",
+                "must be normal, 1-1000, bold, or 700",
+            )
+        })?;
         let style = match style.trim().to_ascii_lowercase().as_str() {
             "normal" => FontStyleValue::Normal,
             "italic" => FontStyleValue::Italic,

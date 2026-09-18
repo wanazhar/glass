@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-527`, following completed
 `native-engine-browser-526`, following completed
 `native-engine-browser-525`, following completed
 `native-engine-browser-524`, following completed
@@ -335,6 +336,17 @@ element variation coordinates and `@font-face`/script-created `FontFace`
 descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none`
 retain their existing behavior. Custom axes, hinting, color tables, and
+complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 527 extends the bounded COLR/CPAL paint path with finite affine transform
+stacks and `SourceOver`/`DestinationOver` compositing for solid layers.
+Current-outline clips are depth-checked and balanced; clip boxes, gradients,
+other blend modes, malformed paint state, and non-finite transforms fail closed
+to the existing monochrome outline fallback. The 32-layer bound,
+supersampled coverage, shaping, spacing, hit testing, font-container
+normalization, and two-crate boundary remain unchanged. Gradient parity,
+clip-box masks, remaining blend modes, CBDT/CBLC and SVG-in-font sources,
+palette selection, color variation axes, hinting, font-display timing, and
 complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 526 adds bounded COLR/CPAL color-glyph paint. Solid palette layers from

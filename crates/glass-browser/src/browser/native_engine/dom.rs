@@ -33,12 +33,12 @@ use super::{
         FlexDirectionValue, FlexWrapValue, FontStyleValue, FontWeightValue, JustifyContentValue,
         NativeBorderRadius, NativeBorderStyleValue, NativeBoxSizing, NativeColor,
         NativeComputedStyle, NativeFontFamilyList, NativeFontFeatureSettings, NativeFontKerning,
-        NativeFontLanguageOverride, NativeFontVariantAlternates, NativeFontVariantCaps,
-        NativeFontVariantEastAsian, NativeFontVariantLigatures, NativeFontVariantNumeric,
-        NativeFontVariantPosition, NativeFontVariationSettings, NativeInheritedStyle,
-        NativeMarginValue, NativeOrderValue, NativePointerEventsValue, NativeTextDecorationSkipInk,
-        NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, OverflowValue,
-        TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
+        NativeFontLanguageOverride, NativeFontOpticalSizing, NativeFontVariantAlternates,
+        NativeFontVariantCaps, NativeFontVariantEastAsian, NativeFontVariantLigatures,
+        NativeFontVariantNumeric, NativeFontVariantPosition, NativeFontVariationSettings,
+        NativeInheritedStyle, NativeMarginValue, NativeOrderValue, NativePointerEventsValue,
+        NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
+        OverflowValue, TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
         TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
@@ -6562,6 +6562,7 @@ impl NativeDocument {
         let mut inherited_font_variant_numeric = NativeFontVariantNumeric::default();
         let mut inherited_font_feature_settings = NativeFontFeatureSettings::default();
         let mut inherited_font_kerning = NativeFontKerning::Auto;
+        let mut inherited_font_optical_sizing = NativeFontOpticalSizing::Auto;
         let mut inherited_font_weight = FontWeightValue::Normal;
         let mut inherited_font_style = FontStyleValue::Normal;
         let mut inherited_font_stretch = super::css::NativeFontStretchRange::default();
@@ -6635,6 +6636,7 @@ impl NativeDocument {
                     font_variant_numeric: inherited_font_variant_numeric,
                     font_feature_settings: inherited_font_feature_settings,
                     font_kerning: inherited_font_kerning,
+                    font_optical_sizing: inherited_font_optical_sizing,
                     font_weight: inherited_font_weight,
                     font_style: inherited_font_style,
                     font_stretch: inherited_font_stretch,
@@ -6709,6 +6711,7 @@ impl NativeDocument {
             inherited_font_variant_numeric = style.font_variant_numeric();
             inherited_font_feature_settings = style.font_feature_settings();
             inherited_font_kerning = style.font_kerning();
+            inherited_font_optical_sizing = style.font_optical_sizing();
             inherited_font_weight = style.font_weight();
             inherited_font_style = style.font_style();
             inherited_font_stretch = style.font_stretch();
@@ -6736,7 +6739,7 @@ impl NativeDocument {
 
     pub(crate) fn text_metrics_for_layout(&self, id: NativeNodeId) -> NativeTextMetrics {
         let style = self.computed_style_for_layout(id);
-        if style
+        let metrics = if style
             .font_family()
             .iter()
             .any(|family| !matches!(family, super::css::NativeFontFamilyValue::Fallback))
@@ -6776,7 +6779,8 @@ impl NativeDocument {
                 style.font_variation_settings(),
                 style.direction(),
             )
-        }
+        };
+        metrics.with_optical_sizing(style.font_optical_sizing())
     }
 
     pub(crate) fn text_line_height_for_layout(&self, id: NativeNodeId) -> u32 {

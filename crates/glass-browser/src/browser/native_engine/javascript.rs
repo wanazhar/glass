@@ -17840,6 +17840,37 @@ mod native_font_face_tests {
     }
 
     #[test]
+    fn computed_style_projects_font_optical_sizing() {
+        let runtime =
+            NativeJavaScriptRuntime::new_with_context_id("computed-font-optical-sizing-test")
+                .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            r#"<style>#parent { font-optical-sizing: auto; } #child { font-optical-sizing: none; } #reset { font-optical-sizing: initial; } #invalid { font-optical-sizing: auto none; }</style><div id='parent'><span id='child'>Child</span><span id='reset'>Reset</span><span id='invalid'>Invalid</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .expect("font-optical-sizing fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const parent = getComputedStyle(document.getElementById("parent"));
+                  const child = getComputedStyle(document.getElementById("child"));
+                  const reset = getComputedStyle(document.getElementById("reset"));
+                  const invalid = getComputedStyle(document.getElementById("invalid"));
+                  return [parent.fontOpticalSizing, child.getPropertyValue("font-optical-sizing"), reset.fontOpticalSizing, invalid.fontOpticalSizing];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("computed font-optical-sizing surface must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["auto", "none", "auto", "auto"])
+        );
+    }
+
+    #[test]
     fn computed_style_projects_font_variant_caps() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-caps-test")
             .expect("native JavaScript runtime must construct");
@@ -37666,7 +37697,7 @@ fn document_bootstrap(
     "border-left-color", "border-radius", "overflow", "overflow-x", "overflow-y", "white-space",
     "text-align", "text-align-last", "text-justify", "text-indent", "text-transform", "text-overflow",
     "text-decoration", "text-decoration-style", "text-decoration-thickness", "text-underline-offset",
-    "font-weight", "font-style", "font-stretch", "font-variant", "font-variant-ligatures", "font-variant-caps", "font-variant-position", "font-variant-alternates", "font-language-override", "font-variant-east-asian", "font-variant-numeric", "font-feature-settings", "font-variation-settings", "font-kerning", "line-height", "word-break", "word-spacing", "letter-spacing",
+    "font-weight", "font-style", "font-stretch", "font-variant", "font-variant-ligatures", "font-variant-caps", "font-variant-position", "font-variant-alternates", "font-language-override", "font-variant-east-asian", "font-variant-numeric", "font-feature-settings", "font-variation-settings", "font-kerning", "font-optical-sizing", "line-height", "word-break", "word-spacing", "letter-spacing",
     "vertical-align", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
     "justify-content", "align-items", "align-self", "align-content", "gap", "row-gap", "column-gap",
     "order", "grid-template-columns", "grid-template-rows"
@@ -37770,6 +37801,7 @@ fn document_bootstrap(
     if (name === "font-feature-settings") return computedStyleFeatureSettings(raw.font_feature_settings);
     if (name === "font-variation-settings") return computedStyleVariationSettings(raw.font_variation_settings);
     if (name === "font-kerning") return computedStyleEnumName(raw.font_kerning, "auto");
+    if (name === "font-optical-sizing") return computedStyleEnumName(raw.font_optical_sizing, "auto");
     if (name === "line-height") return computedStylePixels(raw.line_height, "normal");
     if (name === "word-spacing") return String(Number(raw.word_spacing) || 0) + "px";
     if (name === "letter-spacing") return String(Number(raw.letter_spacing) || 0) + "px";

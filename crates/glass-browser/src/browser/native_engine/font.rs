@@ -222,6 +222,7 @@ pub enum NativeGlyphGradient {
         center_y: f32,
         start_angle: f32,
         end_angle: f32,
+        transform: NativeGradientTransform,
         extend: NativeGradientExtend,
         stops: Arc<[NativeGradientStop]>,
     },
@@ -301,6 +302,7 @@ impl PartialEq for NativeGlyphGradient {
                     center_y: left_center_y,
                     start_angle: left_start,
                     end_angle: left_end,
+                    transform: left_transform,
                     extend: left_extend,
                     stops: left_stops,
                 },
@@ -309,6 +311,7 @@ impl PartialEq for NativeGlyphGradient {
                     center_y: right_center_y,
                     start_angle: right_start,
                     end_angle: right_end,
+                    transform: right_transform,
                     extend: right_extend,
                     stops: right_stops,
                 },
@@ -317,6 +320,7 @@ impl PartialEq for NativeGlyphGradient {
                     && left_center_y.to_bits() == right_center_y.to_bits()
                     && left_start.to_bits() == right_start.to_bits()
                     && left_end.to_bits() == right_end.to_bits()
+                    && left_transform == right_transform
                     && left_extend == right_extend
                     && left_stops.as_ref() == right_stops.as_ref()
             }
@@ -380,13 +384,15 @@ impl NativeGlyphGradient {
                 center_y,
                 start_angle,
                 end_angle,
+                transform,
                 extend,
                 stops,
             } => Self::Sweep {
-                center_x: scale_x(*center_x),
+                center_x: *center_x,
                 center_y: *center_y,
                 start_angle: *start_angle,
                 end_angle: *end_angle,
+                transform: transform.scale_x(scale),
                 extend: *extend,
                 stops: stops.clone(),
             },
@@ -522,10 +528,12 @@ impl NativeGlyphGradient {
                 center_y,
                 start_angle,
                 end_angle,
+                transform,
                 extend,
                 ..
             } => {
-                let angle = (y - center_y).atan2(x - center_x) / std::f32::consts::PI;
+                let (local_x, local_y) = transform.inverse_point(x, y)?;
+                let angle = (local_y - center_y).atan2(local_x - center_x) / std::f32::consts::PI;
                 let span = end_angle - start_angle;
                 if !span.is_finite() || span.abs() <= f32::EPSILON {
                     0.0
@@ -864,13 +872,15 @@ impl NativeColorPaint {
                 center_y,
                 start_angle,
                 end_angle,
+                transform,
                 extend,
                 stops,
             } => NativeGlyphGradient::Sweep {
-                center_x: map_x(*center_x),
-                center_y: map_y(*center_y),
+                center_x: *center_x,
+                center_y: *center_y,
                 start_angle: *start_angle,
                 end_angle: *end_angle,
+                transform: pixel_transform.compose(*transform),
                 extend: *extend,
                 stops: stops.clone(),
             },
@@ -1079,27 +1089,6 @@ impl<'a> NativeColorPainter<'a> {
             .then_some((transformed_x, transformed_y))
     }
 
-    fn conformal_scale(transform: ttf_parser::Transform) -> Option<(f32, bool)> {
-        let first_length = transform.a.mul_add(transform.a, transform.b * transform.b);
-        let second_length = transform.c.mul_add(transform.c, transform.d * transform.d);
-        let dot = transform.a.mul_add(transform.c, transform.b * transform.d);
-        let determinant = transform.a * transform.d - transform.b * transform.c;
-        let tolerance = first_length.max(second_length).max(1.0) * 0.0001;
-        if !first_length.is_finite()
-            || !second_length.is_finite()
-            || !dot.is_finite()
-            || !determinant.is_finite()
-            || first_length <= f32::EPSILON
-            || (first_length - second_length).abs() > tolerance
-            || dot.abs() > tolerance
-            || determinant.abs() <= f32::EPSILON
-        {
-            return None;
-        }
-        let scale = first_length.sqrt();
-        Self::finite_component(scale).then_some((scale, determinant >= 0.0))
-    }
-
     fn linear_gradient(
         &self,
         gradient: ttf_parser::colr::LinearGradient<'a>,
@@ -1188,27 +1177,16 @@ impl<'a> NativeColorPainter<'a> {
         {
             return None;
         }
-        let (_, preserves_orientation) = Self::conformal_scale(self.transform)?;
-        let (center_x, center_y) =
-            Self::transformed_point(self.transform, gradient.center_x, gradient.center_y)?;
-        let rotation = self.transform.b.atan2(self.transform.a) / std::f32::consts::PI;
-        let map_angle = |angle: f32| {
-            if preserves_orientation {
-                angle + rotation
-            } else {
-                rotation - angle
-            }
-        };
-        let start_angle = map_angle(gradient.start_angle);
-        let end_angle = map_angle(gradient.end_angle);
-        if !Self::finite_component(start_angle) || !Self::finite_component(end_angle) {
+        let transform = NativeGradientTransform::from_ttf(self.transform);
+        if !transform.is_invertible() {
             return None;
         }
         Some(NativeGlyphGradient::Sweep {
-            center_x,
-            center_y,
-            start_angle,
-            end_angle,
+            center_x: gradient.center_x,
+            center_y: gradient.center_y,
+            start_angle: gradient.start_angle,
+            end_angle: gradient.end_angle,
+            transform,
             extend: Self::native_extend(gradient.extend),
             stops: Self::native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
         })
@@ -4922,6 +4900,51 @@ mod tests {
     }
 
     #[test]
+    fn sweep_gradient_affine_transform_samples_gradient_space_angles() {
+        let stops: Arc<[NativeGradientStop]> = Arc::from([
+            NativeGradientStop {
+                offset: 0.0,
+                color: NativeColor::RED,
+            },
+            NativeGradientStop {
+                offset: 1.0,
+                color: NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: u8::MAX,
+                    alpha: u8::MAX,
+                },
+            },
+        ]);
+        let sweep = |transform| NativeGlyphGradient::Sweep {
+            center_x: 0.0,
+            center_y: 0.0,
+            start_angle: 0.0,
+            end_angle: 1.0,
+            transform,
+            extend: NativeGradientExtend::Pad,
+            stops: stops.clone(),
+        };
+        let base = sweep(NativeGradientTransform::identity()).color_at(1.0, 1.0);
+        assert!(base.is_some());
+        let transformed = sweep(NativeGradientTransform {
+            a: 2.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 0.0,
+            f: 0.0,
+        });
+        assert_eq!(transformed.color_at(2.0, 1.0), base);
+
+        let mapped = NativeColorPaint::Gradient(transformed).glyph_gradient(2.0, -3, 10);
+        assert_eq!(
+            mapped.and_then(|gradient| gradient.color_at(7.0, 8.0)),
+            base
+        );
+    }
+
+    #[test]
     fn radial_gradient_without_cone_intersection_is_transparent() {
         let stops: Arc<[NativeGradientStop]> = Arc::from([
             NativeGradientStop {
@@ -5012,21 +5035,21 @@ mod tests {
     }
 
     #[test]
-    fn colr_gradient_transform_geometry_allows_affine_radial_shapes() {
+    fn colr_gradient_transform_geometry_allows_affine_shapes() {
         let translated = ttf_parser::Transform::new_translate(12.0, -4.0);
         assert_eq!(
             NativeColorPainter::transformed_point(translated, 3.0, 5.0),
             Some((15.0, 1.0))
         );
-        let scaled = ttf_parser::Transform::new_scale(2.0, 2.0);
-        let (scale, preserves_orientation) =
-            NativeColorPainter::conformal_scale(scaled).expect("uniform scale is conformal");
-        assert!((scale - 2.0).abs() <= f32::EPSILON);
-        assert!(preserves_orientation);
-        let reflected = ttf_parser::Transform::new_scale(-2.0, 2.0);
-        let (_, preserves_orientation) = NativeColorPainter::conformal_scale(reflected)
-            .expect("uniform reflection is conformal");
-        assert!(!preserves_orientation);
+
+        let scaled = NativeGradientTransform::from_ttf(ttf_parser::Transform::new_scale(2.0, 2.0));
+        assert!(scaled.is_invertible());
+        assert!(scaled.inverse_point(4.0, 6.0).is_some());
+
+        let reflected =
+            NativeGradientTransform::from_ttf(ttf_parser::Transform::new_scale(-2.0, 2.0));
+        assert!(reflected.is_invertible());
+        assert!(reflected.inverse_point(-4.0, 6.0).is_some());
 
         let skew = NativeGradientTransform::from_ttf(ttf_parser::Transform::new_skew(0.125, 0.0));
         assert!(skew.is_invertible());
@@ -5034,10 +5057,6 @@ mod tests {
         assert!(
             !NativeGradientTransform::from_ttf(ttf_parser::Transform::new_scale(0.0, 1.0))
                 .is_invertible()
-        );
-        assert!(
-            NativeColorPainter::conformal_scale(ttf_parser::Transform::new_skew(0.125, 0.0))
-                .is_none()
         );
     }
 

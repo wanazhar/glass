@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-538`, following completed
 `native-engine-browser-537`, following completed
 `native-engine-browser-536`, following completed
 `native-engine-browser-535`, following completed
@@ -354,8 +355,15 @@ metrics into the color-glyph rasterizer, which validates it against the
 font's admitted CPAL palette count before invoking `ttf-parser`. Invalid
 indices fail closed to the existing monochrome path without changing shaping,
 metrics, variation coordinates, or surface budgets. Palette zero remains the
-default until the CSS `font-palette` and `@font-palette-values` APIs are
-wired; those public palette surfaces remain issue #40 gates.
+default boundary for CSS selection until slice 538's keyword path; custom
+`font-palette` names and `@font-palette-values` remain issue #40 gates.
+
+Slice 538 adds inherited CSS `font-palette: normal|light|dark` to native
+parsing, cascade, computed style, CSSOM, and text metrics. `normal` selects
+palette zero; `light` and `dark` select the first bounded CPAL palette
+advertising the corresponding background flag. Missing or malformed metadata
+fails closed to palette zero, while custom palette names and
+`@font-palette-values` remain open.
 
 Slice 536 removes the conformal-transform boundary for COLRv1 sweep
 gradients. Sweep centers and angle endpoints remain in gradient space while a
@@ -364,7 +372,7 @@ synthetic-stretch, and glyph-local pixel mappings. Raster samples inverse-map
 through the composed transform before evaluating the authored angle span, so
 skew, non-uniform scale, rotation, reflection, and translation preserve sweep
 semantics without approximating the transformed geometry. Invalid transforms
-fail closed; SVG-in-font sources, public palette APIs, bitmap variation axes,
+fail closed; SVG-in-font sources, custom palette APIs, bitmap variation axes,
 hinting, font-display timing, and complete FontFace/Web IDL parity remain
 issue #40 gates.
 

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-553`, following
+expansion checkpoint is completed `native-engine-browser-554`, following
+completed `native-engine-browser-553`, following
 completed `native-engine-browser-552`, following
 completed `native-engine-browser-551`, following
 completed `native-engine-browser-550`, following
@@ -429,6 +430,15 @@ values raise `SyntaxError`/`RangeError` before `load()`, and setter failures
 are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
+issue #40 gates.
+
+Slice 554 closes the native `FontFaceSet` event-handler properties
+`onloading`, `onloadingdone`, and `onloadingerror`. The properties are
+installed once on the persistent set, route through the existing listener
+owner, and replace or clear handlers without leaking prior callbacks. Generated
+loading events now cover both listener and handler registration paths.
+Font-display timing, installed-font discovery, variable-axis completeness,
+hinting, media output, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
 
 Slice 553 carries normalized CSS `font-display` through static stylesheet

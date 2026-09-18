@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-554`, following completed
 `native-engine-browser-553`, following completed
 `native-engine-browser-552`, following completed
 `native-engine-browser-551`, following completed
@@ -455,6 +456,16 @@ at construction/setter boundaries. Invalid or over-budget values fail
 transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
+gates.
+
+The completed FontFaceSet event-handler follow-up is
+[`native-engine-browser-554`](tasks/native-engine-browser-554.md):
+native `document.fonts` now exposes persistent `onloading`,
+`onloadingdone`, and `onloadingerror` properties backed by the existing
+EventTarget listener owner. Reassignment and null/non-callable clearing remove
+the previous handler, and repeated host bootstrap preserves the properties.
+Font-display timing, installed-font discovery, variable-axis completeness,
+hinting, media output, and complete FontFace/Web IDL parity remain issue #40
 gates.
 
 The completed CSS FontFace display-carry follow-up is

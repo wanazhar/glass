@@ -10334,6 +10334,11 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     ? globalThis.__glassFontFaceSet
     : new FontFaceSetNative();
   globalThis.__glassFontFaceSet = fontFaceSet;
+  for (const type of ["loading", "loadingdone", "loadingerror"]) {
+    const property = "on" + type;
+    if (!Object.prototype.hasOwnProperty.call(fontFaceSet, property))
+      installEventHandlerProperty(fontFaceSet, type);
+  }
   const nativeFontFaceRefresh = () => {
     const setState = nativeFontFaceSetState(fontFaceSet);
     const descriptors = (Array.isArray(host.font_faces) ? host.font_faces : []).slice(0, 256);
@@ -18500,12 +18505,19 @@ mod native_font_face_tests {
         runtime
             .evaluate(
                 r#"globalThis.__fontFaceEvents = [];
+                globalThis.__fontFaceHandlerEvents = [];
                 document.fonts.addEventListener("loading", event => {
                   __fontFaceEvents.push(["loading", event.fontfaces.length]);
                 });
                 document.fonts.addEventListener("loadingerror", event => {
                   __fontFaceEvents.push(["loadingerror", event.fontfaces.length]);
                 });
+                document.fonts.onloading = event => {
+                  __fontFaceHandlerEvents.push(["loading", event.fontfaces.length]);
+                };
+                document.fonts.onloadingerror = event => {
+                  __fontFaceHandlerEvents.push(["loadingerror", event.fontfaces.length]);
+                };
                 true"#,
                 &empty,
                 "about:blank",
@@ -18520,7 +18532,7 @@ mod native_font_face_tests {
         .expect("font-face fixture must parse");
         let evaluation = runtime
             .evaluate(
-                "[document.fonts.size, document.fonts.status, __fontFaceEvents, [...document.fonts][0].status, [...document.fonts][0].featureSettings, [...document.fonts][0].variationSettings, [...document.fonts][0].sizeAdjust, [...document.fonts][0].ascentOverride, [...document.fonts][0].descentOverride, [...document.fonts][0].lineGapOverride, [...document.fonts][0].display]",
+                "[document.fonts.size, document.fonts.status, __fontFaceEvents, __fontFaceHandlerEvents, [...document.fonts][0].status, [...document.fonts][0].featureSettings, [...document.fonts][0].variationSettings, [...document.fonts][0].sizeAdjust, [...document.fonts][0].ascentOverride, [...document.fonts][0].descentOverride, [...document.fonts][0].lineGapOverride, [...document.fonts][0].display]",
                 &styled,
                 "about:blank",
                 &NativeOrigin::Opaque,
@@ -18533,6 +18545,7 @@ mod native_font_face_tests {
                 1,
                 "loaded",
                 [["loading", 1], ["loadingerror", 1]],
+                [["loading", 1], ["loadingerror", 1]],
                 "error",
                 "\"liga\" 0, \"kern\" 1",
                 "\"wght\" 620",
@@ -18541,6 +18554,42 @@ mod native_font_face_tests {
                 "20%",
                 "normal",
                 "swap"
+            ])
+        );
+    }
+
+    #[test]
+    fn font_face_set_handler_properties_replace_and_remove() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-handler-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::empty();
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const events = [];
+                  const first = event => events.push(["first", event.type]);
+                  const second = event => events.push(["second", event.type]);
+                  document.fonts.onloading = first;
+                  document.fonts.dispatchEvent(new Event("loading"));
+                  document.fonts.onloading = second;
+                  document.fonts.dispatchEvent(new Event("loading"));
+                  const replaced = document.fonts.onloading === second;
+                  document.fonts.onloading = null;
+                  document.fonts.dispatchEvent(new Event("loading"));
+                  return [typeof document.fonts.onloading, replaced, events];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("FontFaceSet handler properties must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                "object",
+                true,
+                [["first", "loading"], ["second", "loading"]]
             ])
         );
     }

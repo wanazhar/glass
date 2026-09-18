@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-554`, following completed
 `native-engine-browser-553`, following completed
 `native-engine-browser-552`, following completed
 `native-engine-browser-551`, following completed
@@ -423,6 +424,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 554 adds the missing `FontFaceSet` event-handler IDL properties:
+`document.fonts.onloading`, `onloadingdone`, and `onloadingerror`. They reuse
+the existing bounded EventTarget listener owner, replace and clear handlers
+transactionally, receive the same generated loading events as listener
+registrations, and survive repeated host bootstrap. Font-display timing,
+installed-font discovery, variable-axis completeness, hinting, media output,
+and complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 553 carries normalized CSS `font-display` through static `FontFace`
 projection and identity/status matching, dynamic `FontFaceInstall` commands,

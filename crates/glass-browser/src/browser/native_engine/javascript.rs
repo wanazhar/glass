@@ -17909,6 +17909,36 @@ mod native_font_face_tests {
     }
 
     #[test]
+    fn computed_style_projects_font_palette() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-palette-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            r#"<style>#parent { font-palette: light; } #child { font-palette: dark; } #reset { font-palette: initial; } #invalid { font-palette: --custom; }</style><div id='parent'><span id='child'>Child</span><span id='reset'>Reset</span><span id='invalid'>Invalid</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .expect("font-palette fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const parent = getComputedStyle(document.getElementById("parent"));
+                  const child = getComputedStyle(document.getElementById("child"));
+                  const reset = getComputedStyle(document.getElementById("reset"));
+                  const invalid = getComputedStyle(document.getElementById("invalid"));
+                  return [parent.fontPalette, child.getPropertyValue("font-palette"), reset.fontPalette, invalid.fontPalette];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("computed font-palette surface must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["light", "dark", "normal", "light"])
+        );
+    }
+
+    #[test]
     fn computed_style_projects_font_variant_caps() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-caps-test")
             .expect("native JavaScript runtime must construct");
@@ -37741,6 +37771,7 @@ fn document_bootstrap(
     "text-align", "text-align-last", "text-justify", "text-indent", "text-transform", "text-overflow",
     "text-decoration", "text-decoration-style", "text-decoration-thickness", "text-underline-offset",
     "font-weight", "font-style", "font-stretch", "font-variant", "font-variant-ligatures", "font-variant-caps", "font-variant-position", "font-variant-alternates", "font-language-override", "font-variant-east-asian", "font-variant-numeric", "font-feature-settings", "font-variation-settings", "font-kerning", "font-optical-sizing", "line-height", "word-break", "word-spacing", "letter-spacing",
+    "font-palette",
     "vertical-align", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
     "justify-content", "align-items", "align-self", "align-content", "gap", "row-gap", "column-gap",
     "order", "grid-template-columns", "grid-template-rows"
@@ -37845,6 +37876,7 @@ fn document_bootstrap(
     if (name === "font-variation-settings") return computedStyleVariationSettings(raw.font_variation_settings);
     if (name === "font-kerning") return computedStyleEnumName(raw.font_kerning, "auto");
     if (name === "font-optical-sizing") return computedStyleEnumName(raw.font_optical_sizing, "auto");
+    if (name === "font-palette") return computedStyleEnumName(raw.font_palette, "normal");
     if (name === "line-height") return computedStylePixels(raw.line_height, "normal");
     if (name === "word-spacing") return String(Number(raw.word_spacing) || 0) + "px";
     if (name === "letter-spacing") return String(Number(raw.letter_spacing) || 0) + "px";

@@ -4,7 +4,7 @@ use super::css::NativeFontVariation;
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, NativeColor, NativeFontFaceRule,
     NativeFontFamilyList, NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning,
-    NativeFontLanguageOverride, NativeFontOpticalSizing, NativeFontStretchRange,
+    NativeFontLanguageOverride, NativeFontOpticalSizing, NativeFontPalette, NativeFontStretchRange,
     NativeFontVariantAlternates, NativeFontVariantCaps, NativeFontVariantEastAsian,
     NativeFontVariantEastAsianForm, NativeFontVariantEastAsianWidth, NativeFontVariantLigatures,
     NativeFontVariantNumeric, NativeFontVariantNumericFigure, NativeFontVariantNumericFraction,
@@ -1497,7 +1497,7 @@ pub(crate) struct NativeTextMetrics {
     feature_settings: NativeFontFeatureSettings,
     kerning: NativeFontKerning,
     optical_sizing: NativeFontOpticalSizing,
-    palette_index: u16,
+    palette: NativeFontPalette,
     ascent: u32,
     line_height: u32,
     direction: DirectionValue,
@@ -1896,7 +1896,7 @@ impl NativeTextMetrics {
             feature_settings,
             kerning,
             optical_sizing: NativeFontOpticalSizing::Auto,
-            palette_index: 0,
+            palette: NativeFontPalette::Normal,
             ascent: FALLBACK_LINE_HEIGHT.saturating_sub(5),
             line_height: FALLBACK_LINE_HEIGHT,
             direction,
@@ -2308,7 +2308,7 @@ impl NativeTextMetrics {
             feature_settings,
             kerning,
             optical_sizing: NativeFontOpticalSizing::Auto,
-            palette_index: 0,
+            palette: NativeFontPalette::Normal,
             ascent,
             line_height,
             direction,
@@ -2320,8 +2320,8 @@ impl NativeTextMetrics {
         self
     }
 
-    pub(crate) fn with_palette_index(mut self, palette_index: u16) -> Self {
-        self.palette_index = palette_index;
+    pub(crate) fn with_palette(mut self, palette: NativeFontPalette) -> Self {
+        self.palette = palette;
         self
     }
 
@@ -2806,12 +2806,13 @@ impl NativeTextMetrics {
         glyph_id: u16,
         variation_settings: NativeFontVariationSettings,
     ) -> Option<Vec<NativeRasterizedGlyph>> {
+        let palette_index = palette_index_for_face(face.font_data.as_ref(), self.palette);
         if let Some(layers) = rasterize_color_glyph(
             face.font_data.as_ref(),
             glyph_id,
             self.font_size,
             variation_settings,
-            self.palette_index,
+            palette_index,
         ) {
             return Some(layers);
         }
@@ -3270,6 +3271,63 @@ fn rasterize_variable_glyph(
     rasterized.composite = NativeGlyphComposite::SourceOver;
     rasterized.gradient = None;
     Some(rasterized)
+}
+
+const CPAL_USABLE_WITH_LIGHT_BACKGROUND: u32 = 0x0000_0001;
+const CPAL_USABLE_WITH_DARK_BACKGROUND: u32 = 0x0000_0002;
+
+fn read_be_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_be_bytes(
+        bytes
+            .get(offset..offset.saturating_add(2))?
+            .try_into()
+            .ok()?,
+    ))
+}
+
+fn read_be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(
+        bytes
+            .get(offset..offset.saturating_add(4))?
+            .try_into()
+            .ok()?,
+    ))
+}
+
+fn palette_index_for_face(font_data: &[u8], palette: NativeFontPalette) -> u16 {
+    let required_flags = match palette {
+        NativeFontPalette::Normal => return 0,
+        NativeFontPalette::Light => CPAL_USABLE_WITH_LIGHT_BACKGROUND,
+        NativeFontPalette::Dark => CPAL_USABLE_WITH_DARK_BACKGROUND,
+    };
+    let Ok(face) = ttf_parser::Face::parse(font_data, 0) else {
+        return 0;
+    };
+    let Some(palette_count) = face.color_palettes().map(|count| usize::from(count.get())) else {
+        return 0;
+    };
+    let Some(cpal) = face.raw_face().table(ttf_parser::Tag::from_bytes(b"CPAL")) else {
+        return 0;
+    };
+    if read_be_u16(cpal, 0).is_none_or(|version| version < 1) {
+        return 0;
+    }
+    let Some(palette_total) = read_be_u16(cpal, 4).map(usize::from) else {
+        return 0;
+    };
+    let indices_end = 12usize.saturating_add(palette_total.saturating_mul(2));
+    let Some(flags_offset) = read_be_u32(cpal, indices_end).map(|offset| offset as usize) else {
+        return 0;
+    };
+    for palette_index in 0..palette_count.min(palette_total) {
+        let Some(flags) = read_be_u32(cpal, flags_offset.saturating_add(palette_index * 4)) else {
+            break;
+        };
+        if flags & required_flags != 0 {
+            return u16::try_from(palette_index).unwrap_or(0);
+        }
+    }
+    0
 }
 
 fn rasterize_color_glyph(
@@ -4775,6 +4833,74 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn cpal_semantic_palette_keywords_select_advertised_palettes() {
+        let bytes = include_bytes!("../../../tests/fixtures/colr-1.ttf");
+        assert_eq!(palette_index_for_face(bytes, NativeFontPalette::Normal), 0);
+        assert_eq!(palette_index_for_face(bytes, NativeFontPalette::Light), 2);
+        assert_eq!(palette_index_for_face(bytes, NativeFontPalette::Dark), 1);
+        assert_eq!(
+            palette_index_for_face(b"not-a-font", NativeFontPalette::Dark),
+            0
+        );
+    }
+
+    #[test]
+    fn text_metrics_palette_keyword_changes_colr_raster_colors() {
+        let bytes = include_bytes!("../../../tests/fixtures/colr-1.ttf");
+        let face = ttf_parser::Face::parse(bytes, 0).expect("COLRv1 fixture must parse");
+        let glyph_id = ttf_parser::GlyphId(86);
+        let character = (0..=0x10ffff)
+            .filter_map(char::from_u32)
+            .find(|character| face.glyph_index(*character) == Some(glyph_id))
+            .expect("COLRv1 fixture must map glyph 86");
+        let resource = NativeFontFaceResource {
+            family: "Palette Fixture".into(),
+            family_key: font_family_hash("Palette Fixture"),
+            weight: NativeFontWeightRange::default(),
+            style: FontStyleValue::Normal,
+            stretch: NativeFontStretchRange::default(),
+            variation_settings: NativeFontVariationSettings::default(),
+            bytes: Arc::from(bytes.as_slice()),
+            unicode_ranges: Vec::new(),
+        };
+        let book = NativeFontBook::from_resources(&[resource]);
+        let families = NativeFontFamilyList::parse("Palette Fixture").unwrap();
+        let normal = NativeTextMetrics::for_style_with_book(
+            families,
+            32,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            DirectionValue::Ltr,
+            &book,
+        )
+        .with_palette(NativeFontPalette::Normal);
+        let light = NativeTextMetrics::for_style_with_book(
+            families,
+            32,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            DirectionValue::Ltr,
+            &book,
+        )
+        .with_palette(NativeFontPalette::Light);
+        let normal_colors = normal
+            .rasterize(&character.to_string(), 0, 0, 0)
+            .expect("normal palette must rasterize")
+            .glyphs
+            .into_iter()
+            .map(|glyph| glyph.color)
+            .collect::<Vec<_>>();
+        let light_colors = light
+            .rasterize(&character.to_string(), 0, 0, 0)
+            .expect("light palette must rasterize")
+            .glyphs
+            .into_iter()
+            .map(|glyph| glyph.color)
+            .collect::<Vec<_>>();
+        assert_ne!(normal_colors, light_colors);
     }
 
     #[test]

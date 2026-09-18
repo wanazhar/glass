@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-550`, following completed
 `native-engine-browser-549`, following completed
 `native-engine-browser-548`, following completed
 `native-engine-browser-547`, following completed
@@ -419,6 +420,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 550 carries the bounded CSS `@font-face` `font-feature-settings`
+descriptor through stylesheet parsing, native font-resource construction, and
+static `document.fonts` projection. Canonical feature entries are exposed as
+`FontFace.featureSettings`, included in static face identity/status matching,
+and applied as face-level shaping defaults beneath element-authored feature
+tags. Font-display timing, installed-font discovery, remaining CSS FontFace
+descriptors, and complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 549 applies normalized page-realm `FontFace.variant` descriptors to
 dynamic native faces. The install command carries the descriptor, the document

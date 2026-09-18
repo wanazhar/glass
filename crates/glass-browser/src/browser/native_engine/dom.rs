@@ -4,9 +4,10 @@ use super::config::{
 use super::css::{
     NativeFontFaceRule, NativeStylesheet, NativeUnicodeRange, absolutize_stylesheet_urls,
     collect_background_image_sources, font_family_hash, format_font_face_unicode_ranges,
-    format_font_stretch_range, format_font_variation_settings, format_font_weight_range,
-    parse_font_face_unicode_range, parse_font_face_variant, parse_font_feature_settings,
-    parse_font_stretch_range, parse_font_variation_settings, parse_font_weight_range,
+    format_font_feature_settings, format_font_stretch_range, format_font_variation_settings,
+    format_font_weight_range, parse_font_face_unicode_range, parse_font_face_variant,
+    parse_font_feature_settings, parse_font_stretch_range, parse_font_variation_settings,
+    parse_font_weight_range,
 };
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
@@ -245,6 +246,7 @@ pub(crate) struct NativeFontFaceScriptDescriptor {
     pub(crate) style: String,
     pub(crate) stretch: String,
     pub(crate) unicode_range: String,
+    pub(crate) feature_settings: String,
     pub(crate) variation_settings: String,
     pub(crate) display: String,
     pub(crate) status: String,
@@ -1356,6 +1358,7 @@ impl NativeDocument {
                 },
                 stretch: format_font_stretch_range(rule.stretch),
                 unicode_range: format_font_face_unicode_ranges(&rule.unicode_ranges),
+                feature_settings: format_font_feature_settings(rule.feature_settings),
                 variation_settings: format_font_variation_settings(rule.variation_settings),
                 display: rule.font_display.as_str().into(),
                 status: if self.font_resources.iter().any(|resource| {
@@ -1363,6 +1366,7 @@ impl NativeDocument {
                         && resource.weight == rule.weight
                         && resource.style == rule.style
                         && resource.variation_settings == rule.variation_settings
+                        && resource.feature_settings == rule.feature_settings
                 }) {
                     "loaded".into()
                 } else {

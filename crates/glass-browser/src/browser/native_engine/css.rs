@@ -1636,6 +1636,7 @@ pub(crate) struct NativeFontFaceRule {
     pub(crate) stretch: NativeFontStretchRange,
     pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
     pub(crate) variation_settings: NativeFontVariationSettings,
+    pub(crate) feature_settings: NativeFontFeatureSettings,
     pub(crate) font_display: NativeFontDisplay,
 }
 
@@ -7453,6 +7454,7 @@ fn parse_font_face_rule(
     let mut stretch = NativeFontStretchRange::default();
     let mut unicode_ranges = Vec::new();
     let mut variation_settings = NativeFontVariationSettings::default();
+    let mut feature_settings = NativeFontFeatureSettings::default();
     let mut font_display = NativeFontDisplay::default();
     for (declaration_offset, declaration) in split_css_declarations(source) {
         let offset = open.saturating_add(1).saturating_add(declaration_offset);
@@ -7544,6 +7546,15 @@ fn parse_font_face_rule(
                     "font-face-variation-settings",
                 ),
             },
+            "font-feature-settings" => match parse_font_feature_settings(value) {
+                Some(parsed) => feature_settings = parsed,
+                None => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-face-feature-settings",
+                ),
+            },
             "font-display" => match parse_font_display(value) {
                 Some(parsed) => font_display = parsed,
                 None => context.diagnostics.push(
@@ -7595,6 +7606,7 @@ fn parse_font_face_rule(
         stretch,
         unicode_ranges,
         variation_settings,
+        feature_settings,
         font_display,
     });
     Ok(())
@@ -13915,6 +13927,21 @@ fn parse_font_feature_entry(value: &str) -> Option<NativeFontFeature> {
         tag,
         value: feature_value,
     })
+}
+
+pub(crate) fn format_font_feature_settings(settings: NativeFontFeatureSettings) -> String {
+    if settings.values().is_empty() {
+        return "normal".into();
+    }
+    settings
+        .values()
+        .iter()
+        .map(|feature| {
+            let tag = std::str::from_utf8(&feature.tag).unwrap_or("    ");
+            format!("\"{tag}\" {}", feature.value)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn parse_font_feature_settings_declaration(
@@ -23982,6 +24009,7 @@ mod tests {
                 font-style: italic;
                 font-stretch: condensed;
                 font-variation-settings: "wght" 450.5, "wdth" -12.25, "wght" 700;
+                font-feature-settings: "liga" off, "kern" on;
                 font-display: SWAP;
             }
             #text { font-family: "Embedded Sans"; }"#
@@ -24009,6 +24037,10 @@ mod tests {
         assert_eq!(
             format_font_variation_settings(rule.variation_settings),
             r#""wght" 700, "wdth" -12.25"#
+        );
+        assert_eq!(
+            format_font_feature_settings(rule.feature_settings),
+            r#""liga" 0, "kern" 1"#
         );
         assert_eq!(stylesheet.rules.len(), 1);
     }

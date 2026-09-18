@@ -1628,6 +1628,13 @@ impl NativeFontDisplay {
 
 pub(crate) const DEFAULT_NATIVE_FONT_SIZE_ADJUST: u16 = 1000;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeFontMetricOverrides {
+    pub(crate) ascent: Option<u16>,
+    pub(crate) descent: Option<u16>,
+    pub(crate) line_gap: Option<u16>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeFontFaceRule {
     pub(crate) family: String,
@@ -1640,6 +1647,7 @@ pub(crate) struct NativeFontFaceRule {
     pub(crate) variation_settings: NativeFontVariationSettings,
     pub(crate) feature_settings: NativeFontFeatureSettings,
     pub(crate) size_adjust: u16,
+    pub(crate) metric_overrides: NativeFontMetricOverrides,
     pub(crate) font_display: NativeFontDisplay,
 }
 
@@ -7459,6 +7467,7 @@ fn parse_font_face_rule(
     let mut variation_settings = NativeFontVariationSettings::default();
     let mut feature_settings = NativeFontFeatureSettings::default();
     let mut size_adjust = DEFAULT_NATIVE_FONT_SIZE_ADJUST;
+    let mut metric_overrides = NativeFontMetricOverrides::default();
     let mut font_display = NativeFontDisplay::default();
     for (declaration_offset, declaration) in split_css_declarations(source) {
         let offset = open.saturating_add(1).saturating_add(declaration_offset);
@@ -7568,6 +7577,33 @@ fn parse_font_face_rule(
                     "font-face-size-adjust",
                 ),
             },
+            "ascent-override" => match parse_font_metric_override(value) {
+                Some(parsed) => metric_overrides.ascent = parsed,
+                None => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-face-ascent-override",
+                ),
+            },
+            "descent-override" => match parse_font_metric_override(value) {
+                Some(parsed) => metric_overrides.descent = parsed,
+                None => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-face-descent-override",
+                ),
+            },
+            "line-gap-override" => match parse_font_metric_override(value) {
+                Some(parsed) => metric_overrides.line_gap = parsed,
+                None => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-face-line-gap-override",
+                ),
+            },
             "font-display" => match parse_font_display(value) {
                 Some(parsed) => font_display = parsed,
                 None => context.diagnostics.push(
@@ -7621,6 +7657,7 @@ fn parse_font_face_rule(
         variation_settings,
         feature_settings,
         size_adjust,
+        metric_overrides,
         font_display,
     });
     Ok(())
@@ -12871,6 +12908,22 @@ pub(crate) fn format_font_size_adjust(value: u16) -> String {
     } else {
         format!("{}.{}%", value / 10, value % 10)
     }
+}
+
+pub(crate) fn parse_font_metric_override(value: &str) -> Option<Option<u16>> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("normal") {
+        return Some(None);
+    }
+    let percentage = value.strip_suffix('%')?;
+    let milli_percentage = parse_decimal_milli(percentage)?;
+    let scaled = milli_percentage.saturating_add(50) / 100;
+    let scaled = u16::try_from(scaled).ok()?;
+    (scaled <= 10_000).then_some(Some(scaled))
+}
+
+pub(crate) fn format_font_metric_override(value: Option<u16>) -> String {
+    value.map_or_else(|| "normal".into(), format_font_size_adjust)
 }
 
 fn parse_font_stretch_token(value: &str) -> Option<u16> {
@@ -24040,6 +24093,9 @@ mod tests {
                 font-variation-settings: "wght" 450.5, "wdth" -12.25, "wght" 700;
                 font-feature-settings: "liga" off, "kern" on;
                 size-adjust: 62.5%;
+                ascent-override: 80%;
+                descent-override: 20%;
+                line-gap-override: normal;
                 font-display: SWAP;
             }
             #text { font-family: "Embedded Sans"; }"#
@@ -24064,6 +24120,14 @@ mod tests {
         assert_eq!(rule.style, FontStyleValue::Italic);
         assert_eq!(rule.stretch, NativeFontStretchRange { min: 750, max: 750 });
         assert_eq!(rule.size_adjust, 625);
+        assert_eq!(
+            rule.metric_overrides,
+            NativeFontMetricOverrides {
+                ascent: Some(800),
+                descent: Some(200),
+                line_gap: None,
+            }
+        );
         assert_eq!(rule.font_display, NativeFontDisplay::Swap);
         assert_eq!(
             format_font_variation_settings(rule.variation_settings),
@@ -24088,6 +24152,20 @@ mod tests {
         assert_eq!(parse_font_size_adjust("62.5555%"), None);
         assert_eq!(format_font_size_adjust(250), "25%");
         assert_eq!(format_font_size_adjust(4000), "400%");
+    }
+
+    #[test]
+    fn font_metric_override_parser_accepts_normal_and_bounded_percentages() {
+        assert_eq!(parse_font_metric_override("normal"), Some(None));
+        assert_eq!(parse_font_metric_override("0%"), Some(Some(0)));
+        assert_eq!(parse_font_metric_override("62.5%"), Some(Some(625)));
+        assert_eq!(parse_font_metric_override("1000%"), Some(Some(10_000)));
+        assert_eq!(parse_font_metric_override("1000.1%"), None);
+        assert_eq!(parse_font_metric_override("62.5"), None);
+        assert_eq!(parse_font_metric_override("62.5555%"), None);
+        assert_eq!(format_font_metric_override(None), "normal");
+        assert_eq!(format_font_metric_override(Some(625)), "62.5%");
+        assert_eq!(format_font_metric_override(Some(10_000)), "1000%");
     }
 
     #[test]

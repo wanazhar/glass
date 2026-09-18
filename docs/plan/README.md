@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-552`, following completed
 `native-engine-browser-551`, following completed
 `native-engine-browser-550`, following completed
 `native-engine-browser-549`, following completed
@@ -454,6 +455,17 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed CSS FontFace metric-override follow-up is
+[`native-engine-browser-552`](tasks/native-engine-browser-552.md):
+`ascent-override`, `descent-override`, and `line-gap-override` now accept
+bounded `normal` or 0% through 1000% values in static `@font-face` rules and
+dynamic page-realm `FontFace` descriptors. The normalized tenth-percent
+values survive native resource/content-process wire construction, static
+identity/status projection, and selected-face line metrics after `size-adjust`.
+Invalid values fail closed before resource mutation. Font-display timing,
+installed-font discovery, variable-axis completeness, hinting, media output,
+and complete FontFace/Web IDL parity remain issue #40 gates.
 
 The completed CSS FontFace `size-adjust` follow-up is
 [`native-engine-browser-551`](tasks/native-engine-browser-551.md): bounded

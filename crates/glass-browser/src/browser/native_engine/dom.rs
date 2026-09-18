@@ -2,13 +2,14 @@ use super::config::{
     NativeEngineLimits, validate_url_text, validate_window_name, without_fragment,
 };
 use super::css::{
-    DEFAULT_NATIVE_FONT_SIZE_ADJUST, NativeFontFaceRule, NativeStylesheet, NativeUnicodeRange,
-    absolutize_stylesheet_urls, collect_background_image_sources, font_family_hash,
-    format_font_face_unicode_ranges, format_font_feature_settings, format_font_size_adjust,
+    DEFAULT_NATIVE_FONT_SIZE_ADJUST, NativeFontFaceRule, NativeFontMetricOverrides,
+    NativeStylesheet, NativeUnicodeRange, absolutize_stylesheet_urls,
+    collect_background_image_sources, font_family_hash, format_font_face_unicode_ranges,
+    format_font_feature_settings, format_font_metric_override, format_font_size_adjust,
     format_font_stretch_range, format_font_variation_settings, format_font_weight_range,
     parse_font_face_unicode_range, parse_font_face_variant, parse_font_feature_settings,
-    parse_font_size_adjust, parse_font_stretch_range, parse_font_variation_settings,
-    parse_font_weight_range,
+    parse_font_metric_override, parse_font_size_adjust, parse_font_stretch_range,
+    parse_font_variation_settings, parse_font_weight_range,
 };
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
@@ -238,6 +239,8 @@ pub(crate) struct NativeFontFaceResourceWire {
     pub(crate) feature_settings: NativeFontFeatureSettings,
     #[serde(default = "default_native_font_size_adjust")]
     pub(crate) size_adjust: u16,
+    #[serde(default)]
+    pub(crate) metric_overrides: NativeFontMetricOverrides,
     pub(crate) data_base64: String,
 }
 
@@ -256,6 +259,9 @@ pub(crate) struct NativeFontFaceScriptDescriptor {
     pub(crate) feature_settings: String,
     pub(crate) variation_settings: String,
     pub(crate) size_adjust: String,
+    pub(crate) ascent_override: String,
+    pub(crate) descent_override: String,
+    pub(crate) line_gap_override: String,
     pub(crate) display: String,
     pub(crate) status: String,
 }
@@ -1369,6 +1375,9 @@ impl NativeDocument {
                 feature_settings: format_font_feature_settings(rule.feature_settings),
                 variation_settings: format_font_variation_settings(rule.variation_settings),
                 size_adjust: format_font_size_adjust(rule.size_adjust),
+                ascent_override: format_font_metric_override(rule.metric_overrides.ascent),
+                descent_override: format_font_metric_override(rule.metric_overrides.descent),
+                line_gap_override: format_font_metric_override(rule.metric_overrides.line_gap),
                 display: rule.font_display.as_str().into(),
                 status: if self.font_resources.iter().any(|resource| {
                     resource.family_key == rule.family_key
@@ -1377,6 +1386,7 @@ impl NativeDocument {
                         && resource.variation_settings == rule.variation_settings
                         && resource.feature_settings == rule.feature_settings
                         && resource.size_adjust == rule.size_adjust
+                        && resource.metric_overrides == rule.metric_overrides
                 }) {
                     "loaded".into()
                 } else {
@@ -1454,6 +1464,9 @@ impl NativeDocument {
         variant: &str,
         feature_settings: &str,
         size_adjust: &str,
+        ascent_override: &str,
+        descent_override: &str,
+        line_gap_override: &str,
         variation_settings: &str,
         body_base64: &str,
     ) -> Result<(), NativeEngineError> {
@@ -1550,6 +1563,23 @@ impl NativeDocument {
                 )
             })?
         };
+        let parse_metric_override = |value: &str, field: &str| {
+            if value.trim().is_empty() {
+                Ok(None)
+            } else {
+                parse_font_metric_override(value).ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        field,
+                        "must be normal or a bounded CSS percentage from 0% through 1000%",
+                    )
+                })
+            }
+        };
+        let metric_overrides = NativeFontMetricOverrides {
+            ascent: parse_metric_override(ascent_override, "native FontFace ascentOverride")?,
+            descent: parse_metric_override(descent_override, "native FontFace descentOverride")?,
+            line_gap: parse_metric_override(line_gap_override, "native FontFace lineGapOverride")?,
+        };
         let max_encoded_bytes = (MAX_NATIVE_FONT_BYTES.saturating_add(2) / 3).saturating_mul(4);
         if body_base64.len() > max_encoded_bytes {
             return Err(NativeEngineError::limit(
@@ -1583,6 +1613,7 @@ impl NativeDocument {
             style,
             stretch,
             size_adjust,
+            metric_overrides,
             bytes: Arc::from(bytes),
             unicode_ranges,
             variation_settings,
@@ -1608,6 +1639,9 @@ impl NativeDocument {
                 variant,
                 feature_settings,
                 size_adjust,
+                ascent_override,
+                descent_override,
+                line_gap_override,
                 variation_settings,
                 body_base64,
             } = command
@@ -1624,6 +1658,9 @@ impl NativeDocument {
                 variant,
                 feature_settings,
                 size_adjust,
+                ascent_override,
+                descent_override,
+                line_gap_override,
                 variation_settings,
                 body_base64,
             )?;
@@ -2451,6 +2488,7 @@ impl NativeDocument {
                 variation_settings: resource.variation_settings,
                 feature_settings: resource.feature_settings,
                 size_adjust: resource.size_adjust,
+                metric_overrides: resource.metric_overrides,
                 data_base64: base64::engine::general_purpose::STANDARD
                     .encode(resource.bytes.as_ref()),
             })
@@ -2547,6 +2585,18 @@ impl NativeDocument {
                     .any(|range| range.start > range.end || range.end > 0x10_FFFF)
                 || !resource.variation_settings.is_valid()
                 || !resource.feature_settings.is_valid()
+                || resource
+                    .metric_overrides
+                    .ascent
+                    .is_some_and(|value| value > 10_000)
+                || resource
+                    .metric_overrides
+                    .descent
+                    .is_some_and(|value| value > 10_000)
+                || resource
+                    .metric_overrides
+                    .line_gap
+                    .is_some_and(|value| value > 10_000)
                 || resource.data_base64.len() > max_encoded_font_bytes
             {
                 return Err(NativeEngineError::Parse {
@@ -2582,6 +2632,7 @@ impl NativeDocument {
                 style: resource.style,
                 stretch: resource.stretch,
                 size_adjust: resource.size_adjust,
+                metric_overrides: resource.metric_overrides,
                 unicode_ranges: resource.unicode_ranges,
                 variation_settings: resource.variation_settings,
                 feature_settings: resource.feature_settings,
@@ -4916,6 +4967,9 @@ impl NativeDocument {
                     variant,
                     feature_settings,
                     size_adjust,
+                    ascent_override,
+                    descent_override,
+                    line_gap_override,
                     variation_settings,
                     body_base64,
                 } => {
@@ -4929,6 +4983,9 @@ impl NativeDocument {
                         variant,
                         feature_settings,
                         size_adjust,
+                        ascent_override,
+                        descent_override,
+                        line_gap_override,
                         variation_settings,
                         body_base64,
                     )?;
@@ -10088,6 +10145,11 @@ mod tests {
                 variation_settings,
                 feature_settings,
                 size_adjust: 625,
+                metric_overrides: NativeFontMetricOverrides {
+                    ascent: Some(800),
+                    descent: Some(200),
+                    line_gap: None,
+                },
                 bytes: Arc::from(vec![0_u8, 1, 2, 3]),
                 unicode_ranges: Vec::new(),
             }])
@@ -10111,6 +10173,14 @@ mod tests {
         );
         assert_eq!(wire.font_resources[0].feature_settings, feature_settings);
         assert_eq!(wire.font_resources[0].size_adjust, 625);
+        assert_eq!(
+            wire.font_resources[0].metric_overrides,
+            NativeFontMetricOverrides {
+                ascent: Some(800),
+                descent: Some(200),
+                line_gap: None,
+            }
+        );
         let restored =
             NativeDocument::from_content_wire(wire.clone(), &limits, document.generation())
                 .unwrap();
@@ -10126,6 +10196,14 @@ mod tests {
             feature_settings
         );
         assert_eq!(restored.font_resources[0].size_adjust, 625);
+        assert_eq!(
+            restored.font_resources[0].metric_overrides,
+            NativeFontMetricOverrides {
+                ascent: Some(800),
+                descent: Some(200),
+                line_gap: None,
+            }
+        );
 
         let mut legacy_font_json =
             serde_json::to_value(&wire.font_resources[0]).expect("font wire serializes");
@@ -10137,6 +10215,10 @@ mod tests {
             .as_object_mut()
             .expect("font wire object")
             .remove("size_adjust");
+        legacy_font_json
+            .as_object_mut()
+            .expect("font wire object")
+            .remove("metric_overrides");
         let legacy_font: NativeFontFaceResourceWire =
             serde_json::from_value(legacy_font_json).expect("legacy font wire decodes");
         assert_eq!(
@@ -10146,6 +10228,10 @@ mod tests {
         assert_eq!(
             legacy_font.size_adjust,
             super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST
+        );
+        assert_eq!(
+            legacy_font.metric_overrides,
+            NativeFontMetricOverrides::default()
         );
         let mut legacy_wire = wire;
         legacy_wire.font_resources[0].weight_range = None;
@@ -10174,6 +10260,9 @@ mod tests {
                 variation_settings: "normal".into(),
                 feature_settings: "normal".into(),
                 size_adjust: "100%".into(),
+                ascent_override: "normal".into(),
+                descent_override: "normal".into(),
+                line_gap_override: "normal".into(),
                 body_base64: "AA==".into(),
             }])
             .expect_err("malformed script unicodeRange must be rejected");
@@ -10201,6 +10290,9 @@ mod tests {
                 variation_settings: "normal".into(),
                 feature_settings: "normal".into(),
                 size_adjust: "100%".into(),
+                ascent_override: "normal".into(),
+                descent_override: "normal".into(),
+                line_gap_override: "normal".into(),
                 body_base64: "AA==".into(),
             }])
             .expect_err("malformed script stretch must be rejected");
@@ -10228,6 +10320,9 @@ mod tests {
                 variation_settings: "normal".into(),
                 feature_settings: "normal".into(),
                 size_adjust: "24.9%".into(),
+                ascent_override: "normal".into(),
+                descent_override: "normal".into(),
+                line_gap_override: "normal".into(),
                 body_base64: "AA==".into(),
             }])
             .expect_err("malformed script sizeAdjust must be rejected");
@@ -10236,6 +10331,36 @@ mod tests {
             error,
             NativeEngineError::InvalidConfiguration { field, .. }
                 if field == "native FontFace sizeAdjust"
+        ));
+        assert!(document.font_resources.is_empty());
+    }
+
+    #[test]
+    fn script_font_face_install_rejects_malformed_metric_override() {
+        let mut document = NativeDocument::empty();
+        let error = document
+            .apply_script_font_face_installs(&[NativeScriptCommand::FontFaceInstall {
+                request_id: 1,
+                family: "Rejected Metric Override".into(),
+                weight: "normal".into(),
+                style: "normal".into(),
+                stretch: "normal".into(),
+                unicode_range: String::new(),
+                variant: "normal".into(),
+                variation_settings: "normal".into(),
+                feature_settings: "normal".into(),
+                size_adjust: "100%".into(),
+                ascent_override: "1000.1%".into(),
+                descent_override: "normal".into(),
+                line_gap_override: "normal".into(),
+                body_base64: "AA==".into(),
+            }])
+            .expect_err("malformed script metric override must be rejected");
+
+        assert!(matches!(
+            error,
+            NativeEngineError::InvalidConfiguration { field, .. }
+                if field == "native FontFace ascentOverride"
         ));
         assert!(document.font_resources.is_empty());
     }
@@ -10255,6 +10380,9 @@ mod tests {
                 variation_settings: r#""wght" 700 escape"#.into(),
                 feature_settings: "normal".into(),
                 size_adjust: "100%".into(),
+                ascent_override: "normal".into(),
+                descent_override: "normal".into(),
+                line_gap_override: "normal".into(),
                 body_base64: "AA==".into(),
             }])
             .expect_err("malformed script variationSettings must be rejected");
@@ -10280,6 +10408,9 @@ mod tests {
                 variant: "normal".into(),
                 feature_settings: r#""liga" 65536"#.into(),
                 size_adjust: "100%".into(),
+                ascent_override: "normal".into(),
+                descent_override: "normal".into(),
+                line_gap_override: "normal".into(),
                 variation_settings: "normal".into(),
                 body_base64: "AA==".into(),
             }])
@@ -10306,6 +10437,9 @@ mod tests {
                 variant: "small-caps all-small-caps".into(),
                 feature_settings: "normal".into(),
                 size_adjust: "100%".into(),
+                ascent_override: "normal".into(),
+                descent_override: "normal".into(),
+                line_gap_override: "normal".into(),
                 variation_settings: "normal".into(),
                 body_base64: "AA==".into(),
             }])

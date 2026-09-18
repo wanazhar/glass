@@ -17913,7 +17913,7 @@ mod native_font_face_tests {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-palette-test")
             .expect("native JavaScript runtime must construct");
         let document = NativeDocument::parse(
-            r#"<style>#parent { font-palette: light; } #child { font-palette: dark; } #reset { font-palette: initial; } #invalid { font-palette: --custom; }</style><div id='parent'><span id='child'>Child</span><span id='reset'>Reset</span><span id='invalid'>Invalid</span></div>"#,
+            r#"<style>#parent { font-palette: light; } #child { font-palette: dark; } #reset { font-palette: initial; } #named { font-palette: --brand; }</style><div id='parent'><span id='child'>Child</span><span id='reset'>Reset</span><span id='named'>Named</span></div>"#,
             &NativeEngineLimits::default(),
         )
         .expect("font-palette fixture must parse");
@@ -17923,8 +17923,8 @@ mod native_font_face_tests {
                   const parent = getComputedStyle(document.getElementById("parent"));
                   const child = getComputedStyle(document.getElementById("child"));
                   const reset = getComputedStyle(document.getElementById("reset"));
-                  const invalid = getComputedStyle(document.getElementById("invalid"));
-                  return [parent.fontPalette, child.getPropertyValue("font-palette"), reset.fontPalette, invalid.fontPalette];
+                  const named = getComputedStyle(document.getElementById("named"));
+                  return [parent.fontPalette, child.getPropertyValue("font-palette"), reset.fontPalette, named.fontPalette];
                 })()"#,
                 &document,
                 "about:blank",
@@ -17934,7 +17934,7 @@ mod native_font_face_tests {
             .expect("computed font-palette surface must evaluate");
         assert_eq!(
             evaluation.value,
-            serde_json::json!(["light", "dark", "normal", "light"])
+            serde_json::json!(["light", "dark", "normal", "--brand"])
         );
     }
 
@@ -37606,6 +37606,20 @@ fn document_bootstrap(
     if (typeof payload === "string") return kebab(payload);
     return kebab(key);
   }};
+  const computedStyleFontPalette = (value) => {{
+    if (!value || typeof value !== "object") return computedStyleEnumName(value, "normal");
+    if (Object.prototype.hasOwnProperty.call(value, "Named")) {{
+      const named = value.Named;
+      const bytes = named && Array.isArray(named.bytes) ? named.bytes.map((byte) => Number(byte)) : [];
+      const length = named ? Number(named.len) : -1;
+      if (Number.isInteger(length) && length >= 0 && length <= bytes.length
+          && bytes.slice(0, length).every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 127)) {{
+        return String.fromCharCode(...bytes.slice(0, length));
+      }}
+      return "normal";
+    }}
+    return computedStyleEnumName(value, "normal");
+  }};
   const computedStyleFontWeight = (value) => {{
     if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 1000) return String(value);
     if (!value || typeof value !== "object") return computedStyleEnumName(value, "normal");
@@ -37876,7 +37890,7 @@ fn document_bootstrap(
     if (name === "font-variation-settings") return computedStyleVariationSettings(raw.font_variation_settings);
     if (name === "font-kerning") return computedStyleEnumName(raw.font_kerning, "auto");
     if (name === "font-optical-sizing") return computedStyleEnumName(raw.font_optical_sizing, "auto");
-    if (name === "font-palette") return computedStyleEnumName(raw.font_palette, "normal");
+    if (name === "font-palette") return computedStyleFontPalette(raw.font_palette);
     if (name === "line-height") return computedStylePixels(raw.line_height, "normal");
     if (name === "word-spacing") return String(Number(raw.word_spacing) || 0) + "px";
     if (name === "letter-spacing") return String(Number(raw.letter_spacing) || 0) + "px";

@@ -6803,7 +6803,7 @@ impl NativeDocument {
         };
         metrics
             .with_optical_sizing(style.font_optical_sizing())
-            .with_palette(style.font_palette())
+            .with_palette(self.stylesheet.resolve_font_palette(style.font_palette()))
     }
 
     pub(crate) fn text_line_height_for_layout(&self, id: NativeNodeId) -> u32 {
@@ -9530,6 +9530,7 @@ fn append_bounded_markup(output: &mut String, value: &str, max_bytes: usize, tru
 
 #[cfg(test)]
 mod tests {
+    use super::super::css::NativeFontPaletteName;
     use super::*;
 
     #[test]
@@ -9543,6 +9544,30 @@ mod tests {
         assert_eq!(document.title(1024), ("Example".into(), false));
         assert_eq!(document.visible_text(1024), ("Hello & Glass".into(), false));
         assert!(document.node_count() > 1);
+    }
+
+    #[test]
+    fn named_font_palette_resolves_base_palette_for_text_metrics() {
+        let document = NativeDocument::parse(
+            "<style>@font-palette-values --brand { base-palette: 2; } #target { font-palette: --brand; } #missing { font-palette: --missing; }</style><p id='target'>Text</p><p id='missing'>Missing</p>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let target = document.resolve_target("id=target").unwrap();
+        let missing = document.resolve_target("id=missing").unwrap();
+        let brand = NativeFontPaletteName::parse("--brand").unwrap();
+        assert_eq!(
+            document.computed_style_for_layout(target).font_palette(),
+            NativeFontPalette::Named(brand)
+        );
+        assert_eq!(
+            document.text_metrics_for_layout(target).palette(),
+            NativeFontPalette::Base(2)
+        );
+        assert_eq!(
+            document.text_metrics_for_layout(missing).palette(),
+            NativeFontPalette::Normal
+        );
     }
 
     #[test]

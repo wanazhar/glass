@@ -2325,6 +2325,11 @@ impl NativeTextMetrics {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) const fn palette(&self) -> NativeFontPalette {
+        self.palette
+    }
+
     pub(crate) const fn line_height(&self) -> u32 {
         self.line_height
     }
@@ -3295,15 +3300,32 @@ fn read_be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
 }
 
 fn palette_index_for_face(font_data: &[u8], palette: NativeFontPalette) -> u16 {
+    let base_palette = match palette {
+        NativeFontPalette::Base(index) => Some(index),
+        NativeFontPalette::Normal
+        | NativeFontPalette::Named(_)
+        | NativeFontPalette::Light
+        | NativeFontPalette::Dark => None,
+    };
     let required_flags = match palette {
-        NativeFontPalette::Normal => return 0,
-        NativeFontPalette::Light => CPAL_USABLE_WITH_LIGHT_BACKGROUND,
-        NativeFontPalette::Dark => CPAL_USABLE_WITH_DARK_BACKGROUND,
+        NativeFontPalette::Normal | NativeFontPalette::Named(_) | NativeFontPalette::Base(_) => {
+            None
+        }
+        NativeFontPalette::Light => Some(CPAL_USABLE_WITH_LIGHT_BACKGROUND),
+        NativeFontPalette::Dark => Some(CPAL_USABLE_WITH_DARK_BACKGROUND),
     };
     let Ok(face) = ttf_parser::Face::parse(font_data, 0) else {
         return 0;
     };
     let Some(palette_count) = face.color_palettes().map(|count| usize::from(count.get())) else {
+        return 0;
+    };
+    if let Some(index) = base_palette {
+        return (usize::from(index) < palette_count)
+            .then_some(index)
+            .unwrap_or(0);
+    }
+    let Some(required_flags) = required_flags else {
         return 0;
     };
     let Some(cpal) = face.raw_face().table(ttf_parser::Tag::from_bytes(b"CPAL")) else {
@@ -4841,6 +4863,11 @@ mod tests {
         assert_eq!(palette_index_for_face(bytes, NativeFontPalette::Normal), 0);
         assert_eq!(palette_index_for_face(bytes, NativeFontPalette::Light), 2);
         assert_eq!(palette_index_for_face(bytes, NativeFontPalette::Dark), 1);
+        assert_eq!(palette_index_for_face(bytes, NativeFontPalette::Base(2)), 2);
+        assert_eq!(
+            palette_index_for_face(bytes, NativeFontPalette::Base(99)),
+            0
+        );
         assert_eq!(
             palette_index_for_face(b"not-a-font", NativeFontPalette::Dark),
             0
@@ -4886,6 +4913,15 @@ mod tests {
             &book,
         )
         .with_palette(NativeFontPalette::Light);
+        let base = NativeTextMetrics::for_style_with_book(
+            families,
+            32,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            DirectionValue::Ltr,
+            &book,
+        )
+        .with_palette(NativeFontPalette::Base(2));
         let normal_colors = normal
             .rasterize(&character.to_string(), 0, 0, 0)
             .expect("normal palette must rasterize")
@@ -4900,6 +4936,14 @@ mod tests {
             .into_iter()
             .map(|glyph| glyph.color)
             .collect::<Vec<_>>();
+        let base_colors = base
+            .rasterize(&character.to_string(), 0, 0, 0)
+            .expect("base palette must rasterize")
+            .glyphs
+            .into_iter()
+            .map(|glyph| glyph.color)
+            .collect::<Vec<_>>();
+        assert_eq!(base_colors, light_colors);
         assert_ne!(normal_colors, light_colors);
     }
 

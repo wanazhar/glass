@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-541`, following completed
 `native-engine-browser-540`, following completed
 `native-engine-browser-539`, following completed
 `native-engine-browser-538`, following completed
@@ -379,9 +380,9 @@ monochrome, and 2/4/8-bit grayscale payloads retain offsets and strike scaling
 under finite dimension/byte budgets; color pixels carry embedded RGBA alpha
 through the existing compositor while grayscale images reuse text-paint
 coverage. Malformed, unsupported, oversized, and over-stretched bitmap data
-falls back to the existing outline paths. SVG-in-font sources, palette override
-APIs, bitmap variation axes, hinting, font-display timing, and complete
-FontFace/Web IDL parity remain issue #40 gates.
+falls back to the existing outline paths. Bitmap variation axes, hinting,
+font-display timing, and complete FontFace/Web IDL parity remain issue #40
+gates.
 
 The completed COLR palette-plumbing follow-up is
 [`native-engine-browser-537`](tasks/native-engine-browser-537.md): native text
@@ -390,6 +391,14 @@ with out-of-range indices failing closed before malformed or unsupported paint
 data can enter the raster path. Palette zero remains the default boundary for
 unregistered or malformed CSS palette selections; keyword and named base
 palette paths are recorded by slices 538 and 539.
+
+The completed SVG-font follow-up is
+[`native-engine-browser-541`](tasks/native-engine-browser-541.md): bounded
+OpenType `SVG ` glyph documents now accept UTF-8 or gzip SVGZ, map finite
+viewBoxes into font-size pixels, and reuse the native SVG surface rasterizer.
+Scripts, external resources, imports, unsupported references, malformed
+documents, and over-budget payloads fail closed to existing COLR, bitmap,
+variable-outline, or fontdue-outline fallback.
 
 The completed palette-override follow-up is
 [`native-engine-browser-540`](tasks/native-engine-browser-540.md): bounded

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-540`, following
+expansion checkpoint is completed `native-engine-browser-541`, following
+completed `native-engine-browser-540`, following
 completed `native-engine-browser-539`, following
 completed `native-engine-browser-538`, following
 completed `native-engine-browser-537`, following
@@ -364,6 +365,15 @@ metrics, variation coordinates, or surface budgets. Palette zero remains the
 default boundary for unregistered or malformed CSS palette selections; keyword
 and named base palette paths are recorded by slices 538 and 539.
 
+Slice 541 adds bounded OpenType `SVG ` glyph support. Valid UTF-8 or gzip SVG
+documents are mapped from a finite viewBox into the selected face's pixel
+viewport and rasterized through the existing native SVG surface path. Scripts,
+external resources, imports, and unsupported references fail closed; malformed
+or over-budget documents fall through to existing COLR, bitmap, variable
+outline, or fontdue-outline behavior. SVG glyph admission does not alter
+shaping, metrics, palette overrides, variation settings, stretch, clipping,
+compositing, or raster budgets.
+
 Slice 540 adds bounded `override-colors` descriptor parsing to named
 `@font-palette-values` rules. Document-local overrides select exact unique CPAL
 source colors and carry substitutions through solid and gradient COLR paints;
@@ -391,9 +401,9 @@ bounded finite nonsingular `NativeGradientTransform` carries paint,
 synthetic-stretch, and glyph-local pixel mappings. Raster samples inverse-map
 through the composed transform before evaluating the authored angle span, so
 skew, non-uniform scale, rotation, reflection, and translation preserve sweep
-semantics without approximation. Invalid transforms fail closed; SVG-in-font
-sources, bitmap variation axes, hinting, font-display timing, and complete
-FontFace/Web IDL parity remain issue #40 gates.
+semantics without approximation. Invalid transforms fail closed; bitmap
+variation axes, hinting, font-display timing, and complete FontFace/Web IDL
+parity remain issue #40 gates.
 
 Slice 535 removes the identity-transform-only clip-box boundary. Each
 finite, nonsingular transformed COLRv1 clip rectangle becomes a bounded convex

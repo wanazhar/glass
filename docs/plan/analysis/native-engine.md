@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-547`, following
+expansion checkpoint is completed `native-engine-browser-548`, following
+completed `native-engine-browser-547`, following
 completed `native-engine-browser-546`, following
 completed `native-engine-browser-545`, following
 completed `native-engine-browser-544`, following
@@ -424,6 +425,16 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 548 carries normalized dynamic `FontFace.featureSettings` through the
+native install command, document-owner admission, and content-process font
+wire. Native faces retain the bounded OpenType feature defaults; shaping merges
+those defaults beneath element-authored `font-feature-settings`, so matching
+element tags override face values and unmatched face values suppress automatic
+feature insertion. Invalid host metadata is rejected and missing legacy wire
+fields default empty. CSS `@font-face` feature descriptors, variant application,
+display timing, installed-font discovery, and complete FontFace/Web IDL parity
+remain explicit issue #40 gates.
 
 Slice 547 validates the page-realm `FontFace.variant` and
 `FontFace.featureSettings` descriptors against the bounded native grammar.

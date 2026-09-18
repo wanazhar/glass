@@ -1157,6 +1157,15 @@ impl NativeFontFeatureSettings {
     pub(crate) fn contains_tag(&self, tag: &[u8; 4]) -> bool {
         self.values().iter().any(|feature| &feature.tag == tag)
     }
+
+    pub(crate) fn is_valid(&self) -> bool {
+        usize::from(self.count) <= MAX_NATIVE_FONT_FEATURES
+            && self.values().iter().all(|feature| {
+                feature.tag.iter().all(|byte| {
+                    (0x20..=0x7e).contains(byte) && !matches!(*byte, b'\'' | b'"' | b',')
+                })
+            })
+    }
 }
 
 /// One bounded OpenType variation axis value expressed in thousandths so the
@@ -13736,7 +13745,7 @@ fn parse_font_variant_numeric_declaration(
     parse_inherited_text_declaration(value, parse_font_variant_numeric)
 }
 
-fn parse_font_feature_settings(value: &str) -> Option<NativeFontFeatureSettings> {
+pub(crate) fn parse_font_feature_settings(value: &str) -> Option<NativeFontFeatureSettings> {
     let value = value.trim();
     if value.eq_ignore_ascii_case("normal") {
         return Some(NativeFontFeatureSettings::default());

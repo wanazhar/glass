@@ -284,6 +284,8 @@ pub(crate) enum NativeScriptCommand {
         stretch: String,
         #[serde(default)]
         unicode_range: String,
+        #[serde(default)]
+        variation_settings: String,
         body_base64: String,
     },
     ServiceWorkerRegister {
@@ -9682,6 +9684,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     String(descriptor && descriptor.weight || "400"),
     String(descriptor && descriptor.style || "normal"),
     String(descriptor && descriptor.stretch || "normal"),
+    String(descriptor && descriptor.variationSettings || "normal"),
   ].join("\u0000");
   const nativeFontFaceSettledPromise = (face, status) => {
     const promise = status === "loaded"
@@ -9880,6 +9883,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
               style: state.style,
               stretch: state.stretch,
               unicode_range: state.unicodeRange,
+              variation_settings: state.variationSettings,
               body_base64: encodeBase64(bytes, nativeFontFaceByteLimit),
             });
           } catch (error) {
@@ -10055,6 +10059,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
           style: descriptor.style === "italic" ? "italic" : "normal",
           stretch: String(descriptor.stretch || "normal"),
           unicodeRange: String(descriptor.unicodeRange || "U+0-10FFFF"),
+          variationSettings: String(descriptor.variationSettings || "normal"),
         });
         const faceState = nativeFontFaceState(face);
         faceState.staticFace = true;
@@ -17628,7 +17633,8 @@ mod native_timer_probe_tests {
 mod native_font_face_tests {
     use super::super::config::NativeEngineLimits;
     use super::super::css::{
-        FontStyleValue, FontWeightValue, NativeFontStretchRange, NativeUnicodeRange,
+        FontStyleValue, FontWeightValue, NativeFontStretchRange, NativeFontVariation,
+        NativeFontVariationSettings, NativeUnicodeRange,
     };
     use super::super::font::NativeFontBook;
     use super::*;
@@ -18085,13 +18091,13 @@ mod native_font_face_tests {
             )
             .expect("FontFaceSet listeners must install");
         let styled = NativeDocument::parse(
-            "<style>@font-face { font-family: 'Late Face'; src: local('Late Face'); }</style>",
+            "<style>@font-face { font-family: 'Late Face'; src: local('Late Face'); font-variation-settings: \"wght\" 620; }</style>",
             &NativeEngineLimits::default(),
         )
         .expect("font-face fixture must parse");
         let evaluation = runtime
             .evaluate(
-                "[document.fonts.size, document.fonts.status, __fontFaceEvents, [...document.fonts][0].status]",
+                "[document.fonts.size, document.fonts.status, __fontFaceEvents, [...document.fonts][0].status, [...document.fonts][0].variationSettings]",
                 &styled,
                 "about:blank",
                 &NativeOrigin::Opaque,
@@ -18100,7 +18106,13 @@ mod native_font_face_tests {
             .expect("FontFaceSet refresh must evaluate");
         assert_eq!(
             evaluation.value,
-            serde_json::json!([1, "loaded", [["loading", 1], ["loadingerror", 1]], "error"])
+            serde_json::json!([
+                1,
+                "loaded",
+                [["loading", 1], ["loadingerror", 1]],
+                "error",
+                "\"wght\" 620"
+            ])
         );
     }
 
@@ -18123,7 +18135,7 @@ mod native_font_face_tests {
             .evaluate(
                 &format!(
                     r#"(() => {{
-                      const face = new FontFace("Inline Sans", {source}, {{ stretch: "condensed", unicodeRange: "U+41-5A" }});
+                      const face = new FontFace("Inline Sans", {source}, {{ stretch: "condensed", unicodeRange: "U+41-5A", variationSettings: '"wght" 620' }});
                       globalThis.__inlineFontFace = face;
                       document.fonts.add(face);
                       face.load().then(() => {{ document.body.textContent = "accepted"; }});
@@ -18183,6 +18195,7 @@ mod native_font_face_tests {
                 style,
                 stretch,
                 unicode_range,
+                variation_settings,
                 body_base64,
                 ..
             } if family == "Inline Sans"
@@ -18190,6 +18203,7 @@ mod native_font_face_tests {
                 && style == "normal"
                 && stretch == "condensed"
                 && unicode_range == "U+41-5A"
+                && variation_settings == "\"wght\" 620"
                 && !body_base64.is_empty()
         ));
         let wire = document.to_content_wire();
@@ -18205,6 +18219,16 @@ mod native_font_face_tests {
                 start: 0x41,
                 end: 0x5A,
             }]
+        );
+        let mut expected_variations = NativeFontVariationSettings::default();
+        expected_variations.values[0] = NativeFontVariation {
+            tag: *b"wght",
+            value_milli: 620_000,
+        };
+        expected_variations.count = 1;
+        assert_eq!(
+            wire.font_resources[0].variation_settings,
+            expected_variations
         );
     }
 

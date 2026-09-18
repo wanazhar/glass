@@ -791,29 +791,59 @@ impl<'a> NativeColorPainter<'a> {
         value.is_finite() && value.abs() <= MAX_COLOR_TRANSFORM_COMPONENT
     }
 
+    fn transformed_point(transform: ttf_parser::Transform, x: f32, y: f32) -> Option<(f32, f32)> {
+        let transformed_x = transform.a.mul_add(x, transform.c.mul_add(y, transform.e));
+        let transformed_y = transform.b.mul_add(x, transform.d.mul_add(y, transform.f));
+        (Self::finite_component(transformed_x) && Self::finite_component(transformed_y))
+            .then_some((transformed_x, transformed_y))
+    }
+
+    fn conformal_scale(transform: ttf_parser::Transform) -> Option<(f32, bool)> {
+        let first_length = transform.a.mul_add(transform.a, transform.b * transform.b);
+        let second_length = transform.c.mul_add(transform.c, transform.d * transform.d);
+        let dot = transform.a.mul_add(transform.c, transform.b * transform.d);
+        let determinant = transform.a * transform.d - transform.b * transform.c;
+        let tolerance = first_length.max(second_length).max(1.0) * 0.0001;
+        if !first_length.is_finite()
+            || !second_length.is_finite()
+            || !dot.is_finite()
+            || !determinant.is_finite()
+            || first_length <= f32::EPSILON
+            || (first_length - second_length).abs() > tolerance
+            || dot.abs() > tolerance
+            || determinant.abs() <= f32::EPSILON
+        {
+            return None;
+        }
+        let scale = first_length.sqrt();
+        Self::finite_component(scale).then_some((scale, determinant >= 0.0))
+    }
+
     fn linear_gradient(
         &self,
         gradient: ttf_parser::colr::LinearGradient<'a>,
     ) -> Option<NativeGlyphGradient> {
-        if !self.transform.is_default()
-            || ![
-                gradient.x0,
-                gradient.y0,
-                gradient.x1,
-                gradient.y1,
-                gradient.x2,
-                gradient.y2,
-            ]
-            .into_iter()
-            .all(Self::finite_component)
+        if ![
+            gradient.x0,
+            gradient.y0,
+            gradient.x1,
+            gradient.y1,
+            gradient.x2,
+            gradient.y2,
+        ]
+        .into_iter()
+        .all(Self::finite_component)
         {
             return None;
         }
+        let (x0, y0) = Self::transformed_point(self.transform, gradient.x0, gradient.y0)?;
+        let (x1, y1) = Self::transformed_point(self.transform, gradient.x1, gradient.y1)?;
+        let _ = Self::transformed_point(self.transform, gradient.x2, gradient.y2)?;
         Some(NativeGlyphGradient::Linear {
-            x0: gradient.x0,
-            y0: gradient.y0,
-            x1: gradient.x1,
-            y1: gradient.y1,
+            x0,
+            y0,
+            x1,
+            y1,
             extend: Self::native_extend(gradient.extend),
             stops: Self::native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
         })
@@ -823,29 +853,36 @@ impl<'a> NativeColorPainter<'a> {
         &self,
         gradient: ttf_parser::colr::RadialGradient<'a>,
     ) -> Option<NativeGlyphGradient> {
-        if !self.transform.is_default()
-            || ![
-                gradient.x0,
-                gradient.y0,
-                gradient.r0,
-                gradient.x1,
-                gradient.y1,
-                gradient.r1,
-            ]
-            .into_iter()
-            .all(Self::finite_component)
+        if ![
+            gradient.x0,
+            gradient.y0,
+            gradient.r0,
+            gradient.x1,
+            gradient.y1,
+            gradient.r1,
+        ]
+        .into_iter()
+        .all(Self::finite_component)
             || gradient.r0 < 0.0
             || gradient.r1 <= 0.0
         {
             return None;
         }
+        let (scale, _) = Self::conformal_scale(self.transform)?;
+        let (x0, y0) = Self::transformed_point(self.transform, gradient.x0, gradient.y0)?;
+        let (x1, y1) = Self::transformed_point(self.transform, gradient.x1, gradient.y1)?;
+        let r0 = gradient.r0 * scale;
+        let r1 = gradient.r1 * scale;
+        if !Self::finite_component(r0) || !Self::finite_component(r1) {
+            return None;
+        }
         Some(NativeGlyphGradient::Radial {
-            x0: gradient.x0,
-            y0: gradient.y0,
-            r0: gradient.r0,
-            x1: gradient.x1,
-            y1: gradient.y1,
-            r1: gradient.r1,
+            x0,
+            y0,
+            r0,
+            x1,
+            y1,
+            r1,
             extend: Self::native_extend(gradient.extend),
             stops: Self::native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
         })
@@ -855,24 +892,39 @@ impl<'a> NativeColorPainter<'a> {
         &self,
         gradient: ttf_parser::colr::SweepGradient<'a>,
     ) -> Option<NativeGlyphGradient> {
-        if !self.transform.is_default()
-            || ![
-                gradient.center_x,
-                gradient.center_y,
-                gradient.start_angle,
-                gradient.end_angle,
-            ]
-            .into_iter()
-            .all(Self::finite_component)
+        if ![
+            gradient.center_x,
+            gradient.center_y,
+            gradient.start_angle,
+            gradient.end_angle,
+        ]
+        .into_iter()
+        .all(Self::finite_component)
             || (gradient.end_angle - gradient.start_angle).abs() <= f32::EPSILON
         {
             return None;
         }
+        let (_, preserves_orientation) = Self::conformal_scale(self.transform)?;
+        let (center_x, center_y) =
+            Self::transformed_point(self.transform, gradient.center_x, gradient.center_y)?;
+        let rotation = self.transform.b.atan2(self.transform.a) / std::f32::consts::PI;
+        let map_angle = |angle: f32| {
+            if preserves_orientation {
+                angle + rotation
+            } else {
+                rotation - angle
+            }
+        };
+        let start_angle = map_angle(gradient.start_angle);
+        let end_angle = map_angle(gradient.end_angle);
+        if !Self::finite_component(start_angle) || !Self::finite_component(end_angle) {
+            return None;
+        }
         Some(NativeGlyphGradient::Sweep {
-            center_x: gradient.center_x,
-            center_y: gradient.center_y,
-            start_angle: gradient.start_angle,
-            end_angle: gradient.end_angle,
+            center_x,
+            center_y,
+            start_angle,
+            end_angle,
             extend: Self::native_extend(gradient.extend),
             stops: Self::native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
         })
@@ -3993,6 +4045,32 @@ mod tests {
         assert_eq!(
             gradient(NativeGradientExtend::Reflect).color_at(15.0, 0.0),
             Some(midpoint)
+        );
+    }
+
+    #[test]
+    fn colr_gradient_transform_geometry_accepts_conformal_only_for_radial_shapes() {
+        let translated = ttf_parser::Transform::new_translate(12.0, -4.0);
+        assert_eq!(
+            NativeColorPainter::transformed_point(translated, 3.0, 5.0),
+            Some((15.0, 1.0))
+        );
+        let scaled = ttf_parser::Transform::new_scale(2.0, 2.0);
+        let (scale, preserves_orientation) =
+            NativeColorPainter::conformal_scale(scaled).expect("uniform scale is conformal");
+        assert!((scale - 2.0).abs() <= f32::EPSILON);
+        assert!(preserves_orientation);
+        let reflected = ttf_parser::Transform::new_scale(-2.0, 2.0);
+        let (_, preserves_orientation) = NativeColorPainter::conformal_scale(reflected)
+            .expect("uniform reflection is conformal");
+        assert!(!preserves_orientation);
+        assert!(
+            NativeColorPainter::conformal_scale(ttf_parser::Transform::new_skew(0.125, 0.0))
+                .is_none()
+        );
+        assert!(
+            NativeColorPainter::conformal_scale(ttf_parser::Transform::new_scale(0.0, 1.0))
+                .is_none()
         );
     }
 

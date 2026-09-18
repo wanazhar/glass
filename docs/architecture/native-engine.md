@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-530`, following completed
 `native-engine-browser-529`, following completed
 `native-engine-browser-528`, following completed
 `native-engine-browser-527`, following completed
@@ -339,6 +340,16 @@ descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none`
 retain their existing behavior. Custom axes, hinting, color tables, and
 complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 530 carries the composed paint transform into COLRv1 gradients. Linear
+gradients transform finite points directly; radial and sweep gradients admit
+finite conformal transforms (translation, rotation/uniform scale, and
+reflection), including radius scaling and sweep-direction mapping. Singular,
+skew/non-uniform radial or sweep transforms, and non-finite transformed
+coordinates fail closed to monochrome fallback. The existing axis-aligned
+clip-box representation remains identity-transform-only, and the bounded
+two-point linear projection remains explicit until full three-point gradient
+equations and transformed clip masks are implemented.
 
 Slice 529 adds bounded COLRv1 linear, radial, and sweep gradient paints plus
 clip-box coverage. The native color painter admits finite coordinates and at

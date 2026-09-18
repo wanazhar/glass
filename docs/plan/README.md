@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-530`, following completed
 `native-engine-browser-529`, following completed
 `native-engine-browser-528`, following completed
 `native-engine-browser-527`, following completed
@@ -360,6 +361,16 @@ to an advertised OpenType `opsz` axis, while authored element coordinates and
 effective value reaches both HarfRust shaping and variation-aware outline
 rasterization. Custom axes, hinting, color tables, and complete FontFace/Web IDL
 parity remain issue #40 gates.
+
+The completed transformed COLRv1 gradient follow-up is
+[`native-engine-browser-530`](tasks/native-engine-browser-530.md): composed
+finite affine transforms now reach linear gradient geometry directly, while
+radial and sweep gradients admit conformal translation, rotation/uniform
+scale, and reflection with radius and direction mapping. Singular and
+skew/non-uniform radial or sweep transforms fail closed. Axis-aligned clip
+boxes remain identity-transform-only and the bounded two-point linear
+projection remains explicit until full three-point equations and transformed
+clip masks land.
 
 The completed bounded COLRv1 gradient follow-up is
 [`native-engine-browser-529`](tasks/native-engine-browser-529.md): linear,

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-545`, following completed
 `native-engine-browser-544`, following completed
 `native-engine-browser-543`, following completed
 `native-engine-browser-542`, following completed
@@ -395,6 +396,15 @@ trimmed, lowercased, and rejected transactionally when invalid; static
 projection, font admission, worker routing, and status semantics remain
 unchanged. Actual display timing, installed-font discovery, and complete
 FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 545 preserves direct network `FontFace` response metadata. The native
+font loader now returns its final URL, successful status, exposed headers,
+content type, redirect state, and bounded body to the page fetch payload;
+fresh-cache and HTTP 304 paths retain the same metadata. CSS `@font-face`
+loading continues to use the byte-only adapter, and local data/file/blob
+responses remain bounded synthetic responses. Font-display timing,
+installed-font discovery, and complete FontFace/Web IDL parity remain issue
+#40 gates.
 
 Slice 540 adds bounded `override-colors` descriptor parsing to named
 `@font-palette-values` rules. Document-local overrides select exact unique CPAL

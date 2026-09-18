@@ -846,7 +846,12 @@ struct NativeTextCacheEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeFontCacheEntry {
     url: String,
+    status: u16,
+    status_text: String,
+    redirected: bool,
     body: Vec<u8>,
+    content_type: Option<String>,
+    headers: Vec<(String, String)>,
     fresh_until: Option<Instant>,
     etag: Option<String>,
     last_modified: Option<String>,
@@ -854,25 +859,43 @@ struct NativeFontCacheEntry {
 
 impl NativeFontCacheEntry {
     fn from_response(
-        url: String,
-        body: Vec<u8>,
+        response: &NativeFetchResponse,
         headers: &HeaderMap,
         now: Instant,
     ) -> Option<Self> {
-        if body.is_empty()
-            || body.len() > MAX_NATIVE_FONT_BYTES
+        if response.body.is_empty()
+            || response.body.len() > MAX_NATIVE_FONT_BYTES
             || !response_cache_metadata_present(headers)
             || !document_cache_storage_allowed(headers)
         {
             return None;
         }
         Some(Self {
-            url,
-            body,
+            url: response.url.clone(),
+            status: response.status,
+            status_text: response.status_text.clone(),
+            redirected: response.redirected,
+            body: response.body.clone(),
+            content_type: response.content_type.clone(),
+            headers: response.headers.clone(),
             fresh_until: document_cache_fresh_until(headers, now),
             etag: response_header_text(headers, reqwest::header::ETAG),
             last_modified: response_header_text(headers, reqwest::header::LAST_MODIFIED),
         })
+    }
+
+    fn response(&self) -> NativeFetchResponse {
+        NativeFetchResponse {
+            url: self.url.clone(),
+            status: self.status,
+            status_text: self.status_text.clone(),
+            content_type: self.content_type.clone(),
+            headers: self.headers.clone(),
+            body: self.body.clone(),
+            redirected: self.redirected,
+            opaque: false,
+            opaque_redirect: false,
+        }
     }
 
     fn is_fresh(&self, now: Instant) -> bool {
@@ -893,6 +916,11 @@ impl NativeFontCacheEntry {
         }
         if let Some(last_modified) = response_header_text(headers, reqwest::header::LAST_MODIFIED) {
             self.last_modified = Some(last_modified);
+        }
+        if let Some(content_type) = response_header_text(headers, reqwest::header::CONTENT_TYPE)
+            .filter(|value| font_content_type_text_allowed(value))
+        {
+            self.content_type = Some(content_type);
         }
         Some(self)
     }
@@ -6128,15 +6156,14 @@ impl NativeResourceLoader {
         Ok(None)
     }
 
-    /// Load a font source for an HTTP(S) document. Local sources reuse the
-    /// synchronous owner above; network sources use a bounded redirect and
-    /// response loop with font-specific CSP and CORS checks.
-    pub(crate) async fn load_font_async(
+    /// Load a font source for an HTTP(S) document while retaining the response
+    /// metadata needed by the dynamic `FontFace` fetch path.
+    pub(crate) async fn load_font_response_async(
         &mut self,
         document_url: &str,
         src: &str,
         object_url: Option<&NativeObjectUrlResource>,
-    ) -> Result<Option<Vec<u8>>, NativeEngineError> {
+    ) -> Result<Option<NativeFetchResponse>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text("font URL", src)?;
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
@@ -6148,18 +6175,48 @@ impl NativeResourceLoader {
         let Some(target_url) = resolve_media_url(&document_url, src)? else {
             return Ok(None);
         };
-        if !is_network_url(target_url.as_str()) {
-            return self.load_font(document_url.as_str(), src, object_url);
+        if is_network_url(target_url.as_str()) {
+            return self
+                .load_network_font_response_async(&document_url, &target_url)
+                .await;
         }
-        self.load_network_font_async(&document_url, &target_url)
-            .await
+        let body = self.load_font(document_url.as_str(), src, object_url)?;
+        Ok(body.map(|body| NativeFetchResponse {
+            url: without_fragment(target_url.as_str()).to_owned(),
+            status: 200,
+            status_text: "OK".into(),
+            content_type: target_url
+                .scheme()
+                .eq_ignore_ascii_case("blob")
+                .then(|| object_url.and_then(|resource| resource.content_type.clone()))
+                .flatten(),
+            headers: Vec::new(),
+            body,
+            redirected: false,
+            opaque: false,
+            opaque_redirect: false,
+        }))
     }
 
-    async fn load_network_font_async(
+    /// Load a font source for an HTTP(S) document. Local sources reuse the
+    /// synchronous owner above; network sources use a bounded redirect and
+    /// response loop with font-specific CSP and CORS checks.
+    pub(crate) async fn load_font_async(
+        &mut self,
+        document_url: &str,
+        src: &str,
+        object_url: Option<&NativeObjectUrlResource>,
+    ) -> Result<Option<Vec<u8>>, NativeEngineError> {
+        self.load_font_response_async(document_url, src, object_url)
+            .await
+            .map(|response| response.map(|response| response.body))
+    }
+
+    async fn load_network_font_response_async(
         &mut self,
         document_url: &Url,
         target_url: &Url,
-    ) -> Result<Option<Vec<u8>>, NativeEngineError> {
+    ) -> Result<Option<NativeFetchResponse>, NativeEngineError> {
         if !is_network_url(document_url.as_str())
             || !is_network_url(without_fragment(target_url.as_str()))
             || !mixed_content_allowed(document_url, target_url)
@@ -6205,7 +6262,7 @@ impl NativeResourceLoader {
                         && policy.allows(NativeSubresourceKind::Font, document_url, &cached_url)
                 })
         }) {
-            return Ok(Some(cached.body.clone()));
+            return Ok(Some(cached.response()));
         }
         let stale_cached_font = cached_font.filter(|cached| {
             !cached.is_fresh(Instant::now())
@@ -6321,7 +6378,7 @@ impl NativeResourceLoader {
                 self.cookie_changes
                     .extend(self.network.store_cookie(&cookie_url, &cookie));
             }
-            let body = cached.body.clone();
+            let cached_response = cached.response();
             if has_set_cookie {
                 self.network.remove_font_cache(&requested_cache_key);
             } else if let Some(entry) =
@@ -6331,7 +6388,7 @@ impl NativeResourceLoader {
             } else {
                 self.network.remove_font_cache(&requested_cache_key);
             }
-            return Ok(Some(body));
+            return Ok(Some(cached_response));
         }
         if !response.status().is_success() {
             return Ok(None);
@@ -6361,6 +6418,22 @@ impl NativeResourceLoader {
             return Ok(None);
         }
         let response_status = response.status();
+        let response_status_text = response_status
+            .canonical_reason()
+            .unwrap_or_default()
+            .to_owned();
+        let response_content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let exposed_headers = exposed_response_headers(
+            &response_headers,
+            document_url.origin() == current_url.origin(),
+            false,
+        )?;
+        let response_url = without_fragment(current_url.as_str()).to_owned();
+        let redirected = redirects != 0;
         let mut stream = response.bytes_stream();
         let mut bytes = Vec::with_capacity(
             content_length
@@ -6380,13 +6453,21 @@ impl NativeResourceLoader {
             self.cookie_changes
                 .extend(self.network.store_cookie(&cookie_url, &cookie));
         }
+        let response = NativeFetchResponse {
+            url: response_url,
+            status: response_status.as_u16(),
+            status_text: response_status_text,
+            content_type: response_content_type,
+            headers: exposed_headers,
+            body: bytes,
+            redirected,
+            opaque: false,
+            opaque_redirect: false,
+        };
         if !has_set_cookie && response_status != reqwest::StatusCode::PARTIAL_CONTENT {
-            if let Some(entry) = NativeFontCacheEntry::from_response(
-                without_fragment(current_url.as_str()).to_owned(),
-                bytes.clone(),
-                &response_headers,
-                Instant::now(),
-            ) {
+            if let Some(entry) =
+                NativeFontCacheEntry::from_response(&response, &response_headers, Instant::now())
+            {
                 self.network.store_font_cache(requested_cache_key, entry);
             } else {
                 self.network.remove_font_cache(&requested_cache_key);
@@ -6394,7 +6475,10 @@ impl NativeResourceLoader {
         } else {
             self.network.remove_font_cache(&requested_cache_key);
         }
-        Ok((!bytes.is_empty()).then_some(bytes))
+        if response.body.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(response))
     }
 
     pub(crate) async fn load_media_async_with_object_url(
@@ -9338,7 +9422,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn network_font_source_requires_font_cors_and_admits_bounded_bytes() {
+    async fn network_font_response_preserves_url_headers_and_body() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -9358,13 +9442,23 @@ mod tests {
         let config = NativeEngineConfig::default();
         let mut loader = NativeResourceLoader::new(&config).unwrap();
         let source = format!("http://{address}/font.ttf");
-        assert_eq!(
-            loader
-                .load_font_async("http://app.test/index.html", &source, None)
-                .await
-                .unwrap(),
-            Some(b"font".to_vec())
+        let response = loader
+            .load_font_response_async("http://app.test/index.html", &source, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.url, source);
+        assert_eq!(response.status, 200);
+        assert_eq!(response.status_text, "OK");
+        assert_eq!(response.content_type.as_deref(), Some("font/ttf"));
+        assert!(
+            response
+                .headers
+                .iter()
+                .any(|(name, value)| name == "content-type" && value == "font/ttf")
         );
+        assert_eq!(response.body, b"font");
+        assert!(!response.redirected);
         server.await.unwrap();
     }
 
@@ -9392,16 +9486,32 @@ mod tests {
         let mut loader = NativeResourceLoader::new(&config).unwrap();
         let source = format!("http://{address}/font.ttf");
         let first = loader
-            .load_font_async("http://app.test/index.html", &source, None)
+            .load_font_response_async("http://app.test/index.html", &source, None)
             .await
             .unwrap();
         let second = loader
-            .load_font_async("http://app.test/index.html", &source, None)
+            .load_font_response_async("http://app.test/index.html", &source, None)
             .await
             .unwrap();
-        assert_eq!(first, Some(b"font".to_vec()));
+        assert_eq!(
+            first.as_ref().map(|response| response.body.as_slice()),
+            Some(&b"font"[..])
+        );
         assert_eq!(second, first);
+        assert_eq!(
+            first
+                .as_ref()
+                .and_then(|response| response.content_type.as_deref()),
+            Some("font/ttf")
+        );
         assert_eq!(loader.network.font_cache.len(), 1);
+        assert_eq!(
+            loader
+                .load_font_async("http://app.test/index.html", &source, None)
+                .await
+                .unwrap(),
+            Some(b"font".to_vec())
+        );
         server.await.unwrap();
     }
 
@@ -9462,6 +9572,14 @@ mod tests {
             .unwrap();
         assert_eq!(first, Some(b"font".to_vec()));
         assert_eq!(second, first);
+        let response = loader
+            .load_font_response_async("http://app.test/index.html", &source, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.url, source);
+        assert_eq!(response.content_type.as_deref(), Some("font/ttf"));
+        assert_eq!(response.body, b"font");
         assert_eq!(loader.network.font_cache.len(), 1);
         server.await.unwrap();
     }

@@ -9,6 +9,7 @@ use url::Url;
 pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
 pub(crate) const MAX_NATIVE_FONT_FACE_RULES: usize = 16;
 pub(crate) const MAX_NATIVE_FONT_PALETTE_RULES: usize = 16;
+pub(crate) const MAX_NATIVE_FONT_PALETTE_OVERRIDES: usize = 32;
 pub(crate) const MAX_NATIVE_GRID_TRACKS: usize = 8;
 pub(crate) const MIN_NATIVE_FLEX_ITEM_ORDER: i32 = -1024;
 pub(crate) const MAX_NATIVE_FLEX_ITEM_ORDER: i32 = 1024;
@@ -1288,6 +1289,12 @@ pub(crate) enum NativeFontPalette {
     Base(u16),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeFontPaletteOverride {
+    pub(crate) palette_index: u16,
+    pub(crate) color: NativeColor,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum FontWeightValue {
     #[default]
@@ -1565,6 +1572,7 @@ pub(crate) struct NativeFontFaceRule {
 pub(crate) struct NativeFontPaletteValuesRule {
     pub(crate) name: NativeFontPaletteName,
     pub(crate) base_palette: u16,
+    pub(crate) overrides: [Option<NativeFontPaletteOverride>; MAX_NATIVE_FONT_PALETTE_OVERRIDES],
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2459,6 +2467,23 @@ impl NativeStylesheet {
                     NativeFontPalette::Base(rule.base_palette)
                 }),
             other => other,
+        }
+    }
+
+    pub(crate) fn resolve_font_palette_overrides(
+        &self,
+        palette: NativeFontPalette,
+    ) -> [Option<NativeFontPaletteOverride>; MAX_NATIVE_FONT_PALETTE_OVERRIDES] {
+        match palette {
+            NativeFontPalette::Named(name) => self
+                .font_palette_values
+                .iter()
+                .rev()
+                .find(|rule| rule.name == name)
+                .map_or([None; MAX_NATIVE_FONT_PALETTE_OVERRIDES], |rule| {
+                    rule.overrides
+                }),
+            _ => [None; MAX_NATIVE_FONT_PALETTE_OVERRIDES],
         }
     }
 
@@ -7202,6 +7227,37 @@ fn parse_font_palette_values_header(
     Some(NativeFontPaletteName::parse(&name).ok_or("font-palette-values-name"))
 }
 
+fn parse_font_palette_overrides(
+    value: &str,
+) -> Option<[Option<NativeFontPaletteOverride>; MAX_NATIVE_FONT_PALETTE_OVERRIDES]> {
+    let tokens = split_css_value_tokens(value)?;
+    let pair_count = tokens.len() / 2;
+    if tokens.len() % 2 != 0 || pair_count > MAX_NATIVE_FONT_PALETTE_OVERRIDES {
+        return None;
+    }
+    let mut overrides: [Option<NativeFontPaletteOverride>; MAX_NATIVE_FONT_PALETTE_OVERRIDES] =
+        [None; MAX_NATIVE_FONT_PALETTE_OVERRIDES];
+    for pair in 0..pair_count {
+        let palette_index = tokens[pair * 2]
+            .parse::<u32>()
+            .ok()
+            .filter(|value| *value <= u32::from(u16::MAX))
+            .and_then(|value| u16::try_from(value).ok())?;
+        if overrides[..pair]
+            .iter()
+            .flatten()
+            .any(|override_value| override_value.palette_index == palette_index)
+        {
+            return None;
+        }
+        overrides[pair] = Some(NativeFontPaletteOverride {
+            palette_index,
+            color: parse_color(tokens[pair * 2 + 1])?,
+        });
+    }
+    Some(overrides)
+}
+
 fn parse_font_palette_values_rule(
     context: &mut NativeCssParseContext<'_>,
     name: NativeFontPaletteName,
@@ -7210,6 +7266,7 @@ fn parse_font_palette_values_rule(
 ) -> Result<(), NativeEngineError> {
     let source = &context.source[open + 1..close];
     let mut base_palette = 0;
+    let mut overrides = [None; MAX_NATIVE_FONT_PALETTE_OVERRIDES];
     let mut valid = true;
     for (declaration_offset, declaration) in split_css_declarations(source) {
         let offset = open.saturating_add(1).saturating_add(declaration_offset);
@@ -7268,15 +7325,18 @@ fn parse_font_palette_values_rule(
                     }
                 }
             }
-            "override-colors" => {
-                context.diagnostics.push(
-                    NativeDiagnosticCode::UnsupportedCssValue,
-                    context.diagnostic_source,
-                    offset,
-                    "font-palette-override-colors",
-                );
-                valid = false;
-            }
+            "override-colors" => match parse_font_palette_overrides(value) {
+                Some(parsed) => overrides = parsed,
+                None => {
+                    context.diagnostics.push(
+                        NativeDiagnosticCode::UnsupportedCssValue,
+                        context.diagnostic_source,
+                        offset,
+                        "font-palette-override-colors",
+                    );
+                    valid = false;
+                }
+            },
             _ => {
                 context.diagnostics.push(
                     NativeDiagnosticCode::UnsupportedCssProperty,
@@ -7300,9 +7360,11 @@ fn parse_font_palette_values_rule(
         );
         return Ok(());
     }
-    context
-        .palette_values
-        .push(NativeFontPaletteValuesRule { name, base_palette });
+    context.palette_values.push(NativeFontPaletteValuesRule {
+        name,
+        base_palette,
+        overrides,
+    });
     Ok(())
 }
 
@@ -25085,16 +25147,32 @@ mod tests {
                 @font-palette-values --brand { base-palette: 1; }
                 @font-palette-values --ignored { override-colors: 0 #ffffff; }
                 @font-palette-values --invalid { base-palette: 65536; }
+                @font-palette-values --malformed { override-colors: 0 red 0 blue; }
             "#
             .to_owned()],
             &mut diagnostics,
         )
         .unwrap();
         let brand = parse_font_palette("--brand").unwrap();
-        assert_eq!(stylesheet.font_palette_values().len(), 2);
+        assert_eq!(stylesheet.font_palette_values().len(), 3);
         assert_eq!(
             stylesheet.resolve_font_palette(brand),
             NativeFontPalette::Base(1)
+        );
+        let ignored = parse_font_palette("--ignored").unwrap();
+        assert_eq!(
+            stylesheet.resolve_font_palette_overrides(ignored)[0],
+            Some(NativeFontPaletteOverride {
+                palette_index: 0,
+                color: parse_color("#ffffff").unwrap(),
+            })
+        );
+        let malformed = parse_font_palette("--malformed").unwrap();
+        assert!(
+            stylesheet
+                .resolve_font_palette_overrides(malformed)
+                .iter()
+                .all(Option::is_none)
         );
         assert_eq!(
             stylesheet.resolve_font_palette(parse_font_palette("--missing").unwrap()),
@@ -25105,6 +25183,37 @@ mod tests {
         assert!(!diagnostics.is_empty());
     }
 
+    #[test]
+    fn font_palette_override_parser_is_bounded_and_unique() {
+        let parsed = parse_font_palette_overrides("0 red 1 rgba(1, 2, 3, 0.5)")
+            .expect("bounded override descriptor must parse");
+        assert_eq!(
+            parsed[0],
+            Some(NativeFontPaletteOverride {
+                palette_index: 0,
+                color: NativeColor::RED,
+            })
+        );
+        assert_eq!(
+            parsed[1],
+            Some(NativeFontPaletteOverride {
+                palette_index: 1,
+                color: NativeColor {
+                    red: 1,
+                    green: 2,
+                    blue: 3,
+                    alpha: 128,
+                },
+            })
+        );
+        assert!(parse_font_palette_overrides("0 red 0 blue").is_none());
+        assert!(parse_font_palette_overrides("-1 red").is_none());
+        let too_many = (0..=MAX_NATIVE_FONT_PALETTE_OVERRIDES)
+            .map(|index| format!("{index} red"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(parse_font_palette_overrides(&too_many).is_none());
+    }
     #[test]
     fn font_palette_parser_accepts_custom_identifiers_only() {
         assert!(matches!(

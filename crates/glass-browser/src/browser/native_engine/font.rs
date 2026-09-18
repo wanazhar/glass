@@ -2,9 +2,10 @@
 use super::css::NativeFontFeature;
 use super::css::NativeFontVariation;
 use super::css::{
-    DirectionValue, FontStyleValue, FontWeightValue, NativeColor, NativeFontFaceRule,
-    NativeFontFamilyList, NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning,
-    NativeFontLanguageOverride, NativeFontOpticalSizing, NativeFontPalette, NativeFontStretchRange,
+    DirectionValue, FontStyleValue, FontWeightValue, MAX_NATIVE_FONT_PALETTE_OVERRIDES,
+    NativeColor, NativeFontFaceRule, NativeFontFamilyList, NativeFontFamilyValue,
+    NativeFontFeatureSettings, NativeFontKerning, NativeFontLanguageOverride,
+    NativeFontOpticalSizing, NativeFontPalette, NativeFontPaletteOverride, NativeFontStretchRange,
     NativeFontVariantAlternates, NativeFontVariantCaps, NativeFontVariantEastAsian,
     NativeFontVariantEastAsianForm, NativeFontVariantEastAsianWidth, NativeFontVariantLigatures,
     NativeFontVariantNumeric, NativeFontVariantNumericFigure, NativeFontVariantNumericFraction,
@@ -983,6 +984,9 @@ enum NativeColorClip {
 
 struct NativeColorPainter<'a> {
     face: ttf_parser::Face<'a>,
+    palette_colors: Vec<NativeColor>,
+    palette_overrides: [Option<NativeFontPaletteOverride>; MAX_NATIVE_FONT_PALETTE_OVERRIDES],
+    foreground_color: NativeColor,
     current: Option<Vec<Vec<NativeOutlinePoint>>>,
     layers: Vec<NativeColorLayer>,
     transform: ttf_parser::Transform,
@@ -994,9 +998,17 @@ struct NativeColorPainter<'a> {
 }
 
 impl<'a> NativeColorPainter<'a> {
-    fn new(face: ttf_parser::Face<'a>) -> Self {
+    fn new(
+        face: ttf_parser::Face<'a>,
+        palette_colors: Vec<NativeColor>,
+        palette_overrides: [Option<NativeFontPaletteOverride>; MAX_NATIVE_FONT_PALETTE_OVERRIDES],
+        foreground_color: NativeColor,
+    ) -> Self {
         Self {
             face,
+            palette_colors,
+            palette_overrides,
+            foreground_color,
             current: None,
             layers: Vec::new(),
             transform: ttf_parser::Transform::default(),
@@ -1015,6 +1027,29 @@ impl<'a> NativeColorPainter<'a> {
             blue: color.blue,
             alpha: color.alpha,
         }
+    }
+
+    fn color_with_overrides(&self, color: ttf_parser::RgbaColor) -> Option<NativeColor> {
+        let native = Self::native_color(color);
+        if self.palette_overrides.iter().all(Option::is_none) {
+            return Some(native);
+        }
+        if native == self.foreground_color {
+            return Some(native);
+        }
+        let mut matched_palette_color = false;
+        for (palette_index, palette_color) in self.palette_colors.iter().enumerate() {
+            if *palette_color != native {
+                continue;
+            }
+            matched_palette_color = true;
+            if let Some(palette_override) =
+                self.palette_overrides.get(palette_index).copied().flatten()
+            {
+                return Some(palette_override.color);
+            }
+        }
+        matched_palette_color.then_some(native)
     }
 
     fn mark_unsupported(&mut self) {
@@ -1042,7 +1077,7 @@ impl<'a> NativeColorPainter<'a> {
             && self.layer_stack.is_empty()
     }
 
-    fn native_stops<I>(stops: I) -> Option<Arc<[NativeGradientStop]>>
+    fn native_stops<I>(&self, stops: I) -> Option<Arc<[NativeGradientStop]>>
     where
         I: Iterator<Item = ttf_parser::colr::ColorStop>,
     {
@@ -1056,7 +1091,7 @@ impl<'a> NativeColorPainter<'a> {
             }
             native_stops.push(NativeGradientStop {
                 offset: stop.stop_offset,
-                color: Self::native_color(stop.color),
+                color: self.color_with_overrides(stop.color)?,
             });
         }
         if native_stops.is_empty() {
@@ -1121,7 +1156,7 @@ impl<'a> NativeColorPainter<'a> {
             x2,
             y2,
             extend: Self::native_extend(gradient.extend),
-            stops: Self::native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
+            stops: self.native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
         })
     }
 
@@ -1157,7 +1192,7 @@ impl<'a> NativeColorPainter<'a> {
             r1: gradient.r1,
             transform,
             extend: Self::native_extend(gradient.extend),
-            stops: Self::native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
+            stops: self.native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
         })
     }
 
@@ -1188,7 +1223,7 @@ impl<'a> NativeColorPainter<'a> {
             end_angle: gradient.end_angle,
             transform,
             extend: Self::native_extend(gradient.extend),
-            stops: Self::native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
+            stops: self.native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
         })
     }
 
@@ -1250,9 +1285,9 @@ impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
             return;
         };
         let paint = match paint {
-            ttf_parser::colr::Paint::Solid(color) => {
-                Some(NativeColorPaint::Solid(Self::native_color(color)))
-            }
+            ttf_parser::colr::Paint::Solid(color) => self
+                .color_with_overrides(color)
+                .map(NativeColorPaint::Solid),
             ttf_parser::colr::Paint::LinearGradient(gradient) => self
                 .linear_gradient(gradient)
                 .map(NativeColorPaint::Gradient),
@@ -1497,6 +1532,7 @@ pub(crate) struct NativeTextMetrics {
     feature_settings: NativeFontFeatureSettings,
     kerning: NativeFontKerning,
     optical_sizing: NativeFontOpticalSizing,
+    palette_overrides: [Option<NativeFontPaletteOverride>; MAX_NATIVE_FONT_PALETTE_OVERRIDES],
     palette: NativeFontPalette,
     ascent: u32,
     line_height: u32,
@@ -1897,6 +1933,7 @@ impl NativeTextMetrics {
             kerning,
             optical_sizing: NativeFontOpticalSizing::Auto,
             palette: NativeFontPalette::Normal,
+            palette_overrides: [None; MAX_NATIVE_FONT_PALETTE_OVERRIDES],
             ascent: FALLBACK_LINE_HEIGHT.saturating_sub(5),
             line_height: FALLBACK_LINE_HEIGHT,
             direction,
@@ -2309,6 +2346,7 @@ impl NativeTextMetrics {
             kerning,
             optical_sizing: NativeFontOpticalSizing::Auto,
             palette: NativeFontPalette::Normal,
+            palette_overrides: [None; MAX_NATIVE_FONT_PALETTE_OVERRIDES],
             ascent,
             line_height,
             direction,
@@ -2324,10 +2362,23 @@ impl NativeTextMetrics {
         self.palette = palette;
         self
     }
+    pub(crate) fn with_palette_overrides(
+        mut self,
+        palette_overrides: [Option<NativeFontPaletteOverride>; MAX_NATIVE_FONT_PALETTE_OVERRIDES],
+    ) -> Self {
+        self.palette_overrides = palette_overrides;
+        self
+    }
 
     #[cfg(test)]
     pub(crate) const fn palette(&self) -> NativeFontPalette {
         self.palette
+    }
+    #[cfg(test)]
+    pub(crate) const fn palette_overrides(
+        &self,
+    ) -> [Option<NativeFontPaletteOverride>; MAX_NATIVE_FONT_PALETTE_OVERRIDES] {
+        self.palette_overrides
     }
 
     pub(crate) const fn line_height(&self) -> u32 {
@@ -2812,13 +2863,21 @@ impl NativeTextMetrics {
         variation_settings: NativeFontVariationSettings,
     ) -> Option<Vec<NativeRasterizedGlyph>> {
         let palette_index = palette_index_for_face(face.font_data.as_ref(), self.palette);
-        if let Some(layers) = rasterize_color_glyph(
-            face.font_data.as_ref(),
-            glyph_id,
-            self.font_size,
-            variation_settings,
-            palette_index,
-        ) {
+        let palette_is_valid = !matches!(
+            self.palette,
+            NativeFontPalette::Base(index)
+                if !palette_index_is_valid_for_face(face.font_data.as_ref(), index)
+        );
+        if palette_is_valid
+            && let Some(layers) = rasterize_color_glyph_with_overrides(
+                face.font_data.as_ref(),
+                glyph_id,
+                self.font_size,
+                variation_settings,
+                palette_index,
+                self.palette_overrides,
+            )
+        {
             return Some(layers);
         }
         if let Some(rasterized) = rasterize_bitmap_glyph(
@@ -3299,6 +3358,13 @@ fn read_be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     ))
 }
 
+fn palette_index_is_valid_for_face(font_data: &[u8], palette_index: u16) -> bool {
+    ttf_parser::Face::parse(font_data, 0)
+        .ok()
+        .and_then(|face| face.color_palettes())
+        .is_some_and(|palette_count| palette_index < palette_count.get())
+}
+
 fn palette_index_for_face(font_data: &[u8], palette: NativeFontPalette) -> u16 {
     let base_palette = match palette {
         NativeFontPalette::Base(index) => Some(index),
@@ -3352,12 +3418,85 @@ fn palette_index_for_face(font_data: &[u8], palette: NativeFontPalette) -> u16 {
     0
 }
 
+fn cpal_palette_colors(cpal: &[u8], palette_index: u16) -> Option<Vec<NativeColor>> {
+    let palette_entries = usize::from(read_be_u16(cpal, 2)?);
+    let palette_count = usize::from(read_be_u16(cpal, 4)?);
+    let color_record_count = usize::from(read_be_u16(cpal, 6)?);
+    if usize::from(palette_index) >= palette_count {
+        return None;
+    }
+    let color_records_offset = usize::try_from(read_be_u32(cpal, 8)?).ok()?;
+    let palette_indices_offset = 12usize.checked_add(usize::from(palette_index).checked_mul(2)?)?;
+    let first_color_record = usize::from(read_be_u16(cpal, palette_indices_offset)?);
+    let last_color_record = first_color_record.checked_add(palette_entries)?;
+    if last_color_record > color_record_count {
+        return None;
+    }
+    let mut colors = Vec::with_capacity(palette_entries);
+    for color_record in first_color_record..last_color_record {
+        let offset = color_records_offset.checked_add(color_record.checked_mul(4)?)?;
+        colors.push(NativeColor {
+            blue: *cpal.get(offset)?,
+            green: *cpal.get(offset.checked_add(1)?)?,
+            red: *cpal.get(offset.checked_add(2)?)?,
+            alpha: *cpal.get(offset.checked_add(3)?)?,
+        });
+    }
+    Some(colors)
+}
+
+fn palette_colors_for_face(font_data: &[u8], palette_index: u16) -> Option<Vec<NativeColor>> {
+    let face = ttf_parser::Face::parse(font_data, 0).ok()?;
+    let cpal = face
+        .raw_face()
+        .table(ttf_parser::Tag::from_bytes(b"CPAL"))?;
+    cpal_palette_colors(cpal, palette_index)
+}
+
+fn palette_overrides_are_unambiguous(
+    palette_colors: &[NativeColor],
+    palette_overrides: &[Option<NativeFontPaletteOverride>; MAX_NATIVE_FONT_PALETTE_OVERRIDES],
+    foreground_color: NativeColor,
+) -> bool {
+    palette_overrides.iter().flatten().all(|palette_override| {
+        let Some(source_color) = palette_colors.get(usize::from(palette_override.palette_index))
+        else {
+            return false;
+        };
+        *source_color != foreground_color
+            && palette_colors
+                .iter()
+                .filter(|candidate| **candidate == *source_color)
+                .count()
+                == 1
+    })
+}
+
+#[cfg(test)]
 fn rasterize_color_glyph(
     font_data: &[u8],
     glyph_id: u16,
     font_size: u32,
     variation_settings: NativeFontVariationSettings,
     palette_index: u16,
+) -> Option<Vec<NativeRasterizedGlyph>> {
+    rasterize_color_glyph_with_overrides(
+        font_data,
+        glyph_id,
+        font_size,
+        variation_settings,
+        palette_index,
+        [None; MAX_NATIVE_FONT_PALETTE_OVERRIDES],
+    )
+}
+
+fn rasterize_color_glyph_with_overrides(
+    font_data: &[u8],
+    glyph_id: u16,
+    font_size: u32,
+    variation_settings: NativeFontVariationSettings,
+    palette_index: u16,
+    palette_overrides: [Option<NativeFontPaletteOverride>; MAX_NATIVE_FONT_PALETTE_OVERRIDES],
 ) -> Option<Vec<NativeRasterizedGlyph>> {
     let mut face = ttf_parser::Face::parse(font_data, 0).ok()?;
     for variation in variation_settings.values() {
@@ -3370,7 +3509,28 @@ fn rasterize_color_glyph(
     if !face.is_color_glyph(glyph_id) || palette_index >= face.color_palettes()?.get() {
         return None;
     }
-    let mut painter = NativeColorPainter::new(face.clone());
+    let foreground_color = NativeColor {
+        red: 0,
+        green: 0,
+        blue: 0,
+        alpha: u8::MAX,
+    };
+    let palette_colors = if palette_overrides.iter().any(Option::is_some) {
+        let palette_colors = palette_colors_for_face(font_data, palette_index)?;
+        if !palette_overrides_are_unambiguous(&palette_colors, &palette_overrides, foreground_color)
+        {
+            return None;
+        }
+        palette_colors
+    } else {
+        Vec::new()
+    };
+    let mut painter = NativeColorPainter::new(
+        face.clone(),
+        palette_colors,
+        palette_overrides,
+        foreground_color,
+    );
     face.paint_color_glyph(
         glyph_id,
         palette_index,
@@ -4858,6 +5018,135 @@ mod tests {
     }
 
     #[test]
+    fn colr_palette_overrides_change_solid_and_gradient_colors() {
+        let solid_bytes = include_bytes!("../../../tests/fixtures/colr-v0.ttf");
+        let solid_face =
+            ttf_parser::Face::parse(solid_bytes, 0).expect("COLRv0 fixture must parse");
+        let solid_glyph = solid_face
+            .glyph_index('A')
+            .expect("COLRv0 fixture must map A to a glyph");
+        let solid_layers = rasterize_color_glyph(
+            solid_bytes,
+            solid_glyph.0,
+            32,
+            NativeFontVariationSettings::default(),
+            0,
+        )
+        .expect("COLRv0 glyph must rasterize");
+        let solid_palette = palette_colors_for_face(solid_bytes, 0).expect("CPAL must parse");
+        let solid_index = solid_palette
+            .iter()
+            .enumerate()
+            .find(|(_, color)| {
+                solid_layers
+                    .iter()
+                    .any(|layer| layer.color == Some(**color))
+            })
+            .map(|(index, _)| index)
+            .expect("COLRv0 layer must reference a CPAL entry");
+        assert!(solid_index < MAX_NATIVE_FONT_PALETTE_OVERRIDES);
+        let replacement = NativeColor {
+            red: 12,
+            green: 34,
+            blue: 56,
+            alpha: u8::MAX,
+        };
+        let mut solid_overrides = [None; MAX_NATIVE_FONT_PALETTE_OVERRIDES];
+        solid_overrides[solid_index] = Some(NativeFontPaletteOverride {
+            palette_index: u16::try_from(solid_index).unwrap(),
+            color: replacement,
+        });
+        let overridden_solid_layers = rasterize_color_glyph_with_overrides(
+            solid_bytes,
+            solid_glyph.0,
+            32,
+            NativeFontVariationSettings::default(),
+            0,
+            solid_overrides,
+        )
+        .expect("COLRv0 override must rasterize");
+        assert!(
+            overridden_solid_layers
+                .iter()
+                .any(|layer| layer.color == Some(replacement))
+        );
+
+        let gradient_bytes = include_bytes!("../../../tests/fixtures/colr-1.ttf");
+        let gradient_palette =
+            palette_colors_for_face(gradient_bytes, 0).expect("COLRv1 CPAL must parse");
+        fn stops_for(gradient: &NativeGlyphGradient) -> &[NativeGradientStop] {
+            match gradient {
+                NativeGlyphGradient::Linear { stops, .. }
+                | NativeGlyphGradient::Radial { stops, .. }
+                | NativeGlyphGradient::Sweep { stops, .. } => stops,
+            }
+        }
+        let (gradient_glyph, gradient_index) = [9_u16, 13, 93]
+            .into_iter()
+            .find_map(|glyph_id| {
+                let layers = rasterize_color_glyph(
+                    gradient_bytes,
+                    glyph_id,
+                    32,
+                    NativeFontVariationSettings::default(),
+                    0,
+                )?;
+                let index = gradient_palette
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, color)| {
+                        layers
+                            .iter()
+                            .filter_map(|layer| layer.gradient.as_ref())
+                            .any(|gradient| {
+                                stops_for(gradient).iter().any(|stop| stop.color == *color)
+                            })
+                            .then_some(index)
+                    })?;
+                Some((glyph_id, index))
+            })
+            .expect("COLRv1 gradient must reference a CPAL entry");
+        let mut gradient_overrides = [None; MAX_NATIVE_FONT_PALETTE_OVERRIDES];
+        gradient_overrides[gradient_index] = Some(NativeFontPaletteOverride {
+            palette_index: u16::try_from(gradient_index).unwrap(),
+            color: replacement,
+        });
+        let overridden_gradient_layers = rasterize_color_glyph_with_overrides(
+            gradient_bytes,
+            gradient_glyph,
+            32,
+            NativeFontVariationSettings::default(),
+            0,
+            gradient_overrides,
+        )
+        .expect("COLRv1 gradient override must rasterize");
+        assert!(
+            overridden_gradient_layers
+                .iter()
+                .filter_map(|layer| layer.gradient.as_ref())
+                .any(|gradient| stops_for(gradient)
+                    .iter()
+                    .any(|stop| stop.color == replacement))
+        );
+        let mut invalid_overrides = [None; MAX_NATIVE_FONT_PALETTE_OVERRIDES];
+        invalid_overrides[0] = Some(NativeFontPaletteOverride {
+            palette_index: u16::MAX,
+            color: replacement,
+        });
+        assert!(
+            rasterize_color_glyph_with_overrides(
+                solid_bytes,
+                solid_glyph.0,
+                32,
+                NativeFontVariationSettings::default(),
+                0,
+                invalid_overrides,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn cpal_semantic_palette_keywords_select_advertised_palettes() {
         let bytes = include_bytes!("../../../tests/fixtures/colr-1.ttf");
         assert_eq!(palette_index_for_face(bytes, NativeFontPalette::Normal), 0);
@@ -5566,7 +5855,12 @@ mod tests {
     fn colr_current_outline_clip_rejects_a_replaced_outline() {
         let bytes = include_bytes!("../../../tests/fixtures/colr-1.ttf");
         let face = ttf_parser::Face::parse(bytes, 0).expect("COLRv1 fixture must parse");
-        let mut painter = NativeColorPainter::new(face.clone());
+        let mut painter = NativeColorPainter::new(
+            face.clone(),
+            Vec::new(),
+            [None; MAX_NATIVE_FONT_PALETTE_OVERRIDES],
+            NativeColor::BLACK,
+        );
         ttf_parser::colr::Painter::outline_glyph(&mut painter, ttf_parser::GlyphId(3));
         ttf_parser::colr::Painter::push_clip(&mut painter);
         ttf_parser::colr::Painter::outline_glyph(&mut painter, ttf_parser::GlyphId(2));

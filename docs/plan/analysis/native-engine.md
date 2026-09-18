@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-539`, following
+expansion checkpoint is completed `native-engine-browser-540`, following
+completed `native-engine-browser-539`, following
 completed `native-engine-browser-538`, following
 completed `native-engine-browser-537`, following
 completed `native-engine-browser-536`, following
@@ -363,12 +364,20 @@ metrics, variation coordinates, or surface budgets. Palette zero remains the
 default boundary for unregistered or malformed CSS palette selections; keyword
 and named base palette paths are recorded by slices 538 and 539.
 
+Slice 540 adds bounded `override-colors` descriptor parsing to named
+`@font-palette-values` rules. Document-local overrides select exact unique CPAL
+source colors and carry substitutions through solid and gradient COLR paints;
+malformed, ambiguous, over-budget, or unidentifiable mappings fail closed to
+the existing monochrome path rather than silently choosing a nearest color.
+Font matching, shaping, metrics, transforms, clipping, compositing, CSSOM, and
+raster budgets remain unchanged.
+
 Slice 539 adds bounded custom dashed-ident names to inherited `font-palette`
 and CSSOM, and parses document-local `@font-palette-values` rules with
 last-wins `base-palette` selection. Resolved base indices enter the existing
 COLR/CPAL palette validation and raster path; unregistered names fail closed to
-palette zero, while unsupported `override-colors` descriptors are rejected
-rather than silently painted. Color override APIs remain issue #40 gates.
+palette zero. Malformed and unsupported override descriptors remain rejected;
+valid color overrides are covered by slice 540.
 
 Slice 538 adds inherited CSS `font-palette: normal|light|dark` to native
 parsing, cascade, computed style, CSSOM, and text metrics. `normal` selects
@@ -383,8 +392,8 @@ synthetic-stretch, and glyph-local pixel mappings. Raster samples inverse-map
 through the composed transform before evaluating the authored angle span, so
 skew, non-uniform scale, rotation, reflection, and translation preserve sweep
 semantics without approximation. Invalid transforms fail closed; SVG-in-font
-sources, palette override APIs, bitmap variation axes, hinting, font-display
-timing, and complete FontFace/Web IDL parity remain issue #40 gates.
+sources, bitmap variation axes, hinting, font-display timing, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 535 removes the identity-transform-only clip-box boundary. Each
 finite, nonsingular transformed COLRv1 clip rectangle becomes a bounded convex

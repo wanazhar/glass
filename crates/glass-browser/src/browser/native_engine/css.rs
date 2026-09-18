@@ -1158,6 +1158,34 @@ impl NativeFontFeatureSettings {
         self.values().iter().any(|feature| &feature.tag == tag)
     }
 
+    pub(crate) fn with_overrides(self, overrides: Self) -> Self {
+        let mut merged = Self::default();
+        for feature in overrides.values().iter().chain(self.values()) {
+            if !merged.contains_tag(&feature.tag) && !merged.insert(*feature) {
+                break;
+            }
+        }
+        merged
+    }
+
+    fn insert(&mut self, feature: NativeFontFeature) -> bool {
+        let count = usize::from(self.count);
+        if let Some(existing) = self
+            .values
+            .get_mut(..count)
+            .and_then(|values| values.iter_mut().find(|item| item.tag == feature.tag))
+        {
+            *existing = feature;
+            true
+        } else if let Some(slot) = self.values.get_mut(count) {
+            *slot = feature;
+            self.count = self.count.saturating_add(1);
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn is_valid(&self) -> bool {
         usize::from(self.count) <= MAX_NATIVE_FONT_FEATURES
             && self.values().iter().all(|feature| {
@@ -13689,6 +13717,79 @@ fn parse_font_variant_shorthand(value: &str) -> Option<NativeFontVariantShorthan
 fn parse_font_variant_shorthand_declaration(value: &str) -> Option<NativeFontVariantShorthand> {
     parse_font_variant_shorthand(value)
 }
+pub(crate) fn parse_font_face_variant(value: &str) -> Option<NativeFontFeatureSettings> {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("normal") {
+        return Some(NativeFontFeatureSettings::default());
+    }
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    parse_font_variant_shorthand(trimmed)?;
+    let mut settings = NativeFontFeatureSettings::default();
+    macro_rules! add_feature {
+        ($tag:literal, $value:expr) => {
+            if !settings.insert(NativeFontFeature {
+                tag: *$tag,
+                value: $value,
+            }) {
+                return None;
+            }
+        };
+    }
+    for token in trimmed.split_ascii_whitespace() {
+        match token.to_ascii_lowercase().as_str() {
+            "common-ligatures" => {
+                add_feature!(b"liga", 1);
+                add_feature!(b"clig", 1);
+            }
+            "no-common-ligatures" => {
+                add_feature!(b"liga", 0);
+                add_feature!(b"clig", 0);
+            }
+            "discretionary-ligatures" => add_feature!(b"dlig", 1),
+            "no-discretionary-ligatures" => add_feature!(b"dlig", 0),
+            "historical-ligatures" => add_feature!(b"hlig", 1),
+            "no-historical-ligatures" => add_feature!(b"hlig", 0),
+            "contextual" => add_feature!(b"calt", 1),
+            "no-contextual" => add_feature!(b"calt", 0),
+            "small-caps" => add_feature!(b"smcp", 1),
+            "all-small-caps" => {
+                add_feature!(b"c2sc", 1);
+                add_feature!(b"smcp", 1);
+            }
+            "petite-caps" => add_feature!(b"pcap", 1),
+            "all-petite-caps" => {
+                add_feature!(b"c2pc", 1);
+                add_feature!(b"pcap", 1);
+            }
+            "unicase" => add_feature!(b"unic", 1),
+            "titling-caps" => add_feature!(b"titl", 1),
+            "sub" => add_feature!(b"subs", 1),
+            "super" => add_feature!(b"sups", 1),
+            "historical-forms" => add_feature!(b"hist", 1),
+            "jis78" => add_feature!(b"jp78", 1),
+            "jis83" => add_feature!(b"jp83", 1),
+            "jis90" => add_feature!(b"jp90", 1),
+            "jis04" => add_feature!(b"jp04", 1),
+            "simplified" => add_feature!(b"smpl", 1),
+            "traditional" => add_feature!(b"trad", 1),
+            "full-width" => add_feature!(b"fwid", 1),
+            "proportional-width" => add_feature!(b"pwid", 1),
+            "ruby" => add_feature!(b"ruby", 1),
+            "lining-nums" => add_feature!(b"lnum", 1),
+            "oldstyle-nums" => add_feature!(b"onum", 1),
+            "proportional-nums" => add_feature!(b"pnum", 1),
+            "tabular-nums" => add_feature!(b"tnum", 1),
+            "diagonal-fractions" => add_feature!(b"frac", 1),
+            "stacked-fractions" => add_feature!(b"afrc", 1),
+            "ordinal" => add_feature!(b"ordn", 1),
+            "slashed-zero" => add_feature!(b"zero", 1),
+            _ => return None,
+        }
+    }
+    Some(settings)
+}
 
 fn parse_font_variant_numeric(value: &str) -> Option<NativeFontVariantNumeric> {
     let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
@@ -23527,6 +23628,44 @@ mod tests {
         assert!(parse_font_feature_settings(r#""liga" -1"#).is_none());
         assert!(parse_font_feature_settings(r#""liga" 65536"#).is_none());
         assert!(parse_font_feature_settings(r#""liga" 1 extra"#).is_none());
+    }
+    #[test]
+    fn font_face_variant_descriptor_maps_to_bounded_features() {
+        let settings = parse_font_face_variant(" SMALL-CAPS proportional-nums RUBY ").unwrap();
+        assert_eq!(settings.count, 3);
+        assert_eq!(
+            settings.values[0],
+            NativeFontFeature {
+                tag: *b"smcp",
+                value: 1
+            }
+        );
+        assert_eq!(
+            settings.values[1],
+            NativeFontFeature {
+                tag: *b"pnum",
+                value: 1
+            }
+        );
+        assert_eq!(
+            settings.values[2],
+            NativeFontFeature {
+                tag: *b"ruby",
+                value: 1
+            }
+        );
+        let explicit = parse_font_feature_settings(r#""smcp" off"#).unwrap();
+        let merged = settings.with_overrides(explicit);
+        assert_eq!(merged.count, 3);
+        assert_eq!(merged.values[0].tag, *b"smcp");
+        assert_eq!(merged.values[0].value, 0);
+        assert_eq!(
+            parse_font_face_variant("normal"),
+            Some(NativeFontFeatureSettings::default())
+        );
+        assert!(parse_font_face_variant("none").is_none());
+        assert!(parse_font_face_variant("small-caps all-small-caps").is_none());
+        assert!(parse_font_face_variant("small-caps made-up").is_none());
     }
 
     #[test]

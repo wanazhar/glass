@@ -1740,7 +1740,11 @@ impl NativeServiceWorkerRegistry {
             return Ok(NativeServiceWorkerFetchOutcome::NotHandled);
         };
         if !is_navigation {
-            loader.enforce_service_worker_connect_policy(&owner, &target)?;
+            if destination == "font" {
+                loader.enforce_service_worker_font_policy(&owner, &target)?;
+            } else {
+                loader.enforce_service_worker_connect_policy(&owner, &target)?;
+            }
         }
         let client_id = self.current_client_id_for(document_url);
         let controlled = self.current_client_is_controlled(document_url);
@@ -1863,7 +1867,11 @@ impl NativeServiceWorkerRegistry {
             })?;
         let response = decode_service_worker_response(response, target.as_str())?;
         if !is_navigation {
-            loader.report_service_worker_connect_policy(&owner, &target);
+            if destination == "font" {
+                loader.report_service_worker_font_policy(&owner, &target);
+            } else {
+                loader.report_service_worker_connect_policy(&owner, &target);
+            }
         }
         Ok(NativeServiceWorkerFetchOutcome::Handled(response))
     }

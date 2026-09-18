@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-543`, following completed
 `native-engine-browser-542`, following completed
 `native-engine-browser-541`, following completed
 `native-engine-browser-540`, following completed
@@ -377,6 +378,15 @@ keywords are normalized and included in static-face identity, while font
 admission, status, events, and dynamic source handling remain unchanged.
 Block/swap/fallback/optional render timing, installed-font discovery, and full
 FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 543 routes controlled dynamic `FontFace` network sources through the
+native Service Worker owner with `Request.destination === "font"`. Handled
+responses preserve status, headers, content type, final URL, and bounded bytes;
+unhandled requests retain the direct native font loader. The document `font-src`
+policy and report-only violations apply to the worker route, while file/data/
+blob sources and suspended worker requests retain their existing boundaries.
+Font-display timing, installed-font discovery, and complete FontFace/Web IDL
+parity remain issue #40 gates.
 
 Slice 540 adds bounded `override-colors` descriptor parsing to named
 `@font-palette-values` rules. Document-local overrides select exact unique CPAL

@@ -22504,6 +22504,9 @@ fn worker_bootstrap(
     const credentials = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
     if (!["omit", "same-origin", "include"].includes(credentials))
       throw new TypeError("native Worker Request credentials are unsupported");
+    const destination = settings.destination === undefined ? "" : String(settings.destination);
+    if (!["", "font", "fetch", "document"].includes(destination))
+      throw new TypeError("native Worker Request destination is unsupported");
     const headers = new WorkerHeadersNative(settings.headers);
     if (payload.contentType && !headers.has("content-type")) headers.set("content-type", payload.contentType);
     settings.method = method;
@@ -22511,6 +22514,7 @@ fn worker_bootstrap(
     settings.redirect = redirect;
     settings.cache = cache;
     settings.credentials = credentials;
+    settings.destination = destination;
     settings.headers = headers;
     const signal = settings.signal === undefined ? new AbortSignalNative() : settings.signal;
     if (!signal || typeof signal !== "object" || typeof signal.aborted !== "boolean"
@@ -22529,6 +22533,7 @@ fn worker_bootstrap(
     this.redirect = redirect;
     this.cache = cache;
     this.credentials = credentials;
+    this.destination = destination;
     this.signal = signal;
     const bodyState = this.__glassWorkerRequestBodyState;
     bodyState.stream = payload.bodyNull
@@ -27416,6 +27421,7 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       mode: String(payload && payload.mode || "same-origin"),
       redirect: String(payload && payload.redirect || "follow"),
       credentials: payload && payload.credentials === true ? "include" : "omit",
+      destination: String(payload && payload.destination || ""),
     });
     let responded = false;
     let responsePromise = null;

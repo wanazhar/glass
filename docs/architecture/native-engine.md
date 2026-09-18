@@ -343,14 +343,23 @@ and variation-aware outline rasterization, while static faces and `none`
 retain their existing behavior. Custom axes, hinting, color tables, and
 complete FontFace/Web IDL parity remain issue #40 gates.
 
+Slice 535 removes the identity-transform-only clip-box boundary. Each
+finite, nonsingular transformed COLRv1 clip rectangle becomes a bounded convex
+quadrilateral in the current paint space. Nested clip rectangles are retained
+as a small mask list and tested at the existing supersampled raster samples,
+so translation, rotation, scale, reflection, and skew intersect without
+allocating an unbounded mask surface. Singular, non-finite, and out-of-bound
+clip transforms fail closed; sweep-gradient skew parity remains an issue #40
+gate.
+
 Slice 534 removes the conformal-only radial-gradient boundary. Native
 COLRv1 radial paints retain their two-circle geometry in gradient space and
 carry a bounded finite nonsingular affine transform through glyph-local pixel
 mapping. The raster sampler inverse-maps each sample into that space before
 solving the exact conical equation, so skew, non-uniform scale, rotation,
 reflection, and translation produce the corresponding ellipse without an
-approximation. Singular or non-finite transforms fail closed; transformed
-clip masks and sweep-gradient skew parity remain separate issue #40 gates.
+approximation. Singular or non-finite transforms fail closed; sweep-gradient
+skew parity remains a separate issue #40 gate.
 
 Slice 533 replaces the earlier bounded COLRv1 radial-gradient approximation
 with the exact two-circle conical-gradient equation. For each finite sample,
@@ -365,9 +374,9 @@ FontFace `local()` source resolution in the same checkpoint borrows the
 immutable system font book for each selected payload instead of cloning every
 installed face inside a JavaScript callback, keeping concurrent native runtimes
 bounded.
-Sweep skew parity, transformed clip masks, SVG-in-font sources, palette APIs,
-bitmap variation axes, hinting, font-display, and complete FontFace/Web IDL
-parity remain issue #40 gates.
+Sweep skew parity, SVG-in-font sources, palette APIs, bitmap variation axes,
+hinting, font-display, and complete FontFace/Web IDL parity remain issue #40
+gates.
 
 Slice 532 adds bounded raster-image glyph support to the native software text renderer. The selected `ttf-parser` collection face is retained for TTC/OTC system fonts, and bounded strikes from `sbix`, `CBDT`/`CBLC`, `EBDT`/`EBLC`, and related bitmap tables are admitted through `glyph_raster_image`. PNG, premultiplied BGRA32, monochrome, and 2/4/8-bit grayscale payloads retain glyph offsets and source-strike scaling under 1,024-pixel and 4 MiB limits. Color pixels carry straight RGBA and embedded alpha through `NativeGlyph` into the existing compositor; grayscale images reuse text-paint coverage.
 Malformed, unsupported, oversized, and over-stretched bitmap payloads fail closed to the existing variable-outline, outline, or fontdue path. COLR remains the higher-priority color owner; SVG-in-font sources, palette selection, bitmap variation axes, hinting, font-display timing, and complete FontFace/Web IDL parity remain issue #40 gates.
@@ -378,8 +387,7 @@ each color-line position is projected. The three finite points survive affine
 paint transforms, synthetic stretch, and glyph-local pixel mapping; a
 cross-product sampler applies the existing extend modes and sorted stops.
 Collinear or non-finite triples fail closed rather than guessing a gradient
-direction. Sweep skew parity and transformed clip masks remain explicit issue
-#40 gates.
+direction. Sweep skew parity remains an explicit issue #40 gate.
 
 Slice 530 carries the composed paint transform into COLRv1 gradients. Linear
 gradients transform finite points directly; radial and sweep gradients admit
@@ -387,9 +395,9 @@ finite conformal transforms (translation, rotation/uniform scale, and
 reflection), including radius scaling and sweep-direction mapping. The
 radial path now admits the broader affine ellipse transform in slice 534;
 sweep skew and non-finite transformed coordinates still fail closed to
-monochrome fallback. The existing axis-aligned clip-box representation remains
-identity-transform-only; sweep skew parity and transformed clip masks remain
-explicit issue #40 gates.
+monochrome fallback. Transformed clip masks are now carried by slice 535; the
+axis-aligned representation is retained only as the source rectangle.
+Sweep-gradient skew parity remains an explicit issue #40 gate.
 
 Slice 529 adds bounded COLRv1 linear, radial, and sweep gradient paints plus
 clip-box coverage. The native color painter admits finite coordinates and at
@@ -398,8 +406,7 @@ glyph-local descriptor, and samples colors directly while rasterizing coverage
 instead of allocating a per-pixel gradient buffer. Nested clip boxes intersect
 with the existing current-outline provenance guard; malformed stops, unsupported
 sweep transforms, and unsupported paint graphs fail closed to monochrome
-fallback. Sweep skew parity and transformed clip masks remain explicit issue
-#40 gates.
+fallback. Sweep-gradient skew parity remains an explicit issue #40 gate.
 
 Slice 528 closes a COLRv1 clip-provenance hole. Each admitted outline receives
 a bounded generation; a current-outline clip is accepted without a redundant

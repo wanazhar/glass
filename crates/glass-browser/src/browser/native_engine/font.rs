@@ -791,7 +791,7 @@ struct NativeColorLayer {
     contours: Vec<Vec<NativeOutlinePoint>>,
     paint: NativeColorPaint,
     composite: NativeGlyphComposite,
-    clip_box: Option<NativeColorClipBox>,
+    clip_mask: Option<NativeColorClipMask>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -880,33 +880,95 @@ impl NativeColorPaint {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct NativeColorClipBox {
-    x_min: f32,
-    y_min: f32,
-    x_max: f32,
-    y_max: f32,
+struct NativeColorClipPolygon {
+    points: [NativeOutlinePoint; 4],
 }
 
-impl NativeColorClipBox {
-    fn contains(self, x: f32, y: f32) -> bool {
-        x >= self.x_min && x <= self.x_max && y >= self.y_min && y <= self.y_max
+impl NativeColorClipPolygon {
+    fn from_bounds(
+        x_min: f32,
+        y_min: f32,
+        x_max: f32,
+        y_max: f32,
+        transform: ttf_parser::Transform,
+    ) -> Option<Self> {
+        if !NativeGradientTransform::from_ttf(transform).is_invertible() {
+            return None;
+        }
+        let transform_point = |x: f32, y: f32| {
+            let transformed_x = transform.a.mul_add(x, transform.c.mul_add(y, transform.e));
+            let transformed_y = transform.b.mul_add(x, transform.d.mul_add(y, transform.f));
+            (transformed_x.is_finite()
+                && transformed_y.is_finite()
+                && transformed_x.abs() <= MAX_COLOR_TRANSFORM_COMPONENT
+                && transformed_y.abs() <= MAX_COLOR_TRANSFORM_COMPONENT)
+                .then_some(NativeOutlinePoint {
+                    x: transformed_x,
+                    y: transformed_y,
+                })
+        };
+        let points = [
+            transform_point(x_min, y_min)?,
+            transform_point(x_max, y_min)?,
+            transform_point(x_max, y_max)?,
+            transform_point(x_min, y_max)?,
+        ];
+        let area = points
+            .iter()
+            .enumerate()
+            .map(|(index, point)| {
+                let next = points[(index + 1) % points.len()];
+                point.x.mul_add(next.y, -(point.y * next.x))
+            })
+            .sum::<f32>();
+        area.is_finite().then_some(Self { points })
     }
 
-    fn intersect(self, other: Self) -> Option<Self> {
-        let result = Self {
-            x_min: self.x_min.max(other.x_min),
-            y_min: self.y_min.max(other.y_min),
-            x_max: self.x_max.min(other.x_max),
-            y_max: self.y_max.min(other.y_max),
-        };
-        (result.x_min <= result.x_max && result.y_min <= result.y_max).then_some(result)
+    fn contains(self, x: f32, y: f32) -> bool {
+        if !x.is_finite() || !y.is_finite() {
+            return false;
+        }
+        let mut orientation = 0_i8;
+        for index in 0..self.points.len() {
+            let start = self.points[index];
+            let end = self.points[(index + 1) % self.points.len()];
+            let cross =
+                (end.x - start.x).mul_add(y - start.y, -((end.y - start.y) * (x - start.x)));
+            if !cross.is_finite() {
+                return false;
+            }
+            if cross.abs() <= f32::EPSILON {
+                continue;
+            }
+            let edge_orientation = if cross > 0.0 { 1 } else { -1 };
+            if orientation == 0 {
+                orientation = edge_orientation;
+            } else if orientation != edge_orientation {
+                return false;
+            }
+        }
+        orientation != 0
+    }
+}
+
+#[derive(Debug, Clone)]
+struct NativeColorClipMask {
+    polygons: Vec<NativeColorClipPolygon>,
+}
+
+impl NativeColorClipMask {
+    fn contains(&self, x: f32, y: f32) -> bool {
+        self.polygons
+            .iter()
+            .copied()
+            .all(|polygon| polygon.contains(x, y))
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 enum NativeColorClip {
     Outline(u64),
-    Box(NativeColorClipBox),
+    Box(NativeColorClipPolygon),
 }
 
 struct NativeColorPainter<'a> {
@@ -1152,26 +1214,18 @@ impl<'a> NativeColorPainter<'a> {
         })
     }
 
-    fn active_clip_box(&self) -> Result<Option<NativeColorClipBox>, ()> {
-        let mut clip_box: Option<NativeColorClipBox> = None;
+    fn active_clip_mask(&self) -> Result<Option<NativeColorClipMask>, ()> {
+        let mut polygons = Vec::new();
         for clip in &self.clip_stack {
             match clip {
                 NativeColorClip::Outline(generation) if *generation != self.outline_generation => {
                     return Err(());
                 }
                 NativeColorClip::Outline(_) => {}
-                NativeColorClip::Box(next) => {
-                    if !self.transform.is_default() {
-                        return Err(());
-                    }
-                    clip_box = match clip_box {
-                        Some(current) => Some(current.intersect(*next).ok_or(())?),
-                        None => Some(*next),
-                    };
-                }
+                NativeColorClip::Box(polygon) => polygons.push(*polygon),
             }
         }
-        Ok(clip_box)
+        Ok((!polygons.is_empty()).then_some(NativeColorClipMask { polygons }))
     }
 }
 
@@ -1213,7 +1267,7 @@ impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
             self.mark_unsupported();
             return;
         };
-        let Ok(clip_box) = self.active_clip_box() else {
+        let Ok(clip_mask) = self.active_clip_mask() else {
             self.mark_unsupported();
             return;
         };
@@ -1243,7 +1297,7 @@ impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
             contours,
             paint,
             composite: self.layer_stack.last().copied().unwrap_or_default(),
-            clip_box,
+            clip_mask,
         });
     }
 
@@ -1271,13 +1325,24 @@ impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
             self.mark_unsupported();
             return;
         }
-        self.clip_stack
-            .push(NativeColorClip::Box(NativeColorClipBox {
-                x_min: clipbox.x_min,
-                y_min: clipbox.y_min,
-                x_max: clipbox.x_max,
-                y_max: clipbox.y_max,
-            }));
+        let transform = NativeGradientTransform::from_ttf(self.transform);
+        let Some(polygon) = transform
+            .is_invertible()
+            .then(|| {
+                NativeColorClipPolygon::from_bounds(
+                    clipbox.x_min,
+                    clipbox.y_min,
+                    clipbox.x_max,
+                    clipbox.y_max,
+                    self.transform,
+                )
+            })
+            .flatten()
+        else {
+            self.mark_unsupported();
+            return;
+        };
+        self.clip_stack.push(NativeColorClip::Box(polygon));
     }
 
     fn pop_clip(&mut self) {
@@ -3256,7 +3321,7 @@ fn rasterize_color_glyph(
                 &layer.contours,
                 font_size,
                 units_per_em,
-                layer.clip_box,
+                layer.clip_mask,
             )?;
             rasterized.color = match &layer.paint {
                 NativeColorPaint::Solid(color) => Some(*color),
@@ -3282,7 +3347,7 @@ fn rasterize_outline_contours(
     contours: &[Vec<NativeOutlinePoint>],
     font_size: u32,
     units_per_em: f32,
-    clip_box: Option<NativeColorClipBox>,
+    clip_mask: Option<NativeColorClipMask>,
 ) -> Option<NativeRasterizedGlyph> {
     if units_per_em <= 0.0 {
         return None;
@@ -3328,7 +3393,7 @@ fn rasterize_outline_contours(
                         + column as f32
                         + (sample_x as f32 + 0.5) / sample_side as f32)
                         / scale;
-                    if clip_box.is_none_or(|clip| clip.contains(x, y))
+                    if clip_mask.as_ref().is_none_or(|clip| clip.contains(x, y))
                         && outline_contains(&contours, x, y)
                     {
                         hits = hits.saturating_add(1);
@@ -4974,6 +5039,82 @@ mod tests {
             NativeColorPainter::conformal_scale(ttf_parser::Transform::new_skew(0.125, 0.0))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn transformed_color_clip_polygons_intersect_nested_masks() {
+        let outer = NativeColorClipPolygon::from_bounds(
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            ttf_parser::Transform {
+                a: 1.0,
+                b: 0.5,
+                c: 0.25,
+                d: 1.0,
+                e: 3.0,
+                f: -2.0,
+            },
+        )
+        .expect("finite nonsingular transformed clip must be admitted");
+        let inner = NativeColorClipPolygon::from_bounds(
+            4.0,
+            1.0,
+            8.0,
+            5.0,
+            ttf_parser::Transform::default(),
+        )
+        .expect("identity clip must be admitted");
+        let mask = NativeColorClipMask {
+            polygons: vec![outer, inner],
+        };
+
+        assert!(mask.contains(5.0, 2.0));
+        assert!(!mask.contains(3.0, 2.0));
+        assert!(!mask.contains(20.0, 2.0));
+        assert!(
+            NativeColorClipPolygon::from_bounds(
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                ttf_parser::Transform::new_scale(0.0, 1.0),
+            )
+            .is_none()
+        );
+
+        let raster_mask = NativeColorClipMask {
+            polygons: vec![
+                NativeColorClipPolygon::from_bounds(
+                    0.0,
+                    0.0,
+                    10.0,
+                    10.0,
+                    ttf_parser::Transform::new_translate(2.0, 0.0),
+                )
+                .expect("translated outer clip must be admitted"),
+                NativeColorClipPolygon::from_bounds(
+                    4.0,
+                    1.0,
+                    8.0,
+                    9.0,
+                    ttf_parser::Transform::default(),
+                )
+                .expect("inner clip must be admitted"),
+            ],
+        };
+        let contours = vec![vec![
+            NativeOutlinePoint { x: 0.0, y: 0.0 },
+            NativeOutlinePoint { x: 10.0, y: 0.0 },
+            NativeOutlinePoint { x: 10.0, y: 10.0 },
+            NativeOutlinePoint { x: 0.0, y: 10.0 },
+        ]];
+        let rasterized = rasterize_outline_contours(&contours, 10, 10.0, Some(raster_mask))
+            .expect("transformed nested clips must rasterize");
+        assert_eq!(rasterized.coverage[5 * 10], 0);
+        assert_eq!(rasterized.coverage[5 * 10 + 5], u8::MAX);
+        assert_eq!(rasterized.coverage[5 * 10 + 8], 0);
     }
 
     #[test]

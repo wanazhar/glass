@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-552`, following
+expansion checkpoint is completed `native-engine-browser-553`, following
+completed `native-engine-browser-552`, following
 completed `native-engine-browser-551`, following
 completed `native-engine-browser-550`, following
 completed `native-engine-browser-549`, following
@@ -429,6 +430,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 553 carries normalized CSS `font-display` through static stylesheet
+projection and identity/status matching, dynamic install commands, native
+resources, and the content-process wire. The document owner revalidates the
+five supported keywords and legacy missing fields default to `auto`; invalid
+dynamic values fail before resource mutation. This slice does not implement
+font-display timing, block/swap/fallback periods, installed-font discovery,
+variable-axis completeness, hinting, media output, or complete FontFace/Web IDL
+parity; those remain explicit issue #40 gates.
 
 Slice 552 carries CSS `ascent-override`, `descent-override`, and
 `line-gap-override` through static stylesheet parsing and page-realm

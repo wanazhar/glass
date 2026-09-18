@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-553`, following completed
 `native-engine-browser-552`, following completed
 `native-engine-browser-551`, following completed
 `native-engine-browser-550`, following completed
@@ -422,6 +423,15 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 553 carries normalized CSS `font-display` through static `FontFace`
+projection and identity/status matching, dynamic `FontFaceInstall` commands,
+native resources, and content-process wire state. The document owner
+revalidates `auto`, `block`, `swap`, `fallback`, and `optional`; missing legacy
+fields default to `auto`. This is policy-state carry only: font-display
+timing, block/swap/fallback periods, installed-font discovery, variable-axis
+completeness, hinting, media output, and complete FontFace/Web IDL parity
+remain issue #40 gates.
 
 Slice 552 carries CSS `ascent-override`, `descent-override`, and
 `line-gap-override` through static `@font-face` parsing and page-realm

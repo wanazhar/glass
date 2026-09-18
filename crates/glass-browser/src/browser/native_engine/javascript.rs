@@ -9753,8 +9753,145 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     state.cycleFaces.clear();
     state.cycleErrors.clear();
   };
-  const nativeFontFaceDescriptorValue = (name, value) => {
+  const nativeFontFaceDescriptorValueLimit = 1024;
+  const nativeFontFaceDescriptorError = (name) => {
+    throw nativeFontFaceError(`FontFace ${name} descriptor is invalid`, "SyntaxError");
+  };
+  const nativeFontFaceDescriptorText = (name, value) => {
     const text = String(value);
+    if (text.length > nativeFontFaceDescriptorValueLimit)
+      throw nativeFontFaceError(`FontFace ${name} descriptor is too long`, "RangeError");
+    return text;
+  };
+  const nativeFontFaceWeightToken = (token) => {
+    const normalized = String(token).toLowerCase();
+    if (normalized === "normal") return { text: "normal", value: 400 };
+    if (normalized === "bold") return { text: "bold", value: 700 };
+    if (!/^[0-9]+$/.test(normalized)) return null;
+    const value = Number(normalized);
+    if (!Number.isSafeInteger(value) || value < 1 || value > 1000) return null;
+    return { text: String(value), value };
+  };
+  const nativeFontFaceWeightDescriptor = (text) => {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    const tokens = trimmed.split(/\s+/);
+    if (tokens.length > 2) return null;
+    const parsed = tokens.map(nativeFontFaceWeightToken);
+    if (parsed.some((token) => token === null)) return null;
+    if (parsed.length === 2 && parsed[0].value > parsed[1].value) return null;
+    return parsed.map((token) => token.text).join(" ");
+  };
+  const nativeFontFaceStretchToken = (token) => {
+    const normalized = String(token).toLowerCase();
+    const keywords = {
+      "ultra-condensed": 500,
+      "extra-condensed": 625,
+      condensed: 750,
+      "semi-condensed": 875,
+      normal: 1000,
+      "semi-expanded": 1125,
+      expanded: 1250,
+      "extra-expanded": 1500,
+      "ultra-expanded": 2000,
+    };
+    if (Object.prototype.hasOwnProperty.call(keywords, normalized))
+      return { text: normalized, value: keywords[normalized] };
+    const match = normalized.match(/^((?:[0-9]+(?:\.[0-9]{1,3})?)|(?:\.[0-9]{1,3}))%$/);
+    if (!match) return null;
+    const pieces = match[1].split(".");
+    const whole = pieces[0] ? Number(pieces[0]) : 0;
+    const fraction = pieces[1] || "";
+    const milli = whole * 1000 + Number((fraction + "000").slice(0, 3));
+    if (!Number.isSafeInteger(milli)) return null;
+    const value = Math.floor((milli + 50) / 100);
+    if (value < 500 || value > 2000) return null;
+    return { text: `${match[1]}%`, value };
+  };
+  const nativeFontFaceStretchDescriptor = (text) => {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    const tokens = trimmed.split(/\s+/);
+    if (tokens.length > 2) return null;
+    const parsed = tokens.map(nativeFontFaceStretchToken);
+    if (parsed.some((token) => token === null)) return null;
+    if (parsed.length === 2 && parsed[0].value > parsed[1].value) return null;
+    return parsed.map((token) => token.text).join(" ");
+  };
+  const nativeFontFaceUnicodeRangeDescriptor = (text) => {
+    const tokens = text.split(",");
+    if (tokens.length === 0 || tokens.length > 32) return null;
+    const normalized = [];
+    for (const raw of tokens) {
+      const token = raw.trim();
+      if (!token || token.length > 16) return null;
+      const match = token.match(/^u\+([0-9a-f?]+)(?:-([0-9a-f?]+))?$/i);
+      if (!match) return null;
+      const first = match[1];
+      const second = match[2];
+      let start;
+      let end;
+      if (second !== undefined) {
+        if (first.includes("?") || second.includes("?")) return null;
+        start = Number.parseInt(first, 16);
+        end = Number.parseInt(second, 16);
+      } else if (first.includes("?")) {
+        if (!/^[0-9a-f]*\?+$/.test(first.toLowerCase())) return null;
+        start = Number.parseInt(first.replace(/\?/g, "0"), 16);
+        end = Number.parseInt(first.replace(/\?/g, "f"), 16);
+      } else {
+        start = Number.parseInt(first, 16);
+        end = start;
+      }
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+        || start < 0 || start > end || end > 0x10ffff) return null;
+      normalized.push(`U+${first.toUpperCase()}${second === undefined ? "" : `-${second.toUpperCase()}`}`);
+    }
+    return normalized.join(", ");
+  };
+  const nativeFontFaceVariationDescriptor = (text) => {
+    const trimmed = text.trim();
+    if (trimmed.toLowerCase() === "normal") return "normal";
+    if (!trimmed) return null;
+    const entries = trimmed.split(",");
+    if (entries.length === 0 || entries.length > 8) return null;
+    const normalized = [];
+    for (const raw of entries) {
+      const match = raw.trim().match(/^(['"])([\s\S]{4})\1\s+([+-]?(?:(?:[0-9]+(?:\.[0-9]{1,3})?)|(?:\.[0-9]{1,3})))$/);
+      if (!match) return null;
+      for (const character of match[2]) {
+        const code = character.charCodeAt(0);
+        if (code < 0x20 || code > 0x7e || ["'", "\"", "\\", ","].includes(character)) return null;
+      }
+      const magnitude = Math.abs(Number(match[3]));
+      if (!Number.isFinite(magnitude) || magnitude > 32768) return null;
+      normalized.push(`${match[1]}${match[2]}${match[1]} ${match[3]}`);
+    }
+    return normalized.join(", ");
+  };
+  const nativeFontFaceDescriptorValue = (name, value) => {
+    const text = nativeFontFaceDescriptorText(name, value);
+    if (name === "style") {
+      const normalized = text.trim().toLowerCase();
+      if (!["normal", "italic"].includes(normalized)) return nativeFontFaceDescriptorError(name);
+      return normalized;
+    }
+    if (name === "weight") {
+      const normalized = nativeFontFaceWeightDescriptor(text);
+      return normalized === null ? nativeFontFaceDescriptorError(name) : normalized;
+    }
+    if (name === "stretch") {
+      const normalized = nativeFontFaceStretchDescriptor(text);
+      return normalized === null ? nativeFontFaceDescriptorError(name) : normalized;
+    }
+    if (name === "unicodeRange") {
+      const normalized = nativeFontFaceUnicodeRangeDescriptor(text);
+      return normalized === null ? nativeFontFaceDescriptorError(name) : normalized;
+    }
+    if (name === "variationSettings") {
+      const normalized = nativeFontFaceVariationDescriptor(text);
+      return normalized === null ? nativeFontFaceDescriptorError(name) : normalized;
+    }
     if (name !== "display") return text;
     const normalized = text.trim().toLowerCase();
     if (!["auto", "block", "swap", "fallback", "optional"].includes(normalized))
@@ -18284,6 +18421,92 @@ mod native_font_face_tests {
         assert_eq!(
             evaluation.value,
             serde_json::json!(["swap", "SyntaxError", ["SyntaxError", "swap"]])
+        );
+    }
+
+    #[test]
+    fn script_font_face_descriptor_validation_normalizes_and_rejects_invalid_values() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-descriptor-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::empty();
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const face = new FontFace("Descriptor Face", "", {
+                    style: " ITALIC ",
+                    weight: " 0300 0700 ",
+                    stretch: " 62.5% 125% ",
+                    unicodeRange: "u+41-5a, u+400-4ff",
+                    variationSettings: '"wght" 450.5, "wdth" -12.25'
+                  });
+                  const invalid = [
+                    ["style", "oblique"],
+                    ["weight", "700 300"],
+                    ["stretch", "40%"],
+                    ["unicodeRange", "U+110000"],
+                    ["variationSettings", "wght 700"]
+                  ];
+                  const constructorErrors = invalid.map(([name, value]) => {
+                    const descriptors = {};
+                    descriptors[name] = value;
+                    try {
+                      new FontFace("Invalid Descriptor Face", "", descriptors);
+                      return [name, "accepted"];
+                    } catch (error) {
+                      return [name, error.name];
+                    }
+                  });
+                  const setterResults = invalid.map(([name, value]) => {
+                    const previous = face[name];
+                    try {
+                      face[name] = value;
+                      return [name, "accepted", face[name]];
+                    } catch (error) {
+                      return [name, error.name, face[name] === previous, face[name]];
+                    }
+                  });
+                  return [
+                    [face.style, face.weight, face.stretch, face.unicodeRange, face.variationSettings],
+                    constructorErrors,
+                    setterResults
+                  ];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("FontFace descriptor validation must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                [
+                    "italic",
+                    "300 700",
+                    "62.5% 125%",
+                    "U+41-5A, U+400-4FF",
+                    "\"wght\" 450.5, \"wdth\" -12.25"
+                ],
+                [
+                    ["style", "SyntaxError"],
+                    ["weight", "SyntaxError"],
+                    ["stretch", "SyntaxError"],
+                    ["unicodeRange", "SyntaxError"],
+                    ["variationSettings", "SyntaxError"]
+                ],
+                [
+                    ["style", "SyntaxError", true, "italic"],
+                    ["weight", "SyntaxError", true, "300 700"],
+                    ["stretch", "SyntaxError", true, "62.5% 125%"],
+                    ["unicodeRange", "SyntaxError", true, "U+41-5A, U+400-4FF"],
+                    [
+                        "variationSettings",
+                        "SyntaxError",
+                        true,
+                        "\"wght\" 450.5, \"wdth\" -12.25"
+                    ]
+                ]
+            ])
         );
     }
 

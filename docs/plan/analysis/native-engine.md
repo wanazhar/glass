@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-545`, following
+expansion checkpoint is completed `native-engine-browser-546`, following
+completed `native-engine-browser-545`, following
 completed `native-engine-browser-544`, following
 completed `native-engine-browser-543`, following
 completed `native-engine-browser-542`, following
@@ -412,6 +413,16 @@ payload; fresh-cache and HTTP 304 paths retain the same metadata. The CSS
 data/file/blob responses remain bounded synthetic responses. Font-display
 timing, installed-font discovery, and complete FontFace/Web IDL parity remain
 explicit issue #40 gates.
+
+Slice 546 validates dynamic and static-projected `FontFace` descriptors at
+the page-realm boundary. The native grammar now covers normal/italic style,
+absolute or ascending weight ranges, named or percentage stretch ranges,
+bounded Unicode ranges, and quoted variation settings; invalid or oversized
+values raise `SyntaxError`/`RangeError` before `load()`, and setter failures
+are transactional. Valid normalized descriptors still reach the existing
+native install command. Variant/feature-setting parity, display timing,
+installed-font discovery, and complete FontFace/Web IDL parity remain explicit
+issue #40 gates.
 
 Slice 540 adds bounded `override-colors` descriptor parsing to named
 `@font-palette-values` rules. Document-local overrides select exact unique CPAL

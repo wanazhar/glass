@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-523`, following completed
 `native-engine-browser-522`, following completed
 `native-engine-browser-521`, following completed
 `native-engine-browser-520`, following completed
@@ -341,8 +342,8 @@ weights from 1 through 1000 now survive parsing, inheritance, cascade,
 CSSOM, face scoring, and paint selection. Numeric requests feed an advertised
 variable `wght` axis, while `normal` and `bold` retain their canonical 400 and
 700 aliases and explicit variation coordinates retain priority. Relative
-`lighter`/`bolder`, descriptor ranges, custom axes, hinting, color tables,
-WOFF2, and complete FontFace/Web IDL parity remain issue #40 gates.
+descriptor ranges, custom axes, hinting, color tables, WOFF2, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 The completed optical-sizing follow-up is
 [`native-engine-browser-522`](tasks/native-engine-browser-522.md): inherited
@@ -351,9 +352,18 @@ and CSSOM projection. `auto` supplies a bounded computed font-size coordinate
 to an advertised OpenType `opsz` axis, while authored element coordinates and
 `@font-face`/script-created `FontFace` descriptors retain precedence; the
 effective value reaches both HarfRust shaping and variation-aware outline
-rasterization. Relative weight keywords, descriptor ranges, custom axes,
-hinting, color tables, WOFF2, and complete FontFace/Web IDL parity remain issue
-#40 gates.
+rasterization. Descriptor ranges, custom axes, hinting, color tables, WOFF2,
+and complete FontFace/Web IDL parity remain issue #40 gates.
+
+The completed relative-weight follow-up is
+[`native-engine-browser-523`](tasks/native-engine-browser-523.md): CSS
+`lighter` and `bolder` now resolve against the inherited computed weight using
+the bounded CSS relative-weight bands, including numeric weights from 1 through
+1000. The resolved absolute value feeds existing face scoring, advertised
+`wght` mapping, paint selection, inheritance/CSS-wide resets, and CSSOM;
+`@font-face` and script-created `FontFace` descriptors remain absolute-only.
+Numeric descriptor ranges, custom axes, hinting, color tables, WOFF2, and
+complete FontFace/Web IDL parity remain issue #40 gates.
 
 The completed variation-aware glyph-rasterization follow-up is
 [`native-engine-browser-519`](tasks/native-engine-browser-519.md): non-default

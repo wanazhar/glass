@@ -1276,6 +1276,13 @@ impl FontWeightValue {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontWeightDeclarationValue {
+    Absolute(FontWeightValue),
+    Lighter,
+    Bolder,
+}
+
 pub(crate) fn format_font_weight(weight: FontWeightValue) -> String {
     weight.numeric().to_string()
 }
@@ -4053,11 +4060,7 @@ impl NativeStylesheet {
                 inherited.font_optical_sizing,
                 NativeFontOpticalSizing::Auto,
             ),
-            font_weight: resolve_inherited_text_declaration(
-                *font_weight,
-                inherited.font_weight,
-                FontWeightValue::Normal,
-            ),
+            font_weight: resolve_font_weight(*font_weight, inherited.font_weight),
             font_style: resolve_inherited_text_declaration(
                 *font_style,
                 inherited.font_style,
@@ -4257,7 +4260,7 @@ struct NativeCascadeScratch {
     font_feature_settings: NativeTextCascadeCandidates<NativeFontFeatureSettings>,
     font_kerning: NativeTextCascadeCandidates<NativeFontKerning>,
     font_optical_sizing: NativeTextCascadeCandidates<NativeFontOpticalSizing>,
-    font_weight: NativeTextCascadeCandidates<FontWeightValue>,
+    font_weight: NativeTextCascadeCandidates<FontWeightDeclarationValue>,
     font_style: NativeTextCascadeCandidates<FontStyleValue>,
     font_stretch: NativeTextCascadeCandidates<NativeFontStretchRange>,
     font_family: NativeTextCascadeCandidates<NativeFontFamilyList>,
@@ -4690,6 +4693,66 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_font_weight(
+    candidates: NativeTextCascadeCandidates<FontWeightDeclarationValue>,
+    inherited: FontWeightValue,
+) -> FontWeightValue {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontWeightDeclarationValue::Absolute(inherited),
+        |declaration| match declaration {
+            InheritedTextDeclaration::Value(FontWeightDeclarationValue::Absolute(value)) => {
+                Some(FontWeightDeclarationValue::Absolute(value))
+            }
+            InheritedTextDeclaration::Value(FontWeightDeclarationValue::Lighter) => Some(
+                FontWeightDeclarationValue::Absolute(relative_font_weight(inherited, false)),
+            ),
+            InheritedTextDeclaration::Value(FontWeightDeclarationValue::Bolder) => Some(
+                FontWeightDeclarationValue::Absolute(relative_font_weight(inherited, true)),
+            ),
+            InheritedTextDeclaration::Inherit
+            | InheritedTextDeclaration::Unset
+            | InheritedTextDeclaration::Revert => {
+                Some(FontWeightDeclarationValue::Absolute(inherited))
+            }
+            InheritedTextDeclaration::Initial => Some(FontWeightDeclarationValue::Absolute(
+                FontWeightValue::Normal,
+            )),
+            InheritedTextDeclaration::RevertLayer => None,
+        },
+    );
+    match resolved {
+        FontWeightDeclarationValue::Absolute(value) => value,
+        FontWeightDeclarationValue::Lighter | FontWeightDeclarationValue::Bolder => {
+            FontWeightValue::Normal
+        }
+    }
+}
+
+fn relative_font_weight(inherited: FontWeightValue, bolder: bool) -> FontWeightValue {
+    let weight = inherited.numeric();
+    let resolved = if bolder {
+        if weight < 350 {
+            400
+        } else if weight < 550 {
+            700
+        } else if weight < 900 {
+            900
+        } else {
+            weight
+        }
+    } else if weight < 100 {
+        weight
+    } else if weight < 550 {
+        100
+    } else if weight < 750 {
+        400
+    } else {
+        700
+    };
+    FontWeightValue::from_numeric(resolved).unwrap_or(FontWeightValue::Normal)
 }
 
 fn resolve_local_cascade_declaration<T: Copy, const N: usize>(
@@ -6582,7 +6645,7 @@ struct NativeDeclarations {
     font_feature_settings: Option<InheritedTextDeclaration<NativeFontFeatureSettings>>,
     font_kerning: Option<InheritedTextDeclaration<NativeFontKerning>>,
     font_optical_sizing: Option<InheritedTextDeclaration<NativeFontOpticalSizing>>,
-    font_weight: Option<InheritedTextDeclaration<FontWeightValue>>,
+    font_weight: Option<InheritedTextDeclaration<FontWeightDeclarationValue>>,
     font_style: Option<InheritedTextDeclaration<FontStyleValue>>,
     font_stretch: Option<InheritedTextDeclaration<NativeFontStretchRange>>,
     font_family: Option<InheritedTextDeclaration<NativeFontFamilyList>>,
@@ -13349,8 +13412,18 @@ fn parse_font_optical_sizing_declaration(
     parse_inherited_text_declaration(value, parse_font_optical_sizing)
 }
 
-fn parse_font_weight_declaration(value: &str) -> Option<InheritedTextDeclaration<FontWeightValue>> {
-    parse_inherited_text_declaration(value, parse_font_weight)
+fn parse_font_weight_property(value: &str) -> Option<FontWeightDeclarationValue> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "lighter" => Some(FontWeightDeclarationValue::Lighter),
+        "bolder" => Some(FontWeightDeclarationValue::Bolder),
+        _ => parse_font_weight(value).map(FontWeightDeclarationValue::Absolute),
+    }
+}
+
+fn parse_font_weight_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<FontWeightDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_weight_property)
 }
 
 fn parse_font_style_declaration(value: &str) -> Option<InheritedTextDeclaration<FontStyleValue>> {
@@ -14083,7 +14156,9 @@ mod tests {
         );
         assert_eq!(
             declarations.font_weight,
-            Some(InheritedTextDeclaration::Value(FontWeightValue::Bold))
+            Some(InheritedTextDeclaration::Value(
+                FontWeightDeclarationValue::Absolute(FontWeightValue::Bold),
+            ))
         );
         assert_eq!(
             declarations.font_style,
@@ -22873,6 +22948,47 @@ mod tests {
     }
 
     #[test]
+    fn font_weight_property_parser_accepts_relative_keywords_only_at_property_level() {
+        assert_eq!(
+            parse_font_weight_property("LIGHTER"),
+            Some(FontWeightDeclarationValue::Lighter)
+        );
+        assert_eq!(
+            parse_font_weight_property("bolder"),
+            Some(FontWeightDeclarationValue::Bolder)
+        );
+        assert_eq!(
+            parse_font_weight_property("500"),
+            Some(FontWeightDeclarationValue::Absolute(
+                FontWeightValue::Numeric(500)
+            ))
+        );
+        assert_eq!(parse_font_weight_property("lighter bolder"), None);
+        assert_eq!(parse_font_weight("lighter"), None);
+    }
+
+    #[test]
+    fn relative_font_weight_uses_css_parent_weight_bands() {
+        let cases = [
+            (FontWeightValue::Numeric(50), 50, 400),
+            (FontWeightValue::Numeric(100), 100, 400),
+            (FontWeightValue::Numeric(349), 100, 400),
+            (FontWeightValue::Numeric(350), 100, 700),
+            (FontWeightValue::Numeric(549), 100, 700),
+            (FontWeightValue::Numeric(550), 400, 900),
+            (FontWeightValue::Numeric(749), 400, 900),
+            (FontWeightValue::Numeric(750), 700, 900),
+            (FontWeightValue::Numeric(899), 700, 900),
+            (FontWeightValue::Numeric(900), 700, 900),
+            (FontWeightValue::Numeric(1000), 700, 1000),
+        ];
+        for (inherited, lighter, bolder) in cases {
+            assert_eq!(relative_font_weight(inherited, false).numeric(), lighter);
+            assert_eq!(relative_font_weight(inherited, true).numeric(), bolder);
+        }
+    }
+
+    #[test]
     fn font_style_parser_accepts_only_normal_and_italic() {
         assert_eq!(parse_font_style("normal"), Some(FontStyleValue::Normal));
         assert_eq!(parse_font_style("ITALIC"), Some(FontStyleValue::Italic));
@@ -23455,7 +23571,9 @@ mod tests {
         );
         assert_eq!(
             declarations.font_weight,
-            Some(InheritedTextDeclaration::Value(FontWeightValue::Bold))
+            Some(InheritedTextDeclaration::Value(
+                FontWeightDeclarationValue::Absolute(FontWeightValue::Bold),
+            ))
         );
         assert_eq!(
             declarations.font_style,
@@ -24897,6 +25015,53 @@ mod tests {
             document.computed_style_for_layout(invalid).font_weight(),
             FontWeightValue::Bold
         );
+    }
+
+    #[test]
+    fn relative_font_weight_is_resolved_against_the_inherited_computed_value() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { font-weight: 550; }
+            #lighter { font-weight: lighter; }
+            #bolder { font-weight: bolder; }
+            #inherit { font-weight: inherit; }
+            #initial { font-weight: initial; }
+            #invalid { font-weight: lighter bolder; }
+            #edge { font-weight: 1000; }
+            #edge-bolder { font-weight: bolder; }
+            #edge-lighter { font-weight: lighter; }
+            @layer base { #rollback { font-weight: 350; } }
+            @layer theme { #rollback { font-weight: lighter; font-weight: revert-layer; } }
+            </style>
+            <div id='parent'>
+              <span id='lighter'>Lighter</span>
+              <span id='bolder'>Bolder</span>
+              <span id='inherit'>Inherit</span>
+              <span id='initial'>Initial</span>
+              <span id='invalid'>Invalid</span>
+              <span id='rollback'>Rollback</span>
+            </div>
+            <div id='edge'>
+              <span id='edge-bolder'>Edge bolder</span>
+              <span id='edge-lighter'>Edge lighter</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+        assert_eq!(style("parent").font_weight().numeric(), 550);
+        assert_eq!(style("lighter").font_weight().numeric(), 400);
+        assert_eq!(style("bolder").font_weight().numeric(), 900);
+        assert_eq!(style("inherit").font_weight().numeric(), 550);
+        assert_eq!(style("initial").font_weight(), FontWeightValue::Normal);
+        assert_eq!(style("invalid").font_weight().numeric(), 550);
+        assert_eq!(style("rollback").font_weight().numeric(), 350);
+        assert_eq!(style("edge").font_weight().numeric(), 1000);
+        assert_eq!(style("edge-bolder").font_weight().numeric(), 1000);
+        assert_eq!(style("edge-lighter").font_weight().numeric(), 700);
     }
 
     #[test]

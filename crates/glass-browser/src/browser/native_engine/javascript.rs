@@ -17749,6 +17749,38 @@ mod native_font_face_tests {
     }
 
     #[test]
+    fn computed_style_projects_relative_font_weight() {
+        let runtime =
+            NativeJavaScriptRuntime::new_with_context_id("computed-relative-font-weight-test")
+                .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<style>#parent { font-weight: 550; } #lighter { font-weight: lighter; } #bolder { font-weight: bolder; } #inherit { font-weight: inherit; } #initial { font-weight: initial; } #invalid { font-weight: lighter bolder; }</style><div id='parent'><span id='lighter'>Lighter</span><span id='bolder'>Bolder</span><span id='inherit'>Inherit</span><span id='initial'>Initial</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("relative font-weight fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const lighter = getComputedStyle(document.getElementById("lighter"));
+                  const bolder = getComputedStyle(document.getElementById("bolder"));
+                  const inherited = getComputedStyle(document.getElementById("inherit"));
+                  const initial = getComputedStyle(document.getElementById("initial"));
+                  const invalid = getComputedStyle(document.getElementById("invalid"));
+                  return [lighter.fontWeight, bolder.getPropertyValue("font-weight"), inherited.fontWeight, initial.fontWeight, invalid.fontWeight];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("computed relative font-weight surface must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["normal", "900", "550", "normal", "550"])
+        );
+    }
+
+    #[test]
     fn computed_style_projects_font_variant_ligatures() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-variant-test")
             .expect("native JavaScript runtime must construct");

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-522`, following
+expansion checkpoint is completed `native-engine-browser-523`, following
+completed `native-engine-browser-522`, following
 completed `native-engine-browser-521`, following
 completed `native-engine-browser-520`, following
 completed `native-engine-browser-517`, following
@@ -325,9 +326,8 @@ inheritance, CSSOM projection, `@font-face` and script-created `FontFace`
 descriptors, local-font lookup, numeric-distance face matching, variable
 `wght` mapping, and the fixed-cell bold paint threshold. `normal` and `bold`
 remain aliases for 400 and 700; explicit descriptor and authored variation
-coordinates retain priority. Relative `lighter`/`bolder`, descriptor ranges,
-custom axes, hinting, color tables, WOFF2, and complete FontFace/Web IDL
-parity remain issue #40 gates.
+coordinates retain priority. Descriptor ranges, custom axes, hinting, color
+tables, WOFF2, and complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 522 carries inherited `font-optical-sizing: auto|none` through native
 parsing, cascade, computed style, and CSSOM. When the selected face advertises
@@ -335,9 +335,18 @@ parsing, cascade, computed style, and CSSOM. When the selected face advertises
 authored element coordinates and `@font-face`/script-created `FontFace`
 descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none` retain
-their existing behavior. Relative weight keywords, descriptor ranges, custom
-axes, hinting, color tables, WOFF2, and complete FontFace/Web IDL parity remain
-issue #40 gates.
+their existing behavior. Descriptor ranges, custom axes, hinting, color
+tables, WOFF2, and complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 523 carries CSS `font-weight: lighter|bolder` through a declaration-only
+relative layer. The computed-style resolver applies the CSS relative-weight
+bands to the inherited absolute weight, including numeric weights from 1
+through 1000, before existing face scoring, advertised `wght` mapping, paint
+selection, and CSSOM serialization. `@font-face` and script-created `FontFace`
+descriptors continue to accept absolute weights only, and the computed-style
+wire shape remains unchanged. Numeric descriptor ranges, custom axes, hinting,
+color tables, WOFF2, and complete FontFace/Web IDL parity remain issue #40
+gates.
 
 Slice 519 carries admitted non-default variable-font coordinates into glyph
 bitmap production as well as HarfRust shaping. A bounded `ttf-parser` outline
@@ -7227,8 +7236,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-522.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-523.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-522.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-521.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-520.md` is the preceding completed
@@ -7706,9 +7717,9 @@ browser task;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed browser-expansion checkpoint is recorded for
-`docs/plan/tasks/native-engine-browser-522.md`; its implementation and focused
+`docs/plan/tasks/native-engine-browser-523.md`; its implementation and focused
 verification are recorded in that task file. The preceding browser-expansion
-checkpoint is `docs/plan/tasks/native-engine-browser-521.md`. The CSS foundation checkpoint
+checkpoint is `docs/plan/tasks/native-engine-browser-522.md`. The CSS foundation checkpoint
 remains `docs/plan/tasks/native-engine-234.md`: implementation is `8a96f56b`
 (design `b2119e5f`). It accepts bounded standalone case-insensitive finite
 `overflow: visible|auto|scroll`, `overflow-x: visible|auto|scroll`, and

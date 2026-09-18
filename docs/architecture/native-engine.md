@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-519`, following completed
+`native-engine-browser-520`, following completed
 `native-engine-browser-517`, following completed
 `native-engine-browser-516`, following completed
 `native-engine-browser-515`, following completed
@@ -303,6 +303,15 @@ retains precedence. The character-by-character fallback and baseline metrics
 remain unchanged; numeric variants, variable/color tables, WOFF2,
 font-display timing, mixed-script shaping, cross-realm FontFace projection,
 and complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 520 maps the inherited CSS `font-weight` and `font-stretch` controls to
+advertised OpenType `wght` and `wdth` axes. Automatic coordinates are inserted
+only when the selected face exposes the axis; `@font-face` descriptor values
+and authored `font-variation-settings` remain authoritative. The effective
+coordinates feed both HarfRust and the variation-aware outline rasterizer,
+while existing synthetic scaling remains for compatibility. Numeric weight
+ranges, optical sizing, custom axes, hinting, color tables, WOFF2, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 519 makes non-default variable-font coordinates reach glyph pixels as
 well as shaping. The native font owner enables `ttf-parser` variable support,

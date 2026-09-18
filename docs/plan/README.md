@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-519`, following completed
+`native-engine-browser-520`, following completed
 `native-engine-browser-517`, following completed
 `native-engine-browser-516`, following completed
 `native-engine-browser-515`, following completed
@@ -321,6 +321,16 @@ feature settings retaining precedence. Character fallback and typographic
 baseline metrics remain bounded; numeric variants, variable/color fonts,
 WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
 projection, and complete FontFace/Web IDL parity remain issue #40 gates.
+
+The completed automatic variable-axis follow-up is
+[`native-engine-browser-520`](tasks/native-engine-browser-520.md): selected
+variable faces now receive automatic `wght=400|700` and CSS-stretch-derived
+`wdth` coordinates when those axes are advertised and no explicit coordinate
+overrides them. The effective values feed both HarfRust shaping and the
+variation-aware outline rasterizer; descriptor and authored coordinates retain
+priority, and synthetic scaling remains for compatibility. Numeric weight
+ranges, optical sizing, custom axes, hinting, color tables, WOFF2, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 The completed variation-aware glyph-rasterization follow-up is
 [`native-engine-browser-519`](tasks/native-engine-browser-519.md): non-default

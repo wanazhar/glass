@@ -6737,6 +6737,8 @@ impl NativeDocument {
         let mut inherited_font_stretch = super::css::NativeFontStretchRange::default();
         let mut inherited_font_family = NativeFontFamilyList::default();
         let mut inherited_font_size = super::font::DEFAULT_NATIVE_FONT_SIZE;
+        let mut inherited_root_font_size = super::font::DEFAULT_NATIVE_FONT_SIZE;
+        let mut root_element_seen = false;
         let mut inherited_word_break = WordBreakValue::Normal;
         let mut inherited_text_overflow = TextOverflowValue::Clip;
         let mut inherited_overflow_x = OverflowValue::Other;
@@ -6750,6 +6752,9 @@ impl NativeDocument {
             let Some(_) = self.node(current_id) else {
                 continue;
             };
+            let is_root_element = self
+                .node(current_id)
+                .is_some_and(|node| node.element_name().is_some());
             let style = self.stylesheet.computed_for_in_document_with_inheritance(
                 self,
                 current_id,
@@ -6812,6 +6817,7 @@ impl NativeDocument {
                     font_stretch: inherited_font_stretch,
                     font_family: inherited_font_family,
                     font_size: inherited_font_size,
+                    root_font_size: inherited_root_font_size,
                     word_break: inherited_word_break,
                     text_overflow: inherited_text_overflow,
                     overflow_x: inherited_overflow_x,
@@ -6823,6 +6829,10 @@ impl NativeDocument {
                     pointer_events: inherited_pointer_events,
                 },
             );
+            if !root_element_seen && is_root_element {
+                inherited_root_font_size = style.font_size();
+                root_element_seen = true;
+            }
             inherited_color = style.color().or(inherited_color);
             inherited_background_color = style.background_color();
             inherited_text_decoration_color = style

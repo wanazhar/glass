@@ -1678,6 +1678,7 @@ enum InheritedTextDeclaration<T> {
 enum NativeFontSizeDeclarationValue {
     Pixels(u32),
     Relative(u32),
+    RootRelative(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1819,6 +1820,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) font_stretch: NativeFontStretchRange,
     pub(crate) font_family: NativeFontFamilyList,
     pub(crate) font_size: u32,
+    pub(crate) root_font_size: u32,
     pub(crate) word_break: WordBreakValue,
     pub(crate) text_overflow: TextOverflowValue,
     pub(crate) overflow_x: OverflowValue,
@@ -1891,6 +1893,7 @@ impl Default for NativeInheritedStyle {
             font_stretch: NativeFontStretchRange::default(),
             font_family: NativeFontFamilyList::default(),
             font_size: super::font::DEFAULT_NATIVE_FONT_SIZE,
+            root_font_size: super::font::DEFAULT_NATIVE_FONT_SIZE,
             word_break: WordBreakValue::Normal,
             text_overflow: TextOverflowValue::Clip,
             overflow_x: OverflowValue::Other,
@@ -4345,7 +4348,7 @@ impl NativeStylesheet {
                 inherited.font_family,
                 NativeFontFamilyList::default(),
             ),
-            font_size: resolve_font_size(*font_size, inherited.font_size),
+            font_size: resolve_font_size(*font_size, inherited.font_size, inherited.root_font_size),
             word_break: resolve_inherited_text_declaration(
                 *word_break,
                 inherited.word_break,
@@ -4961,6 +4964,7 @@ fn scale_relative_font_size(base: u32, scale_milli: u32) -> Option<u32> {
 fn resolve_font_size(
     candidates: NativeTextCascadeCandidates<NativeFontSizeDeclarationValue>,
     inherited: u32,
+    root_font_size: u32,
 ) -> u32 {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
         InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::Pixels(value)) => (1
@@ -4970,6 +4974,9 @@ fn resolve_font_size(
         InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::Relative(scale_milli)) => {
             scale_relative_font_size(inherited, scale_milli)
         }
+        InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::RootRelative(
+            scale_milli,
+        )) => scale_relative_font_size(root_font_size, scale_milli),
         InheritedTextDeclaration::Inherit
         | InheritedTextDeclaration::Unset
         | InheritedTextDeclaration::Revert => Some(inherited),
@@ -13299,12 +13306,14 @@ fn parse_font_size(value: &str) -> Option<u32> {
         .ok()
         .filter(|value| (1..=256).contains(value))
 }
-fn parse_relative_font_size(value: &str) -> Option<u32> {
+fn parse_relative_font_size(value: &str) -> Option<NativeFontSizeDeclarationValue> {
     let value = value.trim().to_ascii_lowercase();
-    let (number, percentage) = if let Some(number) = value.strip_suffix('%') {
-        (number.trim(), true)
+    let (number, root_relative, percentage) = if let Some(number) = value.strip_suffix('%') {
+        (number.trim(), false, true)
+    } else if let Some(number) = value.strip_suffix("rem") {
+        (number.trim(), true, false)
     } else if let Some(number) = value.strip_suffix("em") {
-        (number.trim(), false)
+        (number.trim(), false, false)
     } else {
         return None;
     };
@@ -13314,15 +13323,20 @@ fn parse_relative_font_size(value: &str) -> Option<u32> {
     } else {
         milli
     };
-    (1..=super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000))
-        .contains(&scale_milli)
-        .then_some(scale_milli)
+    if !(1..=super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000)).contains(&scale_milli) {
+        return None;
+    }
+    Some(if root_relative {
+        NativeFontSizeDeclarationValue::RootRelative(scale_milli)
+    } else {
+        NativeFontSizeDeclarationValue::Relative(scale_milli)
+    })
 }
 
 fn parse_font_size_value(value: &str) -> Option<NativeFontSizeDeclarationValue> {
     parse_font_size(value)
         .map(NativeFontSizeDeclarationValue::Pixels)
-        .or_else(|| parse_relative_font_size(value).map(NativeFontSizeDeclarationValue::Relative))
+        .or_else(|| parse_relative_font_size(value))
 }
 
 fn parse_word_break(value: &str) -> Option<WordBreakValue> {
@@ -24407,7 +24421,11 @@ mod tests {
         );
         assert_eq!(parse_font_size_value("0em"), None);
         assert_eq!(parse_font_size_value("256.001em"), None);
-        assert_eq!(parse_font_size_value("1rem"), None);
+        assert_eq!(
+            parse_font_size_value("1rem"),
+            Some(NativeFontSizeDeclarationValue::RootRelative(1_000))
+        );
+        assert_eq!(parse_font_size_value("0rem"), None);
     }
 
     #[test]
@@ -26209,7 +26227,7 @@ mod tests {
     #[test]
     fn font_family_and_size_are_inherited_with_css_wide_resets() {
         let document = NativeDocument::parse(
-            "<style>#parent { font-family: sans-serif; font-size: 24px; } #clear { font-family: initial; font-size: initial; } #inherit { font-family: inherit; font-size: inherit; } #invalid { font-family: sans-serif,; font-size: 400px; } #absolute { font-size: 9pt; } #relative { font-size: 1.5em; } #percent { font-size: 125%; } #relative-invalid { font-size: 2000%; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='inherit'>Inherit</span><span id='invalid'>Invalid</span><span id='absolute'>Absolute</span><span id='relative'>Relative</span><span id='percent'>Percent</span><span id='relative-invalid'>Relative invalid</span></div>",
+            "<style>#parent { font-family: sans-serif; font-size: 24px; } #clear { font-family: initial; font-size: initial; } #inherit { font-family: inherit; font-size: inherit; } #invalid { font-family: sans-serif,; font-size: 400px; } #absolute { font-size: 9pt; } #relative { font-size: 1.5em; } #percent { font-size: 125%; } #relative-invalid { font-size: 2000%; } #nested { font-size: 32px; } #rem { font-size: 1.5rem; } #rem-invalid { font-size: 20rem; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='inherit'>Inherit</span><span id='invalid'>Invalid</span><span id='absolute'>Absolute</span><span id='relative'>Relative</span><span id='percent'>Percent</span><span id='relative-invalid'>Relative invalid</span><span id='nested'><span id='rem'>Rem</span><span id='rem-invalid'>Rem invalid</span></span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -26222,6 +26240,9 @@ mod tests {
         let relative = document.resolve_target("id=relative").unwrap();
         let percent = document.resolve_target("id=percent").unwrap();
         let relative_invalid = document.resolve_target("id=relative-invalid").unwrap();
+        let nested = document.resolve_target("id=nested").unwrap();
+        let rem = document.resolve_target("id=rem").unwrap();
+        let rem_invalid = document.resolve_target("id=rem-invalid").unwrap();
         let sans = NativeFontFamilyList::single(NativeFontFamilyValue::Generic(
             NativeGenericFontFamily::SansSerif,
         ));
@@ -26259,6 +26280,12 @@ mod tests {
                 .computed_style_for_layout(relative_invalid)
                 .font_size(),
             24
+        );
+        assert_eq!(document.computed_style_for_layout(nested).font_size(), 32);
+        assert_eq!(document.computed_style_for_layout(rem).font_size(), 36);
+        assert_eq!(
+            document.computed_style_for_layout(rem_invalid).font_size(),
+            32
         );
     }
 

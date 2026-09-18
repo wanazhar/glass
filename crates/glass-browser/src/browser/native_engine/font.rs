@@ -268,7 +268,8 @@ struct NativeColorPainter<'a> {
     layers: Vec<NativeColorLayer>,
     transform: ttf_parser::Transform,
     transform_stack: Vec<ttf_parser::Transform>,
-    clip_depth: usize,
+    outline_generation: u64,
+    clip_generations: Vec<u64>,
     layer_stack: Vec<NativeGlyphComposite>,
     unsupported: bool,
 }
@@ -281,7 +282,8 @@ impl<'a> NativeColorPainter<'a> {
             layers: Vec::new(),
             transform: ttf_parser::Transform::default(),
             transform_stack: Vec::new(),
-            clip_depth: 0,
+            outline_generation: 0,
+            clip_generations: Vec::new(),
             layer_stack: Vec::new(),
             unsupported: false,
         }
@@ -317,7 +319,7 @@ impl<'a> NativeColorPainter<'a> {
     fn is_balanced(&self) -> bool {
         self.current.is_none()
             && self.transform_stack.is_empty()
-            && self.clip_depth == 0
+            && self.clip_generations.is_empty()
             && self.layer_stack.is_empty()
     }
 }
@@ -348,6 +350,7 @@ impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
                 point.y = y;
             }
         }
+        self.outline_generation = self.outline_generation.saturating_add(1);
         self.current = Some(contours);
     }
 
@@ -363,6 +366,14 @@ impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
             self.mark_unsupported();
             return;
         };
+        if self
+            .clip_generations
+            .iter()
+            .any(|generation| *generation != self.outline_generation)
+        {
+            self.mark_unsupported();
+            return;
+        }
         if self.layers.len() >= MAX_COLOR_GLYPH_LAYERS {
             self.mark_unsupported();
             return;
@@ -378,11 +389,11 @@ impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
         if self.unsupported {
             return;
         }
-        if self.clip_depth >= MAX_COLOR_CLIP_DEPTH {
+        if self.clip_generations.len() >= MAX_COLOR_CLIP_DEPTH || self.current.is_none() {
             self.mark_unsupported();
             return;
         }
-        self.clip_depth = self.clip_depth.saturating_add(1);
+        self.clip_generations.push(self.outline_generation);
     }
 
     fn push_clip_box(&mut self, _clipbox: ttf_parser::RectF) {
@@ -393,11 +404,10 @@ impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
         if self.unsupported {
             return;
         }
-        if self.clip_depth == 0 {
+        if self.clip_generations.pop().is_none() {
             self.mark_unsupported();
             return;
         }
-        self.clip_depth = self.clip_depth.saturating_sub(1);
     }
 
     fn push_layer(&mut self, mode: ttf_parser::colr::CompositeMode) {
@@ -3331,6 +3341,22 @@ mod tests {
                 .iter()
                 .any(|layer| layer.composite == NativeGlyphComposite::DestinationOver)
         );
+    }
+
+    #[test]
+    fn colr_current_outline_clip_rejects_a_replaced_outline() {
+        let bytes = include_bytes!("../../../tests/fixtures/colr-1.ttf");
+        let face = ttf_parser::Face::parse(bytes, 0).expect("COLRv1 fixture must parse");
+        let mut painter = NativeColorPainter::new(face.clone());
+        ttf_parser::colr::Painter::outline_glyph(&mut painter, ttf_parser::GlyphId(3));
+        ttf_parser::colr::Painter::push_clip(&mut painter);
+        ttf_parser::colr::Painter::outline_glyph(&mut painter, ttf_parser::GlyphId(2));
+        assert!(!painter.unsupported);
+        ttf_parser::colr::Painter::paint(
+            &mut painter,
+            ttf_parser::colr::Paint::Solid(ttf_parser::RgbaColor::new(255, 0, 0, 255)),
+        );
+        assert!(painter.unsupported);
     }
 
     #[test]

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-531`, following completed
 `native-engine-browser-530`, following completed
 `native-engine-browser-529`, following completed
 `native-engine-browser-528`, following completed
@@ -361,6 +362,14 @@ to an advertised OpenType `opsz` axis, while authored element coordinates and
 effective value reaches both HarfRust shaping and variation-aware outline
 rasterization. Custom axes, hinting, color tables, and complete FontFace/Web IDL
 parity remain issue #40 gates.
+
+The completed three-point COLRv1 linear-gradient follow-up is
+[`native-engine-browser-531`](tasks/native-engine-browser-531.md): `p0` and
+`p1` define the color line and `p2` defines its projection direction. All
+three points survive finite affine transforms, synthetic stretch, and
+glyph-local mapping; degenerate triples fail closed and valid triples use the
+existing extend modes and sorted stops. Arbitrary gradient transforms and
+transformed clip masks remain explicit issue #40 gates.
 
 The completed transformed COLRv1 gradient follow-up is
 [`native-engine-browser-530`](tasks/native-engine-browser-530.md): composed

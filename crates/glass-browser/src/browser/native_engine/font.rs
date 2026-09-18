@@ -1512,7 +1512,7 @@ impl NativeFontFaceResource {
             style: rule.style,
             stretch: rule.stretch,
             variation_settings: rule.variation_settings,
-            feature_settings: NativeFontFeatureSettings::default(),
+            feature_settings: rule.feature_settings,
             bytes: Arc::from(bytes),
             unicode_ranges: rule.unicode_ranges.clone(),
         }
@@ -4943,17 +4943,19 @@ mod tests {
         let bytes = include_bytes!("../../../tests/fixtures/colr-v0.ttf");
         let face_features =
             super::super::css::parse_font_feature_settings(r#""liga" off, "kern" 1"#).unwrap();
-        let resource = NativeFontFaceResource {
+        let rule = NativeFontFaceRule {
             family: "Feature Fixture".into(),
             family_key: font_family_hash("Feature Fixture"),
+            sources: Vec::new(),
             weight: NativeFontWeightRange::default(),
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
+            unicode_ranges: Vec::new(),
             variation_settings: NativeFontVariationSettings::default(),
             feature_settings: face_features,
-            bytes: Arc::from(bytes.as_slice()),
-            unicode_ranges: Vec::new(),
+            font_display: super::super::css::NativeFontDisplay::Auto,
         };
+        let resource = NativeFontFaceResource::from_rule(&rule, bytes.to_vec());
         let book = NativeFontBook::from_resources(&[resource]);
         let element_features =
             super::super::css::parse_font_feature_settings(r#""liga" on, "calt" 0"#).unwrap();

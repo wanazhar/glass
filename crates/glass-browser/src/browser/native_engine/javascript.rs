@@ -18455,13 +18455,13 @@ mod native_font_face_tests {
             )
             .expect("FontFaceSet listeners must install");
         let styled = NativeDocument::parse(
-            "<style>@font-face { font-family: 'Late Face'; src: local('Late Face'); font-variation-settings: \"wght\" 620; font-display: swap; }</style>",
+            "<style>@font-face { font-family: 'Late Face'; src: local('Late Face'); font-feature-settings: \"liga\" off, \"kern\" on; font-variation-settings: \"wght\" 620; font-display: swap; }</style>",
             &NativeEngineLimits::default(),
         )
         .expect("font-face fixture must parse");
         let evaluation = runtime
             .evaluate(
-                "[document.fonts.size, document.fonts.status, __fontFaceEvents, [...document.fonts][0].status, [...document.fonts][0].variationSettings, [...document.fonts][0].display]",
+                "[document.fonts.size, document.fonts.status, __fontFaceEvents, [...document.fonts][0].status, [...document.fonts][0].featureSettings, [...document.fonts][0].variationSettings, [...document.fonts][0].display]",
                 &styled,
                 "about:blank",
                 &NativeOrigin::Opaque,
@@ -18475,6 +18475,7 @@ mod native_font_face_tests {
                 "loaded",
                 [["loading", 1], ["loadingerror", 1]],
                 "error",
+                "\"liga\" 0, \"kern\" 1",
                 "\"wght\" 620",
                 "swap"
             ])

@@ -9,7 +9,7 @@ use super::css::{
     NativeFontVariantEastAsianForm, NativeFontVariantEastAsianWidth, NativeFontVariantLigatures,
     NativeFontVariantNumeric, NativeFontVariantNumericFigure, NativeFontVariantNumericFraction,
     NativeFontVariantNumericSpacing, NativeFontVariantPosition, NativeFontVariationSettings,
-    NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
+    NativeFontWeightRange, NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
 };
 use std::fmt;
 use std::io::Read;
@@ -255,7 +255,7 @@ struct NativeFontFace {
     family: String,
     family_key: u64,
     generic_family: Option<NativeGenericFontFamily>,
-    weight: FontWeightValue,
+    weight: NativeFontWeightRange,
     style: FontStyleValue,
     stretch: NativeFontStretchRange,
     variation_settings: NativeFontVariationSettings,
@@ -302,7 +302,7 @@ pub(crate) struct NativeFontBook {
 pub(crate) struct NativeFontFaceResource {
     pub(crate) family: String,
     pub(crate) family_key: u64,
-    pub(crate) weight: FontWeightValue,
+    pub(crate) weight: NativeFontWeightRange,
     pub(crate) style: FontStyleValue,
     pub(crate) stretch: NativeFontStretchRange,
     pub(crate) variation_settings: NativeFontVariationSettings,
@@ -2284,7 +2284,7 @@ fn load_system_font_book() -> NativeFontBook {
             };
             if book.faces.iter().any(|face| {
                 face.family.eq_ignore_ascii_case(&family)
-                    && face.weight == weight
+                    && face.weight == NativeFontWeightRange::singleton(weight)
                     && face.style == style
             }) {
                 continue;
@@ -2331,7 +2331,7 @@ fn insert_font_face(
     let font_data: Arc<[u8]> = Arc::from(bytes);
     if book.faces.iter().any(|face| {
         face.family.eq_ignore_ascii_case(&family)
-            && face.weight == weight
+            && face.weight == NativeFontWeightRange::singleton(weight)
             && face.style == style
             && face.font_data == font_data
     }) {
@@ -2344,7 +2344,7 @@ fn insert_font_face(
         family: family.clone(),
         family_key: font_family_hash(&family),
         generic_family,
-        weight,
+        weight: NativeFontWeightRange::singleton(weight),
         style,
         stretch: NativeFontStretchRange::default(),
         variation_settings: NativeFontVariationSettings::default(),
@@ -2517,11 +2517,7 @@ fn face_score(
     style: FontStyleValue,
     stretch: u16,
 ) -> u16 {
-    let weight_score = face
-        .weight
-        .numeric()
-        .abs_diff(weight.numeric())
-        .saturating_mul(8);
+    let weight_score = face.weight.distance(weight.numeric()).saturating_mul(8);
     let style_score = u16::from(face.style != style);
     weight_score
         .saturating_add(style_score.saturating_mul(2000))
@@ -2891,7 +2887,11 @@ mod tests {
         };
         let family = face.family.to_ascii_uppercase();
         let bytes = system_font_book()
-            .local_font_bytes(&family, face.weight, face.style)
+            .local_font_bytes(
+                &family,
+                FontWeightValue::from_numeric(face.weight.nominal()).unwrap(),
+                face.style,
+            )
             .expect("the system font book must resolve its own first face");
         assert_eq!(bytes.as_slice(), face.font_data.as_ref());
     }
@@ -2941,7 +2941,7 @@ mod tests {
         };
         assert!(system_font_book().faces.iter().any(|face| {
             face.family.eq_ignore_ascii_case(&family)
-                && face.weight == weight
+                && face.weight == NativeFontWeightRange::singleton(weight)
                 && face.style == style
                 && face.font_data.as_ref() == bytes.as_slice()
         }));
@@ -3043,7 +3043,7 @@ mod tests {
         let resource = NativeFontFaceResource {
             family: "WOFF Face".into(),
             family_key: font_family_hash("WOFF Face"),
-            weight: FontWeightValue::Normal,
+            weight: NativeFontWeightRange::default(),
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
@@ -3071,7 +3071,7 @@ mod tests {
             .map(|character| NativeFontFaceResource {
                 family: "Range Face".into(),
                 family_key: font_family_hash("Range Face"),
-                weight: FontWeightValue::Normal,
+                weight: NativeFontWeightRange::default(),
                 style: FontStyleValue::Normal,
                 stretch: NativeFontStretchRange::default(),
                 variation_settings: NativeFontVariationSettings::default(),
@@ -3111,7 +3111,7 @@ mod tests {
             NativeFontFaceResource {
                 family: "Stretch Face".into(),
                 family_key,
-                weight: FontWeightValue::Normal,
+                weight: NativeFontWeightRange::default(),
                 style: FontStyleValue::Normal,
                 stretch: NativeFontStretchRange::default(),
                 variation_settings: NativeFontVariationSettings::default(),
@@ -3121,7 +3121,7 @@ mod tests {
             NativeFontFaceResource {
                 family: "Stretch Face".into(),
                 family_key,
-                weight: FontWeightValue::Normal,
+                weight: NativeFontWeightRange::default(),
                 style: FontStyleValue::Normal,
                 stretch: NativeFontStretchRange { min: 750, max: 750 },
                 variation_settings: NativeFontVariationSettings::default(),
@@ -3171,6 +3171,62 @@ mod tests {
         assert!(expanded.measure_text("AAAA", 0, 0) > normal_width);
         let run = expanded.rasterize("AAAA", 0, 0, 0).unwrap();
         assert!(run.width > normal.rasterize("AAAA", 0, 0, 0).unwrap().width);
+    }
+
+    #[test]
+    fn font_weight_ranges_match_inside_and_outside_the_declared_interval() {
+        let Some(system_face) = system_font_book().faces.first() else {
+            return;
+        };
+        let family_key = font_family_hash("Weight Range Face");
+        let resources = [
+            NativeFontFaceResource {
+                family: "Weight Range Face".into(),
+                family_key,
+                weight: NativeFontWeightRange { min: 300, max: 700 },
+                style: FontStyleValue::Normal,
+                stretch: NativeFontStretchRange::default(),
+                variation_settings: NativeFontVariationSettings::default(),
+                bytes: system_face.font_data.clone(),
+                unicode_ranges: Vec::new(),
+            },
+            NativeFontFaceResource {
+                family: "Weight Range Face".into(),
+                family_key,
+                weight: NativeFontWeightRange::singleton(FontWeightValue::Numeric(800)),
+                style: FontStyleValue::Normal,
+                stretch: NativeFontStretchRange::default(),
+                variation_settings: NativeFontVariationSettings::default(),
+                bytes: system_face.font_data.clone(),
+                unicode_ranges: Vec::new(),
+            },
+        ];
+        let book = NativeFontBook::from_resources(&resources);
+        let families = NativeFontFamilyList::parse("Weight Range Face").unwrap();
+        let inside = NativeTextMetrics::for_style_with_book(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Numeric(500),
+            FontStyleValue::Normal,
+            DirectionValue::Ltr,
+            &book,
+        );
+        let singleton = NativeTextMetrics::for_style_with_book(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Numeric(800),
+            FontStyleValue::Normal,
+            DirectionValue::Ltr,
+            &book,
+        );
+        assert_eq!(
+            inside.faces[0].weight,
+            NativeFontWeightRange { min: 300, max: 700 }
+        );
+        assert_eq!(
+            singleton.faces[0].weight,
+            NativeFontWeightRange::singleton(FontWeightValue::Numeric(800))
+        );
     }
 
     #[test]
@@ -3478,7 +3534,7 @@ mod tests {
         let resource = NativeFontFaceResource {
             family: "Variable Face".into(),
             family_key: font_family_hash("Variable Face"),
-            weight: FontWeightValue::Normal,
+            weight: NativeFontWeightRange::default(),
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
@@ -3609,7 +3665,7 @@ mod tests {
         let resource = NativeFontFaceResource {
             family: "Descriptor Variable Face".into(),
             family_key: font_family_hash("Descriptor Variable Face"),
-            weight: FontWeightValue::Normal,
+            weight: NativeFontWeightRange::default(),
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
             variation_settings: descriptor_settings,
@@ -3737,7 +3793,7 @@ mod tests {
         let resource = NativeFontFaceResource {
             family: "Embedded Sans".into(),
             family_key: font_family_hash("Embedded Sans"),
-            weight: FontWeightValue::Normal,
+            weight: NativeFontWeightRange::default(),
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),

@@ -4,9 +4,9 @@ use super::config::{
 use super::css::{
     NativeFontFaceRule, NativeStylesheet, NativeUnicodeRange, absolutize_stylesheet_urls,
     collect_background_image_sources, font_family_hash, format_font_face_unicode_ranges,
-    format_font_stretch_range, format_font_variation_settings, format_font_weight,
+    format_font_stretch_range, format_font_variation_settings, format_font_weight_range,
     parse_font_face_unicode_range, parse_font_stretch_range, parse_font_variation_settings,
-    parse_font_weight,
+    parse_font_weight_range,
 };
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
@@ -36,10 +36,11 @@ use super::{
         NativeFontLanguageOverride, NativeFontOpticalSizing, NativeFontVariantAlternates,
         NativeFontVariantCaps, NativeFontVariantEastAsian, NativeFontVariantLigatures,
         NativeFontVariantNumeric, NativeFontVariantPosition, NativeFontVariationSettings,
-        NativeInheritedStyle, NativeMarginValue, NativeOrderValue, NativePointerEventsValue,
-        NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
-        OverflowValue, TextAlignLastValue, TextAlignValue, TextDecorationValue, TextJustifyValue,
-        TextOverflowValue, TextTransformValue, VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
+        NativeFontWeightRange, NativeInheritedStyle, NativeMarginValue, NativeOrderValue,
+        NativePointerEventsValue, NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces,
+        NativeTextDecorationStyle, OverflowValue, TextAlignLastValue, TextAlignValue,
+        TextDecorationValue, TextJustifyValue, TextOverflowValue, TextTransformValue,
+        VerticalAlignValue, WhiteSpaceValue, WordBreakValue,
     },
 };
 use base64::Engine as _;
@@ -222,6 +223,8 @@ pub(crate) struct NativeFontFaceResourceWire {
     pub(crate) family: String,
     pub(crate) family_key: u64,
     pub(crate) weight: FontWeightValue,
+    #[serde(default)]
+    pub(crate) weight_range: Option<NativeFontWeightRange>,
     pub(crate) style: FontStyleValue,
     #[serde(default)]
     pub(crate) stretch: super::css::NativeFontStretchRange,
@@ -1343,7 +1346,7 @@ impl NativeDocument {
             .iter()
             .map(|rule| NativeFontFaceScriptDescriptor {
                 family: rule.family.clone(),
-                weight: format_font_weight(rule.weight),
+                weight: format_font_weight_range(rule.weight),
                 style: match rule.style {
                     FontStyleValue::Normal => "normal".into(),
                     FontStyleValue::Italic => "italic".into(),
@@ -1378,6 +1381,12 @@ impl NativeDocument {
         }
         let total_bytes = resources.iter().try_fold(0usize, |total, resource| {
             if resource.family.is_empty() || resource.family.len() > MAX_ATTRIBUTE_BYTES {
+                return None;
+            }
+            if resource.weight.min < 1
+                || resource.weight.min > resource.weight.max
+                || resource.weight.max > 1000
+            {
                 return None;
             }
             if resource.stretch.min < 500
@@ -1443,10 +1452,10 @@ impl NativeDocument {
                 "must be a bounded non-empty name",
             ));
         }
-        let weight = parse_font_weight(weight).ok_or_else(|| {
+        let weight = parse_font_weight_range(weight).ok_or_else(|| {
             NativeEngineError::invalid(
                 "native FontFace weight",
-                "must be normal, 1-1000, bold, or 700",
+                "must be one absolute weight or an ascending 1-1000 range",
             )
         })?;
         let style = match style.trim().to_ascii_lowercase().as_str() {
@@ -2372,7 +2381,10 @@ impl NativeDocument {
             .map(|resource| NativeFontFaceResourceWire {
                 family: resource.family.clone(),
                 family_key: resource.family_key,
-                weight: resource.weight,
+                weight: FontWeightValue::from_numeric(resource.weight.nominal())
+                    .unwrap_or(FontWeightValue::Normal),
+                weight_range: (resource.weight.min != resource.weight.max)
+                    .then_some(resource.weight),
                 style: resource.style,
                 stretch: resource.stretch,
                 unicode_ranges: resource.unicode_ranges.clone(),
@@ -2452,10 +2464,16 @@ impl NativeDocument {
         let mut font_resources = Vec::with_capacity(wire.font_resources.len());
         let mut total_font_bytes = 0usize;
         for resource in wire.font_resources {
+            let weight = resource
+                .weight_range
+                .unwrap_or_else(|| NativeFontWeightRange::singleton(resource.weight));
             if resource.family.is_empty()
                 || resource.family.len() > MAX_ATTRIBUTE_BYTES
                 || resource.family.bytes().any(|byte| byte.is_ascii_control())
                 || resource.family_key != super::css::font_family_hash(&resource.family)
+                || weight.min < 1
+                || weight.min > weight.max
+                || weight.max > 1000
                 || resource.stretch.min < 500
                 || resource.stretch.min > resource.stretch.max
                 || resource.stretch.max > 2000
@@ -2496,7 +2514,7 @@ impl NativeDocument {
             font_resources.push(NativeFontFaceResource {
                 family: resource.family,
                 family_key: resource.family_key,
-                weight: resource.weight,
+                weight,
                 style: resource.style,
                 stretch: resource.stretch,
                 unicode_ranges: resource.unicode_ranges,
@@ -9940,7 +9958,7 @@ mod tests {
             .set_font_resources(vec![NativeFontFaceResource {
                 family: "Embedded Sans".into(),
                 family_key: super::super::css::font_family_hash("Embedded Sans"),
-                weight: FontWeightValue::Normal,
+                weight: super::super::css::NativeFontWeightRange { min: 300, max: 700 },
                 style: FontStyleValue::Normal,
                 stretch: super::super::css::NativeFontStretchRange::default(),
                 variation_settings,
@@ -9954,14 +9972,38 @@ mod tests {
         assert_eq!(wire.font_resources[0].stretch.min, 1000);
         assert_eq!(wire.font_resources[0].stretch.max, 1000);
         assert_eq!(
+            wire.font_resources[0].weight,
+            super::super::css::FontWeightValue::Numeric(500)
+        );
+        assert_eq!(
+            wire.font_resources[0].weight_range,
+            Some(super::super::css::NativeFontWeightRange { min: 300, max: 700 })
+        );
+        assert_eq!(
             wire.font_resources[0].variation_settings,
             variation_settings
         );
         let restored =
-            NativeDocument::from_content_wire(wire, &limits, document.generation()).unwrap();
+            NativeDocument::from_content_wire(wire.clone(), &limits, document.generation())
+                .unwrap();
         assert_eq!(restored.font_resources.len(), 1);
         assert_eq!(restored.font_resources[0].family, "Embedded Sans");
+        assert_eq!(
+            restored.font_resources[0].weight,
+            super::super::css::NativeFontWeightRange { min: 300, max: 700 }
+        );
         assert_eq!(restored.font_resources[0].bytes.as_ref(), &[0, 1, 2, 3]);
+
+        let mut legacy_wire = wire;
+        legacy_wire.font_resources[0].weight_range = None;
+        let legacy =
+            NativeDocument::from_content_wire(legacy_wire, &limits, document.generation()).unwrap();
+        assert_eq!(
+            legacy.font_resources[0].weight,
+            super::super::css::NativeFontWeightRange::singleton(
+                super::super::css::FontWeightValue::Numeric(500)
+            )
+        );
     }
 
     #[test]

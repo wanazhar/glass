@@ -1276,6 +1276,50 @@ impl FontWeightValue {
     }
 }
 
+/// A bounded absolute `font-weight` descriptor range. A singleton retains the
+/// existing CSS keyword/number behavior while a true range admits a face for
+/// every requested weight inside its interval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeFontWeightRange {
+    pub(crate) min: u16,
+    pub(crate) max: u16,
+}
+
+impl Default for NativeFontWeightRange {
+    fn default() -> Self {
+        Self { min: 400, max: 400 }
+    }
+}
+
+impl NativeFontWeightRange {
+    pub(crate) const fn singleton(weight: FontWeightValue) -> Self {
+        let weight = weight.numeric();
+        Self {
+            min: weight,
+            max: weight,
+        }
+    }
+
+    pub(crate) const fn contains(self, weight: u16) -> bool {
+        weight >= self.min && weight <= self.max
+    }
+
+    pub(crate) const fn distance(self, weight: u16) -> u16 {
+        if self.contains(weight) {
+            0
+        } else if weight < self.min {
+            self.min.saturating_sub(weight)
+        } else {
+            weight.saturating_sub(self.max)
+        }
+    }
+
+    /// A range's nominal request is used only for `local()` source lookup.
+    pub(crate) const fn nominal(self) -> u16 {
+        self.min.saturating_add(self.max).saturating_div(2)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FontWeightDeclarationValue {
     Absolute(FontWeightValue),
@@ -1285,6 +1329,16 @@ enum FontWeightDeclarationValue {
 
 pub(crate) fn format_font_weight(weight: FontWeightValue) -> String {
     weight.numeric().to_string()
+}
+
+pub(crate) fn format_font_weight_range(range: NativeFontWeightRange) -> String {
+    if range.min == range.max {
+        return format_font_weight(
+            FontWeightValue::from_numeric(range.min).unwrap_or(FontWeightValue::Normal),
+        );
+    } else {
+        format!("{} {}", range.min, range.max)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1455,7 +1509,7 @@ pub(crate) struct NativeFontFaceRule {
     pub(crate) family: String,
     pub(crate) family_key: u64,
     pub(crate) sources: Vec<NativeFontFaceSource>,
-    pub(crate) weight: FontWeightValue,
+    pub(crate) weight: NativeFontWeightRange,
     pub(crate) style: FontStyleValue,
     pub(crate) stretch: NativeFontStretchRange,
     pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
@@ -7017,7 +7071,7 @@ fn parse_font_face_rule(
     let source = &context.source[open + 1..close];
     let mut family = None;
     let mut font_sources = None;
-    let mut weight = FontWeightValue::Normal;
+    let mut weight = NativeFontWeightRange::default();
     let mut style = FontStyleValue::Normal;
     let mut stretch = NativeFontStretchRange::default();
     let mut unicode_ranges = Vec::new();
@@ -7067,7 +7121,7 @@ fn parse_font_face_rule(
                     "font-face-src",
                 ),
             },
-            "font-weight" => match parse_font_weight(value) {
+            "font-weight" => match parse_font_weight_range(value) {
                 Some(parsed) => weight = parsed,
                 None => context.diagnostics.push(
                     NativeDiagnosticCode::UnsupportedCssValue,
@@ -12355,6 +12409,19 @@ pub(crate) fn parse_font_weight(value: &str) -> Option<FontWeightValue> {
             .ok()
             .and_then(FontWeightValue::from_numeric),
     }
+}
+
+pub(crate) fn parse_font_weight_range(value: &str) -> Option<NativeFontWeightRange> {
+    let mut values = value.split_ascii_whitespace();
+    let min = parse_font_weight(values.next()?)?.numeric();
+    let max = match values.next() {
+        Some(value) => parse_font_weight(value)?.numeric(),
+        None => min,
+    };
+    if values.next().is_some() || min > max {
+        return None;
+    }
+    Some(NativeFontWeightRange { min, max })
 }
 
 fn parse_font_style(value: &str) -> Option<FontStyleValue> {
@@ -23388,7 +23455,10 @@ mod tests {
                 NativeFontFaceSource::Url("data:font/ttf;base64,AAECAw==".into()),
             ]
         );
-        assert_eq!(rule.weight, FontWeightValue::Bold);
+        assert_eq!(
+            rule.weight,
+            NativeFontWeightRange::singleton(FontWeightValue::Bold)
+        );
         assert_eq!(rule.style, FontStyleValue::Italic);
         assert_eq!(rule.stretch, NativeFontStretchRange { min: 750, max: 750 });
         assert_eq!(
@@ -23396,6 +23466,52 @@ mod tests {
             r#""wght" 700, "wdth" -12.25"#
         );
         assert_eq!(stylesheet.rules.len(), 1);
+    }
+
+    #[test]
+    fn font_face_weight_range_parser_accepts_absolute_singletons_and_ranges() {
+        assert_eq!(
+            parse_font_weight_range("normal"),
+            Some(NativeFontWeightRange::singleton(FontWeightValue::Normal))
+        );
+        assert_eq!(
+            parse_font_weight_range("300 700"),
+            Some(NativeFontWeightRange { min: 300, max: 700 })
+        );
+        assert_eq!(
+            parse_font_weight_range("BOLD 900"),
+            Some(NativeFontWeightRange { min: 700, max: 900 })
+        );
+        assert_eq!(
+            format_font_weight_range(NativeFontWeightRange { min: 300, max: 700 }),
+            "300 700"
+        );
+        assert!(parse_font_weight_range("lighter").is_none());
+        assert!(parse_font_weight_range("300 700 900").is_none());
+        assert!(parse_font_weight_range("700 300").is_none());
+        assert!(parse_font_weight_range("0 400").is_none());
+        assert!(parse_font_weight_range("400 1001").is_none());
+    }
+
+    #[test]
+    fn font_face_parser_retains_numeric_weight_ranges() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            r#"@font-face {
+                font-family: "Range Face";
+                src: url("data:font/ttf;base64,AAECAw==");
+                font-weight: 300 700;
+            }"#
+            .into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            stylesheet.font_face_rules()[0].weight,
+            NativeFontWeightRange { min: 300, max: 700 }
+        );
+        assert_eq!(
+            format_font_weight_range(stylesheet.font_face_rules()[0].weight),
+            "300 700"
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-523`, following
+expansion checkpoint is completed `native-engine-browser-524`, following
+completed `native-engine-browser-523`, following
 completed `native-engine-browser-522`, following
 completed `native-engine-browser-521`, following
 completed `native-engine-browser-520`, following
@@ -316,9 +317,9 @@ Slice 520 maps inherited CSS weight/stretch to advertised `wght`/`wdth` axes
 when explicit descriptor or authored coordinates do not already provide those
 tags. The effective coordinates feed both HarfRust and the variation-aware
 outline rasterizer; static faces and unknown axes remain unchanged, and
-synthetic scaling remains as the compatibility baseline. Numeric weight ranges,
-optical sizing, custom axes, hinting, color tables, WOFF2, and complete
-FontFace/Web IDL parity remain issue #40 gates.
+synthetic scaling remains as the compatibility baseline. Optical sizing, custom
+axes, hinting, color tables, WOFF2, and complete FontFace/Web IDL parity remain
+issue #40 gates.
 
 Slice 521 admits the CSS integer `font-weight` range 1–1000 throughout the
 native style and font-resource pipeline. The numeric value survives parsing,
@@ -326,8 +327,8 @@ inheritance, CSSOM projection, `@font-face` and script-created `FontFace`
 descriptors, local-font lookup, numeric-distance face matching, variable
 `wght` mapping, and the fixed-cell bold paint threshold. `normal` and `bold`
 remain aliases for 400 and 700; explicit descriptor and authored variation
-coordinates retain priority. Descriptor ranges, custom axes, hinting, color
-tables, WOFF2, and complete FontFace/Web IDL parity remain issue #40 gates.
+coordinates retain priority. Custom axes, hinting, color tables, WOFF2, and
+complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 522 carries inherited `font-optical-sizing: auto|none` through native
 parsing, cascade, computed style, and CSSOM. When the selected face advertises
@@ -335,18 +336,28 @@ parsing, cascade, computed style, and CSSOM. When the selected face advertises
 authored element coordinates and `@font-face`/script-created `FontFace`
 descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none` retain
-their existing behavior. Descriptor ranges, custom axes, hinting, color
-tables, WOFF2, and complete FontFace/Web IDL parity remain issue #40 gates.
+their existing behavior. Custom axes, hinting, color tables, WOFF2, and
+complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 524 carries absolute numeric `font-weight` singletons and ascending
+descriptor ranges from 1 through 1000 through CSS `@font-face`, script-created
+`FontFace`, native resource admission, content-process serialization, and
+restored font books. Legacy payloads without the optional range remain readable
+as singleton faces. Face matching scores requests at zero inside a declared
+range and by distance outside it, while the requested element weight continues
+to drive advertised `wght` mapping; singleton formatting and computed-style
+wire shape remain unchanged. Custom axes, hinting, color glyph tables, WOFF2,
+font-display timing, and complete FontFace/Web IDL parity remain issue #40
+gates.
 
 Slice 523 carries CSS `font-weight: lighter|bolder` through a declaration-only
 relative layer. The computed-style resolver applies the CSS relative-weight
 bands to the inherited absolute weight, including numeric weights from 1
 through 1000, before existing face scoring, advertised `wght` mapping, paint
 selection, and CSSOM serialization. `@font-face` and script-created `FontFace`
-descriptors continue to accept absolute weights only, and the computed-style
-wire shape remains unchanged. Numeric descriptor ranges, custom axes, hinting,
-color tables, WOFF2, and complete FontFace/Web IDL parity remain issue #40
-gates.
+descriptors continue to accept absolute weights only for relative keywords, and
+the computed-style wire shape remains unchanged. Custom axes, hinting, color
+tables, WOFF2, and complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 519 carries admitted non-default variable-font coordinates into glyph
 bitmap production as well as HarfRust shaping. A bounded `ttf-parser` outline
@@ -7236,8 +7247,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-523.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-524.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-523.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-522.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-521.md` is the preceding completed

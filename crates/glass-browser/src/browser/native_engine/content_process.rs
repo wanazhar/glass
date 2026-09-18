@@ -10,8 +10,8 @@ use super::config::{
     validate_context_id, validate_url_text, validate_window_name, without_fragment,
 };
 use super::css::{
-    NativeFontFaceSource, absolutize_stylesheet_urls, css_import_matches, decode_css_url_value,
-    static_css_imports,
+    FontWeightValue, NativeFontFaceSource, absolutize_stylesheet_urls, css_import_matches,
+    decode_css_url_value, static_css_imports,
 };
 use super::dom::{
     NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource,
@@ -4230,9 +4230,12 @@ async fn load_font_faces(
     {
         for source in &rule.sources {
             let bytes = match source {
-                NativeFontFaceSource::Local(family) => {
-                    system_fonts.local_font_bytes(family, rule.weight, rule.style)
-                }
+                NativeFontFaceSource::Local(family) => system_fonts.local_font_bytes(
+                    family,
+                    FontWeightValue::from_numeric(rule.weight.nominal())
+                        .unwrap_or(FontWeightValue::Normal),
+                    rule.style,
+                ),
                 NativeFontFaceSource::Url(source) => {
                     let object_url = runtime
                         .map(|runtime| runtime.object_url_resource(source))

@@ -299,6 +299,8 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         line_gap_override: String,
         #[serde(default)]
+        display: String,
+        #[serde(default)]
         variation_settings: String,
         body_base64: String,
     },
@@ -9701,6 +9703,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     String(descriptor && descriptor.variant || "normal"),
     String(descriptor && descriptor.featureSettings || "normal"),
     String(descriptor && descriptor.variationSettings || "normal"),
+    String(descriptor && descriptor.display || "auto"),
     String(descriptor && descriptor.ascentOverride || "normal"),
     String(descriptor && descriptor.descentOverride || "normal"),
     String(descriptor && descriptor.lineGapOverride || "normal"),
@@ -10172,6 +10175,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
               ascent_override: state.ascentOverride,
               descent_override: state.descentOverride,
               line_gap_override: state.lineGapOverride,
+              display: state.display,
               variation_settings: state.variationSettings,
               body_base64: encodeBase64(bytes, nativeFontFaceByteLimit),
             });
@@ -18593,7 +18597,8 @@ mod native_font_face_tests {
                     sizeAdjust: "62.5%",
                     ascentOverride: "80%",
                     descentOverride: "20%",
-                    lineGapOverride: "normal"
+                    lineGapOverride: "normal",
+                    display: " SWAP "
                   });
                   const invalid = [
                     ["style", "oblique"],
@@ -18624,7 +18629,7 @@ mod native_font_face_tests {
                     }
                   });
                   return [
-                    [face.style, face.weight, face.stretch, face.unicodeRange, face.variationSettings, face.sizeAdjust, face.ascentOverride, face.descentOverride, face.lineGapOverride],
+                    [face.style, face.weight, face.stretch, face.unicodeRange, face.variationSettings, face.sizeAdjust, face.ascentOverride, face.descentOverride, face.lineGapOverride, face.display],
                     constructorErrors,
                     setterResults
                   ];
@@ -18647,7 +18652,8 @@ mod native_font_face_tests {
                     "62.5%",
                     "80%",
                     "20%",
-                    "normal"
+                    "normal",
+                    "swap"
                 ],
                 [
                     ["style", "SyntaxError"],
@@ -18779,7 +18785,7 @@ mod native_font_face_tests {
             .evaluate(
                 &format!(
                     r#"(() => {{
-                      const face = new FontFace("Inline Sans", {source}, {{ weight: "300 700", stretch: "condensed", unicodeRange: "U+41-5A", variant: "SMALL-CAPS", featureSettings: '"liga" off, "kern" on', variationSettings: '"wght" 620', sizeAdjust: "62.5%", ascentOverride: "80%", descentOverride: "20%", lineGapOverride: "normal" }});
+                      const face = new FontFace("Inline Sans", {source}, {{ weight: "300 700", stretch: "condensed", unicodeRange: "U+41-5A", variant: "SMALL-CAPS", featureSettings: '"liga" off, "kern" on', variationSettings: '"wght" 620', sizeAdjust: "62.5%", ascentOverride: "80%", descentOverride: "20%", lineGapOverride: "normal", display: "optional" }});
                       globalThis.__inlineFontFace = face;
                       document.fonts.add(face);
                       face.load().then(() => {{ document.body.textContent = "accepted"; }});
@@ -18845,6 +18851,7 @@ mod native_font_face_tests {
                 ascent_override,
                 descent_override,
                 line_gap_override,
+                display,
                 variation_settings,
                 body_base64,
                 ..
@@ -18860,6 +18867,7 @@ mod native_font_face_tests {
                 && ascent_override == "80%"
                 && descent_override == "20%"
                 && line_gap_override == "normal"
+                && display == "optional"
                 && !body_base64.is_empty()
         ));
         let wire = document.to_content_wire();

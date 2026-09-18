@@ -3,13 +3,13 @@ use super::css::NativeFontFeature;
 use super::css::NativeFontVariation;
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, MAX_NATIVE_FONT_PALETTE_OVERRIDES,
-    NativeColor, NativeFontFaceRule, NativeFontFamilyList, NativeFontFamilyValue,
-    NativeFontFeatureSettings, NativeFontKerning, NativeFontLanguageOverride,
-    NativeFontMetricOverrides, NativeFontOpticalSizing, NativeFontPalette,
-    NativeFontPaletteOverride, NativeFontStretchRange, NativeFontVariantAlternates,
-    NativeFontVariantCaps, NativeFontVariantEastAsian, NativeFontVariantEastAsianForm,
-    NativeFontVariantEastAsianWidth, NativeFontVariantLigatures, NativeFontVariantNumeric,
-    NativeFontVariantNumericFigure, NativeFontVariantNumericFraction,
+    NativeColor, NativeFontDisplay, NativeFontFaceRule, NativeFontFamilyList,
+    NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning,
+    NativeFontLanguageOverride, NativeFontMetricOverrides, NativeFontOpticalSizing,
+    NativeFontPalette, NativeFontPaletteOverride, NativeFontStretchRange,
+    NativeFontVariantAlternates, NativeFontVariantCaps, NativeFontVariantEastAsian,
+    NativeFontVariantEastAsianForm, NativeFontVariantEastAsianWidth, NativeFontVariantLigatures,
+    NativeFontVariantNumeric, NativeFontVariantNumericFigure, NativeFontVariantNumericFraction,
     NativeFontVariantNumericSpacing, NativeFontVariantPosition, NativeFontVariationSettings,
     NativeFontWeightRange, NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
 };
@@ -1460,6 +1460,7 @@ struct NativeFontFace {
     feature_settings: NativeFontFeatureSettings,
     size_adjust: u16,
     metric_overrides: NativeFontMetricOverrides,
+    font_display: NativeFontDisplay,
     font: Arc<fontdue::Font>,
     font_data: Arc<[u8]>,
     collection_index: u32,
@@ -1479,6 +1480,7 @@ impl PartialEq for NativeFontFace {
             && self.feature_settings == other.feature_settings
             && self.size_adjust == other.size_adjust
             && self.metric_overrides == other.metric_overrides
+            && self.font_display == other.font_display
             && self.collection_index == other.collection_index
             && self.font_data == other.font_data
             && self.unicode_ranges == other.unicode_ranges
@@ -1515,6 +1517,7 @@ pub(crate) struct NativeFontFaceResource {
     pub(crate) feature_settings: NativeFontFeatureSettings,
     pub(crate) size_adjust: u16,
     pub(crate) metric_overrides: NativeFontMetricOverrides,
+    pub(crate) font_display: NativeFontDisplay,
     pub(crate) bytes: Arc<[u8]>,
     pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
 }
@@ -1531,6 +1534,7 @@ impl NativeFontFaceResource {
             feature_settings: rule.feature_settings,
             size_adjust: rule.size_adjust,
             metric_overrides: rule.metric_overrides,
+            font_display: rule.font_display,
             bytes: Arc::from(bytes),
             unicode_ranges: rule.unicode_ranges.clone(),
         }
@@ -4187,6 +4191,7 @@ impl NativeFontBook {
                 feature_settings: resource.feature_settings,
                 size_adjust: resource.size_adjust,
                 metric_overrides: resource.metric_overrides,
+                font_display: resource.font_display,
                 font: Arc::new(font),
                 font_data,
                 collection_index: 0,
@@ -4368,6 +4373,7 @@ fn insert_font_face(
         feature_settings: NativeFontFeatureSettings::default(),
         size_adjust: super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
         metric_overrides: NativeFontMetricOverrides::default(),
+        font_display: NativeFontDisplay::Auto,
         font: Arc::new(font),
         font_data,
         collection_index,
@@ -5062,6 +5068,7 @@ mod tests {
             feature_settings: NativeFontFeatureSettings::default(),
             size_adjust,
             metric_overrides: NativeFontMetricOverrides::default(),
+            font_display: NativeFontDisplay::Auto,
             bytes: Arc::from(bytes.as_slice()),
             unicode_ranges: Vec::new(),
         };
@@ -5115,6 +5122,7 @@ mod tests {
             feature_settings: NativeFontFeatureSettings::default(),
             size_adjust,
             metric_overrides,
+            font_display: NativeFontDisplay::Auto,
             bytes: Arc::from(bytes.as_slice()),
             unicode_ranges: Vec::new(),
         };
@@ -5291,6 +5299,7 @@ mod tests {
             feature_settings: NativeFontFeatureSettings::default(),
             size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             metric_overrides: NativeFontMetricOverrides::default(),
+            font_display: NativeFontDisplay::Auto,
             bytes: Arc::from(bytes),
             unicode_ranges: Vec::new(),
         };
@@ -5666,6 +5675,7 @@ mod tests {
             feature_settings: NativeFontFeatureSettings::default(),
             size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             metric_overrides: NativeFontMetricOverrides::default(),
+            font_display: NativeFontDisplay::Auto,
             bytes: Arc::from(bytes.as_slice()),
             unicode_ranges: Vec::new(),
         };
@@ -6551,6 +6561,7 @@ mod tests {
             feature_settings: NativeFontFeatureSettings::default(),
             size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             metric_overrides: NativeFontMetricOverrides::default(),
+            font_display: NativeFontDisplay::Auto,
             bytes: Arc::from(compressed),
             unicode_ranges: Vec::new(),
         };
@@ -6583,6 +6594,7 @@ mod tests {
             feature_settings: NativeFontFeatureSettings::default(),
             size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             metric_overrides: NativeFontMetricOverrides::default(),
+            font_display: NativeFontDisplay::Auto,
             bytes: Arc::from(woff2),
             unicode_ranges: Vec::new(),
         };
@@ -6614,6 +6626,7 @@ mod tests {
                 feature_settings: NativeFontFeatureSettings::default(),
                 size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
                 metric_overrides: NativeFontMetricOverrides::default(),
+                font_display: NativeFontDisplay::Auto,
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: vec![NativeUnicodeRange {
                     start: u32::from(character),
@@ -6657,6 +6670,7 @@ mod tests {
                 feature_settings: NativeFontFeatureSettings::default(),
                 size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
                 metric_overrides: NativeFontMetricOverrides::default(),
+                font_display: NativeFontDisplay::Auto,
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -6670,6 +6684,7 @@ mod tests {
                 feature_settings: NativeFontFeatureSettings::default(),
                 size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
                 metric_overrides: NativeFontMetricOverrides::default(),
+                font_display: NativeFontDisplay::Auto,
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -6735,6 +6750,7 @@ mod tests {
                 feature_settings: NativeFontFeatureSettings::default(),
                 size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
                 metric_overrides: NativeFontMetricOverrides::default(),
+                font_display: NativeFontDisplay::Auto,
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -6748,6 +6764,7 @@ mod tests {
                 feature_settings: NativeFontFeatureSettings::default(),
                 size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
                 metric_overrides: NativeFontMetricOverrides::default(),
+                font_display: NativeFontDisplay::Auto,
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -7092,6 +7109,7 @@ mod tests {
             feature_settings: NativeFontFeatureSettings::default(),
             size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             metric_overrides: NativeFontMetricOverrides::default(),
+            font_display: NativeFontDisplay::Auto,
             bytes: Arc::from(bytes),
             unicode_ranges: Vec::new(),
         };
@@ -7226,6 +7244,7 @@ mod tests {
             feature_settings: NativeFontFeatureSettings::default(),
             size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             metric_overrides: NativeFontMetricOverrides::default(),
+            font_display: NativeFontDisplay::Auto,
             bytes: Arc::from(bytes),
             unicode_ranges: Vec::new(),
         };
@@ -7357,6 +7376,7 @@ mod tests {
             feature_settings: NativeFontFeatureSettings::default(),
             size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             metric_overrides: NativeFontMetricOverrides::default(),
+            font_display: NativeFontDisplay::Auto,
             bytes: system_face.font_data.clone(),
             unicode_ranges: Vec::new(),
         };

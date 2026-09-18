@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-528`, following completed
 `native-engine-browser-527`, following completed
 `native-engine-browser-526`, following completed
 `native-engine-browser-525`, following completed
@@ -358,6 +359,14 @@ to an advertised OpenType `opsz` axis, while authored element coordinates and
 effective value reaches both HarfRust shaping and variation-aware outline
 rasterization. Custom axes, hinting, color tables, and complete FontFace/Web IDL
 parity remain issue #40 gates.
+
+The completed bounded COLRv1 clip-provenance follow-up is
+[`native-engine-browser-528`](tasks/native-engine-browser-528.md): each
+admitted outline carries a bounded generation, and current-outline clips are
+accepted without a redundant mask only when the painted outline matches every
+active clip generation. Replaced outlines, clip creation without an outline,
+and unbalanced paint state fail closed to monochrome fallback. The transform,
+compositing, layer, shaping, spacing, and two-crate contracts remain unchanged.
 
 The completed bounded COLRv1 transform/compositing follow-up is
 [`native-engine-browser-527`](tasks/native-engine-browser-527.md): finite

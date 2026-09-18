@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-528`, following completed
 `native-engine-browser-527`, following completed
 `native-engine-browser-526`, following completed
 `native-engine-browser-525`, following completed
@@ -337,6 +338,14 @@ descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none`
 retain their existing behavior. Custom axes, hinting, color tables, and
 complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 528 closes a COLRv1 clip-provenance hole. Each admitted outline receives
+a bounded generation; a current-outline clip is accepted without a redundant
+mask only when the painted outline still has the generation recorded by every
+active clip. Replaced outlines, clip creation without an outline, and any
+unbalanced paint state fail closed to monochrome fallback. The existing
+transform, compositing, layer, shaping, spacing, and two-crate contracts remain
+unchanged.
 
 Slice 527 extends the bounded COLR/CPAL paint path with finite affine transform
 stacks and `SourceOver`/`DestinationOver` compositing for solid layers.

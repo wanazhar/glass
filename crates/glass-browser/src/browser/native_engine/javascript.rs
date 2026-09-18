@@ -9753,6 +9753,14 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     state.cycleFaces.clear();
     state.cycleErrors.clear();
   };
+  const nativeFontFaceDescriptorValue = (name, value) => {
+    const text = String(value);
+    if (name !== "display") return text;
+    const normalized = text.trim().toLowerCase();
+    if (!["auto", "block", "swap", "fallback", "optional"].includes(normalized))
+      throw nativeFontFaceError("FontFace display descriptor is invalid", "SyntaxError");
+    return normalized;
+  };
   const FontFaceNative = typeof globalThis.__glassFontFaceConstructor === "function"
     ? globalThis.__glassFontFaceConstructor
     : function FontFace(family, source, descriptors) {
@@ -9776,7 +9784,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
         for (const name of nativeFontFaceDescriptorNames) {
           state[name] = settings[name] === undefined
             ? nativeFontFaceDescriptorDefaults[name]
-            : String(settings[name]);
+            : nativeFontFaceDescriptorValue(name, settings[name]);
         }
         nativeFontFaceStates.set(this, state);
       };
@@ -9791,7 +9799,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     set(value) {
       const state = nativeFontFaceState(this);
       if (!state) throw new TypeError("Illegal FontFace receiver");
-      state[name] = String(value);
+      state[name] = nativeFontFaceDescriptorValue(name, value);
     },
   });
   Object.defineProperty(FontFaceNative.prototype, "family", {
@@ -18241,6 +18249,41 @@ mod native_font_face_tests {
                 "\"wght\" 620",
                 "swap"
             ])
+        );
+    }
+
+    #[test]
+    fn script_font_face_display_descriptor_normalizes_and_rejects_invalid_values() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-display-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::empty();
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const face = new FontFace("Display Face", "", { display: " Swap " });
+                  let constructorError = null;
+                  try {
+                    new FontFace("Invalid Display Face", "", { display: "blink" });
+                  } catch (error) {
+                    constructorError = error.name;
+                  }
+                  let setterError = null;
+                  try {
+                    face.display = "blink";
+                  } catch (error) {
+                    setterError = [error.name, face.display];
+                  }
+                  return [face.display, constructorError, setterError];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("FontFace display descriptor validation must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["swap", "SyntaxError", ["SyntaxError", "swap"]])
         );
     }
 

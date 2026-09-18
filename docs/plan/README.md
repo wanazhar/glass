@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-544`, following completed
 `native-engine-browser-543`, following completed
 `native-engine-browser-542`, following completed
 `native-engine-browser-541`, following completed
@@ -418,6 +419,15 @@ private `font` fetches now reach the native Service Worker with
 `font-src` policy, and fall back to the existing direct font loader when
 unhandled. Font-display timing, installed-font discovery, and complete
 FontFace/Web IDL parity remain issue #40 gates.
+
+The completed FontFace display-validation follow-up is
+[`native-engine-browser-544`](tasks/native-engine-browser-544.md): dynamic
+`FontFace.display` constructor and setter values now normalize to the five
+bounded CSS keywords and reject invalid values transactionally with
+`SyntaxError`. Static CSS projection, resource admission, Service Worker
+routing, and loading status remain unchanged; actual display timing,
+installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
+gates.
 
 The completed palette-override follow-up is
 [`native-engine-browser-540`](tasks/native-engine-browser-540.md): bounded

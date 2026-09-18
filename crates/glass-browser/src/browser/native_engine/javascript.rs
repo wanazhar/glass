@@ -9503,7 +9503,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
   };
   const nativeFontFaceSourceLimit = 32;
   const nativeFontFaceSupportedFormats = new Set([
-    "woff", "truetype", "opentype", "collection",
+    "woff", "woff2", "truetype", "opentype", "collection",
   ]);
   const nativeFontFaceSupportedTechs = new Set();
   const nativeFontFaceSplitList = (value) => {

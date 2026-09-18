@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-521`, following
+expansion checkpoint is completed `native-engine-browser-522`, following
+completed `native-engine-browser-521`, following
 completed `native-engine-browser-520`, following
 completed `native-engine-browser-517`, following
 completed `native-engine-browser-516`, following
@@ -325,8 +326,18 @@ descriptors, local-font lookup, numeric-distance face matching, variable
 `wght` mapping, and the fixed-cell bold paint threshold. `normal` and `bold`
 remain aliases for 400 and 700; explicit descriptor and authored variation
 coordinates retain priority. Relative `lighter`/`bolder`, descriptor ranges,
-optical sizing, custom axes, hinting, color tables, WOFF2, and complete
-FontFace/Web IDL parity remain issue #40 gates.
+custom axes, hinting, color tables, WOFF2, and complete FontFace/Web IDL
+parity remain issue #40 gates.
+
+Slice 522 carries inherited `font-optical-sizing: auto|none` through native
+parsing, cascade, computed style, and CSSOM. When the selected face advertises
+`opsz`, `auto` derives a bounded coordinate from the computed CSS font size;
+authored element coordinates and `@font-face`/script-created `FontFace`
+descriptors retain priority. The effective coordinate reaches HarfRust shaping
+and variation-aware outline rasterization, while static faces and `none` retain
+their existing behavior. Relative weight keywords, descriptor ranges, custom
+axes, hinting, color tables, WOFF2, and complete FontFace/Web IDL parity remain
+issue #40 gates.
 
 Slice 519 carries admitted non-default variable-font coordinates into glyph
 bitmap production as well as HarfRust shaping. A bounded `ttf-parser` outline
@@ -7216,13 +7227,15 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-521.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-522.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-521.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-520.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-519.md` is the preceding completed
 browser task;
-`docs/plan/tasks/native-engine-browser-509.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-509.md` is an earlier completed browser
 task;
 `docs/plan/tasks/native-engine-browser-508.md` is the preceding completed browser
 task;
@@ -7693,10 +7706,9 @@ browser task;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed browser-expansion checkpoint is recorded for
-`docs/plan/tasks/native-engine-browser-413.md`; its implementation and focused
-verification are recorded in that task file. The active follow-up checkpoint
-is `docs/plan/tasks/native-engine-browser-414.md`. The preceding browser-
-expansion checkpoint is `docs/plan/tasks/native-engine-browser-412.md`. The CSS foundation checkpoint
+`docs/plan/tasks/native-engine-browser-522.md`; its implementation and focused
+verification are recorded in that task file. The preceding browser-expansion
+checkpoint is `docs/plan/tasks/native-engine-browser-521.md`. The CSS foundation checkpoint
 remains `docs/plan/tasks/native-engine-234.md`: implementation is `8a96f56b`
 (design `b2119e5f`). It accepts bounded standalone case-insensitive finite
 `overflow: visible|auto|scroll`, `overflow-x: visible|auto|scroll`, and

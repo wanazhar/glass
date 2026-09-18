@@ -1237,6 +1237,13 @@ pub(crate) enum NativeFontKerning {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeFontOpticalSizing {
+    #[default]
+    Auto,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum FontWeightValue {
     #[default]
     Normal,
@@ -1597,6 +1604,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) font_variant_numeric: NativeFontVariantNumeric,
     pub(crate) font_feature_settings: NativeFontFeatureSettings,
     pub(crate) font_kerning: NativeFontKerning,
+    pub(crate) font_optical_sizing: NativeFontOpticalSizing,
     pub(crate) font_weight: FontWeightValue,
     pub(crate) font_style: FontStyleValue,
     pub(crate) font_stretch: NativeFontStretchRange,
@@ -1667,6 +1675,7 @@ impl Default for NativeInheritedStyle {
             font_variant_numeric: NativeFontVariantNumeric::default(),
             font_feature_settings: NativeFontFeatureSettings::default(),
             font_kerning: NativeFontKerning::Auto,
+            font_optical_sizing: NativeFontOpticalSizing::Auto,
             font_weight: FontWeightValue::Normal,
             font_style: FontStyleValue::Normal,
             font_stretch: NativeFontStretchRange::default(),
@@ -1846,6 +1855,8 @@ pub(crate) struct NativeComputedStyle {
     font_feature_settings: NativeFontFeatureSettings,
     #[serde(default)]
     font_kerning: NativeFontKerning,
+    #[serde(default)]
+    font_optical_sizing: NativeFontOpticalSizing,
     font_weight: FontWeightValue,
     font_style: FontStyleValue,
     font_stretch: NativeFontStretchRange,
@@ -2069,6 +2080,10 @@ impl NativeComputedStyle {
 
     pub(crate) const fn font_kerning(self) -> NativeFontKerning {
         self.font_kerning
+    }
+
+    pub(crate) const fn font_optical_sizing(self) -> NativeFontOpticalSizing {
+        self.font_optical_sizing
     }
 
     pub(crate) const fn font_weight(self) -> FontWeightValue {
@@ -2401,6 +2416,7 @@ impl NativeStylesheet {
         let mut font_variant_numeric = &mut scratch.font_variant_numeric;
         let mut font_feature_settings = &mut scratch.font_feature_settings;
         let mut font_kerning = &mut scratch.font_kerning;
+        let mut font_optical_sizing = &mut scratch.font_optical_sizing;
         let mut font_weight = &mut scratch.font_weight;
         let mut font_style = &mut scratch.font_style;
         let mut font_stretch = &mut scratch.font_stretch;
@@ -2728,6 +2744,14 @@ impl NativeStylesheet {
                 false,
                 rule.declarations.text_importance.font_kerning,
                 &mut font_kerning,
+            );
+            apply_text_cascade_declaration(
+                rule.declarations.font_optical_sizing,
+                rule.selector.specificity,
+                rule.order,
+                false,
+                rule.declarations.text_importance.font_optical_sizing,
+                &mut font_optical_sizing,
             );
             apply_text_cascade_declaration(
                 rule.declarations.font_weight,
@@ -3399,6 +3423,14 @@ impl NativeStylesheet {
                 &mut font_kerning,
             );
             apply_text_cascade_declaration(
+                declarations.font_optical_sizing,
+                u16::MAX,
+                usize::MAX,
+                true,
+                declarations.text_importance.font_optical_sizing,
+                &mut font_optical_sizing,
+            );
+            apply_text_cascade_declaration(
                 declarations.font_weight,
                 u16::MAX,
                 usize::MAX,
@@ -4016,6 +4048,11 @@ impl NativeStylesheet {
                 inherited.font_kerning,
                 NativeFontKerning::Auto,
             ),
+            font_optical_sizing: resolve_inherited_text_declaration(
+                *font_optical_sizing,
+                inherited.font_optical_sizing,
+                NativeFontOpticalSizing::Auto,
+            ),
             font_weight: resolve_inherited_text_declaration(
                 *font_weight,
                 inherited.font_weight,
@@ -4219,6 +4256,7 @@ struct NativeCascadeScratch {
     font_variant_numeric: NativeTextCascadeCandidates<NativeFontVariantNumeric>,
     font_feature_settings: NativeTextCascadeCandidates<NativeFontFeatureSettings>,
     font_kerning: NativeTextCascadeCandidates<NativeFontKerning>,
+    font_optical_sizing: NativeTextCascadeCandidates<NativeFontOpticalSizing>,
     font_weight: NativeTextCascadeCandidates<FontWeightValue>,
     font_style: NativeTextCascadeCandidates<FontStyleValue>,
     font_stretch: NativeTextCascadeCandidates<NativeFontStretchRange>,
@@ -4321,6 +4359,7 @@ impl NativeCascadeScratch {
             initialize!(font_variant_numeric);
             initialize!(font_feature_settings);
             initialize!(font_kerning);
+            initialize!(font_optical_sizing);
             initialize!(font_weight);
             initialize!(font_style);
             initialize!(font_stretch);
@@ -6472,6 +6511,7 @@ struct NativeTextDeclarationImportance {
     font_variant_numeric: bool,
     font_feature_settings: bool,
     font_kerning: bool,
+    font_optical_sizing: bool,
     font_weight: bool,
     font_style: bool,
     font_stretch: bool,
@@ -6541,6 +6581,7 @@ struct NativeDeclarations {
     font_variant_numeric: Option<InheritedTextDeclaration<NativeFontVariantNumeric>>,
     font_feature_settings: Option<InheritedTextDeclaration<NativeFontFeatureSettings>>,
     font_kerning: Option<InheritedTextDeclaration<NativeFontKerning>>,
+    font_optical_sizing: Option<InheritedTextDeclaration<NativeFontOpticalSizing>>,
     font_weight: Option<InheritedTextDeclaration<FontWeightValue>>,
     font_style: Option<InheritedTextDeclaration<FontStyleValue>>,
     font_stretch: Option<InheritedTextDeclaration<NativeFontStretchRange>>,
@@ -7114,6 +7155,7 @@ fn parse_style_rule(
         || declarations.font_variant_numeric.is_some()
         || declarations.font_feature_settings.is_some()
         || declarations.font_kerning.is_some()
+        || declarations.font_optical_sizing.is_some()
         || declarations.font_weight.is_some()
         || declarations.font_style.is_some()
         || declarations.font_stretch.is_some()
@@ -7354,6 +7396,7 @@ fn parse_declarations_with_diagnostics(
             "font-variant-numeric" => parse_font_variant_numeric_declaration(value).is_some(),
             "font-feature-settings" => parse_font_feature_settings_declaration(value).is_some(),
             "font-kerning" => parse_font_kerning_declaration(value).is_some(),
+            "font-optical-sizing" => parse_font_optical_sizing_declaration(value).is_some(),
             "font-weight" => parse_font_weight_declaration(value).is_some(),
             "font-style" => parse_font_style_declaration(value).is_some(),
             "font-stretch" => parse_font_stretch_declaration(value).is_some(),
@@ -7555,6 +7598,7 @@ fn is_known_css_property(property: &str) -> bool {
             | "font-variant-numeric"
             | "font-feature-settings"
             | "font-kerning"
+            | "font-optical-sizing"
             | "font-weight"
             | "font-style"
             | "font-stretch"
@@ -8043,6 +8087,12 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_font_kerning_declaration(value) {
                     declarations.font_kerning = Some(parsed);
                     declarations.text_importance.font_kerning = important;
+                }
+            }
+            "font-optical-sizing" => {
+                if let Some(parsed) = parse_font_optical_sizing_declaration(value) {
+                    declarations.font_optical_sizing = Some(parsed);
+                    declarations.text_importance.font_optical_sizing = important;
                 }
             }
             "font-weight" => {
@@ -13283,6 +13333,20 @@ fn parse_font_kerning_declaration(
     value: &str,
 ) -> Option<InheritedTextDeclaration<NativeFontKerning>> {
     parse_inherited_text_declaration(value, parse_font_kerning)
+}
+
+fn parse_font_optical_sizing(value: &str) -> Option<NativeFontOpticalSizing> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(NativeFontOpticalSizing::Auto),
+        "none" => Some(NativeFontOpticalSizing::None),
+        _ => None,
+    }
+}
+
+fn parse_font_optical_sizing_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<NativeFontOpticalSizing>> {
+    parse_inherited_text_declaration(value, parse_font_optical_sizing)
 }
 
 fn parse_font_weight_declaration(value: &str) -> Option<InheritedTextDeclaration<FontWeightValue>> {
@@ -22939,6 +23003,21 @@ mod tests {
     }
 
     #[test]
+    fn font_optical_sizing_parser_accepts_only_supported_keywords() {
+        assert_eq!(
+            parse_font_optical_sizing("auto"),
+            Some(NativeFontOpticalSizing::Auto)
+        );
+        assert_eq!(
+            parse_font_optical_sizing("NONE"),
+            Some(NativeFontOpticalSizing::None)
+        );
+        assert!(parse_font_optical_sizing("inherit").is_none());
+        assert!(parse_font_optical_sizing("auto none").is_none());
+        assert!(parse_font_optical_sizing("on").is_none());
+    }
+
+    #[test]
     fn font_variant_caps_parser_accepts_only_supported_keywords() {
         assert_eq!(
             parse_font_variant_caps("normal"),
@@ -24409,6 +24488,46 @@ mod tests {
         assert_eq!(style("inherit").font_kerning(), NativeFontKerning::None);
         assert_eq!(style("clear").font_kerning(), NativeFontKerning::Auto);
         assert_eq!(style("invalid").font_kerning(), NativeFontKerning::None);
+    }
+
+    #[test]
+    fn font_optical_sizing_is_inherited_and_css_wide_resets_are_bounded() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { font-optical-sizing: none; }
+            #child { font-optical-sizing: auto; }
+            #inherit { font-optical-sizing: inherit; }
+            #clear { font-optical-sizing: initial; }
+            #invalid { font-optical-sizing: auto none; }
+            </style>
+            <div id='parent'><span id='child'>Child</span><span id='inherit'>Inherit</span><span id='clear'>Clear</span><span id='invalid'>Invalid</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+        assert_eq!(
+            style("parent").font_optical_sizing(),
+            NativeFontOpticalSizing::None
+        );
+        assert_eq!(
+            style("child").font_optical_sizing(),
+            NativeFontOpticalSizing::Auto
+        );
+        assert_eq!(
+            style("inherit").font_optical_sizing(),
+            NativeFontOpticalSizing::None
+        );
+        assert_eq!(
+            style("clear").font_optical_sizing(),
+            NativeFontOpticalSizing::Auto
+        );
+        assert_eq!(
+            style("invalid").font_optical_sizing(),
+            NativeFontOpticalSizing::None
+        );
     }
 
     #[test]

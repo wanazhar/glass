@@ -4,10 +4,10 @@ use super::css::NativeFontVariation;
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
     NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning,
-    NativeFontLanguageOverride, NativeFontStretchRange, NativeFontVariantAlternates,
-    NativeFontVariantCaps, NativeFontVariantEastAsian, NativeFontVariantEastAsianForm,
-    NativeFontVariantEastAsianWidth, NativeFontVariantLigatures, NativeFontVariantNumeric,
-    NativeFontVariantNumericFigure, NativeFontVariantNumericFraction,
+    NativeFontLanguageOverride, NativeFontOpticalSizing, NativeFontStretchRange,
+    NativeFontVariantAlternates, NativeFontVariantCaps, NativeFontVariantEastAsian,
+    NativeFontVariantEastAsianForm, NativeFontVariantEastAsianWidth, NativeFontVariantLigatures,
+    NativeFontVariantNumeric, NativeFontVariantNumericFigure, NativeFontVariantNumericFraction,
     NativeFontVariantNumericSpacing, NativeFontVariantPosition, NativeFontVariationSettings,
     NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
 };
@@ -341,6 +341,7 @@ pub(crate) struct NativeTextMetrics {
     variant_numeric: NativeFontVariantNumeric,
     feature_settings: NativeFontFeatureSettings,
     kerning: NativeFontKerning,
+    optical_sizing: NativeFontOpticalSizing,
     ascent: u32,
     line_height: u32,
     direction: DirectionValue,
@@ -738,6 +739,7 @@ impl NativeTextMetrics {
             variant_numeric,
             feature_settings,
             kerning,
+            optical_sizing: NativeFontOpticalSizing::Auto,
             ascent: FALLBACK_LINE_HEIGHT.saturating_sub(5),
             line_height: FALLBACK_LINE_HEIGHT,
             direction,
@@ -1148,10 +1150,16 @@ impl NativeTextMetrics {
             variant_numeric,
             feature_settings,
             kerning,
+            optical_sizing: NativeFontOpticalSizing::Auto,
             ascent,
             line_height,
             direction,
         }
+    }
+
+    pub(crate) fn with_optical_sizing(mut self, optical_sizing: NativeFontOpticalSizing) -> Self {
+        self.optical_sizing = optical_sizing;
+        self
     }
 
     pub(crate) const fn line_height(&self) -> u32 {
@@ -1199,6 +1207,9 @@ impl NativeTextMetrics {
                     FontWeightValue::Numeric(value) => i32::from(value).saturating_mul(1_000),
                 }),
                 b"wdth" => Some(i32::from(self.stretch).saturating_mul(100)),
+                b"opsz" if matches!(self.optical_sizing, NativeFontOpticalSizing::Auto) => {
+                    Some((self.font_size as i32).saturating_mul(1_000))
+                }
                 _ => None,
             };
             if let Some(value_milli) = value_milli {

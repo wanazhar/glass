@@ -13240,7 +13240,32 @@ pub(crate) fn font_family_hash(value: &str) -> u64 {
 }
 
 fn parse_font_size(value: &str) -> Option<u32> {
-    parse_dimension(value).filter(|value| (1..=256).contains(value))
+    let value = value.trim().to_ascii_lowercase();
+    if value.ends_with("px") {
+        return parse_dimension(&value).filter(|value| (1..=256).contains(value));
+    }
+    let (number, multiplier, denominator) = [
+        ("pt", 4_u64, 3_u64),
+        ("pc", 16_u64, 1_u64),
+        ("in", 96_u64, 1_u64),
+        ("cm", 4_800_u64, 127_u64),
+        ("mm", 480_u64, 127_u64),
+    ]
+    .iter()
+    .find_map(|(suffix, multiplier, denominator)| {
+        value
+            .strip_suffix(suffix)
+            .map(|number| (number.trim(), *multiplier, *denominator))
+    })?;
+    let milli_units = u64::from(parse_decimal_milli(number)?);
+    let milli_pixels = milli_units
+        .checked_mul(multiplier)?
+        .checked_add(denominator / 2)?
+        .checked_div(denominator)?;
+    let pixels = milli_pixels.checked_add(999)?.checked_div(1_000)?;
+    u32::try_from(pixels)
+        .ok()
+        .filter(|value| (1..=256).contains(value))
 }
 
 fn parse_word_break(value: &str) -> Option<WordBreakValue> {
@@ -24293,11 +24318,21 @@ mod tests {
     }
 
     #[test]
-    fn font_size_parser_accepts_bounded_positive_pixels_only() {
+    fn font_size_parser_accepts_bounded_absolute_units() {
         assert_eq!(parse_font_size("16px"), Some(16));
+        assert_eq!(parse_font_size("9pt"), Some(12));
+        assert_eq!(parse_font_size("0.25in"), Some(24));
+        assert_eq!(parse_font_size("1pc"), Some(16));
+        assert_eq!(parse_font_size("1in"), Some(96));
+        assert_eq!(parse_font_size("1cm"), Some(38));
+        assert_eq!(parse_font_size("1mm"), Some(4));
         assert_eq!(parse_font_size("256px"), Some(256));
         assert_eq!(parse_font_size("0px"), None);
         assert_eq!(parse_font_size("257px"), None);
+        assert_eq!(parse_font_size("257pt"), None);
+        assert_eq!(parse_font_size("1.0000pt"), None);
+        assert_eq!(parse_font_size("16rem"), None);
+        assert_eq!(parse_font_size("50%"), None);
         assert_eq!(parse_font_size("1.5em"), None);
     }
 
@@ -26100,7 +26135,7 @@ mod tests {
     #[test]
     fn font_family_and_size_are_inherited_with_css_wide_resets() {
         let document = NativeDocument::parse(
-            "<style>#parent { font-family: sans-serif; font-size: 24px; } #clear { font-family: initial; font-size: initial; } #inherit { font-family: inherit; font-size: inherit; } #invalid { font-family: sans-serif,; font-size: 400px; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='inherit'>Inherit</span><span id='invalid'>Invalid</span></div>",
+            "<style>#parent { font-family: sans-serif; font-size: 24px; } #clear { font-family: initial; font-size: initial; } #inherit { font-family: inherit; font-size: inherit; } #invalid { font-family: sans-serif,; font-size: 400px; } #absolute { font-size: 9pt; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='inherit'>Inherit</span><span id='invalid'>Invalid</span><span id='absolute'>Absolute</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -26109,6 +26144,7 @@ mod tests {
         let clear = document.resolve_target("id=clear").unwrap();
         let inherit = document.resolve_target("id=inherit").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
+        let absolute = document.resolve_target("id=absolute").unwrap();
         let sans = NativeFontFamilyList::single(NativeFontFamilyValue::Generic(
             NativeGenericFontFamily::SansSerif,
         ));
@@ -26138,6 +26174,7 @@ mod tests {
             sans
         );
         assert_eq!(document.computed_style_for_layout(invalid).font_size(), 24);
+        assert_eq!(document.computed_style_for_layout(absolute).font_size(), 12);
     }
 
     #[test]

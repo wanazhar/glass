@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-554`, following
+expansion checkpoint is completed `native-engine-browser-555`, following
+completed `native-engine-browser-554`, following
 completed `native-engine-browser-553`, following
 completed `native-engine-browser-552`, following
 completed `native-engine-browser-551`, following
@@ -431,6 +432,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 555 closes a bounded CSS `font-size` gap in the native inherited-style
+path. Element declarations using `pt`, `pc`, `in`, `cm`, or `mm` convert through
+the CSS 96 dpi reference pixel, round half-up to integer pixels, and retain the
+existing 1..=256 px bound. The implementation uses checked thousandth-unit
+arithmetic, preserving fail-closed behavior for malformed, over-budget,
+fractional-`px`, relative, percentage, viewport, and other unsupported values.
+Relative-unit resolution, broader CSS font-size grammar, and complete browser
+text parity remain explicit issue #40 gates.
 
 Slice 554 closes the native `FontFaceSet` event-handler properties
 `onloading`, `onloadingdone`, and `onloadingerror`. The properties are

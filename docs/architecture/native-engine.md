@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-555`, following completed
 `native-engine-browser-554`, following completed
 `native-engine-browser-553`, following completed
 `native-engine-browser-552`, following completed
@@ -424,6 +425,13 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 555 adds bounded absolute CSS `font-size` units for inherited element
+styles. `pt`, `pc`, `in`, `cm`, and `mm` resolve through the CSS 96 dpi
+reference pixel and round half-up into the native integer-pixel computed style,
+while the existing 1 through 256 px bound and fail-closed parsing remain in
+force. Relative units, percentages, viewport units, fractional `px`, malformed
+precision, and complete CSS font-size parity remain issue #40 gates.
 
 Slice 554 adds the missing `FontFaceSet` event-handler IDL properties:
 `document.fonts.onloading`, `onloadingdone`, and `onloadingerror`. They reuse

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-545`, following completed
 `native-engine-browser-544`, following completed
 `native-engine-browser-543`, following completed
 `native-engine-browser-542`, following completed
@@ -428,6 +429,15 @@ bounded CSS keywords and reject invalid values transactionally with
 routing, and loading status remain unchanged; actual display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed direct FontFace response-metadata follow-up is
+[`native-engine-browser-545`](tasks/native-engine-browser-545.md): unhandled
+dynamic network font sources now retain the native final URL, status, exposed
+headers, content type, redirect bit, and bounded body through the page fetch
+payload. Fresh font-cache and HTTP 304 paths preserve the same metadata while
+the CSS `@font-face` byte-only loader API remains unchanged. Font-display
+timing, installed-font discovery, and complete FontFace/Web IDL parity remain
+issue #40 gates.
 
 The completed palette-override follow-up is
 [`native-engine-browser-540`](tasks/native-engine-browser-540.md): bounded

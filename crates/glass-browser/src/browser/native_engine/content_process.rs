@@ -11758,21 +11758,10 @@ fn fetch_response_payload(result: Result<NativeFetchResponse, NativeEngineError>
 }
 
 fn font_fetch_response_payload(
-    href: &str,
-    result: Result<Option<Vec<u8>>, NativeEngineError>,
+    result: Result<Option<NativeFetchResponse>, NativeEngineError>,
 ) -> Value {
     match result {
-        Ok(Some(body)) => fetch_response_payload(Ok(NativeFetchResponse {
-            url: href.to_owned(),
-            status: 200,
-            status_text: "OK".into(),
-            content_type: None,
-            headers: Vec::new(),
-            body,
-            redirected: false,
-            opaque: false,
-            opaque_redirect: false,
-        })),
+        Ok(Some(response)) => fetch_response_payload(Ok(response)),
         Ok(None) => fetch_response_payload(Err(NativeEngineError::Network {
             operation: "font fetch".into(),
             reason: "font resource was blocked or unavailable".into(),
@@ -12224,9 +12213,8 @@ async fn resolve_script_fetches(
                         fetch_response_payload(Ok(response))
                     }
                     Ok(NativeServiceWorkerFetchOutcome::NotHandled) => font_fetch_response_payload(
-                        &href,
                         loader
-                            .load_font_async(&current_url, &href, object_url.as_ref())
+                            .load_font_response_async(&current_url, &href, object_url.as_ref())
                             .await,
                     ),
                     Ok(NativeServiceWorkerFetchOutcome::Suspended) => {

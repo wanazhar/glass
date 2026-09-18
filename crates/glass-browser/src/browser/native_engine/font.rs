@@ -44,6 +44,8 @@ const MAX_COLOR_TRANSFORM_DEPTH: usize = 16;
 const MAX_COLOR_CLIP_DEPTH: usize = 16;
 const MAX_COLOR_TRANSFORM_COMPONENT: f32 = 1_000_000.0;
 const MAX_COLOR_STOPS: usize = 16;
+const MAX_COLOR_BITMAP_DIMENSION: usize = 1_024;
+const MAX_COLOR_BITMAP_BYTES: usize = 4 * 1024 * 1024;
 const MAX_VARIABLE_OUTLINE_POINTS: usize = 8_192;
 const MAX_VARIABLE_RASTER_DIMENSION: usize = 1_024;
 const VARIABLE_RASTER_SAMPLES: u32 = 4;
@@ -59,6 +61,7 @@ pub struct NativeGlyph {
     pub color: Option<NativeColor>,
     pub composite: NativeGlyphComposite,
     pub gradient: Option<NativeGlyphGradient>,
+    pub bitmap: Option<Arc<[u8]>>,
     pub coverage: Arc<[u8]>,
 }
 
@@ -1159,6 +1162,8 @@ struct NativeRasterizedGlyph {
     color: Option<NativeColor>,
     composite: NativeGlyphComposite,
     gradient: Option<NativeGlyphGradient>,
+    bitmap: Option<Vec<u8>>,
+    is_bitmap: bool,
     coverage: Vec<u8>,
 }
 
@@ -1173,6 +1178,7 @@ struct NativeFontFace {
     variation_settings: NativeFontVariationSettings,
     font: Arc<fontdue::Font>,
     font_data: Arc<[u8]>,
+    collection_index: u32,
     shaper_data: Option<Arc<harfrust::ShaperData>>,
     unicode_ranges: Arc<[NativeUnicodeRange]>,
 }
@@ -1186,6 +1192,7 @@ impl PartialEq for NativeFontFace {
             && self.style == other.style
             && self.stretch == other.stretch
             && self.variation_settings == other.variation_settings
+            && self.collection_index == other.collection_index
             && self.font_data == other.font_data
             && self.unicode_ranges == other.unicode_ranges
     }
@@ -2481,13 +2488,23 @@ impl NativeTextMetrics {
                 }
                 let width = rasterized.width;
                 let height = rasterized.height;
-                let (width, coverage) = scale_coverage_horizontal(
-                    rasterized.coverage,
-                    width,
-                    height,
-                    requested_stretch,
-                    nominal_stretch,
-                )?;
+                let (width, coverage) = if rasterized.is_bitmap {
+                    scale_coverage_horizontal_bounded(
+                        rasterized.coverage,
+                        width,
+                        height,
+                        requested_stretch,
+                        nominal_stretch,
+                    )
+                } else {
+                    scale_coverage_horizontal(
+                        rasterized.coverage,
+                        width,
+                        height,
+                        requested_stretch,
+                        nominal_stretch,
+                    )
+                }?;
                 let y = i32::try_from(self.ascent)
                     .ok()?
                     .saturating_sub(
@@ -2512,6 +2529,16 @@ impl NativeTextMetrics {
                         .gradient
                         .clone()
                         .map(|gradient| gradient.scale_x(requested_stretch, nominal_stretch)),
+                    bitmap: match rasterized.bitmap.as_deref() {
+                        Some(bitmap) => Some(Arc::from(scale_bitmap_horizontal(
+                            bitmap,
+                            rasterized.width,
+                            rasterized.height,
+                            requested_stretch,
+                            nominal_stretch,
+                        )?)),
+                        None => None,
+                    },
                     coverage,
                 });
             }
@@ -2543,6 +2570,19 @@ impl NativeTextMetrics {
         ) {
             return Some(layers);
         }
+        if let Some(rasterized) = rasterize_bitmap_glyph(
+            face.font_data.as_ref(),
+            face.collection_index,
+            glyph_id,
+            self.font_size,
+        ) {
+            let (requested_stretch, nominal_stretch) = self.stretch_factor(face);
+            let stretched_width =
+                scale_dimension(rasterized.width, requested_stretch, nominal_stretch);
+            if stretched_width <= MAX_COLOR_BITMAP_DIMENSION as u32 {
+                return Some(vec![rasterized]);
+            }
+        }
         if let Some(rasterized) = rasterize_variable_glyph(
             face.font_data.as_ref(),
             glyph_id,
@@ -2560,6 +2600,8 @@ impl NativeTextMetrics {
             color: None,
             composite: NativeGlyphComposite::SourceOver,
             gradient: None,
+            is_bitmap: false,
+            bitmap: None,
             coverage,
         }])
     }
@@ -2612,13 +2654,23 @@ impl NativeTextMetrics {
                 }
                 let width = rasterized.width;
                 let height = rasterized.height;
-                let (width, coverage) = scale_coverage_horizontal(
-                    rasterized.coverage,
-                    width,
-                    height,
-                    requested_stretch,
-                    nominal_stretch,
-                )?;
+                let (width, coverage) = if rasterized.is_bitmap {
+                    scale_coverage_horizontal_bounded(
+                        rasterized.coverage,
+                        width,
+                        height,
+                        requested_stretch,
+                        nominal_stretch,
+                    )
+                } else {
+                    scale_coverage_horizontal(
+                        rasterized.coverage,
+                        width,
+                        height,
+                        requested_stretch,
+                        nominal_stretch,
+                    )
+                }?;
                 let y = i32::try_from(self.ascent).ok()?.saturating_sub(
                     i32::try_from(rasterized.height)
                         .ok()?
@@ -2640,6 +2692,16 @@ impl NativeTextMetrics {
                         .gradient
                         .clone()
                         .map(|gradient| gradient.scale_x(requested_stretch, nominal_stretch)),
+                    bitmap: match rasterized.bitmap.as_deref() {
+                        Some(bitmap) => Some(Arc::from(scale_bitmap_horizontal(
+                            bitmap,
+                            rasterized.width,
+                            rasterized.height,
+                            requested_stretch,
+                            nominal_stretch,
+                        )?)),
+                        None => None,
+                    },
                     coverage,
                 });
             }
@@ -2673,6 +2735,266 @@ struct NativeShapedRun {
     glyphs: Vec<NativeShapedGlyph>,
     width: u32,
     width_fixed: i64,
+}
+
+fn rasterize_bitmap_glyph(
+    font_data: &[u8],
+    collection_index: u32,
+    glyph_id: u16,
+    font_size: u32,
+) -> Option<NativeRasterizedGlyph> {
+    let requested_ppem = u16::try_from(font_size).ok()?;
+    if requested_ppem == 0 {
+        return None;
+    }
+    let face = ttf_parser::Face::parse(font_data, collection_index).ok()?;
+    let image = face.glyph_raster_image(ttf_parser::GlyphId(glyph_id), requested_ppem)?;
+    let source_ppem = image.pixels_per_em;
+    if source_ppem == 0 {
+        return None;
+    }
+    let NativeDecodedBitmap {
+        width,
+        height,
+        coverage,
+        pixels: bitmap,
+    } = decode_bitmap_glyph_image(image)?;
+    let scaled_width = scale_dimension(width, requested_ppem, source_ppem);
+    let scaled_height = scale_dimension(height, requested_ppem, source_ppem);
+    if scaled_width == 0
+        || scaled_height == 0
+        || usize::try_from(scaled_width).ok()? > MAX_COLOR_BITMAP_DIMENSION
+        || usize::try_from(scaled_height).ok()? > MAX_COLOR_BITMAP_DIMENSION
+    {
+        return None;
+    }
+    let scaled_coverage =
+        scale_raster_bytes(&coverage, width, height, 1, scaled_width, scaled_height)?;
+    let scaled_bitmap = match bitmap.as_deref() {
+        Some(pixels) => Some(scale_raster_bytes(
+            pixels,
+            width,
+            height,
+            4,
+            scaled_width,
+            scaled_height,
+        )?),
+        None => None,
+    };
+    let scaled_bytes = usize::try_from(scaled_width)
+        .ok()?
+        .checked_mul(usize::try_from(scaled_height).ok()?)?
+        .checked_mul(4)?;
+    if scaled_bytes > MAX_COLOR_BITMAP_BYTES {
+        return None;
+    }
+    Some(NativeRasterizedGlyph {
+        xmin: scale_signed(i32::from(image.x), requested_ppem, source_ppem),
+        ymin: scale_signed(i32::from(image.y), requested_ppem, source_ppem),
+        width: scaled_width,
+        height: scaled_height,
+        color: None,
+        composite: NativeGlyphComposite::SourceOver,
+        gradient: None,
+        is_bitmap: true,
+        bitmap: scaled_bitmap,
+        coverage: scaled_coverage,
+    })
+}
+
+#[derive(Debug)]
+struct NativeDecodedBitmap {
+    width: u32,
+    height: u32,
+    coverage: Vec<u8>,
+    pixels: Option<Vec<u8>>,
+}
+
+fn decode_bitmap_glyph_image(
+    image: ttf_parser::RasterGlyphImage<'_>,
+) -> Option<NativeDecodedBitmap> {
+    let width = u32::from(image.width);
+    let height = u32::from(image.height);
+    if width == 0
+        || height == 0
+        || usize::try_from(width).ok()? > MAX_COLOR_BITMAP_DIMENSION
+        || usize::try_from(height).ok()? > MAX_COLOR_BITMAP_DIMENSION
+    {
+        return None;
+    }
+    match image.format {
+        ttf_parser::RasterImageFormat::PNG => {
+            let decoded = super::image::decode_png_bytes(image.data, MAX_COLOR_BITMAP_BYTES)?;
+            let pixel_count = usize::try_from(decoded.width)
+                .ok()?
+                .checked_mul(usize::try_from(decoded.height).ok()?)?;
+            if decoded.width == 0
+                || decoded.height == 0
+                || usize::try_from(decoded.width).ok()? > MAX_COLOR_BITMAP_DIMENSION
+                || usize::try_from(decoded.height).ok()? > MAX_COLOR_BITMAP_DIMENSION
+                || decoded.pixels.len() != pixel_count.checked_mul(4)?
+            {
+                return None;
+            }
+            let coverage = decoded
+                .pixels
+                .chunks_exact(4)
+                .map(|pixel| pixel[3])
+                .collect();
+            Some(NativeDecodedBitmap {
+                width: decoded.width,
+                height: decoded.height,
+                coverage,
+                pixels: Some(decoded.pixels),
+            })
+        }
+        ttf_parser::RasterImageFormat::BitmapPremulBgra32 => {
+            let pixel_count = usize::try_from(width)
+                .ok()?
+                .checked_mul(usize::try_from(height).ok()?)?;
+            if image.data.len() != pixel_count.checked_mul(4)? {
+                return None;
+            }
+            let mut pixels = Vec::with_capacity(image.data.len());
+            for bgra in image.data.chunks_exact(4) {
+                let alpha = bgra[3];
+                // A premultiplied channel cannot exceed its alpha. Reject
+                // malformed pixels instead of promoting them to opaque color.
+                if bgra[..3].iter().any(|channel| *channel > alpha) {
+                    return None;
+                }
+                let alpha_u32 = u32::from(alpha);
+                let unpremultiply = |channel: u8| {
+                    if alpha_u32 == 0 {
+                        0
+                    } else {
+                        let numerator = u32::from(channel)
+                            .saturating_mul(u32::from(u8::MAX))
+                            .saturating_add(alpha_u32 / 2);
+                        u8::try_from(numerator.checked_div(alpha_u32).unwrap_or(u32::MAX))
+                            .unwrap_or(u8::MAX)
+                    }
+                };
+                pixels.extend_from_slice(&[
+                    unpremultiply(bgra[2]),
+                    unpremultiply(bgra[1]),
+                    unpremultiply(bgra[0]),
+                    bgra[3],
+                ]);
+            }
+            let coverage = image.data.chunks_exact(4).map(|pixel| pixel[3]).collect();
+            Some(NativeDecodedBitmap {
+                width,
+                height,
+                coverage,
+                pixels: Some(pixels),
+            })
+        }
+        ttf_parser::RasterImageFormat::BitmapMono => Some(NativeDecodedBitmap {
+            width,
+            height,
+            coverage: decode_bitmap_coverage(image.data, width, height, 1, true)?,
+            pixels: None,
+        }),
+        ttf_parser::RasterImageFormat::BitmapMonoPacked => Some(NativeDecodedBitmap {
+            width,
+            height,
+            coverage: decode_bitmap_coverage(image.data, width, height, 1, false)?,
+            pixels: None,
+        }),
+        ttf_parser::RasterImageFormat::BitmapGray2 => Some(NativeDecodedBitmap {
+            width,
+            height,
+            coverage: decode_bitmap_coverage(image.data, width, height, 2, true)?,
+            pixels: None,
+        }),
+        ttf_parser::RasterImageFormat::BitmapGray2Packed => Some(NativeDecodedBitmap {
+            width,
+            height,
+            coverage: decode_bitmap_coverage(image.data, width, height, 2, false)?,
+            pixels: None,
+        }),
+        ttf_parser::RasterImageFormat::BitmapGray4 => Some(NativeDecodedBitmap {
+            width,
+            height,
+            coverage: decode_bitmap_coverage(image.data, width, height, 4, true)?,
+            pixels: None,
+        }),
+        ttf_parser::RasterImageFormat::BitmapGray4Packed => Some(NativeDecodedBitmap {
+            width,
+            height,
+            coverage: decode_bitmap_coverage(image.data, width, height, 4, false)?,
+            pixels: None,
+        }),
+        ttf_parser::RasterImageFormat::BitmapGray8 => Some(NativeDecodedBitmap {
+            width,
+            height,
+            coverage: decode_bitmap_coverage(image.data, width, height, 8, true)?,
+            pixels: None,
+        }),
+    }
+}
+
+fn decode_bitmap_coverage(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    bits_per_pixel: u8,
+    row_aligned: bool,
+) -> Option<Vec<u8>> {
+    if !matches!(bits_per_pixel, 1 | 2 | 4 | 8) {
+        return None;
+    }
+    let width = usize::try_from(width).ok()?;
+    let height = usize::try_from(height).ok()?;
+    if width == 0
+        || height == 0
+        || width > MAX_COLOR_BITMAP_DIMENSION
+        || height > MAX_COLOR_BITMAP_DIMENSION
+    {
+        return None;
+    }
+    let pixel_count = width.checked_mul(height)?;
+    if pixel_count > MAX_COLOR_BITMAP_BYTES {
+        return None;
+    }
+    let bits_per_row = width.checked_mul(usize::from(bits_per_pixel))?;
+    let row_bytes = bits_per_row.checked_add(7)?.checked_div(8)?;
+    let expected_bytes = if row_aligned {
+        row_bytes.checked_mul(height)?
+    } else {
+        bits_per_row
+            .checked_mul(height)?
+            .checked_add(7)?
+            .checked_div(8)?
+    };
+    if expected_bytes > MAX_COLOR_BITMAP_BYTES || data.len() != expected_bytes {
+        return None;
+    }
+    let mask = (1_u32 << bits_per_pixel) - 1;
+    let mut coverage = Vec::with_capacity(pixel_count);
+    for row in 0..height {
+        let row_bit_offset = if row_aligned {
+            row.checked_mul(row_bytes)?.checked_mul(8)?
+        } else {
+            row.checked_mul(bits_per_row)?
+        };
+        for column in 0..width {
+            let bit_offset =
+                row_bit_offset.checked_add(column.checked_mul(usize::from(bits_per_pixel))?)?;
+            let byte = *data.get(bit_offset / 8)?;
+            let shift = 8usize
+                .checked_sub(usize::from(bits_per_pixel))?
+                .checked_sub(bit_offset % 8)?;
+            let value = (u32::from(byte) >> shift) & mask;
+            let alpha = value
+                .saturating_mul(u32::from(u8::MAX))
+                .saturating_add(mask / 2)
+                / mask;
+            coverage.push(u8::try_from(alpha).unwrap_or(u8::MAX));
+        }
+    }
+    Some(coverage)
 }
 
 fn rasterize_variable_glyph(
@@ -2830,8 +3152,10 @@ fn rasterize_outline_contours(
         width: u32::try_from(width).ok()?,
         height: u32::try_from(height).ok()?,
         color: None,
+        is_bitmap: false,
         composite: NativeGlyphComposite::SourceOver,
         gradient: None,
+        bitmap: None,
         coverage,
     })
 }
@@ -3273,6 +3597,7 @@ impl NativeFontBook {
                 variation_settings: resource.variation_settings,
                 font: Arc::new(font),
                 font_data,
+                collection_index: 0,
                 shaper_data,
                 unicode_ranges: Arc::from(resource.unicode_ranges.clone()),
             });
@@ -3450,6 +3775,7 @@ fn insert_font_face(
         variation_settings: NativeFontVariationSettings::default(),
         font: Arc::new(font),
         font_data,
+        collection_index,
         shaper_data,
         unicode_ranges: Arc::from(Vec::<NativeUnicodeRange>::new()),
     });
@@ -3683,6 +4009,95 @@ fn round_stretched(value: f32, requested: u16, nominal: u16) -> i32 {
     round_signed(value * (f32::from(requested) / f32::from(nominal)))
 }
 
+fn scale_raster_bytes(
+    source: &[u8],
+    source_width: u32,
+    source_height: u32,
+    bytes_per_pixel: usize,
+    destination_width: u32,
+    destination_height: u32,
+) -> Option<Vec<u8>> {
+    if source_width == 0
+        || source_height == 0
+        || destination_width == 0
+        || destination_height == 0
+        || bytes_per_pixel == 0
+    {
+        return None;
+    }
+    let source_width = usize::try_from(source_width).ok()?;
+    let source_height = usize::try_from(source_height).ok()?;
+    let destination_width = usize::try_from(destination_width).ok()?;
+    let destination_height = usize::try_from(destination_height).ok()?;
+    if source_width > MAX_COLOR_BITMAP_DIMENSION
+        || source_height > MAX_COLOR_BITMAP_DIMENSION
+        || destination_width > MAX_COLOR_BITMAP_DIMENSION
+        || destination_height > MAX_COLOR_BITMAP_DIMENSION
+    {
+        return None;
+    }
+    let source_len = source_width
+        .checked_mul(source_height)?
+        .checked_mul(bytes_per_pixel)?;
+    if source.len() != source_len || source_len > MAX_COLOR_BITMAP_BYTES {
+        return None;
+    }
+    let destination_len = destination_width
+        .checked_mul(destination_height)?
+        .checked_mul(bytes_per_pixel)?;
+    if destination_len > MAX_COLOR_BITMAP_BYTES {
+        return None;
+    }
+    let mut destination = vec![0_u8; destination_len];
+    for row in 0..destination_height {
+        let source_row = (row
+            .saturating_mul(2)
+            .saturating_add(1)
+            .saturating_mul(source_height)
+            / destination_height.saturating_mul(2).max(1))
+        .min(source_height - 1);
+        for column in 0..destination_width {
+            let source_column = (column
+                .saturating_mul(2)
+                .saturating_add(1)
+                .saturating_mul(source_width)
+                / destination_width.saturating_mul(2).max(1))
+            .min(source_width - 1);
+            let source_start = source_row
+                .checked_mul(source_width)?
+                .checked_add(source_column)?
+                .checked_mul(bytes_per_pixel)?;
+            let destination_start = row
+                .checked_mul(destination_width)?
+                .checked_add(column)?
+                .checked_mul(bytes_per_pixel)?;
+            let source_pixel =
+                source.get(source_start..source_start.checked_add(bytes_per_pixel)?)?;
+            destination
+                .get_mut(destination_start..destination_start.checked_add(bytes_per_pixel)?)?
+                .copy_from_slice(source_pixel);
+        }
+    }
+    Some(destination)
+}
+
+fn scale_bitmap_horizontal(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    requested: u16,
+    nominal: u16,
+) -> Option<Vec<u8>> {
+    scale_raster_bytes(
+        pixels,
+        width,
+        height,
+        4,
+        scale_dimension(width, requested, nominal),
+        height,
+    )
+}
+
 fn scale_coverage_horizontal(
     coverage: Vec<u8>,
     width: u32,
@@ -3690,18 +4105,58 @@ fn scale_coverage_horizontal(
     requested: u16,
     nominal: u16,
 ) -> Option<(u32, Arc<[u8]>)> {
+    scale_coverage_horizontal_with_limit(coverage, width, height, requested, nominal, None)
+}
+
+fn scale_coverage_horizontal_bounded(
+    coverage: Vec<u8>,
+    width: u32,
+    height: u32,
+    requested: u16,
+    nominal: u16,
+) -> Option<(u32, Arc<[u8]>)> {
+    scale_coverage_horizontal_with_limit(
+        coverage,
+        width,
+        height,
+        requested,
+        nominal,
+        Some(MAX_COLOR_BITMAP_DIMENSION),
+    )
+}
+
+fn scale_coverage_horizontal_with_limit(
+    coverage: Vec<u8>,
+    width: u32,
+    height: u32,
+    requested: u16,
+    nominal: u16,
+    max_dimension: Option<usize>,
+) -> Option<(u32, Arc<[u8]>)> {
     let source_width = usize::try_from(width).ok()?;
     let source_height = usize::try_from(height).ok()?;
+    if source_width == 0
+        || source_height == 0
+        || max_dimension.is_some_and(|max| source_width > max || source_height > max)
+    {
+        return None;
+    }
     let source_len = source_width.checked_mul(source_height)?;
-    if source_width == 0 || source_height == 0 || coverage.len() != source_len {
+    if source_len > MAX_COLOR_BITMAP_BYTES || coverage.len() != source_len {
         return None;
     }
     let scaled_width = scale_dimension(width, requested, nominal);
     let destination_width = usize::try_from(scaled_width).ok()?;
+    if scaled_width == 0 || max_dimension.is_some_and(|max| destination_width > max) {
+        return None;
+    }
     if scaled_width == width {
         return Some((width, Arc::from(coverage)));
     }
     let destination_len = destination_width.checked_mul(source_height)?;
+    if destination_len > MAX_COLOR_BITMAP_BYTES {
+        return None;
+    }
     let mut scaled = vec![0_u8; destination_len];
     for row in 0..source_height {
         let source_row = row.checked_mul(source_width)?;
@@ -4111,6 +4566,142 @@ mod tests {
             NativeColorPainter::conformal_scale(ttf_parser::Transform::new_scale(0.0, 1.0))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn bitmap_glyph_formats_decode_and_scale_with_bounded_alpha() {
+        let gray_data = [0x30_u8];
+        let gray = ttf_parser::RasterGlyphImage {
+            x: 1,
+            y: -2,
+            width: 2,
+            height: 1,
+            pixels_per_em: 16,
+            format: ttf_parser::RasterImageFormat::BitmapGray2Packed,
+            data: &gray_data,
+        };
+        let decoded = decode_bitmap_glyph_image(gray).expect("packed grayscale bitmap must decode");
+        assert_eq!((decoded.width, decoded.height), (2, 1));
+        assert_eq!(decoded.coverage, vec![0, u8::MAX]);
+        assert!(decoded.pixels.is_none());
+
+        let bgra_data = [0_u8, 64, 128, 128, 0, 0, 0, 0];
+        let bgra = ttf_parser::RasterGlyphImage {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 1,
+            pixels_per_em: 16,
+            format: ttf_parser::RasterImageFormat::BitmapPremulBgra32,
+            data: &bgra_data,
+        };
+        let decoded =
+            decode_bitmap_glyph_image(bgra).expect("premultiplied BGRA bitmap must decode");
+        assert_eq!((decoded.width, decoded.height), (2, 1));
+        assert_eq!(decoded.coverage, vec![128, 0]);
+        assert_eq!(
+            decoded.pixels.expect("color bitmap pixels"),
+            vec![255, 128, 0, 128, 0, 0, 0, 0]
+        );
+        let malformed_premul = ttf_parser::RasterGlyphImage {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            pixels_per_em: 16,
+            format: ttf_parser::RasterImageFormat::BitmapPremulBgra32,
+            data: &[u8::MAX, 0, 0, 128],
+        };
+        assert!(
+            decode_bitmap_glyph_image(malformed_premul).is_none(),
+            "non-premultiplied channel values must fall back"
+        );
+        assert!(
+            decode_bitmap_glyph_image(ttf_parser::RasterGlyphImage {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                pixels_per_em: 16,
+                format: ttf_parser::RasterImageFormat::BitmapGray8,
+                data: &[],
+            })
+            .is_none(),
+            "truncated grayscale data must fall back"
+        );
+        let row_aligned_gray = [0x1b_u8, 0xe4_u8];
+        assert_eq!(
+            decode_bitmap_coverage(&row_aligned_gray, 2, 2, 2, true),
+            Some(vec![0, 85, u8::MAX, 170])
+        );
+        assert!(decode_bitmap_coverage(&[], 1_025, 1, 1, true).is_none());
+
+        assert_eq!(
+            scale_raster_bytes(&[1], 1, 1, 1, 2, 2).expect("bounded scale"),
+            vec![1, 1, 1, 1]
+        );
+        assert!(scale_raster_bytes(&[1], u32::MAX, 1, 1, 1, 1).is_none());
+        assert!(scale_coverage_horizontal(vec![1], u32::MAX, 1, 1, 1).is_none());
+        assert!(
+            scale_coverage_horizontal_bounded(vec![u8::MAX; 1_024], 1_024, 1, 2_000, 1_000)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn system_color_bitmap_strike_preserves_offsets_when_available() {
+        let Some(bytes) = [
+            "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+            "/System/Library/Fonts/Apple Color Emoji.ttc",
+            r"C:\Windows\Fonts\seguiemj.ttf",
+        ]
+        .into_iter()
+        .find_map(|path| std::fs::read(path).ok()) else {
+            return;
+        };
+        let face = ttf_parser::Face::parse(&bytes, 0).ok();
+        let Some(face) = face else {
+            return;
+        };
+        let Some(glyph_id) = face.glyph_index('😀') else {
+            return;
+        };
+        let Some(image) = face.glyph_raster_image(glyph_id, 16) else {
+            return;
+        };
+        let decoded = decode_bitmap_glyph_image(image).expect("bitmap strike payload must decode");
+        let decoded_width = decoded.width;
+        let decoded_height = decoded.height;
+        let rasterized =
+            rasterize_bitmap_glyph(&bytes, 0, glyph_id.0, 16).expect("bitmap strike must decode");
+        assert_eq!(
+            rasterized.xmin,
+            scale_signed(i32::from(image.x), 16, image.pixels_per_em)
+        );
+        assert_eq!(
+            rasterized.ymin,
+            scale_signed(i32::from(image.y), 16, image.pixels_per_em)
+        );
+        assert_eq!(
+            rasterized.width,
+            scale_dimension(decoded_width, 16, image.pixels_per_em)
+        );
+        assert_eq!(
+            rasterized.height,
+            scale_dimension(decoded_height, 16, image.pixels_per_em)
+        );
+        let pixel_count = usize::try_from(rasterized.width)
+            .unwrap()
+            .checked_mul(usize::try_from(rasterized.height).unwrap())
+            .unwrap();
+        assert_eq!(rasterized.coverage.len(), pixel_count);
+        assert!(rasterized.coverage.iter().any(|coverage| *coverage > 0));
+        if matches!(image.format, ttf_parser::RasterImageFormat::PNG) {
+            assert_eq!(
+                rasterized.bitmap.as_ref().map(|pixels| pixels.len()),
+                Some(pixel_count * 4)
+            );
+        }
     }
 
     #[test]

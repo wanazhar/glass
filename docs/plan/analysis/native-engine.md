@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-531`, following
+expansion checkpoint is completed `native-engine-browser-532`, following
+completed `native-engine-browser-531`, following
 completed `native-engine-browser-530`, following
 completed `native-engine-browser-529`, following
 completed `native-engine-browser-528`, following
@@ -345,6 +346,18 @@ descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none` retain
 their existing behavior. Custom axes, hinting, color tables, and complete
 FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 532 adds bounded bitmap glyph images to the native software text
+renderer. The selected `ttf-parser` collection face is retained for TTC/OTC
+system fonts, and `glyph_raster_image` admits PNG, premultiplied BGRA32,
+monochrome, and 2/4/8-bit grayscale strikes under 1,024-pixel and 4 MiB
+limits. Offsets and strike scaling are preserved; color pixels carry straight
+RGBA and embedded alpha through the existing glyph/compositor path, while
+grayscale images reuse text-paint coverage. Malformed, unsupported, oversized,
+or over-stretched bitmap data falls back to the existing outline paths.
+SVG-in-font sources, palette selection, bitmap variation axes, hinting,
+font-display timing, and complete FontFace/Web IDL parity remain issue #40
+gates.
 
 Slice 531 completes the bounded three-point COLRv1 linear-gradient projection:
 `p0`/`p1` define the color line and `p2` defines the direction across which
@@ -7322,7 +7335,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-531.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-532.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-531.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-530.md` is the preceding completed
 browser task;

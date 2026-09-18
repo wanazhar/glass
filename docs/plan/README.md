@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-532`, following completed
 `native-engine-browser-531`, following completed
 `native-engine-browser-530`, following completed
 `native-engine-browser-529`, following completed
@@ -362,6 +363,18 @@ to an advertised OpenType `opsz` axis, while authored element coordinates and
 effective value reaches both HarfRust shaping and variation-aware outline
 rasterization. Custom axes, hinting, color tables, and complete FontFace/Web IDL
 parity remain issue #40 gates.
+
+The completed bounded bitmap-glyph follow-up is
+[`native-engine-browser-532`](tasks/native-engine-browser-532.md): the native
+text renderer now consumes bounded `ttf-parser` raster strikes from selected
+font faces, including TTC/OTC collection indices. PNG, premultiplied BGRA32,
+monochrome, and 2/4/8-bit grayscale payloads retain offsets and strike scaling
+under finite dimension/byte budgets; color pixels carry embedded RGBA alpha
+through the existing compositor while grayscale images reuse text-paint
+coverage. Malformed, unsupported, oversized, and over-stretched bitmap data
+falls back to the existing outline paths. SVG-in-font sources, palette
+selection, bitmap variation axes, hinting, font-display timing, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 The completed three-point COLRv1 linear-gradient follow-up is
 [`native-engine-browser-531`](tasks/native-engine-browser-531.md): `p0` and

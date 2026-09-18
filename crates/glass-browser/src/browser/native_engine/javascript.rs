@@ -8,7 +8,9 @@ use super::config::{
     MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, is_file_url, is_network_url, validate_context_id,
     validate_url_text, validate_window_name, without_fragment,
 };
-use super::css::{FontStyleValue, parse_font_stretch_range, parse_font_weight};
+use super::css::{
+    FontStyleValue, FontWeightValue, parse_font_stretch_range, parse_font_weight_range,
+};
 use super::dom::{
     NativeDocument, NativeNodeId, NativePageScriptSource, NativePageScriptTiming,
     NativeScriptDocumentSnapshot, NativeScriptElementSnapshot,
@@ -15204,7 +15206,10 @@ fn install_native_local_font_source<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), 
             if family.is_empty() || family.len() > MAX_NATIVE_SCRIPT_BYTES {
                 return Err(Error::Unknown);
             }
-            let weight = parse_font_weight(&weight).ok_or(Error::Unknown)?;
+            let weight = parse_font_weight_range(&weight)
+                .ok_or(Error::Unknown)?
+                .nominal();
+            let weight = FontWeightValue::from_numeric(weight).ok_or(Error::Unknown)?;
             let style = match style.trim().to_ascii_lowercase().as_str() {
                 "normal" => FontStyleValue::Normal,
                 "italic" => FontStyleValue::Italic,
@@ -17630,7 +17635,7 @@ mod native_font_face_tests {
     use super::super::config::NativeEngineLimits;
     use super::super::css::{
         FontStyleValue, FontWeightValue, NativeFontStretchRange, NativeFontVariation,
-        NativeFontVariationSettings, NativeUnicodeRange,
+        NativeFontVariationSettings, NativeFontWeightRange, NativeUnicodeRange,
     };
     use super::super::font::NativeFontBook;
     use super::*;
@@ -17640,7 +17645,7 @@ mod native_font_face_tests {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-test")
             .expect("native JavaScript runtime must construct");
         let document = NativeDocument::parse(
-            "<style>@font-face { font-family: 'Missing Face'; src: local('Missing Face'); font-stretch: condensed; unicode-range: U+41-5A; }</style>",
+            "<style>@font-face { font-family: 'Missing Face'; src: local('Missing Face'); font-weight: 300 700; font-stretch: condensed; unicode-range: U+41-5A; }</style>",
             &NativeEngineLimits::default(),
         )
         .expect("font-face fixture must parse");
@@ -17653,6 +17658,7 @@ mod native_font_face_tests {
                     document.fonts.status,
                     document.fonts.size,
                     cssFace.family,
+                    cssFace.weight,
                     cssFace.stretch,
                     cssFace.unicodeRange,
                     cssFace.status,
@@ -17679,6 +17685,7 @@ mod native_font_face_tests {
                     "loaded",
                     1,
                     "Missing Face",
+                    "300 700",
                     "condensed",
                     "U+41-5A",
                     "error",
@@ -18224,7 +18231,7 @@ mod native_font_face_tests {
             .evaluate(
                 &format!(
                     r#"(() => {{
-                      const face = new FontFace("Inline Sans", {source}, {{ stretch: "condensed", unicodeRange: "U+41-5A", variationSettings: '"wght" 620' }});
+                      const face = new FontFace("Inline Sans", {source}, {{ weight: "300 700", stretch: "condensed", unicodeRange: "U+41-5A", variationSettings: '"wght" 620' }});
                       globalThis.__inlineFontFace = face;
                       document.fonts.add(face);
                       face.load().then(() => {{ document.body.textContent = "accepted"; }});
@@ -18288,7 +18295,7 @@ mod native_font_face_tests {
                 body_base64,
                 ..
             } if family == "Inline Sans"
-                && weight == "normal"
+                && weight == "300 700"
                 && style == "normal"
                 && stretch == "condensed"
                 && unicode_range == "U+41-5A"
@@ -18298,6 +18305,11 @@ mod native_font_face_tests {
         let wire = document.to_content_wire();
         assert_eq!(wire.font_resources.len(), 1);
         assert_eq!(wire.font_resources[0].family, "Inline Sans");
+        assert_eq!(
+            wire.font_resources[0].weight_range,
+            Some(NativeFontWeightRange { min: 300, max: 700 })
+        );
+        assert_eq!(wire.font_resources[0].weight, FontWeightValue::Numeric(500));
         assert_eq!(
             wire.font_resources[0].stretch,
             NativeFontStretchRange { min: 750, max: 750 }

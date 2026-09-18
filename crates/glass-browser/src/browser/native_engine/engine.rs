@@ -9,8 +9,8 @@ use super::content_process::{
     NativeContentProcess, NativeContentScriptResult,
 };
 use super::css::{
-    NativeFontFaceSource, absolutize_stylesheet_urls, css_import_matches, decode_css_url_value,
-    static_css_imports,
+    FontWeightValue, NativeFontFaceSource, absolutize_stylesheet_urls, css_import_matches,
+    decode_css_url_value, static_css_imports,
 };
 use super::diagnostics::NativeDiagnostic;
 use super::dom::{
@@ -8933,9 +8933,12 @@ fn load_font_faces(
     {
         for source in &rule.sources {
             let bytes = match source {
-                NativeFontFaceSource::Local(family) => {
-                    system_fonts.local_font_bytes(family, rule.weight, rule.style)
-                }
+                NativeFontFaceSource::Local(family) => system_fonts.local_font_bytes(
+                    family,
+                    FontWeightValue::from_numeric(rule.weight.nominal())
+                        .unwrap_or(FontWeightValue::Normal),
+                    rule.style,
+                ),
                 NativeFontFaceSource::Url(source) => {
                     let object_url = runtime
                         .map(|runtime| runtime.object_url_resource(source))

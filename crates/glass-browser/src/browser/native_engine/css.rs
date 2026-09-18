@@ -1674,6 +1674,11 @@ enum InheritedTextDeclaration<T> {
     Revert,
     RevertLayer,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeFontSizeDeclarationValue {
+    Pixels(u32),
+    Relative(u32),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeFontVariantShorthand {
@@ -4340,11 +4345,7 @@ impl NativeStylesheet {
                 inherited.font_family,
                 NativeFontFamilyList::default(),
             ),
-            font_size: resolve_inherited_text_declaration(
-                *font_size,
-                inherited.font_size,
-                super::font::DEFAULT_NATIVE_FONT_SIZE,
-            ),
+            font_size: resolve_font_size(*font_size, inherited.font_size),
             word_break: resolve_inherited_text_declaration(
                 *word_break,
                 inherited.word_break,
@@ -4529,7 +4530,7 @@ struct NativeCascadeScratch {
     font_style: NativeTextCascadeCandidates<FontStyleValue>,
     font_stretch: NativeTextCascadeCandidates<NativeFontStretchRange>,
     font_family: NativeTextCascadeCandidates<NativeFontFamilyList>,
-    font_size: NativeTextCascadeCandidates<u32>,
+    font_size: NativeTextCascadeCandidates<NativeFontSizeDeclarationValue>,
     word_break: NativeTextCascadeCandidates<WordBreakValue>,
     text_overflow: NativeTextLocalCascadeCandidates<TextOverflowValue>,
     vertical_align: NativeTextCascadeCandidates<VerticalAlignValue>,
@@ -4944,6 +4945,37 @@ fn resolve_text_justify(
     inherited: TextJustifyValue,
 ) -> TextJustifyValue {
     resolve_inherited_text_declaration(candidates, inherited, TextJustifyValue::Auto)
+}
+
+fn scale_relative_font_size(base: u32, scale_milli: u32) -> Option<u32> {
+    let scaled = u64::from(base)
+        .checked_mul(u64::from(scale_milli))?
+        .checked_add(500)?
+        .checked_div(1_000)?;
+    let value = u32::try_from(scaled).ok()?;
+    (1..=super::font::MAX_NATIVE_FONT_SIZE)
+        .contains(&value)
+        .then_some(value)
+}
+
+fn resolve_font_size(
+    candidates: NativeTextCascadeCandidates<NativeFontSizeDeclarationValue>,
+    inherited: u32,
+) -> u32 {
+    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
+        InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::Pixels(value)) => (1
+            ..=super::font::MAX_NATIVE_FONT_SIZE)
+            .contains(&value)
+            .then_some(value),
+        InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::Relative(scale_milli)) => {
+            scale_relative_font_size(inherited, scale_milli)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(inherited),
+        InheritedTextDeclaration::Initial => Some(super::font::DEFAULT_NATIVE_FONT_SIZE),
+        InheritedTextDeclaration::RevertLayer => None,
+    })
 }
 
 fn resolve_inherited_text_declaration<T: Copy>(
@@ -6917,7 +6949,7 @@ struct NativeDeclarations {
     font_style: Option<InheritedTextDeclaration<FontStyleValue>>,
     font_stretch: Option<InheritedTextDeclaration<NativeFontStretchRange>>,
     font_family: Option<InheritedTextDeclaration<NativeFontFamilyList>>,
-    font_size: Option<InheritedTextDeclaration<u32>>,
+    font_size: Option<InheritedTextDeclaration<NativeFontSizeDeclarationValue>>,
     word_break: Option<InheritedTextDeclaration<WordBreakValue>>,
     text_overflow: Option<LocalCascadeDeclaration<TextOverflowValue>>,
     vertical_align: Option<InheritedTextDeclaration<VerticalAlignValue>>,
@@ -13267,6 +13299,31 @@ fn parse_font_size(value: &str) -> Option<u32> {
         .ok()
         .filter(|value| (1..=256).contains(value))
 }
+fn parse_relative_font_size(value: &str) -> Option<u32> {
+    let value = value.trim().to_ascii_lowercase();
+    let (number, percentage) = if let Some(number) = value.strip_suffix('%') {
+        (number.trim(), true)
+    } else if let Some(number) = value.strip_suffix("em") {
+        (number.trim(), false)
+    } else {
+        return None;
+    };
+    let milli = parse_decimal_milli(number)?;
+    let scale_milli = if percentage {
+        milli.checked_add(50)?.checked_div(100)?
+    } else {
+        milli
+    };
+    (1..=super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000))
+        .contains(&scale_milli)
+        .then_some(scale_milli)
+}
+
+fn parse_font_size_value(value: &str) -> Option<NativeFontSizeDeclarationValue> {
+    parse_font_size(value)
+        .map(NativeFontSizeDeclarationValue::Pixels)
+        .or_else(|| parse_relative_font_size(value).map(NativeFontSizeDeclarationValue::Relative))
+}
 
 fn parse_word_break(value: &str) -> Option<WordBreakValue> {
     match value.trim().to_ascii_lowercase().as_str() {
@@ -14137,8 +14194,10 @@ fn parse_font_family_declaration(
     parse_inherited_text_declaration(value, parse_font_family)
 }
 
-fn parse_font_size_declaration(value: &str) -> Option<InheritedTextDeclaration<u32>> {
-    parse_inherited_text_declaration(value, parse_font_size)
+fn parse_font_size_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<NativeFontSizeDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_size_value)
 }
 
 fn parse_word_break_declaration(value: &str) -> Option<InheritedTextDeclaration<WordBreakValue>> {
@@ -24337,6 +24396,21 @@ mod tests {
     }
 
     #[test]
+    fn font_size_parser_accepts_bounded_relative_units() {
+        assert_eq!(
+            parse_font_size_value("1.5em"),
+            Some(NativeFontSizeDeclarationValue::Relative(1_500))
+        );
+        assert_eq!(
+            parse_font_size_value("125%"),
+            Some(NativeFontSizeDeclarationValue::Relative(1_250))
+        );
+        assert_eq!(parse_font_size_value("0em"), None);
+        assert_eq!(parse_font_size_value("256.001em"), None);
+        assert_eq!(parse_font_size_value("1rem"), None);
+    }
+
+    #[test]
     fn word_break_parser_accepts_only_normal_and_break_all() {
         assert_eq!(parse_word_break("normal"), Some(WordBreakValue::Normal));
         assert_eq!(
@@ -26135,7 +26209,7 @@ mod tests {
     #[test]
     fn font_family_and_size_are_inherited_with_css_wide_resets() {
         let document = NativeDocument::parse(
-            "<style>#parent { font-family: sans-serif; font-size: 24px; } #clear { font-family: initial; font-size: initial; } #inherit { font-family: inherit; font-size: inherit; } #invalid { font-family: sans-serif,; font-size: 400px; } #absolute { font-size: 9pt; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='inherit'>Inherit</span><span id='invalid'>Invalid</span><span id='absolute'>Absolute</span></div>",
+            "<style>#parent { font-family: sans-serif; font-size: 24px; } #clear { font-family: initial; font-size: initial; } #inherit { font-family: inherit; font-size: inherit; } #invalid { font-family: sans-serif,; font-size: 400px; } #absolute { font-size: 9pt; } #relative { font-size: 1.5em; } #percent { font-size: 125%; } #relative-invalid { font-size: 2000%; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='inherit'>Inherit</span><span id='invalid'>Invalid</span><span id='absolute'>Absolute</span><span id='relative'>Relative</span><span id='percent'>Percent</span><span id='relative-invalid'>Relative invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -26145,6 +26219,9 @@ mod tests {
         let inherit = document.resolve_target("id=inherit").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
         let absolute = document.resolve_target("id=absolute").unwrap();
+        let relative = document.resolve_target("id=relative").unwrap();
+        let percent = document.resolve_target("id=percent").unwrap();
+        let relative_invalid = document.resolve_target("id=relative-invalid").unwrap();
         let sans = NativeFontFamilyList::single(NativeFontFamilyValue::Generic(
             NativeGenericFontFamily::SansSerif,
         ));
@@ -26175,6 +26252,14 @@ mod tests {
         );
         assert_eq!(document.computed_style_for_layout(invalid).font_size(), 24);
         assert_eq!(document.computed_style_for_layout(absolute).font_size(), 12);
+        assert_eq!(document.computed_style_for_layout(relative).font_size(), 36);
+        assert_eq!(document.computed_style_for_layout(percent).font_size(), 30);
+        assert_eq!(
+            document
+                .computed_style_for_layout(relative_invalid)
+                .font_size(),
+            24
+        );
     }
 
     #[test]

@@ -2,11 +2,12 @@ use super::config::{
     NativeEngineLimits, validate_url_text, validate_window_name, without_fragment,
 };
 use super::css::{
-    NativeFontFaceRule, NativeStylesheet, NativeUnicodeRange, absolutize_stylesheet_urls,
-    collect_background_image_sources, font_family_hash, format_font_face_unicode_ranges,
-    format_font_feature_settings, format_font_stretch_range, format_font_variation_settings,
-    format_font_weight_range, parse_font_face_unicode_range, parse_font_face_variant,
-    parse_font_feature_settings, parse_font_stretch_range, parse_font_variation_settings,
+    DEFAULT_NATIVE_FONT_SIZE_ADJUST, NativeFontFaceRule, NativeStylesheet, NativeUnicodeRange,
+    absolutize_stylesheet_urls, collect_background_image_sources, font_family_hash,
+    format_font_face_unicode_ranges, format_font_feature_settings, format_font_size_adjust,
+    format_font_stretch_range, format_font_variation_settings, format_font_weight_range,
+    parse_font_face_unicode_range, parse_font_face_variant, parse_font_feature_settings,
+    parse_font_size_adjust, parse_font_stretch_range, parse_font_variation_settings,
     parse_font_weight_range,
 };
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
@@ -235,7 +236,13 @@ pub(crate) struct NativeFontFaceResourceWire {
     pub(crate) variation_settings: NativeFontVariationSettings,
     #[serde(default)]
     pub(crate) feature_settings: NativeFontFeatureSettings,
+    #[serde(default = "default_native_font_size_adjust")]
+    pub(crate) size_adjust: u16,
     pub(crate) data_base64: String,
+}
+
+fn default_native_font_size_adjust() -> u16 {
+    DEFAULT_NATIVE_FONT_SIZE_ADJUST
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -248,6 +255,7 @@ pub(crate) struct NativeFontFaceScriptDescriptor {
     pub(crate) unicode_range: String,
     pub(crate) feature_settings: String,
     pub(crate) variation_settings: String,
+    pub(crate) size_adjust: String,
     pub(crate) display: String,
     pub(crate) status: String,
 }
@@ -1360,6 +1368,7 @@ impl NativeDocument {
                 unicode_range: format_font_face_unicode_ranges(&rule.unicode_ranges),
                 feature_settings: format_font_feature_settings(rule.feature_settings),
                 variation_settings: format_font_variation_settings(rule.variation_settings),
+                size_adjust: format_font_size_adjust(rule.size_adjust),
                 display: rule.font_display.as_str().into(),
                 status: if self.font_resources.iter().any(|resource| {
                     resource.family_key == rule.family_key
@@ -1367,6 +1376,7 @@ impl NativeDocument {
                         && resource.style == rule.style
                         && resource.variation_settings == rule.variation_settings
                         && resource.feature_settings == rule.feature_settings
+                        && resource.size_adjust == rule.size_adjust
                 }) {
                     "loaded".into()
                 } else {
@@ -1443,6 +1453,7 @@ impl NativeDocument {
         unicode_range: &str,
         variant: &str,
         feature_settings: &str,
+        size_adjust: &str,
         variation_settings: &str,
         body_base64: &str,
     ) -> Result<(), NativeEngineError> {
@@ -1529,6 +1540,16 @@ impl NativeDocument {
             })?
         };
         let feature_settings = variant_settings.with_overrides(feature_settings);
+        let size_adjust = if size_adjust.trim().is_empty() {
+            DEFAULT_NATIVE_FONT_SIZE_ADJUST
+        } else {
+            parse_font_size_adjust(size_adjust).ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native FontFace sizeAdjust",
+                    "must be a bounded CSS percentage from 25% through 400%",
+                )
+            })?
+        };
         let max_encoded_bytes = (MAX_NATIVE_FONT_BYTES.saturating_add(2) / 3).saturating_mul(4);
         if body_base64.len() > max_encoded_bytes {
             return Err(NativeEngineError::limit(
@@ -1561,6 +1582,7 @@ impl NativeDocument {
             weight,
             style,
             stretch,
+            size_adjust,
             bytes: Arc::from(bytes),
             unicode_ranges,
             variation_settings,
@@ -1585,6 +1607,7 @@ impl NativeDocument {
                 unicode_range,
                 variant,
                 feature_settings,
+                size_adjust,
                 variation_settings,
                 body_base64,
             } = command
@@ -1600,6 +1623,7 @@ impl NativeDocument {
                 unicode_range,
                 variant,
                 feature_settings,
+                size_adjust,
                 variation_settings,
                 body_base64,
             )?;
@@ -2426,6 +2450,7 @@ impl NativeDocument {
                 unicode_ranges: resource.unicode_ranges.clone(),
                 variation_settings: resource.variation_settings,
                 feature_settings: resource.feature_settings,
+                size_adjust: resource.size_adjust,
                 data_base64: base64::engine::general_purpose::STANDARD
                     .encode(resource.bytes.as_ref()),
             })
@@ -2514,6 +2539,7 @@ impl NativeDocument {
                 || resource.stretch.min < 500
                 || resource.stretch.min > resource.stretch.max
                 || resource.stretch.max > 2000
+                || !(250..=4000).contains(&resource.size_adjust)
                 || resource.unicode_ranges.len() > super::css::MAX_NATIVE_FONT_FACE_UNICODE_RANGES
                 || resource
                     .unicode_ranges
@@ -2555,6 +2581,7 @@ impl NativeDocument {
                 weight,
                 style: resource.style,
                 stretch: resource.stretch,
+                size_adjust: resource.size_adjust,
                 unicode_ranges: resource.unicode_ranges,
                 variation_settings: resource.variation_settings,
                 feature_settings: resource.feature_settings,
@@ -4888,6 +4915,7 @@ impl NativeDocument {
                     unicode_range,
                     variant,
                     feature_settings,
+                    size_adjust,
                     variation_settings,
                     body_base64,
                 } => {
@@ -4900,6 +4928,7 @@ impl NativeDocument {
                         unicode_range,
                         variant,
                         feature_settings,
+                        size_adjust,
                         variation_settings,
                         body_base64,
                     )?;
@@ -10058,6 +10087,7 @@ mod tests {
                 stretch: super::super::css::NativeFontStretchRange::default(),
                 variation_settings,
                 feature_settings,
+                size_adjust: 625,
                 bytes: Arc::from(vec![0_u8, 1, 2, 3]),
                 unicode_ranges: Vec::new(),
             }])
@@ -10080,6 +10110,7 @@ mod tests {
             variation_settings
         );
         assert_eq!(wire.font_resources[0].feature_settings, feature_settings);
+        assert_eq!(wire.font_resources[0].size_adjust, 625);
         let restored =
             NativeDocument::from_content_wire(wire.clone(), &limits, document.generation())
                 .unwrap();
@@ -10094,6 +10125,7 @@ mod tests {
             restored.font_resources[0].feature_settings,
             feature_settings
         );
+        assert_eq!(restored.font_resources[0].size_adjust, 625);
 
         let mut legacy_font_json =
             serde_json::to_value(&wire.font_resources[0]).expect("font wire serializes");
@@ -10101,11 +10133,19 @@ mod tests {
             .as_object_mut()
             .expect("font wire object")
             .remove("feature_settings");
+        legacy_font_json
+            .as_object_mut()
+            .expect("font wire object")
+            .remove("size_adjust");
         let legacy_font: NativeFontFaceResourceWire =
             serde_json::from_value(legacy_font_json).expect("legacy font wire decodes");
         assert_eq!(
             legacy_font.feature_settings,
             NativeFontFeatureSettings::default()
+        );
+        assert_eq!(
+            legacy_font.size_adjust,
+            super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST
         );
         let mut legacy_wire = wire;
         legacy_wire.font_resources[0].weight_range = None;
@@ -10133,6 +10173,7 @@ mod tests {
                 variant: "normal".into(),
                 variation_settings: "normal".into(),
                 feature_settings: "normal".into(),
+                size_adjust: "100%".into(),
                 body_base64: "AA==".into(),
             }])
             .expect_err("malformed script unicodeRange must be rejected");
@@ -10159,6 +10200,7 @@ mod tests {
                 variant: "normal".into(),
                 variation_settings: "normal".into(),
                 feature_settings: "normal".into(),
+                size_adjust: "100%".into(),
                 body_base64: "AA==".into(),
             }])
             .expect_err("malformed script stretch must be rejected");
@@ -10167,6 +10209,33 @@ mod tests {
             error,
             NativeEngineError::InvalidConfiguration { field, .. }
                 if field == "native FontFace stretch"
+        ));
+        assert!(document.font_resources.is_empty());
+    }
+
+    #[test]
+    fn script_font_face_install_rejects_malformed_size_adjust() {
+        let mut document = NativeDocument::empty();
+        let error = document
+            .apply_script_font_face_installs(&[NativeScriptCommand::FontFaceInstall {
+                request_id: 1,
+                family: "Rejected Size Adjust".into(),
+                weight: "normal".into(),
+                style: "normal".into(),
+                stretch: "normal".into(),
+                unicode_range: String::new(),
+                variant: "normal".into(),
+                variation_settings: "normal".into(),
+                feature_settings: "normal".into(),
+                size_adjust: "24.9%".into(),
+                body_base64: "AA==".into(),
+            }])
+            .expect_err("malformed script sizeAdjust must be rejected");
+
+        assert!(matches!(
+            error,
+            NativeEngineError::InvalidConfiguration { field, .. }
+                if field == "native FontFace sizeAdjust"
         ));
         assert!(document.font_resources.is_empty());
     }
@@ -10185,6 +10254,7 @@ mod tests {
                 variant: "normal".into(),
                 variation_settings: r#""wght" 700 escape"#.into(),
                 feature_settings: "normal".into(),
+                size_adjust: "100%".into(),
                 body_base64: "AA==".into(),
             }])
             .expect_err("malformed script variationSettings must be rejected");
@@ -10209,6 +10279,7 @@ mod tests {
                 unicode_range: String::new(),
                 variant: "normal".into(),
                 feature_settings: r#""liga" 65536"#.into(),
+                size_adjust: "100%".into(),
                 variation_settings: "normal".into(),
                 body_base64: "AA==".into(),
             }])
@@ -10234,6 +10305,7 @@ mod tests {
                 unicode_range: String::new(),
                 variant: "small-caps all-small-caps".into(),
                 feature_settings: "normal".into(),
+                size_adjust: "100%".into(),
                 variation_settings: "normal".into(),
                 body_base64: "AA==".into(),
             }])

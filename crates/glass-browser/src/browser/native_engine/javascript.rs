@@ -291,6 +291,8 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         feature_settings: String,
         #[serde(default)]
+        size_adjust: String,
+        #[serde(default)]
         variation_settings: String,
         body_base64: String,
     },
@@ -9693,7 +9695,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     String(descriptor && descriptor.variant || "normal"),
     String(descriptor && descriptor.featureSettings || "normal"),
     String(descriptor && descriptor.variationSettings || "normal"),
-    String(descriptor && descriptor.display || "auto"),
+    String(descriptor && descriptor.sizeAdjust || "100%"),
   ].join("\u0000");
   const nativeFontFaceSettledPromise = (face, status) => {
     const promise = status === "loaded"
@@ -9948,6 +9950,19 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     }
     return normalized.map((candidate) => candidate.entry).join(", ");
   };
+  const nativeFontFaceSizeAdjustDescriptor = (text) => {
+    const match = text.trim().match(/^((?:[0-9]+(?:\.[0-9]{1,3})?)|(?:\.[0-9]{1,3}))%$/);
+    if (!match) return null;
+    const pieces = match[1].split(".");
+    const whole = pieces[0] ? Number(pieces[0]) : 0;
+    const fraction = pieces[1] || "";
+    const milliPercentage = whole * 1000 + Number((fraction + "000").slice(0, 3));
+    const adjusted = Math.floor((milliPercentage + 50) / 100);
+    if (!Number.isSafeInteger(adjusted) || adjusted < 250 || adjusted > 4000) return null;
+    return adjusted % 10 === 0
+      ? `${adjusted / 10}%`
+      : `${Math.floor(adjusted / 10)}.${adjusted % 10}%`;
+  };
 
   const nativeFontFaceDescriptorValue = (name, value) => {
     const text = nativeFontFaceDescriptorText(name, value);
@@ -9978,6 +9993,10 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     }
     if (name === "featureSettings") {
       const normalized = nativeFontFaceFeatureSettingsDescriptor(text);
+      return normalized === null ? nativeFontFaceDescriptorError(name) : normalized;
+    }
+    if (name === "sizeAdjust") {
+      const normalized = nativeFontFaceSizeAdjustDescriptor(text);
       return normalized === null ? nativeFontFaceDescriptorError(name) : normalized;
     }
     if (name !== "display") return text;
@@ -10121,6 +10140,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
               unicode_range: state.unicodeRange,
               variant: state.variant,
               feature_settings: state.featureSettings,
+              size_adjust: state.sizeAdjust,
               variation_settings: state.variationSettings,
               body_base64: encodeBase64(bytes, nativeFontFaceByteLimit),
             });
@@ -10300,6 +10320,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
           variant: String(descriptor.variant || "normal"),
           featureSettings: String(descriptor.featureSettings || "normal"),
           variationSettings: String(descriptor.variationSettings || "normal"),
+          sizeAdjust: String(descriptor.sizeAdjust || "100%"),
           display: String(descriptor.display || "auto"),
         });
         const faceState = nativeFontFaceState(face);
@@ -18455,13 +18476,13 @@ mod native_font_face_tests {
             )
             .expect("FontFaceSet listeners must install");
         let styled = NativeDocument::parse(
-            "<style>@font-face { font-family: 'Late Face'; src: local('Late Face'); font-feature-settings: \"liga\" off, \"kern\" on; font-variation-settings: \"wght\" 620; font-display: swap; }</style>",
+            "<style>@font-face { font-family: 'Late Face'; src: local('Late Face'); font-feature-settings: \"liga\" off, \"kern\" on; font-variation-settings: \"wght\" 620; size-adjust: 62.5%; font-display: swap; }</style>",
             &NativeEngineLimits::default(),
         )
         .expect("font-face fixture must parse");
         let evaluation = runtime
             .evaluate(
-                "[document.fonts.size, document.fonts.status, __fontFaceEvents, [...document.fonts][0].status, [...document.fonts][0].featureSettings, [...document.fonts][0].variationSettings, [...document.fonts][0].display]",
+                "[document.fonts.size, document.fonts.status, __fontFaceEvents, [...document.fonts][0].status, [...document.fonts][0].featureSettings, [...document.fonts][0].variationSettings, [...document.fonts][0].sizeAdjust, [...document.fonts][0].display]",
                 &styled,
                 "about:blank",
                 &NativeOrigin::Opaque,
@@ -18477,6 +18498,7 @@ mod native_font_face_tests {
                 "error",
                 "\"liga\" 0, \"kern\" 1",
                 "\"wght\" 620",
+                "62.5%",
                 "swap"
             ])
         );
@@ -18530,14 +18552,16 @@ mod native_font_face_tests {
                     weight: " 0300 0700 ",
                     stretch: " 62.5% 125% ",
                     unicodeRange: "u+41-5a, u+400-4ff",
-                    variationSettings: '"wght" 450.5, "wdth" -12.25'
+                    variationSettings: '"wght" 450.5, "wdth" -12.25',
+                    sizeAdjust: "62.5%"
                   });
                   const invalid = [
                     ["style", "oblique"],
                     ["weight", "700 300"],
                     ["stretch", "40%"],
                     ["unicodeRange", "U+110000"],
-                    ["variationSettings", "wght 700"]
+                    ["variationSettings", "wght 700"],
+                    ["sizeAdjust", "24.9%"]
                   ];
                   const constructorErrors = invalid.map(([name, value]) => {
                     const descriptors = {};
@@ -18559,7 +18583,7 @@ mod native_font_face_tests {
                     }
                   });
                   return [
-                    [face.style, face.weight, face.stretch, face.unicodeRange, face.variationSettings],
+                    [face.style, face.weight, face.stretch, face.unicodeRange, face.variationSettings, face.sizeAdjust],
                     constructorErrors,
                     setterResults
                   ];
@@ -18578,14 +18602,16 @@ mod native_font_face_tests {
                     "300 700",
                     "62.5% 125%",
                     "U+41-5A, U+400-4FF",
-                    "\"wght\" 450.5, \"wdth\" -12.25"
+                    "\"wght\" 450.5, \"wdth\" -12.25",
+                    "62.5%"
                 ],
                 [
                     ["style", "SyntaxError"],
                     ["weight", "SyntaxError"],
                     ["stretch", "SyntaxError"],
                     ["unicodeRange", "SyntaxError"],
-                    ["variationSettings", "SyntaxError"]
+                    ["variationSettings", "SyntaxError"],
+                    ["sizeAdjust", "SyntaxError"]
                 ],
                 [
                     ["style", "SyntaxError", true, "italic"],
@@ -18596,8 +18622,9 @@ mod native_font_face_tests {
                         "variationSettings",
                         "SyntaxError",
                         true,
-                        "\"wght\" 450.5, \"wdth\" -12.25"
-                    ]
+                        "\"wght\" 450.5, \"wdth\" -12.25",
+                    ],
+                    ["sizeAdjust", "SyntaxError", true, "62.5%"]
                 ]
             ])
         );
@@ -18706,7 +18733,7 @@ mod native_font_face_tests {
             .evaluate(
                 &format!(
                     r#"(() => {{
-                      const face = new FontFace("Inline Sans", {source}, {{ weight: "300 700", stretch: "condensed", unicodeRange: "U+41-5A", variant: "SMALL-CAPS", featureSettings: '"liga" off, "kern" on', variationSettings: '"wght" 620' }});
+                      const face = new FontFace("Inline Sans", {source}, {{ weight: "300 700", stretch: "condensed", unicodeRange: "U+41-5A", variant: "SMALL-CAPS", featureSettings: '"liga" off, "kern" on', variationSettings: '"wght" 620', sizeAdjust: "62.5%" }});
                       globalThis.__inlineFontFace = face;
                       document.fonts.add(face);
                       face.load().then(() => {{ document.body.textContent = "accepted"; }});
@@ -18768,6 +18795,7 @@ mod native_font_face_tests {
                 unicode_range,
                 variant,
                 feature_settings,
+                size_adjust,
                 variation_settings,
                 body_base64,
                 ..
@@ -18779,6 +18807,7 @@ mod native_font_face_tests {
                 && variant == "small-caps"
                 && feature_settings == "\"liga\" 0, \"kern\" 1"
                 && variation_settings == "\"wght\" 620"
+                && size_adjust == "62.5%"
                 && !body_base64.is_empty()
         ));
         let wire = document.to_content_wire();
@@ -18826,6 +18855,7 @@ mod native_font_face_tests {
             *b"smcp"
         );
         assert_eq!(wire.font_resources[0].feature_settings.values[2].value, 1);
+        assert_eq!(wire.font_resources[0].size_adjust, 625);
     }
 
     #[test]

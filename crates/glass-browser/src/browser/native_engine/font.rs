@@ -1438,6 +1438,15 @@ struct NativeRasterizedGlyph {
     coverage: Vec<u8>,
 }
 
+fn adjusted_font_size(font_size: u32, size_adjust: u16) -> u32 {
+    let adjusted = u64::from(font_size)
+        .saturating_mul(u64::from(size_adjust))
+        .saturating_add(500)
+        / 1000;
+    u32::try_from(adjusted.clamp(1, u64::from(MAX_NATIVE_FONT_SIZE).saturating_mul(4)))
+        .unwrap_or(MAX_NATIVE_FONT_SIZE.saturating_mul(4))
+}
+
 #[derive(Clone)]
 struct NativeFontFace {
     family: String,
@@ -1448,6 +1457,7 @@ struct NativeFontFace {
     stretch: NativeFontStretchRange,
     variation_settings: NativeFontVariationSettings,
     feature_settings: NativeFontFeatureSettings,
+    size_adjust: u16,
     font: Arc<fontdue::Font>,
     font_data: Arc<[u8]>,
     collection_index: u32,
@@ -1465,6 +1475,7 @@ impl PartialEq for NativeFontFace {
             && self.stretch == other.stretch
             && self.variation_settings == other.variation_settings
             && self.feature_settings == other.feature_settings
+            && self.size_adjust == other.size_adjust
             && self.collection_index == other.collection_index
             && self.font_data == other.font_data
             && self.unicode_ranges == other.unicode_ranges
@@ -1499,6 +1510,7 @@ pub(crate) struct NativeFontFaceResource {
     pub(crate) stretch: NativeFontStretchRange,
     pub(crate) variation_settings: NativeFontVariationSettings,
     pub(crate) feature_settings: NativeFontFeatureSettings,
+    pub(crate) size_adjust: u16,
     pub(crate) bytes: Arc<[u8]>,
     pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
 }
@@ -1513,6 +1525,7 @@ impl NativeFontFaceResource {
             stretch: rule.stretch,
             variation_settings: rule.variation_settings,
             feature_settings: rule.feature_settings,
+            size_adjust: rule.size_adjust,
             bytes: Arc::from(bytes),
             unicode_ranges: rule.unicode_ranges.clone(),
         }
@@ -2325,7 +2338,9 @@ impl NativeTextMetrics {
                 direction,
             );
         };
-        let line_metrics = face.font.horizontal_line_metrics(font_size as f32);
+        let line_metrics = face
+            .font
+            .horizontal_line_metrics(adjusted_font_size(font_size, face.size_adjust) as f32);
         let ascent = line_metrics
             .map(|metrics| ceil_positive(metrics.ascent))
             .unwrap_or(FALLBACK_LINE_HEIGHT.saturating_sub(5));
@@ -2397,10 +2412,9 @@ impl NativeTextMetrics {
                 scale_dimension(FALLBACK_GLYPH_ADVANCE, self.stretch, 1000),
                 |face| {
                     let (_, nominal) = self.stretch_factor(face);
+                    let font_size = adjusted_font_size(self.font_size, face.size_adjust);
                     ceil_stretched(
-                        face.font
-                            .metrics(character, self.font_size as f32)
-                            .advance_width,
+                        face.font.metrics(character, font_size as f32).advance_width,
                         self.stretch,
                         nominal,
                     )
@@ -2465,9 +2479,10 @@ impl NativeTextMetrics {
                 && let Some(face) = self.faces.get(face_index)
                 && let Some(previous) = previous
             {
+                let font_size = adjusted_font_size(self.font_size, face.size_adjust);
                 let kerning = face
                     .font
-                    .horizontal_kern(previous, character, self.font_size as f32)
+                    .horizontal_kern(previous, character, font_size as f32)
                     .map_or(0, round_signed);
                 if kerning.is_negative() {
                     width = width.saturating_sub(kerning.unsigned_abs());
@@ -2535,7 +2550,10 @@ impl NativeTextMetrics {
             DirectionValue::Rtl => harfrust::Direction::RightToLeft,
         };
         buffer.set_direction(direction);
-        let scale = i32::try_from(self.font_size.saturating_mul(FONT_SHAPE_SCALE)).ok()?;
+        let scale = i32::try_from(
+            adjusted_font_size(self.font_size, face.size_adjust).saturating_mul(FONT_SHAPE_SCALE),
+        )
+        .ok()?;
         let variation_settings = self.effective_variation_settings(face);
         let variation_instance = if variation_settings.values().is_empty() {
             None
@@ -2870,8 +2888,8 @@ impl NativeTextMetrics {
         glyph_id: u16,
         variation_settings: NativeFontVariationSettings,
     ) -> Option<Vec<NativeRasterizedGlyph>> {
-        if let Some(rasterized) =
-            rasterize_svg_glyph(face.font_data.as_ref(), glyph_id, self.font_size)
+        let font_size = adjusted_font_size(self.font_size, face.size_adjust);
+        if let Some(rasterized) = rasterize_svg_glyph(face.font_data.as_ref(), glyph_id, font_size)
         {
             return Some(vec![rasterized]);
         }
@@ -2885,7 +2903,7 @@ impl NativeTextMetrics {
             && let Some(layers) = rasterize_color_glyph_with_overrides(
                 face.font_data.as_ref(),
                 glyph_id,
-                self.font_size,
+                font_size,
                 variation_settings,
                 palette_index,
                 self.palette_overrides,
@@ -2897,7 +2915,7 @@ impl NativeTextMetrics {
             face.font_data.as_ref(),
             face.collection_index,
             glyph_id,
-            self.font_size,
+            font_size,
         ) {
             let (requested_stretch, nominal_stretch) = self.stretch_factor(face);
             let stretched_width =
@@ -2909,12 +2927,12 @@ impl NativeTextMetrics {
         if let Some(rasterized) = rasterize_variable_glyph(
             face.font_data.as_ref(),
             glyph_id,
-            self.font_size,
+            font_size,
             variation_settings,
         ) {
             return Some(vec![rasterized]);
         }
-        let (metrics, coverage) = face.font.rasterize_indexed(glyph_id, self.font_size as f32);
+        let (metrics, coverage) = face.font.rasterize_indexed(glyph_id, font_size as f32);
         Some(vec![NativeRasterizedGlyph {
             xmin: metrics.xmin,
             ymin: metrics.ymin,
@@ -2948,9 +2966,10 @@ impl NativeTextMetrics {
             if previous_face_index == Some(face_index)
                 && let Some(previous) = previous
             {
+                let font_size = adjusted_font_size(self.font_size, face.size_adjust);
                 let kerning = face
                     .font
-                    .horizontal_kern(previous, character, self.font_size as f32)
+                    .horizontal_kern(previous, character, font_size as f32)
                     .map_or(0, |value| {
                         round_stretched(value, requested_stretch, nominal_stretch)
                     });
@@ -4139,6 +4158,7 @@ impl NativeFontBook {
                 stretch: resource.stretch,
                 variation_settings: resource.variation_settings,
                 feature_settings: resource.feature_settings,
+                size_adjust: resource.size_adjust,
                 font: Arc::new(font),
                 font_data,
                 collection_index: 0,
@@ -4318,6 +4338,7 @@ fn insert_font_face(
         stretch: NativeFontStretchRange::default(),
         variation_settings: NativeFontVariationSettings::default(),
         feature_settings: NativeFontFeatureSettings::default(),
+        size_adjust: super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
         font: Arc::new(font),
         font_data,
         collection_index,
@@ -4953,6 +4974,7 @@ mod tests {
             unicode_ranges: Vec::new(),
             variation_settings: NativeFontVariationSettings::default(),
             feature_settings: face_features,
+            size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             font_display: super::super::css::NativeFontDisplay::Auto,
         };
         let resource = NativeFontFaceResource::from_rule(&rule, bytes.to_vec());
@@ -4995,6 +5017,58 @@ mod tests {
                 value: 1
             }
         );
+    }
+
+    #[test]
+    fn font_face_size_adjust_scales_metrics_and_rasterization() {
+        let bytes = include_bytes!("../../../tests/fixtures/colr-v0.ttf");
+        let resource = |size_adjust| NativeFontFaceResource {
+            family: "Size Adjust Fixture".into(),
+            family_key: font_family_hash("Size Adjust Fixture"),
+            weight: NativeFontWeightRange::default(),
+            style: FontStyleValue::Normal,
+            stretch: NativeFontStretchRange::default(),
+            variation_settings: NativeFontVariationSettings::default(),
+            feature_settings: NativeFontFeatureSettings::default(),
+            size_adjust,
+            bytes: Arc::from(bytes.as_slice()),
+            unicode_ranges: Vec::new(),
+        };
+        let normal_book = NativeFontBook::from_resources(&[resource(1000)]);
+        let adjusted_book = NativeFontBook::from_resources(&[resource(500)]);
+        let family = || {
+            NativeFontFamilyList::single(NativeFontFamilyValue::Named(font_family_hash(
+                "Size Adjust Fixture",
+            )))
+        };
+        let normal = NativeTextMetrics::for_style_with_book(
+            family(),
+            64,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            DirectionValue::Ltr,
+            &normal_book,
+        );
+        let adjusted = NativeTextMetrics::for_style_with_book(
+            family(),
+            64,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            DirectionValue::Ltr,
+            &adjusted_book,
+        );
+        assert_eq!(adjusted.faces[0].size_adjust, 500);
+        assert!(adjusted.line_height() < normal.line_height());
+        assert!(adjusted.measure_text("A", 0, 0) < normal.measure_text("A", 0, 0));
+        let normal_run = normal
+            .rasterize("A", 0, 0, 0)
+            .expect("normal font must rasterize");
+        let adjusted_run = adjusted
+            .rasterize("A", 0, 0, 0)
+            .expect("adjusted font must rasterize");
+        assert!(!normal_run.glyphs.is_empty());
+        assert!(!adjusted_run.glyphs.is_empty());
+        assert!(adjusted_run.glyphs[0].height < normal_run.glyphs[0].height);
     }
     use flate2::write::GzEncoder;
 
@@ -5118,6 +5192,7 @@ mod tests {
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
             feature_settings: NativeFontFeatureSettings::default(),
+            size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             bytes: Arc::from(bytes),
             unicode_ranges: Vec::new(),
         };
@@ -5491,6 +5566,7 @@ mod tests {
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
             feature_settings: NativeFontFeatureSettings::default(),
+            size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             bytes: Arc::from(bytes.as_slice()),
             unicode_ranges: Vec::new(),
         };
@@ -6374,6 +6450,7 @@ mod tests {
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
             feature_settings: NativeFontFeatureSettings::default(),
+            size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             bytes: Arc::from(compressed),
             unicode_ranges: Vec::new(),
         };
@@ -6404,6 +6481,7 @@ mod tests {
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
             feature_settings: NativeFontFeatureSettings::default(),
+            size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             bytes: Arc::from(woff2),
             unicode_ranges: Vec::new(),
         };
@@ -6433,6 +6511,7 @@ mod tests {
                 stretch: NativeFontStretchRange::default(),
                 variation_settings: NativeFontVariationSettings::default(),
                 feature_settings: NativeFontFeatureSettings::default(),
+                size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: vec![NativeUnicodeRange {
                     start: u32::from(character),
@@ -6474,6 +6553,7 @@ mod tests {
                 stretch: NativeFontStretchRange::default(),
                 variation_settings: NativeFontVariationSettings::default(),
                 feature_settings: NativeFontFeatureSettings::default(),
+                size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -6485,6 +6565,7 @@ mod tests {
                 stretch: NativeFontStretchRange { min: 750, max: 750 },
                 variation_settings: NativeFontVariationSettings::default(),
                 feature_settings: NativeFontFeatureSettings::default(),
+                size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -6548,6 +6629,7 @@ mod tests {
                 stretch: NativeFontStretchRange::default(),
                 variation_settings: NativeFontVariationSettings::default(),
                 feature_settings: NativeFontFeatureSettings::default(),
+                size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -6559,6 +6641,7 @@ mod tests {
                 stretch: NativeFontStretchRange::default(),
                 variation_settings: NativeFontVariationSettings::default(),
                 feature_settings: NativeFontFeatureSettings::default(),
+                size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -6901,6 +6984,7 @@ mod tests {
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
             feature_settings: NativeFontFeatureSettings::default(),
+            size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             bytes: Arc::from(bytes),
             unicode_ranges: Vec::new(),
         };
@@ -7033,6 +7117,7 @@ mod tests {
             stretch: NativeFontStretchRange::default(),
             variation_settings: descriptor_settings,
             feature_settings: NativeFontFeatureSettings::default(),
+            size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             bytes: Arc::from(bytes),
             unicode_ranges: Vec::new(),
         };
@@ -7162,6 +7247,7 @@ mod tests {
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
             feature_settings: NativeFontFeatureSettings::default(),
+            size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
             bytes: system_face.font_data.clone(),
             unicode_ranges: Vec::new(),
         };

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-550`, following
+expansion checkpoint is completed `native-engine-browser-551`, following
+completed `native-engine-browser-550`, following
 completed `native-engine-browser-549`, following
 completed `native-engine-browser-548`, following
 completed `native-engine-browser-547`, following
@@ -427,6 +428,16 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 551 carries bounded CSS `@font-face` and page-realm `FontFace`
+`size-adjust` through native parsing, dynamic-owner validation, resource and
+content-wire state, static identity/status projection, and selected-face
+metrics, shaping, and rasterization. Values normalize to bounded tenth-percent
+units from 25% through 400%; invalid values are rejected before resource
+mutation.
+Font-display timing, installed-font discovery, remaining CSS FontFace
+descriptors, and complete FontFace/Web IDL parity remain explicit issue #40
+gates.
 
 Slice 550 carries bounded CSS `@font-face` `font-feature-settings` through
 stylesheet parsing, native resource construction, and static `document.fonts`

@@ -94,6 +94,106 @@ impl PartialEq for NativeGradientStop {
 
 impl Eq for NativeGradientStop {}
 
+#[derive(Debug, Clone, Copy)]
+#[doc(hidden)]
+pub struct NativeGradientTransform {
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    e: f32,
+    f: f32,
+}
+
+impl NativeGradientTransform {
+    #[cfg(test)]
+    const fn identity() -> Self {
+        Self {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+
+    fn from_ttf(transform: ttf_parser::Transform) -> Self {
+        Self {
+            a: transform.a,
+            b: transform.b,
+            c: transform.c,
+            d: transform.d,
+            e: transform.e,
+            f: transform.f,
+        }
+    }
+
+    fn compose(self, inner: Self) -> Self {
+        Self {
+            a: self.a.mul_add(inner.a, self.c * inner.b),
+            b: self.b.mul_add(inner.a, self.d * inner.b),
+            c: self.a.mul_add(inner.c, self.c * inner.d),
+            d: self.b.mul_add(inner.c, self.d * inner.d),
+            e: self.a.mul_add(inner.e, self.c.mul_add(inner.f, self.e)),
+            f: self.b.mul_add(inner.e, self.d.mul_add(inner.f, self.f)),
+        }
+    }
+
+    fn scale_x(self, scale: f32) -> Self {
+        Self {
+            a: self.a * scale,
+            b: self.b,
+            c: self.c * scale,
+            d: self.d,
+            e: self.e * scale,
+            f: self.f,
+        }
+    }
+
+    fn is_bounded(self) -> bool {
+        [self.a, self.b, self.c, self.d, self.e, self.f]
+            .into_iter()
+            .all(|component| {
+                component.is_finite() && component.abs() <= MAX_COLOR_TRANSFORM_COMPONENT
+            })
+    }
+
+    fn is_invertible(self) -> bool {
+        let determinant = self.a.mul_add(self.d, -(self.b * self.c));
+        self.is_bounded() && determinant.is_finite() && determinant.abs() > f32::EPSILON
+    }
+
+    fn inverse_point(self, x: f32, y: f32) -> Option<(f32, f32)> {
+        if !self.is_invertible() || !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let determinant = self.a.mul_add(self.d, -(self.b * self.c));
+        let delta_x = x - self.e;
+        let delta_y = y - self.f;
+        let local_x = (self.d.mul_add(delta_x, -(self.c * delta_y))) / determinant;
+        let local_y = (self.a.mul_add(delta_y, -(self.b * delta_x))) / determinant;
+        (local_x.is_finite()
+            && local_y.is_finite()
+            && local_x.abs() <= MAX_COLOR_TRANSFORM_COMPONENT
+            && local_y.abs() <= MAX_COLOR_TRANSFORM_COMPONENT)
+            .then_some((local_x, local_y))
+    }
+}
+
+impl PartialEq for NativeGradientTransform {
+    fn eq(&self, other: &Self) -> bool {
+        self.a.to_bits() == other.a.to_bits()
+            && self.b.to_bits() == other.b.to_bits()
+            && self.c.to_bits() == other.c.to_bits()
+            && self.d.to_bits() == other.d.to_bits()
+            && self.e.to_bits() == other.e.to_bits()
+            && self.f.to_bits() == other.f.to_bits()
+    }
+}
+
+impl Eq for NativeGradientTransform {}
+
 #[derive(Debug, Clone)]
 pub enum NativeGlyphGradient {
     Linear {
@@ -113,6 +213,7 @@ pub enum NativeGlyphGradient {
         x1: f32,
         y1: f32,
         r1: f32,
+        transform: NativeGradientTransform,
         extend: NativeGradientExtend,
         stops: Arc<[NativeGradientStop]>,
     },
@@ -168,6 +269,7 @@ impl PartialEq for NativeGlyphGradient {
                     x1: left_x1,
                     y1: left_y1,
                     r1: left_r1,
+                    transform: left_transform,
                     extend: left_extend,
                     stops: left_stops,
                 },
@@ -178,6 +280,7 @@ impl PartialEq for NativeGlyphGradient {
                     x1: right_x1,
                     y1: right_y1,
                     r1: right_r1,
+                    transform: right_transform,
                     extend: right_extend,
                     stops: right_stops,
                 },
@@ -188,6 +291,7 @@ impl PartialEq for NativeGlyphGradient {
                     && left_x1.to_bits() == right_x1.to_bits()
                     && left_y1.to_bits() == right_y1.to_bits()
                     && left_r1.to_bits() == right_r1.to_bits()
+                    && left_transform == right_transform
                     && left_extend == right_extend
                     && left_stops.as_ref() == right_stops.as_ref()
             }
@@ -257,15 +361,17 @@ impl NativeGlyphGradient {
                 x1,
                 y1,
                 r1,
+                transform,
                 extend,
                 stops,
             } => Self::Radial {
-                x0: scale_x(*x0),
+                x0: *x0,
                 y0: *y0,
-                r0: scale_x(*r0),
-                x1: scale_x(*x1),
+                r0: *r0,
+                x1: *x1,
                 y1: *y1,
-                r1: scale_x(*r1),
+                r1: *r1,
+                transform: transform.scale_x(scale),
                 extend: *extend,
                 stops: stops.clone(),
             },
@@ -403,10 +509,14 @@ impl NativeGlyphGradient {
                 x1,
                 y1,
                 r1,
+                transform,
                 extend,
                 ..
-            } => Self::radial_parameter(x, y, *x0, *y0, *r0, *x1, *y1, *r1)?
-                .apply_gradient_extend(*extend),
+            } => {
+                let (local_x, local_y) = transform.inverse_point(x, y)?;
+                Self::radial_parameter(local_x, local_y, *x0, *y0, *r0, *x1, *y1, *r1)?
+                    .apply_gradient_extend(*extend)
+            }
             Self::Sweep {
                 center_x,
                 center_y,
@@ -699,6 +809,14 @@ impl NativeColorPaint {
             return None;
         }
         let map_x = |value: f32| value.mul_add(scale, -(xmin as f32));
+        let pixel_transform = NativeGradientTransform {
+            a: scale,
+            b: 0.0,
+            c: 0.0,
+            d: -scale,
+            e: -(xmin as f32),
+            f: ymax as f32,
+        };
         let map_y = |value: f32| (ymax as f32) - value * scale;
         let mapped = match gradient {
             NativeGlyphGradient::Linear {
@@ -727,15 +845,17 @@ impl NativeColorPaint {
                 x1,
                 y1,
                 r1,
+                transform,
                 extend,
                 stops,
             } => NativeGlyphGradient::Radial {
-                x0: map_x(*x0),
-                y0: map_y(*y0),
-                r0: *r0 * scale,
-                x1: map_x(*x1),
-                y1: map_y(*y1),
-                r1: *r1 * scale,
+                x0: *x0,
+                y0: *y0,
+                r0: *r0,
+                x1: *x1,
+                y1: *y1,
+                r1: *r1,
+                transform: pixel_transform.compose(*transform),
                 extend: *extend,
                 stops: stops.clone(),
             },
@@ -973,21 +1093,18 @@ impl<'a> NativeColorPainter<'a> {
         {
             return None;
         }
-        let (scale, _) = Self::conformal_scale(self.transform)?;
-        let (x0, y0) = Self::transformed_point(self.transform, gradient.x0, gradient.y0)?;
-        let (x1, y1) = Self::transformed_point(self.transform, gradient.x1, gradient.y1)?;
-        let r0 = gradient.r0 * scale;
-        let r1 = gradient.r1 * scale;
-        if !Self::finite_component(r0) || !Self::finite_component(r1) {
+        let transform = NativeGradientTransform::from_ttf(self.transform);
+        if !transform.is_invertible() {
             return None;
         }
         Some(NativeGlyphGradient::Radial {
-            x0,
-            y0,
-            r0,
-            x1,
-            y1,
-            r1,
+            x0: gradient.x0,
+            y0: gradient.y0,
+            r0: gradient.r0,
+            x1: gradient.x1,
+            y1: gradient.y1,
+            r1: gradient.r1,
+            transform,
             extend: Self::native_extend(gradient.extend),
             stops: Self::native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
         })
@@ -4656,6 +4773,7 @@ mod tests {
             x1,
             y1,
             r1,
+            transform: NativeGradientTransform::identity(),
             extend: NativeGradientExtend::Pad,
             stops: stops.clone(),
         };
@@ -4685,6 +4803,56 @@ mod tests {
             radial(0.0, 0.0, 5.0, 0.0, 0.0, 5.0)
                 .color_at(5.0, 0.0)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn radial_gradient_affine_transform_samples_ellipse_geometry() {
+        let stops: Arc<[NativeGradientStop]> = Arc::from([
+            NativeGradientStop {
+                offset: 0.0,
+                color: NativeColor::RED,
+            },
+            NativeGradientStop {
+                offset: 1.0,
+                color: NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: u8::MAX,
+                    alpha: u8::MAX,
+                },
+            },
+        ]);
+        let midpoint = NativeColor {
+            red: 128,
+            green: 0,
+            blue: 128,
+            alpha: u8::MAX,
+        };
+        let radial = NativeGlyphGradient::Radial {
+            x0: 0.0,
+            y0: 0.0,
+            r0: 2.0,
+            x1: 4.0,
+            y1: 0.0,
+            r1: 8.0,
+            transform: NativeGradientTransform {
+                a: 2.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                e: 0.0,
+                f: 0.0,
+            },
+            extend: NativeGradientExtend::Pad,
+            stops: stops.clone(),
+        };
+        assert_eq!(radial.color_at(4.0, 5.0), Some(midpoint));
+
+        let mapped = NativeColorPaint::Gradient(radial).glyph_gradient(2.0, -3, 10);
+        assert_eq!(
+            mapped.and_then(|gradient| gradient.color_at(11.0, 0.0)),
+            Some(midpoint)
         );
     }
 
@@ -4722,6 +4890,7 @@ mod tests {
                     x1: 4.0,
                     y1: 0.0,
                     r1: 1.0,
+                    transform: NativeGradientTransform::identity(),
                     extend: NativeGradientExtend::Pad,
                     stops,
                 }),
@@ -4778,7 +4947,7 @@ mod tests {
     }
 
     #[test]
-    fn colr_gradient_transform_geometry_accepts_conformal_only_for_radial_shapes() {
+    fn colr_gradient_transform_geometry_allows_affine_radial_shapes() {
         let translated = ttf_parser::Transform::new_translate(12.0, -4.0);
         assert_eq!(
             NativeColorPainter::transformed_point(translated, 3.0, 5.0),
@@ -4793,12 +4962,16 @@ mod tests {
         let (_, preserves_orientation) = NativeColorPainter::conformal_scale(reflected)
             .expect("uniform reflection is conformal");
         assert!(!preserves_orientation);
+
+        let skew = NativeGradientTransform::from_ttf(ttf_parser::Transform::new_skew(0.125, 0.0));
+        assert!(skew.is_invertible());
+        assert!(skew.inverse_point(4.0, 5.0).is_some());
         assert!(
-            NativeColorPainter::conformal_scale(ttf_parser::Transform::new_skew(0.125, 0.0))
-                .is_none()
+            !NativeGradientTransform::from_ttf(ttf_parser::Transform::new_scale(0.0, 1.0))
+                .is_invertible()
         );
         assert!(
-            NativeColorPainter::conformal_scale(ttf_parser::Transform::new_scale(0.0, 1.0))
+            NativeColorPainter::conformal_scale(ttf_parser::Transform::new_skew(0.125, 0.0))
                 .is_none()
         );
     }

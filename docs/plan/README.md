@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-534`, following completed
 `native-engine-browser-533`, following completed
 `native-engine-browser-532`, following completed
 `native-engine-browser-531`, following completed
@@ -377,33 +378,42 @@ falls back to the existing outline paths. SVG-in-font sources, palette
 selection, bitmap variation axes, hinting, font-display timing, and complete
 FontFace/Web IDL parity remain issue #40 gates.
 
+The completed affine radial-gradient follow-up is
+[`native-engine-browser-534`](tasks/native-engine-browser-534.md): COLRv1
+radial paints retain exact two-circle geometry and carry finite nonsingular
+affine transforms through glyph-local pixel mapping and synthetic stretch.
+Inverse-mapped samples produce ellipse gradients for skew, non-uniform scale,
+rotation, reflection, and translation; singular or non-finite transforms fail
+closed. Transformed clip masks and sweep-gradient skew parity remain explicit
+issue #40 gates.
+
 The completed three-point COLRv1 linear-gradient follow-up is
 [`native-engine-browser-531`](tasks/native-engine-browser-531.md): `p0` and
 `p1` define the color line and `p2` defines its projection direction. All
 three points survive finite affine transforms, synthetic stretch, and
 glyph-local mapping; degenerate triples fail closed and valid triples use the
-existing extend modes and sorted stops. Arbitrary gradient transforms and
+existing extend modes and sorted stops. Sweep-gradient skew parity and
 transformed clip masks remain explicit issue #40 gates.
 
 The completed transformed COLRv1 gradient follow-up is
 [`native-engine-browser-530`](tasks/native-engine-browser-530.md): composed
-finite affine transforms now reach linear gradient geometry directly, while
-radial and sweep gradients admit conformal translation, rotation/uniform
-scale, and reflection with radius and direction mapping. Singular and
-skew/non-uniform radial or sweep transforms fail closed. Axis-aligned clip
-boxes remain identity-transform-only and the bounded two-point linear
-projection remains explicit until full three-point equations and transformed
-clip masks land.
+finite affine transforms reach linear gradient geometry directly, while radial
+and sweep gradients first admit conformal translation, rotation/uniform scale,
+and reflection with radius and direction mapping. Slice 534 extends the radial
+path to the broader affine ellipse transform; sweep skew and non-finite
+transformed coordinates still fail closed. Axis-aligned clip boxes remain
+identity-transform-only and transformed clip masks remain explicit issue #40
+gates.
 
 The completed bounded COLRv1 gradient follow-up is
 [`native-engine-browser-529`](tasks/native-engine-browser-529.md): linear,
 radial, and sweep COLRv1 paints now admit finite coordinates, at most 16
 bounded stops, and pad/repeat/reflect extension into compact glyph-local
 descriptors sampled at raster time. Nested clip boxes intersect during
-supersampled coverage, while malformed stops, unsupported gradient transforms,
+supersampled coverage, while malformed stops, unsupported sweep transforms,
 unsupported paint graphs, and unbalanced state fail closed to monochrome
-fallback. The current identity-transform boundary and bounded radial
-non-coincident-center approximation remain explicit issue #40 gates.
+fallback. The current identity-transform clip boundary and sweep-gradient
+skew parity remain explicit issue #40 gates.
 
 The completed bounded COLRv1 clip-provenance follow-up is
 [`native-engine-browser-528`](tasks/native-engine-browser-528.md): each

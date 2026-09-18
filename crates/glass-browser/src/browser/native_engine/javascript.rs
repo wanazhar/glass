@@ -9687,6 +9687,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     String(descriptor && descriptor.style || "normal"),
     String(descriptor && descriptor.stretch || "normal"),
     String(descriptor && descriptor.variationSettings || "normal"),
+    String(descriptor && descriptor.display || "auto"),
   ].join("\u0000");
   const nativeFontFaceSettledPromise = (face, status) => {
     const promise = status === "loaded"
@@ -10062,6 +10063,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
           stretch: String(descriptor.stretch || "normal"),
           unicodeRange: String(descriptor.unicodeRange || "U+0-10FFFF"),
           variationSettings: String(descriptor.variationSettings || "normal"),
+          display: String(descriptor.display || "auto"),
         });
         const faceState = nativeFontFaceState(face);
         faceState.staticFace = true;
@@ -18216,13 +18218,13 @@ mod native_font_face_tests {
             )
             .expect("FontFaceSet listeners must install");
         let styled = NativeDocument::parse(
-            "<style>@font-face { font-family: 'Late Face'; src: local('Late Face'); font-variation-settings: \"wght\" 620; }</style>",
+            "<style>@font-face { font-family: 'Late Face'; src: local('Late Face'); font-variation-settings: \"wght\" 620; font-display: swap; }</style>",
             &NativeEngineLimits::default(),
         )
         .expect("font-face fixture must parse");
         let evaluation = runtime
             .evaluate(
-                "[document.fonts.size, document.fonts.status, __fontFaceEvents, [...document.fonts][0].status, [...document.fonts][0].variationSettings]",
+                "[document.fonts.size, document.fonts.status, __fontFaceEvents, [...document.fonts][0].status, [...document.fonts][0].variationSettings, [...document.fonts][0].display]",
                 &styled,
                 "about:blank",
                 &NativeOrigin::Opaque,
@@ -18236,7 +18238,8 @@ mod native_font_face_tests {
                 "loaded",
                 [["loading", 1], ["loadingerror", 1]],
                 "error",
-                "\"wght\" 620"
+                "\"wght\" 620",
+                "swap"
             ])
         );
     }

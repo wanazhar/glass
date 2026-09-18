@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-542`, following completed
 `native-engine-browser-541`, following completed
 `native-engine-browser-540`, following completed
 `native-engine-browser-539`, following completed
@@ -399,6 +400,15 @@ viewBoxes into font-size pixels, and reuse the native SVG surface rasterizer.
 Scripts, external resources, imports, unsupported references, malformed
 documents, and over-budget payloads fail closed to existing COLR, bitmap,
 variable-outline, or fontdue-outline fallback.
+
+The completed CSS font-display follow-up is
+[`native-engine-browser-542`](tasks/native-engine-browser-542.md): bounded
+`font-display` descriptors now accept the five normalized CSS keywords and
+project through static `document.fonts` faces as `FontFace.display`, with the
+descriptor included in static-face identity. Resource admission and status
+semantics remain unchanged; actual block/swap/fallback/optional render timing,
+installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
+gates.
 
 The completed palette-override follow-up is
 [`native-engine-browser-540`](tasks/native-engine-browser-540.md): bounded

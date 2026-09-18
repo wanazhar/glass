@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-542`, following completed
 `native-engine-browser-541`, following completed
 `native-engine-browser-540`, following completed
 `native-engine-browser-539`, following completed
@@ -369,6 +370,13 @@ or over-budget documents fall through to existing COLR, bitmap, variable
 outline, or fontdue-outline behavior. SVG glyph admission does not alter
 shaping, metrics, palette overrides, variation settings, stretch, clipping,
 compositing, or raster budgets.
+
+Slice 542 carries bounded CSS `font-display` descriptors from native
+`@font-face` parsing into static page-realm `FontFace` faces. The five accepted
+keywords are normalized and included in static-face identity, while font
+admission, status, events, and dynamic source handling remain unchanged.
+Block/swap/fallback/optional render timing, installed-font discovery, and full
+FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 540 adds bounded `override-colors` descriptor parsing to named
 `@font-palette-values` rules. Document-local overrides select exact unique CPAL

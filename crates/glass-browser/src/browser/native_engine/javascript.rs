@@ -15218,8 +15218,7 @@ fn install_native_local_font_source<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), 
             let stretch = parse_font_stretch_range(&stretch)
                 .ok_or(Error::Unknown)?
                 .nominal();
-            let bytes = NativeFontBook::system()
-                .local_font_bytes_with_stretch(family, weight, style, stretch);
+            let bytes = NativeFontBook::system_local_font_bytes(family, weight, style, stretch);
             if bytes
                 .as_ref()
                 .is_some_and(|bytes| bytes.len() > MAX_NATIVE_FONT_BYTES)

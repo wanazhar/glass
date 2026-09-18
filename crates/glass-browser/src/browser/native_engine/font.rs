@@ -44,6 +44,7 @@ const MAX_COLOR_TRANSFORM_DEPTH: usize = 16;
 const MAX_COLOR_CLIP_DEPTH: usize = 16;
 const MAX_COLOR_TRANSFORM_COMPONENT: f32 = 1_000_000.0;
 const MAX_COLOR_STOPS: usize = 16;
+const RADIAL_EQUATION_RELATIVE_EPSILON: f64 = 1e-12;
 const MAX_COLOR_BITMAP_DIMENSION: usize = 1_024;
 const MAX_COLOR_BITMAP_BYTES: usize = 4 * 1024 * 1024;
 const MAX_VARIABLE_OUTLINE_POINTS: usize = 8_192;
@@ -286,6 +287,91 @@ impl NativeGlyphGradient {
         }
     }
 
+    fn radial_parameter(
+        x: f32,
+        y: f32,
+        x0: f32,
+        y0: f32,
+        r0: f32,
+        x1: f32,
+        y1: f32,
+        r1: f32,
+    ) -> Option<f32> {
+        if ![x, y, x0, y0, r0, x1, y1, r1]
+            .into_iter()
+            .all(f32::is_finite)
+        {
+            return None;
+        }
+
+        let x = f64::from(x);
+        let y = f64::from(y);
+        let x0 = f64::from(x0);
+        let y0 = f64::from(y0);
+        let r0 = f64::from(r0);
+        let x1 = f64::from(x1);
+        let y1 = f64::from(y1);
+        let r1 = f64::from(r1);
+        let center_x = x1 - x0;
+        let center_y = y1 - y0;
+        let radius_delta = r1 - r0;
+        let point_x = x - x0;
+        let point_y = y - y0;
+        let coefficient_a =
+            center_x.mul_add(center_x, center_y * center_y) - radius_delta * radius_delta;
+        let coefficient_b =
+            -2.0 * center_x.mul_add(point_x, center_y.mul_add(point_y, r0 * radius_delta));
+        let coefficient_c = point_x.mul_add(point_x, point_y * point_y) - r0 * r0;
+        let geometry_scale = center_x
+            .mul_add(center_x, center_y * center_y)
+            .max(radius_delta * radius_delta)
+            .max(1.0);
+        let coefficient_epsilon = geometry_scale * RADIAL_EQUATION_RELATIVE_EPSILON;
+        let radius_epsilon = r0.abs().max(r1.abs()).max(1.0) * RADIAL_EQUATION_RELATIVE_EPSILON;
+        let mut result = None;
+        let mut consider = |parameter: f64| {
+            if !parameter.is_finite() {
+                return;
+            }
+            let radius = r0 + radius_delta * parameter;
+            if !radius.is_finite() || radius < -radius_epsilon {
+                return;
+            }
+            let Some(parameter) = (parameter as f32).is_finite().then_some(parameter as f32) else {
+                return;
+            };
+            if result.is_none_or(|current| parameter > current) {
+                result = Some(parameter);
+            }
+        };
+
+        if coefficient_a.abs() <= coefficient_epsilon {
+            if coefficient_b.abs() > coefficient_epsilon {
+                consider(-coefficient_c / coefficient_b);
+            }
+            return result;
+        }
+
+        let discriminant =
+            coefficient_b.mul_add(coefficient_b, -4.0 * coefficient_a * coefficient_c);
+        let discriminant_scale = coefficient_b
+            .abs()
+            .mul_add(
+                coefficient_b.abs(),
+                (4.0 * coefficient_a * coefficient_c).abs(),
+            )
+            .max(1.0);
+        let discriminant_epsilon = discriminant_scale * RADIAL_EQUATION_RELATIVE_EPSILON;
+        if discriminant < -discriminant_epsilon {
+            return None;
+        }
+        let root = discriminant.max(0.0).sqrt();
+        let denominator = 2.0 * coefficient_a;
+        consider((-coefficient_b + root) / denominator);
+        consider((-coefficient_b - root) / denominator);
+        result
+    }
+
     pub(crate) fn color_at(&self, x: f32, y: f32) -> Option<NativeColor> {
         let t = match self {
             Self::Linear {
@@ -319,18 +405,8 @@ impl NativeGlyphGradient {
                 r1,
                 extend,
                 ..
-            } => {
-                let radius = r1.abs().max(f32::EPSILON);
-                let distance = (x - x1).hypot(y - y1);
-                let start = if r0.is_finite() { *r0 } else { 0.0 };
-                let center_shift = (x1 - x0).hypot(y1 - y0);
-                let adjustment = if center_shift > f32::EPSILON {
-                    (x - x0).hypot(y - y0) - distance
-                } else {
-                    0.0
-                };
-                ((distance + adjustment - start) / radius).apply_gradient_extend(*extend)
-            }
+            } => Self::radial_parameter(x, y, *x0, *y0, *r0, *x1, *y1, *r1)?
+                .apply_gradient_extend(*extend),
             Self::Sweep {
                 center_x,
                 center_y,
@@ -3516,6 +3592,14 @@ impl NativeFontBook {
     pub(crate) fn system() -> Self {
         system_font_book().clone()
     }
+    pub(crate) fn system_local_font_bytes(
+        family: &str,
+        weight: FontWeightValue,
+        style: FontStyleValue,
+        stretch: u16,
+    ) -> Option<Vec<u8>> {
+        system_font_book().local_font_bytes_with_stretch(family, weight, style, stretch)
+    }
 
     /// Check whether a bounded payload can be consumed by the native font
     /// rasterizer. This is kept separate from `from_resources`, whose
@@ -4540,6 +4624,157 @@ mod tests {
             stops: stops.clone(),
         };
         assert_eq!(diagonal.color_at(5.0, 5.0), Some(stops[0].color));
+    }
+
+    #[test]
+    fn native_radial_gradient_solves_two_circle_geometry() {
+        let stops: Arc<[NativeGradientStop]> = Arc::from([
+            NativeGradientStop {
+                offset: 0.0,
+                color: NativeColor::RED,
+            },
+            NativeGradientStop {
+                offset: 1.0,
+                color: NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: u8::MAX,
+                    alpha: u8::MAX,
+                },
+            },
+        ]);
+        let midpoint = NativeColor {
+            red: 128,
+            green: 0,
+            blue: 128,
+            alpha: u8::MAX,
+        };
+        let radial = |x0, y0, r0, x1, y1, r1| NativeGlyphGradient::Radial {
+            x0,
+            y0,
+            r0,
+            x1,
+            y1,
+            r1,
+            extend: NativeGradientExtend::Pad,
+            stops: stops.clone(),
+        };
+
+        assert_eq!(
+            radial(0.0, 0.0, 10.0, 0.0, 0.0, 20.0).color_at(15.0, 0.0),
+            Some(midpoint)
+        );
+        assert_eq!(
+            radial(0.0, 0.0, 10.0, 0.0, 0.0, 20.0).color_at(5.0, 0.0),
+            Some(NativeColor::RED)
+        );
+        assert_eq!(
+            radial(0.0, 0.0, 2.0, 4.0, 0.0, 8.0).color_at(2.0, 5.0),
+            Some(midpoint)
+        );
+        assert_eq!(
+            radial(0.0, 0.0, 0.0, 0.0, 0.0, 10.0).color_at(0.0, 0.0),
+            Some(NativeColor::RED)
+        );
+        assert!(
+            radial(0.0, 0.0, 1.0, 4.0, 0.0, 1.0)
+                .color_at(2.0, 2.0)
+                .is_none()
+        );
+        assert!(
+            radial(0.0, 0.0, 5.0, 0.0, 0.0, 5.0)
+                .color_at(5.0, 0.0)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn radial_gradient_without_cone_intersection_is_transparent() {
+        let stops: Arc<[NativeGradientStop]> = Arc::from([
+            NativeGradientStop {
+                offset: 0.0,
+                color: NativeColor::RED,
+            },
+            NativeGradientStop {
+                offset: 1.0,
+                color: NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: u8::MAX,
+                    alpha: u8::MAX,
+                },
+            },
+        ]);
+        let node_id = super::super::NativeDocument::empty().root();
+        let run = super::super::NativeFontRun {
+            glyphs: vec![NativeGlyph {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 3,
+                advance: 1,
+                color: Some(NativeColor::RED),
+                composite: NativeGlyphComposite::SourceOver,
+                gradient: Some(NativeGlyphGradient::Radial {
+                    x0: 0.0,
+                    y0: 0.0,
+                    r0: 1.0,
+                    x1: 4.0,
+                    y1: 0.0,
+                    r1: 1.0,
+                    extend: NativeGradientExtend::Pad,
+                    stops,
+                }),
+                bitmap: None,
+                coverage: Arc::from([u8::MAX; 3]),
+            }],
+            space_ranges: Vec::new(),
+            width: 1,
+            ascent: 3,
+            line_height: 3,
+        };
+        let list = super::super::NativeDisplayList {
+            revision: 1,
+            viewport: super::super::Viewport {
+                width: 1,
+                height: 3,
+                device_scale_factor_milli: 1_000,
+            },
+            scroll_offset: super::super::NativePoint { x: 0, y: 0 },
+            commands: vec![
+                super::super::NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                super::super::NativeDisplayCommand::GlyphRun {
+                    node_id,
+                    origin: super::super::NativePoint { x: 0, y: 0 },
+                    text: "A".into(),
+                    truncated: false,
+                    run,
+                    color: NativeColor::BLACK,
+                    decoration_color: NativeColor::BLACK,
+                    decoration_style: super::super::NativeTextDecorationStyle::Solid,
+                    decoration_skip_ink: super::super::NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: super::super::NativeTextDecorationSkipSpaces::None,
+                    decoration_thickness: 1,
+                    underline_offset: 0,
+                    underline: false,
+                    overline: false,
+                    line_through: false,
+                    bold: false,
+                    italic: false,
+                    word_spacing: 0,
+                    letter_spacing: 0,
+                    justify_spacing: 0,
+                    clip: None,
+                },
+            ],
+            text_run_boundaries: Vec::new(),
+        };
+        let surface = super::super::NativeSurface::from_display_list(&list).unwrap();
+
+        assert_ne!(surface.pixel(0, 0), Some([255, 0, 0, 255]));
+        assert_eq!(surface.pixel(0, 2), Some([255, 255, 255, 255]));
     }
 
     #[test]

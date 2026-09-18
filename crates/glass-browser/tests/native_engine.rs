@@ -6010,6 +6010,7 @@ async fn native_content_process_registers_service_worker_and_intercepts_fetch_an
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let font_bytes = include_bytes!("fixtures/colr-v0.ttf").to_vec();
     let server = tokio::spawn(async move {
         for (expected_path, content_type, body) in [
             (
@@ -6027,6 +6028,12 @@ async fn native_content_process_registers_service_worker_and_intercepts_fetch_an
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', event => {
     const path = new URL(event.request.url).pathname;
+  if (path === '/font.ttf') {
+    event.respondWith(event.request.destination === 'font'
+      ? fetch('/font-upstream.ttf')
+      : new Response('wrong destination', { status: 400 }));
+    return;
+  }
   if (path === '/api') {
     event.respondWith((async () => {
       const matched = await clients.matchAll();
@@ -6071,13 +6078,6 @@ self.addEventListener('fetch', event => {
                 "text/plain",
                 Cow::Owned("x".repeat(20_000)),
             ),
-            (
-                "/network",
-                "text/html",
-                Cow::Borrowed(
-                    "<!doctype html><html><body><main id='network'>network fallback</main></body></html>",
-                ),
-            ),
         ] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
@@ -6089,6 +6089,28 @@ self.addEventListener('fetch', event => {
             );
             stream.write_all(response.as_bytes()).await.unwrap();
         }
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/font-upstream.ttf")
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: font/ttf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            font_bytes.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.write_all(&font_bytes).await.unwrap();
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/network"));
+        let body =
+            "<!doctype html><html><body><main id='network'>network fallback</main></body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
     });
 
     let mut engine = NativeEngine::new(
@@ -6176,6 +6198,20 @@ self.addEventListener('fetch', event => {
                 "type": "text/service-worker-client",
             },
         })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await (async () => {
+                  const face = new FontFace("SW Face", "url(/font.ttf)");
+                  document.fonts.add(face);
+                  await face.load();
+                  return [face.status, face.family, document.fonts.check("16px \"SW Face\"")];
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["loaded", "SW Face", true])
     );
     assert_eq!(
         engine

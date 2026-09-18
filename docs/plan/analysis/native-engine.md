@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-542`, following
+expansion checkpoint is completed `native-engine-browser-543`, following
+completed `native-engine-browser-542`, following
 completed `native-engine-browser-541`, following
 completed `native-engine-browser-540`, following
 completed `native-engine-browser-539`, following
@@ -382,6 +383,16 @@ normalized `FontFace.display`, and included in the static-face identity key.
 Font admission and status transitions remain unchanged; actual display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 543 routes controlled dynamic `FontFace` URL sources through
+`NativeServiceWorkerRegistry::intercept_fetch` with a private `font`
+destination. The worker realm receives the destination on its `Request`, and
+handled responses retain native status/header/content-type/URL data before the
+existing page `FontFaceInstall` acknowledgement. Non-handled network requests
+fall back to `load_font_async`; file/data/blob paths remain direct. The route
+uses document `font-src` enforcement and report-only recording instead of the
+generic `connect-src` policy. Font-display timing, installed-font discovery,
+and complete FontFace/Web IDL parity remain explicit issue #40 gates.
 
 Slice 540 adds bounded `override-colors` descriptor parsing to named
 `@font-palette-values` rules. Document-local overrides select exact unique CPAL

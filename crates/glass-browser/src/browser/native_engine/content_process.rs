@@ -12199,12 +12199,45 @@ async fn resolve_script_fetches(
                     ));
                 }
                 let object_url = runtime.object_url_resource(&href)?;
-                let payload = font_fetch_response_payload(
-                    &href,
-                    loader
-                        .load_font_async(&current_url, &href, object_url.as_ref())
-                        .await,
-                );
+                let intercepted = if is_network_url(&current_url) {
+                    service_workers
+                        .intercept_fetch(
+                            loader,
+                            &current_url,
+                            &href,
+                            method.as_str(),
+                            headers.clone(),
+                            body.clone(),
+                            content_type.clone(),
+                            cors_mode,
+                            redirect_mode,
+                            timeout,
+                            credentials,
+                            "font",
+                        )
+                        .await
+                } else {
+                    Ok(NativeServiceWorkerFetchOutcome::NotHandled)
+                };
+                let payload = match intercepted {
+                    Ok(NativeServiceWorkerFetchOutcome::Handled(response)) => {
+                        fetch_response_payload(Ok(response))
+                    }
+                    Ok(NativeServiceWorkerFetchOutcome::NotHandled) => font_fetch_response_payload(
+                        &href,
+                        loader
+                            .load_font_async(&current_url, &href, object_url.as_ref())
+                            .await,
+                    ),
+                    Ok(NativeServiceWorkerFetchOutcome::Suspended) => {
+                        fetch_response_payload(Err(NativeEngineError::Worker {
+                            operation: "content process font fetch".into(),
+                            reason: "Service Worker font fetch is awaiting a browser WindowClient"
+                                .into(),
+                        }))
+                    }
+                    Err(error) => fetch_response_payload(Err(error)),
+                };
                 process_page_fetch_resolution(
                     request_id,
                     payload,

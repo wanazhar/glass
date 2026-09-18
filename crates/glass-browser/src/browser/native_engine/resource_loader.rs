@@ -3590,6 +3590,32 @@ impl NativeResourceLoader {
         Ok(())
     }
 
+    pub(crate) fn enforce_service_worker_font_policy(
+        &self,
+        document_url: &Url,
+        target_url: &Url,
+    ) -> Result<(), NativeEngineError> {
+        if !mixed_content_allowed(document_url, target_url) {
+            return Err(NativeEngineError::Network {
+                operation: "service worker font policy".into(),
+                reason: "HTTPS documents cannot fetch HTTP resources".into(),
+            });
+        }
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(document_url))
+            .cloned()
+            .unwrap_or_default();
+        if !policy.allows(NativeSubresourceKind::Font, document_url, target_url) {
+            return Err(NativeEngineError::Network {
+                operation: "service worker font policy".into(),
+                reason: "document CSP blocked the font target".into(),
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) fn allows_navigation(
         &mut self,
         document_url: &str,
@@ -3658,6 +3684,25 @@ impl NativeResourceLoader {
         self.record_report_only_url_violations(
             &policy,
             NativeSubresourceKind::Connect,
+            document_url,
+            target_url,
+        );
+    }
+
+    pub(crate) fn report_service_worker_font_policy(
+        &mut self,
+        document_url: &Url,
+        target_url: &Url,
+    ) {
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(document_url))
+            .cloned()
+            .unwrap_or_default();
+        self.record_report_only_url_violations(
+            &policy,
+            NativeSubresourceKind::Font,
             document_url,
             target_url,
         );
@@ -10050,6 +10095,50 @@ mod tests {
         let reports = loader.take_csp_violations();
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].effective_directive, "connect-src");
+        assert_eq!(reports[0].blocked_uri, target.as_str());
+    }
+
+    #[test]
+    fn service_worker_font_interception_uses_the_document_font_policy() {
+        let mut loader = NativeResourceLoader::for_content_process(
+            NativeEngineConfig::default().limits.max_document_bytes,
+            None,
+            &[],
+        )
+        .unwrap();
+        let document = Url::parse("http://app.test/page").unwrap();
+        let target = Url::parse("http://app.test/font.ttf").unwrap();
+        loader
+            .set_document_content_security_policy_from_pairs(
+                document.as_str(),
+                &[("Content-Security-Policy".into(), "font-src 'none'".into())],
+            )
+            .unwrap();
+        assert!(
+            loader
+                .enforce_service_worker_font_policy(&document, &target)
+                .is_err()
+        );
+
+        loader
+            .set_document_content_security_policy_from_pairs(
+                document.as_str(),
+                &[
+                    ("Content-Security-Policy".into(), "font-src 'self'".into()),
+                    (
+                        "Content-Security-Policy-Report-Only".into(),
+                        "font-src 'none'".into(),
+                    ),
+                ],
+            )
+            .unwrap();
+        loader
+            .enforce_service_worker_font_policy(&document, &target)
+            .unwrap();
+        loader.report_service_worker_font_policy(&document, &target);
+        let reports = loader.take_csp_violations();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].effective_directive, "font-src");
         assert_eq!(reports[0].blocked_uri, target.as_str());
     }
 

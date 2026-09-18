@@ -1606,10 +1606,18 @@ impl NativeSurface {
                     {
                         continue;
                     }
+                    let color = glyph
+                        .gradient
+                        .as_ref()
+                        .and_then(|gradient| {
+                            gradient.color_at(column as f32 + 0.5, row as f32 + 0.5)
+                        })
+                        .or(glyph.color)
+                        .unwrap_or(paint.color);
                     self.blend_coverage_pixel(
                         u32::try_from(x).unwrap_or(u32::MAX),
                         u32::try_from(y).unwrap_or(u32::MAX),
-                        glyph.color.unwrap_or(paint.color),
+                        color,
                         *coverage,
                         glyph.composite,
                     );
@@ -2613,6 +2621,7 @@ mod tests {
                 advance: 1,
                 color: Some(NativeColor::RED),
                 composite: NativeGlyphComposite::SourceOver,
+                gradient: None,
                 coverage: Arc::<[u8]>::from(vec![u8::MAX]),
             }],
             space_ranges: Vec::new(),

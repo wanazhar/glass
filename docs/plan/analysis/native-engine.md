@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-528`, following
+expansion checkpoint is completed `native-engine-browser-529`, following
+completed `native-engine-browser-528`, following
 completed `native-engine-browser-527`, following
 completed `native-engine-browser-526`, following
 completed `native-engine-browser-525`, following
@@ -342,6 +343,15 @@ descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none` retain
 their existing behavior. Custom axes, hinting, color tables, and complete
 FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 529 adds bounded COLRv1 linear, radial, and sweep gradient paints plus
+clip-box coverage. The painter admits finite coordinates and at most 16 finite
+stops, preserves pad/repeat/reflect extension, carries compact glyph-local
+descriptors, and samples gradient colors at raster time. Nested clip boxes are
+intersected with the current-outline provenance guard; malformed stops,
+unsupported gradient transforms, and unsupported paint graphs fail closed to
+monochrome fallback. Gradient-transform parity and the bounded radial
+non-coincident-center approximation remain explicit issue #40 gates.
 
 Slice 528 closes a COLRv1 clip-provenance hole. Each admitted outline receives
 a bounded generation; a current-outline clip is accepted without a redundant
@@ -7291,8 +7301,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-528.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-529.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-528.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-527.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-526.md` is the preceding completed

@@ -43,6 +43,7 @@ const MAX_COLOR_GLYPH_LAYERS: usize = 32;
 const MAX_COLOR_TRANSFORM_DEPTH: usize = 16;
 const MAX_COLOR_CLIP_DEPTH: usize = 16;
 const MAX_COLOR_TRANSFORM_COMPONENT: f32 = 1_000_000.0;
+const MAX_COLOR_STOPS: usize = 16;
 const MAX_VARIABLE_OUTLINE_POINTS: usize = 8_192;
 const MAX_VARIABLE_RASTER_DIMENSION: usize = 1_024;
 const VARIABLE_RASTER_SAMPLES: u32 = 4;
@@ -57,6 +58,7 @@ pub struct NativeGlyph {
     pub advance: u32,
     pub color: Option<NativeColor>,
     pub composite: NativeGlyphComposite,
+    pub gradient: Option<NativeGlyphGradient>,
     pub coverage: Arc<[u8]>,
 }
 
@@ -65,6 +67,330 @@ pub enum NativeGlyphComposite {
     #[default]
     SourceOver,
     DestinationOver,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeGradientExtend {
+    Pad,
+    Repeat,
+    Reflect,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NativeGradientStop {
+    pub offset: f32,
+    pub color: NativeColor,
+}
+
+impl PartialEq for NativeGradientStop {
+    fn eq(&self, other: &Self) -> bool {
+        self.offset.to_bits() == other.offset.to_bits() && self.color == other.color
+    }
+}
+
+impl Eq for NativeGradientStop {}
+
+#[derive(Debug, Clone)]
+pub enum NativeGlyphGradient {
+    Linear {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        extend: NativeGradientExtend,
+        stops: Arc<[NativeGradientStop]>,
+    },
+    Radial {
+        x0: f32,
+        y0: f32,
+        r0: f32,
+        x1: f32,
+        y1: f32,
+        r1: f32,
+        extend: NativeGradientExtend,
+        stops: Arc<[NativeGradientStop]>,
+    },
+    Sweep {
+        center_x: f32,
+        center_y: f32,
+        start_angle: f32,
+        end_angle: f32,
+        extend: NativeGradientExtend,
+        stops: Arc<[NativeGradientStop]>,
+    },
+}
+
+impl PartialEq for NativeGlyphGradient {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Linear {
+                    x0: left_x0,
+                    y0: left_y0,
+                    x1: left_x1,
+                    y1: left_y1,
+                    extend: left_extend,
+                    stops: left_stops,
+                },
+                Self::Linear {
+                    x0: right_x0,
+                    y0: right_y0,
+                    x1: right_x1,
+                    y1: right_y1,
+                    extend: right_extend,
+                    stops: right_stops,
+                },
+            ) => {
+                left_x0.to_bits() == right_x0.to_bits()
+                    && left_y0.to_bits() == right_y0.to_bits()
+                    && left_x1.to_bits() == right_x1.to_bits()
+                    && left_y1.to_bits() == right_y1.to_bits()
+                    && left_extend == right_extend
+                    && left_stops.as_ref() == right_stops.as_ref()
+            }
+            (
+                Self::Radial {
+                    x0: left_x0,
+                    y0: left_y0,
+                    r0: left_r0,
+                    x1: left_x1,
+                    y1: left_y1,
+                    r1: left_r1,
+                    extend: left_extend,
+                    stops: left_stops,
+                },
+                Self::Radial {
+                    x0: right_x0,
+                    y0: right_y0,
+                    r0: right_r0,
+                    x1: right_x1,
+                    y1: right_y1,
+                    r1: right_r1,
+                    extend: right_extend,
+                    stops: right_stops,
+                },
+            ) => {
+                left_x0.to_bits() == right_x0.to_bits()
+                    && left_y0.to_bits() == right_y0.to_bits()
+                    && left_r0.to_bits() == right_r0.to_bits()
+                    && left_x1.to_bits() == right_x1.to_bits()
+                    && left_y1.to_bits() == right_y1.to_bits()
+                    && left_r1.to_bits() == right_r1.to_bits()
+                    && left_extend == right_extend
+                    && left_stops.as_ref() == right_stops.as_ref()
+            }
+            (
+                Self::Sweep {
+                    center_x: left_center_x,
+                    center_y: left_center_y,
+                    start_angle: left_start,
+                    end_angle: left_end,
+                    extend: left_extend,
+                    stops: left_stops,
+                },
+                Self::Sweep {
+                    center_x: right_center_x,
+                    center_y: right_center_y,
+                    start_angle: right_start,
+                    end_angle: right_end,
+                    extend: right_extend,
+                    stops: right_stops,
+                },
+            ) => {
+                left_center_x.to_bits() == right_center_x.to_bits()
+                    && left_center_y.to_bits() == right_center_y.to_bits()
+                    && left_start.to_bits() == right_start.to_bits()
+                    && left_end.to_bits() == right_end.to_bits()
+                    && left_extend == right_extend
+                    && left_stops.as_ref() == right_stops.as_ref()
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for NativeGlyphGradient {}
+
+impl NativeGlyphGradient {
+    fn scale_x(&self, requested: u16, nominal: u16) -> Self {
+        if nominal == 0 || requested == nominal {
+            return self.clone();
+        }
+        let scale = f32::from(requested) / f32::from(nominal);
+        let scale_x = |value: f32| value * scale;
+        match self {
+            Self::Linear {
+                x0,
+                y0,
+                x1,
+                y1,
+                extend,
+                stops,
+            } => Self::Linear {
+                x0: scale_x(*x0),
+                y0: *y0,
+                x1: scale_x(*x1),
+                y1: *y1,
+                extend: *extend,
+                stops: stops.clone(),
+            },
+            Self::Radial {
+                x0,
+                y0,
+                r0,
+                x1,
+                y1,
+                r1,
+                extend,
+                stops,
+            } => Self::Radial {
+                x0: scale_x(*x0),
+                y0: *y0,
+                r0: scale_x(*r0),
+                x1: scale_x(*x1),
+                y1: *y1,
+                r1: scale_x(*r1),
+                extend: *extend,
+                stops: stops.clone(),
+            },
+            Self::Sweep {
+                center_x,
+                center_y,
+                start_angle,
+                end_angle,
+                extend,
+                stops,
+            } => Self::Sweep {
+                center_x: scale_x(*center_x),
+                center_y: *center_y,
+                start_angle: *start_angle,
+                end_angle: *end_angle,
+                extend: *extend,
+                stops: stops.clone(),
+            },
+        }
+    }
+
+    pub(crate) fn color_at(&self, x: f32, y: f32) -> Option<NativeColor> {
+        let t = match self {
+            Self::Linear {
+                x0,
+                y0,
+                x1,
+                y1,
+                extend,
+                ..
+            } => {
+                let dx = x1 - x0;
+                let dy = y1 - y0;
+                let length_squared = dx.mul_add(dx, dy * dy);
+                if !length_squared.is_finite() || length_squared <= f32::EPSILON {
+                    0.0
+                } else {
+                    ((x - x0).mul_add(dx, (y - y0) * dy) / length_squared)
+                        .apply_gradient_extend(*extend)
+                }
+            }
+            Self::Radial {
+                x0,
+                y0,
+                r0,
+                x1,
+                y1,
+                r1,
+                extend,
+                ..
+            } => {
+                let radius = r1.abs().max(f32::EPSILON);
+                let distance = (x - x1).hypot(y - y1);
+                let start = if r0.is_finite() { *r0 } else { 0.0 };
+                let center_shift = (x1 - x0).hypot(y1 - y0);
+                let adjustment = if center_shift > f32::EPSILON {
+                    (x - x0).hypot(y - y0) - distance
+                } else {
+                    0.0
+                };
+                ((distance + adjustment - start) / radius).apply_gradient_extend(*extend)
+            }
+            Self::Sweep {
+                center_x,
+                center_y,
+                start_angle,
+                end_angle,
+                extend,
+                ..
+            } => {
+                let angle = (y - center_y).atan2(x - center_x) / std::f32::consts::PI;
+                let span = end_angle - start_angle;
+                if !span.is_finite() || span.abs() <= f32::EPSILON {
+                    0.0
+                } else {
+                    ((angle - start_angle) / span).apply_gradient_extend(*extend)
+                }
+            }
+        };
+        self.interpolate(t)
+    }
+
+    fn interpolate(&self, t: f32) -> Option<NativeColor> {
+        let stops = match self {
+            Self::Linear { stops, .. } | Self::Radial { stops, .. } | Self::Sweep { stops, .. } => {
+                stops.as_ref()
+            }
+        };
+        let first = stops.first()?;
+        if stops.len() == 1 || t <= first.offset {
+            return Some(first.color);
+        }
+        for pair in stops.windows(2) {
+            let left = pair[0];
+            let right = pair[1];
+            if t <= right.offset {
+                let span = right.offset - left.offset;
+                let amount = if span > f32::EPSILON {
+                    ((t - left.offset) / span).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                return Some(interpolate_native_color(left.color, right.color, amount));
+            }
+        }
+        stops.last().map(|stop| stop.color)
+    }
+}
+
+trait NativeGradientExtendValue {
+    fn apply_gradient_extend(self, extend: NativeGradientExtend) -> f32;
+}
+
+impl NativeGradientExtendValue for f32 {
+    fn apply_gradient_extend(self, extend: NativeGradientExtend) -> f32 {
+        if !self.is_finite() {
+            return 0.0;
+        }
+        match extend {
+            NativeGradientExtend::Pad => self.clamp(0.0, 1.0),
+            NativeGradientExtend::Repeat => self.rem_euclid(1.0),
+            NativeGradientExtend::Reflect => {
+                let period = self.rem_euclid(2.0);
+                if period <= 1.0 { period } else { 2.0 - period }
+            }
+        }
+    }
+}
+
+fn interpolate_native_color(left: NativeColor, right: NativeColor, amount: f32) -> NativeColor {
+    let channel = |first: u8, second: u8| {
+        (f32::from(first) + (f32::from(second) - f32::from(first)) * amount)
+            .round()
+            .clamp(0.0, f32::from(u8::MAX)) as u8
+    };
+    NativeColor {
+        red: channel(left.red, right.red),
+        green: channel(left.green, right.green),
+        blue: channel(left.blue, right.blue),
+        alpha: channel(left.alpha, right.alpha),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,8 +584,110 @@ impl ttf_parser::OutlineBuilder for NativeOutlineBuilder {
 #[derive(Debug, Clone)]
 struct NativeColorLayer {
     contours: Vec<Vec<NativeOutlinePoint>>,
-    color: NativeColor,
+    paint: NativeColorPaint,
     composite: NativeGlyphComposite,
+    clip_box: Option<NativeColorClipBox>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NativeColorPaint {
+    Solid(NativeColor),
+    Gradient(NativeGlyphGradient),
+}
+
+impl NativeColorPaint {
+    fn glyph_gradient(&self, scale: f32, xmin: i32, ymax: i32) -> Option<NativeGlyphGradient> {
+        let NativeColorPaint::Gradient(gradient) = self else {
+            return None;
+        };
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        let map_x = |value: f32| value.mul_add(scale, -(xmin as f32));
+        let map_y = |value: f32| (ymax as f32) - value * scale;
+        let mapped = match gradient {
+            NativeGlyphGradient::Linear {
+                x0,
+                y0,
+                x1,
+                y1,
+                extend,
+                stops,
+            } => NativeGlyphGradient::Linear {
+                x0: map_x(*x0),
+                y0: map_y(*y0),
+                x1: map_x(*x1),
+                y1: map_y(*y1),
+                extend: *extend,
+                stops: stops.clone(),
+            },
+            NativeGlyphGradient::Radial {
+                x0,
+                y0,
+                r0,
+                x1,
+                y1,
+                r1,
+                extend,
+                stops,
+            } => NativeGlyphGradient::Radial {
+                x0: map_x(*x0),
+                y0: map_y(*y0),
+                r0: *r0 * scale,
+                x1: map_x(*x1),
+                y1: map_y(*y1),
+                r1: *r1 * scale,
+                extend: *extend,
+                stops: stops.clone(),
+            },
+            NativeGlyphGradient::Sweep {
+                center_x,
+                center_y,
+                start_angle,
+                end_angle,
+                extend,
+                stops,
+            } => NativeGlyphGradient::Sweep {
+                center_x: map_x(*center_x),
+                center_y: map_y(*center_y),
+                start_angle: *start_angle,
+                end_angle: *end_angle,
+                extend: *extend,
+                stops: stops.clone(),
+            },
+        };
+        Some(mapped)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeColorClipBox {
+    x_min: f32,
+    y_min: f32,
+    x_max: f32,
+    y_max: f32,
+}
+
+impl NativeColorClipBox {
+    fn contains(self, x: f32, y: f32) -> bool {
+        x >= self.x_min && x <= self.x_max && y >= self.y_min && y <= self.y_max
+    }
+
+    fn intersect(self, other: Self) -> Option<Self> {
+        let result = Self {
+            x_min: self.x_min.max(other.x_min),
+            y_min: self.y_min.max(other.y_min),
+            x_max: self.x_max.min(other.x_max),
+            y_max: self.y_max.min(other.y_max),
+        };
+        (result.x_min <= result.x_max && result.y_min <= result.y_max).then_some(result)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NativeColorClip {
+    Outline(u64),
+    Box(NativeColorClipBox),
 }
 
 struct NativeColorPainter<'a> {
@@ -269,7 +697,7 @@ struct NativeColorPainter<'a> {
     transform: ttf_parser::Transform,
     transform_stack: Vec<ttf_parser::Transform>,
     outline_generation: u64,
-    clip_generations: Vec<u64>,
+    clip_stack: Vec<NativeColorClip>,
     layer_stack: Vec<NativeGlyphComposite>,
     unsupported: bool,
 }
@@ -283,7 +711,7 @@ impl<'a> NativeColorPainter<'a> {
             transform: ttf_parser::Transform::default(),
             transform_stack: Vec::new(),
             outline_generation: 0,
-            clip_generations: Vec::new(),
+            clip_stack: Vec::new(),
             layer_stack: Vec::new(),
             unsupported: false,
         }
@@ -319,8 +747,157 @@ impl<'a> NativeColorPainter<'a> {
     fn is_balanced(&self) -> bool {
         self.current.is_none()
             && self.transform_stack.is_empty()
-            && self.clip_generations.is_empty()
+            && self.clip_stack.is_empty()
             && self.layer_stack.is_empty()
+    }
+
+    fn native_stops<I>(stops: I) -> Option<Arc<[NativeGradientStop]>>
+    where
+        I: Iterator<Item = ttf_parser::colr::ColorStop>,
+    {
+        let mut native_stops = Vec::new();
+        for stop in stops {
+            if native_stops.len() >= MAX_COLOR_STOPS
+                || !stop.stop_offset.is_finite()
+                || !(0.0..=1.0).contains(&stop.stop_offset)
+            {
+                return None;
+            }
+            native_stops.push(NativeGradientStop {
+                offset: stop.stop_offset,
+                color: Self::native_color(stop.color),
+            });
+        }
+        if native_stops.is_empty() {
+            return None;
+        }
+        native_stops.sort_by(|left, right| {
+            left.offset
+                .partial_cmp(&right.offset)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Some(Arc::from(native_stops))
+    }
+
+    fn native_extend(extend: ttf_parser::colr::GradientExtend) -> NativeGradientExtend {
+        match extend {
+            ttf_parser::colr::GradientExtend::Pad => NativeGradientExtend::Pad,
+            ttf_parser::colr::GradientExtend::Repeat => NativeGradientExtend::Repeat,
+            ttf_parser::colr::GradientExtend::Reflect => NativeGradientExtend::Reflect,
+        }
+    }
+
+    fn finite_component(value: f32) -> bool {
+        value.is_finite() && value.abs() <= MAX_COLOR_TRANSFORM_COMPONENT
+    }
+
+    fn linear_gradient(
+        &self,
+        gradient: ttf_parser::colr::LinearGradient<'a>,
+    ) -> Option<NativeGlyphGradient> {
+        if !self.transform.is_default()
+            || ![
+                gradient.x0,
+                gradient.y0,
+                gradient.x1,
+                gradient.y1,
+                gradient.x2,
+                gradient.y2,
+            ]
+            .into_iter()
+            .all(Self::finite_component)
+        {
+            return None;
+        }
+        Some(NativeGlyphGradient::Linear {
+            x0: gradient.x0,
+            y0: gradient.y0,
+            x1: gradient.x1,
+            y1: gradient.y1,
+            extend: Self::native_extend(gradient.extend),
+            stops: Self::native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
+        })
+    }
+
+    fn radial_gradient(
+        &self,
+        gradient: ttf_parser::colr::RadialGradient<'a>,
+    ) -> Option<NativeGlyphGradient> {
+        if !self.transform.is_default()
+            || ![
+                gradient.x0,
+                gradient.y0,
+                gradient.r0,
+                gradient.x1,
+                gradient.y1,
+                gradient.r1,
+            ]
+            .into_iter()
+            .all(Self::finite_component)
+            || gradient.r0 < 0.0
+            || gradient.r1 <= 0.0
+        {
+            return None;
+        }
+        Some(NativeGlyphGradient::Radial {
+            x0: gradient.x0,
+            y0: gradient.y0,
+            r0: gradient.r0,
+            x1: gradient.x1,
+            y1: gradient.y1,
+            r1: gradient.r1,
+            extend: Self::native_extend(gradient.extend),
+            stops: Self::native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
+        })
+    }
+
+    fn sweep_gradient(
+        &self,
+        gradient: ttf_parser::colr::SweepGradient<'a>,
+    ) -> Option<NativeGlyphGradient> {
+        if !self.transform.is_default()
+            || ![
+                gradient.center_x,
+                gradient.center_y,
+                gradient.start_angle,
+                gradient.end_angle,
+            ]
+            .into_iter()
+            .all(Self::finite_component)
+            || (gradient.end_angle - gradient.start_angle).abs() <= f32::EPSILON
+        {
+            return None;
+        }
+        Some(NativeGlyphGradient::Sweep {
+            center_x: gradient.center_x,
+            center_y: gradient.center_y,
+            start_angle: gradient.start_angle,
+            end_angle: gradient.end_angle,
+            extend: Self::native_extend(gradient.extend),
+            stops: Self::native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
+        })
+    }
+
+    fn active_clip_box(&self) -> Result<Option<NativeColorClipBox>, ()> {
+        let mut clip_box: Option<NativeColorClipBox> = None;
+        for clip in &self.clip_stack {
+            match clip {
+                NativeColorClip::Outline(generation) if *generation != self.outline_generation => {
+                    return Err(());
+                }
+                NativeColorClip::Outline(_) => {}
+                NativeColorClip::Box(next) => {
+                    if !self.transform.is_default() {
+                        return Err(());
+                    }
+                    clip_box = match clip_box {
+                        Some(current) => Some(current.intersect(*next).ok_or(())?),
+                        None => Some(*next),
+                    };
+                }
+            }
+        }
+        Ok(clip_box)
     }
 }
 
@@ -358,30 +935,41 @@ impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
         if self.unsupported {
             return;
         }
-        let ttf_parser::colr::Paint::Solid(color) = paint else {
-            self.mark_unsupported();
-            return;
-        };
         let Some(contours) = self.current.take() else {
             self.mark_unsupported();
             return;
         };
-        if self
-            .clip_generations
-            .iter()
-            .any(|generation| *generation != self.outline_generation)
-        {
+        let Ok(clip_box) = self.active_clip_box() else {
             self.mark_unsupported();
             return;
-        }
+        };
+        let paint = match paint {
+            ttf_parser::colr::Paint::Solid(color) => {
+                Some(NativeColorPaint::Solid(Self::native_color(color)))
+            }
+            ttf_parser::colr::Paint::LinearGradient(gradient) => self
+                .linear_gradient(gradient)
+                .map(NativeColorPaint::Gradient),
+            ttf_parser::colr::Paint::RadialGradient(gradient) => self
+                .radial_gradient(gradient)
+                .map(NativeColorPaint::Gradient),
+            ttf_parser::colr::Paint::SweepGradient(gradient) => self
+                .sweep_gradient(gradient)
+                .map(NativeColorPaint::Gradient),
+        };
+        let Some(paint) = paint else {
+            self.mark_unsupported();
+            return;
+        };
         if self.layers.len() >= MAX_COLOR_GLYPH_LAYERS {
             self.mark_unsupported();
             return;
         }
         self.layers.push(NativeColorLayer {
             contours,
-            color: Self::native_color(color),
+            paint,
             composite: self.layer_stack.last().copied().unwrap_or_default(),
+            clip_box,
         });
     }
 
@@ -389,22 +977,40 @@ impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
         if self.unsupported {
             return;
         }
-        if self.clip_generations.len() >= MAX_COLOR_CLIP_DEPTH || self.current.is_none() {
+        if self.clip_stack.len() >= MAX_COLOR_CLIP_DEPTH || self.current.is_none() {
             self.mark_unsupported();
             return;
         }
-        self.clip_generations.push(self.outline_generation);
+        self.clip_stack
+            .push(NativeColorClip::Outline(self.outline_generation));
     }
 
-    fn push_clip_box(&mut self, _clipbox: ttf_parser::RectF) {
-        self.mark_unsupported();
+    fn push_clip_box(&mut self, clipbox: ttf_parser::RectF) {
+        if self.unsupported
+            || self.clip_stack.len() >= MAX_COLOR_CLIP_DEPTH
+            || ![clipbox.x_min, clipbox.y_min, clipbox.x_max, clipbox.y_max]
+                .into_iter()
+                .all(Self::finite_component)
+            || clipbox.x_min > clipbox.x_max
+            || clipbox.y_min > clipbox.y_max
+        {
+            self.mark_unsupported();
+            return;
+        }
+        self.clip_stack
+            .push(NativeColorClip::Box(NativeColorClipBox {
+                x_min: clipbox.x_min,
+                y_min: clipbox.y_min,
+                x_max: clipbox.x_max,
+                y_max: clipbox.y_max,
+            }));
     }
 
     fn pop_clip(&mut self) {
         if self.unsupported {
             return;
         }
-        if self.clip_generations.pop().is_none() {
+        if self.clip_stack.pop().is_none() {
             self.mark_unsupported();
             return;
         }
@@ -474,6 +1080,7 @@ struct NativeRasterizedGlyph {
     height: u32,
     color: Option<NativeColor>,
     composite: NativeGlyphComposite,
+    gradient: Option<NativeGlyphGradient>,
     coverage: Vec<u8>,
 }
 
@@ -1823,6 +2430,10 @@ impl NativeTextMetrics {
                     advance,
                     color: rasterized.color,
                     composite: rasterized.composite,
+                    gradient: rasterized
+                        .gradient
+                        .clone()
+                        .map(|gradient| gradient.scale_x(requested_stretch, nominal_stretch)),
                     coverage,
                 });
             }
@@ -1870,6 +2481,7 @@ impl NativeTextMetrics {
             height: u32::try_from(metrics.height).ok()?,
             color: None,
             composite: NativeGlyphComposite::SourceOver,
+            gradient: None,
             coverage,
         }])
     }
@@ -1946,6 +2558,10 @@ impl NativeTextMetrics {
                     advance,
                     color: rasterized.color,
                     composite: rasterized.composite,
+                    gradient: rasterized
+                        .gradient
+                        .clone()
+                        .map(|gradient| gradient.scale_x(requested_stretch, nominal_stretch)),
                     coverage,
                 });
             }
@@ -2004,9 +2620,10 @@ fn rasterize_variable_glyph(
     let _bbox = face.outline_glyph(ttf_parser::GlyphId(glyph_id), &mut builder)?;
     let contours = builder.finish()?;
     let units_per_em = f32::from(face.units_per_em());
-    let mut rasterized = rasterize_outline_contours(&contours, font_size, units_per_em)?;
+    let mut rasterized = rasterize_outline_contours(&contours, font_size, units_per_em, None)?;
     rasterized.color = None;
     rasterized.composite = NativeGlyphComposite::SourceOver;
+    rasterized.gradient = None;
     Some(rasterized)
 }
 
@@ -2042,9 +2659,26 @@ fn rasterize_color_glyph(
         .layers
         .into_iter()
         .map(|layer| {
-            let mut rasterized =
-                rasterize_outline_contours(&layer.contours, font_size, units_per_em)?;
-            rasterized.color = Some(layer.color);
+            let mut rasterized = rasterize_outline_contours(
+                &layer.contours,
+                font_size,
+                units_per_em,
+                layer.clip_box,
+            )?;
+            rasterized.color = match &layer.paint {
+                NativeColorPaint::Solid(color) => Some(*color),
+                NativeColorPaint::Gradient(_) => None,
+            };
+            rasterized.gradient = match &layer.paint {
+                NativeColorPaint::Solid(_) => None,
+                NativeColorPaint::Gradient(_) => {
+                    let ymax = rasterized
+                        .ymin
+                        .saturating_add(i32::try_from(rasterized.height).ok()?);
+                    let scale = font_size as f32 / units_per_em;
+                    Some(layer.paint.glyph_gradient(scale, rasterized.xmin, ymax)?)
+                }
+            };
             rasterized.composite = layer.composite;
             Some(rasterized)
         })
@@ -2055,6 +2689,7 @@ fn rasterize_outline_contours(
     contours: &[Vec<NativeOutlinePoint>],
     font_size: u32,
     units_per_em: f32,
+    clip_box: Option<NativeColorClipBox>,
 ) -> Option<NativeRasterizedGlyph> {
     if units_per_em <= 0.0 {
         return None;
@@ -2100,7 +2735,9 @@ fn rasterize_outline_contours(
                         + column as f32
                         + (sample_x as f32 + 0.5) / sample_side as f32)
                         / scale;
-                    if outline_contains(&contours, x, y) {
+                    if clip_box.is_none_or(|clip| clip.contains(x, y))
+                        && outline_contains(&contours, x, y)
+                    {
                         hits = hits.saturating_add(1);
                     }
                 }
@@ -2116,6 +2753,7 @@ fn rasterize_outline_contours(
         height: u32::try_from(height).ok()?,
         color: None,
         composite: NativeGlyphComposite::SourceOver,
+        gradient: None,
         coverage,
     })
 }
@@ -3285,10 +3923,84 @@ mod tests {
     }
 
     #[test]
+    fn colr_v1_gradients_are_rasterized_with_palette_stops() {
+        let bytes = include_bytes!("../../../tests/fixtures/colr-1.ttf");
+        let face = ttf_parser::Face::parse(bytes, 0).expect("COLRv1 fixture must parse");
+        for glyph_id in [9_u16, 13, 93] {
+            let glyph_id = ttf_parser::GlyphId(glyph_id);
+            assert!(face.is_color_glyph(glyph_id));
+            let layers = rasterize_color_glyph(
+                bytes,
+                glyph_id.0,
+                32,
+                NativeFontVariationSettings::default(),
+            )
+            .expect("bounded COLRv1 gradient must rasterize");
+            assert!(layers.iter().any(|layer| {
+                layer.gradient.is_some() && layer.coverage.iter().any(|coverage| *coverage > 0)
+            }));
+        }
+    }
+
+    #[test]
+    fn native_gradient_sampling_interpolates_and_applies_extend_modes() {
+        let stops: Arc<[NativeGradientStop]> = Arc::from([
+            NativeGradientStop {
+                offset: 0.0,
+                color: NativeColor {
+                    red: u8::MAX,
+                    green: 0,
+                    blue: 0,
+                    alpha: u8::MAX,
+                },
+            },
+            NativeGradientStop {
+                offset: 1.0,
+                color: NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: u8::MAX,
+                    alpha: u8::MAX,
+                },
+            },
+        ]);
+        let gradient = |extend| NativeGlyphGradient::Linear {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 10.0,
+            y1: 0.0,
+            extend,
+            stops: stops.clone(),
+        };
+        let midpoint = NativeColor {
+            red: 128,
+            green: 0,
+            blue: 128,
+            alpha: u8::MAX,
+        };
+        assert_eq!(
+            gradient(NativeGradientExtend::Pad).color_at(5.0, 0.0),
+            Some(midpoint)
+        );
+        assert_eq!(
+            gradient(NativeGradientExtend::Pad).color_at(15.0, 0.0),
+            Some(stops[1].color)
+        );
+        assert_eq!(
+            gradient(NativeGradientExtend::Repeat).color_at(15.0, 0.0),
+            Some(midpoint)
+        );
+        assert_eq!(
+            gradient(NativeGradientExtend::Reflect).color_at(15.0, 0.0),
+            Some(midpoint)
+        );
+    }
+
+    #[test]
     fn colr_v1_unsupported_paints_fall_back_to_monochrome() {
         let bytes = include_bytes!("../../../tests/fixtures/colr-1.ttf");
         let face = ttf_parser::Face::parse(bytes, 0).expect("COLRv1 fixture must parse");
-        let glyph_id = ttf_parser::GlyphId(9);
+        let glyph_id = ttf_parser::GlyphId(131);
         assert!(face.is_color_glyph(glyph_id));
         assert!(
             rasterize_color_glyph(

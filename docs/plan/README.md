@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-529`, following completed
 `native-engine-browser-528`, following completed
 `native-engine-browser-527`, following completed
 `native-engine-browser-526`, following completed
@@ -359,6 +360,16 @@ to an advertised OpenType `opsz` axis, while authored element coordinates and
 effective value reaches both HarfRust shaping and variation-aware outline
 rasterization. Custom axes, hinting, color tables, and complete FontFace/Web IDL
 parity remain issue #40 gates.
+
+The completed bounded COLRv1 gradient follow-up is
+[`native-engine-browser-529`](tasks/native-engine-browser-529.md): linear,
+radial, and sweep COLRv1 paints now admit finite coordinates, at most 16
+bounded stops, and pad/repeat/reflect extension into compact glyph-local
+descriptors sampled at raster time. Nested clip boxes intersect during
+supersampled coverage, while malformed stops, unsupported gradient transforms,
+unsupported paint graphs, and unbalanced state fail closed to monochrome
+fallback. The current identity-transform boundary and bounded radial
+non-coincident-center approximation remain explicit issue #40 gates.
 
 The completed bounded COLRv1 clip-provenance follow-up is
 [`native-engine-browser-528`](tasks/native-engine-browser-528.md): each

@@ -1241,6 +1241,36 @@ pub(crate) enum FontWeightValue {
     #[default]
     Normal,
     Bold,
+    Numeric(u16),
+}
+
+impl FontWeightValue {
+    pub(crate) const fn numeric(self) -> u16 {
+        match self {
+            Self::Normal => 400,
+            Self::Bold => 700,
+            Self::Numeric(value) => value,
+        }
+    }
+
+    pub(crate) const fn from_numeric(value: u16) -> Option<Self> {
+        if value == 0 || value > 1000 {
+            return None;
+        }
+        Some(match value {
+            400 => Self::Normal,
+            700 => Self::Bold,
+            value => Self::Numeric(value),
+        })
+    }
+
+    pub(crate) const fn is_bold(self) -> bool {
+        self.numeric() >= 600
+    }
+}
+
+pub(crate) fn format_font_weight(weight: FontWeightValue) -> String {
+    weight.numeric().to_string()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -12202,11 +12232,15 @@ fn parse_text_transform(value: &str) -> Option<TextTransformValue> {
     }
 }
 
-fn parse_font_weight(value: &str) -> Option<FontWeightValue> {
-    match value.trim().to_ascii_lowercase().as_str() {
+pub(crate) fn parse_font_weight(value: &str) -> Option<FontWeightValue> {
+    let value = value.trim();
+    match value.to_ascii_lowercase().as_str() {
         "normal" | "400" => Some(FontWeightValue::Normal),
         "bold" | "700" => Some(FontWeightValue::Bold),
-        _ => None,
+        _ => value
+            .parse::<u16>()
+            .ok()
+            .and_then(FontWeightValue::from_numeric),
     }
 }
 
@@ -22752,12 +22786,23 @@ mod tests {
     }
 
     #[test]
-    fn font_weight_parser_normalizes_only_bounded_normal_and_bold_pairs() {
+    fn font_weight_parser_accepts_the_css_numeric_range() {
         assert_eq!(parse_font_weight("normal"), Some(FontWeightValue::Normal));
         assert_eq!(parse_font_weight("400"), Some(FontWeightValue::Normal));
         assert_eq!(parse_font_weight("BOLD"), Some(FontWeightValue::Bold));
         assert_eq!(parse_font_weight("700"), Some(FontWeightValue::Bold));
-        assert_eq!(parse_font_weight("500"), None);
+        assert_eq!(
+            parse_font_weight("500"),
+            Some(FontWeightValue::Numeric(500))
+        );
+        assert_eq!(parse_font_weight("1"), Some(FontWeightValue::Numeric(1)));
+        assert_eq!(
+            parse_font_weight("1000"),
+            Some(FontWeightValue::Numeric(1000))
+        );
+        assert_eq!(parse_font_weight("0"), None);
+        assert_eq!(parse_font_weight("1001"), None);
+        assert_eq!(parse_font_weight("500.5"), None);
         assert_eq!(parse_font_weight("lighter"), None);
         assert_eq!(parse_font_weight("700 800"), None);
         assert_eq!(parse_font_weight("initial"), None);
@@ -23321,7 +23366,7 @@ mod tests {
     #[test]
     fn inherited_text_declarations_preserve_valid_values_before_invalid_later_values() {
         let declarations = parse_declarations(
-            "text-transform: uppercase; text-transform: capitalize; font-weight: bold; font-weight: 500; font-style: italic; font-style: oblique; word-break: break-all; word-break: keep-all; word-spacing: 12px; word-spacing: 1px 2px; letter-spacing: 13px; letter-spacing: normal;",
+            "text-transform: uppercase; text-transform: capitalize; font-weight: bold; font-weight: 1001; font-style: italic; font-style: oblique; word-break: break-all; word-break: keep-all; word-spacing: 12px; word-spacing: 1px 2px; letter-spacing: 13px; letter-spacing: normal;",
         );
         assert_eq!(
             declarations.text_transform,
@@ -23361,7 +23406,7 @@ mod tests {
             #revert { white-space:ReVeRt; line-height:ReVeRt; text-transform:ReVeRt; font-weight:ReVeRt; font-style:ReVeRt; word-break:ReVeRt; vertical-align:ReVeRt; word-spacing:ReVeRt; letter-spacing:ReVeRt; }
             #initial { white-space:initial; line-height:initial; text-transform:initial; font-weight:initial; font-style:initial; word-break:initial; vertical-align:initial; word-spacing:initial; letter-spacing:initial; }
             #terminal { white-space:pre; white-space:initial; line-height:28px; line-height:initial; text-transform:uppercase; text-transform:initial; font-weight:bold; font-weight:initial; font-style:italic; font-style:initial; word-break:break-all; word-break:initial; vertical-align:middle; vertical-align:initial; word-spacing:12px; word-spacing:initial; letter-spacing:13px; letter-spacing:initial; }
-            #invalid { white-space:pre; white-space:break-spaces; line-height:28px; line-height:0px; text-transform:uppercase; text-transform:capitalize; font-weight:bold; font-weight:500; font-style:italic; font-style:oblique; word-break:break-all; word-break:keep-all; vertical-align:middle; vertical-align:sub; word-spacing:12px; word-spacing:-1px; letter-spacing:13px; letter-spacing:-1px; }
+            #invalid { white-space:pre; white-space:break-spaces; line-height:28px; line-height:0px; text-transform:uppercase; text-transform:capitalize; font-weight:bold; font-weight:1001; font-style:italic; font-style:oblique; word-break:break-all; word-break:keep-all; vertical-align:middle; vertical-align:sub; word-spacing:12px; word-spacing:-1px; letter-spacing:13px; letter-spacing:-1px; }
             </style>
             <div id='parent'><span id='inherit'>inherit</span><span id='unset'>unset</span><span id='revert'>revert</span><span id='initial'>initial</span><span id='terminal'>terminal</span><span id='invalid'>invalid</span></div>"#,
             &NativeEngineLimits::default(),
@@ -24703,13 +24748,14 @@ mod tests {
         );
 
         let document = NativeDocument::parse(
-            "<style>#parent { font-weight: 700; } #clear { font-weight: normal; } #invalid { font-weight: 500; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='invalid'>Invalid</span></div>",
+            "<style>#parent { font-weight: 700; } #clear { font-weight: normal; } #numeric { font-weight: 500; } #invalid { font-weight: 1001; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='numeric'>Numeric</span><span id='invalid'>Invalid</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
         let parent = document.resolve_target("id=parent").unwrap();
         let child = document.resolve_target("id=child").unwrap();
         let clear = document.resolve_target("id=clear").unwrap();
+        let numeric = document.resolve_target("id=numeric").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
 
         assert_eq!(
@@ -24723,6 +24769,10 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(clear).font_weight(),
             FontWeightValue::Normal
+        );
+        assert_eq!(
+            document.computed_style_for_layout(numeric).font_weight(),
+            FontWeightValue::Numeric(500)
         );
         assert_eq!(
             document.computed_style_for_layout(invalid).font_weight(),

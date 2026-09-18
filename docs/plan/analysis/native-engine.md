@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-520`, following
+expansion checkpoint is completed `native-engine-browser-521`, following
+completed `native-engine-browser-520`, following
 completed `native-engine-browser-517`, following
 completed `native-engine-browser-516`, following
 completed `native-engine-browser-515`, following
@@ -314,6 +315,16 @@ when explicit descriptor or authored coordinates do not already provide those
 tags. The effective coordinates feed both HarfRust and the variation-aware
 outline rasterizer; static faces and unknown axes remain unchanged, and
 synthetic scaling remains as the compatibility baseline. Numeric weight ranges,
+optical sizing, custom axes, hinting, color tables, WOFF2, and complete
+FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 521 admits the CSS integer `font-weight` range 1–1000 throughout the
+native style and font-resource pipeline. The numeric value survives parsing,
+inheritance, CSSOM projection, `@font-face` and script-created `FontFace`
+descriptors, local-font lookup, numeric-distance face matching, variable
+`wght` mapping, and the fixed-cell bold paint threshold. `normal` and `bold`
+remain aliases for 400 and 700; explicit descriptor and authored variation
+coordinates retain priority. Relative `lighter`/`bolder`, descriptor ranges,
 optical sizing, custom axes, hinting, color tables, WOFF2, and complete
 FontFace/Web IDL parity remain issue #40 gates.
 
@@ -7205,8 +7216,12 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-510.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-521.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-520.md` is the preceding completed
+browser task;
+`docs/plan/tasks/native-engine-browser-519.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-509.md` is the latest completed browser
 task;
 `docs/plan/tasks/native-engine-browser-508.md` is the preceding completed browser

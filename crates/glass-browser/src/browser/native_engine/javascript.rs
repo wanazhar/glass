@@ -8,7 +8,7 @@ use super::config::{
     MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, is_file_url, is_network_url, validate_context_id,
     validate_url_text, validate_window_name, without_fragment,
 };
-use super::css::{FontStyleValue, FontWeightValue, parse_font_stretch_range};
+use super::css::{FontStyleValue, parse_font_stretch_range, parse_font_weight};
 use super::dom::{
     NativeDocument, NativeNodeId, NativePageScriptSource, NativePageScriptTiming,
     NativeScriptDocumentSnapshot, NativeScriptElementSnapshot,
@@ -10055,7 +10055,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
       if (!face) {
         face = Object.create(FontFaceNative.prototype);
         FontFaceNative.call(face, String(descriptor.family || ""), "", {
-          weight: descriptor.weight === "700" ? "bold" : "normal",
+          weight: String(descriptor.weight || "400"),
           style: descriptor.style === "italic" ? "italic" : "normal",
           stretch: String(descriptor.stretch || "normal"),
           unicodeRange: String(descriptor.unicodeRange || "U+0-10FFFF"),
@@ -15204,11 +15204,7 @@ fn install_native_local_font_source<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), 
             if family.is_empty() || family.len() > MAX_NATIVE_SCRIPT_BYTES {
                 return Err(Error::Unknown);
             }
-            let weight = match weight.trim().to_ascii_lowercase().as_str() {
-                "normal" | "400" => FontWeightValue::Normal,
-                "bold" | "700" => FontWeightValue::Bold,
-                _ => return Err(Error::Unknown),
-            };
+            let weight = parse_font_weight(&weight).ok_or(Error::Unknown)?;
             let style = match style.trim().to_ascii_lowercase().as_str() {
                 "normal" => FontStyleValue::Normal,
                 "italic" => FontStyleValue::Italic,
@@ -17720,6 +17716,36 @@ mod native_font_face_tests {
             )
             .expect("computed font-stretch surface must evaluate");
         assert_eq!(evaluation.value, serde_json::json!(["75%", "62.5%", true]));
+    }
+
+    #[test]
+    fn computed_style_projects_numeric_font_weight() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("computed-font-weight-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<style>#parent { font-weight: 500; } #bold { font-weight: 700; } #reset { font-weight: normal; } #invalid { font-weight: 1001; }</style><div id='parent'><span id='bold'>Bold</span><span id='reset'>Reset</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("numeric font-weight fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const parent = getComputedStyle(document.getElementById("parent"));
+                  const bold = getComputedStyle(document.getElementById("bold"));
+                  const reset = getComputedStyle(document.getElementById("reset"));
+                  const invalid = getComputedStyle(document.getElementById("invalid"));
+                  return [parent.fontWeight, parent.getPropertyValue("font-weight"), bold.fontWeight, reset.fontWeight, invalid.fontWeight];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("computed numeric font-weight surface must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["500", "500", "bold", "normal", "500"])
+        );
     }
 
     #[test]
@@ -37476,6 +37502,16 @@ fn document_bootstrap(
     if (typeof payload === "string") return kebab(payload);
     return kebab(key);
   }};
+  const computedStyleFontWeight = (value) => {{
+    if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 1000) return String(value);
+    if (!value || typeof value !== "object") return computedStyleEnumName(value, "normal");
+    const keys = Object.keys(value);
+    if (keys.length === 1 && keys[0] === "Numeric") {{
+      const number = Number(value.Numeric);
+      if (Number.isInteger(number) && number >= 1 && number <= 1000) return String(number);
+    }}
+    return computedStyleEnumName(value, "normal");
+  }};
   const computedStyleEnumPayload = (value) => {{
     if (!value || typeof value !== "object") return value;
     const keys = Object.keys(value);
@@ -37720,7 +37756,7 @@ fn document_bootstrap(
     if (name === "text-decoration-style") return computedStyleEnumName(raw.text_decoration_style, "solid");
     if (name === "text-decoration-thickness") return String(Number(raw.text_decoration_thickness) || 0) + "px";
     if (name === "text-underline-offset") return String(Number(raw.text_underline_offset) || 0) + "px";
-    if (name === "font-weight") return computedStyleEnumName(raw.font_weight, "normal");
+    if (name === "font-weight") return computedStyleFontWeight(raw.font_weight);
     if (name === "font-style") return computedStyleEnumName(raw.font_style, "normal");
     if (name === "font-stretch") return computedStyleStretch(raw.font_stretch);
     if (name === "font-variant") return computedStyleFontVariant(raw);

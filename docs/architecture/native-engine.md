@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-521`, following completed
 `native-engine-browser-520`, following completed
 `native-engine-browser-517`, following completed
 `native-engine-browser-516`, following completed
@@ -312,6 +313,17 @@ coordinates feed both HarfRust and the variation-aware outline rasterizer,
 while existing synthetic scaling remains for compatibility. Numeric weight
 ranges, optical sizing, custom axes, hinting, color tables, WOFF2, and complete
 FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 521 carries integer CSS `font-weight` values from 1 through 1000 across
+the native parser, cascade, CSSOM, `@font-face` and script-created `FontFace`
+descriptors, local-font selection, face scoring, variable-axis mapping, and
+paint selection. Numeric face matching uses bounded distance while preserving
+style and stretch priorities; advertised `wght` axes receive the requested
+coordinate when no explicit variation coordinate overrides it. The fixed-cell
+bold paint path treats weights at or above 600 as bold. Relative
+`lighter`/`bolder`, descriptor ranges, optical sizing, custom axes, hinting,
+color tables, WOFF2, and complete FontFace/Web IDL parity remain issue #40
+gates.
 
 Slice 519 makes non-default variable-font coordinates reach glyph pixels as
 well as shaping. The native font owner enables `ttf-parser` variable support,

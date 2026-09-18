@@ -1,6 +1,6 @@
 use super::config::MAX_NATIVE_NODES;
 use super::css::{
-    FontStyleValue, FontWeightValue, NATIVE_BACKGROUND_PERCENT_SCALE, NativeBackgroundPosition,
+    FontStyleValue, NATIVE_BACKGROUND_PERCENT_SCALE, NativeBackgroundPosition,
     NativeBackgroundPositionComponent, NativeBackgroundRepeat, NativeBackgroundSize,
     NativeBackgroundSizeComponent, NativeBorderRadius, NativeBorderStyle, NativeColor,
     NativeTextDecorationSkipInk, NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
@@ -353,7 +353,7 @@ impl NativeDisplayList {
                             style.word_spacing(),
                             text_run.justify_spacing,
                         );
-                    let bold = style.font_weight() == FontWeightValue::Bold;
+                    let bold = style.font_weight().is_bold();
                     let italic = style.font_style() == FontStyleValue::Italic;
                     let decoration_style = style.text_decoration_style();
                     let decoration_skip_ink = style.text_decoration_skip_ink();

@@ -2862,6 +2862,11 @@ impl NativeTextMetrics {
         glyph_id: u16,
         variation_settings: NativeFontVariationSettings,
     ) -> Option<Vec<NativeRasterizedGlyph>> {
+        if let Some(rasterized) =
+            rasterize_svg_glyph(face.font_data.as_ref(), glyph_id, self.font_size)
+        {
+            return Some(vec![rasterized]);
+        }
         let palette_index = palette_index_for_face(face.font_data.as_ref(), self.palette);
         let palette_is_valid = !matches!(
             self.palette,
@@ -3109,6 +3114,42 @@ fn rasterize_bitmap_glyph(
         is_bitmap: true,
         bitmap: scaled_bitmap,
         coverage: scaled_coverage,
+    })
+}
+fn rasterize_svg_glyph(
+    font_data: &[u8],
+    glyph_id: u16,
+    font_size: u32,
+) -> Option<NativeRasterizedGlyph> {
+    let face = ttf_parser::Face::parse(font_data, 0).ok()?;
+    let svg_document = face.glyph_svg_image(ttf_parser::GlyphId(glyph_id))?;
+    let (image, view_box) = super::image::decode_svg_font_glyph(
+        svg_document.data,
+        font_size,
+        face.units_per_em(),
+        MAX_COLOR_BITMAP_BYTES,
+    )?;
+    let pixel_count = usize::try_from(image.width)
+        .ok()?
+        .checked_mul(usize::try_from(image.height).ok()?)?;
+    let expected_bytes = pixel_count.checked_mul(4)?;
+    if image.pixels.len() != expected_bytes {
+        return None;
+    }
+    let scale = f64::from(font_size) / f64::from(face.units_per_em());
+    let xmin = round_signed((view_box[0] * scale) as f32);
+    let ymin = round_signed((view_box[1] * scale) as f32);
+    Some(NativeRasterizedGlyph {
+        xmin,
+        ymin,
+        width: image.width,
+        height: image.height,
+        color: None,
+        composite: NativeGlyphComposite::SourceOver,
+        gradient: None,
+        is_bitmap: true,
+        coverage: image.pixels.chunks_exact(4).map(|pixel| pixel[3]).collect(),
+        bitmap: Some(image.pixels),
     })
 }
 
@@ -4886,6 +4927,207 @@ fn system_font_candidates() -> &'static [FontCandidate] {
 mod tests {
     use super::*;
     use base64::Engine as _;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+
+    fn svg_table(glyph_id: u16, document: &[u8]) -> Vec<u8> {
+        let document_offset = 20_u32;
+        let mut table = Vec::with_capacity(
+            usize::try_from(document_offset)
+                .unwrap_or_default()
+                .saturating_add(document.len()),
+        );
+        table.extend_from_slice(&[0, 0, 0, 0, 0, 6]);
+        table.extend_from_slice(&1_u16.to_be_bytes());
+        table.extend_from_slice(&glyph_id.to_be_bytes());
+        table.extend_from_slice(&glyph_id.to_be_bytes());
+        table.extend_from_slice(&14_u32.to_be_bytes());
+        table.extend_from_slice(
+            &u32::try_from(document.len())
+                .unwrap_or(u32::MAX)
+                .to_be_bytes(),
+        );
+        table.extend_from_slice(document);
+        table
+    }
+
+    fn font_with_svg_table(font: &[u8], glyph_id: u16, document: &[u8]) -> Vec<u8> {
+        let table_count = usize::from(read_u16_be(font, 4).expect("font table count"));
+        let old_directory_end = 12_usize.saturating_add(table_count.saturating_mul(16));
+        let first_table_offset = (0..table_count)
+            .map(|index| {
+                read_u32_be(font, 12 + index * 16 + 8)
+                    .expect("font table offset")
+                    .try_into()
+                    .expect("font table offset fits")
+            })
+            .min()
+            .expect("font has tables");
+        let mut output = font[..12].to_vec();
+        let next_table_count = u16::try_from(table_count.saturating_add(1)).expect("table count");
+        write_u16_be(&mut output, 4, next_table_count);
+        let max_power = (1_usize
+            << (usize::BITS - (usize::from(next_table_count)).leading_zeros() - 1))
+            .min(1 << 15);
+        let search_range = max_power.saturating_mul(16);
+        let entry_selector = max_power.trailing_zeros();
+        let range_shift = usize::from(next_table_count)
+            .saturating_mul(16)
+            .saturating_sub(search_range);
+        write_u16_be(
+            &mut output,
+            6,
+            u16::try_from(search_range).expect("search range"),
+        );
+        write_u16_be(
+            &mut output,
+            8,
+            u16::try_from(entry_selector).expect("entry selector"),
+        );
+        write_u16_be(
+            &mut output,
+            10,
+            u16::try_from(range_shift).expect("range shift"),
+        );
+        for index in 0..table_count {
+            let start = 12 + index * 16;
+            let end = start + 16;
+            let mut record = font[start..end].to_vec();
+            let offset = read_u32_be(&record, 8).expect("record offset");
+            write_u32_be(&mut record, 8, offset.saturating_add(16));
+            output.extend_from_slice(&record);
+        }
+        let svg_record_offset = output.len();
+        output.extend_from_slice(b"SVG ");
+        output.extend_from_slice(&[0; 12]);
+        output.extend_from_slice(&font[old_directory_end..first_table_offset]);
+        output.extend_from_slice(&font[first_table_offset..]);
+        while output.len() % 4 != 0 {
+            output.push(0);
+        }
+        let svg_table_offset = output.len();
+        let table = svg_table(glyph_id, document);
+        output.extend_from_slice(&table);
+        write_u32_be(
+            &mut output,
+            svg_record_offset + 8,
+            u32::try_from(svg_table_offset).expect("SVG table offset"),
+        );
+        write_u32_be(
+            &mut output,
+            svg_record_offset + 12,
+            u32::try_from(table.len()).expect("SVG table length"),
+        );
+        output
+    }
+
+    #[test]
+    fn svg_font_glyph_rasterization_precedes_outline_fallback() {
+        let source = include_bytes!("../../../tests/fixtures/colr-v0.ttf");
+        let source_face = ttf_parser::Face::parse(source, 0).expect("fixture must parse");
+        let glyph_id = source_face
+            .glyph_index('A')
+            .expect("fixture must map A to a glyph")
+            .0;
+        assert!(rasterize_svg_glyph(source, glyph_id, 32).is_none());
+        let svg = br##"<svg viewBox="0 0 1000 1000"><path fill="#ff0000" d="M100 100 L900 100 L900 900 L100 900 Z"/></svg>"##;
+        let bytes = font_with_svg_table(source, glyph_id, svg);
+        let face = ttf_parser::Face::parse(&bytes, 0).expect("SVG fixture must parse");
+        assert!(
+            face.glyph_svg_image(ttf_parser::GlyphId(glyph_id))
+                .is_some()
+        );
+        let rasterized =
+            rasterize_svg_glyph(&bytes, glyph_id, 32).expect("SVG glyph must rasterize");
+        assert_eq!((rasterized.width, rasterized.height), (16, 16));
+        assert_eq!(rasterized.bitmap.as_ref().map(Vec::len), Some(16 * 16 * 4));
+        assert!(rasterized.coverage.iter().any(|coverage| *coverage > 0));
+        let resource = NativeFontFaceResource {
+            family: "SVG Fixture".into(),
+            family_key: font_family_hash("SVG Fixture"),
+            weight: NativeFontWeightRange::default(),
+            style: FontStyleValue::Normal,
+            stretch: NativeFontStretchRange::default(),
+            variation_settings: NativeFontVariationSettings::default(),
+            bytes: Arc::from(bytes),
+            unicode_ranges: Vec::new(),
+        };
+        let book = NativeFontBook::from_resources(&[resource]);
+        let metrics = NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language(
+            NativeFontFamilyList::single(NativeFontFamilyValue::Named(font_family_hash(
+                "SVG Fixture",
+            ))),
+            32,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            1000,
+            NativeFontVariantLigatures::default(),
+            NativeFontFeatureSettings::default(),
+            NativeFontKerning::default(),
+            NativeFontVariantCaps::default(),
+            NativeFontVariantPosition::default(),
+            NativeFontVariantNumeric::default(),
+            NativeFontVariantAlternates::default(),
+            NativeFontVariantEastAsian::default(),
+            NativeFontLanguageOverride::default(),
+            DirectionValue::Ltr,
+            &book,
+        );
+        let run = metrics.rasterize("A", 0, 0, 0).expect("SVG font run");
+        assert!(
+            run.glyphs.iter().any(|glyph| glyph.bitmap.is_some()),
+            "font-book rasterization must retain the SVG bitmap"
+        );
+    }
+
+    #[test]
+    fn svg_font_glyphs_accept_svgz_and_reject_external_or_malformed_data() {
+        let source = include_bytes!("../../../tests/fixtures/colr-v0.ttf");
+        let face = ttf_parser::Face::parse(source, 0).expect("fixture must parse");
+        let glyph_id = face
+            .glyph_index('A')
+            .expect("fixture must map A to a glyph")
+            .0;
+        let svg = br##"<svg viewBox="0 0 1000 1000"><path fill="#00ff00" d="M100 100 L900 100 L500 900 Z"/></svg>"##;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(svg).expect("SVGZ payload must compress");
+        let compressed = encoder.finish().expect("SVGZ payload must finish");
+        let svgz_font = font_with_svg_table(source, glyph_id, &compressed);
+        let rasterized =
+            rasterize_svg_glyph(&svgz_font, glyph_id, 32).expect("SVGZ glyph must rasterize");
+        assert!(rasterized.coverage.iter().any(|coverage| *coverage > 0));
+
+        let external =
+            br#"<svg viewBox="0 0 1000 1000"><image href="https://example.test/a.png"/></svg>"#;
+        let external_font = font_with_svg_table(source, glyph_id, external);
+        assert!(rasterize_svg_glyph(&external_font, glyph_id, 32).is_none());
+        let malformed = br#"<svg viewBox="0 0 bad 1000"><path d="M0 0"/></svg>"#;
+        let malformed_font = font_with_svg_table(source, glyph_id, malformed);
+        assert!(rasterize_svg_glyph(&malformed_font, glyph_id, 32).is_none());
+    }
+
+    #[test]
+    fn svg_font_source_without_svg_keeps_existing_outline_path() {
+        let source = include_bytes!("../../../tests/fixtures/colr-v0.ttf");
+        let face = ttf_parser::Face::parse(source, 0).expect("fixture must parse");
+        let glyph_id = face
+            .glyph_index('A')
+            .expect("fixture must map A to a glyph")
+            .0;
+        assert!(rasterize_svg_glyph(source, glyph_id, 32).is_none());
+        let mut builder = NativeOutlineBuilder::default();
+        assert!(
+            face.outline_glyph(ttf_parser::GlyphId(glyph_id), &mut builder)
+                .is_some()
+        );
+        let contours = builder
+            .finish()
+            .expect("outline fallback must remain available");
+        let rasterized =
+            rasterize_outline_contours(&contours, 32, f32::from(face.units_per_em()), None)
+                .expect("outline fallback must rasterize");
+        assert!(rasterized.coverage.iter().any(|coverage| *coverage > 0));
+    }
 
     #[test]
     fn real_system_font_metrics_are_bounded_when_available() {

@@ -1,10 +1,12 @@
 use super::config::{NativeEngineLimits, Viewport};
 use super::dom::NativeDocument;
 use base64::Engine as _;
+use flate2::read::GzDecoder;
 use gif::{ColorOutput, DecodeOptions, DisposalMethod, MemoryLimit, Repeat};
 use image_webp::{LoopCount, WebPDecoder};
 use png::{BlendOp, ColorType, DisposeOp};
-use std::io::Cursor;
+use std::fmt::Write as _;
+use std::io::{Cursor, Read};
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -12,6 +14,8 @@ use zune_jpeg::JpegDecoder;
 use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
 
 const DEFAULT_NATIVE_SVG_IMAGE_WIDTH: u32 = 300;
+const MAX_NATIVE_FONT_SVG_SOURCE_BYTES: usize = 512 * 1024;
+const MAX_NATIVE_FONT_SVG_DIMENSION: u32 = 1024;
 const DEFAULT_NATIVE_SVG_IMAGE_HEIGHT: u32 = 150;
 const MAX_NATIVE_SVG_IMAGE_DECODE_DEPTH: usize = 1;
 
@@ -532,6 +536,243 @@ fn decode_svg_bytes(
         && surface.height() == height
         && surface.rgba().len() == decoded_bytes)
         .then(|| NativeImage::new(width, height, surface.rgba().to_vec()))
+}
+/// Rasterize one bounded OpenType SVG glyph document into the same native
+/// surface used by inline SVG images. The font document is wrapped with a
+/// font-sized viewport so its viewBox maps to CSS pixels deterministically.
+pub(crate) fn decode_svg_font_glyph(
+    bytes: &[u8],
+    font_size: u32,
+    units_per_em: u16,
+    max_decoded_bytes: usize,
+) -> Option<(NativeImage, [f64; 4])> {
+    if bytes.is_empty()
+        || bytes.len() > MAX_NATIVE_FONT_SVG_SOURCE_BYTES
+        || font_size == 0
+        || units_per_em == 0
+        || max_decoded_bytes < 4
+    {
+        return None;
+    }
+    let decoded = decode_svg_font_payload(bytes)?;
+    let source = std::str::from_utf8(&decoded).ok()?.trim();
+    if source.is_empty() || !svg_font_source_is_safe(source) {
+        return None;
+    }
+    let (root_start, root_end, closing_start) = svg_font_root_bounds(source)?;
+    let root_tag = source.get(root_start..=root_end)?;
+    let view_box = parse_svg_font_view_box(svg_font_attribute(root_tag, "viewBox")?)?;
+    let width = svg_font_dimension(view_box[2], font_size, units_per_em)?;
+    let height = svg_font_dimension(view_box[3], font_size, units_per_em)?;
+    let mut wrapped = String::with_capacity(source.len().saturating_add(256));
+    write!(
+        &mut wrapped,
+        "<svg xmlns=\"{}\" width=\"{}\" height=\"{}\" viewBox=\"{} {} {} {}\" preserveAspectRatio=\"none\"",
+        super::dom::SVG_NAMESPACE_URI,
+        width,
+        height,
+        view_box[0],
+        view_box[1],
+        view_box[2],
+        view_box[3],
+    )
+    .ok()?;
+    for attribute in ["fill", "stroke", "fill-rule", "clip-rule", "color", "style"] {
+        if let Some(value) = svg_font_attribute(root_tag, attribute) {
+            if value.len() > 1_024
+                || value
+                    .chars()
+                    .any(|character| matches!(character, '"' | '<' | '>'))
+            {
+                return None;
+            }
+            write!(&mut wrapped, " {attribute}=\"{value}\"").ok()?;
+        }
+    }
+    wrapped.push('>');
+    wrapped.push_str(source.get(root_end.saturating_add(1)..closing_start)?);
+    wrapped.push_str("</svg>");
+    if wrapped.len() > MAX_NATIVE_IMAGE_BYTES {
+        return None;
+    }
+    let decode_depth = NATIVE_SVG_IMAGE_DECODE_DEPTH.with(std::cell::Cell::get);
+    let image = decode_svg_bytes(
+        wrapped.as_bytes(),
+        max_decoded_bytes.min(MAX_NATIVE_IMAGE_BYTES),
+        decode_depth,
+    )?;
+    Some((image, view_box))
+}
+
+fn decode_svg_font_payload(bytes: &[u8]) -> Option<Vec<u8>> {
+    if !bytes.starts_with(&[0x1f, 0x8b]) {
+        return Some(bytes.to_vec());
+    }
+    let mut decoder = GzDecoder::new(Cursor::new(bytes));
+    let mut decoded = Vec::new();
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let read = decoder.read(&mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+        if decoded.len().checked_add(read)? > MAX_NATIVE_FONT_SVG_SOURCE_BYTES {
+            return None;
+        }
+        decoded.extend_from_slice(&buffer[..read]);
+    }
+    Some(decoded)
+}
+
+fn svg_font_source_is_safe(source: &str) -> bool {
+    let lower = source.to_ascii_lowercase();
+    [
+        "<script",
+        "<image",
+        "<foreignobject",
+        "<iframe",
+        "<object",
+        "<use",
+        "href=",
+        "url(",
+        "@import",
+    ]
+    .iter()
+    .all(|needle| !lower.contains(needle))
+}
+
+fn svg_font_root_bounds(source: &str) -> Option<(usize, usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut search = 0;
+    let root_start = loop {
+        let offset = find_ascii_case_insensitive(bytes.get(search..)?, b"<svg")?;
+        let candidate = search.checked_add(offset)?;
+        let boundary = bytes.get(candidate.checked_add(4)?)?;
+        if boundary.is_ascii_whitespace() || matches!(boundary, b'>' | b'/') {
+            break candidate;
+        }
+        search = candidate.checked_add(4)?;
+    };
+    let root_end = find_svg_tag_end(bytes, root_start)?;
+    let mut search = root_end.checked_add(1)?;
+    let mut closing_start = None;
+    while let Some(offset) = find_ascii_case_insensitive(bytes.get(search..)?, b"</svg") {
+        closing_start = Some(search.checked_add(offset)?);
+        search = search.checked_add(offset)?.checked_add(5)?;
+    }
+    let closing_start = closing_start?;
+    let closing_end = find_svg_tag_end(bytes, closing_start)?;
+    if !source.get(closing_end.checked_add(1)?..)?.trim().is_empty() {
+        return None;
+    }
+    Some((root_start, root_end, closing_start))
+}
+
+fn find_svg_tag_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut quote = None;
+    for (offset, byte) in bytes.get(start..)?.iter().copied().enumerate() {
+        match quote {
+            Some(expected) if byte == expected => quote = None,
+            Some(_) => {}
+            None if matches!(byte, b'\'' | b'"') => quote = Some(byte),
+            None if byte == b'>' => return start.checked_add(offset),
+            None => {}
+        }
+    }
+    None
+}
+
+fn find_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle))
+}
+
+fn svg_font_attribute<'a>(tag: &'a str, wanted: &str) -> Option<&'a str> {
+    let bytes = tag.as_bytes();
+    let mut cursor = 4;
+    while cursor < bytes.len() {
+        while bytes
+            .get(cursor)
+            .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>'))
+        {
+            cursor = cursor.saturating_add(1);
+        }
+        if cursor >= bytes.len() || bytes[cursor] == b'>' {
+            break;
+        }
+        let name_start = cursor;
+        while bytes
+            .get(cursor)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'=' | b'/' | b'>'))
+        {
+            cursor = cursor.saturating_add(1);
+        }
+        let name = tag.get(name_start..cursor)?;
+        while bytes
+            .get(cursor)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            cursor = cursor.saturating_add(1);
+        }
+        if bytes.get(cursor) != Some(&b'=') {
+            continue;
+        }
+        cursor = cursor.saturating_add(1);
+        while bytes
+            .get(cursor)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            cursor = cursor.saturating_add(1);
+        }
+        let quote = *bytes.get(cursor)?;
+        if !matches!(quote, b'\'' | b'"') {
+            return None;
+        }
+        cursor = cursor.saturating_add(1);
+        let value_start = cursor;
+        while bytes.get(cursor).is_some_and(|byte| *byte != quote) {
+            cursor = cursor.saturating_add(1);
+        }
+        let value_end = cursor;
+        if !name.eq_ignore_ascii_case(wanted) {
+            cursor = cursor.saturating_add(1);
+            continue;
+        }
+        return tag.get(value_start..value_end);
+    }
+    None
+}
+
+fn parse_svg_font_view_box(value: &str) -> Option<[f64; 4]> {
+    let values = value
+        .split(|character: char| character == ',' || character.is_ascii_whitespace())
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<f64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if values.len() != 4
+        || !values
+            .iter()
+            .all(|value| value.is_finite() && value.abs() <= 1_000_000.0)
+        || values[2] <= 0.0
+        || values[3] <= 0.0
+    {
+        return None;
+    }
+    Some([values[0], values[1], values[2], values[3]])
+}
+
+fn svg_font_dimension(value: f64, font_size: u32, units_per_em: u16) -> Option<u32> {
+    let scaled = value * f64::from(font_size) / f64::from(units_per_em);
+    if !scaled.is_finite() || scaled <= 0.0 {
+        return None;
+    }
+    let dimension = u32::try_from(scaled.ceil() as u64).ok()?;
+    (dimension > 0 && dimension <= MAX_NATIVE_FONT_SVG_DIMENSION).then_some(dimension)
 }
 
 fn document_contains_nested_raster_image(document: &NativeDocument) -> bool {

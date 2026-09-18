@@ -1,5 +1,5 @@
 use super::css::{
-    NativeBorderRadius, NativeBorderStyle, NativeTextDecorationSkipInk,
+    NativeBorderRadius, NativeBorderStyle, NativeColor, NativeTextDecorationSkipInk,
     NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
 };
 use super::error::NativeEngineError;
@@ -1583,15 +1583,48 @@ impl NativeSurface {
             if width == 0 || height == 0 {
                 continue;
             }
+            let Some(pixel_count) = width.checked_mul(height) else {
+                continue;
+            };
+            if glyph.coverage.len() != pixel_count {
+                continue;
+            }
+            let bitmap = match glyph.bitmap.as_deref() {
+                Some(bitmap) => {
+                    let Some(bitmap_len) = pixel_count.checked_mul(4) else {
+                        continue;
+                    };
+                    if bitmap.len() != bitmap_len {
+                        continue;
+                    }
+                    Some(bitmap)
+                }
+                None => None,
+            };
             let glyph_x = origin_x.saturating_add(i64::from(glyph.x));
             let glyph_y = origin_y.saturating_add(i64::from(glyph.y));
-            for (row, coverage_row) in glyph.coverage.chunks(width).take(height).enumerate() {
+            for (row, coverage_row) in glyph.coverage.chunks_exact(width).enumerate() {
                 let y = glyph_y.saturating_add(i64::try_from(row).unwrap_or(i64::MAX));
                 if y < 0 || y >= i64::from(self.height) {
                     continue;
                 }
                 for (column, coverage) in coverage_row.iter().enumerate() {
-                    if *coverage == 0 {
+                    let pixel_index = row
+                        .checked_mul(width)
+                        .and_then(|offset| offset.checked_add(column));
+                    let bitmap_color = bitmap.and_then(|bitmap| {
+                        let start = pixel_index?.checked_mul(4)?;
+                        let pixel = bitmap.get(start..start.checked_add(4)?)?;
+                        Some(NativeColor {
+                            red: pixel[0],
+                            green: pixel[1],
+                            blue: pixel[2],
+                            alpha: pixel[3],
+                        })
+                    });
+                    if (bitmap_color.is_none() && *coverage == 0)
+                        || bitmap_color.is_some_and(|color| color.alpha == 0)
+                    {
                         continue;
                     }
                     let x = glyph_x.saturating_add(i64::try_from(column).unwrap_or(i64::MAX));
@@ -1606,19 +1639,24 @@ impl NativeSurface {
                     {
                         continue;
                     }
-                    let color = glyph
-                        .gradient
-                        .as_ref()
-                        .and_then(|gradient| {
-                            gradient.color_at(column as f32 + 0.5, row as f32 + 0.5)
+                    let color = bitmap_color
+                        .or_else(|| {
+                            glyph.gradient.as_ref().and_then(|gradient| {
+                                gradient.color_at(column as f32 + 0.5, row as f32 + 0.5)
+                            })
                         })
                         .or(glyph.color)
                         .unwrap_or(paint.color);
+                    let coverage = if bitmap_color.is_some() {
+                        u8::MAX
+                    } else {
+                        *coverage
+                    };
                     self.blend_coverage_pixel(
                         u32::try_from(x).unwrap_or(u32::MAX),
                         u32::try_from(y).unwrap_or(u32::MAX),
                         color,
-                        *coverage,
+                        coverage,
                         glyph.composite,
                     );
                 }
@@ -2119,9 +2157,32 @@ fn glyph_run_contains_ink(run: &NativeFontRun, x: i64, y: i64) -> bool {
         let Ok(width) = usize::try_from(glyph.width) else {
             return false;
         };
+        let Ok(height) = usize::try_from(glyph.height) else {
+            return false;
+        };
+        let Some(pixel_count) = width.checked_mul(height) else {
+            return false;
+        };
+        if glyph.coverage.len() != pixel_count {
+            return false;
+        }
+        if let Some(bitmap) = glyph.bitmap.as_deref() {
+            let Some(bitmap_len) = pixel_count.checked_mul(4) else {
+                return false;
+            };
+            if bitmap.len() != bitmap_len {
+                return false;
+            }
+        }
+        let Some(index) = relative_y
+            .checked_mul(width)
+            .and_then(|offset| offset.checked_add(relative_x))
+        else {
+            return false;
+        };
         glyph
             .coverage
-            .get(relative_y.saturating_mul(width).saturating_add(relative_x))
+            .get(index)
             .is_some_and(|coverage| *coverage > 0)
     })
 }
@@ -2622,6 +2683,7 @@ mod tests {
                 color: Some(NativeColor::RED),
                 composite: NativeGlyphComposite::SourceOver,
                 gradient: None,
+                bitmap: None,
                 coverage: Arc::<[u8]>::from(vec![u8::MAX]),
             }],
             space_ranges: Vec::new(),
@@ -2664,6 +2726,117 @@ mod tests {
         let surface = list.rasterize().unwrap();
 
         assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn surface_composites_per_pixel_bitmap_glyph_alpha() {
+        let node_id = NativeDocument::empty().root();
+        let run = NativeFontRun {
+            glyphs: vec![NativeGlyph {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                advance: 1,
+                color: None,
+                composite: NativeGlyphComposite::SourceOver,
+                gradient: None,
+                bitmap: Some(Arc::<[u8]>::from(vec![0, u8::MAX, 0, 128])),
+                coverage: Arc::<[u8]>::from(vec![128]),
+            }],
+            space_ranges: Vec::new(),
+            width: 1,
+            ascent: 1,
+            line_height: 1,
+        };
+        let list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                NativeDisplayCommand::GlyphRun {
+                    node_id,
+                    origin: NativePoint { x: 1, y: 1 },
+                    text: "A".into(),
+                    truncated: false,
+                    run,
+                    color: NativeColor::BLACK,
+                    decoration_color: NativeColor::BLACK,
+                    decoration_style: NativeTextDecorationStyle::Solid,
+                    decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
+                    decoration_thickness: 1,
+                    underline_offset: 0,
+                    underline: false,
+                    overline: false,
+                    line_through: false,
+                    bold: false,
+                    italic: false,
+                    word_spacing: 0,
+                    letter_spacing: 0,
+                    justify_spacing: 0,
+                    clip: None,
+                },
+            ],
+            3,
+            3,
+        );
+        let surface = list.rasterize().unwrap();
+
+        assert_eq!(surface.pixel(1, 1), Some([127, 255, 127, 255]));
+    }
+
+    #[test]
+    fn surface_rejects_malformed_bitmap_payload_without_text_fallback() {
+        let run = NativeFontRun {
+            glyphs: vec![NativeGlyph {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                advance: 1,
+                color: None,
+                composite: NativeGlyphComposite::SourceOver,
+                gradient: None,
+                bitmap: Some(Arc::<[u8]>::from(vec![0, u8::MAX, 0])),
+                coverage: Arc::<[u8]>::from(vec![u8::MAX]),
+            }],
+            space_ranges: Vec::new(),
+            width: 1,
+            ascent: 1,
+            line_height: 1,
+        };
+        let mut surface = NativeSurface {
+            width: 1,
+            height: 1,
+            rgba: vec![u8::MAX; 4],
+        };
+        surface.draw_glyph_run(
+            NativePoint { x: 0, y: 0 },
+            "A",
+            &run,
+            TextPaint {
+                color: NativeColor::RED,
+                decoration_color: NativeColor::RED,
+                decoration_style: NativeTextDecorationStyle::Solid,
+                decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
+                decoration_thickness: 1,
+                underline_offset: 0,
+                underline: false,
+                overline: false,
+                line_through: false,
+                bold: false,
+                italic: false,
+                word_spacing: 0,
+                letter_spacing: 0,
+                justify_spacing: 0,
+            },
+            NativeTextLineBoundary::default(),
+            None,
+            NativePoint { x: 0, y: 0 },
+        );
+        assert_eq!(surface.pixel(0, 0), Some([u8::MAX; 4]));
     }
 
     #[test]

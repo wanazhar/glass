@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-532`, following completed
 `native-engine-browser-531`, following completed
 `native-engine-browser-530`, following completed
 `native-engine-browser-529`, following completed
@@ -341,6 +342,9 @@ descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none`
 retain their existing behavior. Custom axes, hinting, color tables, and
 complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 532 adds bounded raster-image glyph support to the native software text renderer. The selected `ttf-parser` collection face is retained for TTC/OTC system fonts, and bounded strikes from `sbix`, `CBDT`/`CBLC`, `EBDT`/`EBLC`, and related bitmap tables are admitted through `glyph_raster_image`. PNG, premultiplied BGRA32, monochrome, and 2/4/8-bit grayscale payloads retain glyph offsets and source-strike scaling under 1,024-pixel and 4 MiB limits. Color pixels carry straight RGBA and embedded alpha through `NativeGlyph` into the existing compositor; grayscale images reuse text-paint coverage.
+Malformed, unsupported, oversized, and over-stretched bitmap payloads fail closed to the existing variable-outline, outline, or fontdue path. COLR remains the higher-priority color owner; SVG-in-font sources, palette selection, bitmap variation axes, hinting, font-display timing, and complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 531 completes the bounded three-point COLRv1 linear-gradient projection:
 `p0`/`p1` define the color line and `p2` defines the direction across which

@@ -5,6 +5,13 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added bounded bitmap-font glyph decoding for native text rendering. PNG,
+  premultiplied BGRA32, monochrome, and grayscale strikes retain selected-face
+  offsets and embedded alpha under finite raster budgets; unsupported or
+  malformed payloads fall back to existing outline rendering.
+
 ### Changed
 
 - Updated the managed native Pi AgentSession SDK to `0.84.4`; the published

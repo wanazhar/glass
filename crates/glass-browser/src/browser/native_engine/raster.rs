@@ -3,7 +3,7 @@ use super::css::{
     NativeTextDecorationSkipSpaces, NativeTextDecorationStyle,
 };
 use super::error::NativeEngineError;
-use super::font::NativeFontRun;
+use super::font::{NativeFontRun, NativeGlyphComposite};
 use super::layout::{NativePoint, NativeRect, NativeSvgSubpath, rounded_rect_contains};
 use super::paint::{
     MAX_NATIVE_DISPLAY_COMMANDS, NativeDisplayCommand, NativeDisplayList, NativeSvgStrokeShape,
@@ -1611,6 +1611,7 @@ impl NativeSurface {
                         u32::try_from(y).unwrap_or(u32::MAX),
                         glyph.color.unwrap_or(paint.color),
                         *coverage,
+                        glyph.composite,
                     );
                 }
             }
@@ -1989,6 +1990,16 @@ impl NativeSurface {
     }
 
     fn blend_pixel(&mut self, x: u32, y: u32, color: super::css::NativeColor) {
+        self.blend_pixel_with_composite(x, y, color, NativeGlyphComposite::SourceOver);
+    }
+
+    fn blend_pixel_with_composite(
+        &mut self,
+        x: u32,
+        y: u32,
+        color: super::css::NativeColor,
+        composite: NativeGlyphComposite,
+    ) {
         let Some(index) = self.pixel_index(x, y) else {
             return;
         };
@@ -1996,6 +2007,34 @@ impl NativeSurface {
         if source_alpha == 0 {
             return;
         }
+
+        let destination_alpha = u32::from(self.rgba[index + 3]);
+        if matches!(composite, NativeGlyphComposite::DestinationOver) {
+            let inverse_destination_alpha = u32::from(u8::MAX) - destination_alpha;
+            let output_alpha_scaled =
+                destination_alpha * u32::from(u8::MAX) + source_alpha * inverse_destination_alpha;
+            if output_alpha_scaled == 0 {
+                self.rgba[index..index + 4].fill(0);
+                return;
+            }
+            for (channel, source) in [color.red, color.green, color.blue].into_iter().enumerate() {
+                let destination = u32::from(self.rgba[index + channel]);
+                let destination_premultiplied =
+                    destination * destination_alpha * u32::from(u8::MAX);
+                let source_premultiplied =
+                    u32::from(source) * source_alpha * inverse_destination_alpha;
+                self.rgba[index + channel] = u8::try_from(
+                    (destination_premultiplied + source_premultiplied + output_alpha_scaled / 2)
+                        / output_alpha_scaled,
+                )
+                .unwrap_or(u8::MAX);
+            }
+            self.rgba[index + 3] =
+                u8::try_from((output_alpha_scaled + u32::from(u8::MAX) / 2) / u32::from(u8::MAX))
+                    .unwrap_or(u8::MAX);
+            return;
+        }
+
         if source_alpha == u32::from(u8::MAX) {
             self.rgba[index..index + 4].copy_from_slice(&[
                 color.red,
@@ -2006,7 +2045,6 @@ impl NativeSurface {
             return;
         }
 
-        let destination_alpha = u32::from(self.rgba[index + 3]);
         let inverse_source_alpha = u32::from(u8::MAX) - source_alpha;
         let output_alpha_scaled =
             source_alpha * u32::from(u8::MAX) + destination_alpha * inverse_source_alpha;
@@ -2036,9 +2074,10 @@ impl NativeSurface {
         y: u32,
         mut color: super::css::NativeColor,
         coverage: u8,
+        composite: NativeGlyphComposite,
     ) {
         color.alpha = multiply_alpha(color.alpha, coverage);
-        self.blend_pixel(x, y, color);
+        self.blend_pixel_with_composite(x, y, color, composite);
     }
 
     fn pixel_index(&self, x: u32, y: u32) -> Option<usize> {
@@ -2311,7 +2350,8 @@ mod tests {
     use crate::browser::native_engine::{
         NativeBorderPaint, NativeBorderPaintSide, NativeBorderStyle, NativeColor,
         NativeDisplayCommand, NativeDisplayList, NativeDocument, NativeFontRun, NativeGlyph,
-        NativePoint, NativeTextDecorationSkipInk, NativeTextDecorationStyle, Viewport,
+        NativeGlyphComposite, NativePoint, NativeTextDecorationSkipInk, NativeTextDecorationStyle,
+        Viewport,
     };
     use std::io::Cursor;
     use std::sync::Arc;
@@ -2572,6 +2612,7 @@ mod tests {
                 height: 1,
                 advance: 1,
                 color: Some(NativeColor::RED),
+                composite: NativeGlyphComposite::SourceOver,
                 coverage: Arc::<[u8]>::from(vec![u8::MAX]),
             }],
             space_ranges: Vec::new(),
@@ -2614,6 +2655,24 @@ mod tests {
         let surface = list.rasterize().unwrap();
 
         assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn destination_over_color_composite_preserves_opaque_destination() {
+        let mut surface = NativeSurface {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, u8::MAX, u8::MAX],
+        };
+        surface.blend_coverage_pixel(
+            0,
+            0,
+            NativeColor::RED,
+            u8::MAX,
+            NativeGlyphComposite::DestinationOver,
+        );
+
+        assert_eq!(surface.pixel(0, 0), Some([0, 0, u8::MAX, u8::MAX]));
     }
 
     #[test]

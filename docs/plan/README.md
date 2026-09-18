@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-527`, following completed
 `native-engine-browser-526`, following completed
 `native-engine-browser-525`, following completed
 `native-engine-browser-524`, following completed
@@ -357,6 +358,18 @@ to an advertised OpenType `opsz` axis, while authored element coordinates and
 effective value reaches both HarfRust shaping and variation-aware outline
 rasterization. Custom axes, hinting, color tables, and complete FontFace/Web IDL
 parity remain issue #40 gates.
+
+The completed bounded COLRv1 transform/compositing follow-up is
+[`native-engine-browser-527`](tasks/native-engine-browser-527.md): finite
+affine transform stacks and `SourceOver`/`DestinationOver` solid-layer modes
+now survive `ttf-parser`, native glyph coverage, and software surface
+compositing. Current-outline clips are balanced and bounded; clip boxes,
+gradients, other blend modes, malformed paint state, and non-finite transforms
+fail closed to monochrome fallback. The two-crate boundary and existing
+shaping/spacing contracts remain unchanged. Gradient parity, clip-box masks,
+remaining blend modes, bitmap/SVG color fonts, palette selection, color axes,
+hinting, font-display timing, and complete FontFace/Web IDL parity remain issue
+#40 gates.
 
 The completed COLR/CPAL color-glyph follow-up is
 [`native-engine-browser-526`](tasks/native-engine-browser-526.md): bounded

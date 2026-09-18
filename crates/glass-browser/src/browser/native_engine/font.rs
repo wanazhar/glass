@@ -40,6 +40,9 @@ const WOFF_HEADER_BYTES: usize = 44;
 const WOFF2_HEADER_BYTES: usize = 48;
 const WOFF_TABLE_BYTES: usize = 20;
 const MAX_COLOR_GLYPH_LAYERS: usize = 32;
+const MAX_COLOR_TRANSFORM_DEPTH: usize = 16;
+const MAX_COLOR_CLIP_DEPTH: usize = 16;
+const MAX_COLOR_TRANSFORM_COMPONENT: f32 = 1_000_000.0;
 const MAX_VARIABLE_OUTLINE_POINTS: usize = 8_192;
 const MAX_VARIABLE_RASTER_DIMENSION: usize = 1_024;
 const VARIABLE_RASTER_SAMPLES: u32 = 4;
@@ -53,7 +56,15 @@ pub struct NativeGlyph {
     pub height: u32,
     pub advance: u32,
     pub color: Option<NativeColor>,
+    pub composite: NativeGlyphComposite,
     pub coverage: Arc<[u8]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NativeGlyphComposite {
+    #[default]
+    SourceOver,
+    DestinationOver,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,12 +259,17 @@ impl ttf_parser::OutlineBuilder for NativeOutlineBuilder {
 struct NativeColorLayer {
     contours: Vec<Vec<NativeOutlinePoint>>,
     color: NativeColor,
+    composite: NativeGlyphComposite,
 }
 
 struct NativeColorPainter<'a> {
     face: ttf_parser::Face<'a>,
     current: Option<Vec<Vec<NativeOutlinePoint>>>,
     layers: Vec<NativeColorLayer>,
+    transform: ttf_parser::Transform,
+    transform_stack: Vec<ttf_parser::Transform>,
+    clip_depth: usize,
+    layer_stack: Vec<NativeGlyphComposite>,
     unsupported: bool,
 }
 
@@ -263,6 +279,10 @@ impl<'a> NativeColorPainter<'a> {
             face,
             current: None,
             layers: Vec::new(),
+            transform: ttf_parser::Transform::default(),
+            transform_stack: Vec::new(),
+            clip_depth: 0,
+            layer_stack: Vec::new(),
             unsupported: false,
         }
     }
@@ -280,6 +300,26 @@ impl<'a> NativeColorPainter<'a> {
         self.unsupported = true;
         self.current = None;
     }
+
+    fn transform_is_bounded(transform: ttf_parser::Transform) -> bool {
+        [
+            transform.a,
+            transform.b,
+            transform.c,
+            transform.d,
+            transform.e,
+            transform.f,
+        ]
+        .into_iter()
+        .all(|component| component.is_finite() && component.abs() <= MAX_COLOR_TRANSFORM_COMPONENT)
+    }
+
+    fn is_balanced(&self) -> bool {
+        self.current.is_none()
+            && self.transform_stack.is_empty()
+            && self.clip_depth == 0
+            && self.layer_stack.is_empty()
+    }
 }
 
 impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
@@ -292,10 +332,22 @@ impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
             self.mark_unsupported();
             return;
         };
-        let Some(contours) = builder.finish() else {
+        let Some(mut contours) = builder.finish() else {
             self.mark_unsupported();
             return;
         };
+        for contour in &mut contours {
+            for point in contour {
+                let x = self.transform.a * point.x + self.transform.c * point.y + self.transform.e;
+                let y = self.transform.b * point.x + self.transform.d * point.y + self.transform.f;
+                if !x.is_finite() || !y.is_finite() {
+                    self.mark_unsupported();
+                    return;
+                }
+                point.x = x;
+                point.y = y;
+            }
+        }
         self.current = Some(contours);
     }
 
@@ -318,11 +370,19 @@ impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
         self.layers.push(NativeColorLayer {
             contours,
             color: Self::native_color(color),
+            composite: self.layer_stack.last().copied().unwrap_or_default(),
         });
     }
 
     fn push_clip(&mut self) {
-        self.mark_unsupported();
+        if self.unsupported {
+            return;
+        }
+        if self.clip_depth >= MAX_COLOR_CLIP_DEPTH {
+            self.mark_unsupported();
+            return;
+        }
+        self.clip_depth = self.clip_depth.saturating_add(1);
     }
 
     fn push_clip_box(&mut self, _clipbox: ttf_parser::RectF) {
@@ -330,23 +390,69 @@ impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
     }
 
     fn pop_clip(&mut self) {
-        self.mark_unsupported();
+        if self.unsupported {
+            return;
+        }
+        if self.clip_depth == 0 {
+            self.mark_unsupported();
+            return;
+        }
+        self.clip_depth = self.clip_depth.saturating_sub(1);
     }
 
-    fn push_layer(&mut self, _mode: ttf_parser::colr::CompositeMode) {
-        self.mark_unsupported();
+    fn push_layer(&mut self, mode: ttf_parser::colr::CompositeMode) {
+        if self.unsupported || self.layer_stack.len() >= MAX_COLOR_TRANSFORM_DEPTH {
+            self.mark_unsupported();
+            return;
+        }
+        let Some(mode) = (match mode {
+            ttf_parser::colr::CompositeMode::SourceOver => Some(NativeGlyphComposite::SourceOver),
+            ttf_parser::colr::CompositeMode::DestinationOver => {
+                Some(NativeGlyphComposite::DestinationOver)
+            }
+            _ => None,
+        }) else {
+            self.mark_unsupported();
+            return;
+        };
+        self.layer_stack.push(mode);
     }
 
     fn pop_layer(&mut self) {
-        self.mark_unsupported();
+        if self.unsupported {
+            return;
+        }
+        if self.layer_stack.pop().is_none() {
+            self.mark_unsupported();
+        }
     }
 
-    fn push_transform(&mut self, _transform: ttf_parser::Transform) {
-        self.mark_unsupported();
+    fn push_transform(&mut self, transform: ttf_parser::Transform) {
+        if self.unsupported
+            || self.transform_stack.len() >= MAX_COLOR_TRANSFORM_DEPTH
+            || !Self::transform_is_bounded(transform)
+        {
+            self.mark_unsupported();
+            return;
+        }
+        let combined = ttf_parser::Transform::combine(self.transform, transform);
+        if !Self::transform_is_bounded(combined) {
+            self.mark_unsupported();
+            return;
+        }
+        self.transform_stack.push(self.transform);
+        self.transform = combined;
     }
 
     fn pop_transform(&mut self) {
-        self.mark_unsupported();
+        if self.unsupported {
+            return;
+        }
+        let Some(transform) = self.transform_stack.pop() else {
+            self.mark_unsupported();
+            return;
+        };
+        self.transform = transform;
     }
 }
 
@@ -357,6 +463,7 @@ struct NativeRasterizedGlyph {
     width: u32,
     height: u32,
     color: Option<NativeColor>,
+    composite: NativeGlyphComposite,
     coverage: Vec<u8>,
 }
 
@@ -1705,6 +1812,7 @@ impl NativeTextMetrics {
                     height,
                     advance,
                     color: rasterized.color,
+                    composite: rasterized.composite,
                     coverage,
                 });
             }
@@ -1751,6 +1859,7 @@ impl NativeTextMetrics {
             width: u32::try_from(metrics.width).ok()?,
             height: u32::try_from(metrics.height).ok()?,
             color: None,
+            composite: NativeGlyphComposite::SourceOver,
             coverage,
         }])
     }
@@ -1826,6 +1935,7 @@ impl NativeTextMetrics {
                     height,
                     advance,
                     color: rasterized.color,
+                    composite: rasterized.composite,
                     coverage,
                 });
             }
@@ -1886,6 +1996,7 @@ fn rasterize_variable_glyph(
     let units_per_em = f32::from(face.units_per_em());
     let mut rasterized = rasterize_outline_contours(&contours, font_size, units_per_em)?;
     rasterized.color = None;
+    rasterized.composite = NativeGlyphComposite::SourceOver;
     Some(rasterized)
 }
 
@@ -1913,7 +2024,7 @@ fn rasterize_color_glyph(
         ttf_parser::RgbaColor::new(0, 0, 0, u8::MAX),
         &mut painter,
     )?;
-    if painter.unsupported || painter.layers.is_empty() {
+    if painter.unsupported || !painter.is_balanced() || painter.layers.is_empty() {
         return None;
     }
     let units_per_em = f32::from(face.units_per_em());
@@ -1924,6 +2035,7 @@ fn rasterize_color_glyph(
             let mut rasterized =
                 rasterize_outline_contours(&layer.contours, font_size, units_per_em)?;
             rasterized.color = Some(layer.color);
+            rasterized.composite = layer.composite;
             Some(rasterized)
         })
         .collect()
@@ -1993,6 +2105,7 @@ fn rasterize_outline_contours(
         width: u32::try_from(width).ok()?,
         height: u32::try_from(height).ok()?,
         color: None,
+        composite: NativeGlyphComposite::SourceOver,
         coverage,
     })
 }
@@ -3175,6 +3288,48 @@ mod tests {
                 NativeFontVariationSettings::default(),
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn colr_v1_solid_transforms_are_rasterized() {
+        let bytes = include_bytes!("../../../tests/fixtures/colr-1.ttf");
+        let face = ttf_parser::Face::parse(bytes, 0).expect("COLRv1 fixture must parse");
+        let glyph_id = ttf_parser::GlyphId(86);
+        assert!(face.is_color_glyph(glyph_id));
+        let layers = rasterize_color_glyph(
+            bytes,
+            glyph_id.0,
+            32,
+            NativeFontVariationSettings::default(),
+        )
+        .expect("bounded solid transform must rasterize");
+        assert!(!layers.is_empty());
+        assert!(
+            layers
+                .iter()
+                .any(|layer| layer.coverage.iter().any(|coverage| *coverage > 0))
+        );
+    }
+
+    #[test]
+    fn colr_v1_solid_composite_layers_are_rasterized() {
+        let bytes = include_bytes!("../../../tests/fixtures/colr-1.ttf");
+        let face = ttf_parser::Face::parse(bytes, 0).expect("COLRv1 fixture must parse");
+        let glyph_id = ttf_parser::GlyphId(84);
+        assert!(face.is_color_glyph(glyph_id));
+        let layers = rasterize_color_glyph(
+            bytes,
+            glyph_id.0,
+            32,
+            NativeFontVariationSettings::default(),
+        )
+        .expect("bounded solid composite must rasterize");
+        assert_eq!(layers.len(), 2);
+        assert!(
+            layers
+                .iter()
+                .any(|layer| layer.composite == NativeGlyphComposite::DestinationOver)
         );
     }
 

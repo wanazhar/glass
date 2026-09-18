@@ -293,6 +293,12 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         size_adjust: String,
         #[serde(default)]
+        ascent_override: String,
+        #[serde(default)]
+        descent_override: String,
+        #[serde(default)]
+        line_gap_override: String,
+        #[serde(default)]
         variation_settings: String,
         body_base64: String,
     },
@@ -9695,6 +9701,9 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     String(descriptor && descriptor.variant || "normal"),
     String(descriptor && descriptor.featureSettings || "normal"),
     String(descriptor && descriptor.variationSettings || "normal"),
+    String(descriptor && descriptor.ascentOverride || "normal"),
+    String(descriptor && descriptor.descentOverride || "normal"),
+    String(descriptor && descriptor.lineGapOverride || "normal"),
     String(descriptor && descriptor.sizeAdjust || "100%"),
   ].join("\u0000");
   const nativeFontFaceSettledPromise = (face, status) => {
@@ -9963,6 +9972,21 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
       ? `${adjusted / 10}%`
       : `${Math.floor(adjusted / 10)}.${adjusted % 10}%`;
   };
+  const nativeFontFaceMetricOverrideDescriptor = (text) => {
+    const trimmed = text.trim().toLowerCase();
+    if (trimmed === "normal") return "normal";
+    const match = trimmed.match(/^((?:[0-9]+(?:\.[0-9]{1,3})?)|(?:\.[0-9]{1,3}))%$/);
+    if (!match) return null;
+    const pieces = match[1].split(".");
+    const whole = pieces[0] ? Number(pieces[0]) : 0;
+    const fraction = pieces[1] || "";
+    const milliPercentage = whole * 1000 + Number((fraction + "000").slice(0, 3));
+    const value = Math.floor((milliPercentage + 50) / 100);
+    if (!Number.isSafeInteger(value) || value < 0 || value > 10000) return null;
+    return value % 10 === 0
+      ? `${value / 10}%`
+      : `${Math.floor(value / 10)}.${value % 10}%`;
+  };
 
   const nativeFontFaceDescriptorValue = (name, value) => {
     const text = nativeFontFaceDescriptorText(name, value);
@@ -9981,6 +10005,10 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     }
     if (name === "unicodeRange") {
       const normalized = nativeFontFaceUnicodeRangeDescriptor(text);
+      return normalized === null ? nativeFontFaceDescriptorError(name) : normalized;
+    }
+    if (["ascentOverride", "descentOverride", "lineGapOverride"].includes(name)) {
+      const normalized = nativeFontFaceMetricOverrideDescriptor(text);
       return normalized === null ? nativeFontFaceDescriptorError(name) : normalized;
     }
     if (name === "variationSettings") {
@@ -10141,6 +10169,9 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
               variant: state.variant,
               feature_settings: state.featureSettings,
               size_adjust: state.sizeAdjust,
+              ascent_override: state.ascentOverride,
+              descent_override: state.descentOverride,
+              line_gap_override: state.lineGapOverride,
               variation_settings: state.variationSettings,
               body_base64: encodeBase64(bytes, nativeFontFaceByteLimit),
             });
@@ -10321,6 +10352,9 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
           featureSettings: String(descriptor.featureSettings || "normal"),
           variationSettings: String(descriptor.variationSettings || "normal"),
           sizeAdjust: String(descriptor.sizeAdjust || "100%"),
+          ascentOverride: String(descriptor.ascentOverride || "normal"),
+          descentOverride: String(descriptor.descentOverride || "normal"),
+          lineGapOverride: String(descriptor.lineGapOverride || "normal"),
           display: String(descriptor.display || "auto"),
         });
         const faceState = nativeFontFaceState(face);
@@ -18476,13 +18510,13 @@ mod native_font_face_tests {
             )
             .expect("FontFaceSet listeners must install");
         let styled = NativeDocument::parse(
-            "<style>@font-face { font-family: 'Late Face'; src: local('Late Face'); font-feature-settings: \"liga\" off, \"kern\" on; font-variation-settings: \"wght\" 620; size-adjust: 62.5%; font-display: swap; }</style>",
+            "<style>@font-face { font-family: 'Late Face'; src: local('Late Face'); font-feature-settings: \"liga\" off, \"kern\" on; font-variation-settings: \"wght\" 620; size-adjust: 62.5%; ascent-override: 80%; descent-override: 20%; line-gap-override: normal; font-display: swap; }</style>",
             &NativeEngineLimits::default(),
         )
         .expect("font-face fixture must parse");
         let evaluation = runtime
             .evaluate(
-                "[document.fonts.size, document.fonts.status, __fontFaceEvents, [...document.fonts][0].status, [...document.fonts][0].featureSettings, [...document.fonts][0].variationSettings, [...document.fonts][0].sizeAdjust, [...document.fonts][0].display]",
+                "[document.fonts.size, document.fonts.status, __fontFaceEvents, [...document.fonts][0].status, [...document.fonts][0].featureSettings, [...document.fonts][0].variationSettings, [...document.fonts][0].sizeAdjust, [...document.fonts][0].ascentOverride, [...document.fonts][0].descentOverride, [...document.fonts][0].lineGapOverride, [...document.fonts][0].display]",
                 &styled,
                 "about:blank",
                 &NativeOrigin::Opaque,
@@ -18499,6 +18533,9 @@ mod native_font_face_tests {
                 "\"liga\" 0, \"kern\" 1",
                 "\"wght\" 620",
                 "62.5%",
+                "80%",
+                "20%",
+                "normal",
                 "swap"
             ])
         );
@@ -18553,7 +18590,10 @@ mod native_font_face_tests {
                     stretch: " 62.5% 125% ",
                     unicodeRange: "u+41-5a, u+400-4ff",
                     variationSettings: '"wght" 450.5, "wdth" -12.25',
-                    sizeAdjust: "62.5%"
+                    sizeAdjust: "62.5%",
+                    ascentOverride: "80%",
+                    descentOverride: "20%",
+                    lineGapOverride: "normal"
                   });
                   const invalid = [
                     ["style", "oblique"],
@@ -18561,7 +18601,8 @@ mod native_font_face_tests {
                     ["stretch", "40%"],
                     ["unicodeRange", "U+110000"],
                     ["variationSettings", "wght 700"],
-                    ["sizeAdjust", "24.9%"]
+                    ["sizeAdjust", "24.9%"],
+                    ["ascentOverride", "1000.1%"]
                   ];
                   const constructorErrors = invalid.map(([name, value]) => {
                     const descriptors = {};
@@ -18583,7 +18624,7 @@ mod native_font_face_tests {
                     }
                   });
                   return [
-                    [face.style, face.weight, face.stretch, face.unicodeRange, face.variationSettings, face.sizeAdjust],
+                    [face.style, face.weight, face.stretch, face.unicodeRange, face.variationSettings, face.sizeAdjust, face.ascentOverride, face.descentOverride, face.lineGapOverride],
                     constructorErrors,
                     setterResults
                   ];
@@ -18603,7 +18644,10 @@ mod native_font_face_tests {
                     "62.5% 125%",
                     "U+41-5A, U+400-4FF",
                     "\"wght\" 450.5, \"wdth\" -12.25",
-                    "62.5%"
+                    "62.5%",
+                    "80%",
+                    "20%",
+                    "normal"
                 ],
                 [
                     ["style", "SyntaxError"],
@@ -18611,7 +18655,8 @@ mod native_font_face_tests {
                     ["stretch", "SyntaxError"],
                     ["unicodeRange", "SyntaxError"],
                     ["variationSettings", "SyntaxError"],
-                    ["sizeAdjust", "SyntaxError"]
+                    ["sizeAdjust", "SyntaxError"],
+                    ["ascentOverride", "SyntaxError"]
                 ],
                 [
                     ["style", "SyntaxError", true, "italic"],
@@ -18624,7 +18669,8 @@ mod native_font_face_tests {
                         true,
                         "\"wght\" 450.5, \"wdth\" -12.25",
                     ],
-                    ["sizeAdjust", "SyntaxError", true, "62.5%"]
+                    ["sizeAdjust", "SyntaxError", true, "62.5%"],
+                    ["ascentOverride", "SyntaxError", true, "80%"]
                 ]
             ])
         );
@@ -18733,7 +18779,7 @@ mod native_font_face_tests {
             .evaluate(
                 &format!(
                     r#"(() => {{
-                      const face = new FontFace("Inline Sans", {source}, {{ weight: "300 700", stretch: "condensed", unicodeRange: "U+41-5A", variant: "SMALL-CAPS", featureSettings: '"liga" off, "kern" on', variationSettings: '"wght" 620', sizeAdjust: "62.5%" }});
+                      const face = new FontFace("Inline Sans", {source}, {{ weight: "300 700", stretch: "condensed", unicodeRange: "U+41-5A", variant: "SMALL-CAPS", featureSettings: '"liga" off, "kern" on', variationSettings: '"wght" 620', sizeAdjust: "62.5%", ascentOverride: "80%", descentOverride: "20%", lineGapOverride: "normal" }});
                       globalThis.__inlineFontFace = face;
                       document.fonts.add(face);
                       face.load().then(() => {{ document.body.textContent = "accepted"; }});
@@ -18796,6 +18842,9 @@ mod native_font_face_tests {
                 variant,
                 feature_settings,
                 size_adjust,
+                ascent_override,
+                descent_override,
+                line_gap_override,
                 variation_settings,
                 body_base64,
                 ..
@@ -18808,6 +18857,9 @@ mod native_font_face_tests {
                 && feature_settings == "\"liga\" 0, \"kern\" 1"
                 && variation_settings == "\"wght\" 620"
                 && size_adjust == "62.5%"
+                && ascent_override == "80%"
+                && descent_override == "20%"
+                && line_gap_override == "normal"
                 && !body_base64.is_empty()
         ));
         let wire = document.to_content_wire();
@@ -18856,6 +18908,9 @@ mod native_font_face_tests {
         );
         assert_eq!(wire.font_resources[0].feature_settings.values[2].value, 1);
         assert_eq!(wire.font_resources[0].size_adjust, 625);
+        assert_eq!(wire.font_resources[0].metric_overrides.ascent, Some(800));
+        assert_eq!(wire.font_resources[0].metric_overrides.descent, Some(200));
+        assert_eq!(wire.font_resources[0].metric_overrides.line_gap, None);
     }
 
     #[test]

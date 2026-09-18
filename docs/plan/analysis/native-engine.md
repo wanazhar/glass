@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-529`, following
+expansion checkpoint is completed `native-engine-browser-530`, following
+completed `native-engine-browser-529`, following
 completed `native-engine-browser-528`, following
 completed `native-engine-browser-527`, following
 completed `native-engine-browser-526`, following
@@ -343,6 +344,16 @@ descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none` retain
 their existing behavior. Custom axes, hinting, color tables, and complete
 FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 530 carries the composed paint transform into COLRv1 gradients. Linear
+gradients transform finite points directly; radial and sweep gradients admit
+finite conformal transforms (translation, rotation/uniform scale, and
+reflection), including radius scaling and sweep-direction mapping. Singular,
+skew/non-uniform radial or sweep transforms, and non-finite transformed
+coordinates fail closed to monochrome fallback. Axis-aligned clip boxes remain
+identity-transform-only, and the bounded two-point linear projection remains
+explicit until full three-point gradient equations and transformed clip masks
+are implemented.
 
 Slice 529 adds bounded COLRv1 linear, radial, and sweep gradient paints plus
 clip-box coverage. The painter admits finite coordinates and at most 16 finite
@@ -7301,8 +7312,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-529.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-530.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-529.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-528.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-527.md` is the preceding completed

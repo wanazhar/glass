@@ -1447,6 +1447,7 @@ struct NativeFontFace {
     style: FontStyleValue,
     stretch: NativeFontStretchRange,
     variation_settings: NativeFontVariationSettings,
+    feature_settings: NativeFontFeatureSettings,
     font: Arc<fontdue::Font>,
     font_data: Arc<[u8]>,
     collection_index: u32,
@@ -1463,6 +1464,7 @@ impl PartialEq for NativeFontFace {
             && self.style == other.style
             && self.stretch == other.stretch
             && self.variation_settings == other.variation_settings
+            && self.feature_settings == other.feature_settings
             && self.collection_index == other.collection_index
             && self.font_data == other.font_data
             && self.unicode_ranges == other.unicode_ranges
@@ -1496,6 +1498,7 @@ pub(crate) struct NativeFontFaceResource {
     pub(crate) style: FontStyleValue,
     pub(crate) stretch: NativeFontStretchRange,
     pub(crate) variation_settings: NativeFontVariationSettings,
+    pub(crate) feature_settings: NativeFontFeatureSettings,
     pub(crate) bytes: Arc<[u8]>,
     pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
 }
@@ -1509,6 +1512,7 @@ impl NativeFontFaceResource {
             style: rule.style,
             stretch: rule.stretch,
             variation_settings: rule.variation_settings,
+            feature_settings: NativeFontFeatureSettings::default(),
             bytes: Arc::from(bytes),
             unicode_ranges: rule.unicode_ranges.clone(),
         }
@@ -2437,6 +2441,23 @@ impl NativeTextMetrics {
         }
         settings
     }
+    fn effective_feature_settings(&self, face: &NativeFontFace) -> NativeFontFeatureSettings {
+        let mut settings = face.feature_settings;
+        for feature in self.feature_settings.values() {
+            let count = usize::from(settings.count);
+            if let Some(existing) = settings.values.get_mut(..count).and_then(|values| {
+                values
+                    .iter_mut()
+                    .find(|existing| existing.tag == feature.tag)
+            }) {
+                *existing = *feature;
+            } else if let Some(slot) = settings.values.get_mut(count) {
+                *slot = *feature;
+                settings.count = settings.count.saturating_add(1);
+            }
+        }
+        settings
+    }
 
     fn face_index_for_character(&self, character: char) -> Option<usize> {
         self.faces
@@ -2548,7 +2569,8 @@ impl NativeTextMetrics {
             .shaper(&font)
             .instance(variation_instance.as_ref())
             .build();
-        let mut features = Vec::with_capacity(21 + self.feature_settings.values().len());
+        let feature_settings = self.effective_feature_settings(face);
+        let mut features = Vec::with_capacity(21 + feature_settings.values().len());
         for (tag, value) in [
             (*b"liga", u32::from(self.ligatures.common)),
             (*b"clig", u32::from(self.ligatures.common)),
@@ -2556,12 +2578,12 @@ impl NativeTextMetrics {
             (*b"hlig", u32::from(self.ligatures.historical)),
             (*b"calt", u32::from(self.ligatures.contextual)),
         ] {
-            if !self.feature_settings.contains_tag(&tag) {
+            if !feature_settings.contains_tag(&tag) {
                 features.push(harfrust::Feature::new(harfrust::Tag::new(&tag), value, ..));
             }
         }
         if !matches!(self.kerning, NativeFontKerning::Auto)
-            && !self.feature_settings.contains_tag(b"kern")
+            && !feature_settings.contains_tag(b"kern")
         {
             let value = u32::from(matches!(self.kerning, NativeFontKerning::Normal));
             features.push(harfrust::Feature::new(
@@ -2572,24 +2594,24 @@ impl NativeTextMetrics {
         }
         let (caps_tags, caps_count) = font_variant_caps_tags(self.variant_caps);
         for tag in caps_tags.into_iter().take(caps_count).flatten() {
-            push_feature_if_not_explicit(&mut features, self.feature_settings, tag, 1);
+            push_feature_if_not_explicit(&mut features, feature_settings, tag, 1);
         }
         if let Some(tag) = font_variant_position_tag(self.variant_position) {
-            push_feature_if_not_explicit(&mut features, self.feature_settings, tag, 1);
+            push_feature_if_not_explicit(&mut features, feature_settings, tag, 1);
         }
         let (numeric_tags, numeric_count) = font_variant_numeric_tags(self.variant_numeric);
         for tag in numeric_tags.into_iter().take(numeric_count).flatten() {
-            push_feature_if_not_explicit(&mut features, self.feature_settings, tag, 1);
+            push_feature_if_not_explicit(&mut features, feature_settings, tag, 1);
         }
         if let Some(tag) = font_variant_alternates_tag(self.variant_alternates) {
-            push_feature_if_not_explicit(&mut features, self.feature_settings, tag, 1);
+            push_feature_if_not_explicit(&mut features, feature_settings, tag, 1);
         }
         let (east_asian_tags, east_asian_count) =
             font_variant_east_asian_tags(self.variant_east_asian);
         for tag in east_asian_tags.into_iter().take(east_asian_count).flatten() {
-            push_feature_if_not_explicit(&mut features, self.feature_settings, tag, 1);
+            push_feature_if_not_explicit(&mut features, feature_settings, tag, 1);
         }
-        let explicit_features = self.feature_settings.values();
+        let explicit_features = feature_settings.values();
         for (index, feature) in explicit_features.iter().enumerate() {
             if explicit_features[index.saturating_add(1)..]
                 .iter()
@@ -4130,6 +4152,7 @@ impl NativeFontBook {
                 style: resource.style,
                 stretch: resource.stretch,
                 variation_settings: resource.variation_settings,
+                feature_settings: resource.feature_settings,
                 font: Arc::new(font),
                 font_data,
                 collection_index: 0,
@@ -4308,6 +4331,7 @@ fn insert_font_face(
         style,
         stretch: NativeFontStretchRange::default(),
         variation_settings: NativeFontVariationSettings::default(),
+        feature_settings: NativeFontFeatureSettings::default(),
         font: Arc::new(font),
         font_data,
         collection_index,
@@ -4928,6 +4952,62 @@ mod tests {
     use super::*;
     use base64::Engine as _;
     use flate2::Compression;
+    #[test]
+    fn font_face_feature_defaults_merge_with_element_overrides() {
+        let bytes = include_bytes!("../../../tests/fixtures/colr-v0.ttf");
+        let face_features =
+            super::super::css::parse_font_feature_settings(r#""liga" off, "kern" 1"#).unwrap();
+        let resource = NativeFontFaceResource {
+            family: "Feature Fixture".into(),
+            family_key: font_family_hash("Feature Fixture"),
+            weight: NativeFontWeightRange::default(),
+            style: FontStyleValue::Normal,
+            stretch: NativeFontStretchRange::default(),
+            variation_settings: NativeFontVariationSettings::default(),
+            feature_settings: face_features,
+            bytes: Arc::from(bytes.as_slice()),
+            unicode_ranges: Vec::new(),
+        };
+        let book = NativeFontBook::from_resources(&[resource]);
+        let element_features =
+            super::super::css::parse_font_feature_settings(r#""liga" on, "calt" 0"#).unwrap();
+        let metrics = NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features(
+            NativeFontFamilyList::single(NativeFontFamilyValue::Named(font_family_hash(
+                "Feature Fixture",
+            ))),
+            16,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            1000,
+            NativeFontVariantLigatures::default(),
+            element_features,
+            DirectionValue::Ltr,
+            &book,
+        );
+        let merged = metrics.effective_feature_settings(&metrics.faces[0]);
+        assert_eq!(merged.count, 3);
+        assert_eq!(
+            merged.values[0],
+            NativeFontFeature {
+                tag: *b"liga",
+                value: 1
+            }
+        );
+        assert_eq!(
+            merged.values[1],
+            NativeFontFeature {
+                tag: *b"kern",
+                value: 1
+            }
+        );
+        assert_eq!(
+            merged.values[2],
+            NativeFontFeature {
+                tag: *b"calt",
+                value: 0
+            }
+        );
+    }
     use flate2::write::GzEncoder;
 
     fn svg_table(glyph_id: u16, document: &[u8]) -> Vec<u8> {
@@ -5049,6 +5129,7 @@ mod tests {
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
+            feature_settings: NativeFontFeatureSettings::default(),
             bytes: Arc::from(bytes),
             unicode_ranges: Vec::new(),
         };
@@ -5421,6 +5502,7 @@ mod tests {
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
+            feature_settings: NativeFontFeatureSettings::default(),
             bytes: Arc::from(bytes.as_slice()),
             unicode_ranges: Vec::new(),
         };
@@ -6303,6 +6385,7 @@ mod tests {
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
+            feature_settings: NativeFontFeatureSettings::default(),
             bytes: Arc::from(compressed),
             unicode_ranges: Vec::new(),
         };
@@ -6332,6 +6415,7 @@ mod tests {
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
+            feature_settings: NativeFontFeatureSettings::default(),
             bytes: Arc::from(woff2),
             unicode_ranges: Vec::new(),
         };
@@ -6360,6 +6444,7 @@ mod tests {
                 style: FontStyleValue::Normal,
                 stretch: NativeFontStretchRange::default(),
                 variation_settings: NativeFontVariationSettings::default(),
+                feature_settings: NativeFontFeatureSettings::default(),
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: vec![NativeUnicodeRange {
                     start: u32::from(character),
@@ -6400,6 +6485,7 @@ mod tests {
                 style: FontStyleValue::Normal,
                 stretch: NativeFontStretchRange::default(),
                 variation_settings: NativeFontVariationSettings::default(),
+                feature_settings: NativeFontFeatureSettings::default(),
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -6410,6 +6496,7 @@ mod tests {
                 style: FontStyleValue::Normal,
                 stretch: NativeFontStretchRange { min: 750, max: 750 },
                 variation_settings: NativeFontVariationSettings::default(),
+                feature_settings: NativeFontFeatureSettings::default(),
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -6472,6 +6559,7 @@ mod tests {
                 style: FontStyleValue::Normal,
                 stretch: NativeFontStretchRange::default(),
                 variation_settings: NativeFontVariationSettings::default(),
+                feature_settings: NativeFontFeatureSettings::default(),
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -6482,6 +6570,7 @@ mod tests {
                 style: FontStyleValue::Normal,
                 stretch: NativeFontStretchRange::default(),
                 variation_settings: NativeFontVariationSettings::default(),
+                feature_settings: NativeFontFeatureSettings::default(),
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -6823,6 +6912,7 @@ mod tests {
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
+            feature_settings: NativeFontFeatureSettings::default(),
             bytes: Arc::from(bytes),
             unicode_ranges: Vec::new(),
         };
@@ -6954,6 +7044,7 @@ mod tests {
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
             variation_settings: descriptor_settings,
+            feature_settings: NativeFontFeatureSettings::default(),
             bytes: Arc::from(bytes),
             unicode_ranges: Vec::new(),
         };
@@ -7082,6 +7173,7 @@ mod tests {
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
             variation_settings: NativeFontVariationSettings::default(),
+            feature_settings: NativeFontFeatureSettings::default(),
             bytes: system_face.font_data.clone(),
             unicode_ranges: Vec::new(),
         };

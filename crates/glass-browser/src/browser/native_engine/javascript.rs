@@ -287,6 +287,8 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         unicode_range: String,
         #[serde(default)]
+        feature_settings: String,
+        #[serde(default)]
         variation_settings: String,
         body_base64: String,
     },
@@ -9686,6 +9688,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     String(descriptor && descriptor.weight || "400"),
     String(descriptor && descriptor.style || "normal"),
     String(descriptor && descriptor.stretch || "normal"),
+    String(descriptor && descriptor.featureSettings || "normal"),
     String(descriptor && descriptor.variationSettings || "normal"),
     String(descriptor && descriptor.display || "auto"),
   ].join("\u0000");
@@ -10113,6 +10116,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
               style: state.style,
               stretch: state.stretch,
               unicode_range: state.unicodeRange,
+              feature_settings: state.featureSettings,
               variation_settings: state.variationSettings,
               body_base64: encodeBase64(bytes, nativeFontFaceByteLimit),
             });
@@ -10289,6 +10293,7 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
           style: descriptor.style === "italic" ? "italic" : "normal",
           stretch: String(descriptor.stretch || "normal"),
           unicodeRange: String(descriptor.unicodeRange || "U+0-10FFFF"),
+          featureSettings: String(descriptor.featureSettings || "normal"),
           variationSettings: String(descriptor.variationSettings || "normal"),
           display: String(descriptor.display || "auto"),
         });
@@ -18695,7 +18700,7 @@ mod native_font_face_tests {
             .evaluate(
                 &format!(
                     r#"(() => {{
-                      const face = new FontFace("Inline Sans", {source}, {{ weight: "300 700", stretch: "condensed", unicodeRange: "U+41-5A", variationSettings: '"wght" 620' }});
+                      const face = new FontFace("Inline Sans", {source}, {{ weight: "300 700", stretch: "condensed", unicodeRange: "U+41-5A", featureSettings: '"liga" off, "kern" on', variationSettings: '"wght" 620' }});
                       globalThis.__inlineFontFace = face;
                       document.fonts.add(face);
                       face.load().then(() => {{ document.body.textContent = "accepted"; }});
@@ -18755,6 +18760,7 @@ mod native_font_face_tests {
                 style,
                 stretch,
                 unicode_range,
+                feature_settings,
                 variation_settings,
                 body_base64,
                 ..
@@ -18763,6 +18769,7 @@ mod native_font_face_tests {
                 && style == "normal"
                 && stretch == "condensed"
                 && unicode_range == "U+41-5A"
+                && feature_settings == "\"liga\" 0, \"kern\" 1"
                 && variation_settings == "\"wght\" 620"
                 && !body_base64.is_empty()
         ));
@@ -18795,6 +18802,17 @@ mod native_font_face_tests {
             wire.font_resources[0].variation_settings,
             expected_variations
         );
+        assert_eq!(wire.font_resources[0].feature_settings.count, 2);
+        assert_eq!(
+            wire.font_resources[0].feature_settings.values[0].tag,
+            *b"liga"
+        );
+        assert_eq!(wire.font_resources[0].feature_settings.values[0].value, 0);
+        assert_eq!(
+            wire.font_resources[0].feature_settings.values[1].tag,
+            *b"kern"
+        );
+        assert_eq!(wire.font_resources[0].feature_settings.values[1].value, 1);
     }
 
     #[test]

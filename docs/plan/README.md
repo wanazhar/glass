@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-548`, following completed
 `native-engine-browser-547`, following completed
 `native-engine-browser-546`, following completed
 `native-engine-browser-545`, following completed
@@ -450,6 +451,17 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed FontFace feature-application follow-up is
+[`native-engine-browser-548`](tasks/native-engine-browser-548.md): normalized
+dynamic `FontFace.featureSettings` values now travel through the install command,
+document-owner admission, and content-process wire. Native faces retain bounded
+OpenType defaults; element-authored feature tags override matching face defaults
+while unmatched face defaults suppress automatic shaping defaults. Invalid host
+metadata fails closed, and legacy wire snapshots default to an empty list.
+CSS `@font-face` resources remain unchanged until their feature descriptors are
+parsed separately; variant application, display timing, installed-font discovery,
+and complete FontFace/Web IDL parity remain issue #40 gates.
 
 The completed FontFace variant-descriptor follow-up is
 [`native-engine-browser-547`](tasks/native-engine-browser-547.md): dynamic and

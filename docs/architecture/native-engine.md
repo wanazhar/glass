@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-518`, following completed
 `native-engine-browser-517`, following completed
 `native-engine-browser-516`, following completed
 `native-engine-browser-515`, following completed
@@ -302,6 +303,14 @@ retains precedence. The character-by-character fallback and baseline metrics
 remain unchanged; numeric variants, variable/color tables, WOFF2,
 font-display timing, mixed-script shaping, cross-realm FontFace projection,
 and complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 518 wires the bounded `font-variation-settings` `@font-face` descriptor
+and script-created `FontFace` descriptor through CSS parsing, page projection,
+install commands, content-process snapshots, and selected-face HarfRust
+shaping. Authored element coordinates override matching face defaults. The
+fontdue contour rasterizer still uses its default instance; automatic axis
+mapping, variable contour rasterization, color tables, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 517 carries bounded inherited `font-variation-settings` through native
 computed style, CSSOM, and the HarfRust shaping path. The fixed-size parser

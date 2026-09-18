@@ -80,6 +80,7 @@ struct NativeFontFace {
     weight: FontWeightValue,
     style: FontStyleValue,
     stretch: NativeFontStretchRange,
+    variation_settings: NativeFontVariationSettings,
     font: Arc<fontdue::Font>,
     font_data: Arc<[u8]>,
     shaper_data: Option<Arc<harfrust::ShaperData>>,
@@ -94,6 +95,7 @@ impl PartialEq for NativeFontFace {
             && self.weight == other.weight
             && self.style == other.style
             && self.stretch == other.stretch
+            && self.variation_settings == other.variation_settings
             && self.font_data == other.font_data
             && self.unicode_ranges == other.unicode_ranges
     }
@@ -125,6 +127,7 @@ pub(crate) struct NativeFontFaceResource {
     pub(crate) weight: FontWeightValue,
     pub(crate) style: FontStyleValue,
     pub(crate) stretch: NativeFontStretchRange,
+    pub(crate) variation_settings: NativeFontVariationSettings,
     pub(crate) bytes: Arc<[u8]>,
     pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
 }
@@ -137,6 +140,7 @@ impl NativeFontFaceResource {
             weight: rule.weight,
             style: rule.style,
             stretch: rule.stretch,
+            variation_settings: rule.variation_settings,
             bytes: Arc::from(bytes),
             unicode_ranges: rule.unicode_ranges.clone(),
         }
@@ -1070,12 +1074,15 @@ impl NativeTextMetrics {
         };
         buffer.set_direction(direction);
         let scale = i32::try_from(self.font_size.saturating_mul(FONT_SHAPE_SCALE)).ok()?;
-        let variation_instance = if self.variation_settings.values().is_empty() {
+        let variation_settings = face
+            .variation_settings
+            .with_overrides(self.variation_settings);
+        let variation_instance = if variation_settings.values().is_empty() {
             None
         } else {
             Some(harfrust::ShaperInstance::from_variations(
                 &font,
-                self.variation_settings
+                variation_settings
                     .values()
                     .iter()
                     .map(|variation| harfrust::Variation {
@@ -1786,6 +1793,7 @@ impl NativeFontBook {
                 weight: resource.weight,
                 style: resource.style,
                 stretch: resource.stretch,
+                variation_settings: resource.variation_settings,
                 font: Arc::new(font),
                 font_data,
                 shaper_data,
@@ -1962,6 +1970,7 @@ fn insert_font_face(
         weight,
         style,
         stretch: NativeFontStretchRange::default(),
+        variation_settings: NativeFontVariationSettings::default(),
         font: Arc::new(font),
         font_data,
         shaper_data,
@@ -2657,6 +2666,7 @@ mod tests {
             weight: FontWeightValue::Normal,
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
+            variation_settings: NativeFontVariationSettings::default(),
             bytes: Arc::from(compressed),
             unicode_ranges: Vec::new(),
         };
@@ -2684,6 +2694,7 @@ mod tests {
                 weight: FontWeightValue::Normal,
                 style: FontStyleValue::Normal,
                 stretch: NativeFontStretchRange::default(),
+                variation_settings: NativeFontVariationSettings::default(),
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: vec![NativeUnicodeRange {
                     start: u32::from(character),
@@ -2723,6 +2734,7 @@ mod tests {
                 weight: FontWeightValue::Normal,
                 style: FontStyleValue::Normal,
                 stretch: NativeFontStretchRange::default(),
+                variation_settings: NativeFontVariationSettings::default(),
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -2732,6 +2744,7 @@ mod tests {
                 weight: FontWeightValue::Normal,
                 style: FontStyleValue::Normal,
                 stretch: NativeFontStretchRange { min: 750, max: 750 },
+                variation_settings: NativeFontVariationSettings::default(),
                 bytes: system_face.font_data.clone(),
                 unicode_ranges: Vec::new(),
             },
@@ -3088,6 +3101,7 @@ mod tests {
             weight: FontWeightValue::Normal,
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
+            variation_settings: NativeFontVariationSettings::default(),
             bytes: Arc::from(bytes),
             unicode_ranges: Vec::new(),
         };
@@ -3148,6 +3162,92 @@ mod tests {
             "wdth axis must affect shaped advance: narrow={} normal={}",
             narrow_run.width_fixed,
             normal_run.width_fixed
+        );
+    }
+
+    #[test]
+    fn font_face_variation_defaults_are_overridden_by_authored_axes() {
+        let Some(bytes) = [
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu[wdth,wght].ttf",
+            "/usr/share/fonts/truetype/ubuntu/UbuntuSans[wdth,wght].ttf",
+        ]
+        .into_iter()
+        .find_map(|path| std::fs::read(path).ok()) else {
+            return;
+        };
+        let mut descriptor_settings = NativeFontVariationSettings::default();
+        descriptor_settings.values[0] = NativeFontVariation {
+            tag: *b"wdth",
+            value_milli: 75_000,
+        };
+        descriptor_settings.count = 1;
+        let resource = NativeFontFaceResource {
+            family: "Descriptor Variable Face".into(),
+            family_key: font_family_hash("Descriptor Variable Face"),
+            weight: FontWeightValue::Normal,
+            style: FontStyleValue::Normal,
+            stretch: NativeFontStretchRange::default(),
+            variation_settings: descriptor_settings,
+            bytes: Arc::from(bytes),
+            unicode_ranges: Vec::new(),
+        };
+        let book = NativeFontBook::from_resources(&[resource]);
+        let families = NativeFontFamilyList::parse("Descriptor Variable Face").unwrap();
+        let descriptor_metrics = NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language_and_variations(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            1000,
+            NativeFontVariantLigatures::default(),
+            NativeFontFeatureSettings::default(),
+            NativeFontKerning::Auto,
+            NativeFontVariantCaps::Normal,
+            NativeFontVariantPosition::Normal,
+            NativeFontVariantNumeric::default(),
+            NativeFontVariantAlternates::Normal,
+            NativeFontVariantEastAsian::default(),
+            NativeFontLanguageOverride::default(),
+            NativeFontVariationSettings::default(),
+            DirectionValue::Ltr,
+            &book,
+        );
+        let mut authored_settings = NativeFontVariationSettings::default();
+        authored_settings.values[0] = NativeFontVariation {
+            tag: *b"wdth",
+            value_milli: 100_000,
+        };
+        authored_settings.count = 1;
+        let authored_metrics = NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language_and_variations(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            1000,
+            NativeFontVariantLigatures::default(),
+            NativeFontFeatureSettings::default(),
+            NativeFontKerning::Auto,
+            NativeFontVariantCaps::Normal,
+            NativeFontVariantPosition::Normal,
+            NativeFontVariantNumeric::default(),
+            NativeFontVariantAlternates::Normal,
+            NativeFontVariantEastAsian::default(),
+            NativeFontLanguageOverride::default(),
+            authored_settings,
+            DirectionValue::Ltr,
+            &book,
+        );
+        let descriptor_width = descriptor_metrics
+            .shape("AAAA", 0, 0)
+            .expect("descriptor variable face must shape")
+            .width_fixed;
+        let authored_width = authored_metrics
+            .shape("AAAA", 0, 0)
+            .expect("authored variable face must shape")
+            .width_fixed;
+        assert!(
+            descriptor_width < authored_width,
+            "authored wdth must override @font-face default: descriptor={descriptor_width} authored={authored_width}"
         );
     }
 
@@ -3215,6 +3315,7 @@ mod tests {
             weight: FontWeightValue::Normal,
             style: FontStyleValue::Normal,
             stretch: NativeFontStretchRange::default(),
+            variation_settings: NativeFontVariationSettings::default(),
             bytes: system_face.font_data.clone(),
             unicode_ranges: Vec::new(),
         };

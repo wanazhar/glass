@@ -1195,6 +1195,37 @@ impl NativeFontVariationSettings {
     pub(crate) fn values(&self) -> &[NativeFontVariation] {
         &self.values[..usize::from(self.count).min(MAX_NATIVE_FONT_VARIATIONS)]
     }
+
+    /// Overlay authored element coordinates on a face's descriptor defaults.
+    /// Authored coordinates are inserted first so the fixed bound never drops
+    /// an explicit element value when the two lists use different axes.
+    pub(crate) fn with_overrides(self, overrides: Self) -> Self {
+        let mut merged = Self::default();
+        for variation in overrides.values().iter().chain(self.values()) {
+            let count = usize::from(merged.count);
+            if merged
+                .values
+                .get(..count)
+                .is_some_and(|values| values.iter().any(|item| item.tag == variation.tag))
+            {
+                continue;
+            } else if count < MAX_NATIVE_FONT_VARIATIONS {
+                merged.values[count] = *variation;
+                merged.count = merged.count.saturating_add(1);
+            }
+        }
+        merged
+    }
+
+    pub(crate) fn is_valid(self) -> bool {
+        usize::from(self.count) <= MAX_NATIVE_FONT_VARIATIONS
+            && self.values().iter().all(|variation| {
+                variation.tag.iter().all(|byte| {
+                    (0x20..=0x7e).contains(byte) && !matches!(*byte, b'\'' | b'"' | b'\\' | b',')
+                }) && i64::from(variation.value_milli).unsigned_abs()
+                    <= i64::from(MAX_NATIVE_FONT_VARIATION_VALUE_MILLI) as u64
+            })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1384,6 +1415,7 @@ pub(crate) struct NativeFontFaceRule {
     pub(crate) style: FontStyleValue,
     pub(crate) stretch: NativeFontStretchRange,
     pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
+    pub(crate) variation_settings: NativeFontVariationSettings,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -6855,6 +6887,7 @@ fn parse_font_face_rule(
     let mut style = FontStyleValue::Normal;
     let mut stretch = NativeFontStretchRange::default();
     let mut unicode_ranges = Vec::new();
+    let mut variation_settings = NativeFontVariationSettings::default();
     for (declaration_offset, declaration) in split_css_declarations(source) {
         let offset = open.saturating_add(1).saturating_add(declaration_offset);
         let declaration = declaration.trim();
@@ -6936,6 +6969,15 @@ fn parse_font_face_rule(
                     "font-face-unicode-range",
                 ),
             },
+            "font-variation-settings" => match parse_font_variation_settings(value) {
+                Some(parsed) => variation_settings = parsed,
+                None => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-face-variation-settings",
+                ),
+            },
             _ => context.diagnostics.push(
                 NativeDiagnosticCode::UnsupportedCssProperty,
                 context.diagnostic_source,
@@ -6977,6 +7019,7 @@ fn parse_font_face_rule(
         style,
         stretch,
         unicode_ranges,
+        variation_settings,
     });
     Ok(())
 }
@@ -12747,7 +12790,7 @@ fn parse_font_variation_entry(value: &str) -> Option<NativeFontVariation> {
     })
 }
 
-fn parse_font_variation_settings(value: &str) -> Option<NativeFontVariationSettings> {
+pub(crate) fn parse_font_variation_settings(value: &str) -> Option<NativeFontVariationSettings> {
     let value = value.trim();
     if value.eq_ignore_ascii_case("normal") {
         return Some(NativeFontVariationSettings::default());
@@ -12775,6 +12818,35 @@ fn parse_font_variation_settings(value: &str) -> Option<NativeFontVariationSetti
         }
     }
     Some(settings)
+}
+
+pub(crate) fn format_font_variation_settings(settings: NativeFontVariationSettings) -> String {
+    if settings.values().is_empty() {
+        return "normal".into();
+    }
+    settings
+        .values()
+        .iter()
+        .map(|variation| {
+            let tag = std::str::from_utf8(&variation.tag).unwrap_or("    ");
+            let magnitude = i64::from(variation.value_milli).unsigned_abs();
+            let whole = magnitude / 1_000;
+            let fraction = magnitude % 1_000;
+            let number = if fraction == 0 {
+                whole.to_string()
+            } else {
+                let fractional = format!("{fraction:03}");
+                format!("{whole}.{}", fractional.trim_end_matches('0'))
+            };
+            let number = if variation.value_milli < 0 {
+                format!("-{number}")
+            } else {
+                number
+            };
+            format!("\"{tag}\" {number}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn parse_font_variation_settings_declaration(
@@ -22796,6 +22868,17 @@ mod tests {
         assert!(parse_font_variation_settings(r#""wght" 700 escape"#).is_none());
         assert!(parse_font_variation_settings(r#""wght" 700, "#).is_none());
         assert!(parse_font_variation_settings(r#""wg\,t" 700"#).is_none());
+        assert_eq!(
+            format_font_variation_settings(settings),
+            r#""wght" 700, "wdth" -12.25"#
+        );
+        let merged = parse_font_variation_settings(r#""wght" 500, "opsz" 12"#)
+            .unwrap()
+            .with_overrides(settings);
+        assert_eq!(
+            format_font_variation_settings(merged),
+            r#""wght" 700, "wdth" -12.25, "opsz" 12"#
+        );
     }
 
     #[test]
@@ -23048,6 +23131,7 @@ mod tests {
                 font-weight: 700;
                 font-style: italic;
                 font-stretch: condensed;
+                font-variation-settings: "wght" 450.5, "wdth" -12.25, "wght" 700;
             }
             #text { font-family: "Embedded Sans"; }"#
                 .into(),
@@ -23067,6 +23151,10 @@ mod tests {
         assert_eq!(rule.weight, FontWeightValue::Bold);
         assert_eq!(rule.style, FontStyleValue::Italic);
         assert_eq!(rule.stretch, NativeFontStretchRange { min: 750, max: 750 });
+        assert_eq!(
+            format_font_variation_settings(rule.variation_settings),
+            r#""wght" 700, "wdth" -12.25"#
+        );
         assert_eq!(stylesheet.rules.len(), 1);
     }
 

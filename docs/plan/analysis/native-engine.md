@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-518`, following
+expansion checkpoint is completed `native-engine-browser-519`, following
 completed `native-engine-browser-517`, following
 completed `native-engine-browser-516`, following
 completed `native-engine-browser-515`, following
@@ -308,6 +308,14 @@ authoritative. Character fallback and baseline metrics remain unchanged;
 numeric variants, variable axes, color rendering, WOFF2, font-display timing,
 mixed-script shaping, cross-realm FontFace projection, and complete
 FontFace/Web IDL parity remain open.
+
+Slice 519 carries admitted non-default variable-font coordinates into glyph
+bitmap production as well as HarfRust shaping. A bounded `ttf-parser` outline
+collector handles TrueType/CFF lines and curves, fixed 4x supersampling
+produces coverage in the existing baseline contract, and static/default,
+bitmap-only, or malformed outlines retain the fontdue fallback. Hinting,
+automatic CSS weight/stretch axis mapping, color tables, WOFF2, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 518 carries `@font-face` and script-created `FontFace`
 `variationSettings` descriptor defaults through CSS parsing, page projection,

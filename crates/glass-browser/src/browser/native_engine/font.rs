@@ -37,6 +37,9 @@ const MAX_NATIVE_SYSTEM_COLLECTION_FACES: u32 = 32;
 const MAX_WOFF_TABLES: usize = 256;
 const WOFF_HEADER_BYTES: usize = 44;
 const WOFF_TABLE_BYTES: usize = 20;
+const MAX_VARIABLE_OUTLINE_POINTS: usize = 8_192;
+const MAX_VARIABLE_RASTER_DIMENSION: usize = 1_024;
+const VARIABLE_RASTER_SAMPLES: u32 = 4;
 
 /// One coverage bitmap and placement produced by the selected font face.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +73,180 @@ pub struct NativeFontRun {
     pub width: u32,
     pub ascent: u32,
     pub line_height: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeOutlinePoint {
+    x: f32,
+    y: f32,
+}
+
+#[derive(Default)]
+struct NativeOutlineBuilder {
+    contours: Vec<Vec<NativeOutlinePoint>>,
+    current: Vec<NativeOutlinePoint>,
+    start: Option<NativeOutlinePoint>,
+    previous: Option<NativeOutlinePoint>,
+    invalid: bool,
+}
+
+impl NativeOutlineBuilder {
+    fn finish_current(&mut self) {
+        if self.current.len() >= 3 {
+            self.contours.push(std::mem::take(&mut self.current));
+        } else {
+            self.current.clear();
+        }
+        self.start = None;
+        self.previous = None;
+    }
+
+    fn total_points(&self) -> usize {
+        self.contours
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>()
+            .saturating_add(self.current.len())
+    }
+
+    fn push_point(&mut self, point: NativeOutlinePoint) {
+        if !point.x.is_finite() || !point.y.is_finite() {
+            self.invalid = true;
+            return;
+        }
+        if self.total_points() >= MAX_VARIABLE_OUTLINE_POINTS {
+            self.invalid = true;
+            return;
+        }
+        if self
+            .current
+            .last()
+            .is_some_and(|last| last.x == point.x && last.y == point.y)
+        {
+            return;
+        }
+        self.current.push(point);
+        self.previous = Some(point);
+    }
+
+    fn begin(&mut self, point: NativeOutlinePoint) {
+        self.finish_current();
+        self.start = Some(point);
+        self.push_point(point);
+    }
+
+    fn curve_steps(points: &[NativeOutlinePoint]) -> usize {
+        let length = points
+            .windows(2)
+            .map(|pair| {
+                let dx = pair[1].x - pair[0].x;
+                let dy = pair[1].y - pair[0].y;
+                dx.mul_add(dx, dy * dy).sqrt()
+            })
+            .sum::<f32>();
+        if !length.is_finite() {
+            return 0;
+        }
+        (length / 16.0).ceil().clamp(4.0, 64.0) as usize
+    }
+
+    fn finish(mut self) -> Option<Vec<Vec<NativeOutlinePoint>>> {
+        self.finish_current();
+        (!self.invalid && !self.contours.is_empty()).then_some(self.contours)
+    }
+}
+
+impl ttf_parser::OutlineBuilder for NativeOutlineBuilder {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.begin(NativeOutlinePoint { x, y });
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        if self.start.is_none() {
+            self.invalid = true;
+            return;
+        }
+        self.push_point(NativeOutlinePoint { x, y });
+    }
+
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let Some(previous) = self.previous else {
+            self.invalid = true;
+            return;
+        };
+        let control = NativeOutlinePoint { x: x1, y: y1 };
+        let end = NativeOutlinePoint { x, y };
+        let steps = Self::curve_steps(&[previous, control, end]);
+        if steps == 0 {
+            self.invalid = true;
+            return;
+        }
+        for step in 1..=steps {
+            let t = step as f32 / steps as f32;
+            let inverse = 1.0 - t;
+            self.push_point(NativeOutlinePoint {
+                x: inverse.mul_add(
+                    inverse.mul_add(previous.x, 2.0 * t * control.x),
+                    t * t * end.x,
+                ),
+                y: inverse.mul_add(
+                    inverse.mul_add(previous.y, 2.0 * t * control.y),
+                    t * t * end.y,
+                ),
+            });
+        }
+    }
+
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let Some(previous) = self.previous else {
+            self.invalid = true;
+            return;
+        };
+        let first_control = NativeOutlinePoint { x: x1, y: y1 };
+        let second_control = NativeOutlinePoint { x: x2, y: y2 };
+        let end = NativeOutlinePoint { x, y };
+        let steps = Self::curve_steps(&[previous, first_control, second_control, end]);
+        if steps == 0 {
+            self.invalid = true;
+            return;
+        }
+        for step in 1..=steps {
+            let t = step as f32 / steps as f32;
+            let inverse = 1.0 - t;
+            let inverse_squared = inverse * inverse;
+            let t_squared = t * t;
+            self.push_point(NativeOutlinePoint {
+                x: inverse_squared.mul_add(
+                    inverse.mul_add(previous.x, 3.0 * t * first_control.x),
+                    t_squared.mul_add(3.0 * inverse * second_control.x, t * end.x),
+                ),
+                y: inverse_squared.mul_add(
+                    inverse.mul_add(previous.y, 3.0 * t * first_control.y),
+                    t_squared.mul_add(3.0 * inverse * second_control.y, t * end.y),
+                ),
+            });
+        }
+    }
+
+    fn close(&mut self) {
+        if let Some(start) = self.start
+            && self
+                .previous
+                .is_some_and(|previous| previous.x != start.x || previous.y != start.y)
+        {
+            self.push_point(start);
+        }
+        self.finish_current();
+    }
+}
+
+#[derive(Debug, Clone)]
+struct NativeRasterizedGlyph {
+    xmin: i32,
+    ymin: i32,
+    width: u32,
+    height: u32,
+    coverage: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -1254,6 +1431,9 @@ impl NativeTextMetrics {
     ) -> Option<NativeFontRun> {
         let face = self.faces.get(shaped.face_index)?;
         let (requested_stretch, nominal_stretch) = self.stretch_factor(face);
+        let variation_settings = face
+            .variation_settings
+            .with_overrides(self.variation_settings);
         let characters: Vec<char> = value.chars().collect();
         let justify_unit = i64::from(justify_spacing).saturating_mul(i64::from(FONT_SHAPE_SCALE));
         let justified_space_count = shaped
@@ -1301,7 +1481,7 @@ impl NativeTextMetrics {
             if glyph_id >= face.font.glyph_count() {
                 return None;
             }
-            let (metrics, coverage) = face.font.rasterize_indexed(glyph_id, self.font_size as f32);
+            let rasterized = self.rasterize_glyph(face, glyph_id, variation_settings)?;
             let advance_fixed = i64::from(shaped_glyph.x_advance)
                 .saturating_add(shaped_glyph.cluster_spacing)
                 .saturating_add(justify);
@@ -1321,11 +1501,11 @@ impl NativeTextMetrics {
                     char_index: shaped_glyph.cluster,
                 });
             }
-            if metrics.width > 0 && metrics.height > 0 && !coverage.is_empty() {
-                let width = u32::try_from(metrics.width).ok()?;
-                let height = u32::try_from(metrics.height).ok()?;
+            if rasterized.width > 0 && rasterized.height > 0 && !rasterized.coverage.is_empty() {
+                let width = rasterized.width;
+                let height = rasterized.height;
                 let (width, coverage) = scale_coverage_horizontal(
-                    coverage,
+                    rasterized.coverage,
                     width,
                     height,
                     requested_stretch,
@@ -1334,9 +1514,9 @@ impl NativeTextMetrics {
                 let y = i32::try_from(self.ascent)
                     .ok()?
                     .saturating_sub(
-                        i32::try_from(metrics.height)
+                        i32::try_from(rasterized.height)
                             .ok()?
-                            .saturating_add(metrics.ymin),
+                            .saturating_add(rasterized.ymin),
                     )
                     .saturating_sub(round_signed_fixed(i64::from(shaped_glyph.y_offset)));
                 let glyph_x = match self.direction {
@@ -1348,7 +1528,7 @@ impl NativeTextMetrics {
                 };
                 glyphs.push(NativeGlyph {
                     x: round_signed_fixed(glyph_x).saturating_add(scale_signed(
-                        metrics.xmin,
+                        rasterized.xmin,
                         requested_stretch,
                         nominal_stretch,
                     )),
@@ -1370,6 +1550,30 @@ impl NativeTextMetrics {
             width: round_fixed_nonnegative(total_width_fixed),
             ascent: self.ascent,
             line_height: self.line_height,
+        })
+    }
+
+    fn rasterize_glyph(
+        &self,
+        face: &NativeFontFace,
+        glyph_id: u16,
+        variation_settings: NativeFontVariationSettings,
+    ) -> Option<NativeRasterizedGlyph> {
+        if let Some(rasterized) = rasterize_variable_glyph(
+            face.font_data.as_ref(),
+            glyph_id,
+            self.font_size,
+            variation_settings,
+        ) {
+            return Some(rasterized);
+        }
+        let (metrics, coverage) = face.font.rasterize_indexed(glyph_id, self.font_size as f32);
+        Some(NativeRasterizedGlyph {
+            xmin: metrics.xmin,
+            ymin: metrics.ymin,
+            width: u32::try_from(metrics.width).ok()?,
+            height: u32::try_from(metrics.height).ok()?,
+            coverage,
         })
     }
 
@@ -1400,7 +1604,12 @@ impl NativeTextMetrics {
                     });
                 x = x.saturating_add(kerning);
             }
-            let (metrics, coverage) = face.font.rasterize(character, self.font_size as f32);
+            let rasterized = self.rasterize_glyph(
+                face,
+                face.font.lookup_glyph_index(character),
+                face.variation_settings
+                    .with_overrides(self.variation_settings),
+            )?;
             let advance = self
                 .advance(character, letter_spacing, word_spacing)
                 .saturating_add(if character == ' ' { justify_spacing } else { 0 });
@@ -1411,24 +1620,24 @@ impl NativeTextMetrics {
                     char_index,
                 });
             }
-            if metrics.width > 0 && metrics.height > 0 && !coverage.is_empty() {
-                let width = u32::try_from(metrics.width).ok()?;
-                let height = u32::try_from(metrics.height).ok()?;
+            if rasterized.width > 0 && rasterized.height > 0 && !rasterized.coverage.is_empty() {
+                let width = rasterized.width;
+                let height = rasterized.height;
                 let (width, coverage) = scale_coverage_horizontal(
-                    coverage,
+                    rasterized.coverage,
                     width,
                     height,
                     requested_stretch,
                     nominal_stretch,
                 )?;
                 let y = i32::try_from(self.ascent).ok()?.saturating_sub(
-                    i32::try_from(metrics.height)
+                    i32::try_from(rasterized.height)
                         .ok()?
-                        .saturating_add(metrics.ymin),
+                        .saturating_add(rasterized.ymin),
                 );
                 glyphs.push(NativeGlyph {
                     x: x.saturating_add(scale_signed(
-                        metrics.xmin,
+                        rasterized.xmin,
                         requested_stretch,
                         nominal_stretch,
                     )),
@@ -1469,6 +1678,120 @@ struct NativeShapedRun {
     glyphs: Vec<NativeShapedGlyph>,
     width: u32,
     width_fixed: i64,
+}
+
+fn rasterize_variable_glyph(
+    font_data: &[u8],
+    glyph_id: u16,
+    font_size: u32,
+    variation_settings: NativeFontVariationSettings,
+) -> Option<NativeRasterizedGlyph> {
+    if variation_settings.values().is_empty() {
+        return None;
+    }
+    let mut face = ttf_parser::Face::parse(font_data, 0).ok()?;
+    if face.variation_axes().len() == 0 {
+        return None;
+    }
+    for variation in variation_settings.values() {
+        let _ = face.set_variation(
+            ttf_parser::Tag::from_bytes(&variation.tag),
+            variation.value_milli as f32 / 1_000.0,
+        );
+    }
+    let mut builder = NativeOutlineBuilder::default();
+    let bbox = face.outline_glyph(ttf_parser::GlyphId(glyph_id), &mut builder)?;
+    let contours = builder.finish()?;
+    let units_per_em = f32::from(face.units_per_em());
+    if units_per_em <= 0.0 {
+        return None;
+    }
+    let scale = font_size as f32 / units_per_em;
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let scaled_x_min = f32::from(bbox.x_min) * scale;
+    let scaled_x_max = f32::from(bbox.x_max) * scale;
+    let scaled_y_min = f32::from(bbox.y_min) * scale;
+    let scaled_y_max = f32::from(bbox.y_max) * scale;
+    let xmin = bounded_floor_i32(scaled_x_min)?;
+    let xmax = bounded_ceil_i32(scaled_x_max)?;
+    let ymin = bounded_floor_i32(scaled_y_min)?;
+    let ymax = bounded_ceil_i32(scaled_y_max)?;
+    let width = usize::try_from(i64::from(xmax).saturating_sub(i64::from(xmin))).ok()?;
+    let height = usize::try_from(i64::from(ymax).saturating_sub(i64::from(ymin))).ok()?;
+    if width == 0
+        || height == 0
+        || width > MAX_VARIABLE_RASTER_DIMENSION
+        || height > MAX_VARIABLE_RASTER_DIMENSION
+    {
+        return None;
+    }
+    let pixel_count = width.checked_mul(height)?;
+    let sample_side = usize::try_from(VARIABLE_RASTER_SAMPLES).ok()?;
+    let sample_count = sample_side.checked_mul(sample_side)?;
+    let mut coverage = vec![0_u8; pixel_count];
+    let top = ymax as f32;
+    for row in 0..height {
+        for column in 0..width {
+            let mut hits = 0usize;
+            for sample_y in 0..sample_side {
+                let y = (top - row as f32 - (sample_y as f32 + 0.5) / sample_side as f32) / scale;
+                for sample_x in 0..sample_side {
+                    let x = (xmin as f32
+                        + column as f32
+                        + (sample_x as f32 + 0.5) / sample_side as f32)
+                        / scale;
+                    if outline_contains(&contours, x, y) {
+                        hits = hits.saturating_add(1);
+                    }
+                }
+            }
+            let value = hits.saturating_mul(255).saturating_add(sample_count / 2) / sample_count;
+            coverage[row * width + column] = u8::try_from(value).unwrap_or(u8::MAX);
+        }
+    }
+    Some(NativeRasterizedGlyph {
+        xmin,
+        ymin,
+        width: u32::try_from(width).ok()?,
+        height: u32::try_from(height).ok()?,
+        coverage,
+    })
+}
+
+fn outline_contains(contours: &[Vec<NativeOutlinePoint>], x: f32, y: f32) -> bool {
+    let mut winding = 0i32;
+    for contour in contours {
+        if contour.len() < 3 {
+            continue;
+        }
+        for index in 0..contour.len() {
+            let start = contour[index];
+            let end = contour[(index + 1) % contour.len()];
+            let is_left = (end.x - start.x) * (y - start.y) - (x - start.x) * (end.y - start.y);
+            if start.y <= y {
+                if end.y > y && is_left > 0.0 {
+                    winding = winding.saturating_add(1);
+                }
+            } else if end.y <= y && is_left < 0.0 {
+                winding = winding.saturating_sub(1);
+            }
+        }
+    }
+    winding != 0
+}
+
+fn bounded_floor_i32(value: f32) -> Option<i32> {
+    let value = value.floor();
+    (value.is_finite() && value >= i32::MIN as f32 && value <= i32::MAX as f32)
+        .then_some(value as i32)
+}
+
+fn bounded_ceil_i32(value: f32) -> Option<i32> {
+    let value = value.ceil();
+    (value.is_finite() && value >= i32::MIN as f32 && value <= i32::MAX as f32)
+        .then_some(value as i32)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3162,6 +3485,26 @@ mod tests {
             "wdth axis must affect shaped advance: narrow={} normal={}",
             narrow_run.width_fixed,
             normal_run.width_fixed
+        );
+        let normal_raster = normal
+            .rasterize("AAAA", 0, 0, 0)
+            .expect("variable font must rasterize the normal instance");
+        let narrow_raster = narrow
+            .rasterize("AAAA", 0, 0, 0)
+            .expect("variable font must rasterize the requested instance");
+        let normal_glyph = normal_raster
+            .glyphs
+            .first()
+            .expect("normal variable run must contain a glyph");
+        let narrow_glyph = narrow_raster
+            .glyphs
+            .first()
+            .expect("narrow variable run must contain a glyph");
+        assert!(
+            normal_glyph.width != narrow_glyph.width
+                || normal_glyph.height != narrow_glyph.height
+                || normal_glyph.coverage != narrow_glyph.coverage,
+            "wdth axis must affect the rasterized outline"
         );
     }
 

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-540`, following completed
 `native-engine-browser-539`, following completed
 `native-engine-browser-538`, following completed
 `native-engine-browser-537`, following completed
@@ -390,13 +391,20 @@ data can enter the raster path. Palette zero remains the default boundary for
 unregistered or malformed CSS palette selections; keyword and named base
 palette paths are recorded by slices 538 and 539.
 
+The completed palette-override follow-up is
+[`native-engine-browser-540`](tasks/native-engine-browser-540.md): bounded
+`override-colors` descriptors now resolve through document-local named
+palettes, validate exact unique CPAL source colors, and recolor admitted COLR
+solid and gradient paints. Malformed, ambiguous, over-budget, and
+unidentifiable mappings fail closed to monochrome fallback without silently
+substituting a nearest color.
+
 The completed named-palette follow-up is
 [`native-engine-browser-539`](tasks/native-engine-browser-539.md): bounded custom
 names now flow through inherited `font-palette` and CSSOM, while
 `@font-palette-values` stores document-local last-wins `base-palette` selections
-for COLR/CPAL painting. Unregistered names fail closed to palette zero, and
-unsupported `override-colors` declarations are rejected rather than silently
-painted; color overrides remain an explicit issue #40 gate.
+for COLR/CPAL painting. Unregistered names fail closed to palette zero; valid
+color overrides are covered by slice 540.
 
 The completed CSS palette-keyword follow-up is
 [`native-engine-browser-538`](tasks/native-engine-browser-538.md): inherited
@@ -412,8 +420,8 @@ space while carrying a bounded finite nonsingular affine transform through
 paint composition, synthetic stretch, and glyph-local pixel mapping. Raster
 samples inverse-map into gradient space before angle evaluation, so skew,
 non-uniform scale, rotation, reflection, and translation preserve sweep
-semantics without approximation. Invalid transforms fail closed; the broader
-font, palette, timing, and Web IDL gates remain issue #40 work.
+semantics without approximation. Invalid transforms fail closed; the remaining
+font, timing, and Web IDL gates remain issue #40 work.
 
 The completed transformed COLRv1 clip-mask follow-up is
 [`native-engine-browser-535`](tasks/native-engine-browser-535.md): finite

@@ -6801,9 +6801,11 @@ impl NativeDocument {
                 style.direction(),
             )
         };
+        let palette = style.font_palette();
         metrics
             .with_optical_sizing(style.font_optical_sizing())
-            .with_palette(self.stylesheet.resolve_font_palette(style.font_palette()))
+            .with_palette(self.stylesheet.resolve_font_palette(palette))
+            .with_palette_overrides(self.stylesheet.resolve_font_palette_overrides(palette))
     }
 
     pub(crate) fn text_line_height_for_layout(&self, id: NativeNodeId) -> u32 {
@@ -9549,7 +9551,7 @@ mod tests {
     #[test]
     fn named_font_palette_resolves_base_palette_for_text_metrics() {
         let document = NativeDocument::parse(
-            "<style>@font-palette-values --brand { base-palette: 2; } #target { font-palette: --brand; } #missing { font-palette: --missing; }</style><p id='target'>Text</p><p id='missing'>Missing</p>",
+            "<style>@font-palette-values --brand { base-palette: 2; override-colors: 0 #010203; } #target { font-palette: --brand; } #missing { font-palette: --missing; }</style><p id='target'>Text</p><p id='missing'>Missing</p>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -9565,8 +9567,27 @@ mod tests {
             NativeFontPalette::Base(2)
         );
         assert_eq!(
+            document.text_metrics_for_layout(target).palette_overrides()[0]
+                .map(|value| (value.palette_index, value.color)),
+            Some((
+                0,
+                NativeColor {
+                    red: 1,
+                    green: 2,
+                    blue: 3,
+                    alpha: u8::MAX,
+                }
+            ))
+        );
+        assert_eq!(
             document.text_metrics_for_layout(missing).palette(),
             NativeFontPalette::Normal
+        );
+        assert!(
+            document
+                .text_metrics_for_layout(missing)
+                .palette_overrides()[0]
+                .is_none()
         );
     }
 

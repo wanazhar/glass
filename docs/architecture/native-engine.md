@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-546`, following completed
 `native-engine-browser-545`, following completed
 `native-engine-browser-544`, following completed
 `native-engine-browser-543`, following completed
@@ -403,6 +404,16 @@ content type, redirect state, and bounded body to the page fetch payload;
 fresh-cache and HTTP 304 paths retain the same metadata. CSS `@font-face`
 loading continues to use the byte-only adapter, and local data/file/blob
 responses remain bounded synthetic responses. Font-display timing,
+installed-font discovery, and complete FontFace/Web IDL parity remain issue
+#40 gates.
+
+Slice 546 validates dynamic `FontFace` descriptors at the page-realm boundary.
+Style, absolute/ascending weight ranges, named or percentage stretch ranges,
+Unicode ranges, and quoted variation settings are normalized to the bounded
+native grammar; malformed, reversed, out-of-range, or oversized values raise
+`SyntaxError`/`RangeError` before loading, and failed setters preserve their
+previous value. Valid descriptors continue through the existing native install
+acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
 

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-518`, following completed
+`native-engine-browser-519`, following completed
 `native-engine-browser-517`, following completed
 `native-engine-browser-516`, following completed
 `native-engine-browser-515`, following completed
@@ -303,6 +303,15 @@ retains precedence. The character-by-character fallback and baseline metrics
 remain unchanged; numeric variants, variable/color tables, WOFF2,
 font-display timing, mixed-script shaping, cross-realm FontFace projection,
 and complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 519 makes non-default variable-font coordinates reach glyph pixels as
+well as shaping. The native font owner enables `ttf-parser` variable support,
+collects the selected TrueType/CFF outline under a fixed point budget, and
+uses bounded 4x software supersampling before the existing stretch and display
+placement steps. Static/default-instance, bitmap-only, and malformed outlines
+retain the fontdue fallback. Hinting, automatic weight/stretch axis mapping,
+color tables, WOFF2, and complete FontFace/Web IDL parity remain issue #40
+gates.
 
 Slice 518 wires the bounded `font-variation-settings` `@font-face` descriptor
 and script-created `FontFace` descriptor through CSS parsing, page projection,

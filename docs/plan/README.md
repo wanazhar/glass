@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-518`, following completed
+`native-engine-browser-519`, following completed
 `native-engine-browser-517`, following completed
 `native-engine-browser-516`, following completed
 `native-engine-browser-515`, following completed
@@ -321,6 +321,16 @@ feature settings retaining precedence. Character fallback and typographic
 baseline metrics remain bounded; numeric variants, variable/color fonts,
 WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
 projection, and complete FontFace/Web IDL parity remain issue #40 gates.
+
+The completed variation-aware glyph-rasterization follow-up is
+[`native-engine-browser-519`](tasks/native-engine-browser-519.md): non-default
+variable-font coordinates now reach both the HarfRust shaping owner and the
+native glyph bitmap. A bounded `ttf-parser` outline collector flattens
+TrueType/CFF lines and curves and uses fixed 4x supersampling under explicit
+point, dimension, and font-size limits; static/default-instance, bitmap-only,
+and malformed outlines retain the fontdue fallback. Hinting, color glyph
+tables, automatic `font-weight`/`font-stretch` axis mapping, WOFF2, and full
+FontFace/Web IDL parity remain issue #40 gates.
 
 The completed bounded FontFace variation-descriptor follow-up is
 [`native-engine-browser-518`](tasks/native-engine-browser-518.md): the

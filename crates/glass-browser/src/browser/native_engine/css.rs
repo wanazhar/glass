@@ -1556,6 +1556,39 @@ impl NativeFontStretchRange {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeFontDisplay {
+    #[default]
+    Auto,
+    Block,
+    Swap,
+    Fallback,
+    Optional,
+}
+
+impl NativeFontDisplay {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "block" => Some(Self::Block),
+            "swap" => Some(Self::Swap),
+            "fallback" => Some(Self::Fallback),
+            "optional" => Some(Self::Optional),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Block => "block",
+            Self::Swap => "swap",
+            Self::Fallback => "fallback",
+            Self::Optional => "optional",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeFontFaceRule {
     pub(crate) family: String,
@@ -1566,6 +1599,7 @@ pub(crate) struct NativeFontFaceRule {
     pub(crate) stretch: NativeFontStretchRange,
     pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
     pub(crate) variation_settings: NativeFontVariationSettings,
+    pub(crate) font_display: NativeFontDisplay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7382,6 +7416,7 @@ fn parse_font_face_rule(
     let mut stretch = NativeFontStretchRange::default();
     let mut unicode_ranges = Vec::new();
     let mut variation_settings = NativeFontVariationSettings::default();
+    let mut font_display = NativeFontDisplay::default();
     for (declaration_offset, declaration) in split_css_declarations(source) {
         let offset = open.saturating_add(1).saturating_add(declaration_offset);
         let declaration = declaration.trim();
@@ -7472,6 +7507,15 @@ fn parse_font_face_rule(
                     "font-face-variation-settings",
                 ),
             },
+            "font-display" => match parse_font_display(value) {
+                Some(parsed) => font_display = parsed,
+                None => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-face-display",
+                ),
+            },
             _ => context.diagnostics.push(
                 NativeDiagnosticCode::UnsupportedCssProperty,
                 context.diagnostic_source,
@@ -7514,6 +7558,7 @@ fn parse_font_face_rule(
         stretch,
         unicode_ranges,
         variation_settings,
+        font_display,
     });
     Ok(())
 }
@@ -12745,6 +12790,9 @@ fn parse_font_style(value: &str) -> Option<FontStyleValue> {
         "italic" => Some(FontStyleValue::Italic),
         _ => None,
     }
+}
+fn parse_font_display(value: &str) -> Option<NativeFontDisplay> {
+    NativeFontDisplay::parse(value)
 }
 
 fn parse_font_stretch_token(value: &str) -> Option<u16> {
@@ -23786,6 +23834,7 @@ mod tests {
                 font-style: italic;
                 font-stretch: condensed;
                 font-variation-settings: "wght" 450.5, "wdth" -12.25, "wght" 700;
+                font-display: SWAP;
             }
             #text { font-family: "Embedded Sans"; }"#
                 .into(),
@@ -23808,11 +23857,29 @@ mod tests {
         );
         assert_eq!(rule.style, FontStyleValue::Italic);
         assert_eq!(rule.stretch, NativeFontStretchRange { min: 750, max: 750 });
+        assert_eq!(rule.font_display, NativeFontDisplay::Swap);
         assert_eq!(
             format_font_variation_settings(rule.variation_settings),
             r#""wght" 700, "wdth" -12.25"#
         );
         assert_eq!(stylesheet.rules.len(), 1);
+    }
+
+    #[test]
+    fn font_display_parser_accepts_only_single_normalized_keywords() {
+        assert_eq!(parse_font_display("AUTO"), Some(NativeFontDisplay::Auto));
+        assert_eq!(parse_font_display("block"), Some(NativeFontDisplay::Block));
+        assert_eq!(parse_font_display(" Swap "), Some(NativeFontDisplay::Swap));
+        assert_eq!(
+            parse_font_display("fallback"),
+            Some(NativeFontDisplay::Fallback)
+        );
+        assert_eq!(
+            parse_font_display("optional"),
+            Some(NativeFontDisplay::Optional)
+        );
+        assert!(parse_font_display("swap optional").is_none());
+        assert!(parse_font_display("unknown").is_none());
     }
 
     #[test]

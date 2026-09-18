@@ -244,6 +244,7 @@ pub(crate) struct NativeFontFaceScriptDescriptor {
     pub(crate) stretch: String,
     pub(crate) unicode_range: String,
     pub(crate) variation_settings: String,
+    pub(crate) display: String,
     pub(crate) status: String,
 }
 
@@ -1354,6 +1355,7 @@ impl NativeDocument {
                 stretch: format_font_stretch_range(rule.stretch),
                 unicode_range: format_font_face_unicode_ranges(&rule.unicode_ranges),
                 variation_settings: format_font_variation_settings(rule.variation_settings),
+                display: rule.font_display.as_str().into(),
                 status: if self.font_resources.iter().any(|resource| {
                     resource.family_key == rule.family_key
                         && resource.weight == rule.weight

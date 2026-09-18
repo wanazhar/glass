@@ -8,6 +8,7 @@ use url::Url;
 
 pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
 pub(crate) const MAX_NATIVE_FONT_FACE_RULES: usize = 16;
+pub(crate) const MAX_NATIVE_FONT_PALETTE_RULES: usize = 16;
 pub(crate) const MAX_NATIVE_GRID_TRACKS: usize = 8;
 pub(crate) const MIN_NATIVE_FLEX_ITEM_ORDER: i32 = -1024;
 pub(crate) const MAX_NATIVE_FLEX_ITEM_ORDER: i32 = 1024;
@@ -1243,12 +1244,48 @@ pub(crate) enum NativeFontOpticalSizing {
     None,
 }
 
+const MAX_NATIVE_FONT_PALETTE_NAME_BYTES: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeFontPaletteName {
+    bytes: [u8; MAX_NATIVE_FONT_PALETTE_NAME_BYTES],
+    len: u8,
+}
+
+impl NativeFontPaletteName {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        let bytes = value.as_bytes();
+        if bytes.len() > MAX_NATIVE_FONT_PALETTE_NAME_BYTES
+            || !bytes.starts_with(b"--")
+            || bytes.len() < 3
+            || bytes[2..].iter().any(|byte| !is_identifier_char(*byte))
+        {
+            return None;
+        }
+        let mut name = Self::default();
+        name.bytes[..bytes.len()].copy_from_slice(bytes);
+        name.len = u8::try_from(bytes.len()).ok()?;
+        Some(name)
+    }
+}
+
+impl Default for NativeFontPaletteName {
+    fn default() -> Self {
+        Self {
+            bytes: [0; MAX_NATIVE_FONT_PALETTE_NAME_BYTES],
+            len: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeFontPalette {
     #[default]
     Normal,
     Light,
     Dark,
+    Named(NativeFontPaletteName),
+    Base(u16),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1522,6 +1559,12 @@ pub(crate) struct NativeFontFaceRule {
     pub(crate) stretch: NativeFontStretchRange,
     pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
     pub(crate) variation_settings: NativeFontVariationSettings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeFontPaletteValuesRule {
+    pub(crate) name: NativeFontPaletteName,
+    pub(crate) base_palette: u16,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2357,6 +2400,7 @@ pub(crate) struct NativeStylesheet {
     rules: Vec<NativeStyleRule>,
     background_image_sources: BTreeMap<u32, String>,
     font_face_rules: Vec<NativeFontFaceRule>,
+    font_palette_values: Vec<NativeFontPaletteValuesRule>,
 }
 
 impl NativeStylesheet {
@@ -2385,6 +2429,7 @@ impl NativeStylesheet {
                 &mut layers,
                 &mut stylesheet.background_image_sources,
                 &mut stylesheet.font_face_rules,
+                &mut stylesheet.font_palette_values,
             )?;
         }
         Ok(stylesheet)
@@ -2396,6 +2441,25 @@ impl NativeStylesheet {
 
     pub(crate) fn font_face_rules(&self) -> &[NativeFontFaceRule] {
         &self.font_face_rules
+    }
+
+    #[cfg(test)]
+    pub(crate) fn font_palette_values(&self) -> &[NativeFontPaletteValuesRule] {
+        &self.font_palette_values
+    }
+
+    pub(crate) fn resolve_font_palette(&self, palette: NativeFontPalette) -> NativeFontPalette {
+        match palette {
+            NativeFontPalette::Named(name) => self
+                .font_palette_values
+                .iter()
+                .rev()
+                .find(|rule| rule.name == name)
+                .map_or(NativeFontPalette::Normal, |rule| {
+                    NativeFontPalette::Base(rule.base_palette)
+                }),
+            other => other,
+        }
     }
 
     #[cfg(test)]
@@ -6976,6 +7040,7 @@ fn parse_source(
     layers: &mut Vec<String>,
     background_image_sources: &mut BTreeMap<u32, String>,
     font_face_rules: &mut Vec<NativeFontFaceRule>,
+    palette_values: &mut Vec<NativeFontPaletteValuesRule>,
 ) -> Result<(), NativeEngineError> {
     let source = strip_comments(source);
     let end = source.len();
@@ -6988,6 +7053,7 @@ fn parse_source(
         layers,
         background_image_sources,
         font_face_rules,
+        palette_values,
     };
     parse_source_block(&mut context, 0, end, None)
 }
@@ -7001,6 +7067,7 @@ struct NativeCssParseContext<'a> {
     layers: &'a mut Vec<String>,
     background_image_sources: &'a mut BTreeMap<u32, String>,
     font_face_rules: &'a mut Vec<NativeFontFaceRule>,
+    palette_values: &'a mut Vec<NativeFontPaletteValuesRule>,
 }
 
 fn parse_source_block(
@@ -7059,6 +7126,16 @@ fn parse_source_block(
         let header = &context.source[cursor..open];
         if is_font_face_header(header) {
             parse_font_face_rule(context, cursor, open, close)?;
+        } else if let Some(palette_header) = parse_font_palette_values_header(header) {
+            match palette_header {
+                Ok(name) => parse_font_palette_values_rule(context, name, open, close)?,
+                Err(detail) => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    cursor,
+                    detail,
+                ),
+            }
         } else if let Some(layer_header) = parse_layer_header(header) {
             if current_layer.is_some() {
                 context.diagnostics.push(
@@ -7102,6 +7179,131 @@ fn is_font_face_header(source: &str) -> bool {
     let source = source.trim();
     const KEYWORD: &str = "@font-face";
     source.len() == KEYWORD.len() && source.as_bytes().eq_ignore_ascii_case(KEYWORD.as_bytes())
+}
+
+fn parse_font_palette_values_header(
+    source: &str,
+) -> Option<Result<NativeFontPaletteName, &'static str>> {
+    let source = source.trim();
+    const KEYWORD: &str = "@font-palette-values";
+    if source.len() <= KEYWORD.len()
+        || !source.as_bytes()[..KEYWORD.len()].eq_ignore_ascii_case(KEYWORD.as_bytes())
+        || !source.as_bytes()[KEYWORD.len()].is_ascii_whitespace()
+    {
+        return None;
+    }
+    let remainder = source[KEYWORD.len()..].trim();
+    let Some((name, end)) = read_identifier(remainder, 0) else {
+        return Some(Err("font-palette-values-name"));
+    };
+    if end != remainder.len() {
+        return Some(Err("font-palette-values-header"));
+    }
+    Some(NativeFontPaletteName::parse(&name).ok_or("font-palette-values-name"))
+}
+
+fn parse_font_palette_values_rule(
+    context: &mut NativeCssParseContext<'_>,
+    name: NativeFontPaletteName,
+    open: usize,
+    close: usize,
+) -> Result<(), NativeEngineError> {
+    let source = &context.source[open + 1..close];
+    let mut base_palette = 0;
+    let mut valid = true;
+    for (declaration_offset, declaration) in split_css_declarations(source) {
+        let offset = open.saturating_add(1).saturating_add(declaration_offset);
+        let declaration = declaration.trim();
+        if declaration.is_empty() {
+            continue;
+        }
+        let Some((property, value)) = declaration.split_once(':') else {
+            context.diagnostics.push(
+                NativeDiagnosticCode::MalformedCss,
+                context.diagnostic_source,
+                offset,
+                "font-palette-values-missing-colon",
+            );
+            valid = false;
+            continue;
+        };
+        let property = property.trim().to_ascii_lowercase();
+        let (value, _) = strip_important_suffix(value.trim());
+        if value.is_empty() {
+            context.diagnostics.push(
+                NativeDiagnosticCode::MalformedCss,
+                context.diagnostic_source,
+                offset,
+                "font-palette-values-empty-value",
+            );
+            valid = false;
+            continue;
+        }
+        match property.as_str() {
+            "base-palette" => {
+                let mut values = value.split_ascii_whitespace();
+                match (values.next(), values.next()) {
+                    (Some(value), None) => match value.parse::<u32>() {
+                        Ok(value) if value <= u32::from(u16::MAX) => {
+                            base_palette = value as u16;
+                        }
+                        _ => {
+                            context.diagnostics.push(
+                                NativeDiagnosticCode::UnsupportedCssValue,
+                                context.diagnostic_source,
+                                offset,
+                                "font-palette-values-base-palette",
+                            );
+                            valid = false;
+                        }
+                    },
+                    _ => {
+                        context.diagnostics.push(
+                            NativeDiagnosticCode::UnsupportedCssValue,
+                            context.diagnostic_source,
+                            offset,
+                            "font-palette-values-base-palette",
+                        );
+                        valid = false;
+                    }
+                }
+            }
+            "override-colors" => {
+                context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-palette-override-colors",
+                );
+                valid = false;
+            }
+            _ => {
+                context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssProperty,
+                    context.diagnostic_source,
+                    offset,
+                    "font-palette-values-descriptor",
+                );
+                valid = false;
+            }
+        }
+    }
+    if !valid {
+        return Ok(());
+    }
+    if context.palette_values.len() >= MAX_NATIVE_FONT_PALETTE_RULES {
+        context.diagnostics.push(
+            NativeDiagnosticCode::UnsupportedCssValue,
+            context.diagnostic_source,
+            open,
+            "too-many-font-palette-values",
+        );
+        return Ok(());
+    }
+    context
+        .palette_values
+        .push(NativeFontPaletteValuesRule { name, base_palette });
+    Ok(())
 }
 
 fn parse_font_face_rule(
@@ -13531,11 +13733,12 @@ fn parse_font_optical_sizing_declaration(
 }
 
 fn parse_font_palette(value: &str) -> Option<NativeFontPalette> {
-    match value.trim().to_ascii_lowercase().as_str() {
+    let value = value.trim();
+    match value.to_ascii_lowercase().as_str() {
         "normal" => Some(NativeFontPalette::Normal),
         "light" => Some(NativeFontPalette::Light),
         "dark" => Some(NativeFontPalette::Dark),
-        _ => None,
+        _ => NativeFontPaletteName::parse(value).map(NativeFontPalette::Named),
     }
 }
 
@@ -23267,13 +23470,17 @@ mod tests {
     }
 
     #[test]
-    fn font_palette_parser_accepts_only_supported_keywords() {
+    fn font_palette_parser_accepts_keywords_and_custom_names() {
         assert_eq!(
             parse_font_palette("normal"),
             Some(NativeFontPalette::Normal)
         );
         assert_eq!(parse_font_palette("LIGHT"), Some(NativeFontPalette::Light));
         assert_eq!(parse_font_palette("dark"), Some(NativeFontPalette::Dark));
+        assert!(matches!(
+            parse_font_palette("--brand"),
+            Some(NativeFontPalette::Named(_))
+        ));
         assert!(parse_font_palette("palette-one").is_none());
         assert!(parse_font_palette("normal light").is_none());
     }
@@ -24851,7 +25058,7 @@ mod tests {
             #inherit { font-palette: inherit; }
             #clear { font-palette: initial; }
             #unset { font-palette: unset; }
-            #invalid { font-palette: --custom; }
+            #invalid { font-palette: palette-one; }
             </style>
             <div id='parent'><span id='child'>Child</span><span id='inherit'>Inherit</span><span id='clear'>Clear</span><span id='unset'>Unset</span><span id='invalid'>Invalid</span></div>"#,
             &NativeEngineLimits::default(),
@@ -24867,6 +25074,45 @@ mod tests {
         assert_eq!(style("clear").font_palette(), NativeFontPalette::Normal);
         assert_eq!(style("unset").font_palette(), NativeFontPalette::Light);
         assert_eq!(style("invalid").font_palette(), NativeFontPalette::Light);
+    }
+
+    #[test]
+    fn named_font_palette_values_resolve_last_valid_base_palette() {
+        let mut diagnostics = NativeDiagnosticSink::default();
+        let stylesheet = NativeStylesheet::from_sources_with_diagnostics(
+            [r#"
+                @font-palette-values --brand { base-palette: 2; }
+                @font-palette-values --brand { base-palette: 1; }
+                @font-palette-values --ignored { override-colors: 0 #ffffff; }
+                @font-palette-values --invalid { base-palette: 65536; }
+            "#
+            .to_owned()],
+            &mut diagnostics,
+        )
+        .unwrap();
+        let brand = parse_font_palette("--brand").unwrap();
+        assert_eq!(stylesheet.font_palette_values().len(), 2);
+        assert_eq!(
+            stylesheet.resolve_font_palette(brand),
+            NativeFontPalette::Base(1)
+        );
+        assert_eq!(
+            stylesheet.resolve_font_palette(parse_font_palette("--missing").unwrap()),
+            NativeFontPalette::Normal
+        );
+        let (diagnostics, truncated) = diagnostics.finish();
+        assert!(!truncated);
+        assert!(!diagnostics.is_empty());
+    }
+
+    #[test]
+    fn font_palette_parser_accepts_custom_identifiers_only() {
+        assert!(matches!(
+            parse_font_palette("--brand"),
+            Some(NativeFontPalette::Named(_))
+        ));
+        assert!(parse_font_palette("brand").is_none());
+        assert!(parse_font_palette("--").is_none());
     }
 
     #[test]

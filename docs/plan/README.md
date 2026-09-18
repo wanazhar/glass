@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-539`, following completed
 `native-engine-browser-538`, following completed
 `native-engine-browser-537`, following completed
 `native-engine-browser-536`, following completed
@@ -377,7 +378,7 @@ monochrome, and 2/4/8-bit grayscale payloads retain offsets and strike scaling
 under finite dimension/byte budgets; color pixels carry embedded RGBA alpha
 through the existing compositor while grayscale images reuse text-paint
 coverage. Malformed, unsupported, oversized, and over-stretched bitmap data
-falls back to the existing outline paths. SVG-in-font sources, custom palette
+falls back to the existing outline paths. SVG-in-font sources, palette override
 APIs, bitmap variation axes, hinting, font-display timing, and complete
 FontFace/Web IDL parity remain issue #40 gates.
 
@@ -386,15 +387,23 @@ The completed COLR palette-plumbing follow-up is
 metrics now carry a bounded face-local CPAL palette index into COLR painting,
 with out-of-range indices failing closed before malformed or unsupported paint
 data can enter the raster path. Palette zero remains the default boundary for
-the CSS selector until the keyword path recorded by slice 538; custom
-`font-palette` names and `@font-palette-values` remain explicit issue #40 work.
+unregistered or malformed CSS palette selections; keyword and named base
+palette paths are recorded by slices 538 and 539.
+
+The completed named-palette follow-up is
+[`native-engine-browser-539`](tasks/native-engine-browser-539.md): bounded custom
+names now flow through inherited `font-palette` and CSSOM, while
+`@font-palette-values` stores document-local last-wins `base-palette` selections
+for COLR/CPAL painting. Unregistered names fail closed to palette zero, and
+unsupported `override-colors` declarations are rejected rather than silently
+painted; color overrides remain an explicit issue #40 gate.
 
 The completed CSS palette-keyword follow-up is
 [`native-engine-browser-538`](tasks/native-engine-browser-538.md): inherited
 `font-palette: normal|light|dark` now selects palette zero or the first
 bounded CPAL palette advertising the requested light/dark background flag.
 Malformed metadata and missing semantic palettes fail closed to palette zero;
-custom palette names and `@font-palette-values` remain open.
+named base palettes are now covered by slice 539.
 
 The completed affine sweep-gradient follow-up is
 [`native-engine-browser-536`](tasks/native-engine-browser-536.md): COLRv1

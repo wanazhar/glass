@@ -9869,6 +9869,80 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     }
     return normalized.join(", ");
   };
+  const nativeFontFaceVariantDescriptor = (text) => {
+    const trimmed = text.trim();
+    if (trimmed.toLowerCase() === "normal") return "normal";
+    if (!trimmed) return null;
+    const tokens = trimmed.split(/\s+/);
+    if (tokens.length > 16) return null;
+    const groups = {
+      commonLigatures: new Set(["common-ligatures", "no-common-ligatures"]),
+      discretionaryLigatures: new Set(["discretionary-ligatures", "no-discretionary-ligatures"]),
+      historicalLigatures: new Set(["historical-ligatures", "no-historical-ligatures"]),
+      contextualLigatures: new Set(["contextual", "no-contextual"]),
+      caps: new Set(["small-caps", "all-small-caps", "petite-caps", "all-petite-caps", "unicase", "titling-caps"]),
+      position: new Set(["sub", "super"]),
+      alternates: new Set(["historical-forms"]),
+      eastAsianForm: new Set(["jis78", "jis83", "jis90", "jis04", "simplified", "traditional"]),
+      eastAsianWidth: new Set(["full-width", "proportional-width"]),
+      eastAsianRuby: new Set(["ruby"]),
+      numericFigure: new Set(["lining-nums", "oldstyle-nums"]),
+      numericSpacing: new Set(["proportional-nums", "tabular-nums"]),
+      numericFraction: new Set(["diagonal-fractions", "stacked-fractions"]),
+      numericOrdinal: new Set(["ordinal"]),
+      numericSlashedZero: new Set(["slashed-zero"]),
+    };
+    const seen = new Set();
+    const normalized = [];
+    for (const raw of tokens) {
+      const token = raw.toLowerCase();
+      if (token === "normal" || token === "none" || token === "inherit"
+        || token === "initial" || token === "unset" || token === "revert"
+        || token === "revert-layer") return null;
+      let group = null;
+      for (const name of Object.keys(groups)) {
+        if (groups[name].has(token)) {
+          group = name;
+          break;
+        }
+      }
+      if (group === null || seen.has(group)) return null;
+      seen.add(group);
+      normalized.push(token);
+    }
+    return normalized.length === 0 ? null : normalized.join(" ");
+  };
+  const nativeFontFaceFeatureSettingsDescriptor = (text) => {
+    const trimmed = text.trim();
+    if (trimmed.toLowerCase() === "normal") return "normal";
+    if (!trimmed) return null;
+    const entries = trimmed.split(",");
+    if (entries.length === 0 || entries.length > 16) return null;
+    const normalized = [];
+    for (const raw of entries) {
+      const match = raw.trim().match(/^(['"])([\s\S]{4})\1(?:\s*(on|off|[0-9]+))?$/i);
+      if (!match) return null;
+      for (const character of match[2]) {
+        const code = character.charCodeAt(0);
+        if (code < 0x20 || code > 0x7e || ["'", "\"", ","].includes(character)) return null;
+      }
+      let value = 1;
+      if (match[3] !== undefined) {
+        if (match[3].toLowerCase() === "off") value = 0;
+        else if (match[3].toLowerCase() !== "on") {
+          value = Number(match[3]);
+          if (!Number.isSafeInteger(value) || value < 0 || value > 65535) return null;
+        }
+      }
+      const tag = match[2];
+      const entry = `"${tag}" ${value}`;
+      const existing = normalized.findIndex((candidate) => candidate.tag === tag);
+      if (existing >= 0) normalized[existing] = { tag, entry };
+      else normalized.push({ tag, entry });
+    }
+    return normalized.map((candidate) => candidate.entry).join(", ");
+  };
+
   const nativeFontFaceDescriptorValue = (name, value) => {
     const text = nativeFontFaceDescriptorText(name, value);
     if (name === "style") {
@@ -9890,6 +9964,14 @@ const NATIVE_FONT_FACE_SCRIPT: &str = r###"
     }
     if (name === "variationSettings") {
       const normalized = nativeFontFaceVariationDescriptor(text);
+      return normalized === null ? nativeFontFaceDescriptorError(name) : normalized;
+    }
+    if (name === "variant") {
+      const normalized = nativeFontFaceVariantDescriptor(text);
+      return normalized === null ? nativeFontFaceDescriptorError(name) : normalized;
+    }
+    if (name === "featureSettings") {
+      const normalized = nativeFontFaceFeatureSettingsDescriptor(text);
       return normalized === null ? nativeFontFaceDescriptorError(name) : normalized;
     }
     if (name !== "display") return text;
@@ -18505,6 +18587,90 @@ mod native_font_face_tests {
                         true,
                         "\"wght\" 450.5, \"wdth\" -12.25"
                     ]
+                ]
+            ])
+        );
+    }
+
+    #[test]
+    fn script_font_face_variant_and_feature_descriptors_normalize_transactionally() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("font-face-variant-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::empty();
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const face = new FontFace("Variant Face", "", {
+                    variant: " SMALL-CAPS proportional-nums RUBY ",
+                    featureSettings: '"liga" on, \'kern\' 0000, "liga" off, "calt"'
+                  });
+                  document.fonts.add(face);
+                  const invalid = [
+                    ["variant", "normal small-caps"],
+                    ["variant", "small-caps small-caps"],
+                    ["variant", "made-up"],
+                    ["featureSettings", "liga 1"],
+                    ["featureSettings", '"liga" 65536'],
+                    ["featureSettings", '"toolong" 1']
+                  ];
+                  const constructorErrors = invalid.map(([name, value]) => {
+                    const descriptors = {};
+                    descriptors[name] = value;
+                    try {
+                      new FontFace("Invalid Variant Face", "", descriptors);
+                      return [name, "accepted"];
+                    } catch (error) {
+                      return [name, error.name];
+                    }
+                  });
+                  const previous = [face.variant, face.featureSettings];
+                  const setterErrors = invalid.map(([name, value]) => {
+                    try {
+                      face[name] = value;
+                      return [name, "accepted"];
+                    } catch (error) {
+                      return [name, error.name];
+                    }
+                  });
+                  return [
+                    [face.variant, face.featureSettings, document.fonts.size, Array.from(document.fonts)[0] === face],
+                    constructorErrors,
+                    [setterErrors, face.variant === previous[0] && face.featureSettings === previous[1]]
+                  ];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("FontFace variant descriptor validation must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                [
+                    "small-caps proportional-nums ruby",
+                    "\"liga\" 0, \"kern\" 0, \"calt\" 1",
+                    1,
+                    true
+                ],
+                [
+                    ["variant", "SyntaxError"],
+                    ["variant", "SyntaxError"],
+                    ["variant", "SyntaxError"],
+                    ["featureSettings", "SyntaxError"],
+                    ["featureSettings", "SyntaxError"],
+                    ["featureSettings", "SyntaxError"]
+                ],
+                [
+                    [
+                        ["variant", "SyntaxError"],
+                        ["variant", "SyntaxError"],
+                        ["variant", "SyntaxError"],
+                        ["featureSettings", "SyntaxError"],
+                        ["featureSettings", "SyntaxError"],
+                        ["featureSettings", "SyntaxError"]
+                    ],
+                    true
                 ]
             ])
         );

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-546`, following
+expansion checkpoint is completed `native-engine-browser-547`, following
+completed `native-engine-browser-546`, following
 completed `native-engine-browser-545`, following
 completed `native-engine-browser-544`, following
 completed `native-engine-browser-543`, following
@@ -421,6 +422,16 @@ bounded Unicode ranges, and quoted variation settings; invalid or oversized
 values raise `SyntaxError`/`RangeError` before `load()`, and setter failures
 are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
+installed-font discovery, and complete FontFace/Web IDL parity remain explicit
+issue #40 gates.
+
+Slice 547 validates the page-realm `FontFace.variant` and
+`FontFace.featureSettings` descriptors against the bounded native grammar.
+Variant groups are normalized to lowercase with mutually exclusive groups
+rejected; feature entries require printable four-character tags and bounded
+numeric/on/off values, with duplicate tags updated last-wins. Constructor and
+setter failures are transactional, and FontFaceSet identity survives invalid
+updates. Native install wire behavior remains unchanged; display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
 

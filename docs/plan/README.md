@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-547`, following completed
 `native-engine-browser-546`, following completed
 `native-engine-browser-545`, following completed
 `native-engine-browser-544`, following completed
@@ -449,6 +450,16 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed FontFace variant-descriptor follow-up is
+[`native-engine-browser-547`](tasks/native-engine-browser-547.md): dynamic and
+static-projected `FontFace` objects now validate bounded `variant` and
+`featureSettings` values against the native font-variant and
+font-feature-settings grammar. Valid values normalize deterministically,
+duplicate feature tags use last-wins semantics, and invalid constructors or
+setters fail transactionally. Native install wire behavior is unchanged;
+display timing, installed-font discovery, and complete FontFace/Web IDL parity
+remain issue #40 gates.
 
 The completed palette-override follow-up is
 [`native-engine-browser-540`](tasks/native-engine-browser-540.md): bounded

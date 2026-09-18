@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-547`, following completed
 `native-engine-browser-546`, following completed
 `native-engine-browser-545`, following completed
 `native-engine-browser-544`, following completed
@@ -414,6 +415,16 @@ native grammar; malformed, reversed, out-of-range, or oversized values raise
 `SyntaxError`/`RangeError` before loading, and failed setters preserve their
 previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
+installed-font discovery, and complete FontFace/Web IDL parity remain issue
+#40 gates.
+
+Slice 547 validates the remaining bounded page-realm `FontFace` descriptor
+surfaces for `variant` and `featureSettings`. Variant tokens reuse the native
+font-variant group grammar with normalized case and duplicate-group rejection;
+feature entries require printable four-character tags and bounded numeric
+values, with duplicate tags resolved last-wins. Invalid constructors/setters
+raise `SyntaxError` without mutating the face, including after insertion into
+`FontFaceSet`; native install wire behavior remains unchanged. Display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
 

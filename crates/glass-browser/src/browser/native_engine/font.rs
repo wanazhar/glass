@@ -1,3 +1,6 @@
+#[cfg(test)]
+use super::css::NativeFontFeature;
+use super::css::NativeFontVariation;
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
     NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning,
@@ -8,8 +11,6 @@ use super::css::{
     NativeFontVariantNumericSpacing, NativeFontVariantPosition, NativeFontVariationSettings,
     NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
 };
-#[cfg(test)]
-use super::css::{NativeFontFeature, NativeFontVariation};
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -328,6 +329,7 @@ impl NativeFontFaceResource {
 pub(crate) struct NativeTextMetrics {
     faces: Vec<Arc<NativeFontFace>>,
     font_size: u32,
+    weight: FontWeightValue,
     stretch: u16,
     ligatures: NativeFontVariantLigatures,
     variant_caps: NativeFontVariantCaps,
@@ -454,6 +456,25 @@ fn font_variant_numeric_tags(numeric: NativeFontVariantNumeric) -> ([Option<[u8;
         push(*b"zero");
     }
     (tags, count)
+}
+
+fn append_variation_if_missing(
+    settings: &mut NativeFontVariationSettings,
+    tag: [u8; 4],
+    value_milli: i32,
+) {
+    if settings
+        .values()
+        .iter()
+        .any(|variation| variation.tag == tag)
+    {
+        return;
+    }
+    let count = usize::from(settings.count);
+    if count < settings.values.len() {
+        settings.values[count] = NativeFontVariation { tag, value_milli };
+        settings.count = settings.count.saturating_add(1);
+    }
 }
 
 impl NativeTextMetrics {
@@ -705,6 +726,7 @@ impl NativeTextMetrics {
         Self {
             faces: Vec::new(),
             font_size: font_size.clamp(1, MAX_NATIVE_FONT_SIZE),
+            weight: FontWeightValue::Normal,
             stretch: stretch.clamp(500, 2000),
             ligatures,
             variant_caps,
@@ -1114,6 +1136,7 @@ impl NativeTextMetrics {
         Self {
             faces,
             font_size,
+            weight,
             stretch,
             ligatures,
             variant_caps,
@@ -1158,6 +1181,30 @@ impl NativeTextMetrics {
 
     fn stretch_factor(&self, face: &NativeFontFace) -> (u16, u16) {
         (self.stretch, face.stretch.nominal())
+    }
+
+    fn effective_variation_settings(&self, face: &NativeFontFace) -> NativeFontVariationSettings {
+        let mut settings = face
+            .variation_settings
+            .with_overrides(self.variation_settings);
+        let Ok(parsed_face) = ttf_parser::Face::parse(face.font_data.as_ref(), 0) else {
+            return settings;
+        };
+        for axis in parsed_face.variation_axes() {
+            let tag = axis.tag.to_bytes();
+            let value_milli = match &tag {
+                b"wght" => Some(match self.weight {
+                    FontWeightValue::Normal => 400_000,
+                    FontWeightValue::Bold => 700_000,
+                }),
+                b"wdth" => Some(i32::from(self.stretch).saturating_mul(100)),
+                _ => None,
+            };
+            if let Some(value_milli) = value_milli {
+                append_variation_if_missing(&mut settings, tag, value_milli);
+            }
+        }
+        settings
     }
 
     fn face_index_for_character(&self, character: char) -> Option<usize> {
@@ -1251,9 +1298,7 @@ impl NativeTextMetrics {
         };
         buffer.set_direction(direction);
         let scale = i32::try_from(self.font_size.saturating_mul(FONT_SHAPE_SCALE)).ok()?;
-        let variation_settings = face
-            .variation_settings
-            .with_overrides(self.variation_settings);
+        let variation_settings = self.effective_variation_settings(face);
         let variation_instance = if variation_settings.values().is_empty() {
             None
         } else {
@@ -1431,9 +1476,7 @@ impl NativeTextMetrics {
     ) -> Option<NativeFontRun> {
         let face = self.faces.get(shaped.face_index)?;
         let (requested_stretch, nominal_stretch) = self.stretch_factor(face);
-        let variation_settings = face
-            .variation_settings
-            .with_overrides(self.variation_settings);
+        let variation_settings = self.effective_variation_settings(face);
         let characters: Vec<char> = value.chars().collect();
         let justify_unit = i64::from(justify_spacing).saturating_mul(i64::from(FONT_SHAPE_SCALE));
         let justified_space_count = shaped
@@ -1607,8 +1650,7 @@ impl NativeTextMetrics {
             let rasterized = self.rasterize_glyph(
                 face,
                 face.font.lookup_glyph_index(character),
-                face.variation_settings
-                    .with_overrides(self.variation_settings),
+                self.effective_variation_settings(face),
             )?;
             let advance = self
                 .advance(character, letter_spacing, word_spacing)
@@ -3505,6 +3547,31 @@ mod tests {
                 || normal_glyph.height != narrow_glyph.height
                 || normal_glyph.coverage != narrow_glyph.coverage,
             "wdth axis must affect the rasterized outline"
+        );
+        let mut automatic = normal.clone();
+        automatic.weight = FontWeightValue::Bold;
+        automatic.stretch = 750;
+        automatic.variation_settings = NativeFontVariationSettings::default();
+        let automatic_face = automatic
+            .faces
+            .first()
+            .expect("automatic-axis witness must retain a variable face");
+        let automatic_settings = automatic.effective_variation_settings(automatic_face);
+        assert_eq!(
+            automatic_settings
+                .values()
+                .iter()
+                .find(|variation| variation.tag == *b"wght")
+                .map(|variation| variation.value_milli),
+            Some(700_000)
+        );
+        assert_eq!(
+            automatic_settings
+                .values()
+                .iter()
+                .find(|variation| variation.tag == *b"wdth")
+                .map(|variation| variation.value_milli),
+            Some(75_000)
         );
     }
 

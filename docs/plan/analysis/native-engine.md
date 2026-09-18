@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-519`, following
+expansion checkpoint is completed `native-engine-browser-520`, following
 completed `native-engine-browser-517`, following
 completed `native-engine-browser-516`, following
 completed `native-engine-browser-515`, following
@@ -308,6 +308,14 @@ authoritative. Character fallback and baseline metrics remain unchanged;
 numeric variants, variable axes, color rendering, WOFF2, font-display timing,
 mixed-script shaping, cross-realm FontFace projection, and complete
 FontFace/Web IDL parity remain open.
+
+Slice 520 maps inherited CSS weight/stretch to advertised `wght`/`wdth` axes
+when explicit descriptor or authored coordinates do not already provide those
+tags. The effective coordinates feed both HarfRust and the variation-aware
+outline rasterizer; static faces and unknown axes remain unchanged, and
+synthetic scaling remains as the compatibility baseline. Numeric weight ranges,
+optical sizing, custom axes, hinting, color tables, WOFF2, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 519 carries admitted non-default variable-font coordinates into glyph
 bitmap production as well as HarfRust shaping. A bounded `ttf-parser` outline

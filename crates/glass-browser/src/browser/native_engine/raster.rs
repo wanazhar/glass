@@ -1639,12 +1639,17 @@ impl NativeSurface {
                     {
                         continue;
                     }
+                    let gradient_color = glyph.gradient.as_ref().and_then(|gradient| {
+                        gradient.color_at(column as f32 + 0.5, row as f32 + 0.5)
+                    });
+                    if bitmap_color.is_none()
+                        && glyph.gradient.is_some()
+                        && gradient_color.is_none()
+                    {
+                        continue;
+                    }
                     let color = bitmap_color
-                        .or_else(|| {
-                            glyph.gradient.as_ref().and_then(|gradient| {
-                                gradient.color_at(column as f32 + 0.5, row as f32 + 0.5)
-                            })
-                        })
+                        .or(gradient_color)
                         .or(glyph.color)
                         .unwrap_or(paint.color);
                     let coverage = if bitmap_color.is_some() {

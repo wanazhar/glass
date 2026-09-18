@@ -343,6 +343,23 @@ and variation-aware outline rasterization, while static faces and `none`
 retain their existing behavior. Custom axes, hinting, color tables, and
 complete FontFace/Web IDL parity remain issue #40 gates.
 
+Slice 533 replaces the earlier bounded COLRv1 radial-gradient approximation
+with the exact two-circle conical-gradient equation. For each finite sample,
+the native sampler solves the quadratic defined by the interpolated circle
+center and radius, selects the highest root whose radius is non-negative, and
+retains the color-line pad/repeat/reflect extension behavior. Concentric and
+non-concentric circles, equal-radius strips, tangent points, nested circles,
+the zero-radius cone tip, degenerate circles, and outside-cone samples are
+handled without guessing a color; samples with no cone intersection are
+transparent in the compositor rather than falling through to text paint.
+FontFace `local()` source resolution in the same checkpoint borrows the
+immutable system font book for each selected payload instead of cloning every
+installed face inside a JavaScript callback, keeping concurrent native runtimes
+bounded.
+Arbitrary affine radial ellipses, transformed clip masks, sweep skew parity,
+SVG-in-font sources, palette APIs, bitmap variation axes, hinting, font-display,
+and complete FontFace/Web IDL parity remain issue #40 gates.
+
 Slice 532 adds bounded raster-image glyph support to the native software text renderer. The selected `ttf-parser` collection face is retained for TTC/OTC system fonts, and bounded strikes from `sbix`, `CBDT`/`CBLC`, `EBDT`/`EBLC`, and related bitmap tables are admitted through `glyph_raster_image`. PNG, premultiplied BGRA32, monochrome, and 2/4/8-bit grayscale payloads retain glyph offsets and source-strike scaling under 1,024-pixel and 4 MiB limits. Color pixels carry straight RGBA and embedded alpha through `NativeGlyph` into the existing compositor; grayscale images reuse text-paint coverage.
 Malformed, unsupported, oversized, and over-stretched bitmap payloads fail closed to the existing variable-outline, outline, or fontdue path. COLR remains the higher-priority color owner; SVG-in-font sources, palette selection, bitmap variation axes, hinting, font-display timing, and complete FontFace/Web IDL parity remain issue #40 gates.
 
@@ -361,9 +378,8 @@ finite conformal transforms (translation, rotation/uniform scale, and
 reflection), including radius scaling and sweep-direction mapping. Singular,
 skew/non-uniform radial or sweep transforms, and non-finite transformed
 coordinates fail closed to monochrome fallback. The existing axis-aligned
-clip-box representation remains identity-transform-only, and the bounded
-two-point linear projection remains explicit until full three-point gradient
-equations and transformed clip masks are implemented.
+clip-box representation remains identity-transform-only; arbitrary gradient
+transforms and transformed clip masks remain explicit issue #40 gates.
 
 Slice 529 adds bounded COLRv1 linear, radial, and sweep gradient paints plus
 clip-box coverage. The native color painter admits finite coordinates and at
@@ -372,9 +388,8 @@ glyph-local descriptor, and samples colors directly while rasterizing coverage
 instead of allocating a per-pixel gradient buffer. Nested clip boxes intersect
 with the existing current-outline provenance guard; malformed stops,
 unsupported paint transforms, and unsupported paint graphs fail closed to
-monochrome fallback. Identity-transform gradients are the supported boundary;
-gradient-transform parity and the bounded radial non-coincident-center
-approximation remain explicit issue #40 gates.
+monochrome fallback. Arbitrary gradient transforms and transformed clip masks
+remain explicit issue #40 gates.
 
 Slice 528 closes a COLRv1 clip-provenance hole. Each admitted outline receives
 a bounded generation; a current-outline clip is accepted without a redundant

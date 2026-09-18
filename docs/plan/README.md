@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-549`, following completed
 `native-engine-browser-548`, following completed
 `native-engine-browser-547`, following completed
 `native-engine-browser-546`, following completed
@@ -452,6 +453,17 @@ native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
 
+The completed FontFace variant-application follow-up is
+[`native-engine-browser-549`](tasks/native-engine-browser-549.md): normalized
+dynamic and static-projected `FontFace.variant` values now travel through the
+install command and document-owner admission. The native owner maps bounded
+font-variant tokens to OpenType defaults, lets explicit face
+`featureSettings` entries override matching variant tags, and preserves
+element-level feature precedence during shaping. Invalid host variants fail
+closed before font admission; display timing, installed-font discovery, CSS
+`@font-face` feature descriptors, and complete FontFace/Web IDL parity remain
+issue #40 gates.
+
 The completed FontFace feature-application follow-up is
 [`native-engine-browser-548`](tasks/native-engine-browser-548.md): normalized
 dynamic `FontFace.featureSettings` values now travel through the install command,
@@ -460,8 +472,8 @@ OpenType defaults; element-authored feature tags override matching face defaults
 while unmatched face defaults suppress automatic shaping defaults. Invalid host
 metadata fails closed, and legacy wire snapshots default to an empty list.
 CSS `@font-face` resources remain unchanged until their feature descriptors are
-parsed separately; variant application, display timing, installed-font discovery,
-and complete FontFace/Web IDL parity remain issue #40 gates.
+parsed separately; display timing, installed-font discovery, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 The completed FontFace variant-descriptor follow-up is
 [`native-engine-browser-547`](tasks/native-engine-browser-547.md): dynamic and

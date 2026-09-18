@@ -2442,21 +2442,7 @@ impl NativeTextMetrics {
         settings
     }
     fn effective_feature_settings(&self, face: &NativeFontFace) -> NativeFontFeatureSettings {
-        let mut settings = face.feature_settings;
-        for feature in self.feature_settings.values() {
-            let count = usize::from(settings.count);
-            if let Some(existing) = settings.values.get_mut(..count).and_then(|values| {
-                values
-                    .iter_mut()
-                    .find(|existing| existing.tag == feature.tag)
-            }) {
-                *existing = *feature;
-            } else if let Some(slot) = settings.values.get_mut(count) {
-                *slot = *feature;
-                settings.count = settings.count.saturating_add(1);
-            }
-        }
-        settings
+        face.feature_settings.with_overrides(self.feature_settings)
     }
 
     fn face_index_for_character(&self, character: char) -> Option<usize> {
@@ -4996,15 +4982,15 @@ mod tests {
         assert_eq!(
             merged.values[1],
             NativeFontFeature {
-                tag: *b"kern",
-                value: 1
+                tag: *b"calt",
+                value: 0
             }
         );
         assert_eq!(
             merged.values[2],
             NativeFontFeature {
-                tag: *b"calt",
-                value: 0
+                tag: *b"kern",
+                value: 1
             }
         );
     }

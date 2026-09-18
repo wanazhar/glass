@@ -5,8 +5,8 @@ use super::css::{
     NativeFontFaceRule, NativeStylesheet, NativeUnicodeRange, absolutize_stylesheet_urls,
     collect_background_image_sources, font_family_hash, format_font_face_unicode_ranges,
     format_font_stretch_range, format_font_variation_settings, format_font_weight_range,
-    parse_font_face_unicode_range, parse_font_feature_settings, parse_font_stretch_range,
-    parse_font_variation_settings, parse_font_weight_range,
+    parse_font_face_unicode_range, parse_font_face_variant, parse_font_feature_settings,
+    parse_font_stretch_range, parse_font_variation_settings, parse_font_weight_range,
 };
 use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::error::NativeEngineError;
@@ -1437,6 +1437,7 @@ impl NativeDocument {
         style: &str,
         stretch: &str,
         unicode_range: &str,
+        variant: &str,
         feature_settings: &str,
         variation_settings: &str,
         body_base64: &str,
@@ -1493,6 +1494,16 @@ impl NativeDocument {
                 )
             })?
         };
+        let variant_settings = if variant.trim().is_empty() {
+            NativeFontFeatureSettings::default()
+        } else {
+            parse_font_face_variant(variant).ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native FontFace variant",
+                    "must be a bounded CSS font-variant value",
+                )
+            })?
+        };
         let variation_settings = if variation_settings.trim().is_empty() {
             NativeFontVariationSettings::default()
         } else {
@@ -1513,6 +1524,7 @@ impl NativeDocument {
                 )
             })?
         };
+        let feature_settings = variant_settings.with_overrides(feature_settings);
         let max_encoded_bytes = (MAX_NATIVE_FONT_BYTES.saturating_add(2) / 3).saturating_mul(4);
         if body_base64.len() > max_encoded_bytes {
             return Err(NativeEngineError::limit(
@@ -1567,6 +1579,7 @@ impl NativeDocument {
                 style,
                 stretch,
                 unicode_range,
+                variant,
                 feature_settings,
                 variation_settings,
                 body_base64,
@@ -1581,6 +1594,7 @@ impl NativeDocument {
                 style,
                 stretch,
                 unicode_range,
+                variant,
                 feature_settings,
                 variation_settings,
                 body_base64,
@@ -4868,6 +4882,7 @@ impl NativeDocument {
                     style,
                     stretch,
                     unicode_range,
+                    variant,
                     feature_settings,
                     variation_settings,
                     body_base64,
@@ -4879,6 +4894,7 @@ impl NativeDocument {
                         style,
                         stretch,
                         unicode_range,
+                        variant,
                         feature_settings,
                         variation_settings,
                         body_base64,
@@ -10110,6 +10126,7 @@ mod tests {
                 style: "normal".into(),
                 stretch: "normal".into(),
                 unicode_range: "U+4?A".into(),
+                variant: "normal".into(),
                 variation_settings: "normal".into(),
                 feature_settings: "normal".into(),
                 body_base64: "AA==".into(),
@@ -10135,6 +10152,7 @@ mod tests {
                 style: "normal".into(),
                 stretch: "201%".into(),
                 unicode_range: String::new(),
+                variant: "normal".into(),
                 variation_settings: "normal".into(),
                 feature_settings: "normal".into(),
                 body_base64: "AA==".into(),
@@ -10160,6 +10178,7 @@ mod tests {
                 style: "normal".into(),
                 stretch: "normal".into(),
                 unicode_range: String::new(),
+                variant: "normal".into(),
                 variation_settings: r#""wght" 700 escape"#.into(),
                 feature_settings: "normal".into(),
                 body_base64: "AA==".into(),
@@ -10184,6 +10203,7 @@ mod tests {
                 style: "normal".into(),
                 stretch: "normal".into(),
                 unicode_range: String::new(),
+                variant: "normal".into(),
                 feature_settings: r#""liga" 65536"#.into(),
                 variation_settings: "normal".into(),
                 body_base64: "AA==".into(),
@@ -10194,6 +10214,31 @@ mod tests {
             error,
             NativeEngineError::InvalidConfiguration { field, .. }
                 if field == "native FontFace featureSettings"
+        ));
+        assert!(document.font_resources.is_empty());
+    }
+    #[test]
+    fn script_font_face_install_rejects_malformed_variant() {
+        let mut document = NativeDocument::empty();
+        let error = document
+            .apply_script_font_face_installs(&[NativeScriptCommand::FontFaceInstall {
+                request_id: 1,
+                family: "Rejected Variant".into(),
+                weight: "normal".into(),
+                style: "normal".into(),
+                stretch: "normal".into(),
+                unicode_range: String::new(),
+                variant: "small-caps all-small-caps".into(),
+                feature_settings: "normal".into(),
+                variation_settings: "normal".into(),
+                body_base64: "AA==".into(),
+            }])
+            .expect_err("malformed script variant must be rejected");
+
+        assert!(matches!(
+            error,
+            NativeEngineError::InvalidConfiguration { field, .. }
+                if field == "native FontFace variant"
         ));
         assert!(document.font_resources.is_empty());
     }

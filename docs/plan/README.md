@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-526`, following completed
 `native-engine-browser-525`, following completed
 `native-engine-browser-524`, following completed
 `native-engine-browser-523`, following completed
@@ -356,6 +357,17 @@ to an advertised OpenType `opsz` axis, while authored element coordinates and
 effective value reaches both HarfRust shaping and variation-aware outline
 rasterization. Custom axes, hinting, color tables, and complete FontFace/Web IDL
 parity remain issue #40 gates.
+
+The completed COLR/CPAL color-glyph follow-up is
+[`native-engine-browser-526`](tasks/native-engine-browser-526.md): bounded
+solid palette layers now carry their colors from `ttf-parser` through native
+glyph coverage into the software raster surface. The existing shaping,
+spacing, clipping, hit-test, font-container, and two-crate contracts remain
+unchanged; unsupported gradients, transforms, clips, composite layers, and
+malformed color paints fail closed to the monochrome outline path. COLR
+gradient/transform parity, CBDT/CBLC and SVG-in-font sources, palette
+selection, color variation axes, hinting, font-display timing, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 The completed WOFF2 font-admission follow-up is
 [`native-engine-browser-525`](tasks/native-engine-browser-525.md): valid WOFF2

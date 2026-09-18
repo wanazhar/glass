@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-526`, following completed
 `native-engine-browser-525`, following completed
 `native-engine-browser-524`, following completed
 `native-engine-browser-523`, following completed
@@ -335,6 +336,17 @@ descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none`
 retain their existing behavior. Custom axes, hinting, color tables, and
 complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 526 adds bounded COLR/CPAL color-glyph paint. Solid palette layers from
+the existing `ttf-parser` face owner now carry per-layer colors through native
+glyph coverage into the software raster surface. One color glyph is bounded to
+32 layers; gradients, transforms, clips, composite layers, and malformed
+color paints fail closed to the existing monochrome outline fallback. Shaping,
+spacing, clipping, hit testing, font-container normalization, and the
+two-crate boundary remain unchanged. COLR gradient/transform parity,
+CBDT/CBLC and SVG-in-font sources, palette selection, color variation axes,
+hinting, font-display timing, and complete FontFace/Web IDL parity remain issue
+#40 gates.
 
 Slice 525 adds bounded WOFF2 font admission. A pure-Rust Wuff decoder rebuilds
 valid WOFF2 containers into SFNT bytes for the existing fontdue/HarfRust owners;

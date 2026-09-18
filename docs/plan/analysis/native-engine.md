@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-525`, following
+expansion checkpoint is completed `native-engine-browser-526`, following
+completed `native-engine-browser-525`, following
 completed `native-engine-browser-524`, following
 completed `native-engine-browser-523`, following
 completed `native-engine-browser-522`, following
@@ -339,6 +340,17 @@ descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none` retain
 their existing behavior. Custom axes, hinting, color tables, and complete
 FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 526 adds bounded COLR/CPAL color-glyph paint. Solid palette layers from
+the existing `ttf-parser` face owner now carry per-layer colors through the
+native glyph coverage and software raster paths. One color glyph is bounded to
+32 layers; gradients, transforms, clips, composite layers, and malformed
+color paints fail closed to the existing monochrome outline fallback. Shaping,
+spacing, clipping, hit testing, font-container normalization, and the
+two-crate boundary remain unchanged. COLR gradient/transform parity,
+CBDT/CBLC and SVG-in-font sources, palette selection, color variation axes,
+hinting, font-display timing, and complete FontFace/Web IDL parity remain issue
+#40 gates.
 
 Slice 525 adds bounded WOFF2 font admission. A pure-Rust Wuff decoder rebuilds
 valid WOFF2 containers into SFNT bytes for the existing fontdue/HarfRust owners;
@@ -7258,7 +7270,9 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-525.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-526.md` is the latest completed browser
+task;
+`docs/plan/tasks/native-engine-browser-525.md` is the preceding completed browser
 task;
 `docs/plan/tasks/native-engine-browser-524.md` is the preceding completed
 browser task;
@@ -7743,9 +7757,9 @@ browser task;
 `docs/plan/tasks/native-engine-031.md` is the earlier completed checkpoint,
 and `docs/plan/tasks/native-engine-030.md` is the earlier selector checkpoint.
 The current completed browser-expansion checkpoint is recorded for
-`docs/plan/tasks/native-engine-browser-525.md`; its implementation and focused
+`docs/plan/tasks/native-engine-browser-526.md`; its implementation and focused
 verification are recorded in that task file. The preceding browser-expansion
-checkpoint is `docs/plan/tasks/native-engine-browser-524.md`. The CSS foundation checkpoint
+checkpoint is `docs/plan/tasks/native-engine-browser-525.md`. The CSS foundation checkpoint
 remains `docs/plan/tasks/native-engine-234.md`: implementation is `8a96f56b`
 (design `b2119e5f`). It accepts bounded standalone case-insensitive finite
 `overflow: visible|auto|scroll`, `overflow-x: visible|auto|scroll`, and

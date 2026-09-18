@@ -2,8 +2,8 @@
 use super::css::NativeFontFeature;
 use super::css::NativeFontVariation;
 use super::css::{
-    DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
-    NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning,
+    DirectionValue, FontStyleValue, FontWeightValue, NativeColor, NativeFontFaceRule,
+    NativeFontFamilyList, NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning,
     NativeFontLanguageOverride, NativeFontOpticalSizing, NativeFontStretchRange,
     NativeFontVariantAlternates, NativeFontVariantCaps, NativeFontVariantEastAsian,
     NativeFontVariantEastAsianForm, NativeFontVariantEastAsianWidth, NativeFontVariantLigatures,
@@ -39,6 +39,7 @@ const MAX_WOFF_TABLES: usize = 256;
 const WOFF_HEADER_BYTES: usize = 44;
 const WOFF2_HEADER_BYTES: usize = 48;
 const WOFF_TABLE_BYTES: usize = 20;
+const MAX_COLOR_GLYPH_LAYERS: usize = 32;
 const MAX_VARIABLE_OUTLINE_POINTS: usize = 8_192;
 const MAX_VARIABLE_RASTER_DIMENSION: usize = 1_024;
 const VARIABLE_RASTER_SAMPLES: u32 = 4;
@@ -51,6 +52,7 @@ pub struct NativeGlyph {
     pub width: u32,
     pub height: u32,
     pub advance: u32,
+    pub color: Option<NativeColor>,
     pub coverage: Arc<[u8]>,
 }
 
@@ -243,11 +245,118 @@ impl ttf_parser::OutlineBuilder for NativeOutlineBuilder {
 }
 
 #[derive(Debug, Clone)]
+struct NativeColorLayer {
+    contours: Vec<Vec<NativeOutlinePoint>>,
+    color: NativeColor,
+}
+
+struct NativeColorPainter<'a> {
+    face: ttf_parser::Face<'a>,
+    current: Option<Vec<Vec<NativeOutlinePoint>>>,
+    layers: Vec<NativeColorLayer>,
+    unsupported: bool,
+}
+
+impl<'a> NativeColorPainter<'a> {
+    fn new(face: ttf_parser::Face<'a>) -> Self {
+        Self {
+            face,
+            current: None,
+            layers: Vec::new(),
+            unsupported: false,
+        }
+    }
+
+    fn native_color(color: ttf_parser::RgbaColor) -> NativeColor {
+        NativeColor {
+            red: color.red,
+            green: color.green,
+            blue: color.blue,
+            alpha: color.alpha,
+        }
+    }
+
+    fn mark_unsupported(&mut self) {
+        self.unsupported = true;
+        self.current = None;
+    }
+}
+
+impl<'a> ttf_parser::colr::Painter<'a> for NativeColorPainter<'a> {
+    fn outline_glyph(&mut self, glyph_id: ttf_parser::GlyphId) {
+        if self.unsupported {
+            return;
+        }
+        let mut builder = NativeOutlineBuilder::default();
+        let Some(_) = self.face.outline_glyph(glyph_id, &mut builder) else {
+            self.mark_unsupported();
+            return;
+        };
+        let Some(contours) = builder.finish() else {
+            self.mark_unsupported();
+            return;
+        };
+        self.current = Some(contours);
+    }
+
+    fn paint(&mut self, paint: ttf_parser::colr::Paint<'a>) {
+        if self.unsupported {
+            return;
+        }
+        let ttf_parser::colr::Paint::Solid(color) = paint else {
+            self.mark_unsupported();
+            return;
+        };
+        let Some(contours) = self.current.take() else {
+            self.mark_unsupported();
+            return;
+        };
+        if self.layers.len() >= MAX_COLOR_GLYPH_LAYERS {
+            self.mark_unsupported();
+            return;
+        }
+        self.layers.push(NativeColorLayer {
+            contours,
+            color: Self::native_color(color),
+        });
+    }
+
+    fn push_clip(&mut self) {
+        self.mark_unsupported();
+    }
+
+    fn push_clip_box(&mut self, _clipbox: ttf_parser::RectF) {
+        self.mark_unsupported();
+    }
+
+    fn pop_clip(&mut self) {
+        self.mark_unsupported();
+    }
+
+    fn push_layer(&mut self, _mode: ttf_parser::colr::CompositeMode) {
+        self.mark_unsupported();
+    }
+
+    fn pop_layer(&mut self) {
+        self.mark_unsupported();
+    }
+
+    fn push_transform(&mut self, _transform: ttf_parser::Transform) {
+        self.mark_unsupported();
+    }
+
+    fn pop_transform(&mut self) {
+        self.mark_unsupported();
+    }
+}
+
+#[derive(Debug, Clone)]
 struct NativeRasterizedGlyph {
     xmin: i32,
     ymin: i32,
     width: u32,
     height: u32,
+    color: Option<NativeColor>,
     coverage: Vec<u8>,
 }
 
@@ -1537,7 +1646,6 @@ impl NativeTextMetrics {
             if glyph_id >= face.font.glyph_count() {
                 return None;
             }
-            let rasterized = self.rasterize_glyph(face, glyph_id, variation_settings)?;
             let advance_fixed = i64::from(shaped_glyph.x_advance)
                 .saturating_add(shaped_glyph.cluster_spacing)
                 .saturating_add(justify);
@@ -1557,7 +1665,18 @@ impl NativeTextMetrics {
                     char_index: shaped_glyph.cluster,
                 });
             }
-            if rasterized.width > 0 && rasterized.height > 0 && !rasterized.coverage.is_empty() {
+            let glyph_x = match self.direction {
+                DirectionValue::Ltr => pen_x.saturating_add(i64::from(shaped_glyph.x_offset)),
+                DirectionValue::Rtl => total_width_fixed
+                    .saturating_sub(pen_x)
+                    .saturating_sub(advance_fixed)
+                    .saturating_add(i64::from(shaped_glyph.x_offset)),
+            };
+            for rasterized in self.rasterize_glyph_layers(face, glyph_id, variation_settings)? {
+                if rasterized.width == 0 || rasterized.height == 0 || rasterized.coverage.is_empty()
+                {
+                    continue;
+                }
                 let width = rasterized.width;
                 let height = rasterized.height;
                 let (width, coverage) = scale_coverage_horizontal(
@@ -1575,13 +1694,6 @@ impl NativeTextMetrics {
                             .saturating_add(rasterized.ymin),
                     )
                     .saturating_sub(round_signed_fixed(i64::from(shaped_glyph.y_offset)));
-                let glyph_x = match self.direction {
-                    DirectionValue::Ltr => pen_x.saturating_add(i64::from(shaped_glyph.x_offset)),
-                    DirectionValue::Rtl => total_width_fixed
-                        .saturating_sub(pen_x)
-                        .saturating_sub(advance_fixed)
-                        .saturating_add(i64::from(shaped_glyph.x_offset)),
-                };
                 glyphs.push(NativeGlyph {
                     x: round_signed_fixed(glyph_x).saturating_add(scale_signed(
                         rasterized.xmin,
@@ -1592,6 +1704,7 @@ impl NativeTextMetrics {
                     width,
                     height,
                     advance,
+                    color: rasterized.color,
                     coverage,
                 });
             }
@@ -1609,28 +1722,37 @@ impl NativeTextMetrics {
         })
     }
 
-    fn rasterize_glyph(
+    fn rasterize_glyph_layers(
         &self,
         face: &NativeFontFace,
         glyph_id: u16,
         variation_settings: NativeFontVariationSettings,
-    ) -> Option<NativeRasterizedGlyph> {
+    ) -> Option<Vec<NativeRasterizedGlyph>> {
+        if let Some(layers) = rasterize_color_glyph(
+            face.font_data.as_ref(),
+            glyph_id,
+            self.font_size,
+            variation_settings,
+        ) {
+            return Some(layers);
+        }
         if let Some(rasterized) = rasterize_variable_glyph(
             face.font_data.as_ref(),
             glyph_id,
             self.font_size,
             variation_settings,
         ) {
-            return Some(rasterized);
+            return Some(vec![rasterized]);
         }
         let (metrics, coverage) = face.font.rasterize_indexed(glyph_id, self.font_size as f32);
-        Some(NativeRasterizedGlyph {
+        Some(vec![NativeRasterizedGlyph {
             xmin: metrics.xmin,
             ymin: metrics.ymin,
             width: u32::try_from(metrics.width).ok()?,
             height: u32::try_from(metrics.height).ok()?,
+            color: None,
             coverage,
-        })
+        }])
     }
 
     fn rasterize_character_by_character(
@@ -1660,11 +1782,6 @@ impl NativeTextMetrics {
                     });
                 x = x.saturating_add(kerning);
             }
-            let rasterized = self.rasterize_glyph(
-                face,
-                face.font.lookup_glyph_index(character),
-                self.effective_variation_settings(face),
-            )?;
             let advance = self
                 .advance(character, letter_spacing, word_spacing)
                 .saturating_add(if character == ' ' { justify_spacing } else { 0 });
@@ -1675,7 +1792,15 @@ impl NativeTextMetrics {
                     char_index,
                 });
             }
-            if rasterized.width > 0 && rasterized.height > 0 && !rasterized.coverage.is_empty() {
+            for rasterized in self.rasterize_glyph_layers(
+                face,
+                face.font.lookup_glyph_index(character),
+                self.effective_variation_settings(face),
+            )? {
+                if rasterized.width == 0 || rasterized.height == 0 || rasterized.coverage.is_empty()
+                {
+                    continue;
+                }
                 let width = rasterized.width;
                 let height = rasterized.height;
                 let (width, coverage) = scale_coverage_horizontal(
@@ -1700,6 +1825,7 @@ impl NativeTextMetrics {
                     width,
                     height,
                     advance,
+                    color: rasterized.color,
                     coverage,
                 });
             }
@@ -1755,9 +1881,59 @@ fn rasterize_variable_glyph(
         );
     }
     let mut builder = NativeOutlineBuilder::default();
-    let bbox = face.outline_glyph(ttf_parser::GlyphId(glyph_id), &mut builder)?;
+    let _bbox = face.outline_glyph(ttf_parser::GlyphId(glyph_id), &mut builder)?;
     let contours = builder.finish()?;
     let units_per_em = f32::from(face.units_per_em());
+    let mut rasterized = rasterize_outline_contours(&contours, font_size, units_per_em)?;
+    rasterized.color = None;
+    Some(rasterized)
+}
+
+fn rasterize_color_glyph(
+    font_data: &[u8],
+    glyph_id: u16,
+    font_size: u32,
+    variation_settings: NativeFontVariationSettings,
+) -> Option<Vec<NativeRasterizedGlyph>> {
+    let mut face = ttf_parser::Face::parse(font_data, 0).ok()?;
+    for variation in variation_settings.values() {
+        let _ = face.set_variation(
+            ttf_parser::Tag::from_bytes(&variation.tag),
+            variation.value_milli as f32 / 1_000.0,
+        );
+    }
+    let glyph_id = ttf_parser::GlyphId(glyph_id);
+    if !face.is_color_glyph(glyph_id) {
+        return None;
+    }
+    let mut painter = NativeColorPainter::new(face.clone());
+    face.paint_color_glyph(
+        glyph_id,
+        0,
+        ttf_parser::RgbaColor::new(0, 0, 0, u8::MAX),
+        &mut painter,
+    )?;
+    if painter.unsupported || painter.layers.is_empty() {
+        return None;
+    }
+    let units_per_em = f32::from(face.units_per_em());
+    painter
+        .layers
+        .into_iter()
+        .map(|layer| {
+            let mut rasterized =
+                rasterize_outline_contours(&layer.contours, font_size, units_per_em)?;
+            rasterized.color = Some(layer.color);
+            Some(rasterized)
+        })
+        .collect()
+}
+
+fn rasterize_outline_contours(
+    contours: &[Vec<NativeOutlinePoint>],
+    font_size: u32,
+    units_per_em: f32,
+) -> Option<NativeRasterizedGlyph> {
     if units_per_em <= 0.0 {
         return None;
     }
@@ -1765,14 +1941,19 @@ fn rasterize_variable_glyph(
     if !scale.is_finite() || scale <= 0.0 {
         return None;
     }
-    let scaled_x_min = f32::from(bbox.x_min) * scale;
-    let scaled_x_max = f32::from(bbox.x_max) * scale;
-    let scaled_y_min = f32::from(bbox.y_min) * scale;
-    let scaled_y_max = f32::from(bbox.y_max) * scale;
-    let xmin = bounded_floor_i32(scaled_x_min)?;
-    let xmax = bounded_ceil_i32(scaled_x_max)?;
-    let ymin = bounded_floor_i32(scaled_y_min)?;
-    let ymax = bounded_ceil_i32(scaled_y_max)?;
+    let mut points = contours.iter().flat_map(|contour| contour.iter()).copied();
+    let first = points.next()?;
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (first.x, first.x, first.y, first.y);
+    for point in points {
+        min_x = min_x.min(point.x);
+        max_x = max_x.max(point.x);
+        min_y = min_y.min(point.y);
+        max_y = max_y.max(point.y);
+    }
+    let xmin = bounded_floor_i32(min_x * scale)?;
+    let xmax = bounded_ceil_i32(max_x * scale)?;
+    let ymin = bounded_floor_i32(min_y * scale)?;
+    let ymax = bounded_ceil_i32(max_y * scale)?;
     let width = usize::try_from(i64::from(xmax).saturating_sub(i64::from(xmin))).ok()?;
     let height = usize::try_from(i64::from(ymax).saturating_sub(i64::from(ymin))).ok()?;
     if width == 0
@@ -1811,6 +1992,7 @@ fn rasterize_variable_glyph(
         ymin,
         width: u32::try_from(width).ok()?,
         height: u32::try_from(height).ok()?,
+        color: None,
         coverage,
     })
 }
@@ -2936,6 +3118,64 @@ mod tests {
             assert!(!run.glyphs.is_empty());
             assert!(run.width > 0);
         }
+    }
+
+    #[test]
+    fn colr_palette_layers_are_rasterized_with_palette_colors() {
+        let bytes = include_bytes!("../../../tests/fixtures/colr-v0.ttf");
+        let face = ttf_parser::Face::parse(bytes, 0).expect("COLR fixture must parse");
+        let glyph_id = face
+            .glyph_index('A')
+            .expect("COLR fixture must map A to a glyph");
+        assert!(face.is_color_glyph(glyph_id));
+        let layers = rasterize_color_glyph(
+            bytes,
+            glyph_id.0,
+            32,
+            NativeFontVariationSettings::default(),
+        )
+        .expect("COLR glyph must rasterize");
+        assert_eq!(layers.len(), 2);
+        assert!(layers.iter().any(|layer| {
+            layer.color
+                == Some(NativeColor {
+                    red: u8::MAX,
+                    green: 0,
+                    blue: 0,
+                    alpha: u8::MAX,
+                })
+        }));
+        assert!(layers.iter().any(|layer| {
+            layer.color
+                == Some(NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: u8::MAX,
+                    alpha: u8::MAX,
+                })
+        }));
+        assert!(
+            layers
+                .iter()
+                .any(|layer| layer.coverage.iter().any(|coverage| *coverage > 0))
+        );
+    }
+
+    #[test]
+    fn colr_v1_unsupported_paints_fall_back_to_monochrome() {
+        let bytes = include_bytes!("../../../tests/fixtures/colr-1.ttf");
+        let face = ttf_parser::Face::parse(bytes, 0).expect("COLRv1 fixture must parse");
+        let glyph_id = ttf_parser::GlyphId(9);
+        assert!(face.is_color_glyph(glyph_id));
+        assert!(
+            rasterize_color_glyph(
+                bytes,
+                glyph_id.0,
+                32,
+                NativeFontVariationSettings::default(),
+            )
+            .is_none()
+        );
     }
 
     #[test]

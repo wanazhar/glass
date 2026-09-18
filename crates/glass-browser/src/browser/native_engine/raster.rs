@@ -1609,7 +1609,7 @@ impl NativeSurface {
                     self.blend_coverage_pixel(
                         u32::try_from(x).unwrap_or(u32::MAX),
                         u32::try_from(y).unwrap_or(u32::MAX),
-                        paint.color,
+                        glyph.color.unwrap_or(paint.color),
                         *coverage,
                     );
                 }
@@ -2310,10 +2310,11 @@ mod tests {
     use super::*;
     use crate::browser::native_engine::{
         NativeBorderPaint, NativeBorderPaintSide, NativeBorderStyle, NativeColor,
-        NativeDisplayCommand, NativeDisplayList, NativeDocument, NativePoint,
-        NativeTextDecorationSkipInk, NativeTextDecorationStyle, Viewport,
+        NativeDisplayCommand, NativeDisplayList, NativeDocument, NativeFontRun, NativeGlyph,
+        NativePoint, NativeTextDecorationSkipInk, NativeTextDecorationStyle, Viewport,
     };
     use std::io::Cursor;
+    use std::sync::Arc;
 
     fn display_list(
         commands: Vec<NativeDisplayCommand>,
@@ -2558,6 +2559,61 @@ mod tests {
         assert_eq!(surface.pixel(4, 2), Some([255, 0, 0, 255]));
         assert_eq!(surface.pixel(7, 2), Some([255, 255, 255, 255]));
         assert_eq!(surface.pixel(7, 7), Some([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn surface_preserves_per_glyph_color_over_text_paint() {
+        let node_id = NativeDocument::empty().root();
+        let run = NativeFontRun {
+            glyphs: vec![NativeGlyph {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                advance: 1,
+                color: Some(NativeColor::RED),
+                coverage: Arc::<[u8]>::from(vec![u8::MAX]),
+            }],
+            space_ranges: Vec::new(),
+            width: 1,
+            ascent: 1,
+            line_height: 1,
+        };
+        let list = display_list(
+            vec![
+                NativeDisplayCommand::Clear {
+                    color: NativeColor::WHITE,
+                },
+                NativeDisplayCommand::GlyphRun {
+                    node_id,
+                    origin: NativePoint { x: 1, y: 1 },
+                    text: "A".into(),
+                    truncated: false,
+                    run,
+                    color: NativeColor::BLACK,
+                    decoration_color: NativeColor::BLACK,
+                    decoration_style: NativeTextDecorationStyle::Solid,
+                    decoration_skip_ink: NativeTextDecorationSkipInk::None,
+                    decoration_skip_spaces: NativeTextDecorationSkipSpaces::None,
+                    decoration_thickness: 1,
+                    underline_offset: 0,
+                    underline: false,
+                    overline: false,
+                    line_through: false,
+                    bold: false,
+                    italic: false,
+                    word_spacing: 0,
+                    letter_spacing: 0,
+                    justify_spacing: 0,
+                    clip: None,
+                },
+            ],
+            3,
+            3,
+        );
+        let surface = list.rasterize().unwrap();
+
+        assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
     }
 
     #[test]

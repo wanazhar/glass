@@ -1626,6 +1626,8 @@ impl NativeFontDisplay {
     }
 }
 
+pub(crate) const DEFAULT_NATIVE_FONT_SIZE_ADJUST: u16 = 1000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeFontFaceRule {
     pub(crate) family: String,
@@ -1637,6 +1639,7 @@ pub(crate) struct NativeFontFaceRule {
     pub(crate) unicode_ranges: Vec<NativeUnicodeRange>,
     pub(crate) variation_settings: NativeFontVariationSettings,
     pub(crate) feature_settings: NativeFontFeatureSettings,
+    pub(crate) size_adjust: u16,
     pub(crate) font_display: NativeFontDisplay,
 }
 
@@ -7455,6 +7458,7 @@ fn parse_font_face_rule(
     let mut unicode_ranges = Vec::new();
     let mut variation_settings = NativeFontVariationSettings::default();
     let mut feature_settings = NativeFontFeatureSettings::default();
+    let mut size_adjust = DEFAULT_NATIVE_FONT_SIZE_ADJUST;
     let mut font_display = NativeFontDisplay::default();
     for (declaration_offset, declaration) in split_css_declarations(source) {
         let offset = open.saturating_add(1).saturating_add(declaration_offset);
@@ -7555,6 +7559,15 @@ fn parse_font_face_rule(
                     "font-face-feature-settings",
                 ),
             },
+            "size-adjust" => match parse_font_size_adjust(value) {
+                Some(parsed) => size_adjust = parsed,
+                None => context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    offset,
+                    "font-face-size-adjust",
+                ),
+            },
             "font-display" => match parse_font_display(value) {
                 Some(parsed) => font_display = parsed,
                 None => context.diagnostics.push(
@@ -7607,6 +7620,7 @@ fn parse_font_face_rule(
         unicode_ranges,
         variation_settings,
         feature_settings,
+        size_adjust,
         font_display,
     });
     Ok(())
@@ -12842,6 +12856,21 @@ fn parse_font_style(value: &str) -> Option<FontStyleValue> {
 }
 fn parse_font_display(value: &str) -> Option<NativeFontDisplay> {
     NativeFontDisplay::parse(value)
+}
+pub(crate) fn parse_font_size_adjust(value: &str) -> Option<u16> {
+    let percentage = value.trim().strip_suffix('%')?.trim();
+    let milli_percentage = parse_decimal_milli(percentage)?;
+    let adjusted = milli_percentage.saturating_add(50) / 100;
+    let adjusted = u16::try_from(adjusted).ok()?;
+    (250..=4000).contains(&adjusted).then_some(adjusted)
+}
+
+pub(crate) fn format_font_size_adjust(value: u16) -> String {
+    if value % 10 == 0 {
+        format!("{}%", value / 10)
+    } else {
+        format!("{}.{}%", value / 10, value % 10)
+    }
 }
 
 fn parse_font_stretch_token(value: &str) -> Option<u16> {
@@ -24010,6 +24039,7 @@ mod tests {
                 font-stretch: condensed;
                 font-variation-settings: "wght" 450.5, "wdth" -12.25, "wght" 700;
                 font-feature-settings: "liga" off, "kern" on;
+                size-adjust: 62.5%;
                 font-display: SWAP;
             }
             #text { font-family: "Embedded Sans"; }"#
@@ -24033,6 +24063,7 @@ mod tests {
         );
         assert_eq!(rule.style, FontStyleValue::Italic);
         assert_eq!(rule.stretch, NativeFontStretchRange { min: 750, max: 750 });
+        assert_eq!(rule.size_adjust, 625);
         assert_eq!(rule.font_display, NativeFontDisplay::Swap);
         assert_eq!(
             format_font_variation_settings(rule.variation_settings),
@@ -24042,7 +24073,21 @@ mod tests {
             format_font_feature_settings(rule.feature_settings),
             r#""liga" 0, "kern" 1"#
         );
+        assert_eq!(format_font_size_adjust(rule.size_adjust), "62.5%");
         assert_eq!(stylesheet.rules.len(), 1);
+    }
+
+    #[test]
+    fn font_size_adjust_parser_enforces_percentage_bounds() {
+        assert_eq!(parse_font_size_adjust("25%"), Some(250));
+        assert_eq!(parse_font_size_adjust("62.5%"), Some(625));
+        assert_eq!(parse_font_size_adjust("400%"), Some(4000));
+        assert_eq!(parse_font_size_adjust("24.9%"), None);
+        assert_eq!(parse_font_size_adjust("400.1%"), None);
+        assert_eq!(parse_font_size_adjust("62.5"), None);
+        assert_eq!(parse_font_size_adjust("62.5555%"), None);
+        assert_eq!(format_font_size_adjust(250), "25%");
+        assert_eq!(format_font_size_adjust(4000), "400%");
     }
 
     #[test]

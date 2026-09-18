@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-551`, following completed
 `native-engine-browser-550`, following completed
 `native-engine-browser-549`, following completed
 `native-engine-browser-548`, following completed
@@ -453,6 +454,16 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed CSS FontFace `size-adjust` follow-up is
+[`native-engine-browser-551`](tasks/native-engine-browser-551.md): bounded
+`size-adjust` percentages from 25% through 400% now normalize in static
+`@font-face` rules and dynamic page-realm `FontFace` descriptors. The value
+survives native resource and content-process wire construction, participates
+in static face identity/status matching, and scales selected-face metrics,
+shaping, and rasterization. Font-display timing, installed-font discovery,
+remaining CSS FontFace descriptors, and complete FontFace/Web IDL parity remain
+issue #40 gates.
 
 The completed CSS FontFace feature-default follow-up is
 [`native-engine-browser-550`](tasks/native-engine-browser-550.md): bounded

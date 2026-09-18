@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-537`, following completed
 `native-engine-browser-536`, following completed
 `native-engine-browser-535`, following completed
 `native-engine-browser-534`, following completed
@@ -375,9 +376,17 @@ monochrome, and 2/4/8-bit grayscale payloads retain offsets and strike scaling
 under finite dimension/byte budgets; color pixels carry embedded RGBA alpha
 through the existing compositor while grayscale images reuse text-paint
 coverage. Malformed, unsupported, oversized, and over-stretched bitmap data
-falls back to the existing outline paths. SVG-in-font sources, palette
-selection, bitmap variation axes, hinting, font-display timing, and complete
+falls back to the existing outline paths. SVG-in-font sources, public palette
+APIs, bitmap variation axes, hinting, font-display timing, and complete
 FontFace/Web IDL parity remain issue #40 gates.
+
+The completed COLR palette-plumbing follow-up is
+[`native-engine-browser-537`](tasks/native-engine-browser-537.md): native text
+metrics now carry a bounded face-local CPAL palette index into COLR painting,
+with out-of-range indices failing closed before malformed or unsupported paint
+data can enter the raster path. Palette zero remains the default at this
+checkpoint; the CSS `font-palette` and `@font-palette-values` APIs remain
+explicit issue #40 work.
 
 The completed affine sweep-gradient follow-up is
 [`native-engine-browser-536`](tasks/native-engine-browser-536.md): COLRv1

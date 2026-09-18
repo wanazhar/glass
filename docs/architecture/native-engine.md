@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-525`, following completed
 `native-engine-browser-524`, following completed
 `native-engine-browser-523`, following completed
 `native-engine-browser-522`, following completed
@@ -209,7 +210,7 @@ fontdue and HarfRust owners admit them. Discovery is capped at 512 files,
 64 MiB of file bytes, 64 faces, 32 collection faces, and the existing 4 MiB
 per-face limit; unreadable, malformed, duplicate, and unsupported entries are
 skipped without failing the book. Eager startup I/O, conservative metadata
-mapping, variable/color tables, WOFF/WOFF2, font-display timing, and complete
+mapping, variable/color tables, WOFF, font-display timing, and complete
 FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 502 admits bounded WOFF 1.0 font sources. The native font owner validates
@@ -218,7 +219,7 @@ compressed tables, reconstructs a sorted SFNT directory, and repairs the
 `head.checkSumAdjustment` before existing fontdue/HarfRust admission. The
 normalizer is shared by document resources and script-created FontFace
 installs. Page source filtering now advertises only WOFF, TrueType, OpenType,
-and collection formats that this parser can consume; WOFF2, variable/color,
+and collection formats that this parser can consume; variable/color,
 EOT, SVG, and complete font-format/Web IDL parity remain issue #40 gates.
 
 Slice 503 adds bounded CSS `unicode-range` selection. Codepoint, inclusive
@@ -228,7 +229,7 @@ through document resources and the content-process wire snapshot, and tied
 named-family faces are retained so glyph lookup can choose the first face that
 both admits the codepoint and contains the glyph. The CSS `document.fonts`
 projection exposes the canonical range string. Mixed-script shaping,
-font-stretch/variant, font-display timing, variable/color fonts, WOFF2, and
+font-stretch/variant, font-display timing, variable/color fonts, and
 complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 504 carries the page-realm `FontFace` constructor's `unicodeRange` through
@@ -238,7 +239,7 @@ font bytes are decoded or admitted; malformed descriptors leave the font book
 unchanged and use the existing rejection acknowledgement. An omitted command
 field remains unrestricted for compatibility, while accepted ranges persist in
 document resources and content-process snapshots. Mixed-script shaping,
-font-stretch/variant, font-display timing, variable/color fonts, WOFF2,
+font-stretch/variant, font-display timing, variable/color fonts,
 cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
 issue #40 gates.
 
@@ -251,7 +252,7 @@ payloads default to `normal`. The computed CSS `font-stretch` property,
 font-face range matching, horizontal glyph scaling, inherited
 `font-variant-ligatures`, bounded `font-feature-settings`, and `font-kerning`
 remain implemented rendering gates; font-display timing, variable/color fonts,
-WOFF2, cross-realm FontFace projection, and complete FontFace/Web IDL parity
+cross-realm FontFace projection, and complete FontFace/Web IDL parity
 remain issue #40 gates.
 
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
@@ -261,7 +262,7 @@ faces remain available for codepoint selection. Shaped and character-path text
 now scale advances, offsets, kerning, and glyph coverage horizontally, while
 `local()` source lookup uses the descriptor's nominal width. Descriptor ranges
 use a normal-width synthetic baseline until a real variation-axis owner exists;
-variable/color tables, WOFF2, font-display timing, mixed-script shaping,
+variable/color tables, font-display timing, mixed-script shaping,
 cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
 issue #40 gates.
 
@@ -272,7 +273,7 @@ CSS cascade and projected through native CSSOM. HarfRust receives explicit
 `liga`/`clig`, `dlig`, `hlig`, and `calt` settings before measuring and
 rasterizing, so disabling or opting into a ligature group changes both layout
 width and glyph output. The broader `font-variant` family, variable/color
-tables, WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
+tables, font-display timing, mixed-script shaping, cross-realm FontFace
 projection, and complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 508 wires bounded `font-feature-settings` into the inherited computed
@@ -280,7 +281,7 @@ style, CSSOM, and HarfRust shaping path. Quoted four-byte OpenType tags accept
 bounded `on`/`off` or non-negative integer values, duplicate tags normalize
 last-wins, and explicit `liga`/`clig`/`dlig`/`hlig`/`calt` settings override the
 native ligature defaults. The fixed feature-list cap and escape-free parser
-are deliberate boundaries; variable/color tables, WOFF2, font-display timing,
+are deliberate boundaries; variable/color tables, font-display timing,
 mixed-script shaping, cross-realm FontFace projection, and complete
 FontFace/Web IDL parity remain issue #40 gates.
 
@@ -288,7 +289,7 @@ Slice 509 wires inherited `font-kerning` into the native computed style, CSSOM,
 and HarfRust shaping path. `auto` delegates to the shaper's normal behavior,
 while `normal` and `none` provide explicit `kern` values; an authored low-level
 `"kern"` feature setting retains precedence. Character-by-character fallback
-keeps its existing bounded advances, while variable/color tables, WOFF2,
+keeps its existing bounded advances, while variable/color tables,
 font-display timing, mixed-script shaping, cross-realm FontFace projection, and
 complete FontFace/Web IDL parity remain issue #40 gates.
 
@@ -297,14 +298,14 @@ CSSOM, and HarfRust shaping path. The seven bounded values map to the
 corresponding `smcp`, `c2sc`, `pcap`, `c2pc`, `unic`, and `titl` OpenType
 features, and an authored low-level feature tag retains precedence. The
 character-by-character fallback keeps its bounded glyph path; variable/color
-tables, WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
+tables, font-display timing, mixed-script shaping, cross-realm FontFace
 projection, and complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 511 wires inherited `font-variant-position` into the native computed
 style, CSSOM, and HarfRust shaping path. `sub` and `super` map to the bounded
 `subs` and `sups` OpenType features, and an authored low-level feature tag
 retains precedence. The character-by-character fallback and baseline metrics
-remain unchanged; numeric variants, variable/color tables, WOFF2,
+remain unchanged; numeric variants, variable/color tables,
 font-display timing, mixed-script shaping, cross-realm FontFace projection,
 and complete FontFace/Web IDL parity remain issue #40 gates.
 
@@ -314,8 +315,8 @@ only when the selected face exposes the axis; `@font-face` descriptor values
 and authored `font-variation-settings` remain authoritative. The effective
 coordinates feed both HarfRust and the variation-aware outline rasterizer,
 while existing synthetic scaling remains for compatibility. Optical sizing,
-custom axes, hinting, color tables, WOFF2, and complete FontFace/Web IDL parity
-remain issue #40 gates.
+custom axes, hinting, color tables, and complete FontFace/Web IDL parity remain
+issue #40 gates.
 
 Slice 521 carries integer CSS `font-weight` values from 1 through 1000 across
 the native parser, cascade, CSSOM, `@font-face` and script-created `FontFace`
@@ -324,8 +325,7 @@ paint selection. Numeric face matching uses bounded distance while preserving
 style and stretch priorities; advertised `wght` axes receive the requested
 coordinate when no explicit variation coordinate overrides it. The fixed-cell
 bold paint path treats weights at or above 600 as bold. Custom axes, hinting,
-color tables, WOFF2, and complete FontFace/Web IDL parity remain issue #40
-gates.
+color tables, and complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 522 carries inherited `font-optical-sizing: auto|none` through native
 parsing, cascade, computed style, and CSSOM. For an advertised `opsz` axis,
@@ -333,8 +333,18 @@ parsing, cascade, computed style, and CSSOM. For an advertised `opsz` axis,
 element variation coordinates and `@font-face`/script-created `FontFace`
 descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none`
-retain their existing behavior. Custom axes, hinting, color tables, WOFF2, and
+retain their existing behavior. Custom axes, hinting, color tables, and
 complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 525 adds bounded WOFF2 font admission. A pure-Rust Wuff decoder rebuilds
+valid WOFF2 containers into SFNT bytes for the existing fontdue/HarfRust owners;
+header, table-stream, Brotli-output, and final-font budgets are checked before
+resources enter the font book. CSS `@font-face` and script-created `FontFace`
+source lists recognize `format("woff2")`, while WOFF1/SFNT behavior, source
+fallback, content-process wire shape, and the two-crate boundary remain
+unchanged. Color-glyph tables, variable-axis completeness, hinting,
+font-display timing, and complete FontFace/Web IDL parity remain issue #40
+gates.
 
 Slice 524 carries absolute numeric `font-weight` singletons and ascending
 descriptor ranges from 1 through 1000 through CSS `@font-face`, script-created
@@ -343,8 +353,8 @@ restored font books. Legacy wire payloads without the optional range remain
 readable as singleton faces. Face matching scores requests at zero inside a
 declared range and by distance outside it, while the requested element weight
 continues to drive advertised `wght` mapping and singleton formatting remains
-unchanged. Custom axes, hinting, color glyph tables, WOFF2, font-display
-timing, and complete FontFace/Web IDL parity remain issue #40 gates.
+unchanged. Custom axes, hinting, color glyph tables, font-display timing, and
+complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 523 carries CSS `font-weight: lighter|bolder` through a declaration-only
 relative layer. The computed-style resolver applies the CSS relative-weight
@@ -353,7 +363,7 @@ through 1000, before existing face scoring, advertised `wght` mapping, paint
 selection, and CSSOM serialization. `@font-face` and script-created `FontFace`
 descriptors continue to accept absolute weights only for relative keywords, and
 the computed-style wire shape remains unchanged. Custom axes, hinting, color
-tables, WOFF2, and complete FontFace/Web IDL parity remain issue #40 gates.
+tables, and complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 519 makes non-default variable-font coordinates reach glyph pixels as
 well as shaping. The native font owner enables `ttf-parser` variable support,
@@ -361,8 +371,7 @@ collects the selected TrueType/CFF outline under a fixed point budget, and
 uses bounded 4x software supersampling before the existing stretch and display
 placement steps. Static/default-instance, bitmap-only, and malformed outlines
 retain the fontdue fallback. Hinting, automatic weight/stretch axis mapping,
-color tables, WOFF2, and complete FontFace/Web IDL parity remain issue #40
-gates.
+color tables, and complete FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 518 wires the bounded `font-variation-settings` `@font-face` descriptor
 and script-created `FontFace` descriptor through CSS parsing, page projection,
@@ -388,7 +397,7 @@ atomically, inherited, and serialized as the exact canonical quoted value;
 the shaper receives the normalized unpadded language tag. Missing serialized
 fields default to `normal` for content-process compatibility, while malformed
 values and the existing character fallback path remain bounded. Full language
-negotiation, mixed-script and vertical shaping, variable/color tables, WOFF2,
+negotiation, mixed-script and vertical shaping, variable/color tables,
 font-display timing, cross-realm FontFace projection, and complete FontFace/Web
 IDL parity remain issue #40 gates.
 
@@ -396,7 +405,7 @@ Slice 515 wires the bounded inherited `font-variant` shorthand across the
 already implemented font-variant groups. CSS-wide values expand to every
 longhand, ordinary cascade order is preserved, and computed CSSOM exposes a
 canonical serialization that omits defaults. Longhand grammar is unchanged;
-language-specific shaping, vertical writing, variable/color tables, WOFF2,
+language-specific shaping, vertical writing, variable/color tables,
 font-display timing, mixed-script shaping, cross-realm FontFace projection,
 and complete FontFace/Web IDL parity remain issue #40 gates.
 
@@ -404,7 +413,7 @@ Slice 514 wires the bounded inherited `font-variant-east-asian` property into
 the native computed style, CSSOM, and HarfRust shaping path. Form, width, and
 ruby keywords map to their standard OpenType tags, while authored low-level
 settings retain precedence. Language-specific shaping, vertical writing,
-variable/color tables, WOFF2, font-display timing, mixed-script shaping,
+variable/color tables, font-display timing, mixed-script shaping,
 cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
 issue #40 gates.
 
@@ -413,7 +422,7 @@ the native computed style, CSSOM, and HarfRust shaping path. `normal` and
 `historical-forms` are admitted, with the latter mapping to `hist`; an authored
 low-level `"hist"` setting retains precedence. Parameterized feature-value
 alternates remain rejected until a native `@font-feature-values` registry is
-implemented. Character fallback, variable/color tables, WOFF2, font-display
+implemented. Character fallback, variable/color tables, font-display
 timing, mixed-script shaping, cross-realm FontFace projection, and complete
 FontFace/Web IDL parity remain issue #40 gates.
 
@@ -422,7 +431,7 @@ style, CSSOM, and HarfRust shaping path. The five bounded control groups map
 to `lnum`, `onum`, `pnum`, `tnum`, `frac`, `afrc`, `ordn`, and `zero` OpenType
 features, and an authored low-level feature tag retains precedence. The
 character-by-character fallback remains unchanged; numeric feature-specific
-shaping, variable/color tables, WOFF2, font-display timing, mixed-script
+shaping, variable/color tables, font-display timing, mixed-script
 shaping, cross-realm FontFace projection, and complete FontFace/Web IDL parity
 remain issue #40 gates.
 

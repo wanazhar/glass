@@ -12,7 +12,7 @@ use super::css::{
     NativeFontWeightRange, NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
 };
 use std::fmt;
-use std::io::Read;
+use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -37,6 +37,7 @@ const MAX_NATIVE_SYSTEM_FONT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_NATIVE_SYSTEM_COLLECTION_FACES: u32 = 32;
 const MAX_WOFF_TABLES: usize = 256;
 const WOFF_HEADER_BYTES: usize = 44;
+const WOFF2_HEADER_BYTES: usize = 48;
 const WOFF_TABLE_BYTES: usize = 20;
 const MAX_VARIABLE_OUTLINE_POINTS: usize = 8_192;
 const MAX_VARIABLE_RASTER_DIMENSION: usize = 1_024;
@@ -1908,8 +1909,7 @@ fn sfnt_checksum(bytes: &[u8]) -> u32 {
 }
 
 /// Convert a bounded WOFF 1.0 container to the SFNT bytes consumed by the
-/// existing fontdue/HarfRust owners. WOFF2 and unsupported payloads remain
-/// fail-closed until their decompressor and renderer paths are implemented.
+/// existing fontdue/HarfRust owners.
 fn decode_woff(bytes: &[u8]) -> Option<Vec<u8>> {
     if bytes.len() < WOFF_HEADER_BYTES || bytes.len() > MAX_NATIVE_FONT_BYTES {
         return None;
@@ -2077,13 +2077,92 @@ fn decode_woff(bytes: &[u8]) -> Option<Vec<u8>> {
     Some(output)
 }
 
+struct BoundedBrotliWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl Write for BoundedBrotliWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "WOFF2 Brotli output exceeds the native font limit",
+            ));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn decode_woff2_brotli(
+    compressed: &[u8],
+    size_hint: usize,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    if size_hint == 0 || size_hint > MAX_NATIVE_FONT_BYTES {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "WOFF2 Brotli table stream exceeds the native font limit",
+        )));
+    }
+    let mut reader = Cursor::new(compressed);
+    let mut writer = BoundedBrotliWriter {
+        bytes: Vec::with_capacity(size_hint),
+        limit: size_hint,
+    };
+    brotli_decompressor::BrotliDecompress(&mut reader, &mut writer)?;
+    if writer.bytes.len() != size_hint {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "WOFF2 Brotli table stream has an unexpected size",
+        )));
+    }
+    Ok(writer.bytes)
+}
+
+/// Convert a bounded WOFF2 container to the SFNT bytes consumed by the
+/// existing fontdue/HarfRust owners. Header limits are checked before Wuff's
+/// table-directory parser and the Brotli callback keeps its decompressed table
+/// stream within the same native font budget.
+fn decode_woff2(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < WOFF2_HEADER_BYTES || bytes.len() > MAX_NATIVE_FONT_BYTES {
+        return None;
+    }
+    if read_u32_be(bytes, 0)? != 0x774f_4632 {
+        return None;
+    }
+    let declared_length = usize::try_from(read_u32_be(bytes, 8)?).ok()?;
+    if declared_length != bytes.len() {
+        return None;
+    }
+    let table_count = usize::from(read_u16_be(bytes, 12)?);
+    if table_count == 0 || table_count > MAX_WOFF_TABLES {
+        return None;
+    }
+    let total_sfnt_size = usize::try_from(read_u32_be(bytes, 16)?).ok()?;
+    if total_sfnt_size == 0 || total_sfnt_size > MAX_NATIVE_FONT_BYTES {
+        return None;
+    }
+    let total_compressed_size = usize::try_from(read_u32_be(bytes, 20)?).ok()?;
+    if total_compressed_size == 0 || total_compressed_size > bytes.len() {
+        return None;
+    }
+    let decoded =
+        wuff::decompress_woff2_with_custom_brotli(bytes, &mut decode_woff2_brotli).ok()?;
+    (decoded.len() <= MAX_NATIVE_FONT_BYTES).then_some(decoded)
+}
+
 fn normalize_font_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
     if bytes.is_empty() || bytes.len() > MAX_NATIVE_FONT_BYTES {
         return None;
     }
     match read_u32_be(bytes, 0)? {
         0x774f_4646 => decode_woff(bytes),
-        0x774f_4632 => None,
+        0x774f_4632 => decode_woff2(bytes),
         _ => Some(bytes.to_vec()),
     }
 }
@@ -2836,6 +2915,7 @@ fn system_font_candidates() -> &'static [FontCandidate] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     #[test]
     fn real_system_font_metrics_are_bounded_when_available() {
@@ -3056,6 +3136,35 @@ mod tests {
             Some("WOFF Face")
         );
         assert_ne!(book.faces.first().unwrap().font_data.as_ref(), b"wOFF");
+    }
+
+    #[test]
+    fn woff2_sources_are_normalized_before_native_font_admission() {
+        let encoded = "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";
+        let woff2 = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("the WPT WOFF2 fixture must be valid base64");
+        let normalized = normalize_font_bytes(&woff2).expect("WOFF2 must normalize to SFNT");
+        assert!(supported_woff_flavor(
+            read_u32_be(&normalized, 0).expect("normalized SFNT must have a flavor")
+        ));
+        assert!(NativeFontBook::is_parseable_font_bytes(&woff2));
+        let resource = NativeFontFaceResource {
+            family: "WOFF2 Face".into(),
+            family_key: font_family_hash("WOFF2 Face"),
+            weight: NativeFontWeightRange::default(),
+            style: FontStyleValue::Normal,
+            stretch: NativeFontStretchRange::default(),
+            variation_settings: NativeFontVariationSettings::default(),
+            bytes: Arc::from(woff2),
+            unicode_ranges: Vec::new(),
+        };
+        let book = NativeFontBook::from_resources(&[resource]);
+        assert_eq!(
+            book.faces.first().map(|face| face.family.as_str()),
+            Some("WOFF2 Face")
+        );
+        assert_eq!(book.faces.first().unwrap().font_data.as_ref(), normalized);
     }
 
     #[test]

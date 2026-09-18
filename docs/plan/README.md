@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-525`, following completed
 `native-engine-browser-524`, following completed
 `native-engine-browser-523`, following completed
 `native-engine-browser-522`, following completed
@@ -225,16 +226,16 @@ font book searches bounded user and platform roots for TTF, OTF, TTC, and OTC
 files, reads collection metadata with `ttf-parser`, preserves static faces
 first, and admits deterministic family/style matches under explicit file,
 byte, collection, and face limits. Eager discovery cost, variable/color
-tables, WOFF/WOFF2, font-display timing, and complete FontFace/Web IDL parity
+tables, WOFF, font-display timing, and complete FontFace/Web IDL parity
 remain issue #40 gates.
 
 The completed WOFF admission follow-up is
 [`native-engine-browser-502`](tasks/native-engine-browser-502.md): bounded WOFF
 1.0 resources are validated, zlib-decompressed when needed, reconstructed as
 SFNT bytes, checksum-repaired, and admitted through the existing raster and
-shaping owners. The page source filter now fails closed for WOFF2, variation,
+shaping owners. The page source filter now fails closed for unsupported variation,
 color, EOT, and SVG formats that the native renderer does not yet implement.
-Decoded-size limits, WOFF2, variable/color rendering, and complete font-format
+Decoded-size limits, variable/color rendering, and complete font-format
 and FontFace/Web IDL parity remain issue #40 gates.
 
 The completed CSS unicode-range selection follow-up is
@@ -243,7 +244,7 @@ codepoint, range, and wildcard descriptors are normalized and carried through
 the page/content font-resource boundary, while tied named-family faces are
 selected by both range membership and glyph coverage. The `document.fonts`
 projection exposes the canonical range. Mixed-script shaping, font-stretch and
-variant descriptors, font-display timing, variable/color fonts, WOFF2, and
+variant descriptors, font-display timing, variable/color fonts, and
 complete FontFace/Web IDL parity remain issue #40 gates.
 
 The completed dynamic FontFace unicode-range follow-up is
@@ -254,7 +255,7 @@ range storage, and 32-range admission limit before font bytes are installed.
 Malformed descriptors are rejected transactionally; omitted command fields
 retain unrestricted coverage for compatibility. Mixed-script shaping,
 font-stretch and variant descriptors, font-display timing, variable/color
-fonts, WOFF2, cross-realm FontFace projection, and complete FontFace/Web IDL
+fonts, cross-realm FontFace projection, and complete FontFace/Web IDL
 parity remain issue #40 gates.
 
 The completed `font-stretch` descriptor follow-up is
@@ -265,7 +266,7 @@ FontFace resource boundaries, content-process wire snapshots, and the
 admission and older payloads default to `normal`. The computed CSS property,
 face-range matching, horizontal glyph scaling, and inherited font-variant
 controls are now represented in the native rendering path; font-display
-timing, variable/color fonts, WOFF2, cross-realm FontFace projection, and
+timing, variable/color fonts, cross-realm FontFace projection, and
 complete FontFace/Web IDL parity remain issue #40 gates.
 
 The completed rendering follow-up is
@@ -275,7 +276,7 @@ considers the closest bounded face range after weight/style, and shaped and
 character-path runs scale horizontal advances, offsets, kerning, and glyph
 coverage. `local()` source lookup uses the selected descriptor's nominal width;
 descriptor ranges remain on a normal-width synthetic baseline until a real
-variation-axis owner exists. Variable/color tables, WOFF2, font-display timing,
+variation-axis owner exists. Variable/color tables, font-display timing,
 mixed-script shaping, cross-realm FontFace projection, and complete FontFace/Web
 IDL parity remain issue #40 gates.
 
@@ -284,7 +285,7 @@ The completed ligature-shaping follow-up is
 `font-variant-ligatures` now inherits through the native cascade, projects as a
 canonical CSSOM value, and controls HarfRust's common, discretionary,
 historical, and contextual OpenType features during measurement and
-rasterization. The broader `font-variant` family, variable/color fonts, WOFF2,
+rasterization. The broader `font-variant` family, variable/color fonts,
 font-display timing, mixed-script shaping, cross-realm FontFace projection, and
 complete FontFace/Web IDL parity remain issue #40 gates.
 
@@ -295,7 +296,7 @@ canonical CSSOM list, and supplies bounded quoted OpenType tags to HarfRust
 for measurement and rasterization. Duplicate tags normalize last-wins, and
 explicit ligature-tag values override the native `font-variant-ligatures`
 defaults. The fixed cap and escape-free parser are deliberate boundaries;
-variable/color fonts, WOFF2, font-display timing, mixed-script shaping,
+variable/color fonts, font-display timing, mixed-script shaping,
 cross-realm FontFace projection, and complete FontFace/Web IDL parity remain
 issue #40 gates.
 
@@ -304,7 +305,7 @@ The completed kerning follow-up is
 `font-kerning` now projects through native CSSOM and maps `auto`, `normal`, and
 `none` to the existing HarfRust `kern` feature owner, while an explicit
 `"kern"` setting retains precedence. Character fallback keeps its bounded
-advances; variable/color fonts, WOFF2, font-display timing, mixed-script
+advances; variable/color fonts, font-display timing, mixed-script
 shaping, cross-realm FontFace projection, and complete FontFace/Web IDL parity
 remain issue #40 gates.
 
@@ -313,7 +314,7 @@ The completed `font-variant-caps` follow-up is
 inherited capitalization property is carried through native CSSOM and
 mapped to the bounded HarfRust `smcp`, `c2sc`, `pcap`, `c2pc`, `unic`, and
 `titl` feature tags, with explicit low-level feature settings retaining
-precedence. Character fallback remains bounded; variable/color fonts, WOFF2,
+precedence. Character fallback remains bounded; variable/color fonts,
 font-display timing, mixed-script shaping, cross-realm FontFace projection,
 and complete FontFace/Web IDL parity remain issue #40 gates.
 
@@ -323,7 +324,7 @@ The completed `font-variant-position` follow-up is
 bounded HarfRust `subs` and `sups` feature tags, with explicit low-level
 feature settings retaining precedence. Character fallback and typographic
 baseline metrics remain bounded; numeric variants, variable/color fonts,
-WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
+font-display timing, mixed-script shaping, cross-realm FontFace
 projection, and complete FontFace/Web IDL parity remain issue #40 gates.
 
 The completed automatic variable-axis follow-up is
@@ -333,8 +334,8 @@ variable faces now receive automatic `wght=400|700` and CSS-stretch-derived
 overrides them. The effective values feed both HarfRust shaping and the
 variation-aware outline rasterizer; descriptor and authored coordinates retain
 priority, and synthetic scaling remains for compatibility. Optical sizing,
-custom axes, hinting, color tables, WOFF2, and complete FontFace/Web IDL parity
-remain issue #40 gates.
+custom axes, hinting, color tables, and complete FontFace/Web IDL parity remain
+issue #40 gates.
 
 The completed numeric font-weight follow-up is
 [`native-engine-browser-521`](tasks/native-engine-browser-521.md): CSS integer
@@ -343,8 +344,8 @@ weights from 1 through 1000 now survive parsing, inheritance, cascade,
 CSSOM, face scoring, and paint selection. Numeric requests feed an advertised
 variable `wght` axis, while `normal` and `bold` retain their canonical 400 and
 700 aliases and explicit variation coordinates retain priority. Custom axes,
-hinting, color tables, WOFF2, and complete FontFace/Web IDL parity remain issue
-#40 gates.
+hinting, color tables, and complete FontFace/Web IDL parity remain issue #40
+gates.
 
 The completed optical-sizing follow-up is
 [`native-engine-browser-522`](tasks/native-engine-browser-522.md): inherited
@@ -353,8 +354,19 @@ and CSSOM projection. `auto` supplies a bounded computed font-size coordinate
 to an advertised OpenType `opsz` axis, while authored element coordinates and
 `@font-face`/script-created `FontFace` descriptors retain precedence; the
 effective value reaches both HarfRust shaping and variation-aware outline
-rasterization. Custom axes, hinting, color tables, WOFF2, and complete
-FontFace/Web IDL parity remain issue #40 gates.
+rasterization. Custom axes, hinting, color tables, and complete FontFace/Web IDL
+parity remain issue #40 gates.
+
+The completed WOFF2 font-admission follow-up is
+[`native-engine-browser-525`](tasks/native-engine-browser-525.md): valid WOFF2
+font sources now pass through bounded pure-Rust Brotli/container decoding into
+the existing SFNT font owners, with malformed headers, oversized compressed or
+decompressed streams, and invalid output rejected before admission. CSS
+`@font-face` and script-created `FontFace` source lists recognize
+`format("woff2")`, while existing WOFF1/SFNT behavior, source fallback,
+content-process wire shape, and the two-crate boundary remain unchanged. Color
+glyph tables, variable-axis completeness, hinting, font-display timing, and
+complete FontFace/Web IDL parity remain issue #40 gates.
 
 The completed numeric font-face range follow-up is
 [`native-engine-browser-524`](tasks/native-engine-browser-524.md): absolute
@@ -364,8 +376,8 @@ resource admission, content-process serialization, legacy singleton wire
 decoding, and range-aware face matching. The requested element weight still
 drives advertised variable `wght` mapping, and singleton formatting and
 computed-style behavior remain unchanged. Custom axes, hinting, color glyph
-tables, WOFF2, font-display timing, and complete FontFace/Web IDL parity remain
-issue #40 gates.
+tables, font-display timing, and complete FontFace/Web IDL parity remain issue
+#40 gates.
 
 The completed relative-weight follow-up is
 [`native-engine-browser-523`](tasks/native-engine-browser-523.md): CSS
@@ -374,7 +386,7 @@ the bounded CSS relative-weight bands, including numeric weights from 1 through
 1000. The resolved absolute value feeds existing face scoring, advertised
 `wght` mapping, paint selection, inheritance/CSS-wide resets, and CSSOM;
 `@font-face` and script-created `FontFace` descriptors remain absolute-only for
-relative keywords. Custom axes, hinting, color tables, WOFF2, and complete
+relative keywords. Custom axes, hinting, color tables, and complete
 FontFace/Web IDL parity remain issue #40 gates.
 
 The completed variation-aware glyph-rasterization follow-up is
@@ -384,7 +396,7 @@ native glyph bitmap. A bounded `ttf-parser` outline collector flattens
 TrueType/CFF lines and curves and uses fixed 4x supersampling under explicit
 point, dimension, and font-size limits; static/default-instance, bitmap-only,
 and malformed outlines retain the fontdue fallback. Hinting, color glyph
-tables, automatic `font-weight`/`font-stretch` axis mapping, WOFF2, and full
+tables, automatic `font-weight`/`font-stretch` axis mapping, and full
 FontFace/Web IDL parity remain issue #40 gates.
 
 The completed bounded FontFace variation-descriptor follow-up is
@@ -437,7 +449,7 @@ The completed `font-variant-numeric` follow-up is
 numeric figure, spacing, fraction, ordinal, and slashed-zero controls now
 cross native CSSOM and map to bounded HarfRust OpenType tags, with explicit
 low-level feature settings retaining precedence. Character fallback remains
-bounded; numeric feature-specific shaping, variable/color fonts, WOFF2,
+bounded; numeric feature-specific shaping, variable/color fonts,
 font-display timing, mixed-script shaping, cross-realm FontFace projection,
 and complete FontFace/Web IDL parity remain issue #40 gates.
 

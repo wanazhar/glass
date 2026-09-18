@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-544`, following completed
 `native-engine-browser-543`, following completed
 `native-engine-browser-542`, following completed
 `native-engine-browser-541`, following completed
@@ -387,6 +388,13 @@ policy and report-only violations apply to the worker route, while file/data/
 blob sources and suspended worker requests retain their existing boundaries.
 Font-display timing, installed-font discovery, and complete FontFace/Web IDL
 parity remain issue #40 gates.
+
+Slice 544 validates dynamic `FontFace.display` values against the same bounded
+five-keyword CSS contract as static faces. Constructor and setter inputs are
+trimmed, lowercased, and rejected transactionally when invalid; static
+projection, font admission, worker routing, and status semantics remain
+unchanged. Actual display timing, installed-font discovery, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 540 adds bounded `override-colors` descriptor parsing to named
 `@font-palette-values` rules. Document-local overrides select exact unique CPAL

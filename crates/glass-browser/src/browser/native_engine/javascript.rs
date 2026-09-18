@@ -17957,6 +17957,47 @@ mod native_font_face_tests {
     }
 
     #[test]
+    fn computed_style_projects_font_variation_settings() {
+        let runtime =
+            NativeJavaScriptRuntime::new_with_context_id("computed-font-variation-settings-test")
+                .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            r#"<style>#parent { font-variation-settings: "wght" 450.5, "wdth" -12.25, "wght" 700; } #inherit { font-variation-settings: inherit; } #reset { font-variation-settings: initial; } #invalid { font-variation-settings: "wght" 700 escape; }</style><div id="parent"><span id="inherit">Inherit</span><span id="reset">Reset</span><span id="invalid">Invalid</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .expect("font-variation-settings fixture must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                  const parent = getComputedStyle(document.getElementById("parent"));
+                  const inherited = getComputedStyle(document.getElementById("inherit"));
+                  const reset = getComputedStyle(document.getElementById("reset"));
+                  const invalid = getComputedStyle(document.getElementById("invalid"));
+                  return [
+                    parent.fontVariationSettings,
+                    inherited.getPropertyValue("font-variation-settings"),
+                    reset.fontVariationSettings,
+                    invalid.fontVariationSettings
+                  ];
+                })()"#,
+                &document,
+                "about:blank",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("computed font-variation-settings surface must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                "\"wght\" 700, \"wdth\" -12.25",
+                "\"wght\" 700, \"wdth\" -12.25",
+                "normal",
+                "\"wght\" 700, \"wdth\" -12.25"
+            ])
+        );
+    }
+
+    #[test]
     fn computed_style_projects_font_variant_shorthand() {
         let runtime =
             NativeJavaScriptRuntime::new_with_context_id("computed-font-variant-shorthand-test")
@@ -37507,6 +37548,25 @@ fn document_bootstrap(
     }}
     return features.length === 0 ? "normal" : features.join(", ");
   }};
+  const computedStyleVariationSettings = (value) => {{
+    if (!value || typeof value !== "object" || !Array.isArray(value.values)) return "normal";
+    const count = Math.max(0, Math.min(value.values.length, Number(value.count) || 0));
+    const variations = [];
+    for (let index = 0; index < count; index += 1) {{
+      const variation = value.values[index];
+      if (!variation || !Array.isArray(variation.tag) || variation.tag.length !== 4) continue;
+      const tagValues = variation.tag.map((byte) => Number(byte));
+      const tag = tagValues.every((byte) => Number.isInteger(byte) && byte >= 32 && byte <= 126
+        && byte !== 34 && byte !== 39 && byte !== 92 && byte !== 44)
+        ? String.fromCharCode(...tagValues)
+        : null;
+      const valueMilli = Number(variation.value_milli);
+      if (tag === null || !Number.isInteger(valueMilli) || !Number.isFinite(valueMilli)
+          || Math.abs(valueMilli) > 32768000) continue;
+      variations.push('"' + tag + '" ' + String(valueMilli / 1000));
+    }}
+    return variations.length === 0 ? "normal" : variations.join(", ");
+  }};
   const computedStyleColor = (value, fallback = "rgba(0, 0, 0, 0)") => {{
     if (!value || typeof value !== "object") return fallback;
     const red = Number(value.red);
@@ -37546,7 +37606,7 @@ fn document_bootstrap(
     "border-left-color", "border-radius", "overflow", "overflow-x", "overflow-y", "white-space",
     "text-align", "text-align-last", "text-justify", "text-indent", "text-transform", "text-overflow",
     "text-decoration", "text-decoration-style", "text-decoration-thickness", "text-underline-offset",
-    "font-weight", "font-style", "font-stretch", "font-variant", "font-variant-ligatures", "font-variant-caps", "font-variant-position", "font-variant-alternates", "font-language-override", "font-variant-east-asian", "font-variant-numeric", "font-feature-settings", "font-kerning", "line-height", "word-break", "word-spacing", "letter-spacing",
+    "font-weight", "font-style", "font-stretch", "font-variant", "font-variant-ligatures", "font-variant-caps", "font-variant-position", "font-variant-alternates", "font-language-override", "font-variant-east-asian", "font-variant-numeric", "font-feature-settings", "font-variation-settings", "font-kerning", "line-height", "word-break", "word-spacing", "letter-spacing",
     "vertical-align", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
     "justify-content", "align-items", "align-self", "align-content", "gap", "row-gap", "column-gap",
     "order", "grid-template-columns", "grid-template-rows"
@@ -37648,6 +37708,7 @@ fn document_bootstrap(
     if (name === "font-variant-east-asian") return computedStyleFontVariantEastAsian(raw.font_variant_east_asian);
     if (name === "font-variant-numeric") return computedStyleFontVariantNumeric(raw.font_variant_numeric);
     if (name === "font-feature-settings") return computedStyleFeatureSettings(raw.font_feature_settings);
+    if (name === "font-variation-settings") return computedStyleVariationSettings(raw.font_variation_settings);
     if (name === "font-kerning") return computedStyleEnumName(raw.font_kerning, "auto");
     if (name === "line-height") return computedStylePixels(raw.line_height, "normal");
     if (name === "word-spacing") return String(Number(raw.word_spacing) || 0) + "px";

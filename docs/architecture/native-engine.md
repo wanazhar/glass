@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-529`, following completed
 `native-engine-browser-528`, following completed
 `native-engine-browser-527`, following completed
 `native-engine-browser-526`, following completed
@@ -338,6 +339,17 @@ descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none`
 retain their existing behavior. Custom axes, hinting, color tables, and
 complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 529 adds bounded COLRv1 linear, radial, and sweep gradient paints plus
+clip-box coverage. The native color painter admits finite coordinates and at
+most 16 finite stops, preserves pad/repeat/reflect extension, carries a compact
+glyph-local descriptor, and samples colors directly while rasterizing coverage
+instead of allocating a per-pixel gradient buffer. Nested clip boxes intersect
+with the existing current-outline provenance guard; malformed stops,
+unsupported paint transforms, and unsupported paint graphs fail closed to
+monochrome fallback. Identity-transform gradients are the supported boundary;
+gradient-transform parity and the bounded radial non-coincident-center
+approximation remain explicit issue #40 gates.
 
 Slice 528 closes a COLRv1 clip-provenance hole. Each admitted outline receives
 a bounded generation; a current-outline clip is accepted without a redundant

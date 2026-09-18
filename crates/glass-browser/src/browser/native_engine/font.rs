@@ -97,6 +97,8 @@ pub enum NativeGlyphGradient {
         y0: f32,
         x1: f32,
         y1: f32,
+        x2: f32,
+        y2: f32,
         extend: NativeGradientExtend,
         stops: Arc<[NativeGradientStop]>,
     },
@@ -129,6 +131,8 @@ impl PartialEq for NativeGlyphGradient {
                     y0: left_y0,
                     x1: left_x1,
                     y1: left_y1,
+                    x2: left_x2,
+                    y2: left_y2,
                     extend: left_extend,
                     stops: left_stops,
                 },
@@ -137,6 +141,8 @@ impl PartialEq for NativeGlyphGradient {
                     y0: right_y0,
                     x1: right_x1,
                     y1: right_y1,
+                    x2: right_x2,
+                    y2: right_y2,
                     extend: right_extend,
                     stops: right_stops,
                 },
@@ -145,6 +151,8 @@ impl PartialEq for NativeGlyphGradient {
                     && left_y0.to_bits() == right_y0.to_bits()
                     && left_x1.to_bits() == right_x1.to_bits()
                     && left_y1.to_bits() == right_y1.to_bits()
+                    && left_x2.to_bits() == right_x2.to_bits()
+                    && left_y2.to_bits() == right_y2.to_bits()
                     && left_extend == right_extend
                     && left_stops.as_ref() == right_stops.as_ref()
             }
@@ -224,6 +232,8 @@ impl NativeGlyphGradient {
                 y0,
                 x1,
                 y1,
+                x2,
+                y2,
                 extend,
                 stops,
             } => Self::Linear {
@@ -231,6 +241,8 @@ impl NativeGlyphGradient {
                 y0: *y0,
                 x1: scale_x(*x1),
                 y1: *y1,
+                x2: scale_x(*x2),
+                y2: *y2,
                 extend: *extend,
                 stops: stops.clone(),
             },
@@ -278,16 +290,20 @@ impl NativeGlyphGradient {
                 y0,
                 x1,
                 y1,
+                x2,
+                y2,
                 extend,
                 ..
             } => {
                 let dx = x1 - x0;
                 let dy = y1 - y0;
-                let length_squared = dx.mul_add(dx, dy * dy);
-                if !length_squared.is_finite() || length_squared <= f32::EPSILON {
+                let projection_x = x2 - x0;
+                let projection_y = y2 - y0;
+                let denominator = dx.mul_add(projection_y, -(dy * projection_x));
+                if !denominator.is_finite() || denominator.abs() <= f32::EPSILON {
                     0.0
                 } else {
-                    ((x - x0).mul_add(dx, (y - y0) * dy) / length_squared)
+                    ((x - x0).mul_add(projection_y, -((y - y0) * projection_x)) / denominator)
                         .apply_gradient_extend(*extend)
                 }
             }
@@ -611,6 +627,8 @@ impl NativeColorPaint {
                 y0,
                 x1,
                 y1,
+                x2,
+                y2,
                 extend,
                 stops,
             } => NativeGlyphGradient::Linear {
@@ -618,6 +636,8 @@ impl NativeColorPaint {
                 y0: map_y(*y0),
                 x1: map_x(*x1),
                 y1: map_y(*y1),
+                x2: map_x(*x2),
+                y2: map_y(*y2),
                 extend: *extend,
                 stops: stops.clone(),
             },
@@ -838,12 +858,18 @@ impl<'a> NativeColorPainter<'a> {
         }
         let (x0, y0) = Self::transformed_point(self.transform, gradient.x0, gradient.y0)?;
         let (x1, y1) = Self::transformed_point(self.transform, gradient.x1, gradient.y1)?;
-        let _ = Self::transformed_point(self.transform, gradient.x2, gradient.y2)?;
+        let (x2, y2) = Self::transformed_point(self.transform, gradient.x2, gradient.y2)?;
+        let denominator = (x1 - x0).mul_add(y2 - y0, -((y1 - y0) * (x2 - x0)));
+        if !denominator.is_finite() || denominator.abs() <= f32::EPSILON {
+            return None;
+        }
         Some(NativeGlyphGradient::Linear {
             x0,
             y0,
             x1,
             y1,
+            x2,
+            y2,
             extend: Self::native_extend(gradient.extend),
             stops: Self::native_stops(gradient.stops(0, self.face.variation_coordinates()))?,
         })
@@ -4021,6 +4047,8 @@ mod tests {
             y0: 0.0,
             x1: 10.0,
             y1: 0.0,
+            x2: 0.0,
+            y2: 10.0,
             extend,
             stops: stops.clone(),
         };
@@ -4046,6 +4074,17 @@ mod tests {
             gradient(NativeGradientExtend::Reflect).color_at(15.0, 0.0),
             Some(midpoint)
         );
+        let diagonal = NativeGlyphGradient::Linear {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 10.0,
+            y1: 0.0,
+            x2: 10.0,
+            y2: 10.0,
+            extend: NativeGradientExtend::Pad,
+            stops: stops.clone(),
+        };
+        assert_eq!(diagonal.color_at(5.0, 5.0), Some(stops[0].color));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-531`, following completed
 `native-engine-browser-530`, following completed
 `native-engine-browser-529`, following completed
 `native-engine-browser-528`, following completed
@@ -340,6 +341,15 @@ descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none`
 retain their existing behavior. Custom axes, hinting, color tables, and
 complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 531 completes the bounded three-point COLRv1 linear-gradient projection:
+`p0`/`p1` define the color line and `p2` defines the direction across which
+each color-line position is projected. The three finite points survive affine
+paint transforms, synthetic stretch, and glyph-local pixel mapping; a
+cross-product sampler applies the existing extend modes and sorted stops.
+Collinear or non-finite triples fail closed rather than guessing a gradient
+direction. Arbitrary gradient transforms and transformed clip masks remain
+explicit issue #40 gates.
 
 Slice 530 carries the composed paint transform into COLRv1 gradients. Linear
 gradients transform finite points directly; radial and sweep gradients admit

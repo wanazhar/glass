@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-530`, following
+expansion checkpoint is completed `native-engine-browser-531`, following
+completed `native-engine-browser-530`, following
 completed `native-engine-browser-529`, following
 completed `native-engine-browser-528`, following
 completed `native-engine-browser-527`, following
@@ -344,6 +345,15 @@ descriptors retain priority. The effective coordinate reaches HarfRust shaping
 and variation-aware outline rasterization, while static faces and `none` retain
 their existing behavior. Custom axes, hinting, color tables, and complete
 FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 531 completes the bounded three-point COLRv1 linear-gradient projection:
+`p0`/`p1` define the color line and `p2` defines the direction across which
+each color-line position is projected. The three finite points survive affine
+paint transforms, synthetic stretch, and glyph-local pixel mapping; a
+cross-product sampler applies extend modes and sorted stops. Collinear or
+non-finite triples fail closed rather than guessing a gradient direction.
+Arbitrary gradient transforms and transformed clip masks remain explicit
+issue #40 gates.
 
 Slice 530 carries the composed paint transform into COLRv1 gradients. Linear
 gradients transform finite points directly; radial and sweep gradients admit
@@ -7312,8 +7322,10 @@ visual stacking.
 ## Delivery evidence
 
 The task file for each slice owns its touched paths and verification commands;
-`docs/plan/tasks/native-engine-browser-530.md` is the latest completed browser
+`docs/plan/tasks/native-engine-browser-531.md` is the latest completed browser
 task;
+`docs/plan/tasks/native-engine-browser-530.md` is the preceding completed
+browser task;
 `docs/plan/tasks/native-engine-browser-529.md` is the preceding completed
 browser task;
 `docs/plan/tasks/native-engine-browser-528.md` is the preceding completed

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-517`, following completed
 `native-engine-browser-516`, following completed
 `native-engine-browser-515`, following completed
 `native-engine-browser-514`, following completed
@@ -319,6 +320,15 @@ feature settings retaining precedence. Character fallback and typographic
 baseline metrics remain bounded; numeric variants, variable/color fonts,
 WOFF2, font-display timing, mixed-script shaping, cross-realm FontFace
 projection, and complete FontFace/Web IDL parity remain issue #40 gates.
+
+The completed bounded `font-variation-settings` follow-up is
+[`native-engine-browser-517`](tasks/native-engine-browser-517.md): inherited
+quoted four-byte OpenType axis/value pairs now cross native CSS cascade and
+CSSOM into HarfRust `ShaperInstance` coordinates, with duplicate-axis
+last-wins normalization, CSS-wide resets, bounded decimal serialization, and
+atomic malformed-value rejection. The existing character fallback and
+fontdue raster path retain their default instance; variable rasterization,
+color tables, and complete FontFace/Web IDL parity remain issue #40 gates.
 
 The completed bounded `font-language-override` follow-up is
 [`native-engine-browser-516`](tasks/native-engine-browser-516.md): it carries

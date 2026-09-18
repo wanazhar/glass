@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-517`, following completed
 `native-engine-browser-516`, following completed
 `native-engine-browser-515`, following completed
 `native-engine-browser-514`, following completed
@@ -301,6 +302,15 @@ retains precedence. The character-by-character fallback and baseline metrics
 remain unchanged; numeric variants, variable/color tables, WOFF2,
 font-display timing, mixed-script shaping, cross-realm FontFace projection,
 and complete FontFace/Web IDL parity remain issue #40 gates.
+
+Slice 517 carries bounded inherited `font-variation-settings` through native
+computed style, CSSOM, and the HarfRust shaping path. The fixed-size parser
+accepts quoted four-byte printable axis tags with signed decimal values,
+keeps duplicate axes last-wins in declaration order, and rejects malformed
+lists atomically. Selected values are converted to HarfRust's
+`ShaperInstance`; character fallback and the fontdue rasterizer retain their
+default instance. Variable-font rasterization, color tables, and complete
+FontFace/Web IDL parity remain issue #40 gates.
 
 Slice 516 carries bounded inherited `font-language-override` through native
 computed style, CSSOM, and the HarfRust shaping path. `normal` and quoted

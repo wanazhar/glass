@@ -1,5 +1,3 @@
-#[cfg(test)]
-use super::css::NativeFontFeature;
 use super::css::{
     DirectionValue, FontStyleValue, FontWeightValue, NativeFontFaceRule, NativeFontFamilyList,
     NativeFontFamilyValue, NativeFontFeatureSettings, NativeFontKerning,
@@ -7,9 +5,11 @@ use super::css::{
     NativeFontVariantCaps, NativeFontVariantEastAsian, NativeFontVariantEastAsianForm,
     NativeFontVariantEastAsianWidth, NativeFontVariantLigatures, NativeFontVariantNumeric,
     NativeFontVariantNumericFigure, NativeFontVariantNumericFraction,
-    NativeFontVariantNumericSpacing, NativeFontVariantPosition, NativeGenericFontFamily,
-    NativeUnicodeRange, font_family_hash,
+    NativeFontVariantNumericSpacing, NativeFontVariantPosition, NativeFontVariationSettings,
+    NativeGenericFontFamily, NativeUnicodeRange, font_family_hash,
 };
+#[cfg(test)]
+use super::css::{NativeFontFeature, NativeFontVariation};
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -153,6 +153,7 @@ pub(crate) struct NativeTextMetrics {
     variant_position: NativeFontVariantPosition,
     variant_alternates: NativeFontVariantAlternates,
     language_override: NativeFontLanguageOverride,
+    variation_settings: NativeFontVariationSettings,
     variant_east_asian: NativeFontVariantEastAsian,
     variant_numeric: NativeFontVariantNumeric,
     feature_settings: NativeFontFeatureSettings,
@@ -473,6 +474,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language(
         font_size: u32,
         stretch: u16,
@@ -487,6 +489,38 @@ impl NativeTextMetrics {
         language_override: NativeFontLanguageOverride,
         direction: DirectionValue,
     ) -> Self {
+        Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language_and_variations(
+            font_size,
+            stretch,
+            ligatures,
+            feature_settings,
+            kerning,
+            variant_caps,
+            variant_position,
+            variant_numeric,
+            variant_alternates,
+            variant_east_asian,
+            language_override,
+            NativeFontVariationSettings::default(),
+            direction,
+        )
+    }
+
+    pub(crate) fn fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language_and_variations(
+        font_size: u32,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
+        kerning: NativeFontKerning,
+        variant_caps: NativeFontVariantCaps,
+        variant_position: NativeFontVariantPosition,
+        variant_numeric: NativeFontVariantNumeric,
+        variant_alternates: NativeFontVariantAlternates,
+        variant_east_asian: NativeFontVariantEastAsian,
+        language_override: NativeFontLanguageOverride,
+        variation_settings: NativeFontVariationSettings,
+        direction: DirectionValue,
+    ) -> Self {
         Self {
             faces: Vec::new(),
             font_size: font_size.clamp(1, MAX_NATIVE_FONT_SIZE),
@@ -496,6 +530,7 @@ impl NativeTextMetrics {
             variant_position,
             variant_alternates,
             language_override,
+            variation_settings,
             variant_east_asian,
             variant_numeric,
             feature_settings,
@@ -808,6 +843,7 @@ impl NativeTextMetrics {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language(
         families: NativeFontFamilyList,
         font_size: u32,
@@ -826,11 +862,51 @@ impl NativeTextMetrics {
         direction: DirectionValue,
         book: &NativeFontBook,
     ) -> Self {
+        Self::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language_and_variations(
+            families,
+            font_size,
+            weight,
+            style,
+            stretch,
+            ligatures,
+            feature_settings,
+            kerning,
+            variant_caps,
+            variant_position,
+            variant_numeric,
+            variant_alternates,
+            variant_east_asian,
+            language_override,
+            NativeFontVariationSettings::default(),
+            direction,
+            book,
+        )
+    }
+
+    pub(crate) fn for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language_and_variations(
+        families: NativeFontFamilyList,
+        font_size: u32,
+        weight: FontWeightValue,
+        style: FontStyleValue,
+        stretch: u16,
+        ligatures: NativeFontVariantLigatures,
+        feature_settings: NativeFontFeatureSettings,
+        kerning: NativeFontKerning,
+        variant_caps: NativeFontVariantCaps,
+        variant_position: NativeFontVariantPosition,
+        variant_numeric: NativeFontVariantNumeric,
+        variant_alternates: NativeFontVariantAlternates,
+        variant_east_asian: NativeFontVariantEastAsian,
+        language_override: NativeFontLanguageOverride,
+        variation_settings: NativeFontVariationSettings,
+        direction: DirectionValue,
+        book: &NativeFontBook,
+    ) -> Self {
         let font_size = font_size.clamp(1, MAX_NATIVE_FONT_SIZE);
         let stretch = stretch.clamp(500, 2000);
         let faces = book.faces_for(families, weight, style, stretch);
         let Some(face) = faces.first() else {
-            return Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language(
+            return Self::fallback_with_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language_and_variations(
                 font_size,
                 stretch,
                 ligatures,
@@ -842,6 +918,7 @@ impl NativeTextMetrics {
                 variant_alternates,
                 variant_east_asian,
                 language_override,
+                variation_settings,
                 direction,
             );
         };
@@ -862,6 +939,7 @@ impl NativeTextMetrics {
             variant_position,
             variant_alternates,
             language_override,
+            variation_settings,
             variant_east_asian,
             variant_numeric,
             feature_settings,
@@ -992,7 +1070,24 @@ impl NativeTextMetrics {
         };
         buffer.set_direction(direction);
         let scale = i32::try_from(self.font_size.saturating_mul(FONT_SHAPE_SCALE)).ok()?;
-        let shaper = shaper_data.shaper(&font).build();
+        let variation_instance = if self.variation_settings.values().is_empty() {
+            None
+        } else {
+            Some(harfrust::ShaperInstance::from_variations(
+                &font,
+                self.variation_settings
+                    .values()
+                    .iter()
+                    .map(|variation| harfrust::Variation {
+                        tag: harfrust::Tag::new(&variation.tag),
+                        value: variation.value_milli as f32 / 1_000.0,
+                    }),
+            ))
+        };
+        let shaper = shaper_data
+            .shaper(&font)
+            .instance(variation_instance.as_ref())
+            .build();
         let mut features = Vec::with_capacity(21 + self.feature_settings.values().len());
         for (tag, value) in [
             (*b"liga", u32::from(self.ligatures.common)),
@@ -2974,6 +3069,85 @@ mod tests {
                 tag: Some(*b"EN G"),
             }),
             None
+        );
+    }
+
+    #[test]
+    fn font_variation_settings_change_variable_font_shaping_when_available() {
+        let Some(bytes) = [
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu[wdth,wght].ttf",
+            "/usr/share/fonts/truetype/ubuntu/UbuntuSans[wdth,wght].ttf",
+        ]
+        .into_iter()
+        .find_map(|path| std::fs::read(path).ok()) else {
+            return;
+        };
+        let resource = NativeFontFaceResource {
+            family: "Variable Face".into(),
+            family_key: font_family_hash("Variable Face"),
+            weight: FontWeightValue::Normal,
+            style: FontStyleValue::Normal,
+            stretch: NativeFontStretchRange::default(),
+            bytes: Arc::from(bytes),
+            unicode_ranges: Vec::new(),
+        };
+        let book = NativeFontBook::from_resources(&[resource]);
+        let families = NativeFontFamilyList::parse("Variable Face").unwrap();
+        let normal = NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language_and_variations(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            1000,
+            NativeFontVariantLigatures::default(),
+            NativeFontFeatureSettings::default(),
+            NativeFontKerning::Auto,
+            NativeFontVariantCaps::Normal,
+            NativeFontVariantPosition::Normal,
+            NativeFontVariantNumeric::default(),
+            NativeFontVariantAlternates::Normal,
+            NativeFontVariantEastAsian::default(),
+            NativeFontLanguageOverride::default(),
+            NativeFontVariationSettings::default(),
+            DirectionValue::Ltr,
+            &book,
+        );
+        let mut narrow_settings = NativeFontVariationSettings::default();
+        narrow_settings.values[0] = NativeFontVariation {
+            tag: *b"wdth",
+            value_milli: 75_000,
+        };
+        narrow_settings.count = 1;
+        let narrow = NativeTextMetrics::for_style_with_book_and_stretch_and_ligatures_and_features_and_kerning_and_variant_caps_and_position_and_numeric_and_alternates_and_east_asian_and_language_and_variations(
+            families,
+            DEFAULT_NATIVE_FONT_SIZE,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            1000,
+            NativeFontVariantLigatures::default(),
+            NativeFontFeatureSettings::default(),
+            NativeFontKerning::Auto,
+            NativeFontVariantCaps::Normal,
+            NativeFontVariantPosition::Normal,
+            NativeFontVariantNumeric::default(),
+            NativeFontVariantAlternates::Normal,
+            NativeFontVariantEastAsian::default(),
+            NativeFontLanguageOverride::default(),
+            narrow_settings,
+            DirectionValue::Ltr,
+            &book,
+        );
+        let normal_run = normal
+            .shape("AAAA", 0, 0)
+            .expect("variable font must shape the normal instance");
+        let narrow_run = narrow
+            .shape("AAAA", 0, 0)
+            .expect("variable font must shape the requested instance");
+        assert!(
+            narrow_run.width_fixed < normal_run.width_fixed,
+            "wdth axis must affect shaped advance: narrow={} normal={}",
+            narrow_run.width_fixed,
+            normal_run.width_fixed
         );
     }
 

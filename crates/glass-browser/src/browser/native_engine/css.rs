@@ -1838,6 +1838,13 @@ pub(crate) enum WordBreakValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordBreakDeclarationValue {
+    Value(WordBreakValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, WordBreakValue),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InheritedTextDeclaration<T> {
     Value(T),
     Inherit,
@@ -4706,11 +4713,7 @@ impl NativeStylesheet {
                 inherited.viewport,
                 custom_properties,
             ),
-            word_break: resolve_inherited_text_declaration(
-                *word_break,
-                inherited.word_break,
-                WordBreakValue::Normal,
-            ),
+            word_break: resolve_word_break(*word_break, inherited.word_break, custom_properties),
             text_overflow: resolve_text_overflow(*text_overflow, inherited.text_overflow),
             vertical_align: resolve_inherited_text_declaration(
                 *vertical_align,
@@ -4895,7 +4898,7 @@ struct NativeCascadeScratch {
     font_stretch: NativeTextCascadeCandidates<FontStretchDeclarationValue>,
     font_family: NativeTextCascadeCandidates<FontFamilyDeclarationValue>,
     font_size: NativeTextCascadeCandidates<NativeFontSizeDeclarationValue>,
-    word_break: NativeTextCascadeCandidates<WordBreakValue>,
+    word_break: NativeTextCascadeCandidates<WordBreakDeclarationValue>,
     text_overflow: NativeTextLocalCascadeCandidates<TextOverflowValue>,
     vertical_align: NativeTextCascadeCandidates<VerticalAlignValue>,
     text_indent: NativeTextLocalCascadeCandidates<u32>,
@@ -5245,6 +5248,87 @@ fn resolve_line_height(
         LineHeightDeclarationValue::Initial => None,
         LineHeightDeclarationValue::CustomProperty(_)
         | LineHeightDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
+}
+
+fn resolve_word_break_declaration(
+    declaration: InheritedTextDeclaration<WordBreakDeclarationValue>,
+    inherited: WordBreakValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<WordBreakDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_word_break_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(WordBreakDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => {
+            Some(WordBreakDeclarationValue::Value(WordBreakValue::Normal))
+        }
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_word_break_value(
+    value: WordBreakDeclarationValue,
+    inherited: WordBreakValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<WordBreakDeclarationValue> {
+    match value {
+        WordBreakDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_word_break_declaration(value))
+                .and_then(|declaration| {
+                    resolve_word_break_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        WordBreakDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_word_break_declaration(value))
+                .and_then(|declaration| {
+                    resolve_word_break_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(WordBreakDeclarationValue::Value(fallback)))
+        }
+        WordBreakDeclarationValue::CustomProperty(_)
+        | WordBreakDeclarationValue::CustomPropertyFallback(_, _) => None,
+        value => Some(value),
+    }
+}
+
+fn resolve_word_break(
+    candidates: NativeTextCascadeCandidates<WordBreakDeclarationValue>,
+    inherited: WordBreakValue,
+    custom_properties: &BTreeMap<u64, String>,
+) -> WordBreakValue {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        WordBreakDeclarationValue::Value(inherited),
+        |declaration| resolve_word_break_declaration(declaration, inherited, custom_properties, 0),
+    );
+    match resolved {
+        WordBreakDeclarationValue::Value(value) => value,
+        WordBreakDeclarationValue::CustomProperty(_)
+        | WordBreakDeclarationValue::CustomPropertyFallback(_, _) => inherited,
     }
 }
 
@@ -9715,7 +9799,7 @@ struct NativeDeclarations {
     font_stretch: Option<InheritedTextDeclaration<FontStretchDeclarationValue>>,
     font_family: Option<InheritedTextDeclaration<FontFamilyDeclarationValue>>,
     font_size: Option<InheritedTextDeclaration<NativeFontSizeDeclarationValue>>,
-    word_break: Option<InheritedTextDeclaration<WordBreakValue>>,
+    word_break: Option<InheritedTextDeclaration<WordBreakDeclarationValue>>,
     text_overflow: Option<LocalCascadeDeclaration<TextOverflowValue>>,
     vertical_align: Option<InheritedTextDeclaration<VerticalAlignValue>>,
     text_indent: Option<LocalCascadeDeclaration<u32>>,
@@ -17023,6 +17107,38 @@ fn parse_word_break(value: &str) -> Option<WordBreakValue> {
     }
 }
 
+fn parse_word_break_custom_property(value: &str) -> Option<WordBreakDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_word_break(fallback)
+            .map(|fallback| WordBreakDeclarationValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(WordBreakDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_word_break_property(value: &str) -> Option<WordBreakDeclarationValue> {
+    parse_word_break(value)
+        .map(WordBreakDeclarationValue::Value)
+        .or_else(|| parse_word_break_custom_property(value))
+}
+
 fn parse_inherited_text_declaration<T: Copy>(
     value: &str,
     parse: fn(&str) -> Option<T>,
@@ -18612,8 +18728,10 @@ fn parse_font_size_declaration(
     parse_inherited_text_declaration(value, parse_font_size_value)
 }
 
-fn parse_word_break_declaration(value: &str) -> Option<InheritedTextDeclaration<WordBreakValue>> {
-    parse_inherited_text_declaration(value, parse_word_break)
+fn parse_word_break_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<WordBreakDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_word_break_property)
 }
 
 fn parse_word_spacing_declaration(value: &str) -> Option<InheritedTextDeclaration<u32>> {
@@ -19339,7 +19457,9 @@ mod tests {
         );
         assert_eq!(
             declarations.word_break,
-            Some(InheritedTextDeclaration::Value(WordBreakValue::BreakAll))
+            Some(InheritedTextDeclaration::Value(
+                WordBreakDeclarationValue::Value(WordBreakValue::BreakAll)
+            ))
         );
         assert_eq!(
             declarations.text_overflow,
@@ -29833,6 +29953,24 @@ mod tests {
         assert_eq!(parse_word_break("keep-all"), None);
         assert_eq!(parse_word_break("break-word"), None);
         assert_eq!(parse_word_break("initial"), None);
+        let word_break_name = parse_custom_property_name("--word-break").unwrap();
+        assert_eq!(
+            parse_word_break_property("var(--word-break)"),
+            Some(WordBreakDeclarationValue::CustomProperty(word_break_name))
+        );
+        assert_eq!(
+            parse_word_break_declaration("var(--word-break, break-all)"),
+            Some(InheritedTextDeclaration::Value(
+                WordBreakDeclarationValue::CustomPropertyFallback(
+                    word_break_name,
+                    WordBreakValue::BreakAll
+                )
+            ))
+        );
+        assert_eq!(
+            parse_word_break_property("var(--word-break, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -29938,7 +30076,9 @@ mod tests {
         );
         assert_eq!(
             declarations.word_break,
-            Some(InheritedTextDeclaration::Value(WordBreakValue::BreakAll))
+            Some(InheritedTextDeclaration::Value(
+                WordBreakDeclarationValue::Value(WordBreakValue::BreakAll)
+            ))
         );
         assert_eq!(
             declarations.word_spacing,
@@ -32981,6 +33121,44 @@ mod tests {
             document.computed_style_for_layout(invalid).word_break(),
             WordBreakValue::BreakAll
         );
+    }
+
+    #[test]
+    fn inherited_word_break_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --word-break: break-all; --alias: var(--word-break); --cycle: var(--cycle); word-break: var(--word-break); }
+            #child { word-break: var(--alias); }
+            #fallback { word-break: var(--missing, normal); }
+            #invalid { --bad: keep-all; word-break: var(--bad, break-all); }
+            #cycle { word-break: var(--cycle, normal); }
+            #wide-initial { --wide: initial; word-break: var(--wide); }
+            #wide-inherit { --wide: inherit; word-break: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .word_break()
+        };
+
+        assert_eq!(style("parent"), WordBreakValue::BreakAll);
+        assert_eq!(style("child"), WordBreakValue::BreakAll);
+        assert_eq!(style("fallback"), WordBreakValue::Normal);
+        assert_eq!(style("invalid"), WordBreakValue::BreakAll);
+        assert_eq!(style("cycle"), WordBreakValue::Normal);
+        assert_eq!(style("wide-initial"), WordBreakValue::Normal);
+        assert_eq!(style("wide-inherit"), WordBreakValue::BreakAll);
     }
 
     #[test]

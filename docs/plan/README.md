@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-637`, following completed
 `native-engine-browser-636`, following completed
 `native-engine-browser-635`, following completed
 `native-engine-browser-634`, following completed
@@ -538,6 +539,15 @@ at construction/setter boundaries. Invalid or over-budget values fail
 transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
+gates.
+
+The completed physical border color shorthand variable follow-up is
+[`native-engine-browser-637`](tasks/native-engine-browser-637.md): native
+`border-color` now retains side-indexed shorthand candidates through bounded
+`var(--name)` aliases and expands concrete one- to four-color fallbacks using
+the existing physical edge grammar. Invalid and cyclic handling plus
+declaration-order precedence remain fail-closed. Full registered properties,
+complete color grammar, and complete CSS and Web IDL parity remain issue #40
 gates.
 
 The completed logical border color variable follow-up is

@@ -980,6 +980,8 @@ enum FlexGrowDeclaration {
     Value(u32),
     CustomProperty(u64),
     CustomPropertyFallback(u64, u32),
+    CustomPropertyShorthand(u64),
+    CustomPropertyShorthandFallback(u64, u32),
     Inherit,
     Reset,
     RevertLayer,
@@ -990,6 +992,8 @@ enum FlexShrinkDeclaration {
     Value(u32),
     CustomProperty(u64),
     CustomPropertyFallback(u64, u32),
+    CustomPropertyShorthand(u64),
+    CustomPropertyShorthandFallback(u64, u32),
     Inherit,
     Reset,
     RevertLayer,
@@ -1000,6 +1004,8 @@ enum FlexBasisDeclaration {
     Value(FlexBasisValue),
     CustomProperty(u64),
     CustomPropertyFallback(u64, FlexBasisValue),
+    CustomPropertyShorthand(u64),
+    CustomPropertyShorthandFallback(u64, FlexBasisValue),
     Inherit,
     Reset,
     RevertLayer,
@@ -6173,8 +6179,41 @@ fn resolve_flex_grow_value(
                 })
                 .or(Some(fallback))
         }
+        FlexGrowDeclaration::CustomPropertyShorthand(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_shorthand_declaration(value))
+                .and_then(|(grow, _, _)| {
+                    resolve_flex_grow_value(
+                        grow,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FlexGrowDeclaration::CustomPropertyShorthandFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_shorthand_declaration(value))
+                .and_then(|(grow, _, _)| {
+                    resolve_flex_grow_value(
+                        grow,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
         FlexGrowDeclaration::CustomProperty(_)
         | FlexGrowDeclaration::CustomPropertyFallback(_, _)
+        | FlexGrowDeclaration::CustomPropertyShorthand(_)
+        | FlexGrowDeclaration::CustomPropertyShorthandFallback(_, _)
         | FlexGrowDeclaration::RevertLayer => None,
     }
 }
@@ -6220,8 +6259,41 @@ fn resolve_flex_shrink_value(
                 })
                 .or(Some(fallback))
         }
+        FlexShrinkDeclaration::CustomPropertyShorthand(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_shorthand_declaration(value))
+                .and_then(|(_, shrink, _)| {
+                    resolve_flex_shrink_value(
+                        shrink,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FlexShrinkDeclaration::CustomPropertyShorthandFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_shorthand_declaration(value))
+                .and_then(|(_, shrink, _)| {
+                    resolve_flex_shrink_value(
+                        shrink,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
         FlexShrinkDeclaration::CustomProperty(_)
         | FlexShrinkDeclaration::CustomPropertyFallback(_, _)
+        | FlexShrinkDeclaration::CustomPropertyShorthand(_)
+        | FlexShrinkDeclaration::CustomPropertyShorthandFallback(_, _)
         | FlexShrinkDeclaration::RevertLayer => None,
     }
 }
@@ -6267,8 +6339,41 @@ fn resolve_flex_basis_value(
                 })
                 .or(Some(fallback))
         }
+        FlexBasisDeclaration::CustomPropertyShorthand(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_shorthand_declaration(value))
+                .and_then(|(_, _, basis)| {
+                    resolve_flex_basis_value(
+                        basis,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FlexBasisDeclaration::CustomPropertyShorthandFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_shorthand_declaration(value))
+                .and_then(|(_, _, basis)| {
+                    resolve_flex_basis_value(
+                        basis,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
         FlexBasisDeclaration::CustomProperty(_)
         | FlexBasisDeclaration::CustomPropertyFallback(_, _)
+        | FlexBasisDeclaration::CustomPropertyShorthand(_)
+        | FlexBasisDeclaration::CustomPropertyShorthandFallback(_, _)
         | FlexBasisDeclaration::RevertLayer => None,
     }
 }
@@ -19238,6 +19343,31 @@ fn parse_flex_shorthand(value: &str) -> Option<(u32, u32, FlexBasisValue)> {
     }
 }
 
+fn parse_flex_shorthand_custom_property(
+    value: &str,
+) -> Option<(
+    FlexGrowDeclaration,
+    FlexShrinkDeclaration,
+    FlexBasisDeclaration,
+)> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => {
+            let (grow, shrink, basis) = parse_flex_shorthand(fallback)?;
+            Some((
+                FlexGrowDeclaration::CustomPropertyShorthandFallback(name_hash, grow),
+                FlexShrinkDeclaration::CustomPropertyShorthandFallback(name_hash, shrink),
+                FlexBasisDeclaration::CustomPropertyShorthandFallback(name_hash, basis),
+            ))
+        }
+        None => Some((
+            FlexGrowDeclaration::CustomPropertyShorthand(name_hash),
+            FlexShrinkDeclaration::CustomPropertyShorthand(name_hash),
+            FlexBasisDeclaration::CustomPropertyShorthand(name_hash),
+        )),
+    }
+}
+
 fn parse_flex_shorthand_declaration(
     value: &str,
 ) -> Option<(
@@ -19266,12 +19396,15 @@ fn parse_flex_shorthand_declaration(
             FlexBasisDeclaration::Inherit,
         ));
     }
-    let (grow, shrink, basis) = parse_flex_shorthand(value)?;
-    Some((
-        FlexGrowDeclaration::Value(grow),
-        FlexShrinkDeclaration::Value(shrink),
-        FlexBasisDeclaration::Value(basis),
-    ))
+    parse_flex_shorthand(value)
+        .map(|(grow, shrink, basis)| {
+            (
+                FlexGrowDeclaration::Value(grow),
+                FlexShrinkDeclaration::Value(shrink),
+                FlexBasisDeclaration::Value(basis),
+            )
+        })
+        .or_else(|| parse_flex_shorthand_custom_property(value))
 }
 
 fn parse_text_decoration(value: &str) -> Option<TextDecorationValue> {
@@ -28555,6 +28688,46 @@ mod tests {
                 flex_basis: Some(FlexBasisDeclaration::RevertLayer),
                 ..NativeDeclarations::default()
             }
+        );
+    }
+    #[test]
+    fn flex_shorthand_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let flex = parse_custom_property_name("--flex").unwrap();
+        assert_eq!(
+            parse_flex_shorthand_declaration("var(--flex)"),
+            Some((
+                FlexGrowDeclaration::CustomPropertyShorthand(flex),
+                FlexShrinkDeclaration::CustomPropertyShorthand(flex),
+                FlexBasisDeclaration::CustomPropertyShorthand(flex),
+            ))
+        );
+        assert_eq!(
+            parse_flex_shorthand_declaration("var(--flex, 2 3 12px)"),
+            Some((
+                FlexGrowDeclaration::CustomPropertyShorthandFallback(flex, 2),
+                FlexShrinkDeclaration::CustomPropertyShorthandFallback(flex, 3),
+                FlexBasisDeclaration::CustomPropertyShorthandFallback(
+                    flex,
+                    FlexBasisValue::Length(12)
+                ),
+            ))
+        );
+        assert_eq!(
+            parse_declarations("flex: var(--flex)"),
+            NativeDeclarations {
+                flex_grow: Some(FlexGrowDeclaration::CustomPropertyShorthand(flex)),
+                flex_shrink: Some(FlexShrinkDeclaration::CustomPropertyShorthand(flex)),
+                flex_basis: Some(FlexBasisDeclaration::CustomPropertyShorthand(flex)),
+                ..NativeDeclarations::default()
+            }
+        );
+        assert_eq!(
+            parse_flex_shorthand_declaration("var(--flex, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_flex_shorthand_declaration("var(--flex, 2 3 50%)"),
+            None
         );
     }
 
@@ -39767,6 +39940,55 @@ mod tests {
             document.computed_style_for_layout(child).flex_basis(),
             FlexBasisValue::Auto
         );
+    }
+
+    #[test]
+    fn flex_shorthand_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --flex: 2 3 12px; --alias: var(--flex); --cycle: var(--cycle); flex: var(--alias); }
+            #child { flex: var(--alias); }
+            #fallback { flex: var(--missing, 4 5 auto); }
+            #invalid { --bad: unsupported; flex: var(--bad, 6 0 16px); }
+            #cycle { flex: var(--cycle, 7 1 18px); }
+            #reset { --reset: initial; flex: var(--reset, 8 2 20px); }
+            #override { --flex: 9 8 22px; flex: var(--flex); flex-grow: 4; flex-shrink: 3; flex-basis: 10px; }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='override'>Override</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        assert_eq!(style("parent").flex_grow(), 2);
+        assert_eq!(style("parent").flex_shrink(), 3);
+        assert_eq!(style("parent").flex_basis(), FlexBasisValue::Length(12));
+        assert_eq!(style("child").flex_grow(), 2);
+        assert_eq!(style("child").flex_shrink(), 3);
+        assert_eq!(style("child").flex_basis(), FlexBasisValue::Length(12));
+        assert_eq!(style("fallback").flex_grow(), 4);
+        assert_eq!(style("fallback").flex_shrink(), 5);
+        assert_eq!(style("fallback").flex_basis(), FlexBasisValue::Auto);
+        assert_eq!(style("invalid").flex_grow(), 6);
+        assert_eq!(style("invalid").flex_shrink(), 0);
+        assert_eq!(style("invalid").flex_basis(), FlexBasisValue::Length(16));
+        assert_eq!(style("cycle").flex_grow(), 7);
+        assert_eq!(style("cycle").flex_shrink(), 1);
+        assert_eq!(style("cycle").flex_basis(), FlexBasisValue::Length(18));
+        assert_eq!(style("reset").flex_grow(), 0);
+        assert_eq!(style("reset").flex_shrink(), 1);
+        assert_eq!(style("reset").flex_basis(), FlexBasisValue::Auto);
+        assert_eq!(style("override").flex_grow(), 4);
+        assert_eq!(style("override").flex_shrink(), 3);
+        assert_eq!(style("override").flex_basis(), FlexBasisValue::Length(10));
     }
 
     #[test]

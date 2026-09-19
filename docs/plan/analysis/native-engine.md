@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-623`, following
+expansion checkpoint is completed `native-engine-browser-624`, following
+completed `native-engine-browser-623`, following completed
 completed `native-engine-browser-622`, following completed
 completed `native-engine-browser-621`, following completed
 `native-engine-browser-620`, following completed
@@ -500,6 +501,14 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 624 extends bounded custom-property substitution to the `flex`
+shorthand. Standalone `var(--name)` values and concrete three-component
+shorthand fallbacks now project through grow, shrink, and basis components,
+handling inherited aliases, invalid and cyclic fallback handling, longhand
+override precedence, and existing reset and `revert-layer` behavior. Full
+custom-property grammar, registered properties, and complete CSS and Web IDL
+parity remain explicit issue #40 gates.
 
 Slice 623 extends bounded custom-property substitution to `flex-grow`,
 `flex-shrink`, and `flex-basis`. Standalone `var(--name)` values and

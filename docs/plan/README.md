@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-630`, following completed
 `native-engine-browser-629`, following completed
 `native-engine-browser-628`, following completed
 `native-engine-browser-627`, following completed
@@ -532,6 +533,14 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed background-image substitution follow-up is
+[`native-engine-browser-630`](tasks/native-engine-browser-630.md): native
+`background-image` now accepts bounded standalone `var(--name)` values and
+concrete URL or `none` fallbacks. Resolution preserves inherited aliases,
+invalid and cyclic fallback handling, explicit `none`, and declaration-order
+precedence. Full image-list grammar, registered properties, and complete CSS
+and Web IDL parity remain issue #40 gates.
 
 The completed text-decoration shorthand substitution follow-up is
 [`native-engine-browser-629`](tasks/native-engine-browser-629.md): native

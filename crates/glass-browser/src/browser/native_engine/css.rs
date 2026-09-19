@@ -237,13 +237,21 @@ enum NativeBackgroundImageValue {
     Unset,
     Initial,
     Revert,
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, Option<u32>),
 }
 
 impl NativeBackgroundImageValue {
     const fn resolve(self) -> Option<u32> {
         match self {
             Self::Url(source) => Some(source),
-            Self::None | Self::Inherit | Self::Unset | Self::Initial | Self::Revert => None,
+            Self::None
+            | Self::Inherit
+            | Self::Unset
+            | Self::Initial
+            | Self::Revert
+            | Self::CustomProperty(_)
+            | Self::CustomPropertyFallback(_, _) => None,
         }
     }
 }
@@ -4531,7 +4539,7 @@ impl NativeStylesheet {
             custom_properties,
         );
         let resolved_background_image =
-            resolve_local_background_image_declaration(*background_image);
+            resolve_local_background_image_declaration(*background_image, custom_properties);
         let resolved_background_repeat =
             resolve_local_background_repeat_declaration(*background_repeat);
         let resolved_background_position =
@@ -9999,12 +10007,56 @@ fn resolve_local_background_color_declaration(
     })
 }
 
+fn resolve_native_background_image_value(
+    value: NativeBackgroundImageValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<Option<u32>> {
+    match value {
+        NativeBackgroundImageValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_background_image_value(value))
+                .and_then(|value| {
+                    resolve_native_background_image_value(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeBackgroundImageValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_background_image_value(value))
+                .and_then(|value| {
+                    resolve_native_background_image_value(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        NativeBackgroundImageValue::CustomProperty(_)
+        | NativeBackgroundImageValue::CustomPropertyFallback(_, _) => None,
+        value => Some(value.resolve()),
+    }
+}
+
 fn resolve_local_background_image_declaration(
     candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBackgroundImageValue>>>;
         MAX_NATIVE_PAINT_CASCADE_LAYERS],
+    custom_properties: &BTreeMap<u64, String>,
 ) -> Option<u32> {
     resolve_alignment_candidates(candidates, None, |declaration| match declaration {
-        LocalCascadeDeclaration::Value(value) => Some(value.resolve()),
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_native_background_image_value(value, custom_properties, 0)
+        }
         LocalCascadeDeclaration::Inherit
         | LocalCascadeDeclaration::Reset
         | LocalCascadeDeclaration::RevertLayer => None,
@@ -16464,11 +16516,18 @@ fn parse_background_image_url(value: &str) -> Option<&str> {
     Some(inner)
 }
 
-fn parse_background_image_value(value: &str) -> Option<NativeBackgroundImageValue> {
+fn parse_background_image_concrete_value(value: &str) -> Option<NativeBackgroundImageValue> {
     let value = value.trim();
     if value.eq_ignore_ascii_case("none") {
         return Some(NativeBackgroundImageValue::None);
     }
+    parse_background_image_url(value)
+        .map(background_image_source_id)
+        .map(NativeBackgroundImageValue::Url)
+}
+
+fn parse_background_image_value(value: &str) -> Option<NativeBackgroundImageValue> {
+    let value = value.trim();
     if value.eq_ignore_ascii_case("inherit") {
         return Some(NativeBackgroundImageValue::Inherit);
     }
@@ -16481,9 +16540,26 @@ fn parse_background_image_value(value: &str) -> Option<NativeBackgroundImageValu
     if value.eq_ignore_ascii_case("revert") {
         return Some(NativeBackgroundImageValue::Revert);
     }
-    parse_background_image_url(value)
-        .map(background_image_source_id)
-        .map(NativeBackgroundImageValue::Url)
+    if let Some((name_hash, fallback)) = parse_flex_var_arguments(value) {
+        return match fallback {
+            Some(fallback) => match parse_background_image_concrete_value(fallback)? {
+                NativeBackgroundImageValue::Url(source) => Some(
+                    NativeBackgroundImageValue::CustomPropertyFallback(name_hash, Some(source)),
+                ),
+                NativeBackgroundImageValue::None => Some(
+                    NativeBackgroundImageValue::CustomPropertyFallback(name_hash, None),
+                ),
+                NativeBackgroundImageValue::Inherit
+                | NativeBackgroundImageValue::Unset
+                | NativeBackgroundImageValue::Initial
+                | NativeBackgroundImageValue::Revert
+                | NativeBackgroundImageValue::CustomProperty(_)
+                | NativeBackgroundImageValue::CustomPropertyFallback(_, _) => None,
+            },
+            None => Some(NativeBackgroundImageValue::CustomProperty(name_hash)),
+        };
+    }
+    parse_background_image_concrete_value(value)
 }
 
 fn parse_background_image_declaration(
@@ -24217,6 +24293,40 @@ mod tests {
     }
 
     #[test]
+    fn background_image_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let image = parse_custom_property_name("--image").unwrap();
+        let source = background_image_source_id("https://example.test/image.png");
+        assert_eq!(
+            parse_background_image_declaration("var(--image)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundImageValue::CustomProperty(image)
+            ))
+        );
+        assert_eq!(
+            parse_background_image_declaration(
+                "VAR(--image, url('https://example.test/image.png'))"
+            ),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundImageValue::CustomPropertyFallback(image, Some(source))
+            ))
+        );
+        assert_eq!(
+            parse_background_image_declaration("var(--image, none)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundImageValue::CustomPropertyFallback(image, None)
+            ))
+        );
+        assert_eq!(
+            parse_background_image_declaration("var(--image, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_background_image_declaration("var(--image, inherit)"),
+            None
+        );
+    }
+
+    #[test]
     fn inherited_color_custom_properties_resolve_with_fallbacks() {
         let document = NativeDocument::parse(
             "<style>#parent { --accent: rgb(1, 2, 3); --alias: var(--accent); --cycle: var(--cycle); color: var(--accent); } #child { color: var(--alias); } #fallback { color: var(--missing, red); } #invalid { --bad: nonsense; color: var(--bad, white); } #cycle { color: var(--cycle, white); }</style><div id='parent'><span id='child'>Child</span><span id='fallback'>Fallback</span><span id='invalid'>Invalid</span><span id='cycle'>Cycle</span></div>",
@@ -24254,6 +24364,76 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(cycle).color(),
             Some(NativeColor::WHITE)
+        );
+    }
+
+    #[test]
+    fn background_image_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --image: url('https://example.test/parent.png'); background-image: var(--image); }
+            #child { --alias: var(--image); background-image: var(--alias); }
+            #fallback { background-image: var(--missing, url('https://example.test/fallback.png')); }
+            #invalid { --bad: nonsense; background-image: var(--bad, url('https://example.test/invalid.png')); }
+            #cycle { --cycle: var(--cycle); background-image: var(--cycle, none); }
+            #none { --none: none; background-image: var(--none, url('https://example.test/ignored.png')); }
+            #ordered { background-image: url('https://example.test/first.png'); background-image: var(--missing, url('https://example.test/last.png')); }
+            </style>
+            <div id='parent'><span id='child'>Child</span><span id='fallback'>Fallback</span><span id='invalid'>Invalid</span><span id='cycle'>Cycle</span><span id='none'>None</span><span id='ordered'>Ordered</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let fallback = document.resolve_target("id=fallback").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let cycle = document.resolve_target("id=cycle").unwrap();
+        let none = document.resolve_target("id=none").unwrap();
+        let ordered = document.resolve_target("id=ordered").unwrap();
+
+        assert_eq!(
+            document
+                .computed_style_for_layout(parent)
+                .background_image(),
+            Some(background_image_source_id(
+                "https://example.test/parent.png"
+            ))
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).background_image(),
+            Some(background_image_source_id(
+                "https://example.test/parent.png"
+            ))
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(fallback)
+                .background_image(),
+            Some(background_image_source_id(
+                "https://example.test/fallback.png"
+            ))
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .background_image(),
+            Some(background_image_source_id(
+                "https://example.test/invalid.png"
+            ))
+        );
+        assert_eq!(
+            document.computed_style_for_layout(cycle).background_image(),
+            None
+        );
+        assert_eq!(
+            document.computed_style_for_layout(none).background_image(),
+            None
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(ordered)
+                .background_image(),
+            Some(background_image_source_id("https://example.test/last.png"))
         );
     }
 

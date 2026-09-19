@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-621`, following completed
 `native-engine-browser-620`, following completed
 `native-engine-browser-619`, following completed
 `native-engine-browser-618`, following completed
@@ -523,6 +524,16 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed visibility substitution follow-up is
+[`native-engine-browser-621`](tasks/native-engine-browser-621.md): native
+`visibility` now accepts bounded standalone `var(--name)` values and hidden
+or visible fallbacks. Resolution covers inherited custom-property aliases,
+invalid and cyclic fallback handling, local cascade, and existing
+`revert-layer` behavior before the hidden-subtree owner. The existing
+hidden/visible grammar remains unchanged; CSS-wide values beyond
+`revert-layer`, `collapse`, nested-variable, registered-property, full CSS
+variable grammar, and complete CSS and Web IDL parity remain issue #40 gates.
 
 The completed gap substitution follow-up is
 [`native-engine-browser-620`](tasks/native-engine-browser-620.md): native

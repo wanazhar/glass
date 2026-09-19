@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-620`, following
+expansion checkpoint is completed `native-engine-browser-621`, following
+completed `native-engine-browser-620`, following
 completed `native-engine-browser-619`, following
 completed `native-engine-browser-618`, following
 completed `native-engine-browser-617`, following
@@ -497,6 +498,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 621 extends bounded custom-property substitution to `visibility`.
+Standalone `var(--name)` values and hidden or visible fallbacks now resolve
+inherited custom-property aliases, invalid and cyclic fallback handling, local
+cascade, and existing `revert-layer` behavior before the hidden-subtree owner.
+The existing hidden/visible grammar remains unchanged; CSS-wide values beyond
+`revert-layer`, `collapse`, nested-variable, registered-property, full CSS
+variable grammar, and complete CSS and Web IDL parity remain explicit issue
+#40 gates.
 
 Slice 620 extends bounded custom-property substitution to `gap`, `row-gap`,
 and `column-gap`. Standalone `var(--name)` values, one- or two-value shorthand

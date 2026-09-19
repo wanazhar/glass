@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-635`, following completed
 `native-engine-browser-634`, following completed
 `native-engine-browser-633`, following completed
 `native-engine-browser-632`, following completed
@@ -537,6 +538,14 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed grid-template substitution follow-up is
+[`native-engine-browser-635`](tasks/native-engine-browser-635.md): native
+`grid-template-columns` and `grid-template-rows` now accept bounded standalone
+`var(--name)` values and concrete track-list fallbacks. Resolution preserves
+inherited aliases, invalid and cyclic handling, `none`, repeat expansion, and
+declaration-order precedence. Full grid grammar, registered properties, and
+complete CSS and Web IDL parity remain issue #40 gates.
 
 The completed background shorthand substitution follow-up is
 [`native-engine-browser-634`](tasks/native-engine-browser-634.md): native

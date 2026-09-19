@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-605`, following completed
 `native-engine-browser-604`, following completed
 `native-engine-browser-603`, following completed
 `native-engine-browser-602`, following completed
@@ -474,6 +475,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 605 extends bounded native custom-property substitution to `opacity`.
+Standalone `var(--name)` and percentage or numeric `var(--name, value)`
+fallbacks now resolve inherited aliases, invalid values, and cyclic values
+before computed-style projection, while existing quantization, local cascade
+precedence, and supported values remain unchanged. Nested variable grammar,
+registered properties, full CSS variable grammar, and complete CSS/Web IDL
+parity remain issue #40 gates.
 
 Slice 604 extends bounded native custom-property substitution to
 `overflow`, `overflow-x`, and `overflow-y`. Standalone `var(--name)` and

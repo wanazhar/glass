@@ -5745,6 +5745,7 @@ impl NativeDocument {
         } else {
             node.state.attribute_namespaces.remove(&name);
         }
+        self.computed_styles = None;
         Ok(())
     }
 
@@ -5781,6 +5782,7 @@ impl NativeDocument {
         }
         attributes.remove(&name);
         node.state.attribute_namespaces.remove(&name);
+        self.computed_styles = None;
         Ok(())
     }
 

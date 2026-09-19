@@ -9179,6 +9179,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cssom_custom_property_mutations_recompute_inherited_font_size() {
+        let config = NativeEngineConfig::default()
+            .with_initial_url("fixture://cssom.test/index")
+            .with_fixture(
+                "fixture://cssom.test/index",
+                "<style>#parent { --size: 1em; } #child { font-size: var(--size); }</style><div id='parent'><span id='child'>Child</span></div>",
+            )
+            .expect("CSSOM fixture must validate");
+        let mut engine = NativeEngine::new(config).expect("native engine must construct");
+        engine.initialize().expect("native engine must initialize");
+        let child = engine
+            .resolve_target("id=child")
+            .expect("CSSOM child must resolve");
+
+        assert_eq!(
+            engine.document.computed_style_for_layout(child).font_size(),
+            16
+        );
+        assert_eq!(
+            engine
+                .evaluate_async(
+                    "document.getElementById('parent').style.setProperty('--size', '2em'); true"
+                )
+                .await
+                .expect("CSSOM custom-property update must succeed"),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            engine.document.computed_style_for_layout(child).font_size(),
+            32
+        );
+        assert_eq!(
+            engine
+                .evaluate_async(
+                    "document.getElementById('parent').style.removeProperty('--size'); true"
+                )
+                .await
+                .expect("CSSOM custom-property removal must succeed"),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            engine.document.computed_style_for_layout(child).font_size(),
+            16
+        );
+    }
+
+    #[tokio::test]
     async fn viewport_updates_recompute_css_and_script_dimensions() {
         let config = NativeEngineConfig::default()
             .with_initial_url("fixture://viewport.test/index")

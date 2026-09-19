@@ -788,6 +788,13 @@ pub(crate) enum TextJustifyValue {
     InterWord,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextJustifyDeclarationValue {
+    Value(TextJustifyValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, TextJustifyValue),
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum JustifyContentValue {
     #[default]
@@ -4541,7 +4548,11 @@ impl NativeStylesheet {
                 inherited.text_align_last,
                 custom_properties,
             ),
-            text_justify: resolve_text_justify(*text_justify, inherited.text_justify),
+            text_justify: resolve_text_justify(
+                *text_justify,
+                inherited.text_justify,
+                custom_properties,
+            ),
             justify_content: resolve_justify_content(*justify_content, inherited.justify_content),
             align_items: resolve_align_items(*align_items, inherited.align_items),
             align_self: resolve_align_self(*align_self, inherited.align_self),
@@ -4813,7 +4824,7 @@ struct NativeCascadeScratch {
     white_space: NativeTextCascadeCandidates<WhiteSpaceValue>,
     text_align: NativeTextCascadeCandidates<TextAlignDeclarationValue>,
     text_align_last: NativeTextCascadeCandidates<TextAlignLastDeclarationValue>,
-    text_justify: NativeTextCascadeCandidates<TextJustifyValue>,
+    text_justify: NativeTextCascadeCandidates<TextJustifyDeclarationValue>,
     direction: NativeTextCascadeCandidates<DirectionValue>,
     justify_content: NativeLocalDeclarationCandidates<JustifyContentDeclaration>,
     align_items: NativeLocalDeclarationCandidates<AlignItemsDeclaration>,
@@ -5411,12 +5422,89 @@ fn resolve_text_align_last(
     }
 }
 
-fn resolve_text_justify(
-    candidates: [Option<CascadeValue<InheritedTextDeclaration<TextJustifyValue>>>;
-        MAX_NATIVE_TEXT_CASCADE_LAYERS],
+fn resolve_text_justify_declaration(
+    declaration: InheritedTextDeclaration<TextJustifyDeclarationValue>,
     inherited: TextJustifyValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<TextJustifyDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_text_justify_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(TextJustifyDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => {
+            Some(TextJustifyDeclarationValue::Value(TextJustifyValue::Auto))
+        }
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_text_justify_value(
+    value: TextJustifyDeclarationValue,
+    inherited: TextJustifyValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<TextJustifyDeclarationValue> {
+    match value {
+        TextJustifyDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_justify_declaration(value))
+                .and_then(|declaration| {
+                    resolve_text_justify_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        TextJustifyDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_justify_declaration(value))
+                .and_then(|declaration| {
+                    resolve_text_justify_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(TextJustifyDeclarationValue::Value(fallback)))
+        }
+        TextJustifyDeclarationValue::CustomProperty(_)
+        | TextJustifyDeclarationValue::CustomPropertyFallback(_, _) => None,
+        TextJustifyDeclarationValue::Value(value) => {
+            Some(TextJustifyDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_text_justify(
+    candidates: NativeTextCascadeCandidates<TextJustifyDeclarationValue>,
+    inherited: TextJustifyValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> TextJustifyValue {
-    resolve_inherited_text_declaration(candidates, inherited, TextJustifyValue::Auto)
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        TextJustifyDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_text_justify_declaration(declaration, inherited, custom_properties, 0)
+        },
+    );
+    match resolved {
+        TextJustifyDeclarationValue::Value(value) => value,
+        TextJustifyDeclarationValue::CustomProperty(_)
+        | TextJustifyDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn scale_relative_font_size(base: u32, scale_milli: u32) -> Option<u32> {
@@ -9340,7 +9428,7 @@ struct NativeDeclarations {
     white_space: Option<InheritedTextDeclaration<WhiteSpaceValue>>,
     text_align: Option<InheritedTextDeclaration<TextAlignDeclarationValue>>,
     text_align_last: Option<InheritedTextDeclaration<TextAlignLastDeclarationValue>>,
-    text_justify: Option<InheritedTextDeclaration<TextJustifyValue>>,
+    text_justify: Option<InheritedTextDeclaration<TextJustifyDeclarationValue>>,
     justify_content: Option<JustifyContentDeclaration>,
     align_items: Option<AlignItemsDeclaration>,
     align_self: Option<AlignSelfDeclaration>,
@@ -15221,10 +15309,33 @@ fn parse_text_justify(value: &str) -> Option<TextJustifyValue> {
     }
 }
 
+fn parse_text_justify_custom_property(value: &str) -> Option<TextJustifyDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_text_justify(fallback).map(|fallback| {
+            TextJustifyDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(TextJustifyDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_text_justify_property(value: &str) -> Option<TextJustifyDeclarationValue> {
+    parse_text_justify(value)
+        .map(TextJustifyDeclarationValue::Value)
+        .or_else(|| parse_text_justify_custom_property(value))
+}
+
 fn parse_text_justify_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<TextJustifyValue>> {
-    parse_inherited_text_declaration(value, parse_text_justify)
+) -> Option<InheritedTextDeclaration<TextJustifyDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_text_justify_property)
 }
 
 fn parse_justify_content(value: &str) -> Option<JustifyContentValue> {
@@ -18783,7 +18894,9 @@ mod tests {
         );
         assert_eq!(
             declarations.text_justify,
-            Some(InheritedTextDeclaration::Value(TextJustifyValue::InterWord))
+            Some(InheritedTextDeclaration::Value(
+                TextJustifyDeclarationValue::Value(TextJustifyValue::InterWord)
+            ))
         );
         assert_eq!(
             declarations.justify_content,
@@ -23176,6 +23289,22 @@ mod tests {
         assert_eq!(parse_text_justify("inter-character"), None);
         assert_eq!(parse_text_justify("distribute"), None);
         assert_eq!(parse_text_justify("auto none"), None);
+        let justify_name = parse_custom_property_name("--justify").unwrap();
+        let fallback = TextJustifyValue::InterWord;
+        assert_eq!(
+            parse_text_justify_property("var(--justify)"),
+            Some(TextJustifyDeclarationValue::CustomProperty(justify_name))
+        );
+        assert_eq!(
+            parse_text_justify_declaration("var(--justify, inter-word)"),
+            Some(InheritedTextDeclaration::Value(
+                TextJustifyDeclarationValue::CustomPropertyFallback(justify_name, fallback)
+            ))
+        );
+        assert_eq!(
+            parse_text_justify_property("var(--justify, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -30107,6 +30236,44 @@ mod tests {
                 .text_align_last(),
             TextAlignLastValue::Center
         );
+    }
+
+    #[test]
+    fn inherited_text_justify_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --justify: inter-word; --alias: var(--justify); --cycle: var(--cycle); text-justify: var(--justify); }
+            #child { text-justify: var(--alias); }
+            #fallback { text-justify: var(--missing, none); }
+            #invalid { --bad: inter-character; text-justify: var(--bad, auto); }
+            #cycle { text-justify: var(--cycle, none); }
+            #wide-initial { --wide: initial; text-justify: var(--wide); }
+            #wide-inherit { --wide: inherit; text-justify: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .text_justify()
+        };
+
+        assert_eq!(style("parent"), TextJustifyValue::InterWord);
+        assert_eq!(style("child"), TextJustifyValue::InterWord);
+        assert_eq!(style("fallback"), TextJustifyValue::None);
+        assert_eq!(style("invalid"), TextJustifyValue::Auto);
+        assert_eq!(style("cycle"), TextJustifyValue::None);
+        assert_eq!(style("wide-initial"), TextJustifyValue::Auto);
+        assert_eq!(style("wide-inherit"), TextJustifyValue::InterWord);
     }
 
     #[test]

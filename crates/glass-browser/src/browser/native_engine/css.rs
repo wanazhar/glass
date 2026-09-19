@@ -4488,12 +4488,12 @@ impl NativeStylesheet {
             resolved_direction,
             &mut border_radius,
         );
-        project_logical_box_model_candidates(
+        project_logical_padding_candidates(
             &logical_padding,
             resolved_direction,
             inherited.direction,
             inherited.padding,
-            &mut padding,
+            padding,
         );
         project_logical_box_model_candidates(
             &logical_margin,
@@ -4504,10 +4504,7 @@ impl NativeStylesheet {
         );
 
         let resolved_padding = std::array::from_fn(|index| {
-            resolve_local_inherited_optional_cascade_declaration(
-                padding[index],
-                inherited.padding[index],
-            )
+            resolve_padding_candidates(padding[index], inherited.padding[index], custom_properties)
         });
         let resolved_margin = std::array::from_fn(|index| {
             resolve_local_inherited_optional_cascade_declaration(
@@ -4875,6 +4872,15 @@ enum BoxSizingDeclarationValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaddingDeclarationValue {
+    Value(u32),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, u32),
+    CustomPropertyShorthand(u64, u8),
+    CustomPropertyShorthandFallback(u64, u8, u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpacityDeclarationValue {
     Value(u8),
     CustomProperty(u64),
@@ -5025,7 +5031,7 @@ struct NativeCascadeScratch {
     logical_border_radius: NativeLogicalBorderRadiusCandidates,
     logical_padding: NativeLogicalBoxModelCandidates<u32>,
     logical_margin: NativeLogicalBoxModelCandidates<NativeMarginValue>,
-    padding: NativePhysicalLocalBorderCandidates<u32>,
+    padding: NativePhysicalLocalBorderCandidates<PaddingDeclarationValue>,
     margin: NativePhysicalLocalBorderCandidates<NativeMarginValue>,
     box_sizing: NativeLocalCascadeCandidates<BoxSizingDeclarationValue>,
     color: NativePaintCascadeCandidates<NativeColorValue>,
@@ -8548,6 +8554,119 @@ fn resolve_box_sizing(
     }
 }
 
+fn resolve_padding_declaration(
+    declaration: LocalCascadeDeclaration<PaddingDeclarationValue>,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<PaddingDeclarationValue> {
+    match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_padding_value(value, inherited, custom_properties, depth)
+        }
+        LocalCascadeDeclaration::Inherit => Some(PaddingDeclarationValue::Value(inherited)),
+        LocalCascadeDeclaration::Reset => Some(PaddingDeclarationValue::Value(0)),
+        LocalCascadeDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_padding_value(
+    value: PaddingDeclarationValue,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<PaddingDeclarationValue> {
+    match value {
+        PaddingDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_physical_padding_declaration(value))
+                .and_then(|declaration| {
+                    resolve_padding_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        PaddingDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_physical_padding_declaration(value))
+                .and_then(|declaration| {
+                    resolve_padding_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(PaddingDeclarationValue::Value(fallback)))
+        }
+        PaddingDeclarationValue::CustomPropertyShorthand(name_hash, edge)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_box_edges(value))
+                .and_then(|declarations| declarations.get(edge as usize).copied())
+                .and_then(|declaration| {
+                    resolve_padding_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        PaddingDeclarationValue::CustomPropertyShorthandFallback(name_hash, edge, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_box_edges(value))
+                .and_then(|declarations| declarations.get(edge as usize).copied())
+                .and_then(|declaration| {
+                    resolve_padding_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(PaddingDeclarationValue::Value(fallback)))
+        }
+        PaddingDeclarationValue::CustomProperty(_)
+        | PaddingDeclarationValue::CustomPropertyFallback(_, _)
+        | PaddingDeclarationValue::CustomPropertyShorthand(_, _)
+        | PaddingDeclarationValue::CustomPropertyShorthandFallback(_, _, _) => None,
+        PaddingDeclarationValue::Value(value) => Some(PaddingDeclarationValue::Value(value)),
+    }
+}
+
+fn resolve_padding_candidates(
+    candidates: NativeLocalCascadeCandidates<PaddingDeclarationValue>,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+) -> Option<u32> {
+    resolve_alignment_candidates(candidates, None, |declaration| {
+        resolve_padding_declaration(declaration, inherited, custom_properties, 0).map(|value| {
+            match value {
+                PaddingDeclarationValue::Value(value) => Some(value),
+                PaddingDeclarationValue::CustomProperty(_)
+                | PaddingDeclarationValue::CustomPropertyFallback(_, _)
+                | PaddingDeclarationValue::CustomPropertyShorthand(_, _)
+                | PaddingDeclarationValue::CustomPropertyShorthandFallback(_, _, _) => None,
+            }
+        })
+    })
+}
+
 fn resolve_text_indent_declaration(
     declaration: LocalCascadeDeclaration<TextIndentDeclarationValue>,
     inherited: u32,
@@ -10472,6 +10591,49 @@ fn project_logical_border_radius_candidates(
     }
 }
 
+fn project_logical_padding_candidates(
+    sources: &NativeLogicalBoxModelCandidates<u32>,
+    direction: DirectionValue,
+    inherited_direction: DirectionValue,
+    inherited: [u32; 4],
+    targets: &mut NativePhysicalLocalBorderCandidates<PaddingDeclarationValue>,
+) {
+    for (logical_side, logical_candidates) in sources.iter().enumerate() {
+        let physical_side = logical_border_physical_side(logical_side, direction);
+        let inherited_physical_side =
+            logical_border_physical_side(logical_side, inherited_direction);
+        for (layer, source_candidate) in logical_candidates.iter().copied().enumerate() {
+            let Some(source_candidate) = source_candidate else {
+                continue;
+            };
+            let value = match source_candidate.value {
+                LocalCascadeDeclaration::Value(value) => {
+                    LocalCascadeDeclaration::Value(PaddingDeclarationValue::Value(value))
+                }
+                LocalCascadeDeclaration::Inherit => LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(inherited[inherited_physical_side]),
+                ),
+                LocalCascadeDeclaration::Reset => LocalCascadeDeclaration::Reset,
+                LocalCascadeDeclaration::RevertLayer => LocalCascadeDeclaration::RevertLayer,
+            };
+            let candidate = CascadeValue {
+                value,
+                specificity: source_candidate.specificity,
+                order: source_candidate.order,
+                inline: source_candidate.inline,
+            };
+            if wins(
+                candidate.specificity,
+                candidate.order,
+                candidate.inline,
+                targets[physical_side][layer],
+            ) {
+                targets[physical_side][layer] = Some(candidate);
+            }
+        }
+    }
+}
+
 fn project_logical_box_model_candidates<T: Copy>(
     sources: &NativeLogicalBoxModelCandidates<T>,
     direction: DirectionValue,
@@ -10948,7 +11110,7 @@ struct NativeDeclarations {
     border_radius_corner_orders: [usize; 4],
     border_radius_corner_important: [bool; 4],
     logical_border_radius: NativeLogicalBorderRadiusDeclarations,
-    padding: [Option<LocalCascadeDeclaration<u32>>; 4],
+    padding: [Option<LocalCascadeDeclaration<PaddingDeclarationValue>>; 4],
     padding_order: [usize; 4],
     margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; 4],
     margin_order: [usize; 4],
@@ -13753,28 +13915,28 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 );
             }
             "padding-top" => {
-                if let Some(value) = parse_local_padding_declaration(value) {
+                if let Some(value) = parse_local_physical_padding_declaration(value) {
                     declarations.padding[0] = Some(value);
                     declarations.padding_order[0] = declaration_order;
                     declarations.box_model_importance.padding[0] = important;
                 }
             }
             "padding-right" => {
-                if let Some(value) = parse_local_padding_declaration(value) {
+                if let Some(value) = parse_local_physical_padding_declaration(value) {
                     declarations.padding[1] = Some(value);
                     declarations.padding_order[1] = declaration_order;
                     declarations.box_model_importance.padding[1] = important;
                 }
             }
             "padding-bottom" => {
-                if let Some(value) = parse_local_padding_declaration(value) {
+                if let Some(value) = parse_local_physical_padding_declaration(value) {
                     declarations.padding[2] = Some(value);
                     declarations.padding_order[2] = declaration_order;
                     declarations.box_model_importance.padding[2] = important;
                 }
             }
             "padding-left" => {
-                if let Some(value) = parse_local_padding_declaration(value) {
+                if let Some(value) = parse_local_physical_padding_declaration(value) {
                     declarations.padding[3] = Some(value);
                     declarations.padding_order[3] = declaration_order;
                     declarations.box_model_importance.padding[3] = important;
@@ -15571,7 +15733,9 @@ fn parse_box_edges(value: &str) -> Option<[u32; 4]> {
     expand_box_edges(&values)
 }
 
-fn parse_local_box_edges(value: &str) -> Option<[LocalCascadeDeclaration<u32>; 4]> {
+fn parse_local_box_edges(
+    value: &str,
+) -> Option<[LocalCascadeDeclaration<PaddingDeclarationValue>; 4]> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 4]);
     }
@@ -15579,9 +15743,25 @@ fn parse_local_box_edges(value: &str) -> Option<[LocalCascadeDeclaration<u32>; 4
         return Some([LocalCascadeDeclaration::Inherit; 4]);
     }
     if is_local_reset_keyword(value) {
-        return Some([LocalCascadeDeclaration::Value(0); 4]);
+        return Some([LocalCascadeDeclaration::Value(PaddingDeclarationValue::Value(0)); 4]);
     }
-    parse_box_edges(value).map(|values| values.map(LocalCascadeDeclaration::Value))
+    if let Some(values) = parse_box_edges(value) {
+        return Some(
+            values
+                .map(|value| LocalCascadeDeclaration::Value(PaddingDeclarationValue::Value(value))),
+        );
+    }
+    let (name_hash, fallback) = parse_padding_shorthand_custom_property(value)?;
+    Some(std::array::from_fn(|index| {
+        LocalCascadeDeclaration::Value(match fallback {
+            Some(values) => PaddingDeclarationValue::CustomPropertyShorthandFallback(
+                name_hash,
+                index as u8,
+                values[index],
+            ),
+            None => PaddingDeclarationValue::CustomPropertyShorthand(name_hash, index as u8),
+        })
+    }))
 }
 
 fn parse_box_edge_pair(value: &str) -> Option<[u32; 2]> {
@@ -20246,6 +20426,55 @@ fn parse_local_dimension_declaration(
     parse_local_reset_cascade_declaration(value, parse_dimension_property)
 }
 
+fn parse_padding_var_arguments(value: &str) -> Option<(u64, Option<&str>)> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    Some((parse_custom_property_name(name)?, fallback))
+}
+
+fn parse_padding_custom_property(value: &str) -> Option<PaddingDeclarationValue> {
+    let (name_hash, fallback) = parse_padding_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_dimension(fallback)
+            .map(|fallback| PaddingDeclarationValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(PaddingDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_padding_shorthand_custom_property(value: &str) -> Option<(u64, Option<[u32; 4]>)> {
+    let (name_hash, fallback) = parse_padding_var_arguments(value)?;
+    let fallback = match fallback {
+        Some(fallback) => Some(parse_box_edges(fallback)?),
+        None => None,
+    };
+    Some((name_hash, fallback))
+}
+
+fn parse_padding_property(value: &str) -> Option<PaddingDeclarationValue> {
+    parse_dimension(value)
+        .map(PaddingDeclarationValue::Value)
+        .or_else(|| parse_padding_custom_property(value))
+}
+
+fn parse_local_physical_padding_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<PaddingDeclarationValue>> {
+    if is_inherit_keyword(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
+    if is_local_reset_keyword(value) {
+        return Some(LocalCascadeDeclaration::Value(
+            PaddingDeclarationValue::Value(0),
+        ));
+    }
+    parse_local_cascade_declaration(value, parse_padding_property)
+}
+
 fn parse_local_padding_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
     if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
@@ -21129,7 +21358,9 @@ mod tests {
         );
         assert_eq!(
             declarations.padding,
-            [Some(LocalCascadeDeclaration::Value(4)); 4]
+            [Some(LocalCascadeDeclaration::Value(
+                PaddingDeclarationValue::Value(4)
+            )); 4]
         );
         assert_eq!(
             declarations.margin,
@@ -21900,10 +22131,18 @@ mod tests {
         assert_eq!(
             declarations.padding,
             [
-                Some(LocalCascadeDeclaration::Value(1)),
-                Some(LocalCascadeDeclaration::Value(2)),
-                Some(LocalCascadeDeclaration::Value(3)),
-                Some(LocalCascadeDeclaration::Value(5)),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(1)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(2)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(3)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(5)
+                )),
             ]
         );
         assert_eq!(
@@ -21929,7 +22168,9 @@ mod tests {
             parse_declarations("padding: 4px; padding-left: 50%; margin: 2px; margin-top: -1px");
         assert_eq!(
             declarations.padding,
-            [Some(LocalCascadeDeclaration::Value(4)); 4]
+            [Some(LocalCascadeDeclaration::Value(
+                PaddingDeclarationValue::Value(4)
+            )); 4]
         );
         assert_eq!(
             declarations.margin,
@@ -30542,10 +30783,18 @@ mod tests {
         assert_eq!(
             declarations.padding,
             [
-                Some(LocalCascadeDeclaration::Value(1)),
-                Some(LocalCascadeDeclaration::Value(2)),
-                Some(LocalCascadeDeclaration::Value(3)),
-                Some(LocalCascadeDeclaration::Value(5)),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(1)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(2)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(3)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(5)
+                )),
             ]
         );
         assert_eq!(
@@ -30579,10 +30828,18 @@ mod tests {
         assert_eq!(
             preserved.padding,
             [
-                Some(LocalCascadeDeclaration::Value(4)),
-                Some(LocalCascadeDeclaration::Value(9)),
-                Some(LocalCascadeDeclaration::Value(4)),
-                Some(LocalCascadeDeclaration::Value(4)),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(4)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(9)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(4)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(4)
+                )),
             ]
         );
         assert_eq!(
@@ -32888,7 +33145,7 @@ mod tests {
         assert_eq!(parse_local_box_edges("revert-layer 4px"), None);
         assert_eq!(
             parse_local_box_edges("InItIaL"),
-            Some([LocalCascadeDeclaration::Value(0); 4])
+            Some([LocalCascadeDeclaration::Value(PaddingDeclarationValue::Value(0)); 4])
         );
         assert_eq!(
             parse_local_box_edge_pair("UNSET"),
@@ -32950,9 +33207,13 @@ mod tests {
         assert_eq!(
             declarations.padding,
             [
-                Some(LocalCascadeDeclaration::Value(1)),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(1)
+                )),
                 Some(LocalCascadeDeclaration::RevertLayer),
-                Some(LocalCascadeDeclaration::Value(3)),
+                Some(LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::Value(3)
+                )),
                 Some(LocalCascadeDeclaration::RevertLayer),
             ]
         );
@@ -32970,6 +33231,124 @@ mod tests {
             Some(LocalCascadeDeclaration::Value(
                 BoxSizingDeclarationValue::Value(NativeBoxSizing::BorderBox)
             ))
+        );
+    }
+
+    #[test]
+    fn padding_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let padding = parse_custom_property_name("--padding").unwrap();
+        assert_eq!(
+            parse_padding_property("4px"),
+            Some(PaddingDeclarationValue::Value(4))
+        );
+        assert_eq!(
+            parse_local_physical_padding_declaration("var(--padding)"),
+            Some(LocalCascadeDeclaration::Value(
+                PaddingDeclarationValue::CustomProperty(padding)
+            ))
+        );
+        assert_eq!(
+            parse_local_physical_padding_declaration("var(--padding, 8px)"),
+            Some(LocalCascadeDeclaration::Value(
+                PaddingDeclarationValue::CustomPropertyFallback(padding, 8)
+            ))
+        );
+        assert_eq!(
+            parse_local_box_edges("var(--padding)"),
+            Some([
+                LocalCascadeDeclaration::Value(PaddingDeclarationValue::CustomPropertyShorthand(
+                    padding, 0
+                )),
+                LocalCascadeDeclaration::Value(PaddingDeclarationValue::CustomPropertyShorthand(
+                    padding, 1
+                )),
+                LocalCascadeDeclaration::Value(PaddingDeclarationValue::CustomPropertyShorthand(
+                    padding, 2
+                )),
+                LocalCascadeDeclaration::Value(PaddingDeclarationValue::CustomPropertyShorthand(
+                    padding, 3
+                )),
+            ])
+        );
+        assert_eq!(
+            parse_local_box_edges("var(--padding, 1px 2px)"),
+            Some([
+                LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::CustomPropertyShorthandFallback(padding, 0, 1)
+                ),
+                LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::CustomPropertyShorthandFallback(padding, 1, 2)
+                ),
+                LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::CustomPropertyShorthandFallback(padding, 2, 1)
+                ),
+                LocalCascadeDeclaration::Value(
+                    PaddingDeclarationValue::CustomPropertyShorthandFallback(padding, 3, 2)
+                ),
+            ])
+        );
+        assert_eq!(
+            parse_local_physical_padding_declaration("var(--padding, var(--other))"),
+            None
+        );
+        assert_eq!(parse_local_box_edges("var(--padding, var(--other))"), None);
+        assert_eq!(
+            parse_local_physical_padding_declaration("initial"),
+            Some(LocalCascadeDeclaration::Value(
+                PaddingDeclarationValue::Value(0)
+            ))
+        );
+        assert_eq!(
+            parse_local_physical_padding_declaration("inherit"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
+    }
+
+    #[test]
+    fn padding_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --pad: 2px 4px 6px 8px; --alias: var(--pad); padding: var(--alias); }
+            #child { padding: var(--alias); }
+            #fallback { padding: var(--missing, 3px 4px); }
+            #invalid { --bad: unsupported; padding: var(--bad, 5px); }
+            #cycle { --cycle: var(--cycle); padding: var(--cycle, 6px); }
+            #reset { --reset: initial; padding: var(--reset, 7px); }
+            #longhand { --side: 9px; padding-left: var(--side); }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='longhand'>Longhand</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .padding()
+        };
+
+        assert_eq!(
+            style("parent"),
+            NativeBoxEdges::from_values([Some(2), Some(4), Some(6), Some(8)])
+        );
+        assert_eq!(
+            style("child"),
+            NativeBoxEdges::from_values([Some(2), Some(4), Some(6), Some(8)])
+        );
+        assert_eq!(
+            style("fallback"),
+            NativeBoxEdges::from_values([Some(3), Some(4), Some(3), Some(4)])
+        );
+        assert_eq!(style("invalid"), NativeBoxEdges::from_values([Some(5); 4]));
+        assert_eq!(style("cycle"), NativeBoxEdges::from_values([Some(6); 4]));
+        assert_eq!(style("reset"), NativeBoxEdges::default());
+        assert_eq!(
+            style("longhand"),
+            NativeBoxEdges::from_values([None, None, None, Some(9)])
         );
     }
 

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-612`, following completed
 `native-engine-browser-611`, following completed
 `native-engine-browser-610`, following completed
 `native-engine-browser-609`, following completed
@@ -513,6 +514,17 @@ at construction/setter boundaries. Invalid or over-budget values fail
 transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
+gates.
+
+The completed padding substitution follow-up is
+[`native-engine-browser-612`](tasks/native-engine-browser-612.md): native
+physical `padding` shorthand and longhands now accept bounded standalone
+`var(--name)` and concrete pixel fallbacks, including four-value shorthand
+expansion, resolving inherited aliases, CSS-wide reset mappings, invalid
+values, and cyclic values before computed-style projection. Existing logical
+padding, content-box geometry, local cascade precedence, and `revert-layer`
+behavior remain unchanged. Nested variable grammar, registered properties,
+full CSS variable grammar, and complete CSS/Web IDL parity remain issue #40
 gates.
 
 The completed box-sizing substitution follow-up is

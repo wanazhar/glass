@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-633`, following completed
 `native-engine-browser-632`, following completed
 `native-engine-browser-631`, following completed
 `native-engine-browser-630`, following completed
@@ -502,6 +503,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 633 extends bounded native custom-property substitution to
+`background-size`. Standalone `var(--name)` values and concrete size,
+`cover`, or `contain` fallbacks now resolve through the existing paint cascade,
+preserving inherited aliases, invalid and cyclic fallback handling, bounded
+pixel and percentage components, and declaration-order precedence. Full size
+grammar, registered properties, and complete CSS and Web IDL parity remain
+explicit issue #40 gates.
 
 Slice 632 extends bounded native custom-property substitution to
 `background-position`. Standalone `var(--name)` values and concrete axis

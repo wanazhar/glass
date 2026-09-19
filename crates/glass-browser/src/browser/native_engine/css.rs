@@ -331,6 +331,12 @@ impl Default for NativeBackgroundSize {
         }
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeBackgroundSizeDeclaration {
+    Value(NativeBackgroundSize),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeBackgroundSize),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeBackgroundShorthandDeclaration {
@@ -4560,7 +4566,8 @@ impl NativeStylesheet {
             resolve_local_background_repeat_declaration(*background_repeat, custom_properties);
         let resolved_background_position =
             resolve_local_background_position_declaration(*background_position, custom_properties);
-        let resolved_background_size = resolve_local_background_size_declaration(*background_size);
+        let resolved_background_size =
+            resolve_local_background_size_declaration(*background_size, custom_properties);
         let resolved_border_color: [Option<NativeColor>; 4] = std::array::from_fn(|index| {
             resolve_local_border_color_declaration(
                 border_color[index],
@@ -5120,7 +5127,7 @@ struct NativeCascadeScratch {
     background_image: NativePaintCascadeCandidates<NativeBackgroundImageValue>,
     background_repeat: NativePaintCascadeCandidates<NativeBackgroundRepeat>,
     background_position: NativePaintCascadeCandidates<NativeBackgroundPositionDeclaration>,
-    background_size: NativePaintCascadeCandidates<NativeBackgroundSize>,
+    background_size: NativePaintCascadeCandidates<NativeBackgroundSizeDeclaration>,
     border: NativePhysicalBorderCandidates<NativeBorderDeclaration>,
     logical_border: NativeLogicalBorderCandidates<NativeBorderDeclaration>,
     border_width: NativePhysicalBorderWidthCandidates,
@@ -10209,13 +10216,57 @@ fn resolve_local_background_position_declaration(
     )
 }
 
+fn resolve_native_background_size_value(
+    value: NativeBackgroundSizeDeclaration,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<NativeBackgroundSize> {
+    match value {
+        NativeBackgroundSizeDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_background_size_value(value))
+                .and_then(|value| {
+                    resolve_native_background_size_value(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeBackgroundSizeDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_background_size_value(value))
+                .and_then(|value| {
+                    resolve_native_background_size_value(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        NativeBackgroundSizeDeclaration::CustomProperty(_)
+        | NativeBackgroundSizeDeclaration::CustomPropertyFallback(_, _) => None,
+        NativeBackgroundSizeDeclaration::Value(value) => Some(value),
+    }
+}
+
 fn resolve_local_background_size_declaration(
-    candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBackgroundSize>>>;
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBackgroundSizeDeclaration>>>;
         MAX_NATIVE_PAINT_CASCADE_LAYERS],
+    custom_properties: &BTreeMap<u64, String>,
 ) -> NativeBackgroundSize {
     resolve_alignment_candidates(candidates, NativeBackgroundSize::default(), |declaration| {
         match declaration {
-            LocalCascadeDeclaration::Value(value) => Some(value),
+            LocalCascadeDeclaration::Value(value) => {
+                resolve_native_background_size_value(value, custom_properties, 0)
+            }
             LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => {
                 Some(NativeBackgroundSize::default())
             }
@@ -13058,7 +13109,7 @@ struct NativeDeclarations {
     background_repeat_important: bool,
     background_position: Option<LocalCascadeDeclaration<NativeBackgroundPositionDeclaration>>,
     background_position_important: bool,
-    background_size: Option<LocalCascadeDeclaration<NativeBackgroundSize>>,
+    background_size: Option<LocalCascadeDeclaration<NativeBackgroundSizeDeclaration>>,
     background_size_important: bool,
     border: [Option<LocalCascadeDeclaration<NativeBorderDeclaration>>; 4],
     border_order: [usize; 4],
@@ -13107,7 +13158,7 @@ fn apply_background_shorthand_declaration(
             LocalCascadeDeclaration::Value(NativeBackgroundPositionDeclaration::Value(
                 value.position,
             )),
-            LocalCascadeDeclaration::Value(value.size),
+            LocalCascadeDeclaration::Value(NativeBackgroundSizeDeclaration::Value(value.size)),
         ),
         NativeBackgroundShorthandDeclaration::Inherit => (
             LocalCascadeDeclaration::Inherit,
@@ -16894,13 +16945,25 @@ fn parse_background_size(value: &str) -> Option<NativeBackgroundSize> {
     }
 }
 
+fn parse_background_size_value(value: &str) -> Option<NativeBackgroundSizeDeclaration> {
+    if let Some((name_hash, fallback)) = parse_flex_var_arguments(value) {
+        return match fallback {
+            Some(fallback) => parse_background_size(fallback).map(|fallback| {
+                NativeBackgroundSizeDeclaration::CustomPropertyFallback(name_hash, fallback)
+            }),
+            None => Some(NativeBackgroundSizeDeclaration::CustomProperty(name_hash)),
+        };
+    }
+    parse_background_size(value).map(NativeBackgroundSizeDeclaration::Value)
+}
+
 fn parse_background_size_declaration(
     value: &str,
-) -> Option<LocalCascadeDeclaration<NativeBackgroundSize>> {
+) -> Option<LocalCascadeDeclaration<NativeBackgroundSizeDeclaration>> {
     if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
-    parse_local_reset_cascade_declaration(value, parse_background_size)
+    parse_local_reset_cascade_declaration(value, parse_background_size_value)
 }
 
 fn split_background_size_separator(value: &str) -> Option<(&str, Option<&str>)> {
@@ -24478,6 +24541,44 @@ mod tests {
     }
 
     #[test]
+    fn background_size_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let size = parse_custom_property_name("--size").unwrap();
+        let fallback = NativeBackgroundSize::Explicit {
+            width: NativeBackgroundSizeComponent::Percentage(500),
+            height: NativeBackgroundSizeComponent::Length(24),
+        };
+        assert_eq!(
+            parse_background_size_declaration("var(--size)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundSizeDeclaration::CustomProperty(size)
+            ))
+        );
+        assert_eq!(
+            parse_background_size_declaration("VAR(--size, 50% 24px)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundSizeDeclaration::CustomPropertyFallback(size, fallback)
+            ))
+        );
+        assert_eq!(
+            parse_background_size_declaration("var(--size, cover)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundSizeDeclaration::CustomPropertyFallback(
+                    size,
+                    NativeBackgroundSize::Cover
+                )
+            ))
+        );
+        assert_eq!(
+            parse_background_size_declaration("var(--size, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_background_size_declaration("var(--size, inherit)"),
+            None
+        );
+    }
+
+    #[test]
     fn background_position_parser_accepts_custom_property_aliases_and_fallbacks() {
         let position = parse_custom_property_name("--position").unwrap();
         let fallback = NativeBackgroundPosition {
@@ -24811,6 +24912,80 @@ mod tests {
             NativeBackgroundPosition {
                 x: NativeBackgroundPositionComponent::Percentage(NATIVE_BACKGROUND_PERCENT_SCALE),
                 y: NativeBackgroundPositionComponent::Percentage(NATIVE_BACKGROUND_PERCENT_SCALE),
+            }
+        );
+    }
+
+    #[test]
+    fn background_size_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --size: cover; background-size: var(--size); }
+            #child { --alias: var(--size); background-size: var(--alias); }
+            #fallback { background-size: var(--missing, 50% 24px); }
+            #invalid { --bad: nonsense; background-size: var(--bad, contain); }
+            #cycle { --cycle: var(--cycle); background-size: var(--cycle, 12px 18px); }
+            #explicit { --explicit: 25% auto; background-size: var(--explicit, cover); }
+            #ordered { background-size: contain; background-size: var(--missing, 10px 20px); }
+            </style>
+            <div id='parent'><span id='child'>Child</span><span id='fallback'>Fallback</span><span id='invalid'>Invalid</span><span id='cycle'>Cycle</span><span id='explicit'>Explicit</span><span id='ordered'>Ordered</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let fallback = document.resolve_target("id=fallback").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let cycle = document.resolve_target("id=cycle").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let ordered = document.resolve_target("id=ordered").unwrap();
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).background_size(),
+            NativeBackgroundSize::Cover
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).background_size(),
+            NativeBackgroundSize::Cover
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(fallback)
+                .background_size(),
+            NativeBackgroundSize::Explicit {
+                width: NativeBackgroundSizeComponent::Percentage(500),
+                height: NativeBackgroundSizeComponent::Length(24),
+            }
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .background_size(),
+            NativeBackgroundSize::Contain
+        );
+        assert_eq!(
+            document.computed_style_for_layout(cycle).background_size(),
+            NativeBackgroundSize::Explicit {
+                width: NativeBackgroundSizeComponent::Length(12),
+                height: NativeBackgroundSizeComponent::Length(18),
+            }
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(explicit)
+                .background_size(),
+            NativeBackgroundSize::Explicit {
+                width: NativeBackgroundSizeComponent::Percentage(250),
+                height: NativeBackgroundSizeComponent::Auto,
+            }
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(ordered)
+                .background_size(),
+            NativeBackgroundSize::Explicit {
+                width: NativeBackgroundSizeComponent::Length(10),
+                height: NativeBackgroundSizeComponent::Length(20),
             }
         );
     }

@@ -898,6 +898,13 @@ pub(crate) enum DirectionValue {
     Rtl,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectionDeclarationValue {
+    Value(DirectionValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, DirectionValue),
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum FlexWrapValue {
     #[default]
@@ -4395,7 +4402,8 @@ impl NativeStylesheet {
             );
         }
 
-        let resolved_direction = resolve_direction(*direction, inherited.direction);
+        let resolved_direction =
+            resolve_direction(*direction, inherited.direction, custom_properties);
         project_logical_border_candidates(
             NativeLogicalBorderCandidateSources {
                 border: &logical_border,
@@ -4825,7 +4833,7 @@ struct NativeCascadeScratch {
     text_align: NativeTextCascadeCandidates<TextAlignDeclarationValue>,
     text_align_last: NativeTextCascadeCandidates<TextAlignLastDeclarationValue>,
     text_justify: NativeTextCascadeCandidates<TextJustifyDeclarationValue>,
-    direction: NativeTextCascadeCandidates<DirectionValue>,
+    direction: NativeTextCascadeCandidates<DirectionDeclarationValue>,
     justify_content: NativeLocalDeclarationCandidates<JustifyContentDeclaration>,
     align_items: NativeLocalDeclarationCandidates<AlignItemsDeclaration>,
     align_self: NativeLocalDeclarationCandidates<AlignSelfDeclaration>,
@@ -5074,12 +5082,85 @@ fn resolve_line_height(
     })
 }
 
-fn resolve_direction(
-    candidates: [Option<CascadeValue<InheritedTextDeclaration<DirectionValue>>>;
-        MAX_NATIVE_TEXT_CASCADE_LAYERS],
+fn resolve_direction_declaration(
+    declaration: InheritedTextDeclaration<DirectionDeclarationValue>,
     inherited: DirectionValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<DirectionDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_direction_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(DirectionDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => {
+            Some(DirectionDeclarationValue::Value(DirectionValue::Ltr))
+        }
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_direction_value(
+    value: DirectionDeclarationValue,
+    inherited: DirectionValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<DirectionDeclarationValue> {
+    match value {
+        DirectionDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_direction_declaration(value))
+                .and_then(|declaration| {
+                    resolve_direction_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        DirectionDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_direction_declaration(value))
+                .and_then(|declaration| {
+                    resolve_direction_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(DirectionDeclarationValue::Value(fallback)))
+        }
+        DirectionDeclarationValue::CustomProperty(_)
+        | DirectionDeclarationValue::CustomPropertyFallback(_, _) => None,
+        DirectionDeclarationValue::Value(value) => Some(DirectionDeclarationValue::Value(value)),
+    }
+}
+
+fn resolve_direction(
+    candidates: NativeTextCascadeCandidates<DirectionDeclarationValue>,
+    inherited: DirectionValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> DirectionValue {
-    resolve_inherited_text_declaration(candidates, inherited, DirectionValue::Ltr)
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        DirectionDeclarationValue::Value(inherited),
+        |declaration| resolve_direction_declaration(declaration, inherited, custom_properties, 0),
+    );
+    match resolved {
+        DirectionDeclarationValue::Value(value) => value,
+        DirectionDeclarationValue::CustomProperty(_)
+        | DirectionDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_flex_direction(
@@ -9434,7 +9515,7 @@ struct NativeDeclarations {
     align_self: Option<AlignSelfDeclaration>,
     align_content: Option<AlignContentDeclaration>,
     flex_direction: Option<FlexDirectionDeclaration>,
-    direction: Option<InheritedTextDeclaration<DirectionValue>>,
+    direction: Option<InheritedTextDeclaration<DirectionDeclarationValue>>,
     flex_wrap: Option<FlexWrapDeclaration>,
     order: Option<FlexItemOrderDeclaration>,
     flex_grow: Option<FlexGrowDeclaration>,
@@ -15516,8 +15597,32 @@ fn parse_direction(value: &str) -> Option<DirectionValue> {
     }
 }
 
-fn parse_direction_declaration(value: &str) -> Option<InheritedTextDeclaration<DirectionValue>> {
-    parse_inherited_text_declaration(value, parse_direction)
+fn parse_direction_custom_property(value: &str) -> Option<DirectionDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_direction(fallback)
+            .map(|fallback| DirectionDeclarationValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(DirectionDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_direction_property(value: &str) -> Option<DirectionDeclarationValue> {
+    parse_direction(value)
+        .map(DirectionDeclarationValue::Value)
+        .or_else(|| parse_direction_custom_property(value))
+}
+
+fn parse_direction_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<DirectionDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_direction_property)
 }
 
 fn parse_flex_wrap(value: &str) -> Option<FlexWrapValue> {
@@ -18924,7 +19029,9 @@ mod tests {
         );
         assert_eq!(
             declarations.direction,
-            Some(InheritedTextDeclaration::Value(DirectionValue::Rtl))
+            Some(InheritedTextDeclaration::Value(
+                DirectionDeclarationValue::Value(DirectionValue::Rtl)
+            ))
         );
         assert_eq!(
             declarations.flex_wrap,
@@ -23399,6 +23506,22 @@ mod tests {
         assert_eq!(parse_direction("inherit"), None);
         assert_eq!(parse_direction("vertical-rl"), None);
         assert_eq!(parse_direction("rtl ltr"), None);
+        let direction_name = parse_custom_property_name("--direction").unwrap();
+        let fallback = DirectionValue::Rtl;
+        assert_eq!(
+            parse_direction_property("var(--direction)"),
+            Some(DirectionDeclarationValue::CustomProperty(direction_name))
+        );
+        assert_eq!(
+            parse_direction_declaration("var(--direction, rtl)"),
+            Some(InheritedTextDeclaration::Value(
+                DirectionDeclarationValue::CustomPropertyFallback(direction_name, fallback)
+            ))
+        );
+        assert_eq!(
+            parse_direction_property("var(--direction, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -23409,7 +23532,9 @@ mod tests {
         );
         assert_eq!(
             parse_direction_declaration("RTL"),
-            Some(InheritedTextDeclaration::Value(DirectionValue::Rtl))
+            Some(InheritedTextDeclaration::Value(
+                DirectionDeclarationValue::Value(DirectionValue::Rtl)
+            ))
         );
         assert_eq!(
             parse_direction_declaration(" REVERT-LAYER "),
@@ -33461,6 +33586,44 @@ mod tests {
                 .flex_direction(),
             FlexDirectionValue::Row
         );
+    }
+
+    #[test]
+    fn inherited_direction_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --direction: rtl; --alias: var(--direction); --cycle: var(--cycle); direction: var(--direction); }
+            #child { direction: var(--alias); }
+            #fallback { direction: var(--missing, ltr); }
+            #invalid { --bad: vertical-rl; direction: var(--bad, ltr); }
+            #cycle { direction: var(--cycle, rtl); }
+            #wide-initial { --wide: initial; direction: var(--wide); }
+            #wide-inherit { --wide: inherit; direction: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .direction()
+        };
+
+        assert_eq!(style("parent"), DirectionValue::Rtl);
+        assert_eq!(style("child"), DirectionValue::Rtl);
+        assert_eq!(style("fallback"), DirectionValue::Ltr);
+        assert_eq!(style("invalid"), DirectionValue::Ltr);
+        assert_eq!(style("cycle"), DirectionValue::Rtl);
+        assert_eq!(style("wide-initial"), DirectionValue::Ltr);
+        assert_eq!(style("wide-inherit"), DirectionValue::Rtl);
     }
 
     #[test]

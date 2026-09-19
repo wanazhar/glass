@@ -13797,6 +13797,12 @@ enum NativeSelectorCombinator {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeRelativeSelector {
+    combinator: NativeSelectorCombinator,
+    selector: NativeSelector,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum NativePseudoClass {
     Root,
     FirstChild,
@@ -13813,6 +13819,7 @@ enum NativePseudoClass {
     Not(Vec<NativeSelector>),
     Is(Vec<NativeSelector>),
     Where(Vec<NativeSelector>),
+    Has(Vec<NativeRelativeSelector>),
 }
 
 impl NativePseudoClass {
@@ -13836,6 +13843,7 @@ impl NativePseudoClass {
             Self::Is(selectors) | Self::Where(selectors) => selectors
                 .iter()
                 .any(|selector| selector.matches_local(node)),
+            Self::Has(_) => false,
             Self::Root | Self::FirstChild | Self::LastChild | Self::OnlyChild => false,
         }
     }
@@ -13886,6 +13894,9 @@ impl NativePseudoClass {
             Self::Is(selectors) | Self::Where(selectors) => selectors
                 .iter()
                 .any(|selector| selector.matches_in_document(document, node_id)),
+            Self::Has(selectors) => selectors
+                .iter()
+                .any(|relative| relative_selector_matches(document, node_id, relative)),
             _ => self.matches_local(node),
         }
     }
@@ -13913,18 +13924,16 @@ impl NativeSelector {
         self.matches_local(node)
     }
 
-    fn matches_in_document(&self, document: &NativeDocument, node_id: NativeNodeId) -> bool {
-        let Some(node) = document.node(node_id) else {
-            return false;
-        };
-        if node.element_name().is_none() {
-            return false;
-        }
-        let Some(target) = self.compounds.last() else {
-            return false;
-        };
+    fn matched_start_in_document(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+    ) -> Option<NativeNodeId> {
+        let node = document.node(node_id)?;
+        node.element_name()?;
+        let target = self.compounds.last()?;
         if !target.matches_in_document(document, node_id) {
-            return false;
+            return None;
         }
 
         let mut current = node_id;
@@ -13948,13 +13957,14 @@ impl NativeSelector {
                 NativeSelectorCombinator::SubsequentSibling => {
                     sibling_matching_compound(document, current, compound, false)
                 }
-            };
-            let Some(matched) = matched else {
-                return false;
-            };
+            }?;
             current = matched;
         }
-        true
+        Some(current)
+    }
+
+    fn matches_in_document(&self, document: &NativeDocument, node_id: NativeNodeId) -> bool {
+        self.matched_start_in_document(document, node_id).is_some()
     }
 }
 
@@ -14016,6 +14026,137 @@ fn sibling_matching_compound(
             .then_some(candidate_id);
     }
     previous.find(|candidate_id| compound.matches_in_document(document, *candidate_id))
+}
+
+fn relative_selector_matches(
+    document: &NativeDocument,
+    anchor_id: NativeNodeId,
+    relative: &NativeRelativeSelector,
+) -> bool {
+    match relative.combinator {
+        NativeSelectorCombinator::Descendant => {
+            descendant_matching_selector(document, anchor_id, anchor_id, &relative.selector, 0)
+        }
+        NativeSelectorCombinator::Child => {
+            child_matching_selector(document, anchor_id, &relative.selector)
+        }
+        NativeSelectorCombinator::NextSibling => {
+            following_sibling_matching_selector(document, anchor_id, &relative.selector, true)
+        }
+        NativeSelectorCombinator::SubsequentSibling => {
+            following_sibling_matching_selector(document, anchor_id, &relative.selector, false)
+        }
+    }
+}
+
+fn descendant_matching_selector(
+    document: &NativeDocument,
+    anchor_id: NativeNodeId,
+    scope_id: NativeNodeId,
+    selector: &NativeSelector,
+    depth: usize,
+) -> bool {
+    if depth >= MAX_NATIVE_DOM_DEPTH {
+        return false;
+    }
+    let Some(anchor) = document.node(anchor_id) else {
+        return false;
+    };
+    for candidate_id in anchor.children().iter().copied() {
+        let is_element = document
+            .node(candidate_id)
+            .is_some_and(|candidate| candidate.element_name().is_some());
+        if is_element
+            && selector
+                .matched_start_in_document(document, candidate_id)
+                .is_some_and(|matched_start| {
+                    is_strict_descendant(document, scope_id, matched_start)
+                })
+        {
+            return true;
+        }
+        if descendant_matching_selector(
+            document,
+            candidate_id,
+            scope_id,
+            selector,
+            depth.saturating_add(1),
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_strict_descendant(
+    document: &NativeDocument,
+    ancestor_id: NativeNodeId,
+    candidate_id: NativeNodeId,
+) -> bool {
+    let mut current = document.node(candidate_id).and_then(|node| node.parent());
+    for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+        if current == Some(ancestor_id) {
+            return true;
+        }
+        current = current.and_then(|node_id| document.node(node_id).and_then(|node| node.parent()));
+    }
+    false
+}
+
+fn child_matching_selector(
+    document: &NativeDocument,
+    anchor_id: NativeNodeId,
+    selector: &NativeSelector,
+) -> bool {
+    let Some(anchor) = document.node(anchor_id) else {
+        return false;
+    };
+    anchor.children().iter().copied().any(|candidate_id| {
+        document.node(candidate_id).is_some_and(|candidate| {
+            candidate.element_name().is_some()
+                && selector.matched_start_in_document(document, candidate_id) == Some(candidate_id)
+        })
+    })
+}
+
+fn following_sibling_matching_selector(
+    document: &NativeDocument,
+    anchor_id: NativeNodeId,
+    selector: &NativeSelector,
+    immediate: bool,
+) -> bool {
+    let Some(parent_id) = document.node(anchor_id).and_then(|node| node.parent()) else {
+        return false;
+    };
+    let Some(parent) = document.node(parent_id) else {
+        return false;
+    };
+    let Some(position) = parent
+        .children()
+        .iter()
+        .position(|child_id| *child_id == anchor_id)
+    else {
+        return false;
+    };
+    let mut following = parent
+        .children()
+        .iter()
+        .copied()
+        .skip(position.saturating_add(1))
+        .filter(|candidate_id| {
+            document
+                .node(*candidate_id)
+                .is_some_and(|candidate| candidate.element_name().is_some())
+        });
+    if immediate {
+        following.next().is_some_and(|candidate_id| {
+            selector.matched_start_in_document(document, candidate_id) == Some(candidate_id)
+        })
+    } else {
+        following.any(|candidate_id| {
+            selector.matched_start_in_document(document, candidate_id) == Some(candidate_id)
+        })
+    }
 }
 
 impl NativeCompoundSelector {
@@ -24673,6 +24814,19 @@ fn parse_functional_pseudo_class(name: &str, argument: &str) -> Option<(NativePs
     if argument.len() > MAX_SELECTOR_BYTES {
         return None;
     }
+    let name = name.to_ascii_lowercase();
+    if name == "has" {
+        let selectors = split_selector_list(argument)?
+            .into_iter()
+            .map(parse_relative_selector)
+            .collect::<Option<Vec<_>>>()?;
+        let specificity = selectors
+            .iter()
+            .map(|relative| relative.selector.specificity)
+            .max()
+            .unwrap_or_default();
+        return Some((NativePseudoClass::Has(selectors), specificity));
+    }
     let selectors = split_selector_list(argument)?
         .into_iter()
         .map(parse_selector)
@@ -24682,12 +24836,27 @@ fn parse_functional_pseudo_class(name: &str, argument: &str) -> Option<(NativePs
         .map(|selector| selector.specificity)
         .max()
         .unwrap_or_default();
-    match name.to_ascii_lowercase().as_str() {
+    match name.as_str() {
         "not" => Some((NativePseudoClass::Not(selectors), specificity)),
         "is" => Some((NativePseudoClass::Is(selectors), specificity)),
         "where" => Some((NativePseudoClass::Where(selectors), 0)),
         _ => None,
     }
+}
+
+fn parse_relative_selector(source: &str) -> Option<NativeRelativeSelector> {
+    let source = source.trim_start();
+    let (combinator, selector_source) = match source.as_bytes().first().copied() {
+        Some(b'>') => (NativeSelectorCombinator::Child, &source[1..]),
+        Some(b'+') => (NativeSelectorCombinator::NextSibling, &source[1..]),
+        Some(b'~') => (NativeSelectorCombinator::SubsequentSibling, &source[1..]),
+        _ => (NativeSelectorCombinator::Descendant, source),
+    };
+    let selector = parse_selector(selector_source.trim())?;
+    Some(NativeRelativeSelector {
+        combinator,
+        selector,
+    })
 }
 
 fn find_selector_function_close(source: &str, open: usize) -> Option<usize> {
@@ -25273,7 +25442,15 @@ mod tests {
         );
         assert!(parse_selector("button:hover").is_none());
         assert!(parse_selector("button:nth-child(2)").is_none());
-        assert!(parse_selector("button:has(.child)").is_none());
+        assert_eq!(
+            parse_selector("button:has(.child)").unwrap().specificity,
+            11
+        );
+        assert_eq!(
+            parse_selector("button:has(> .child)").unwrap().specificity,
+            11
+        );
+        assert!(parse_selector("button:has(>)").is_none());
         assert!(parse_selector("button:not(.active").is_none());
         assert!(parse_selector("button::before").is_none());
     }
@@ -25411,6 +25588,59 @@ mod tests {
             matched_ids("#primary:not(:is(.secondary, .other))"),
             vec!["primary"]
         );
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_has_pseudo_class() {
+        let document = NativeDocument::parse(
+            "<main id='root'><section id='parent'><span id='child' class='target'></span><span id='tail' class='tail'></span></section><section id='empty'></section><div id='anchor'></div><span id='next' class='next'></span><span id='later' class='later'></span></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("has pseudo-class fixture document");
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .map(|node_id| {
+                    document
+                        .node(node_id)
+                        .and_then(|node| node.attribute("id"))
+                        .expect("matched element id")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(matched_ids("section:has(.target)"), vec!["parent"]);
+        assert_eq!(matched_ids("#parent:has(> .target)"), vec!["parent"]);
+        assert!(matched_ids("#parent:has(section .target)").is_empty());
+        assert_eq!(matched_ids("main:has(section > .target)"), vec!["root"]);
+        assert_eq!(matched_ids("#anchor:has(+ .next)"), vec!["anchor"]);
+        assert_eq!(matched_ids("#anchor:has(~ .later)"), vec!["anchor"]);
+        assert!(matched_ids("#empty:has(.target)").is_empty());
+    }
+
+    #[test]
+    fn has_pseudo_class_applies_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            ".card { color: black; } .card:has(.selected) { color: red; }".into(),
+        ])
+        .expect("has pseudo-class stylesheet");
+        let document = NativeDocument::parse(
+            "<main><article id='selected-card' class='card'><span class='selected'></span></article><article id='plain-card' class='card'></article></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("has pseudo-class cascade document");
+
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+        assert_eq!(style("selected-card").color(), Some(NativeColor::RED));
+        assert_eq!(style("plain-card").color(), Some(NativeColor::BLACK));
     }
 
     #[test]

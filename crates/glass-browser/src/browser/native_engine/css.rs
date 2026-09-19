@@ -4585,8 +4585,10 @@ impl NativeStylesheet {
 
         let resolved_box_sizing =
             resolve_local_inherited_cascade_declaration(*box_sizing, inherited.box_sizing);
-        let resolved_overflow_x = resolve_overflow_axis(*overflow_x, inherited.overflow_x);
-        let resolved_overflow_y = resolve_overflow_axis(*overflow_y, inherited.overflow_y);
+        let resolved_overflow_x =
+            resolve_overflow_axis(*overflow_x, inherited.overflow_x, custom_properties);
+        let resolved_overflow_y =
+            resolve_overflow_axis(*overflow_y, inherited.overflow_y, custom_properties);
         NativeComputedStyle {
             display: resolve_local_cascade_declaration(*display, DisplayValue::Auto),
             position: resolve_local_cascade_declaration(*position, NativePositionValue::Static),
@@ -4853,6 +4855,13 @@ pub(crate) enum OverflowValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverflowDeclarationValue {
+    Value(OverflowValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, OverflowValue),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CascadeValue<T> {
     value: T,
     specificity: u16,
@@ -4983,8 +4992,8 @@ struct NativeCascadeScratch {
     margin: NativePhysicalLocalBorderCandidates<NativeMarginValue>,
     box_sizing: NativeLocalCascadeCandidates<NativeBoxSizing>,
     color: NativePaintCascadeCandidates<NativeColorValue>,
-    overflow_x: NativeLocalCascadeCandidates<OverflowValue>,
-    overflow_y: NativeLocalCascadeCandidates<OverflowValue>,
+    overflow_x: NativeLocalCascadeCandidates<OverflowDeclarationValue>,
+    overflow_y: NativeLocalCascadeCandidates<OverflowDeclarationValue>,
 }
 
 impl NativeCascadeScratch {
@@ -8217,21 +8226,83 @@ fn resolve_text_overflow(
     }
 }
 
-fn resolve_overflow_axis(
-    candidates: [Option<CascadeValue<LocalCascadeDeclaration<OverflowValue>>>;
-        MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+fn resolve_overflow_declaration(
+    declaration: LocalCascadeDeclaration<OverflowDeclarationValue>,
     inherited: OverflowValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<OverflowDeclarationValue> {
+    match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_overflow_value(value, inherited, custom_properties, depth)
+        }
+        LocalCascadeDeclaration::Inherit => Some(OverflowDeclarationValue::Value(inherited)),
+        LocalCascadeDeclaration::Reset => {
+            Some(OverflowDeclarationValue::Value(OverflowValue::Other))
+        }
+        LocalCascadeDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_overflow_value(
+    value: OverflowDeclarationValue,
+    inherited: OverflowValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<OverflowDeclarationValue> {
+    match value {
+        OverflowDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_overflow_declaration(value))
+                .and_then(|declaration| {
+                    resolve_overflow_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        OverflowDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_overflow_declaration(value))
+                .and_then(|declaration| {
+                    resolve_overflow_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(OverflowDeclarationValue::Value(fallback)))
+        }
+        OverflowDeclarationValue::CustomProperty(_)
+        | OverflowDeclarationValue::CustomPropertyFallback(_, _) => None,
+        OverflowDeclarationValue::Value(value) => Some(OverflowDeclarationValue::Value(value)),
+    }
+}
+
+fn resolve_overflow_axis(
+    candidates: NativeLocalCascadeCandidates<OverflowDeclarationValue>,
+    inherited: OverflowValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> OverflowValue {
-    resolve_alignment_candidates(
+    let resolved = resolve_alignment_candidates(
         candidates,
-        OverflowValue::Other,
-        |declaration| match declaration {
-            LocalCascadeDeclaration::Value(value) => Some(value),
-            LocalCascadeDeclaration::Inherit => Some(inherited),
-            LocalCascadeDeclaration::Reset => Some(OverflowValue::Other),
-            LocalCascadeDeclaration::RevertLayer => None,
-        },
-    )
+        OverflowDeclarationValue::Value(OverflowValue::Other),
+        |declaration| resolve_overflow_declaration(declaration, inherited, custom_properties, 0),
+    );
+    match resolved {
+        OverflowDeclarationValue::Value(value) => value,
+        OverflowDeclarationValue::CustomProperty(_)
+        | OverflowDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_local_optional_cascade_declaration<T: Copy, const N: usize>(
@@ -10353,9 +10424,9 @@ struct NativeDeclarations {
     box_sizing: Option<LocalCascadeDeclaration<NativeBoxSizing>>,
     color: Option<LocalCascadeDeclaration<NativeColorValue>>,
     color_important: bool,
-    overflow: Option<LocalCascadeDeclaration<OverflowValue>>,
-    overflow_x: Option<LocalCascadeDeclaration<OverflowValue>>,
-    overflow_y: Option<LocalCascadeDeclaration<OverflowValue>>,
+    overflow: Option<LocalCascadeDeclaration<OverflowDeclarationValue>>,
+    overflow_x: Option<LocalCascadeDeclaration<OverflowDeclarationValue>>,
+    overflow_y: Option<LocalCascadeDeclaration<OverflowDeclarationValue>>,
     overflow_importance: NativeOverflowDeclarationImportance,
     logical_box_model: NativeLogicalBoxModelDeclarations,
 }
@@ -11658,11 +11729,14 @@ fn parse_declarations_with_diagnostics(
                             | LocalCascadeDeclaration::Reset
                             | LocalCascadeDeclaration::RevertLayer
                             | LocalCascadeDeclaration::Value(
-                                OverflowValue::Hidden
-                                    | OverflowValue::Clip
-                                    | OverflowValue::Auto
-                                    | OverflowValue::Scroll
-                                    | OverflowValue::Other
+                                OverflowDeclarationValue::Value(
+                                    OverflowValue::Hidden
+                                        | OverflowValue::Clip
+                                        | OverflowValue::Auto
+                                        | OverflowValue::Scroll
+                                        | OverflowValue::Other,
+                                ) | OverflowDeclarationValue::CustomProperty(_)
+                                    | OverflowDeclarationValue::CustomPropertyFallback(_, _),
                             )
                     )
                 }),
@@ -19559,11 +19633,45 @@ fn parse_overflow(value: &str) -> Option<OverflowValue> {
     }
 }
 
-fn parse_overflow_declaration(value: &str) -> Option<LocalCascadeDeclaration<OverflowValue>> {
+fn parse_overflow_custom_property(value: &str) -> Option<OverflowDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_overflow(fallback.trim())
+            .map(|fallback| OverflowDeclarationValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(OverflowDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_overflow_property(value: &str) -> Option<OverflowDeclarationValue> {
+    parse_overflow(value)
+        .map(OverflowDeclarationValue::Value)
+        .or_else(|| parse_overflow_custom_property(value))
+}
+
+fn parse_overflow_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<OverflowDeclarationValue>> {
     if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
-    parse_local_reset_cascade_declaration(value, parse_overflow)
+    parse_local_reset_cascade_declaration(value, parse_overflow_property)
 }
 
 pub(crate) fn selector_matches_in_document(
@@ -20251,15 +20359,21 @@ mod tests {
         );
         assert_eq!(
             declarations.overflow,
-            Some(LocalCascadeDeclaration::Value(OverflowValue::Hidden))
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::Value(OverflowValue::Hidden)
+            ))
         );
         assert_eq!(
             declarations.overflow_x,
-            Some(LocalCascadeDeclaration::Value(OverflowValue::Hidden))
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::Value(OverflowValue::Hidden)
+            ))
         );
         assert_eq!(
             declarations.overflow_y,
-            Some(LocalCascadeDeclaration::Value(OverflowValue::Hidden))
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::Value(OverflowValue::Hidden)
+            ))
         );
         assert_eq!(parse_white_space("normal"), Some(WhiteSpaceValue::Normal));
         assert_eq!(
@@ -23364,6 +23478,95 @@ mod tests {
     }
 
     #[test]
+    fn overflow_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let mode = parse_custom_property_name("--mode").unwrap();
+        assert_eq!(
+            parse_overflow_property("hidden"),
+            Some(OverflowDeclarationValue::Value(OverflowValue::Hidden))
+        );
+        assert_eq!(
+            parse_overflow_declaration("var(--mode)"),
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::CustomProperty(mode)
+            ))
+        );
+        assert_eq!(
+            parse_overflow_declaration("var(--mode, auto)"),
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::CustomPropertyFallback(mode, OverflowValue::Auto)
+            ))
+        );
+        assert_eq!(
+            parse_overflow_declaration("var(--mode, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_overflow_declaration("initial"),
+            Some(LocalCascadeDeclaration::Reset)
+        );
+        assert_eq!(
+            parse_overflow_declaration("inherit"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
+    }
+
+    #[test]
+    fn overflow_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --mode: hidden; --alias: var(--mode); --cycle: var(--cycle); overflow: var(--mode); }
+            #child { overflow-x: var(--alias); overflow-y: var(--missing, auto); }
+            #fallback { overflow: var(--missing, clip); }
+            #invalid { --bad: 1px; overflow: var(--bad, scroll); }
+            #cycle { overflow: var(--cycle, hidden); }
+            #wide-initial { --wide: initial; overflow: var(--wide); }
+            #wide-inherit { --wide: inherit; overflow: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            let style = document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap());
+            (style.overflow_x(), style.overflow_y())
+        };
+
+        assert_eq!(
+            style("parent"),
+            (OverflowValue::Hidden, OverflowValue::Hidden)
+        );
+        assert_eq!(style("child"), (OverflowValue::Hidden, OverflowValue::Auto));
+        assert_eq!(
+            style("fallback"),
+            (OverflowValue::Clip, OverflowValue::Clip)
+        );
+        assert_eq!(
+            style("invalid"),
+            (OverflowValue::Scroll, OverflowValue::Scroll)
+        );
+        assert_eq!(
+            style("cycle"),
+            (OverflowValue::Hidden, OverflowValue::Hidden)
+        );
+        assert_eq!(
+            style("wide-initial"),
+            (OverflowValue::Other, OverflowValue::Other)
+        );
+        assert_eq!(
+            style("wide-inherit"),
+            (OverflowValue::Hidden, OverflowValue::Hidden)
+        );
+    }
+
+    #[test]
     fn overflow_axis_longhands_cascade_independently_from_shorthand() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             ".card { overflow: hidden; } #card { overflow-x: clip; overflow-y: visible; }".into(),
@@ -23379,11 +23582,15 @@ mod tests {
             parse_declarations("overflow-x: hidden; overflow: clip; overflow-y: visible;");
         assert_eq!(
             declarations.overflow_x,
-            Some(LocalCascadeDeclaration::Value(OverflowValue::Clip))
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::Value(OverflowValue::Clip)
+            ))
         );
         assert_eq!(
             declarations.overflow_y,
-            Some(LocalCascadeDeclaration::Value(OverflowValue::Other))
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::Value(OverflowValue::Other)
+            ))
         );
     }
 
@@ -23562,11 +23769,13 @@ mod tests {
         for keyword in ["visible", "AUTO", "ScRoLl"] {
             assert_eq!(
                 parse_overflow_declaration(keyword),
-                Some(LocalCascadeDeclaration::Value(match keyword {
-                    "AUTO" => OverflowValue::Auto,
-                    "ScRoLl" => OverflowValue::Scroll,
-                    _ => OverflowValue::Other,
-                })),
+                Some(LocalCascadeDeclaration::Value(
+                    OverflowDeclarationValue::Value(match keyword {
+                        "AUTO" => OverflowValue::Auto,
+                        "ScRoLl" => OverflowValue::Scroll,
+                        _ => OverflowValue::Other,
+                    })
+                )),
                 "overflow {keyword}"
             );
         }
@@ -23628,7 +23837,9 @@ mod tests {
         );
         assert_eq!(
             parse_overflow_declaration("visible"),
-            Some(LocalCascadeDeclaration::Value(OverflowValue::Other))
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::Value(OverflowValue::Other)
+            ))
         );
 
         let mut diagnostics = NativeDiagnosticSink::default();
@@ -23664,15 +23875,21 @@ mod tests {
         );
         assert_eq!(
             declarations.overflow,
-            Some(LocalCascadeDeclaration::Value(OverflowValue::Hidden))
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::Value(OverflowValue::Hidden)
+            ))
         );
         assert_eq!(
             declarations.overflow_x,
-            Some(LocalCascadeDeclaration::Value(OverflowValue::Clip))
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::Value(OverflowValue::Clip)
+            ))
         );
         assert_eq!(
             declarations.overflow_y,
-            Some(LocalCascadeDeclaration::Value(OverflowValue::Other))
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::Value(OverflowValue::Other)
+            ))
         );
         assert_eq!(
             declarations.overflow_importance,
@@ -23688,15 +23905,21 @@ mod tests {
         );
         assert_eq!(
             preserved.overflow,
-            Some(LocalCascadeDeclaration::Value(OverflowValue::Hidden))
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::Value(OverflowValue::Hidden)
+            ))
         );
         assert_eq!(
             preserved.overflow_x,
-            Some(LocalCascadeDeclaration::Value(OverflowValue::Clip))
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::Value(OverflowValue::Clip)
+            ))
         );
         assert_eq!(
             preserved.overflow_y,
-            Some(LocalCascadeDeclaration::Value(OverflowValue::Other))
+            Some(LocalCascadeDeclaration::Value(
+                OverflowDeclarationValue::Value(OverflowValue::Other)
+            ))
         );
         assert_eq!(
             preserved.overflow_importance,

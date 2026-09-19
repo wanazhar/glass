@@ -1879,6 +1879,15 @@ struct NativeFontVariantShorthand {
     east_asian: InheritedTextDeclaration<NativeFontVariantEastAsian>,
     numeric: InheritedTextDeclaration<NativeFontVariantNumeric>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FontVariantShorthandCustomPropertyDeclaration {
+    ligatures: InheritedTextDeclaration<FontVariantLigaturesDeclarationValue>,
+    caps: InheritedTextDeclaration<FontVariantCapsDeclarationValue>,
+    position: InheritedTextDeclaration<FontVariantPositionDeclarationValue>,
+    alternates: InheritedTextDeclaration<FontVariantAlternatesDeclarationValue>,
+    east_asian: InheritedTextDeclaration<FontVariantEastAsianDeclarationValue>,
+    numeric: InheritedTextDeclaration<FontVariantNumericDeclarationValue>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalCascadeDeclaration<T> {
@@ -5563,7 +5572,7 @@ fn resolve_native_font_variant_numeric_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_font_variant_numeric_declaration(value))
+                .and_then(|value| parse_font_variant_numeric_custom_declaration(value))
                 .and_then(|declaration| {
                     resolve_native_font_variant_numeric_declaration(
                         declaration,
@@ -5578,7 +5587,7 @@ fn resolve_native_font_variant_numeric_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_font_variant_numeric_declaration(value))
+                .and_then(|value| parse_font_variant_numeric_custom_declaration(value))
                 .and_then(|declaration| {
                     resolve_native_font_variant_numeric_declaration(
                         declaration,
@@ -5655,7 +5664,7 @@ fn resolve_native_font_variant_east_asian_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_font_variant_east_asian_declaration(value))
+                .and_then(|value| parse_font_variant_east_asian_custom_declaration(value))
                 .and_then(|declaration| {
                     resolve_native_font_variant_east_asian_declaration(
                         declaration,
@@ -5670,7 +5679,7 @@ fn resolve_native_font_variant_east_asian_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_font_variant_east_asian_declaration(value))
+                .and_then(|value| parse_font_variant_east_asian_custom_declaration(value))
                 .and_then(|declaration| {
                     resolve_native_font_variant_east_asian_declaration(
                         declaration,
@@ -5747,7 +5756,7 @@ fn resolve_native_font_variant_alternates_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_font_variant_alternates_declaration(value))
+                .and_then(|value| parse_font_variant_alternates_custom_declaration(value))
                 .and_then(|declaration| {
                     resolve_native_font_variant_alternates_declaration(
                         declaration,
@@ -5762,7 +5771,7 @@ fn resolve_native_font_variant_alternates_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_font_variant_alternates_declaration(value))
+                .and_then(|value| parse_font_variant_alternates_custom_declaration(value))
                 .and_then(|declaration| {
                     resolve_native_font_variant_alternates_declaration(
                         declaration,
@@ -5839,7 +5848,7 @@ fn resolve_native_font_variant_position_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_font_variant_position_declaration(value))
+                .and_then(|value| parse_font_variant_position_custom_declaration(value))
                 .and_then(|declaration| {
                     resolve_native_font_variant_position_declaration(
                         declaration,
@@ -5854,7 +5863,7 @@ fn resolve_native_font_variant_position_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_font_variant_position_declaration(value))
+                .and_then(|value| parse_font_variant_position_custom_declaration(value))
                 .and_then(|declaration| {
                     resolve_native_font_variant_position_declaration(
                         declaration,
@@ -5931,7 +5940,7 @@ fn resolve_native_font_variant_caps_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_font_variant_caps_declaration(value))
+                .and_then(|value| parse_font_variant_caps_custom_declaration(value))
                 .and_then(|declaration| {
                     resolve_native_font_variant_caps_declaration(
                         declaration,
@@ -5946,7 +5955,7 @@ fn resolve_native_font_variant_caps_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_font_variant_caps_declaration(value))
+                .and_then(|value| parse_font_variant_caps_custom_declaration(value))
                 .and_then(|declaration| {
                     resolve_native_font_variant_caps_declaration(
                         declaration,
@@ -6023,7 +6032,7 @@ fn resolve_native_font_variant_ligatures_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_font_variant_ligatures_declaration(value))
+                .and_then(|value| parse_font_variant_ligatures_custom_declaration(value))
                 .and_then(|declaration| {
                     resolve_native_font_variant_ligatures_declaration(
                         declaration,
@@ -6038,7 +6047,7 @@ fn resolve_native_font_variant_ligatures_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_font_variant_ligatures_declaration(value))
+                .and_then(|value| parse_font_variant_ligatures_custom_declaration(value))
                 .and_then(|declaration| {
                     resolve_native_font_variant_ligatures_declaration(
                         declaration,
@@ -10999,6 +11008,19 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                         Some(wrap_font_variant_east_asian_declaration(parsed.east_asian));
                     declarations.font_variant_numeric =
                         Some(wrap_font_variant_numeric_declaration(parsed.numeric));
+                    declarations.text_importance.font_variant_ligatures = important;
+                    declarations.text_importance.font_variant_caps = important;
+                    declarations.text_importance.font_variant_position = important;
+                    declarations.text_importance.font_variant_alternates = important;
+                    declarations.text_importance.font_variant_east_asian = important;
+                    declarations.text_importance.font_variant_numeric = important;
+                } else if let Some(parsed) = parse_font_variant_shorthand_custom_property(value) {
+                    declarations.font_variant_ligatures = Some(parsed.ligatures);
+                    declarations.font_variant_caps = Some(parsed.caps);
+                    declarations.font_variant_position = Some(parsed.position);
+                    declarations.font_variant_alternates = Some(parsed.alternates);
+                    declarations.font_variant_east_asian = Some(parsed.east_asian);
+                    declarations.font_variant_numeric = Some(parsed.numeric);
                     declarations.text_importance.font_variant_ligatures = important;
                     declarations.text_importance.font_variant_caps = important;
                     declarations.text_importance.font_variant_position = important;
@@ -16899,6 +16921,145 @@ fn wrap_font_variant_east_asian_declaration(
         InheritedTextDeclaration::Revert => InheritedTextDeclaration::Revert,
         InheritedTextDeclaration::RevertLayer => InheritedTextDeclaration::RevertLayer,
     }
+}
+fn parse_font_variant_shorthand_custom_property(
+    value: &str,
+) -> Option<FontVariantShorthandCustomPropertyDeclaration> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    let fallback = match fallback {
+        Some(fallback) => Some(parse_font_variant_shorthand(fallback)?),
+        None => None,
+    };
+    match fallback {
+        None => Some(FontVariantShorthandCustomPropertyDeclaration {
+            ligatures: InheritedTextDeclaration::Value(
+                FontVariantLigaturesDeclarationValue::CustomProperty(name_hash),
+            ),
+            caps: InheritedTextDeclaration::Value(FontVariantCapsDeclarationValue::CustomProperty(
+                name_hash,
+            )),
+            position: InheritedTextDeclaration::Value(
+                FontVariantPositionDeclarationValue::CustomProperty(name_hash),
+            ),
+            alternates: InheritedTextDeclaration::Value(
+                FontVariantAlternatesDeclarationValue::CustomProperty(name_hash),
+            ),
+            east_asian: InheritedTextDeclaration::Value(
+                FontVariantEastAsianDeclarationValue::CustomProperty(name_hash),
+            ),
+            numeric: InheritedTextDeclaration::Value(
+                FontVariantNumericDeclarationValue::CustomProperty(name_hash),
+            ),
+        }),
+        Some(fallback) => {
+            let InheritedTextDeclaration::Value(ligatures) = fallback.ligatures else {
+                return None;
+            };
+            let InheritedTextDeclaration::Value(caps) = fallback.caps else {
+                return None;
+            };
+            let InheritedTextDeclaration::Value(position) = fallback.position else {
+                return None;
+            };
+            let InheritedTextDeclaration::Value(alternates) = fallback.alternates else {
+                return None;
+            };
+            let InheritedTextDeclaration::Value(east_asian) = fallback.east_asian else {
+                return None;
+            };
+            let InheritedTextDeclaration::Value(numeric) = fallback.numeric else {
+                return None;
+            };
+            Some(FontVariantShorthandCustomPropertyDeclaration {
+                ligatures: InheritedTextDeclaration::Value(
+                    FontVariantLigaturesDeclarationValue::CustomPropertyFallback(
+                        name_hash, ligatures,
+                    ),
+                ),
+                caps: InheritedTextDeclaration::Value(
+                    FontVariantCapsDeclarationValue::CustomPropertyFallback(name_hash, caps),
+                ),
+                position: InheritedTextDeclaration::Value(
+                    FontVariantPositionDeclarationValue::CustomPropertyFallback(
+                        name_hash, position,
+                    ),
+                ),
+                alternates: InheritedTextDeclaration::Value(
+                    FontVariantAlternatesDeclarationValue::CustomPropertyFallback(
+                        name_hash, alternates,
+                    ),
+                ),
+                east_asian: InheritedTextDeclaration::Value(
+                    FontVariantEastAsianDeclarationValue::CustomPropertyFallback(
+                        name_hash, east_asian,
+                    ),
+                ),
+                numeric: InheritedTextDeclaration::Value(
+                    FontVariantNumericDeclarationValue::CustomPropertyFallback(name_hash, numeric),
+                ),
+            })
+        }
+    }
+}
+fn parse_font_variant_ligatures_custom_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<FontVariantLigaturesDeclarationValue>> {
+    parse_font_variant_ligatures_declaration(value).or_else(|| {
+        parse_font_variant_shorthand(value)
+            .map(|parsed| wrap_font_variant_ligatures_declaration(parsed.ligatures))
+    })
+}
+
+fn parse_font_variant_caps_custom_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<FontVariantCapsDeclarationValue>> {
+    parse_font_variant_caps_declaration(value).or_else(|| {
+        parse_font_variant_shorthand(value)
+            .map(|parsed| wrap_font_variant_caps_declaration(parsed.caps))
+    })
+}
+
+fn parse_font_variant_position_custom_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<FontVariantPositionDeclarationValue>> {
+    parse_font_variant_position_declaration(value).or_else(|| {
+        parse_font_variant_shorthand(value)
+            .map(|parsed| wrap_font_variant_position_declaration(parsed.position))
+    })
+}
+
+fn parse_font_variant_alternates_custom_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<FontVariantAlternatesDeclarationValue>> {
+    parse_font_variant_alternates_declaration(value).or_else(|| {
+        parse_font_variant_shorthand(value)
+            .map(|parsed| wrap_font_variant_alternates_declaration(parsed.alternates))
+    })
+}
+
+fn parse_font_variant_east_asian_custom_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<FontVariantEastAsianDeclarationValue>> {
+    parse_font_variant_east_asian_declaration(value).or_else(|| {
+        parse_font_variant_shorthand(value)
+            .map(|parsed| wrap_font_variant_east_asian_declaration(parsed.east_asian))
+    })
+}
+
+fn parse_font_variant_numeric_custom_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<FontVariantNumericDeclarationValue>> {
+    parse_font_variant_numeric_declaration(value).or_else(|| {
+        parse_font_variant_shorthand(value)
+            .map(|parsed| wrap_font_variant_numeric_declaration(parsed.numeric))
+    })
 }
 
 fn parse_font_variant_shorthand(value: &str) -> Option<NativeFontVariantShorthand> {
@@ -28128,6 +28289,27 @@ mod tests {
         assert!(parse_font_variant_shorthand("none ruby").is_none());
         assert!(parse_font_variant_shorthand("small-caps small-caps").is_none());
         assert!(parse_font_variant_shorthand("unknown").is_none());
+        let variant_name = parse_custom_property_name("--variant").unwrap();
+        let custom = parse_font_variant_shorthand_custom_property("var(--variant)").unwrap();
+        assert!(matches!(
+            custom.ligatures,
+            InheritedTextDeclaration::Value(
+                FontVariantLigaturesDeclarationValue::CustomProperty(name)
+            ) if name == variant_name
+        ));
+        let fallback = parse_font_variant_shorthand_custom_property(
+            "var(--variant, no-common-ligatures unicase super historical-forms jis83 full-width ruby oldstyle-nums)",
+        )
+        .unwrap();
+        assert!(matches!(
+            fallback.numeric,
+            InheritedTextDeclaration::Value(
+                FontVariantNumericDeclarationValue::CustomPropertyFallback(name, _)
+            ) if name == variant_name
+        ));
+        assert!(
+            parse_font_variant_shorthand_custom_property("var(--variant, var(--other))").is_none()
+        );
     }
 
     #[test]
@@ -30681,6 +30863,122 @@ mod tests {
             NativeFontVariantEastAsian::default()
         );
         assert_eq!(style("invalid").font_variant_east_asian(), parent);
+    }
+
+    #[test]
+    fn inherited_font_variant_shorthand_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --variant: no-common-ligatures unicase super historical-forms jis83 full-width ruby oldstyle-nums tabular-nums; --alias: var(--variant); --cycle: var(--cycle); font-variant: var(--variant); }
+            #child { font-variant: var(--alias); }
+            #fallback { font-variant: var(--missing, common-ligatures titling-caps sub historical-forms jis83 full-width ruby oldstyle-nums); }
+            #invalid { --bad: normal unknown; font-variant: var(--bad, normal); }
+            #cycle { font-variant: var(--cycle, normal); }
+            #wide-initial { --wide: initial; font-variant: var(--wide); }
+            #wide-inherit { --wide: inherit; font-variant: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        let parent_ligatures = NativeFontVariantLigatures {
+            common: false,
+            discretionary: false,
+            historical: false,
+            contextual: true,
+        };
+        let parent_caps = NativeFontVariantCaps::Unicase;
+        let parent_position = NativeFontVariantPosition::Super;
+        let parent_alternates = NativeFontVariantAlternates::HistoricalForms;
+        let parent_east_asian = NativeFontVariantEastAsian {
+            form: NativeFontVariantEastAsianForm::Jis83,
+            width: NativeFontVariantEastAsianWidth::Full,
+            ruby: true,
+        };
+        let parent_numeric = NativeFontVariantNumeric {
+            figure: NativeFontVariantNumericFigure::Oldstyle,
+            spacing: NativeFontVariantNumericSpacing::Tabular,
+            fraction: NativeFontVariantNumericFraction::Normal,
+            ordinal: false,
+            slashed_zero: false,
+        };
+        for id in ["parent", "child", "wide-inherit"] {
+            assert_eq!(style(id).font_variant_ligatures(), parent_ligatures);
+            assert_eq!(style(id).font_variant_caps(), parent_caps);
+            assert_eq!(style(id).font_variant_position(), parent_position);
+            assert_eq!(style(id).font_variant_alternates(), parent_alternates);
+            assert_eq!(style(id).font_variant_east_asian(), parent_east_asian);
+            assert_eq!(style(id).font_variant_numeric(), parent_numeric);
+        }
+        assert_eq!(
+            style("fallback").font_variant_ligatures(),
+            NativeFontVariantLigatures::default()
+        );
+        assert_eq!(
+            style("fallback").font_variant_caps(),
+            NativeFontVariantCaps::TitlingCaps
+        );
+        assert_eq!(
+            style("fallback").font_variant_position(),
+            NativeFontVariantPosition::Sub
+        );
+        assert_eq!(
+            style("fallback").font_variant_alternates(),
+            NativeFontVariantAlternates::HistoricalForms
+        );
+        assert_eq!(
+            style("fallback").font_variant_east_asian(),
+            NativeFontVariantEastAsian {
+                form: NativeFontVariantEastAsianForm::Jis83,
+                width: NativeFontVariantEastAsianWidth::Full,
+                ruby: true,
+            }
+        );
+        assert_eq!(
+            style("fallback").font_variant_numeric(),
+            NativeFontVariantNumeric {
+                figure: NativeFontVariantNumericFigure::Oldstyle,
+                spacing: NativeFontVariantNumericSpacing::Normal,
+                fraction: NativeFontVariantNumericFraction::Normal,
+                ordinal: false,
+                slashed_zero: false,
+            }
+        );
+        for id in ["invalid", "cycle", "wide-initial"] {
+            assert_eq!(
+                style(id).font_variant_ligatures(),
+                NativeFontVariantLigatures::default()
+            );
+            assert_eq!(style(id).font_variant_caps(), NativeFontVariantCaps::Normal);
+            assert_eq!(
+                style(id).font_variant_position(),
+                NativeFontVariantPosition::Normal
+            );
+            assert_eq!(
+                style(id).font_variant_alternates(),
+                NativeFontVariantAlternates::Normal
+            );
+            assert_eq!(
+                style(id).font_variant_east_asian(),
+                NativeFontVariantEastAsian::default()
+            );
+            assert_eq!(
+                style(id).font_variant_numeric(),
+                NativeFontVariantNumeric::default()
+            );
+        }
     }
 
     #[test]

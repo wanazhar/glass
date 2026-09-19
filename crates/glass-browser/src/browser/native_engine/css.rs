@@ -756,6 +756,13 @@ pub(crate) enum TextAlignLastValue {
     Justify,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextAlignLastDeclarationValue {
+    Value(TextAlignLastValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, TextAlignLastValue),
+}
+
 impl TextAlignLastValue {
     pub(crate) const fn resolve(self, text_align: TextAlignValue) -> TextAlignValue {
         match self {
@@ -4529,7 +4536,11 @@ impl NativeStylesheet {
             opacity: resolve_local_optional_cascade_declaration(*opacity),
             white_space: resolve_white_space(*white_space, inherited.white_space),
             text_align: resolve_text_align(*text_align, inherited.text_align, custom_properties),
-            text_align_last: resolve_text_align_last(*text_align_last, inherited.text_align_last),
+            text_align_last: resolve_text_align_last(
+                *text_align_last,
+                inherited.text_align_last,
+                custom_properties,
+            ),
             text_justify: resolve_text_justify(*text_justify, inherited.text_justify),
             justify_content: resolve_justify_content(*justify_content, inherited.justify_content),
             align_items: resolve_align_items(*align_items, inherited.align_items),
@@ -4801,7 +4812,7 @@ struct NativeCascadeScratch {
     opacity: NativeLocalCascadeCandidates<u8>,
     white_space: NativeTextCascadeCandidates<WhiteSpaceValue>,
     text_align: NativeTextCascadeCandidates<TextAlignDeclarationValue>,
-    text_align_last: NativeTextCascadeCandidates<TextAlignLastValue>,
+    text_align_last: NativeTextCascadeCandidates<TextAlignLastDeclarationValue>,
     text_justify: NativeTextCascadeCandidates<TextJustifyValue>,
     direction: NativeTextCascadeCandidates<DirectionValue>,
     justify_content: NativeLocalDeclarationCandidates<JustifyContentDeclaration>,
@@ -5315,12 +5326,89 @@ fn resolve_text_align(
     }
 }
 
-fn resolve_text_align_last(
-    candidates: [Option<CascadeValue<InheritedTextDeclaration<TextAlignLastValue>>>;
-        MAX_NATIVE_TEXT_CASCADE_LAYERS],
+fn resolve_text_align_last_declaration(
+    declaration: InheritedTextDeclaration<TextAlignLastDeclarationValue>,
     inherited: TextAlignLastValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<TextAlignLastDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_text_align_last_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(TextAlignLastDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => Some(TextAlignLastDeclarationValue::Value(
+            TextAlignLastValue::Auto,
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_text_align_last_value(
+    value: TextAlignLastDeclarationValue,
+    inherited: TextAlignLastValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<TextAlignLastDeclarationValue> {
+    match value {
+        TextAlignLastDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_align_last_declaration(value))
+                .and_then(|declaration| {
+                    resolve_text_align_last_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        TextAlignLastDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_align_last_declaration(value))
+                .and_then(|declaration| {
+                    resolve_text_align_last_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(TextAlignLastDeclarationValue::Value(fallback)))
+        }
+        TextAlignLastDeclarationValue::CustomProperty(_)
+        | TextAlignLastDeclarationValue::CustomPropertyFallback(_, _) => None,
+        TextAlignLastDeclarationValue::Value(value) => {
+            Some(TextAlignLastDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_text_align_last(
+    candidates: NativeTextCascadeCandidates<TextAlignLastDeclarationValue>,
+    inherited: TextAlignLastValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> TextAlignLastValue {
-    resolve_inherited_text_declaration(candidates, inherited, TextAlignLastValue::Auto)
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        TextAlignLastDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_text_align_last_declaration(declaration, inherited, custom_properties, 0)
+        },
+    );
+    match resolved {
+        TextAlignLastDeclarationValue::Value(value) => value,
+        TextAlignLastDeclarationValue::CustomProperty(_)
+        | TextAlignLastDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_text_justify(
@@ -9251,7 +9339,7 @@ struct NativeDeclarations {
     text_importance: NativeTextDeclarationImportance,
     white_space: Option<InheritedTextDeclaration<WhiteSpaceValue>>,
     text_align: Option<InheritedTextDeclaration<TextAlignDeclarationValue>>,
-    text_align_last: Option<InheritedTextDeclaration<TextAlignLastValue>>,
+    text_align_last: Option<InheritedTextDeclaration<TextAlignLastDeclarationValue>>,
     text_justify: Option<InheritedTextDeclaration<TextJustifyValue>>,
     justify_content: Option<JustifyContentDeclaration>,
     align_items: Option<AlignItemsDeclaration>,
@@ -15095,10 +15183,33 @@ fn parse_text_align_last(value: &str) -> Option<TextAlignLastValue> {
     }
 }
 
+fn parse_text_align_last_custom_property(value: &str) -> Option<TextAlignLastDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_text_align_last(fallback).map(|fallback| {
+            TextAlignLastDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(TextAlignLastDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_text_align_last_property(value: &str) -> Option<TextAlignLastDeclarationValue> {
+    parse_text_align_last(value)
+        .map(TextAlignLastDeclarationValue::Value)
+        .or_else(|| parse_text_align_last_custom_property(value))
+}
+
 fn parse_text_align_last_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<TextAlignLastValue>> {
-    parse_inherited_text_declaration(value, parse_text_align_last)
+) -> Option<InheritedTextDeclaration<TextAlignLastDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_text_align_last_property)
 }
 
 fn parse_text_justify(value: &str) -> Option<TextJustifyValue> {
@@ -18666,7 +18777,9 @@ mod tests {
         );
         assert_eq!(
             declarations.text_align_last,
-            Some(InheritedTextDeclaration::Value(TextAlignLastValue::End))
+            Some(InheritedTextDeclaration::Value(
+                TextAlignLastDeclarationValue::Value(TextAlignLastValue::End)
+            ))
         );
         assert_eq!(
             declarations.text_justify,
@@ -23032,6 +23145,24 @@ mod tests {
         );
         assert_eq!(parse_text_align_last("match-parent"), None);
         assert_eq!(parse_text_align_last("start end"), None);
+        let align_last_name = parse_custom_property_name("--align-last").unwrap();
+        let fallback = TextAlignLastValue::Justify;
+        assert_eq!(
+            parse_text_align_last_property("var(--align-last)"),
+            Some(TextAlignLastDeclarationValue::CustomProperty(
+                align_last_name
+            ))
+        );
+        assert_eq!(
+            parse_text_align_last_declaration("var(--align-last, justify)"),
+            Some(InheritedTextDeclaration::Value(
+                TextAlignLastDeclarationValue::CustomPropertyFallback(align_last_name, fallback)
+            ))
+        );
+        assert_eq!(
+            parse_text_align_last_property("var(--align-last, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -29887,6 +30018,44 @@ mod tests {
             document.computed_style_for_layout(invalid).text_align(),
             TextAlignValue::Center
         );
+    }
+
+    #[test]
+    fn inherited_text_align_last_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --align-last: center; --alias: var(--align-last); --cycle: var(--cycle); text-align-last: var(--align-last); }
+            #child { text-align-last: var(--alias); }
+            #fallback { text-align-last: var(--missing, justify); }
+            #invalid { --bad: match-parent; text-align-last: var(--bad, right); }
+            #cycle { text-align-last: var(--cycle, left); }
+            #wide-initial { --wide: initial; text-align-last: var(--wide); }
+            #wide-inherit { --wide: inherit; text-align-last: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .text_align_last()
+        };
+
+        assert_eq!(style("parent"), TextAlignLastValue::Center);
+        assert_eq!(style("child"), TextAlignLastValue::Center);
+        assert_eq!(style("fallback"), TextAlignLastValue::Justify);
+        assert_eq!(style("invalid"), TextAlignLastValue::Right);
+        assert_eq!(style("cycle"), TextAlignLastValue::Left);
+        assert_eq!(style("wide-initial"), TextAlignLastValue::Auto);
+        assert_eq!(style("wide-inherit"), TextAlignLastValue::Center);
     }
 
     #[test]

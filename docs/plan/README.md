@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-592`, following completed
 `native-engine-browser-591`, following completed
 `native-engine-browser-590`, following completed
 `native-engine-browser-589`, following completed
@@ -494,6 +495,14 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed inherited text-align-last substitution follow-up is
+[`native-engine-browser-592`](tasks/native-engine-browser-592.md): native
+`text-align-last` now accepts bounded standalone `var(--name)` and keyword
+fallbacks, resolving inherited aliases, CSS-wide mapped values, invalid values,
+and cyclic values before normal last-line alignment. Nested variable grammar,
+registered properties, full CSS variable grammar, and complete CSS/Web IDL
+parity remain issue #40 gates.
 
 The completed inherited text-align substitution follow-up is
 [`native-engine-browser-591`](tasks/native-engine-browser-591.md): native

@@ -339,64 +339,37 @@ pub enum NativeTextDecorationStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTextDecorationStyleDeclaration {
     Value(NativeTextDecorationStyle),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeTextDecorationStyle),
     Inherit,
     Initial,
     Unset,
     Revert,
     RevertLayer,
-}
-
-impl NativeTextDecorationStyleDeclaration {
-    const fn resolve(self, inherited: NativeTextDecorationStyle) -> NativeTextDecorationStyle {
-        match self {
-            Self::Value(value) => value,
-            Self::Inherit | Self::Unset | Self::Revert => inherited,
-            Self::Initial => NativeTextDecorationStyle::Solid,
-            Self::RevertLayer => inherited,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTextDecorationThicknessDeclaration {
     Value(u32),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, u32),
     Inherit,
     Initial,
     Unset,
     Revert,
     RevertLayer,
-}
-
-impl NativeTextDecorationThicknessDeclaration {
-    const fn resolve(self, inherited: u32) -> u32 {
-        match self {
-            Self::Value(value) => value,
-            Self::Inherit | Self::Unset | Self::Revert => inherited,
-            Self::Initial => 1,
-            Self::RevertLayer => inherited,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTextUnderlineOffsetDeclaration {
     Value(i32),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, i32),
     Inherit,
     Initial,
     Unset,
     Revert,
     RevertLayer,
-}
-
-impl NativeTextUnderlineOffsetDeclaration {
-    const fn resolve(self, inherited: i32) -> i32 {
-        match self {
-            Self::Value(value) => value,
-            Self::Inherit | Self::Unset | Self::Revert => inherited,
-            Self::Initial => 0,
-            Self::RevertLayer => inherited,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -423,22 +396,13 @@ pub enum NativeTextDecorationSkipInk {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTextDecorationSkipInkDeclaration {
     Value(NativeTextDecorationSkipInk),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeTextDecorationSkipInk),
     Inherit,
     Initial,
     Unset,
     Revert,
     RevertLayer,
-}
-
-impl NativeTextDecorationSkipInkDeclaration {
-    const fn resolve(self, inherited: NativeTextDecorationSkipInk) -> NativeTextDecorationSkipInk {
-        match self {
-            Self::Value(value) => value,
-            Self::Inherit | Self::Unset | Self::Revert => inherited,
-            Self::Initial => NativeTextDecorationSkipInk::Auto,
-            Self::RevertLayer => inherited,
-        }
-    }
 }
 
 /// Bounded inherited fixed-cell whitespace behavior for text decorations.
@@ -455,22 +419,12 @@ pub enum NativeTextDecorationSkipSpaces {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTextDecorationSkipSpacesDeclaration {
     Value(NativeTextDecorationSkipSpaces),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeTextDecorationSkipSpaces),
     Inherit,
     Unset,
     Revert,
     RevertLayer,
-}
-
-impl NativeTextDecorationSkipSpacesDeclaration {
-    const fn resolve(
-        self,
-        inherited: NativeTextDecorationSkipSpaces,
-    ) -> NativeTextDecorationSkipSpaces {
-        match self {
-            Self::Value(value) => value,
-            Self::Inherit | Self::Unset | Self::Revert | Self::RevertLayer => inherited,
-        }
-    }
 }
 
 /// Bounded physical circular radii for the top-left, top-right, bottom-right,
@@ -4711,22 +4665,27 @@ impl NativeStylesheet {
             text_decoration_style: resolve_text_decoration_style(
                 *text_decoration_style,
                 inherited.text_decoration_style,
+                custom_properties,
             ),
             text_decoration_skip_ink: resolve_text_decoration_skip_ink(
                 *text_decoration_skip_ink,
                 inherited.text_decoration_skip_ink,
+                custom_properties,
             ),
             text_decoration_skip_spaces: resolve_text_decoration_skip_spaces(
                 *text_decoration_skip_spaces,
                 inherited.text_decoration_skip_spaces,
+                custom_properties,
             ),
             text_decoration_thickness: resolve_text_decoration_thickness(
                 *text_decoration_thickness,
                 inherited.text_decoration_thickness,
+                custom_properties,
             ),
             text_underline_offset: resolve_text_underline_offset(
                 *text_underline_offset,
                 inherited.text_underline_offset,
+                custom_properties,
             ),
             text_decoration_color: resolve_text_decoration_color(
                 *text_decoration_color,
@@ -10739,10 +10698,59 @@ fn resolve_alignment_candidates<T: Copy, U: Copy, const N: usize>(
     }
 }
 
+fn resolve_native_text_decoration_skip_spaces_value(
+    value: NativeTextDecorationSkipSpacesDeclaration,
+    inherited: NativeTextDecorationSkipSpaces,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<NativeTextDecorationSkipSpaces> {
+    match value {
+        NativeTextDecorationSkipSpacesDeclaration::Value(value) => Some(value),
+        NativeTextDecorationSkipSpacesDeclaration::Inherit
+        | NativeTextDecorationSkipSpacesDeclaration::Unset
+        | NativeTextDecorationSkipSpacesDeclaration::Revert => Some(inherited),
+        NativeTextDecorationSkipSpacesDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_decoration_skip_spaces(value))
+                .and_then(|declaration| {
+                    resolve_native_text_decoration_skip_spaces_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeTextDecorationSkipSpacesDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_decoration_skip_spaces(value))
+                .and_then(|declaration| {
+                    resolve_native_text_decoration_skip_spaces_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        NativeTextDecorationSkipSpacesDeclaration::CustomProperty(_)
+        | NativeTextDecorationSkipSpacesDeclaration::CustomPropertyFallback(_, _)
+        | NativeTextDecorationSkipSpacesDeclaration::RevertLayer => None,
+    }
+}
+
 fn resolve_text_decoration_skip_spaces(
     candidates: [Option<CascadeValue<NativeTextDecorationSkipSpacesDeclaration>>;
         MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: NativeTextDecorationSkipSpaces,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> NativeTextDecorationSkipSpaces {
     let mut blocked = [false; MAX_NATIVE_TEXT_CASCADE_LAYERS];
     loop {
@@ -10768,7 +10776,65 @@ fn resolve_text_decoration_skip_spaces(
             blocked[layer] = true;
             continue;
         }
-        return candidate.value.resolve(inherited);
+        let Some(value) = resolve_native_text_decoration_skip_spaces_value(
+            candidate.value,
+            inherited,
+            custom_properties,
+            0,
+        ) else {
+            blocked[layer] = true;
+            continue;
+        };
+        return value;
+    }
+}
+
+fn resolve_native_text_decoration_style_value(
+    value: NativeTextDecorationStyleDeclaration,
+    inherited: NativeTextDecorationStyle,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<NativeTextDecorationStyle> {
+    match value {
+        NativeTextDecorationStyleDeclaration::Value(value) => Some(value),
+        NativeTextDecorationStyleDeclaration::Inherit
+        | NativeTextDecorationStyleDeclaration::Unset
+        | NativeTextDecorationStyleDeclaration::Revert => Some(inherited),
+        NativeTextDecorationStyleDeclaration::Initial => Some(NativeTextDecorationStyle::Solid),
+        NativeTextDecorationStyleDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_decoration_style(value))
+                .and_then(|declaration| {
+                    resolve_native_text_decoration_style_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeTextDecorationStyleDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_decoration_style(value))
+                .and_then(|declaration| {
+                    resolve_native_text_decoration_style_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        NativeTextDecorationStyleDeclaration::CustomProperty(_)
+        | NativeTextDecorationStyleDeclaration::CustomPropertyFallback(_, _)
+        | NativeTextDecorationStyleDeclaration::RevertLayer => None,
     }
 }
 
@@ -10776,6 +10842,7 @@ fn resolve_text_decoration_style(
     candidates: [Option<CascadeValue<NativeTextDecorationStyleDeclaration>>;
         MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: NativeTextDecorationStyle,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> NativeTextDecorationStyle {
     let mut blocked = [false; MAX_NATIVE_TEXT_CASCADE_LAYERS];
     loop {
@@ -10801,7 +10868,65 @@ fn resolve_text_decoration_style(
             blocked[layer] = true;
             continue;
         }
-        return candidate.value.resolve(inherited);
+        let Some(value) = resolve_native_text_decoration_style_value(
+            candidate.value,
+            inherited,
+            custom_properties,
+            0,
+        ) else {
+            blocked[layer] = true;
+            continue;
+        };
+        return value;
+    }
+}
+
+fn resolve_native_text_decoration_thickness_value(
+    value: NativeTextDecorationThicknessDeclaration,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<u32> {
+    match value {
+        NativeTextDecorationThicknessDeclaration::Value(value) => Some(value),
+        NativeTextDecorationThicknessDeclaration::Inherit
+        | NativeTextDecorationThicknessDeclaration::Unset
+        | NativeTextDecorationThicknessDeclaration::Revert => Some(inherited),
+        NativeTextDecorationThicknessDeclaration::Initial => Some(1),
+        NativeTextDecorationThicknessDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_decoration_thickness(value))
+                .and_then(|declaration| {
+                    resolve_native_text_decoration_thickness_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeTextDecorationThicknessDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_decoration_thickness(value))
+                .and_then(|declaration| {
+                    resolve_native_text_decoration_thickness_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        NativeTextDecorationThicknessDeclaration::CustomProperty(_)
+        | NativeTextDecorationThicknessDeclaration::CustomPropertyFallback(_, _)
+        | NativeTextDecorationThicknessDeclaration::RevertLayer => None,
     }
 }
 
@@ -10809,6 +10934,7 @@ fn resolve_text_decoration_thickness(
     candidates: [Option<CascadeValue<NativeTextDecorationThicknessDeclaration>>;
         MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> u32 {
     let mut blocked = [false; MAX_NATIVE_TEXT_CASCADE_LAYERS];
     loop {
@@ -10834,7 +10960,65 @@ fn resolve_text_decoration_thickness(
             blocked[layer] = true;
             continue;
         }
-        return candidate.value.resolve(inherited);
+        let Some(value) = resolve_native_text_decoration_thickness_value(
+            candidate.value,
+            inherited,
+            custom_properties,
+            0,
+        ) else {
+            blocked[layer] = true;
+            continue;
+        };
+        return value;
+    }
+}
+
+fn resolve_native_text_underline_offset_value(
+    value: NativeTextUnderlineOffsetDeclaration,
+    inherited: i32,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<i32> {
+    match value {
+        NativeTextUnderlineOffsetDeclaration::Value(value) => Some(value),
+        NativeTextUnderlineOffsetDeclaration::Inherit
+        | NativeTextUnderlineOffsetDeclaration::Unset
+        | NativeTextUnderlineOffsetDeclaration::Revert => Some(inherited),
+        NativeTextUnderlineOffsetDeclaration::Initial => Some(0),
+        NativeTextUnderlineOffsetDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_underline_offset(value))
+                .and_then(|declaration| {
+                    resolve_native_text_underline_offset_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeTextUnderlineOffsetDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_underline_offset(value))
+                .and_then(|declaration| {
+                    resolve_native_text_underline_offset_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        NativeTextUnderlineOffsetDeclaration::CustomProperty(_)
+        | NativeTextUnderlineOffsetDeclaration::CustomPropertyFallback(_, _)
+        | NativeTextUnderlineOffsetDeclaration::RevertLayer => None,
     }
 }
 
@@ -10842,6 +11026,7 @@ fn resolve_text_underline_offset(
     candidates: [Option<CascadeValue<NativeTextUnderlineOffsetDeclaration>>;
         MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: i32,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> i32 {
     let mut blocked = [false; MAX_NATIVE_TEXT_CASCADE_LAYERS];
     loop {
@@ -10867,7 +11052,16 @@ fn resolve_text_underline_offset(
             blocked[layer] = true;
             continue;
         }
-        return candidate.value.resolve(inherited);
+        let Some(value) = resolve_native_text_underline_offset_value(
+            candidate.value,
+            inherited,
+            custom_properties,
+            0,
+        ) else {
+            blocked[layer] = true;
+            continue;
+        };
+        return value;
     }
 }
 
@@ -10997,10 +11191,60 @@ fn resolve_text_decoration_color(
     }
 }
 
+fn resolve_native_text_decoration_skip_ink_value(
+    value: NativeTextDecorationSkipInkDeclaration,
+    inherited: NativeTextDecorationSkipInk,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<NativeTextDecorationSkipInk> {
+    match value {
+        NativeTextDecorationSkipInkDeclaration::Value(value) => Some(value),
+        NativeTextDecorationSkipInkDeclaration::Inherit
+        | NativeTextDecorationSkipInkDeclaration::Unset
+        | NativeTextDecorationSkipInkDeclaration::Revert => Some(inherited),
+        NativeTextDecorationSkipInkDeclaration::Initial => Some(NativeTextDecorationSkipInk::Auto),
+        NativeTextDecorationSkipInkDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_decoration_skip_ink(value))
+                .and_then(|declaration| {
+                    resolve_native_text_decoration_skip_ink_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeTextDecorationSkipInkDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_decoration_skip_ink(value))
+                .and_then(|declaration| {
+                    resolve_native_text_decoration_skip_ink_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        NativeTextDecorationSkipInkDeclaration::CustomProperty(_)
+        | NativeTextDecorationSkipInkDeclaration::CustomPropertyFallback(_, _)
+        | NativeTextDecorationSkipInkDeclaration::RevertLayer => None,
+    }
+}
+
 fn resolve_text_decoration_skip_ink(
     candidates: [Option<CascadeValue<NativeTextDecorationSkipInkDeclaration>>;
         MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: NativeTextDecorationSkipInk,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> NativeTextDecorationSkipInk {
     let mut blocked = [false; MAX_NATIVE_TEXT_CASCADE_LAYERS];
     loop {
@@ -11026,7 +11270,16 @@ fn resolve_text_decoration_skip_ink(
             blocked[layer] = true;
             continue;
         }
-        return candidate.value.resolve(inherited);
+        let Some(value) = resolve_native_text_decoration_skip_ink_value(
+            candidate.value,
+            inherited,
+            custom_properties,
+            0,
+        ) else {
+            blocked[layer] = true;
+            continue;
+        };
+        return value;
     }
 }
 
@@ -17747,45 +18000,91 @@ fn parse_border_style_value(value: &str) -> Option<NativeBorderStyleValue> {
     }
 }
 
-fn parse_text_decoration_style(value: &str) -> Option<NativeTextDecorationStyleDeclaration> {
+fn parse_text_decoration_style_value(value: &str) -> Option<NativeTextDecorationStyle> {
     match value.to_ascii_lowercase().as_str() {
-        "solid" => Some(NativeTextDecorationStyleDeclaration::Value(
-            NativeTextDecorationStyle::Solid,
-        )),
-        "dashed" => Some(NativeTextDecorationStyleDeclaration::Value(
-            NativeTextDecorationStyle::Dashed,
-        )),
-        "dotted" => Some(NativeTextDecorationStyleDeclaration::Value(
-            NativeTextDecorationStyle::Dotted,
-        )),
-        "double" => Some(NativeTextDecorationStyleDeclaration::Value(
-            NativeTextDecorationStyle::Double,
-        )),
-        "wavy" => Some(NativeTextDecorationStyleDeclaration::Value(
-            NativeTextDecorationStyle::Wavy,
-        )),
+        "solid" => Some(NativeTextDecorationStyle::Solid),
+        "dashed" => Some(NativeTextDecorationStyle::Dashed),
+        "dotted" => Some(NativeTextDecorationStyle::Dotted),
+        "double" => Some(NativeTextDecorationStyle::Double),
+        "wavy" => Some(NativeTextDecorationStyle::Wavy),
+        _ => None,
+    }
+}
+
+fn parse_text_decoration_style(value: &str) -> Option<NativeTextDecorationStyleDeclaration> {
+    if let Some((name_hash, fallback)) = parse_flex_var_arguments(value) {
+        return match fallback {
+            Some(fallback) => parse_text_decoration_style_value(fallback).map(|fallback| {
+                NativeTextDecorationStyleDeclaration::CustomPropertyFallback(name_hash, fallback)
+            }),
+            None => Some(NativeTextDecorationStyleDeclaration::CustomProperty(
+                name_hash,
+            )),
+        };
+    }
+    match value.to_ascii_lowercase().as_str() {
         "inherit" => Some(NativeTextDecorationStyleDeclaration::Inherit),
         "initial" => Some(NativeTextDecorationStyleDeclaration::Initial),
         "unset" => Some(NativeTextDecorationStyleDeclaration::Unset),
         "revert" => Some(NativeTextDecorationStyleDeclaration::Revert),
         "revert-layer" => Some(NativeTextDecorationStyleDeclaration::RevertLayer),
+        _ => parse_text_decoration_style_value(value)
+            .map(NativeTextDecorationStyleDeclaration::Value),
+    }
+}
+
+fn parse_text_decoration_skip_ink_value(value: &str) -> Option<NativeTextDecorationSkipInk> {
+    match value.to_ascii_lowercase().as_str() {
+        "auto" => Some(NativeTextDecorationSkipInk::Auto),
+        "none" => Some(NativeTextDecorationSkipInk::None),
         _ => None,
     }
 }
 
 fn parse_text_decoration_skip_ink(value: &str) -> Option<NativeTextDecorationSkipInkDeclaration> {
+    if let Some((name_hash, fallback)) = parse_flex_var_arguments(value) {
+        return match fallback {
+            Some(fallback) => parse_text_decoration_skip_ink_value(fallback).map(|fallback| {
+                NativeTextDecorationSkipInkDeclaration::CustomPropertyFallback(name_hash, fallback)
+            }),
+            None => Some(NativeTextDecorationSkipInkDeclaration::CustomProperty(
+                name_hash,
+            )),
+        };
+    }
     match value.to_ascii_lowercase().as_str() {
-        "auto" => Some(NativeTextDecorationSkipInkDeclaration::Value(
-            NativeTextDecorationSkipInk::Auto,
-        )),
-        "none" => Some(NativeTextDecorationSkipInkDeclaration::Value(
-            NativeTextDecorationSkipInk::None,
-        )),
         "inherit" => Some(NativeTextDecorationSkipInkDeclaration::Inherit),
         "initial" => Some(NativeTextDecorationSkipInkDeclaration::Initial),
         "unset" => Some(NativeTextDecorationSkipInkDeclaration::Unset),
         "revert" => Some(NativeTextDecorationSkipInkDeclaration::Revert),
         "revert-layer" => Some(NativeTextDecorationSkipInkDeclaration::RevertLayer),
+        _ => parse_text_decoration_skip_ink_value(value)
+            .map(NativeTextDecorationSkipInkDeclaration::Value),
+    }
+}
+
+fn parse_text_decoration_skip_spaces_value(value: &str) -> Option<NativeTextDecorationSkipSpaces> {
+    let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
+    match tokens.as_slice() {
+        [token] => match token.to_ascii_lowercase().as_str() {
+            "none" => Some(NativeTextDecorationSkipSpaces::None),
+            "all" => Some(NativeTextDecorationSkipSpaces::All),
+            "start" => Some(NativeTextDecorationSkipSpaces::Start),
+            "end" => Some(NativeTextDecorationSkipSpaces::End),
+            _ => None,
+        },
+        [first, second] => {
+            let first = first.to_ascii_lowercase();
+            let second = second.to_ascii_lowercase();
+            if matches!(first.as_str(), "start" | "end")
+                && matches!(second.as_str(), "start" | "end")
+                && first != second
+            {
+                Some(NativeTextDecorationSkipSpaces::StartAndEnd)
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -17793,6 +18092,18 @@ fn parse_text_decoration_skip_ink(value: &str) -> Option<NativeTextDecorationSki
 fn parse_text_decoration_skip_spaces(
     value: &str,
 ) -> Option<NativeTextDecorationSkipSpacesDeclaration> {
+    if let Some((name_hash, fallback)) = parse_flex_var_arguments(value) {
+        return match fallback {
+            Some(fallback) => parse_text_decoration_skip_spaces_value(fallback).map(|fallback| {
+                NativeTextDecorationSkipSpacesDeclaration::CustomPropertyFallback(
+                    name_hash, fallback,
+                )
+            }),
+            None => Some(NativeTextDecorationSkipSpacesDeclaration::CustomProperty(
+                name_hash,
+            )),
+        };
+    }
     let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
     match tokens.as_slice() {
         [token] => match token.to_ascii_lowercase().as_str() {
@@ -17803,41 +18114,34 @@ fn parse_text_decoration_skip_spaces(
             "unset" => Some(NativeTextDecorationSkipSpacesDeclaration::Unset),
             "revert" => Some(NativeTextDecorationSkipSpacesDeclaration::Revert),
             "revert-layer" => Some(NativeTextDecorationSkipSpacesDeclaration::RevertLayer),
-            "none" => Some(NativeTextDecorationSkipSpacesDeclaration::Value(
-                NativeTextDecorationSkipSpaces::None,
-            )),
-            "all" => Some(NativeTextDecorationSkipSpacesDeclaration::Value(
-                NativeTextDecorationSkipSpaces::All,
-            )),
-            "start" => Some(NativeTextDecorationSkipSpacesDeclaration::Value(
-                NativeTextDecorationSkipSpaces::Start,
-            )),
-            "end" => Some(NativeTextDecorationSkipSpacesDeclaration::Value(
-                NativeTextDecorationSkipSpaces::End,
-            )),
-            _ => None,
+            _ => parse_text_decoration_skip_spaces_value(value)
+                .map(NativeTextDecorationSkipSpacesDeclaration::Value),
         },
-        [first, second] => {
-            let first = first.to_ascii_lowercase();
-            let second = second.to_ascii_lowercase();
-            if matches!(first.as_str(), "start" | "end")
-                && matches!(second.as_str(), "start" | "end")
-                && first != second
-            {
-                Some(NativeTextDecorationSkipSpacesDeclaration::Value(
-                    NativeTextDecorationSkipSpaces::StartAndEnd,
-                ))
-            } else {
-                None
-            }
-        }
-        _ => None,
+        _ => parse_text_decoration_skip_spaces_value(value)
+            .map(NativeTextDecorationSkipSpacesDeclaration::Value),
     }
+}
+
+fn parse_text_decoration_thickness_value(value: &str) -> Option<u32> {
+    parse_dimension(value)
+        .filter(|value| (1..=MAX_NATIVE_TEXT_DECORATION_THICKNESS).contains(value))
 }
 
 fn parse_text_decoration_thickness(
     value: &str,
 ) -> Option<NativeTextDecorationThicknessDeclaration> {
+    if let Some((name_hash, fallback)) = parse_flex_var_arguments(value) {
+        return match fallback {
+            Some(fallback) => parse_text_decoration_thickness_value(fallback).map(|fallback| {
+                NativeTextDecorationThicknessDeclaration::CustomPropertyFallback(
+                    name_hash, fallback,
+                )
+            }),
+            None => Some(NativeTextDecorationThicknessDeclaration::CustomProperty(
+                name_hash,
+            )),
+        };
+    }
     if value.eq_ignore_ascii_case("inherit") {
         return Some(NativeTextDecorationThicknessDeclaration::Inherit);
     }
@@ -17853,22 +18157,12 @@ fn parse_text_decoration_thickness(
     if value.eq_ignore_ascii_case("revert-layer") {
         return Some(NativeTextDecorationThicknessDeclaration::RevertLayer);
     }
-    parse_dimension(value)
-        .filter(|value| (1..=MAX_NATIVE_TEXT_DECORATION_THICKNESS).contains(value))
+    parse_text_decoration_thickness_value(value)
         .map(NativeTextDecorationThicknessDeclaration::Value)
 }
 
-fn parse_text_underline_offset(value: &str) -> Option<NativeTextUnderlineOffsetDeclaration> {
-    let value = value.trim();
-    match value.to_ascii_lowercase().as_str() {
-        "inherit" => return Some(NativeTextUnderlineOffsetDeclaration::Inherit),
-        "initial" => return Some(NativeTextUnderlineOffsetDeclaration::Initial),
-        "unset" => return Some(NativeTextUnderlineOffsetDeclaration::Unset),
-        "revert" => return Some(NativeTextUnderlineOffsetDeclaration::Revert),
-        "revert-layer" => return Some(NativeTextUnderlineOffsetDeclaration::RevertLayer),
-        _ => {}
-    }
-    let value = value.to_ascii_lowercase();
+fn parse_text_underline_offset_value(value: &str) -> Option<i32> {
+    let value = value.trim().to_ascii_lowercase();
     let value = value.strip_suffix("px")?.trim();
     let (negative, magnitude) = match value.strip_prefix('-') {
         Some(value) => (true, value),
@@ -17881,11 +18175,30 @@ fn parse_text_underline_offset(value: &str) -> Option<NativeTextUnderlineOffsetD
     if magnitude > MAX_NATIVE_TEXT_UNDERLINE_OFFSET {
         return None;
     }
-    Some(NativeTextUnderlineOffsetDeclaration::Value(if negative {
-        -magnitude
-    } else {
-        magnitude
-    }))
+    Some(if negative { -magnitude } else { magnitude })
+}
+
+fn parse_text_underline_offset(value: &str) -> Option<NativeTextUnderlineOffsetDeclaration> {
+    if let Some((name_hash, fallback)) = parse_flex_var_arguments(value) {
+        return match fallback {
+            Some(fallback) => parse_text_underline_offset_value(fallback).map(|fallback| {
+                NativeTextUnderlineOffsetDeclaration::CustomPropertyFallback(name_hash, fallback)
+            }),
+            None => Some(NativeTextUnderlineOffsetDeclaration::CustomProperty(
+                name_hash,
+            )),
+        };
+    }
+    let value = value.trim();
+    match value.to_ascii_lowercase().as_str() {
+        "inherit" => return Some(NativeTextUnderlineOffsetDeclaration::Inherit),
+        "initial" => return Some(NativeTextUnderlineOffsetDeclaration::Initial),
+        "unset" => return Some(NativeTextUnderlineOffsetDeclaration::Unset),
+        "revert" => return Some(NativeTextUnderlineOffsetDeclaration::Revert),
+        "revert-layer" => return Some(NativeTextUnderlineOffsetDeclaration::RevertLayer),
+        _ => {}
+    }
+    parse_text_underline_offset_value(value).map(NativeTextUnderlineOffsetDeclaration::Value)
 }
 
 fn parse_text_decoration_color(value: &str) -> Option<NativeTextDecorationColorDeclaration> {
@@ -31726,6 +32039,252 @@ mod tests {
             parse_declarations("text-decoration-skip-spaces: revert-layer")
                 .text_decoration_skip_spaces,
             Some(NativeTextDecorationSkipSpacesDeclaration::RevertLayer)
+        );
+    }
+    #[test]
+    fn text_decoration_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let style = parse_custom_property_name("--style").unwrap();
+        let skip_ink = parse_custom_property_name("--skip-ink").unwrap();
+        let skip_spaces = parse_custom_property_name("--skip-spaces").unwrap();
+        let thickness = parse_custom_property_name("--thickness").unwrap();
+        let offset = parse_custom_property_name("--offset").unwrap();
+
+        assert_eq!(
+            parse_text_decoration_style("var(--style)"),
+            Some(NativeTextDecorationStyleDeclaration::CustomProperty(style))
+        );
+        assert_eq!(
+            parse_text_decoration_style("var(--style, wavy)"),
+            Some(
+                NativeTextDecorationStyleDeclaration::CustomPropertyFallback(
+                    style,
+                    NativeTextDecorationStyle::Wavy
+                )
+            )
+        );
+        assert_eq!(
+            parse_text_decoration_skip_ink("var(--skip-ink, none)"),
+            Some(
+                NativeTextDecorationSkipInkDeclaration::CustomPropertyFallback(
+                    skip_ink,
+                    NativeTextDecorationSkipInk::None
+                )
+            )
+        );
+        assert_eq!(
+            parse_text_decoration_skip_spaces("var(--skip-spaces, start end)"),
+            Some(
+                NativeTextDecorationSkipSpacesDeclaration::CustomPropertyFallback(
+                    skip_spaces,
+                    NativeTextDecorationSkipSpaces::StartAndEnd
+                )
+            )
+        );
+        assert_eq!(
+            parse_text_decoration_thickness("var(--thickness, 4px)"),
+            Some(NativeTextDecorationThicknessDeclaration::CustomPropertyFallback(thickness, 4))
+        );
+        assert_eq!(
+            parse_text_underline_offset("var(--offset, -3px)"),
+            Some(NativeTextUnderlineOffsetDeclaration::CustomPropertyFallback(offset, -3))
+        );
+        let missing_offset = parse_custom_property_name("--missing-offset").unwrap();
+        assert_eq!(
+            parse_text_underline_offset("var(--missing-offset, 4px)"),
+            Some(NativeTextUnderlineOffsetDeclaration::CustomPropertyFallback(missing_offset, 4))
+        );
+        assert_eq!(
+            parse_text_decoration_skip_ink("var(--skip-ink, var(--nested))"),
+            None
+        );
+        assert_eq!(parse_text_decoration_style("var(--style, inherit)"), None);
+        assert_eq!(
+            parse_text_decoration_skip_spaces("var(--skip-spaces, start start)"),
+            None
+        );
+        assert_eq!(
+            parse_text_decoration_thickness("var(--thickness, 0px)"),
+            None
+        );
+        assert_eq!(parse_text_underline_offset("var(--offset, 2em)"), None);
+        let declarations = parse_declarations(
+            "text-decoration-style: var(--style); text-decoration-skip-ink: var(--skip-ink); text-decoration-skip-spaces: var(--skip-spaces); text-decoration-thickness: var(--thickness); text-underline-offset: var(--offset)",
+        );
+        assert_eq!(
+            declarations.text_decoration_style,
+            Some(NativeTextDecorationStyleDeclaration::CustomProperty(style))
+        );
+        assert_eq!(
+            declarations.text_decoration_skip_ink,
+            Some(NativeTextDecorationSkipInkDeclaration::CustomProperty(
+                skip_ink
+            ))
+        );
+        assert_eq!(
+            declarations.text_decoration_skip_spaces,
+            Some(NativeTextDecorationSkipSpacesDeclaration::CustomProperty(
+                skip_spaces
+            ))
+        );
+        assert_eq!(
+            declarations.text_decoration_thickness,
+            Some(NativeTextDecorationThicknessDeclaration::CustomProperty(
+                thickness
+            ))
+        );
+        assert_eq!(
+            declarations.text_underline_offset,
+            Some(NativeTextUnderlineOffsetDeclaration::CustomProperty(offset))
+        );
+    }
+
+    #[test]
+    fn text_decoration_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent {
+                --style: wavy;
+                --style-alias: var(--style);
+                --skip-ink: none;
+                --skip-spaces: start end;
+                --thickness: 4px;
+                --offset: -3px;
+                text-decoration-style: var(--style-alias);
+                text-decoration-skip-ink: var(--skip-ink);
+                text-decoration-skip-spaces: var(--skip-spaces);
+                text-decoration-thickness: var(--thickness);
+                text-underline-offset: var(--offset);
+            }
+            #child {
+                text-decoration-style: var(--style-alias);
+                text-decoration-skip-ink: var(--skip-ink);
+                text-decoration-skip-spaces: var(--skip-spaces);
+                text-decoration-thickness: var(--thickness);
+                text-underline-offset: var(--offset);
+            }
+            #fallback {
+                text-decoration-style: var(--missing-style, double);
+                text-decoration-skip-ink: var(--missing-ink, auto);
+                text-decoration-skip-spaces: var(--missing-spaces, end);
+                text-decoration-thickness: var(--missing-thickness, 2px);
+                text-underline-offset: var(--missing-offset, 4px);
+            }
+            #invalid {
+                --bad: unsupported;
+                text-decoration-style: var(--bad, dotted);
+                text-decoration-skip-ink: var(--bad, none);
+                text-decoration-skip-spaces: var(--bad, all);
+                text-decoration-thickness: var(--bad, 3px);
+                text-underline-offset: var(--bad, -4px);
+            }
+            #cycle {
+                --cycle: var(--cycle);
+                text-decoration-style: var(--cycle, dashed);
+                text-decoration-skip-ink: var(--cycle, none);
+                text-decoration-skip-spaces: var(--cycle, start end);
+                text-decoration-thickness: var(--cycle, 3px);
+                text-underline-offset: var(--cycle, 3px);
+            }
+            #reset {
+                --reset: initial;
+                text-decoration-style: var(--reset, dotted);
+                text-decoration-skip-ink: var(--reset, none);
+                text-decoration-skip-spaces: var(--reset, end);
+                text-decoration-thickness: var(--reset, 6px);
+                text-underline-offset: var(--reset, 2px);
+            }
+            #override {
+                --style: solid;
+                --thickness: 2px;
+                text-decoration-style: var(--style);
+                text-decoration-style: dashed;
+                text-decoration-thickness: var(--thickness);
+                text-decoration-thickness: 4px;
+            }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='override'>Override</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        let assert_values = |id: &str,
+                             decoration_style: NativeTextDecorationStyle,
+                             skip_ink: NativeTextDecorationSkipInk,
+                             skip_spaces: NativeTextDecorationSkipSpaces,
+                             thickness: u32,
+                             offset: i32| {
+            let computed = style(id);
+            assert_eq!(computed.text_decoration_style(), decoration_style);
+            assert_eq!(computed.text_decoration_skip_ink(), skip_ink);
+            assert_eq!(computed.text_decoration_skip_spaces(), skip_spaces);
+            assert_eq!(computed.text_decoration_thickness(), thickness);
+            assert_eq!(computed.text_underline_offset(), offset);
+        };
+
+        assert_values(
+            "parent",
+            NativeTextDecorationStyle::Wavy,
+            NativeTextDecorationSkipInk::None,
+            NativeTextDecorationSkipSpaces::StartAndEnd,
+            4,
+            -3,
+        );
+        assert_values(
+            "child",
+            NativeTextDecorationStyle::Wavy,
+            NativeTextDecorationSkipInk::None,
+            NativeTextDecorationSkipSpaces::StartAndEnd,
+            4,
+            -3,
+        );
+        assert_values(
+            "fallback",
+            NativeTextDecorationStyle::Double,
+            NativeTextDecorationSkipInk::Auto,
+            NativeTextDecorationSkipSpaces::End,
+            2,
+            4,
+        );
+        assert_values(
+            "invalid",
+            NativeTextDecorationStyle::Dotted,
+            NativeTextDecorationSkipInk::None,
+            NativeTextDecorationSkipSpaces::All,
+            3,
+            -4,
+        );
+        assert_values(
+            "cycle",
+            NativeTextDecorationStyle::Dashed,
+            NativeTextDecorationSkipInk::None,
+            NativeTextDecorationSkipSpaces::StartAndEnd,
+            3,
+            3,
+        );
+        assert_values(
+            "reset",
+            NativeTextDecorationStyle::Solid,
+            NativeTextDecorationSkipInk::Auto,
+            NativeTextDecorationSkipSpaces::StartAndEnd,
+            1,
+            0,
+        );
+        assert_values(
+            "override",
+            NativeTextDecorationStyle::Dashed,
+            NativeTextDecorationSkipInk::Auto,
+            NativeTextDecorationSkipSpaces::None,
+            4,
+            0,
         );
     }
 

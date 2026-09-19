@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-628`, following completed
 `native-engine-browser-627`, following completed
 `native-engine-browser-626`, following completed
 `native-engine-browser-625`, following completed
@@ -497,6 +498,16 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 628 extends bounded native custom-property substitution to inherited
+text-decoration presentation properties: `text-decoration-style`,
+`text-decoration-skip-ink`, `text-decoration-skip-spaces`,
+`text-decoration-thickness`, and `text-underline-offset`. Standalone
+`var(--name)` values and concrete fallbacks now resolve through the existing
+inherited text-decoration state, preserving invalid and cyclic fallback
+handling, reset, declaration-order precedence, and `revert-layer` rollback.
+Full custom-property grammar, registered properties, and complete CSS and Web
+IDL parity remain explicit issue #40 gates.
 
 Slice 627 extends bounded native custom-property substitution to the
 `place-content` shorthand. Standalone `var(--name)` values and concrete

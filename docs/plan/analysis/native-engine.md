@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-593`, following
+expansion checkpoint is completed `native-engine-browser-594`, following
+completed `native-engine-browser-593`, following
 completed `native-engine-browser-592`, following
 completed `native-engine-browser-591`, following
 completed `native-engine-browser-590`, following
@@ -470,6 +471,14 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 594 extends bounded custom-property substitution to the inherited
+`direction`. Standalone `var(--name)` and keyword
+`var(--name, value)` fallbacks now resolve inherited aliases, CSS-wide mapped
+values, invalid values, and cyclic values before direction-dependent layout,
+while the existing supported values and computed-style projection remain
+unchanged. Nested variable grammar, registered properties, full CSS variable
+grammar, and complete CSS/Web IDL parity remain explicit issue #40 gates.
 
 Slice 593 extends bounded custom-property substitution to the inherited
 `text-justify`. Standalone `var(--name)` and keyword

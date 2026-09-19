@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-613`, following
+expansion checkpoint is completed `native-engine-browser-614`, following
+completed `native-engine-browser-613`, following
 completed `native-engine-browser-612`, following
 completed `native-engine-browser-611`, following
 completed `native-engine-browser-610`, following
@@ -490,6 +491,16 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 614 extends bounded custom-property substitution to physical
+`border-width` and `border-top-width`, `border-right-width`,
+`border-bottom-width`, and `border-left-width`. Standalone `var(--name)` and
+pixel or CSS-wide fallbacks, including one-to-four-value shorthand expansion,
+now resolve inherited aliases, CSS-wide reset mappings, invalid values, and
+cyclic values before border composition. Logical border-width and existing
+local cascade, `revert-layer`, and geometry behavior remain unchanged. Nested
+variable grammar, registered properties, full CSS variable grammar, and
+complete CSS and Web IDL parity remain explicit issue #40 gates.
 
 Slice 613 extends bounded custom-property substitution to physical `margin`
 shorthand and `margin-top`, `margin-right`, `margin-bottom`, and `margin-left`.

@@ -2026,6 +2026,8 @@ struct NativeGapValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GapShorthandDeclaration {
     Value(NativeGapValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeGapValue),
     Inherit,
     Initial,
     Unset,
@@ -2036,6 +2038,10 @@ enum GapShorthandDeclaration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GapComponentDeclaration {
     Value(u32),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, u32),
+    CustomPropertyShorthand(u64, u8),
+    CustomPropertyShorthandFallback(u64, u8, u32),
     Inherit,
     Initial,
     Unset,
@@ -4790,8 +4796,14 @@ impl NativeStylesheet {
                 (*gap).shorthand_column,
                 (*gap).column_gap,
                 inherited.column_gap,
+                custom_properties,
             ),
-            row_gap: resolve_gap_axis((*gap).shorthand_row, (*gap).row_gap, inherited.row_gap),
+            row_gap: resolve_gap_axis(
+                (*gap).shorthand_row,
+                (*gap).row_gap,
+                inherited.row_gap,
+                custom_properties,
+            ),
             width: resolve_dimension(*width, inherited.width, custom_properties),
             height: resolve_dimension(*height, inherited.height, custom_properties),
             min_width: resolve_dimension(*min_width, inherited.min_width, custom_properties),
@@ -10333,10 +10345,95 @@ fn select_gap_candidate(
     }
 }
 
+fn resolve_gap_component_declaration(
+    declaration: GapComponentDeclaration,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<u32> {
+    match declaration {
+        GapComponentDeclaration::Value(value) => Some(value),
+        GapComponentDeclaration::Inherit => Some(inherited),
+        GapComponentDeclaration::Initial
+        | GapComponentDeclaration::Unset
+        | GapComponentDeclaration::Revert => Some(0),
+        GapComponentDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_gap_component_declaration(value))
+                .and_then(|declaration| {
+                    resolve_gap_component_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        GapComponentDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_gap_component_declaration(value))
+                .and_then(|declaration| {
+                    resolve_gap_component_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        GapComponentDeclaration::CustomPropertyShorthand(name_hash, axis)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_gap_declaration(value))
+                .map(|declaration| project_gap_shorthand_declaration(declaration, axis))
+                .and_then(|declaration| {
+                    resolve_gap_component_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        GapComponentDeclaration::CustomPropertyShorthandFallback(name_hash, axis, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_gap_declaration(value))
+                .map(|declaration| project_gap_shorthand_declaration(declaration, axis))
+                .and_then(|declaration| {
+                    resolve_gap_component_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        GapComponentDeclaration::CustomProperty(_)
+        | GapComponentDeclaration::CustomPropertyFallback(_, _)
+        | GapComponentDeclaration::CustomPropertyShorthand(_, _)
+        | GapComponentDeclaration::CustomPropertyShorthandFallback(_, _, _)
+        | GapComponentDeclaration::RevertLayer => None,
+    }
+}
+
 fn resolve_gap_axis(
     shorthand: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
     longhand: [Option<GapCascadeValue<GapComponentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
     inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> u32 {
     let mut blocked = [false; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
     loop {
@@ -10354,14 +10451,12 @@ fn resolve_gap_axis(
         else {
             return 0;
         };
-        match candidate.value {
-            GapComponentDeclaration::Value(value) => return value,
-            GapComponentDeclaration::Inherit => return inherited,
-            GapComponentDeclaration::Initial
-            | GapComponentDeclaration::Unset
-            | GapComponentDeclaration::Revert => return 0,
-            GapComponentDeclaration::RevertLayer => blocked[layer] = true,
+        if let Some(value) =
+            resolve_gap_component_declaration(candidate.value, inherited, custom_properties, 0)
+        {
+            return value;
         }
+        blocked[layer] = true;
     }
 }
 
@@ -10374,32 +10469,8 @@ fn apply_gap_declarations(
 ) {
     if let Some(value) = declarations.gap {
         let layer = local_cascade_layer(specificity, declarations.gap_important);
-        let (row, column) = match value {
-            GapShorthandDeclaration::Value(value) => (
-                GapComponentDeclaration::Value(value.row),
-                GapComponentDeclaration::Value(value.column),
-            ),
-            GapShorthandDeclaration::Inherit => (
-                GapComponentDeclaration::Inherit,
-                GapComponentDeclaration::Inherit,
-            ),
-            GapShorthandDeclaration::Initial => (
-                GapComponentDeclaration::Initial,
-                GapComponentDeclaration::Initial,
-            ),
-            GapShorthandDeclaration::Unset => (
-                GapComponentDeclaration::Unset,
-                GapComponentDeclaration::Unset,
-            ),
-            GapShorthandDeclaration::Revert => (
-                GapComponentDeclaration::Revert,
-                GapComponentDeclaration::Revert,
-            ),
-            GapShorthandDeclaration::RevertLayer => (
-                GapComponentDeclaration::RevertLayer,
-                GapComponentDeclaration::RevertLayer,
-            ),
-        };
+        let row = project_gap_shorthand_declaration(value, 0);
+        let column = project_gap_shorthand_declaration(value, 1);
         set_gap_candidate(
             &mut cascade.shorthand_row[layer],
             row,
@@ -17907,6 +17978,65 @@ fn parse_gap(value: &str) -> Option<NativeGapValue> {
         .then_some(NativeGapValue { row, column })
 }
 
+fn parse_gap_var_arguments(value: &str) -> Option<(u64, Option<&str>)> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    Some((parse_custom_property_name(name)?, fallback))
+}
+
+fn parse_gap_custom_property(value: &str) -> Option<GapShorthandDeclaration> {
+    let (name_hash, fallback) = parse_gap_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_gap(fallback)
+            .map(|fallback| GapShorthandDeclaration::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(GapShorthandDeclaration::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_gap_component_custom_property(value: &str) -> Option<GapComponentDeclaration> {
+    let (name_hash, fallback) = parse_gap_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_dimension(fallback)
+            .map(|fallback| GapComponentDeclaration::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(GapComponentDeclaration::CustomProperty(name_hash)),
+    }
+}
+
+fn project_gap_shorthand_declaration(
+    declaration: GapShorthandDeclaration,
+    axis: u8,
+) -> GapComponentDeclaration {
+    match declaration {
+        GapShorthandDeclaration::Value(value) => {
+            GapComponentDeclaration::Value(if axis == 0 { value.row } else { value.column })
+        }
+        GapShorthandDeclaration::CustomProperty(name_hash) => {
+            GapComponentDeclaration::CustomPropertyShorthand(name_hash, axis)
+        }
+        GapShorthandDeclaration::CustomPropertyFallback(name_hash, fallback) => {
+            GapComponentDeclaration::CustomPropertyShorthandFallback(
+                name_hash,
+                axis,
+                if axis == 0 {
+                    fallback.row
+                } else {
+                    fallback.column
+                },
+            )
+        }
+        GapShorthandDeclaration::Inherit => GapComponentDeclaration::Inherit,
+        GapShorthandDeclaration::Initial => GapComponentDeclaration::Initial,
+        GapShorthandDeclaration::Unset => GapComponentDeclaration::Unset,
+        GapShorthandDeclaration::Revert => GapComponentDeclaration::Revert,
+        GapShorthandDeclaration::RevertLayer => GapComponentDeclaration::RevertLayer,
+    }
+}
+
 fn parse_gap_declaration(value: &str) -> Option<GapShorthandDeclaration> {
     match value.trim().to_ascii_lowercase().as_str() {
         "inherit" => Some(GapShorthandDeclaration::Inherit),
@@ -17914,7 +18044,9 @@ fn parse_gap_declaration(value: &str) -> Option<GapShorthandDeclaration> {
         "unset" => Some(GapShorthandDeclaration::Unset),
         "revert" => Some(GapShorthandDeclaration::Revert),
         "revert-layer" => Some(GapShorthandDeclaration::RevertLayer),
-        _ => parse_gap(value).map(GapShorthandDeclaration::Value),
+        _ => parse_gap(value)
+            .map(GapShorthandDeclaration::Value)
+            .or_else(|| parse_gap_custom_property(value)),
     }
 }
 
@@ -17925,7 +18057,9 @@ fn parse_gap_component_declaration(value: &str) -> Option<GapComponentDeclaratio
         "unset" => Some(GapComponentDeclaration::Unset),
         "revert" => Some(GapComponentDeclaration::Revert),
         "revert-layer" => Some(GapComponentDeclaration::RevertLayer),
-        _ => parse_dimension(value).map(GapComponentDeclaration::Value),
+        _ => parse_dimension(value)
+            .map(GapComponentDeclaration::Value)
+            .or_else(|| parse_gap_component_custom_property(value)),
     }
 }
 
@@ -27555,6 +27689,42 @@ mod tests {
         assert_eq!(parse_declarations("gap: 2em").gap, None);
         assert_eq!(parse_declarations("gap: 50%").gap, None);
         assert_eq!(parse_declarations("gap: 20000px").gap, None);
+    }
+    #[test]
+    fn gap_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let gap = parse_custom_property_name("--gap").unwrap();
+        let row = parse_custom_property_name("--row").unwrap();
+        assert_eq!(
+            parse_gap_declaration("var(--gap)"),
+            Some(GapShorthandDeclaration::CustomProperty(gap))
+        );
+        assert_eq!(
+            parse_gap_declaration("var(--gap, 8px 12px)"),
+            Some(GapShorthandDeclaration::CustomPropertyFallback(
+                gap,
+                NativeGapValue { row: 8, column: 12 }
+            ))
+        );
+        assert_eq!(
+            parse_gap_component_declaration("var(--row, 4px)"),
+            Some(GapComponentDeclaration::CustomPropertyFallback(row, 4))
+        );
+        let declarations =
+            parse_declarations("gap: var(--gap); row-gap: var(--row, 4px); column-gap: var(--gap)");
+        assert_eq!(
+            declarations.gap,
+            Some(GapShorthandDeclaration::CustomProperty(gap))
+        );
+        assert_eq!(
+            declarations.row_gap,
+            Some(GapComponentDeclaration::CustomPropertyFallback(row, 4))
+        );
+        assert_eq!(
+            declarations.column_gap,
+            Some(GapComponentDeclaration::CustomProperty(gap))
+        );
+        assert_eq!(parse_gap_declaration("var(--gap, var(--other))"), None);
+        assert_eq!(parse_gap_component_declaration("var(--row, 1px 2px)"), None);
     }
 
     #[test]
@@ -38681,6 +38851,47 @@ mod tests {
         assert_eq!(style("cycle"), 8);
         assert_eq!(style("wide-initial"), 0);
         assert_eq!(style("wide-inherit"), 16);
+    }
+    #[test]
+    fn gap_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --gap: 8px 12px; --alias: var(--gap); --cycle: var(--cycle); gap: var(--alias); }
+            #child { gap: var(--alias); }
+            #fallback { gap: var(--missing, 14px 16px); }
+            #invalid { --bad: unsupported; gap: var(--bad, 18px 20px); }
+            #cycle { gap: var(--cycle, 22px 24px); }
+            #reset { --reset: initial; gap: var(--reset, 26px 28px); }
+            #longhand { --row: 30px; row-gap: var(--row); column-gap: var(--missing, 32px); }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='longhand'>Longhand</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        assert_eq!(style("parent").row_gap(), 8);
+        assert_eq!(style("parent").column_gap(), 12);
+        assert_eq!(style("child").row_gap(), 8);
+        assert_eq!(style("child").column_gap(), 12);
+        assert_eq!(style("fallback").row_gap(), 14);
+        assert_eq!(style("fallback").column_gap(), 16);
+        assert_eq!(style("invalid").row_gap(), 18);
+        assert_eq!(style("invalid").column_gap(), 20);
+        assert_eq!(style("cycle").row_gap(), 22);
+        assert_eq!(style("cycle").column_gap(), 24);
+        assert_eq!(style("reset").row_gap(), 0);
+        assert_eq!(style("reset").column_gap(), 0);
+        assert_eq!(style("longhand").row_gap(), 30);
+        assert_eq!(style("longhand").column_gap(), 32);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use super::browsing_context::NATIVE_CONTEXT_ID;
 use super::error::NativeEngineError;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use url::Url;
 
@@ -26,8 +27,9 @@ pub const MAX_NATIVE_VIEWPORT_DIMENSION: u32 = 16_384;
 /// unbounded IPC or target-routing payload.
 pub(crate) const MAX_NATIVE_WINDOW_NAME_BYTES: usize = 256;
 
-/// Viewport inputs reserved for future layout and rendering phases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Bounded viewport inputs used by layout, rendering, and viewport-relative CSS
+/// resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Viewport {
     pub width: u32,
     pub height: u32,

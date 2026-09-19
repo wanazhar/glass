@@ -27,8 +27,9 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed `native-engine-browser-640`,
-following completed `native-engine-browser-639`, following completed
+the browser-complete expansion has completed `native-engine-browser-641`,
+following completed `native-engine-browser-640`, following completed
+`native-engine-browser-639`, following completed
 `native-engine-browser-638`, following completed
 `native-engine-browser-637`, following completed
 `native-engine-browser-636`, following completed
@@ -554,6 +555,15 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed bounded selector-combinator follow-up is
+[`native-engine-browser-641`](tasks/native-engine-browser-641.md): native
+selector chains now retain descendant, child (`>`), adjacent-sibling (`+`),
+and subsequent-sibling (`~`) relationships. Matching advances through the
+attached document tree for mixed combinator chains, with bounded parser limits
+and fail-closed malformed-combinator handling preserved. Full selector
+grammar, namespaces, functional selectors, pseudo-elements, complete CSS
+parity, and complete Web IDL parity remain issue #40 gates.
 
 The completed bounded pseudo-class selector follow-up is
 [`native-engine-browser-640`](tasks/native-engine-browser-640.md): native

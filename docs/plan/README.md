@@ -27,8 +27,9 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed `native-engine-browser-641`,
-following completed `native-engine-browser-640`, following completed
+the browser-complete expansion has completed `native-engine-browser-642`,
+following completed `native-engine-browser-641`, following completed
+`native-engine-browser-640`, following completed
 `native-engine-browser-639`, following completed
 `native-engine-browser-638`, following completed
 `native-engine-browser-637`, following completed
@@ -555,6 +556,17 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed bounded functional-selector follow-up is
+[`native-engine-browser-642`](tasks/native-engine-browser-642.md): native
+selectors now support bounded `:not(...)`, `:is(...)`, and `:where(...)`
+argument lists, nested functional matching, and CSS-specificity rules for
+negation, alternation, and zero-specificity `:where`. Stylesheet selector-list
+parsing preserves commas inside functional arguments, while unsupported
+functional forms and malformed syntax remain fail-closed. Full selector
+grammar, `:has()` relative selectors, nth arithmetic, namespaces,
+pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
+#40 gates.
 
 The completed bounded selector-combinator follow-up is
 [`native-engine-browser-641`](tasks/native-engine-browser-641.md): native

@@ -2947,11 +2947,17 @@ impl NativeStylesheet {
     fn custom_properties_for_node_with_matcher(
         &self,
         node: &NativeNode,
+        viewport: Viewport,
         matches: impl Fn(&NativeSelector) -> bool,
     ) -> BTreeMap<u64, String> {
         let mut candidates = BTreeMap::new();
         for rule in &self.rules {
-            if !matches(&rule.selector) {
+            if rule
+                .media
+                .as_deref()
+                .is_some_and(|media| !css_media_list_matches(media, viewport))
+                || !matches(&rule.selector)
+            {
                 continue;
             }
             apply_custom_property_declarations(
@@ -2983,6 +2989,7 @@ impl NativeStylesheet {
         &self,
         document: &NativeDocument,
         node_id: NativeNodeId,
+        viewport: Viewport,
     ) -> BTreeMap<u64, String> {
         let mut ancestry = Vec::new();
         let mut current = Some(node_id);
@@ -2995,23 +3002,35 @@ impl NativeStylesheet {
             let Some(node) = document.node(id) else {
                 continue;
             };
-            values.extend(
-                self.custom_properties_for_node_with_matcher(node, |selector| {
-                    selector.matches_in_document(document, id)
-                }),
-            );
+            values.extend(self.custom_properties_for_node_with_matcher(
+                node,
+                viewport,
+                |selector| selector.matches_in_document(document, id),
+            ));
         }
         values
     }
 
     #[cfg(test)]
     pub(crate) fn computed_for(&self, node: &NativeNode) -> NativeComputedStyle {
+        self.computed_for_with_viewport(node, Viewport::default())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn computed_for_with_viewport(
+        &self,
+        node: &NativeNode,
+        viewport: Viewport,
+    ) -> NativeComputedStyle {
         let custom_properties =
-            self.custom_properties_for_node_with_matcher(node, |selector| selector.matches(node));
+            self.custom_properties_for_node_with_matcher(node, viewport, |selector| {
+                selector.matches(node)
+            });
         self.computed_for_with_matcher_and_custom_properties(
             node,
             NativeInheritedStyle::default(),
             &custom_properties,
+            viewport,
             |selector| selector.matches(node),
         )
     }
@@ -3030,6 +3049,7 @@ impl NativeStylesheet {
                 text_decoration_color: inherited_color.unwrap_or(NativeColor::BLACK),
                 ..NativeInheritedStyle::default()
             },
+            Viewport::default(),
         )
     }
 
@@ -3038,18 +3058,21 @@ impl NativeStylesheet {
         document: &NativeDocument,
         node_id: NativeNodeId,
         inherited: NativeInheritedStyle,
+        viewport: Viewport,
     ) -> NativeComputedStyle {
         let Some(node) = document.node(node_id) else {
             return NativeComputedStyle::default();
         };
-        let custom_properties = self.custom_properties_for_document(document, node_id);
+        let custom_properties = self.custom_properties_for_document(document, node_id, viewport);
         self.computed_for_with_matcher_and_custom_properties(
             node,
             inherited,
             &custom_properties,
+            viewport,
             |selector| selector.matches_in_document(document, node_id),
         )
     }
+
     #[cfg(test)]
     // The cascade locals are mutable references into heap-owned scratch. The
     // explicit reborrows below keep each helper's mutable borrow short-lived
@@ -3066,6 +3089,7 @@ impl NativeStylesheet {
             node,
             inherited,
             &custom_properties,
+            Viewport::default(),
             matches,
         )
     }
@@ -3076,6 +3100,7 @@ impl NativeStylesheet {
         node: &NativeNode,
         inherited: NativeInheritedStyle,
         custom_properties: &BTreeMap<u64, String>,
+        viewport: Viewport,
         matches: impl Fn(&NativeSelector) -> bool,
     ) -> NativeComputedStyle {
         let mut scratch = NativeCascadeScratch::new_boxed();
@@ -3169,7 +3194,12 @@ impl NativeStylesheet {
         let mut overflow_x = &mut scratch.overflow_x;
         let mut overflow_y = &mut scratch.overflow_y;
         for rule in &self.rules {
-            if !matches(&rule.selector) {
+            if rule
+                .media
+                .as_deref()
+                .is_some_and(|media| !css_media_list_matches(media, viewport))
+                || !matches(&rule.selector)
+            {
                 continue;
             }
             apply_local_important_cascade_declaration(
@@ -13732,6 +13762,7 @@ struct NativeStyleRule {
     selector: NativeSelector,
     declarations: NativeDeclarations,
     custom_properties: Vec<NativeCustomPropertyDeclaration>,
+    media: Option<String>,
     order: usize,
 }
 
@@ -13860,7 +13891,7 @@ fn parse_source(
         font_face_rules,
         palette_values,
     };
-    parse_source_block(&mut context, 0, end, None)
+    parse_source_block(&mut context, 0, end, None, None)
 }
 
 struct NativeCssParseContext<'a> {
@@ -13880,6 +13911,7 @@ fn parse_source_block(
     start: usize,
     end: usize,
     current_layer: Option<usize>,
+    current_media: Option<&str>,
 ) -> Result<(), NativeEngineError> {
     let mut cursor = start;
     while cursor < end {
@@ -13941,6 +13973,17 @@ fn parse_source_block(
                     detail,
                 ),
             }
+        } else if let Some(media_header) = parse_media_header(header) {
+            if current_media.is_some() {
+                context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    cursor,
+                    "nested-media",
+                );
+            } else {
+                parse_source_block(context, open + 1, close, current_layer, Some(media_header))?;
+            }
         } else if let Some(layer_header) = parse_layer_header(header) {
             if current_layer.is_some() {
                 context.diagnostics.push(
@@ -13962,7 +14005,7 @@ fn parse_source_block(
                             cursor = close + 1;
                             continue;
                         };
-                        parse_source_block(context, open + 1, close, Some(layer))?;
+                        parse_source_block(context, open + 1, close, Some(layer), current_media)?;
                     }
                     Err(detail) => context.diagnostics.push(
                         NativeDiagnosticCode::UnsupportedCssValue,
@@ -13973,11 +14016,24 @@ fn parse_source_block(
                 }
             }
         } else {
-            parse_style_rule(context, cursor, open, close, current_layer)?;
+            parse_style_rule(context, cursor, open, close, current_layer, current_media)?;
         }
         cursor = close + 1;
     }
     Ok(())
+}
+
+fn parse_media_header(source: &str) -> Option<&str> {
+    let source = source.trim();
+    const KEYWORD: &str = "@media";
+    if source.len() <= KEYWORD.len()
+        || !source.as_bytes()[..KEYWORD.len()].eq_ignore_ascii_case(KEYWORD.as_bytes())
+        || !source.as_bytes()[KEYWORD.len()].is_ascii_whitespace()
+    {
+        return None;
+    }
+    let condition = source[KEYWORD.len()..].trim();
+    (!condition.is_empty()).then_some(condition)
 }
 
 fn is_font_face_header(source: &str) -> bool {
@@ -14366,6 +14422,7 @@ fn parse_style_rule(
     open: usize,
     close: usize,
     layer: Option<usize>,
+    media: Option<&str>,
 ) -> Result<(), NativeEngineError> {
     let source = context.source;
     let declarations = parse_declarations_with_diagnostics(
@@ -14499,6 +14556,7 @@ fn parse_style_rule(
                 selector,
                 declarations,
                 custom_properties: custom_properties.clone(),
+                media: media.map(str::to_owned),
                 order: *context.next_order,
             });
             *context.next_order = context.next_order.saturating_add(1);
@@ -14507,7 +14565,6 @@ fn parse_style_rule(
     }
     Ok(())
 }
-
 fn find_matching_brace(source: &str, open: usize, end: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (offset, byte) in source[open..end].bytes().enumerate() {
@@ -24439,6 +24496,76 @@ mod tests {
         let anonymous =
             static_css_imports("@import 'a.css' layer; @import 'b.css' layer;").unwrap();
         assert_ne!(anonymous[0].layer, anonymous[1].layer);
+    }
+
+    #[test]
+    fn inline_media_rules_match_bounded_viewport_features() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#target { color: white; } @media screen and (min-width: 1000px) { #target { color: red; } } @media screen and (max-width: 600px) { #target { color: black; } } @media print { #target { color: red; } }"
+                .into(),
+        ])
+        .expect("media stylesheet");
+        let element = node("<div id='target'>Target</div>");
+
+        assert_eq!(
+            stylesheet
+                .computed_for_with_viewport(&element, Viewport::default())
+                .color(),
+            Some(NativeColor::RED)
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for_with_viewport(
+                    &element,
+                    Viewport {
+                        width: 800,
+                        ..Viewport::default()
+                    }
+                )
+                .color(),
+            Some(NativeColor::WHITE)
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for_with_viewport(
+                    &element,
+                    Viewport {
+                        width: 500,
+                        ..Viewport::default()
+                    }
+                )
+                .color(),
+            Some(NativeColor::BLACK)
+        );
+    }
+
+    #[test]
+    fn inline_media_rules_filter_custom_properties_by_viewport() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#target { color: var(--accent, white); } @media screen and (min-width: 1000px) { #target { --accent: red; } }"
+                .into(),
+        ])
+        .expect("media custom-property stylesheet");
+        let element = node("<div id='target'>Target</div>");
+
+        assert_eq!(
+            stylesheet
+                .computed_for_with_viewport(&element, Viewport::default())
+                .color(),
+            Some(NativeColor::RED)
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for_with_viewport(
+                    &element,
+                    Viewport {
+                        width: 800,
+                        ..Viewport::default()
+                    }
+                )
+                .color(),
+            Some(NativeColor::WHITE)
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-583`, following
+expansion checkpoint is completed `native-engine-browser-584`, following
+completed `native-engine-browser-583`,
 completed `native-engine-browser-582`, following
 completed `native-engine-browser-581`, following
 completed `native-engine-browser-580`, following
@@ -460,6 +461,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 584 extends bounded native custom-property substitution to inherited
+`font-variant-caps`. Standalone `var(--name)` and keyword
+`var(--name, value)` fallbacks now resolve inherited aliases, CSS-wide mapped
+values, invalid values, and cyclic values before normal capitalization
+computation, while the existing supported caps values and computed-style
+projection remain unchanged. Complete shorthand substitution, nested variable
+grammar, registered properties, full CSS variable grammar, and complete CSS
+Web IDL parity remain explicit issue #40 gates.
 
 Slice 583 extends bounded native custom-property substitution to inherited
 `font-variant-ligatures`. Standalone `var(--name)` and keyword-list

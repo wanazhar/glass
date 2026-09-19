@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-619`, following
+expansion checkpoint is completed `native-engine-browser-620`, following
+completed `native-engine-browser-619`, following
 completed `native-engine-browser-618`, following
 completed `native-engine-browser-617`, following
 completed `native-engine-browser-616`, following
@@ -496,6 +497,16 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 620 extends bounded custom-property substitution to `gap`, `row-gap`,
+and `column-gap`. Standalone `var(--name)` values, one- or two-value shorthand
+fallbacks, and single-component fallbacks now resolve inherited custom-property
+aliases, invalid and cyclic fallback handling, CSS-wide reset mappings,
+independent row/column projection, local cascade, and `revert-layer` without
+changing the existing bounded non-negative pixel grammar. Percentage,
+relative-unit, calculation, nested-variable, registered-property, full CSS
+variable grammar, and complete CSS and Web IDL parity remain explicit issue
+#40 gates.
 
 Slice 619 extends bounded custom-property substitution to complete
 `border` and the four physical side-border shorthands. Standalone

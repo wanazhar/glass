@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-620`, following completed
 `native-engine-browser-619`, following completed
 `native-engine-browser-618`, following completed
 `native-engine-browser-617`, following completed
@@ -522,6 +523,17 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed gap substitution follow-up is
+[`native-engine-browser-620`](tasks/native-engine-browser-620.md): native
+`gap`, `row-gap`, and `column-gap` now accept bounded standalone
+`var(--name)` values, with one- or two-value shorthand fallbacks and
+single-component fallbacks. Resolution covers inherited custom-property
+aliases, invalid and cyclic fallback handling, CSS-wide reset mappings,
+independent row/column projection, local cascade, and `revert-layer` without
+changing the existing bounded non-negative pixel grammar. Percentage,
+relative-unit, calculation, nested-variable, registered-property, full CSS
+variable grammar, and complete CSS and Web IDL parity remain issue #40 gates.
 
 The completed complete-border substitution follow-up is
 [`native-engine-browser-619`](tasks/native-engine-browser-619.md): native

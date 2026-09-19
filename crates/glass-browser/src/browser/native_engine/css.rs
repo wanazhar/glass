@@ -1066,6 +1066,12 @@ pub(crate) enum NativeFontVariantPosition {
     Sub,
     Super,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontVariantPositionDeclarationValue {
+    Value(NativeFontVariantPosition),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontVariantPosition),
+}
 
 /// The bounded OpenType alternate control exposed by
 /// `font-variant-alternates`.
@@ -4538,10 +4544,10 @@ impl NativeStylesheet {
                 inherited.font_variant_caps,
                 custom_properties,
             ),
-            font_variant_position: resolve_inherited_text_declaration(
+            font_variant_position: resolve_font_variant_position(
                 *font_variant_position,
                 inherited.font_variant_position,
-                NativeFontVariantPosition::Normal,
+                custom_properties,
             ),
             font_variant_alternates: resolve_inherited_text_declaration(
                 *font_variant_alternates,
@@ -4778,10 +4784,10 @@ struct NativeCascadeScratch {
         NativeTextDeclarationCandidates<NativeTextDecorationThicknessDeclaration>,
     text_underline_offset: NativeTextDeclarationCandidates<NativeTextUnderlineOffsetDeclaration>,
     text_decoration_color: NativePaintDeclarationCandidates<NativeTextDecorationColorDeclaration>,
+    font_variant_position: NativeTextCascadeCandidates<FontVariantPositionDeclarationValue>,
     text_transform: NativeTextCascadeCandidates<TextTransformValue>,
     font_variant_ligatures: NativeTextCascadeCandidates<FontVariantLigaturesDeclarationValue>,
     font_variant_caps: NativeTextCascadeCandidates<FontVariantCapsDeclarationValue>,
-    font_variant_position: NativeTextCascadeCandidates<NativeFontVariantPosition>,
     font_variant_alternates: NativeTextCascadeCandidates<NativeFontVariantAlternates>,
     font_language_override: NativeTextCascadeCandidates<FontLanguageOverrideDeclarationValue>,
     font_variation_settings: NativeTextCascadeCandidates<FontVariationSettingsDeclarationValue>,
@@ -5503,6 +5509,98 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_variant_position_declaration(
+    declaration: InheritedTextDeclaration<FontVariantPositionDeclarationValue>,
+    inherited: NativeFontVariantPosition,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariantPositionDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_variant_position_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => {
+            Some(FontVariantPositionDeclarationValue::Value(inherited))
+        }
+        InheritedTextDeclaration::Initial => Some(FontVariantPositionDeclarationValue::Value(
+            NativeFontVariantPosition::Normal,
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_variant_position_value(
+    value: FontVariantPositionDeclarationValue,
+    inherited: NativeFontVariantPosition,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariantPositionDeclarationValue> {
+    match value {
+        FontVariantPositionDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variant_position_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variant_position_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontVariantPositionDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variant_position_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variant_position_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontVariantPositionDeclarationValue::Value(fallback)))
+        }
+        FontVariantPositionDeclarationValue::CustomProperty(_)
+        | FontVariantPositionDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontVariantPositionDeclarationValue::Value(value) => {
+            Some(FontVariantPositionDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_font_variant_position(
+    candidates: NativeTextCascadeCandidates<FontVariantPositionDeclarationValue>,
+    inherited: NativeFontVariantPosition,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontVariantPosition {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontVariantPositionDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_variant_position_declaration(
+                declaration,
+                inherited,
+                custom_properties,
+                0,
+            )
+        },
+    );
+    match resolved {
+        FontVariantPositionDeclarationValue::Value(value) => value,
+        FontVariantPositionDeclarationValue::CustomProperty(_)
+        | FontVariantPositionDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_variant_caps_declaration(
@@ -8703,7 +8801,7 @@ struct NativeDeclarations {
     text_transform: Option<InheritedTextDeclaration<TextTransformValue>>,
     font_variant_ligatures: Option<InheritedTextDeclaration<FontVariantLigaturesDeclarationValue>>,
     font_variant_caps: Option<InheritedTextDeclaration<FontVariantCapsDeclarationValue>>,
-    font_variant_position: Option<InheritedTextDeclaration<NativeFontVariantPosition>>,
+    font_variant_position: Option<InheritedTextDeclaration<FontVariantPositionDeclarationValue>>,
     font_variant_alternates: Option<InheritedTextDeclaration<NativeFontVariantAlternates>>,
     font_language_override: Option<InheritedTextDeclaration<FontLanguageOverrideDeclarationValue>>,
     font_variation_settings:
@@ -10598,7 +10696,8 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                         Some(wrap_font_variant_ligatures_declaration(parsed.ligatures));
                     declarations.font_variant_caps =
                         Some(wrap_font_variant_caps_declaration(parsed.caps));
-                    declarations.font_variant_position = Some(parsed.position);
+                    declarations.font_variant_position =
+                        Some(wrap_font_variant_position_declaration(parsed.position));
                     declarations.font_variant_alternates = Some(parsed.alternates);
                     declarations.font_variant_east_asian = Some(parsed.east_asian);
                     declarations.font_variant_numeric = Some(parsed.numeric);
@@ -16092,10 +16191,54 @@ fn parse_font_variant_position(value: &str) -> Option<NativeFontVariantPosition>
     }
 }
 
+fn parse_font_variant_position_custom_property(
+    value: &str,
+) -> Option<FontVariantPositionDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_variant_position(fallback).map(|fallback| {
+            FontVariantPositionDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(FontVariantPositionDeclarationValue::CustomProperty(
+            name_hash,
+        )),
+    }
+}
+
+fn parse_font_variant_position_property(
+    value: &str,
+) -> Option<FontVariantPositionDeclarationValue> {
+    parse_font_variant_position(value)
+        .map(FontVariantPositionDeclarationValue::Value)
+        .or_else(|| parse_font_variant_position_custom_property(value))
+}
+
 fn parse_font_variant_position_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontVariantPosition>> {
-    parse_inherited_text_declaration(value, parse_font_variant_position)
+) -> Option<InheritedTextDeclaration<FontVariantPositionDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_variant_position_property)
+}
+
+fn wrap_font_variant_position_declaration(
+    declaration: InheritedTextDeclaration<NativeFontVariantPosition>,
+) -> InheritedTextDeclaration<FontVariantPositionDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            InheritedTextDeclaration::Value(FontVariantPositionDeclarationValue::Value(value))
+        }
+        InheritedTextDeclaration::Inherit => InheritedTextDeclaration::Inherit,
+        InheritedTextDeclaration::Initial => InheritedTextDeclaration::Initial,
+        InheritedTextDeclaration::Unset => InheritedTextDeclaration::Unset,
+        InheritedTextDeclaration::Revert => InheritedTextDeclaration::Revert,
+        InheritedTextDeclaration::RevertLayer => InheritedTextDeclaration::RevertLayer,
+    }
 }
 
 fn parse_font_variant_alternates(value: &str) -> Option<NativeFontVariantAlternates> {
@@ -27343,6 +27486,27 @@ mod tests {
         assert!(parse_font_variant_position("inherit").is_none());
         assert!(parse_font_variant_position("sub super").is_none());
         assert!(parse_font_variant_position("none").is_none());
+        let position_name = parse_custom_property_name("--position").unwrap();
+        let fallback = NativeFontVariantPosition::Super;
+        assert_eq!(
+            parse_font_variant_position_property("var(--position)"),
+            Some(FontVariantPositionDeclarationValue::CustomProperty(
+                position_name
+            ))
+        );
+        assert_eq!(
+            parse_font_variant_position_declaration("var(--position, super)"),
+            Some(InheritedTextDeclaration::Value(
+                FontVariantPositionDeclarationValue::CustomPropertyFallback(
+                    position_name,
+                    fallback
+                )
+            ))
+        );
+        assert_eq!(
+            parse_font_variant_position_property("var(--position, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -29617,6 +29781,44 @@ mod tests {
         assert_eq!(style("cycle"), NativeFontVariantCaps::Normal);
         assert_eq!(style("wide-initial"), NativeFontVariantCaps::Normal);
         assert_eq!(style("wide-inherit"), NativeFontVariantCaps::AllSmallCaps);
+    }
+
+    #[test]
+    fn inherited_font_variant_position_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --position: super; --alias: var(--position); --cycle: var(--cycle); font-variant-position: var(--position); }
+            #child { font-variant-position: var(--alias); }
+            #fallback { font-variant-position: var(--missing, sub); }
+            #invalid { --bad: sub super; font-variant-position: var(--bad, normal); }
+            #cycle { font-variant-position: var(--cycle, normal); }
+            #wide-initial { --wide: initial; font-variant-position: var(--wide); }
+            #wide-inherit { --wide: inherit; font-variant-position: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_variant_position()
+        };
+
+        assert_eq!(style("parent"), NativeFontVariantPosition::Super);
+        assert_eq!(style("child"), NativeFontVariantPosition::Super);
+        assert_eq!(style("fallback"), NativeFontVariantPosition::Sub);
+        assert_eq!(style("invalid"), NativeFontVariantPosition::Normal);
+        assert_eq!(style("cycle"), NativeFontVariantPosition::Normal);
+        assert_eq!(style("wide-initial"), NativeFontVariantPosition::Normal);
+        assert_eq!(style("wide-inherit"), NativeFontVariantPosition::Super);
     }
 
     #[test]

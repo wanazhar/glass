@@ -28,6 +28,7 @@ const MAX_NATIVE_CUSTOM_PROPERTIES_PER_RULE: usize = 16;
 const MAX_NATIVE_CUSTOM_PROPERTY_NAME_BYTES: usize = 64;
 const MAX_NATIVE_CUSTOM_PROPERTY_VALUE_BYTES: usize = 512;
 const MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH: usize = 8;
+const MAX_NATIVE_FONT_SIZE_VARIABLE_EXPRESSION_BYTES: usize = 256;
 const MAX_NATIVE_FONT_FACE_SOURCE_BYTES: usize = 512 * 1024;
 const MAX_NATIVE_FONT_FACE_SOURCES: usize = 8;
 pub(crate) const MAX_NATIVE_FONT_FACE_UNICODE_RANGES: usize = 32;
@@ -1701,12 +1702,41 @@ enum NativeFontSizeFallbackValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeFontSizeVariableExpression {
+    bytes: [u8; MAX_NATIVE_FONT_SIZE_VARIABLE_EXPRESSION_BYTES],
+    len: u16,
+}
+
+impl NativeFontSizeVariableExpression {
+    fn from_text(value: &str) -> Option<Self> {
+        if value.is_empty()
+            || value.len() > MAX_NATIVE_FONT_SIZE_VARIABLE_EXPRESSION_BYTES
+            || !value.is_ascii()
+        {
+            return None;
+        }
+        let mut bytes = [0_u8; MAX_NATIVE_FONT_SIZE_VARIABLE_EXPRESSION_BYTES];
+        bytes[..value.len()].copy_from_slice(value.as_bytes());
+        Some(Self {
+            bytes,
+            len: u16::try_from(value.len()).ok()?,
+        })
+    }
+
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)])
+            .expect("font-size variable expression is ASCII")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeFontSizeDeclarationValue {
     Pixels(u32),
     Relative(u32),
     RootRelative(u32),
     Viewport(u32, NativeViewportFontSizeUnit),
     Calculation(NativeFontSizeCalculation),
+    VariableCalculation(NativeFontSizeVariableExpression),
     CustomProperty(u64),
     CustomPropertyFallback(u64, NativeFontSizeFallbackValue),
 }
@@ -5154,6 +5184,85 @@ fn resolve_font_size_calculation(
         .then_some(value)
 }
 
+fn expand_font_size_variables(
+    source: &str,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<String> {
+    if !source.is_ascii() || source.len() > MAX_NATIVE_CUSTOM_PROPERTY_VALUE_BYTES {
+        return None;
+    }
+    let bytes = source.as_bytes();
+    let mut expanded = String::with_capacity(source.len());
+    let mut cursor = 0_usize;
+    while cursor < bytes.len() {
+        let mut start = None;
+        for index in cursor..bytes.len().saturating_sub(3) {
+            if bytes
+                .get(index..index.saturating_add(4))
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(b"var("))
+            {
+                start = Some(index);
+                break;
+            }
+        }
+        let Some(start) = start else {
+            let literal = source.get(cursor..)?;
+            if expanded.len().saturating_add(literal.len()) > MAX_NATIVE_CUSTOM_PROPERTY_VALUE_BYTES
+            {
+                return None;
+            }
+            expanded.push_str(literal);
+            break;
+        };
+        let literal = source.get(cursor..start)?;
+        if expanded.len().saturating_add(literal.len()) > MAX_NATIVE_CUSTOM_PROPERTY_VALUE_BYTES {
+            return None;
+        }
+        expanded.push_str(literal);
+        if depth >= MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH {
+            return None;
+        }
+        let mut nesting = 1_usize;
+        let mut close = None;
+        for index in start.saturating_add(4)..bytes.len() {
+            match bytes[index] {
+                b'(' => nesting = nesting.checked_add(1)?,
+                b')' => {
+                    nesting = nesting.checked_sub(1)?;
+                    if nesting == 0 {
+                        close = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close?;
+        let arguments = source.get(start.saturating_add(4)..close)?;
+        let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+        let name_hash = parse_custom_property_name(name)?;
+        let mapped = custom_properties.get(&name_hash).map(String::as_str);
+        let mut candidate = mapped
+            .and_then(|replacement| {
+                expand_font_size_variables(replacement, custom_properties, depth.saturating_add(1))
+            })
+            .filter(|candidate| parse_font_size_value(candidate).is_some());
+        if candidate.is_none() {
+            candidate = fallback.and_then(|replacement| {
+                expand_font_size_variables(replacement, custom_properties, depth.saturating_add(1))
+            });
+        }
+        let candidate = candidate?;
+        if expanded.len().saturating_add(candidate.len()) > MAX_NATIVE_CUSTOM_PROPERTY_VALUE_BYTES {
+            return None;
+        }
+        expanded.push_str(&candidate);
+        cursor = close.saturating_add(1);
+    }
+    Some(expanded)
+}
+
 fn resolve_font_size_fallback(
     fallback: NativeFontSizeFallbackValue,
     inherited: u32,
@@ -5210,6 +5319,14 @@ fn resolve_font_size_declaration(
         InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::Calculation(
             calculation,
         )) => resolve_font_size_calculation(calculation, inherited, root_font_size, viewport),
+        InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::VariableCalculation(
+            expression,
+        )) if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH => {
+            let expanded =
+                expand_font_size_variables(expression.as_str(), custom_properties, depth)?;
+            let calculation = parse_font_size_calculation(&expanded)?;
+            resolve_font_size_calculation(calculation, inherited, root_font_size, viewport)
+        }
         InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::CustomProperty(
             name_hash,
         )) if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH => custom_properties
@@ -5249,7 +5366,10 @@ fn resolve_font_size_declaration(
         | InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::CustomProperty(_))
         | InheritedTextDeclaration::Value(
             NativeFontSizeDeclarationValue::CustomPropertyFallback(_, _),
-        ) => None,
+        )
+        | InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::VariableCalculation(_)) => {
+            None
+        }
     }
 }
 
@@ -14255,9 +14375,45 @@ fn parse_font_size_calculation(value: &str) -> Option<NativeFontSizeCalculation>
     Some(total)
 }
 
+fn parse_font_size_variable_expression(value: &str) -> Option<NativeFontSizeVariableExpression> {
+    let value = value.trim();
+    if value.len() < 9
+        || !value
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("calc("))
+        || !value.ends_with(')')
+        || !value.is_ascii()
+    {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    let mut depth = 0_usize;
+    let mut has_variable = false;
+    for index in 0..bytes.len() {
+        if bytes
+            .get(index..index.saturating_add(4))
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(b"var("))
+        {
+            has_variable = true;
+        }
+        match bytes[index] {
+            b'(' => depth = depth.checked_add(1)?,
+            b')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 && index.saturating_add(1) != bytes.len() {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    (depth == 0 && has_variable).then(|| NativeFontSizeVariableExpression::from_text(value))?
+}
+
 fn parse_font_size_value_without_custom(value: &str) -> Option<NativeFontSizeDeclarationValue> {
-    parse_font_size(value)
-        .map(NativeFontSizeDeclarationValue::Pixels)
+    parse_font_size_variable_expression(value)
+        .map(NativeFontSizeDeclarationValue::VariableCalculation)
+        .or_else(|| parse_font_size(value).map(NativeFontSizeDeclarationValue::Pixels))
         .or_else(|| parse_relative_font_size(value))
         .or_else(|| {
             parse_font_size_calculation(value).map(NativeFontSizeDeclarationValue::Calculation)
@@ -25397,6 +25553,44 @@ mod tests {
     }
 
     #[test]
+    fn font_size_parser_accepts_composite_custom_property_calculations() {
+        let Some(NativeFontSizeDeclarationValue::VariableCalculation(expression)) =
+            parse_font_size_value("calc(var(--size) + 2px)")
+        else {
+            panic!("expected a bounded variable calculation");
+        };
+        assert_eq!(expression.as_str(), "calc(var(--size) + 2px)");
+        assert!(matches!(
+            parse_font_size_value("CALC(VAR(--size, 18px) + 2px)"),
+            Some(NativeFontSizeDeclarationValue::VariableCalculation(_))
+        ));
+        assert_eq!(
+            parse_font_size_value("calc(var(--size) + 2px) trailing"),
+            None
+        );
+        assert_eq!(
+            parse_font_size_value("calc(var(--size) + 2px\u{00a0})"),
+            None
+        );
+    }
+
+    #[test]
+    fn font_size_variable_resolution_remains_bounded_and_fail_closed() {
+        let oversized = format!(
+            "calc(var(--size) + {}px)",
+            "1".repeat(MAX_NATIVE_FONT_SIZE_VARIABLE_EXPRESSION_BYTES)
+        );
+        assert_eq!(parse_font_size_value(&oversized), None);
+
+        let mut custom_properties = BTreeMap::new();
+        custom_properties.insert(custom_property_hash("--cycle"), "var(--cycle)".into());
+        assert_eq!(
+            expand_font_size_variables("calc(var(--cycle) + 2px)", &custom_properties, 0),
+            None
+        );
+    }
+
+    #[test]
     fn font_size_parser_accepts_bounded_relative_units() {
         assert_eq!(
             parse_font_size_value("1.5em"),
@@ -27565,7 +27759,7 @@ mod tests {
     #[test]
     fn inherited_font_size_custom_properties_resolve_with_inline_override() {
         let document = NativeDocument::parse(
-            "<style>#parent { --size: 1.5em; --bad: nonsense; font-size: 24px; } #child { font-size: var(--size); } #invalid { font-size: var(--missing); } #fallback { font-size: var(--missing, 18px); } #invalid-fallback { font-size: var(--bad, 20px); } #calc-fallback { font-size: var(--missing, calc(1em + 2px)); }</style><div id='parent'><span id='child'>Child</span><span id='invalid'>Invalid</span><span id='fallback'>Fallback</span><span id='invalid-fallback'>Invalid fallback</span><span id='calc-fallback'>Calc fallback</span><span id='inline' style='--size: 2em; font-size: var(--size)'>Inline</span></div>",
+            "<style>#parent { --size: 1.5em; --nested: var(--size); --broken: var(--missing); --bad: nonsense; font-size: 24px; } #child { font-size: var(--size); } #invalid { font-size: var(--missing); } #fallback { font-size: var(--missing, 18px); } #invalid-fallback { font-size: var(--bad, 20px); } #calc-fallback { font-size: var(--missing, calc(1em + 2px)); } #composite { font-size: calc(var(--size) + 2px); } #composite-fallback { font-size: calc(var(--missing, 18px) + 2px); } #composite-invalid { font-size: calc(var(--bad, 20px) + 2px); } #composite-nested { font-size: calc(var(--nested) + 2px); } #composite-unresolved-fallback { font-size: calc(var(--broken, 20px) + 2px); }</style><div id='parent'><span id='child'>Child</span><span id='invalid'>Invalid</span><span id='fallback'>Fallback</span><span id='invalid-fallback'>Invalid fallback</span><span id='calc-fallback'>Calc fallback</span><span id='composite'>Composite</span><span id='composite-fallback'>Composite fallback</span><span id='composite-invalid'>Composite invalid</span><span id='composite-nested'>Composite nested</span><span id='composite-unresolved-fallback'>Composite unresolved fallback</span><span id='inline' style='--size: 2em; font-size: var(--size)'>Inline</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -27575,6 +27769,13 @@ mod tests {
         let fallback = document.resolve_target("id=fallback").unwrap();
         let invalid_fallback = document.resolve_target("id=invalid-fallback").unwrap();
         let calc_fallback = document.resolve_target("id=calc-fallback").unwrap();
+        let composite = document.resolve_target("id=composite").unwrap();
+        let composite_fallback = document.resolve_target("id=composite-fallback").unwrap();
+        let composite_invalid = document.resolve_target("id=composite-invalid").unwrap();
+        let composite_nested = document.resolve_target("id=composite-nested").unwrap();
+        let composite_unresolved_fallback = document
+            .resolve_target("id=composite-unresolved-fallback")
+            .unwrap();
         let inline = document.resolve_target("id=inline").unwrap();
 
         assert_eq!(document.computed_style_for_layout(parent).font_size(), 24);
@@ -27592,6 +27793,34 @@ mod tests {
                 .computed_style_for_layout(calc_fallback)
                 .font_size(),
             26
+        );
+        assert_eq!(
+            document.computed_style_for_layout(composite).font_size(),
+            38
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(composite_fallback)
+                .font_size(),
+            20
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(composite_invalid)
+                .font_size(),
+            22
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(composite_nested)
+                .font_size(),
+            38
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(composite_unresolved_fallback)
+                .font_size(),
+            22
         );
         assert_eq!(document.computed_style_for_layout(inline).font_size(), 48);
     }

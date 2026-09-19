@@ -27,8 +27,9 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed `native-engine-browser-643`,
-following completed `native-engine-browser-642`, following completed
+the browser-complete expansion has completed `native-engine-browser-644`,
+following completed `native-engine-browser-643`, following completed
+`native-engine-browser-642`, following completed
 `native-engine-browser-641`, following completed
 `native-engine-browser-640`, following completed
 `native-engine-browser-639`, following completed
@@ -557,6 +558,16 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed bounded nth-selector follow-up is
+[`native-engine-browser-644`](tasks/native-engine-browser-644.md): native
+selectors now support bounded `:nth-child()`, `:nth-last-child()`,
+`:nth-of-type()`, and `:nth-last-of-type()` formulas, including integer,
+`odd`/`even`, and `an+b` forms. Document-aware sibling positions feed CSS
+action locators and stylesheet cascade; malformed formulas and unsupported
+`of` clauses remain fail-closed. Full selector grammar, namespaces,
+pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
+#40 gates.
 
 The completed bounded relative-selector follow-up is
 [`native-engine-browser-643`](tasks/native-engine-browser-643.md): native

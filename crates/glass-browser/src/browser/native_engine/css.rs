@@ -733,6 +733,14 @@ enum WhiteSpaceDeclarationValue {
     CustomPropertyFallback(u64, WhiteSpaceValue),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineHeightDeclarationValue {
+    Value(u32),
+    Initial,
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, u32),
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum TextAlignValue {
     #[default]
@@ -4744,7 +4752,11 @@ impl NativeStylesheet {
                 *max_height,
                 inherited.max_height,
             ),
-            line_height: resolve_line_height(*line_height, inherited.line_height),
+            line_height: resolve_line_height(
+                *line_height,
+                inherited.line_height,
+                custom_properties,
+            ),
             background_color: resolved_background_color,
             background_image: resolved_background_image,
             background_repeat: resolved_background_repeat,
@@ -4896,7 +4908,7 @@ struct NativeCascadeScratch {
     max_width: NativeLocalCascadeCandidates<u32>,
     min_height: NativeLocalCascadeCandidates<u32>,
     max_height: NativeLocalCascadeCandidates<u32>,
-    line_height: NativeTextCascadeCandidates<u32>,
+    line_height: NativeTextCascadeCandidates<LineHeightDeclarationValue>,
     background_color: NativePaintCascadeCandidates<NativeBackgroundColorValue>,
     background_image: NativePaintCascadeCandidates<NativeBackgroundImageValue>,
     background_repeat: NativePaintCascadeCandidates<NativeBackgroundRepeat>,
@@ -5151,19 +5163,89 @@ fn resolve_white_space(
     }
 }
 
-fn resolve_line_height(
-    candidates: [Option<CascadeValue<InheritedTextDeclaration<u32>>>;
-        MAX_NATIVE_TEXT_CASCADE_LAYERS],
+fn resolve_line_height_declaration(
+    declaration: InheritedTextDeclaration<LineHeightDeclarationValue>,
     inherited: Option<u32>,
-) -> Option<u32> {
-    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
-        InheritedTextDeclaration::Value(value) => Some(Some(value)),
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<LineHeightDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_line_height_value(value, inherited, custom_properties, depth)
+        }
         InheritedTextDeclaration::Inherit
         | InheritedTextDeclaration::Unset
-        | InheritedTextDeclaration::Revert => Some(inherited),
-        InheritedTextDeclaration::Initial => Some(None),
+        | InheritedTextDeclaration::Revert => Some(match inherited {
+            Some(value) => LineHeightDeclarationValue::Value(value),
+            None => LineHeightDeclarationValue::Initial,
+        }),
+        InheritedTextDeclaration::Initial => Some(LineHeightDeclarationValue::Initial),
         InheritedTextDeclaration::RevertLayer => None,
-    })
+    }
+}
+
+fn resolve_line_height_value(
+    value: LineHeightDeclarationValue,
+    inherited: Option<u32>,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<LineHeightDeclarationValue> {
+    match value {
+        LineHeightDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_line_height_declaration(value))
+                .and_then(|declaration| {
+                    resolve_line_height_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        LineHeightDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_line_height_declaration(value))
+                .and_then(|declaration| {
+                    resolve_line_height_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(LineHeightDeclarationValue::Value(fallback)))
+        }
+        LineHeightDeclarationValue::CustomProperty(_)
+        | LineHeightDeclarationValue::CustomPropertyFallback(_, _) => None,
+        value => Some(value),
+    }
+}
+
+fn resolve_line_height(
+    candidates: NativeTextCascadeCandidates<LineHeightDeclarationValue>,
+    inherited: Option<u32>,
+    custom_properties: &BTreeMap<u64, String>,
+) -> Option<u32> {
+    let fallback = match inherited {
+        Some(value) => LineHeightDeclarationValue::Value(value),
+        None => LineHeightDeclarationValue::Initial,
+    };
+    let resolved = resolve_alignment_candidates(candidates, fallback, |declaration| {
+        resolve_line_height_declaration(declaration, inherited, custom_properties, 0)
+    });
+    match resolved {
+        LineHeightDeclarationValue::Value(value) => Some(value),
+        LineHeightDeclarationValue::Initial => None,
+        LineHeightDeclarationValue::CustomProperty(_)
+        | LineHeightDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_direction_declaration(
@@ -9654,7 +9736,7 @@ struct NativeDeclarations {
     max_width: Option<LocalCascadeDeclaration<u32>>,
     min_height: Option<LocalCascadeDeclaration<u32>>,
     max_height: Option<LocalCascadeDeclaration<u32>>,
-    line_height: Option<InheritedTextDeclaration<u32>>,
+    line_height: Option<InheritedTextDeclaration<LineHeightDeclarationValue>>,
     background_color: Option<LocalCascadeDeclaration<NativeBackgroundColorValue>>,
     background_color_important: bool,
     background_image: Option<LocalCascadeDeclaration<NativeBackgroundImageValue>>,
@@ -15275,8 +15357,43 @@ fn parse_line_height(value: &str) -> Option<u32> {
     parse_dimension(value).filter(|value| *value > 0)
 }
 
-fn parse_line_height_declaration(value: &str) -> Option<InheritedTextDeclaration<u32>> {
-    parse_inherited_text_declaration(value, parse_line_height)
+fn parse_line_height_custom_property(value: &str) -> Option<LineHeightDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_line_height(fallback).map(|fallback| {
+            LineHeightDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(LineHeightDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_line_height_property(value: &str) -> Option<LineHeightDeclarationValue> {
+    parse_line_height(value)
+        .map(LineHeightDeclarationValue::Value)
+        .or_else(|| parse_line_height_custom_property(value))
+}
+
+fn parse_line_height_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<LineHeightDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_line_height_property)
 }
 
 fn parse_opacity(value: &str) -> Option<u8> {
@@ -19258,7 +19375,9 @@ mod tests {
         );
         assert_eq!(
             declarations.line_height,
-            Some(InheritedTextDeclaration::Value(28))
+            Some(InheritedTextDeclaration::Value(
+                LineHeightDeclarationValue::Value(28)
+            ))
         );
         assert_eq!(
             declarations.color,
@@ -22850,6 +22969,44 @@ mod tests {
     }
 
     #[test]
+    fn inherited_line_height_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --line-height: 28px; --alias: var(--line-height); --cycle: var(--cycle); line-height: var(--line-height); }
+            #child { line-height: var(--alias); }
+            #fallback { line-height: var(--missing, 24px); }
+            #invalid { --bad: 1em; line-height: var(--bad, 20px); }
+            #cycle { line-height: var(--cycle, 16px); }
+            #wide-initial { --wide: initial; line-height: var(--wide); }
+            #wide-inherit { --wide: inherit; line-height: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .line_height()
+        };
+
+        assert_eq!(style("parent"), Some(28));
+        assert_eq!(style("child"), Some(28));
+        assert_eq!(style("fallback"), Some(24));
+        assert_eq!(style("invalid"), Some(20));
+        assert_eq!(style("cycle"), Some(16));
+        assert_eq!(style("wide-initial"), None);
+        assert_eq!(style("wide-inherit"), Some(28));
+    }
+
+    #[test]
     fn stylesheet_cascade_resolves_physical_border_sides_independently() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "div { border: 1px solid red; } #card { border-left: 3px solid blue; }".into(),
@@ -22909,7 +23066,9 @@ mod tests {
         );
         assert_eq!(
             parse_line_height_declaration("28px"),
-            Some(InheritedTextDeclaration::Value(28))
+            Some(InheritedTextDeclaration::Value(
+                LineHeightDeclarationValue::Value(28)
+            ))
         );
         assert_eq!(
             parse_line_height_declaration(" REVERT-LAYER "),
@@ -22934,6 +23093,21 @@ mod tests {
         assert_eq!(parse_line_height_declaration("inherit 28px"), None);
         assert_eq!(parse_line_height_declaration("0px"), None);
         assert_eq!(parse_line_height_declaration("revert-layer 28px"), None);
+        let line_height_name = parse_custom_property_name("--line-height").unwrap();
+        assert_eq!(
+            parse_line_height_property("var(--line-height)"),
+            Some(LineHeightDeclarationValue::CustomProperty(line_height_name))
+        );
+        assert_eq!(
+            parse_line_height_declaration("var(--line-height, 24px)"),
+            Some(InheritedTextDeclaration::Value(
+                LineHeightDeclarationValue::CustomPropertyFallback(line_height_name, 24)
+            ))
+        );
+        assert_eq!(
+            parse_line_height_property("var(--line-height, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -27556,7 +27730,9 @@ mod tests {
         );
         assert_eq!(
             preserved.line_height,
-            Some(InheritedTextDeclaration::Value(20))
+            Some(InheritedTextDeclaration::Value(
+                LineHeightDeclarationValue::Value(20)
+            ))
         );
         assert!(preserved.text_importance.white_space);
         assert!(preserved.text_importance.text_decoration);

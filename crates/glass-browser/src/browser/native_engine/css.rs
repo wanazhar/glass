@@ -4592,7 +4592,7 @@ impl NativeStylesheet {
         NativeComputedStyle {
             display: resolve_display(*display, custom_properties),
             position: resolve_position(*position, custom_properties),
-            z_index: resolve_local_cascade_declaration(*z_index, NativeZIndexValue::Auto),
+            z_index: resolve_z_index(*z_index, custom_properties),
             pointer_events: resolve_pointer_events(
                 *pointer_events,
                 inherited.pointer_events,
@@ -4859,6 +4859,13 @@ enum PositionDeclarationValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZIndexDeclarationValue {
+    Value(NativeZIndexValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeZIndexValue),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpacityDeclarationValue {
     Value(u8),
     CustomProperty(u64),
@@ -4925,7 +4932,7 @@ type NativePhysicalLocalBorderCandidates<T> =
 struct NativeCascadeScratch {
     display: NativeLocalCascadeCandidates<DisplayDeclarationValue>,
     position: NativeLocalCascadeCandidates<PositionDeclarationValue>,
-    z_index: NativeLocalCascadeCandidates<NativeZIndexValue>,
+    z_index: NativeLocalCascadeCandidates<ZIndexDeclarationValue>,
     pointer_events: NativeTextCascadeCandidates<PointerEventsDeclarationValue>,
     top: NativeLocalCascadeCandidates<NativePositionOffset>,
     right: NativeLocalCascadeCandidates<NativePositionOffset>,
@@ -8233,6 +8240,79 @@ fn resolve_position(
     }
 }
 
+fn resolve_z_index_declaration(
+    declaration: LocalCascadeDeclaration<ZIndexDeclarationValue>,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<ZIndexDeclarationValue> {
+    match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_z_index_value(value, custom_properties, depth)
+        }
+        LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => {
+            Some(ZIndexDeclarationValue::Value(NativeZIndexValue::Auto))
+        }
+        LocalCascadeDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_z_index_value(
+    value: ZIndexDeclarationValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<ZIndexDeclarationValue> {
+    match value {
+        ZIndexDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_z_index_declaration(value))
+                .and_then(|declaration| {
+                    resolve_z_index_declaration(
+                        declaration,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        ZIndexDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_z_index_declaration(value))
+                .and_then(|declaration| {
+                    resolve_z_index_declaration(
+                        declaration,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(ZIndexDeclarationValue::Value(fallback)))
+        }
+        ZIndexDeclarationValue::CustomProperty(_)
+        | ZIndexDeclarationValue::CustomPropertyFallback(_, _) => None,
+        ZIndexDeclarationValue::Value(value) => Some(ZIndexDeclarationValue::Value(value)),
+    }
+}
+
+fn resolve_z_index(
+    candidates: NativeLocalCascadeCandidates<ZIndexDeclarationValue>,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeZIndexValue {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        ZIndexDeclarationValue::Value(NativeZIndexValue::Auto),
+        |declaration| resolve_z_index_declaration(declaration, custom_properties, 0),
+    );
+    match resolved {
+        ZIndexDeclarationValue::Value(value) => value,
+        ZIndexDeclarationValue::CustomProperty(_)
+        | ZIndexDeclarationValue::CustomPropertyFallback(_, _) => NativeZIndexValue::Auto,
+    }
+}
+
 fn resolve_text_indent_declaration(
     declaration: LocalCascadeDeclaration<TextIndentDeclarationValue>,
     inherited: u32,
@@ -10545,7 +10625,7 @@ struct NativeTextDeclarationImportance {
 struct NativeDeclarations {
     display: Option<LocalCascadeDeclaration<DisplayDeclarationValue>>,
     position: Option<LocalCascadeDeclaration<PositionDeclarationValue>>,
-    z_index: Option<LocalCascadeDeclaration<NativeZIndexValue>>,
+    z_index: Option<LocalCascadeDeclaration<ZIndexDeclarationValue>>,
     pointer_events: Option<InheritedTextDeclaration<PointerEventsDeclarationValue>>,
     top: Option<LocalCascadeDeclaration<NativePositionOffset>>,
     right: Option<LocalCascadeDeclaration<NativePositionOffset>>,
@@ -16126,11 +16206,45 @@ fn parse_z_index(value: &str) -> Option<NativeZIndexValue> {
         .then_some(NativeZIndexValue::Integer(i32::try_from(value).ok()?))
 }
 
-fn parse_z_index_declaration(value: &str) -> Option<LocalCascadeDeclaration<NativeZIndexValue>> {
+fn parse_z_index_custom_property(value: &str) -> Option<ZIndexDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_z_index(fallback)
+            .map(|fallback| ZIndexDeclarationValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(ZIndexDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_z_index_property(value: &str) -> Option<ZIndexDeclarationValue> {
+    parse_z_index(value)
+        .map(ZIndexDeclarationValue::Value)
+        .or_else(|| parse_z_index_custom_property(value))
+}
+
+fn parse_z_index_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<ZIndexDeclarationValue>> {
     if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
-    parse_local_reset_cascade_declaration(value, parse_z_index)
+    parse_local_reset_cascade_declaration(value, parse_z_index_property)
 }
 
 fn parse_pointer_events(value: &str) -> Option<NativePointerEventsValue> {
@@ -21770,6 +21884,79 @@ mod tests {
         assert_eq!(style("invalid"), NativePositionValue::Relative);
         assert_eq!(style("cycle"), NativePositionValue::Sticky);
         assert_eq!(style("reset"), NativePositionValue::Static);
+    }
+
+    #[test]
+    fn z_index_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let z_index = parse_custom_property_name("--z-index").unwrap();
+        assert_eq!(
+            parse_z_index_property("12"),
+            Some(ZIndexDeclarationValue::Value(NativeZIndexValue::Integer(
+                12
+            )))
+        );
+        assert_eq!(
+            parse_z_index_declaration("var(--z-index)"),
+            Some(LocalCascadeDeclaration::Value(
+                ZIndexDeclarationValue::CustomProperty(z_index)
+            ))
+        );
+        assert_eq!(
+            parse_z_index_declaration("var(--z-index, -4)"),
+            Some(LocalCascadeDeclaration::Value(
+                ZIndexDeclarationValue::CustomPropertyFallback(
+                    z_index,
+                    NativeZIndexValue::Integer(-4)
+                )
+            ))
+        );
+        assert_eq!(
+            parse_z_index_declaration("var(--z-index, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_z_index_declaration("initial"),
+            Some(LocalCascadeDeclaration::Reset)
+        );
+        assert_eq!(
+            parse_z_index_declaration("inherit"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
+    }
+
+    #[test]
+    fn z_index_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --z-index: 10; --alias: var(--z-index); --cycle: var(--cycle); z-index: var(--z-index); }
+            #child { z-index: var(--alias); }
+            #fallback { z-index: var(--missing, -4); }
+            #invalid { --bad: unsupported; z-index: var(--bad, 3); }
+            #cycle { z-index: var(--cycle, 7); }
+            #reset { --reset: initial; z-index: var(--reset, 9); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='reset'>Reset</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .z_index()
+        };
+
+        assert_eq!(style("parent"), NativeZIndexValue::Integer(10));
+        assert_eq!(style("child"), NativeZIndexValue::Integer(10));
+        assert_eq!(style("fallback"), NativeZIndexValue::Integer(-4));
+        assert_eq!(style("invalid"), NativeZIndexValue::Integer(3));
+        assert_eq!(style("cycle"), NativeZIndexValue::Integer(7));
+        assert_eq!(style("reset"), NativeZIndexValue::Auto);
     }
     #[test]
     fn local_presentation_important_parser_tracks_markers_and_invalid_preservation() {

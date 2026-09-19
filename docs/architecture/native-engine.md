@@ -1,8 +1,9 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-642`, following completed `native-engine-browser-641`,
-following completed `native-engine-browser-640`, following completed
+`native-engine-browser-643`, following completed `native-engine-browser-642`,
+following completed `native-engine-browser-641`, following completed
+`native-engine-browser-640`, following completed
 `native-engine-browser-639`, following completed
 `native-engine-browser-638`, following completed
 `native-engine-browser-637`, following completed `native-engine-browser-636`,
@@ -511,6 +512,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 643 adds bounded relative-selector support through `:has(...)`.
+Relative arguments default to descendant matching and may explicitly use child
+(`>`), adjacent-sibling (`+`), or subsequent-sibling (`~`) relationships.
+Document-aware matching is shared by CSS action locators and stylesheet
+cascade, with bounded traversal and fail-closed malformed forms. Full selector
+grammar, nth arithmetic, namespaces, pseudo-elements, complete CSS and Web IDL
+parity, and broader issue #40 conformance remain explicit gates.
 
 Slice 642 adds bounded functional selector pseudos `:not(...)`, `:is(...)`,
 and `:where(...)`. Argument selector lists may nest within the bounded

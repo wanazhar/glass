@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-603`, following completed
 `native-engine-browser-602`, following completed
 `native-engine-browser-601`, following completed
 `native-engine-browser-600`, following completed
@@ -472,6 +473,15 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 603 extends bounded native custom-property substitution to the
+inherited-capable `text-indent`. Standalone `var(--name)` and
+positive-pixel `var(--name, value)` fallbacks now resolve inherited aliases,
+CSS-wide mapped values, invalid values, and cyclic values before computed-style
+projection, while the existing explicit-inherit behavior, local cascade
+precedence, and supported values remain unchanged. Nested variable grammar,
+registered properties, full CSS variable grammar, and complete CSS/Web IDL
+parity remain issue #40 gates.
 
 Slice 602 extends bounded native custom-property substitution to local
 `text-overflow`. Standalone `var(--name)` and keyword

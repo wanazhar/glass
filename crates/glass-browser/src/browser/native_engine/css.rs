@@ -1988,6 +1988,13 @@ enum TextOverflowDeclarationValue {
     CustomPropertyFallback(u64, TextOverflowValue),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextIndentDeclarationValue {
+    Value(u32),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, u32),
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum VerticalAlignValue {
     #[default]
@@ -4759,7 +4766,11 @@ impl NativeStylesheet {
                 inherited.vertical_align,
                 custom_properties,
             ),
-            text_indent: resolve_text_indent(*text_indent, inherited.text_indent),
+            text_indent: resolve_text_indent(
+                *text_indent,
+                inherited.text_indent,
+                custom_properties,
+            ),
             word_spacing: resolve_word_spacing(
                 *word_spacing,
                 inherited.word_spacing,
@@ -4940,7 +4951,7 @@ struct NativeCascadeScratch {
     word_break: NativeTextCascadeCandidates<WordBreakDeclarationValue>,
     text_overflow: NativeTextLocalCascadeCandidates<TextOverflowDeclarationValue>,
     vertical_align: NativeTextCascadeCandidates<VerticalAlignDeclarationValue>,
-    text_indent: NativeTextLocalCascadeCandidates<u32>,
+    text_indent: NativeTextLocalCascadeCandidates<TextIndentDeclarationValue>,
     word_spacing: NativeTextCascadeCandidates<WordSpacingDeclarationValue>,
     letter_spacing: NativeTextCascadeCandidates<LetterSpacingDeclarationValue>,
     gap: GapCascade,
@@ -8046,17 +8057,81 @@ fn resolve_local_cascade_declaration<T: Copy, const N: usize>(
     })
 }
 
-fn resolve_text_indent(
-    candidates: [Option<CascadeValue<LocalCascadeDeclaration<u32>>>;
-        MAX_NATIVE_TEXT_CASCADE_LAYERS],
+fn resolve_text_indent_declaration(
+    declaration: LocalCascadeDeclaration<TextIndentDeclarationValue>,
     inherited: u32,
-) -> u32 {
-    resolve_alignment_candidates(candidates, 0, |declaration| match declaration {
-        LocalCascadeDeclaration::Value(value) => Some(value),
-        LocalCascadeDeclaration::Inherit => Some(inherited),
-        LocalCascadeDeclaration::Reset => Some(0),
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<TextIndentDeclarationValue> {
+    match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_text_indent_value(value, inherited, custom_properties, depth)
+        }
+        LocalCascadeDeclaration::Inherit => Some(TextIndentDeclarationValue::Value(inherited)),
+        LocalCascadeDeclaration::Reset => Some(TextIndentDeclarationValue::Value(0)),
         LocalCascadeDeclaration::RevertLayer => None,
-    })
+    }
+}
+
+fn resolve_text_indent_value(
+    value: TextIndentDeclarationValue,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<TextIndentDeclarationValue> {
+    match value {
+        TextIndentDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_indent_declaration(value))
+                .and_then(|declaration| {
+                    resolve_text_indent_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        TextIndentDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_indent_declaration(value))
+                .and_then(|declaration| {
+                    resolve_text_indent_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(TextIndentDeclarationValue::Value(fallback)))
+        }
+        TextIndentDeclarationValue::CustomProperty(_)
+        | TextIndentDeclarationValue::CustomPropertyFallback(_, _) => None,
+        TextIndentDeclarationValue::Value(value) => Some(TextIndentDeclarationValue::Value(value)),
+    }
+}
+
+fn resolve_text_indent(
+    candidates: NativeTextLocalCascadeCandidates<TextIndentDeclarationValue>,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+) -> u32 {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        TextIndentDeclarationValue::Value(0),
+        |declaration| resolve_text_indent_declaration(declaration, inherited, custom_properties, 0),
+    );
+    match resolved {
+        TextIndentDeclarationValue::Value(value) => value,
+        TextIndentDeclarationValue::CustomProperty(_)
+        | TextIndentDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_text_overflow_declaration(
@@ -10222,7 +10297,7 @@ struct NativeDeclarations {
     word_break: Option<InheritedTextDeclaration<WordBreakDeclarationValue>>,
     text_overflow: Option<LocalCascadeDeclaration<TextOverflowDeclarationValue>>,
     vertical_align: Option<InheritedTextDeclaration<VerticalAlignDeclarationValue>>,
-    text_indent: Option<LocalCascadeDeclaration<u32>>,
+    text_indent: Option<LocalCascadeDeclaration<TextIndentDeclarationValue>>,
     word_spacing: Option<InheritedTextDeclaration<WordSpacingDeclarationValue>>,
     letter_spacing: Option<InheritedTextDeclaration<LetterSpacingDeclarationValue>>,
     gap: Option<GapShorthandDeclaration>,
@@ -19313,11 +19388,46 @@ fn parse_text_overflow_declaration(
     parse_local_reset_cascade_declaration(value, parse_text_overflow_property)
 }
 
-fn parse_text_indent_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
+fn parse_text_indent_custom_property(value: &str) -> Option<TextIndentDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_dimension(fallback).map(|fallback| {
+            TextIndentDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(TextIndentDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_text_indent_property(value: &str) -> Option<TextIndentDeclarationValue> {
+    parse_dimension(value)
+        .map(TextIndentDeclarationValue::Value)
+        .or_else(|| parse_text_indent_custom_property(value))
+}
+
+fn parse_text_indent_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<TextIndentDeclarationValue>> {
     if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
-    parse_local_reset_cascade_declaration(value, parse_dimension)
+    parse_local_reset_cascade_declaration(value, parse_text_indent_property)
 }
 
 fn parse_local_dimension_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
@@ -20007,7 +20117,9 @@ mod tests {
         );
         assert_eq!(
             declarations.text_indent,
-            Some(LocalCascadeDeclaration::Value(12))
+            Some(LocalCascadeDeclaration::Value(
+                TextIndentDeclarationValue::Value(12)
+            ))
         );
         assert_eq!(
             declarations.word_spacing,
@@ -23908,6 +24020,33 @@ mod tests {
         assert_eq!(parse_dimension("2em"), None);
         assert_eq!(parse_dimension("50%"), None);
         assert_eq!(parse_dimension("20000px"), None);
+    }
+
+    #[test]
+    fn text_indent_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let indent = parse_custom_property_name("--indent").unwrap();
+        assert_eq!(
+            parse_text_indent_property("var(--indent)"),
+            Some(TextIndentDeclarationValue::CustomProperty(indent))
+        );
+        assert_eq!(
+            parse_text_indent_declaration("var(--indent, 12px)"),
+            Some(LocalCascadeDeclaration::Value(
+                TextIndentDeclarationValue::CustomPropertyFallback(indent, 12)
+            ))
+        );
+        assert_eq!(
+            parse_text_indent_declaration("var(--indent, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_text_indent_declaration("initial"),
+            Some(LocalCascadeDeclaration::Reset)
+        );
+        assert_eq!(
+            parse_text_indent_declaration("inherit"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
     }
 
     #[test]
@@ -30991,7 +31130,9 @@ mod tests {
         );
         assert_eq!(
             parse_text_indent_declaration("16px"),
-            Some(LocalCascadeDeclaration::Value(16))
+            Some(LocalCascadeDeclaration::Value(
+                TextIndentDeclarationValue::Value(16)
+            ))
         );
         for keyword in ["initial", "UNSET", "revert"] {
             assert_eq!(
@@ -31027,7 +31168,9 @@ mod tests {
         );
         assert_eq!(
             declarations.text_indent,
-            Some(LocalCascadeDeclaration::Value(12))
+            Some(LocalCascadeDeclaration::Value(
+                TextIndentDeclarationValue::Value(12)
+            ))
         );
         assert_eq!(
             declarations.text_overflow,
@@ -34164,6 +34307,44 @@ mod tests {
         assert_eq!(style("important-inherit").text_indent(), 24);
         assert_eq!(style("reset").text_indent(), 0);
         assert_eq!(style("revert").text_indent(), 0);
+    }
+
+    #[test]
+    fn text_indent_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --indent: 24px; --alias: var(--indent); --cycle: var(--cycle); text-indent: var(--indent); }
+            #child { text-indent: var(--alias); }
+            #fallback { text-indent: var(--missing, 8px); }
+            #invalid { --bad: 1em; text-indent: var(--bad, 12px); }
+            #cycle { text-indent: var(--cycle, 16px); }
+            #wide-initial { --wide: initial; text-indent: var(--wide); }
+            #wide-inherit { --wide: inherit; text-indent: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .text_indent()
+        };
+
+        assert_eq!(style("parent"), 24);
+        assert_eq!(style("child"), 24);
+        assert_eq!(style("fallback"), 8);
+        assert_eq!(style("invalid"), 12);
+        assert_eq!(style("cycle"), 16);
+        assert_eq!(style("wide-initial"), 0);
+        assert_eq!(style("wide-inherit"), 24);
     }
 
     #[test]

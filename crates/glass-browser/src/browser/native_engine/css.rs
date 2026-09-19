@@ -839,6 +839,8 @@ pub(crate) enum JustifyContentValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JustifyContentDeclaration {
     Value(JustifyContentValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, JustifyContentValue),
     Inherit,
     Reset,
     RevertLayer,
@@ -857,6 +859,8 @@ pub(crate) enum AlignItemsValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AlignItemsDeclaration {
     Value(AlignItemsValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, AlignItemsValue),
     Inherit,
     Reset,
     RevertLayer,
@@ -876,6 +880,8 @@ pub(crate) enum AlignSelfValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AlignSelfDeclaration {
     Value(AlignSelfValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, AlignSelfValue),
     Inherit,
     Reset,
     RevertLayer,
@@ -897,6 +903,8 @@ pub(crate) enum AlignContentValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AlignContentDeclaration {
     Value(AlignContentValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, AlignContentValue),
     Inherit,
     Reset,
     RevertLayer,
@@ -4660,10 +4668,22 @@ impl NativeStylesheet {
                 inherited.text_justify,
                 custom_properties,
             ),
-            justify_content: resolve_justify_content(*justify_content, inherited.justify_content),
-            align_items: resolve_align_items(*align_items, inherited.align_items),
-            align_self: resolve_align_self(*align_self, inherited.align_self),
-            align_content: resolve_align_content(*align_content, inherited.align_content),
+            justify_content: resolve_justify_content(
+                *justify_content,
+                inherited.justify_content,
+                custom_properties,
+            ),
+            align_items: resolve_align_items(
+                *align_items,
+                inherited.align_items,
+                custom_properties,
+            ),
+            align_self: resolve_align_self(*align_self, inherited.align_self, custom_properties),
+            align_content: resolve_align_content(
+                *align_content,
+                inherited.align_content,
+                custom_properties,
+            ),
             flex_direction: resolve_flex_direction(
                 *flex_direction,
                 inherited.flex_direction,
@@ -6030,94 +6050,232 @@ fn resolve_flex_direction(
     })
 }
 
+fn resolve_justify_content_value(
+    value: JustifyContentDeclaration,
+    inherited: JustifyContentValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<JustifyContentValue> {
+    match value {
+        JustifyContentDeclaration::Value(value) => Some(value),
+        JustifyContentDeclaration::Inherit => Some(inherited),
+        JustifyContentDeclaration::Reset => Some(JustifyContentValue::FlexStart),
+        JustifyContentDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_justify_content_declaration(value))
+                .and_then(|declaration| {
+                    resolve_justify_content_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        JustifyContentDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_justify_content_declaration(value))
+                .and_then(|declaration| {
+                    resolve_justify_content_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        JustifyContentDeclaration::CustomProperty(_)
+        | JustifyContentDeclaration::CustomPropertyFallback(_, _)
+        | JustifyContentDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_align_items_value(
+    value: AlignItemsDeclaration,
+    inherited: AlignItemsValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<AlignItemsValue> {
+    match value {
+        AlignItemsDeclaration::Value(value) => Some(value),
+        AlignItemsDeclaration::Inherit => Some(inherited),
+        AlignItemsDeclaration::Reset => Some(AlignItemsValue::FlexStart),
+        AlignItemsDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_align_items_declaration(value))
+                .and_then(|declaration| {
+                    resolve_align_items_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        AlignItemsDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_align_items_declaration(value))
+                .and_then(|declaration| {
+                    resolve_align_items_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        AlignItemsDeclaration::CustomProperty(_)
+        | AlignItemsDeclaration::CustomPropertyFallback(_, _)
+        | AlignItemsDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_align_self_value(
+    value: AlignSelfDeclaration,
+    inherited: AlignSelfValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<AlignSelfValue> {
+    match value {
+        AlignSelfDeclaration::Value(value) => Some(value),
+        AlignSelfDeclaration::Inherit => Some(inherited),
+        AlignSelfDeclaration::Reset => Some(AlignSelfValue::Auto),
+        AlignSelfDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_align_self_declaration(value))
+                .and_then(|declaration| {
+                    resolve_align_self_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        AlignSelfDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_align_self_declaration(value))
+                .and_then(|declaration| {
+                    resolve_align_self_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        AlignSelfDeclaration::CustomProperty(_)
+        | AlignSelfDeclaration::CustomPropertyFallback(_, _)
+        | AlignSelfDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_align_content_value(
+    value: AlignContentDeclaration,
+    inherited: AlignContentValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<AlignContentValue> {
+    match value {
+        AlignContentDeclaration::Value(value) => Some(value),
+        AlignContentDeclaration::Inherit => Some(inherited),
+        AlignContentDeclaration::Reset => Some(AlignContentValue::FlexStart),
+        AlignContentDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_align_content_declaration(value))
+                .and_then(|declaration| {
+                    resolve_align_content_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        AlignContentDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_align_content_declaration(value))
+                .and_then(|declaration| {
+                    resolve_align_content_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        AlignContentDeclaration::CustomProperty(_)
+        | AlignContentDeclaration::CustomPropertyFallback(_, _)
+        | AlignContentDeclaration::RevertLayer => None,
+    }
+}
+
 fn resolve_justify_content(
     candidates: [Option<CascadeValue<JustifyContentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
     inherited: JustifyContentValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> JustifyContentValue {
-    let mut blocked = [false; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-    loop {
-        let Some((layer, candidate)) =
-            candidates
-                .iter()
-                .enumerate()
-                .rev()
-                .find_map(|(layer, candidate)| {
-                    if blocked[layer] {
-                        None
-                    } else {
-                        candidate.map(|candidate| (layer, candidate))
-                    }
-                })
-        else {
-            return JustifyContentValue::FlexStart;
-        };
-        match candidate.value {
-            JustifyContentDeclaration::Value(value) => return value,
-            JustifyContentDeclaration::Inherit => return inherited,
-            JustifyContentDeclaration::Reset => return JustifyContentValue::FlexStart,
-            JustifyContentDeclaration::RevertLayer => blocked[layer] = true,
-        }
-    }
+    resolve_alignment_candidates(candidates, JustifyContentValue::FlexStart, |declaration| {
+        resolve_justify_content_value(declaration, inherited, custom_properties, 0)
+    })
 }
 
 fn resolve_align_items(
     candidates: [Option<CascadeValue<AlignItemsDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
     inherited: AlignItemsValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> AlignItemsValue {
     resolve_alignment_candidates(candidates, AlignItemsValue::FlexStart, |declaration| {
-        match declaration {
-            AlignItemsDeclaration::Value(value) => Some(value),
-            AlignItemsDeclaration::Inherit => Some(inherited),
-            AlignItemsDeclaration::Reset => Some(AlignItemsValue::FlexStart),
-            AlignItemsDeclaration::RevertLayer => None,
-        }
+        resolve_align_items_value(declaration, inherited, custom_properties, 0)
     })
 }
 
 fn resolve_align_self(
     candidates: [Option<CascadeValue<AlignSelfDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
     inherited: AlignSelfValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> AlignSelfValue {
-    resolve_alignment_candidates(
-        candidates,
-        AlignSelfValue::Auto,
-        |declaration| match declaration {
-            AlignSelfDeclaration::Value(value) => Some(value),
-            AlignSelfDeclaration::Inherit => Some(inherited),
-            AlignSelfDeclaration::Reset => Some(AlignSelfValue::Auto),
-            AlignSelfDeclaration::RevertLayer => None,
-        },
-    )
+    resolve_alignment_candidates(candidates, AlignSelfValue::Auto, |declaration| {
+        resolve_align_self_value(declaration, inherited, custom_properties, 0)
+    })
 }
 
 fn resolve_align_content(
     candidates: [Option<CascadeValue<AlignContentDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
     inherited: AlignContentValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> AlignContentValue {
-    let mut blocked = [false; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-    loop {
-        let Some((layer, candidate)) =
-            candidates
-                .iter()
-                .enumerate()
-                .rev()
-                .find_map(|(layer, candidate)| {
-                    if blocked[layer] {
-                        None
-                    } else {
-                        candidate.map(|candidate| (layer, candidate))
-                    }
-                })
-        else {
-            return AlignContentValue::FlexStart;
-        };
-        match candidate.value {
-            AlignContentDeclaration::Value(value) => return value,
-            AlignContentDeclaration::Inherit => return inherited,
-            AlignContentDeclaration::Reset => return AlignContentValue::FlexStart,
-            AlignContentDeclaration::RevertLayer => blocked[layer] = true,
-        }
-    }
+    resolve_alignment_candidates(candidates, AlignContentValue::FlexStart, |declaration| {
+        resolve_align_content_value(declaration, inherited, custom_properties, 0)
+    })
 }
 
 fn resolve_flex_wrap(
@@ -18933,7 +19091,9 @@ fn parse_justify_content_declaration(value: &str) -> Option<JustifyContentDeclar
     if value.trim().eq_ignore_ascii_case("inherit") {
         return Some(JustifyContentDeclaration::Inherit);
     }
-    parse_justify_content(value).map(JustifyContentDeclaration::Value)
+    parse_justify_content(value)
+        .map(JustifyContentDeclaration::Value)
+        .or_else(|| parse_justify_content_custom_property(value))
 }
 
 fn parse_place_content(value: &str) -> Option<(AlignContentValue, JustifyContentValue)> {
@@ -19001,7 +19161,9 @@ fn parse_align_items_declaration(value: &str) -> Option<AlignItemsDeclaration> {
     if value.trim().eq_ignore_ascii_case("inherit") {
         return Some(AlignItemsDeclaration::Inherit);
     }
-    parse_align_items(value).map(AlignItemsDeclaration::Value)
+    parse_align_items(value)
+        .map(AlignItemsDeclaration::Value)
+        .or_else(|| parse_align_items_custom_property(value))
 }
 
 fn parse_align_self(value: &str) -> Option<AlignSelfValue> {
@@ -19026,7 +19188,9 @@ fn parse_align_self_declaration(value: &str) -> Option<AlignSelfDeclaration> {
     if value.trim().eq_ignore_ascii_case("inherit") {
         return Some(AlignSelfDeclaration::Inherit);
     }
-    parse_align_self(value).map(AlignSelfDeclaration::Value)
+    parse_align_self(value)
+        .map(AlignSelfDeclaration::Value)
+        .or_else(|| parse_align_self_custom_property(value))
 }
 
 fn parse_align_content(value: &str) -> Option<AlignContentValue> {
@@ -19053,7 +19217,9 @@ fn parse_align_content_declaration(value: &str) -> Option<AlignContentDeclaratio
     if value.trim().eq_ignore_ascii_case("inherit") {
         return Some(AlignContentDeclaration::Inherit);
     }
-    parse_align_content(value).map(AlignContentDeclaration::Value)
+    parse_align_content(value)
+        .map(AlignContentDeclaration::Value)
+        .or_else(|| parse_align_content_custom_property(value))
 }
 
 fn parse_flex_var_arguments(value: &str) -> Option<(u64, Option<&str>)> {
@@ -19065,6 +19231,41 @@ fn parse_flex_var_arguments(value: &str) -> Option<(u64, Option<&str>)> {
         .get(4..)?;
     let (name, fallback) = parse_font_size_var_arguments(arguments)?;
     Some((parse_custom_property_name(name)?, fallback))
+}
+fn parse_justify_content_custom_property(value: &str) -> Option<JustifyContentDeclaration> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_justify_content(fallback)
+            .map(|fallback| JustifyContentDeclaration::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(JustifyContentDeclaration::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_align_items_custom_property(value: &str) -> Option<AlignItemsDeclaration> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_align_items(fallback)
+            .map(|fallback| AlignItemsDeclaration::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(AlignItemsDeclaration::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_align_self_custom_property(value: &str) -> Option<AlignSelfDeclaration> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_align_self(fallback)
+            .map(|fallback| AlignSelfDeclaration::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(AlignSelfDeclaration::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_align_content_custom_property(value: &str) -> Option<AlignContentDeclaration> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_align_content(fallback)
+            .map(|fallback| AlignContentDeclaration::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(AlignContentDeclaration::CustomProperty(name_hash)),
+    }
 }
 
 fn parse_flex_direction_custom_property(value: &str) -> Option<FlexDirectionDeclaration> {
@@ -29567,6 +29768,73 @@ mod tests {
         assert_eq!(parse_align_content("start"), None);
         assert_eq!(parse_align_content("safe center"), None);
     }
+    #[test]
+    fn flex_alignment_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let justify = parse_custom_property_name("--justify").unwrap();
+        let items = parse_custom_property_name("--items").unwrap();
+        let self_name = parse_custom_property_name("--self").unwrap();
+        let content = parse_custom_property_name("--content").unwrap();
+        assert_eq!(
+            parse_justify_content_declaration("var(--justify)"),
+            Some(JustifyContentDeclaration::CustomProperty(justify))
+        );
+        assert_eq!(
+            parse_justify_content_declaration("var(--justify, space-between)"),
+            Some(JustifyContentDeclaration::CustomPropertyFallback(
+                justify,
+                JustifyContentValue::SpaceBetween
+            ))
+        );
+        assert_eq!(
+            parse_align_items_declaration("var(--items, center)"),
+            Some(AlignItemsDeclaration::CustomPropertyFallback(
+                items,
+                AlignItemsValue::Center
+            ))
+        );
+        assert_eq!(
+            parse_align_self_declaration("var(--self)"),
+            Some(AlignSelfDeclaration::CustomProperty(self_name))
+        );
+        assert_eq!(
+            parse_align_content_declaration("var(--content, space-around)"),
+            Some(AlignContentDeclaration::CustomPropertyFallback(
+                content,
+                AlignContentValue::SpaceAround
+            ))
+        );
+        let declarations = parse_declarations(
+            "justify-content: var(--justify); align-items: var(--items); align-self: var(--self); align-content: var(--content)",
+        );
+        assert_eq!(
+            declarations.justify_content,
+            Some(JustifyContentDeclaration::CustomProperty(justify))
+        );
+        assert_eq!(
+            declarations.align_items,
+            Some(AlignItemsDeclaration::CustomProperty(items))
+        );
+        assert_eq!(
+            declarations.align_self,
+            Some(AlignSelfDeclaration::CustomProperty(self_name))
+        );
+        assert_eq!(
+            declarations.align_content,
+            Some(AlignContentDeclaration::CustomProperty(content))
+        );
+        assert_eq!(
+            parse_justify_content_declaration("var(--justify, safe center)"),
+            None
+        );
+        assert_eq!(
+            parse_align_items_declaration("var(--items, baseline)"),
+            None
+        );
+        assert_eq!(
+            parse_align_self_declaration("var(--self, var(--other))"),
+            None
+        );
+    }
 
     #[test]
     fn flex_direction_parser_accepts_bounded_row_and_column_values() {
@@ -39948,10 +40216,102 @@ mod tests {
         assert_eq!(style("cycle").flex_basis(), FlexBasisValue::Length(18));
         assert_eq!(style("reset").flex_grow(), 0);
         assert_eq!(style("reset").flex_shrink(), 1);
+
         assert_eq!(style("reset").flex_basis(), FlexBasisValue::Auto);
         assert_eq!(style("override").flex_grow(), 4);
         assert_eq!(style("override").flex_shrink(), 2);
         assert_eq!(style("override").flex_basis(), FlexBasisValue::Length(10));
+    }
+    #[test]
+    fn flex_alignment_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --justify: space-between; --alias: var(--justify); --items: center; --self: flex-end; --content: space-around; --cycle: var(--cycle); justify-content: var(--alias); align-items: var(--items); align-self: var(--self); align-content: var(--content); }
+            #child { justify-content: var(--alias); align-items: var(--items); align-self: var(--self); align-content: var(--content); }
+            #fallback { justify-content: var(--missing, center); align-items: var(--missing-items, flex-end); align-self: var(--missing-self, stretch); align-content: var(--missing-content, space-evenly); }
+            #invalid { --bad: unsupported; justify-content: var(--bad, flex-end); align-items: var(--bad, normal); align-self: var(--bad, center); align-content: var(--bad, space-between); }
+            #cycle { justify-content: var(--cycle, space-around); align-items: var(--cycle, stretch); align-self: var(--cycle, flex-start); align-content: var(--cycle, space-evenly); }
+            #reset { --reset: initial; justify-content: var(--reset, center); align-items: var(--reset, flex-end); align-self: var(--reset, stretch); align-content: var(--reset, space-between); }
+            #override { --justify: center; justify-content: var(--justify); justify-content: flex-end; --items: center; align-items: var(--items); align-items: stretch; --self: flex-start; align-self: var(--self); align-self: center; --content: center; align-content: var(--content); align-content: normal; }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='override'>Override</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        assert_eq!(
+            style("parent").justify_content(),
+            JustifyContentValue::SpaceBetween
+        );
+        assert_eq!(style("parent").align_items(), AlignItemsValue::Center);
+        assert_eq!(style("parent").align_self(), AlignSelfValue::FlexEnd);
+        assert_eq!(
+            style("parent").align_content(),
+            AlignContentValue::SpaceAround
+        );
+        assert_eq!(
+            style("child").justify_content(),
+            JustifyContentValue::SpaceBetween
+        );
+        assert_eq!(style("child").align_items(), AlignItemsValue::Center);
+        assert_eq!(style("child").align_self(), AlignSelfValue::FlexEnd);
+        assert_eq!(
+            style("child").align_content(),
+            AlignContentValue::SpaceAround
+        );
+        assert_eq!(
+            style("fallback").justify_content(),
+            JustifyContentValue::Center
+        );
+        assert_eq!(style("fallback").align_items(), AlignItemsValue::FlexEnd);
+        assert_eq!(style("fallback").align_self(), AlignSelfValue::Stretch);
+        assert_eq!(
+            style("fallback").align_content(),
+            AlignContentValue::SpaceEvenly
+        );
+        assert_eq!(
+            style("invalid").justify_content(),
+            JustifyContentValue::FlexEnd
+        );
+        assert_eq!(style("invalid").align_items(), AlignItemsValue::Normal);
+        assert_eq!(style("invalid").align_self(), AlignSelfValue::Center);
+        assert_eq!(
+            style("invalid").align_content(),
+            AlignContentValue::SpaceBetween
+        );
+        assert_eq!(
+            style("cycle").justify_content(),
+            JustifyContentValue::SpaceAround
+        );
+        assert_eq!(style("cycle").align_items(), AlignItemsValue::Stretch);
+        assert_eq!(style("cycle").align_self(), AlignSelfValue::FlexStart);
+        assert_eq!(
+            style("cycle").align_content(),
+            AlignContentValue::SpaceEvenly
+        );
+        assert_eq!(
+            style("reset").justify_content(),
+            JustifyContentValue::FlexStart
+        );
+        assert_eq!(style("reset").align_items(), AlignItemsValue::FlexStart);
+        assert_eq!(style("reset").align_self(), AlignSelfValue::Auto);
+        assert_eq!(style("reset").align_content(), AlignContentValue::FlexStart);
+        assert_eq!(
+            style("override").justify_content(),
+            JustifyContentValue::FlexEnd
+        );
+        assert_eq!(style("override").align_items(), AlignItemsValue::Stretch);
+        assert_eq!(style("override").align_self(), AlignSelfValue::Center);
+        assert_eq!(style("override").align_content(), AlignContentValue::Normal);
     }
 
     #[test]

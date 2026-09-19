@@ -1070,6 +1070,13 @@ pub(crate) struct NativeFontLanguageOverride {
     pub(crate) tag: Option<[u8; 4]>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontLanguageOverrideDeclarationValue {
+    Value(NativeFontLanguageOverride),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontLanguageOverride),
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeFontVariantEastAsianForm {
     #[default]
@@ -4527,10 +4534,10 @@ impl NativeStylesheet {
                 inherited.font_variant_alternates,
                 NativeFontVariantAlternates::Normal,
             ),
-            font_language_override: resolve_inherited_text_declaration(
+            font_language_override: resolve_font_language_override(
                 *font_language_override,
                 inherited.font_language_override,
-                NativeFontLanguageOverride::default(),
+                custom_properties,
             ),
             font_variation_settings: resolve_font_variation_settings(
                 *font_variation_settings,
@@ -4762,7 +4769,7 @@ struct NativeCascadeScratch {
     font_variant_caps: NativeTextCascadeCandidates<NativeFontVariantCaps>,
     font_variant_position: NativeTextCascadeCandidates<NativeFontVariantPosition>,
     font_variant_alternates: NativeTextCascadeCandidates<NativeFontVariantAlternates>,
-    font_language_override: NativeTextCascadeCandidates<NativeFontLanguageOverride>,
+    font_language_override: NativeTextCascadeCandidates<FontLanguageOverrideDeclarationValue>,
     font_variation_settings: NativeTextCascadeCandidates<FontVariationSettingsDeclarationValue>,
     font_variant_east_asian: NativeTextCascadeCandidates<NativeFontVariantEastAsian>,
     font_variant_numeric: NativeTextCascadeCandidates<NativeFontVariantNumeric>,
@@ -5482,6 +5489,98 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_language_override_declaration(
+    declaration: InheritedTextDeclaration<FontLanguageOverrideDeclarationValue>,
+    inherited: NativeFontLanguageOverride,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontLanguageOverrideDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_language_override_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => {
+            Some(FontLanguageOverrideDeclarationValue::Value(inherited))
+        }
+        InheritedTextDeclaration::Initial => Some(FontLanguageOverrideDeclarationValue::Value(
+            NativeFontLanguageOverride::default(),
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_language_override_value(
+    value: FontLanguageOverrideDeclarationValue,
+    inherited: NativeFontLanguageOverride,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontLanguageOverrideDeclarationValue> {
+    match value {
+        FontLanguageOverrideDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_language_override_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_language_override_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontLanguageOverrideDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_language_override_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_language_override_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontLanguageOverrideDeclarationValue::Value(fallback)))
+        }
+        FontLanguageOverrideDeclarationValue::CustomProperty(_)
+        | FontLanguageOverrideDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontLanguageOverrideDeclarationValue::Value(value) => {
+            Some(FontLanguageOverrideDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_font_language_override(
+    candidates: NativeTextCascadeCandidates<FontLanguageOverrideDeclarationValue>,
+    inherited: NativeFontLanguageOverride,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontLanguageOverride {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontLanguageOverrideDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_language_override_declaration(
+                declaration,
+                inherited,
+                custom_properties,
+                0,
+            )
+        },
+    );
+    match resolved {
+        FontLanguageOverrideDeclarationValue::Value(value) => value,
+        FontLanguageOverrideDeclarationValue::CustomProperty(_)
+        | FontLanguageOverrideDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_variation_settings_declaration(
@@ -8408,7 +8507,7 @@ struct NativeDeclarations {
     font_variant_caps: Option<InheritedTextDeclaration<NativeFontVariantCaps>>,
     font_variant_position: Option<InheritedTextDeclaration<NativeFontVariantPosition>>,
     font_variant_alternates: Option<InheritedTextDeclaration<NativeFontVariantAlternates>>,
-    font_language_override: Option<InheritedTextDeclaration<NativeFontLanguageOverride>>,
+    font_language_override: Option<InheritedTextDeclaration<FontLanguageOverrideDeclarationValue>>,
     font_variation_settings:
         Option<InheritedTextDeclaration<FontVariationSettingsDeclarationValue>>,
     font_variant_east_asian: Option<InheritedTextDeclaration<NativeFontVariantEastAsian>>,
@@ -15757,10 +15856,39 @@ fn parse_font_language_override(value: &str) -> Option<NativeFontLanguageOverrid
     Some(NativeFontLanguageOverride { tag: Some(tag) })
 }
 
+fn parse_font_language_override_custom_property(
+    value: &str,
+) -> Option<FontLanguageOverrideDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_language_override(fallback).map(|fallback| {
+            FontLanguageOverrideDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(FontLanguageOverrideDeclarationValue::CustomProperty(
+            name_hash,
+        )),
+    }
+}
+
+fn parse_font_language_override_property(
+    value: &str,
+) -> Option<FontLanguageOverrideDeclarationValue> {
+    parse_font_language_override(value)
+        .map(FontLanguageOverrideDeclarationValue::Value)
+        .or_else(|| parse_font_language_override_custom_property(value))
+}
+
 fn parse_font_language_override_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontLanguageOverride>> {
-    parse_inherited_text_declaration(value, parse_font_language_override)
+) -> Option<InheritedTextDeclaration<FontLanguageOverrideDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_language_override_property)
 }
 
 fn parse_signed_decimal_milli(value: &str) -> Option<i32> {
@@ -26936,6 +27064,29 @@ mod tests {
         assert!(parse_font_language_override("\"    \"").is_none());
         assert!(parse_font_language_override_declaration("inherit").is_some());
         assert!(parse_font_language_override_declaration("revert-layer").is_some());
+        let language_name = parse_custom_property_name("--language").unwrap();
+        let fallback = NativeFontLanguageOverride {
+            tag: Some(*b"TRK "),
+        };
+        assert_eq!(
+            parse_font_language_override_property("var(--language)"),
+            Some(FontLanguageOverrideDeclarationValue::CustomProperty(
+                language_name
+            ))
+        );
+        assert_eq!(
+            parse_font_language_override_declaration("var(--language, 'TRK ')"),
+            Some(InheritedTextDeclaration::Value(
+                FontLanguageOverrideDeclarationValue::CustomPropertyFallback(
+                    language_name,
+                    fallback
+                )
+            ))
+        );
+        assert_eq!(
+            parse_font_language_override_property("var(--language, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -29243,6 +29394,53 @@ mod tests {
             NativeFontVariationSettings::default()
         );
         assert_eq!(style("wide-inherit"), parent);
+    }
+
+    #[test]
+    fn inherited_font_language_override_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --language: "ENG "; --alias: var(--language); --cycle: var(--cycle); font-language-override: var(--language); }
+            #child { font-language-override: var(--alias); }
+            #fallback { font-language-override: var(--missing, "TRK "); }
+            #invalid { --bad: "EN G"; font-language-override: var(--bad, "FRA "); }
+            #cycle { font-language-override: var(--cycle, normal); }
+            #wide-initial { --wide: initial; font-language-override: var(--wide); }
+            #wide-inherit { --wide: inherit; font-language-override: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_language_override()
+        };
+        let english = NativeFontLanguageOverride {
+            tag: Some(*b"ENG "),
+        };
+        let turkish = NativeFontLanguageOverride {
+            tag: Some(*b"TRK "),
+        };
+        let french = NativeFontLanguageOverride {
+            tag: Some(*b"FRA "),
+        };
+
+        assert_eq!(style("parent"), english);
+        assert_eq!(style("child"), english);
+        assert_eq!(style("fallback"), turkish);
+        assert_eq!(style("invalid"), french);
+        assert_eq!(style("cycle"), NativeFontLanguageOverride::default());
+        assert_eq!(style("wide-initial"), NativeFontLanguageOverride::default());
+        assert_eq!(style("wide-inherit"), english);
     }
 
     #[test]

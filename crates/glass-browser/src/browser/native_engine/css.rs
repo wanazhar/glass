@@ -498,6 +498,10 @@ impl NativeBorderRadius {
 pub(crate) enum NativeBorderRadiusValue {
     Radius(NativeBorderRadius),
     Corner(u32),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeBorderRadius),
+    CustomPropertyCorner(u64),
+    CustomPropertyCornerFallback(u64, u32),
     Inherit,
     Unset,
     Initial,
@@ -4808,6 +4812,7 @@ impl NativeStylesheet {
             border_radius: resolve_local_border_radius_declaration(
                 *border_radius,
                 inherited.border_radius,
+                custom_properties,
             ),
             padding: NativeBoxEdges::from_values(resolved_padding),
             margin: NativeBoxEdges::from_margin_values(resolved_margin),
@@ -9797,24 +9802,126 @@ fn resolve_local_border_style_declaration(
     })
 }
 
+fn resolve_border_radius_declaration(
+    declaration: LocalCascadeDeclaration<NativeBorderRadiusValue>,
+    index: usize,
+    inherited_radius: NativeBorderRadius,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<u32> {
+    match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_border_radius_value(value, index, inherited_radius, custom_properties, depth)
+        }
+        LocalCascadeDeclaration::Inherit => Some(inherited_radius.corner(index)),
+        LocalCascadeDeclaration::Reset => Some(0),
+        LocalCascadeDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_border_radius_value(
+    value: NativeBorderRadiusValue,
+    index: usize,
+    inherited_radius: NativeBorderRadius,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<u32> {
+    match value {
+        NativeBorderRadiusValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_border_radius_declaration(value))
+                .and_then(|declaration| {
+                    resolve_border_radius_declaration(
+                        declaration,
+                        index,
+                        inherited_radius,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeBorderRadiusValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_border_radius_declaration(value))
+                .and_then(|declaration| {
+                    resolve_border_radius_declaration(
+                        declaration,
+                        index,
+                        inherited_radius,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or_else(|| Some(fallback.corner(index)))
+        }
+        NativeBorderRadiusValue::CustomPropertyCorner(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_border_radius_corner_declaration(value))
+                .and_then(|declaration| {
+                    resolve_border_radius_declaration(
+                        declaration,
+                        index,
+                        inherited_radius,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeBorderRadiusValue::CustomPropertyCornerFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_border_radius_corner_declaration(value))
+                .and_then(|declaration| {
+                    resolve_border_radius_declaration(
+                        declaration,
+                        index,
+                        inherited_radius,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        NativeBorderRadiusValue::Radius(radius) => Some(radius.corner(index)),
+        NativeBorderRadiusValue::Corner(radius) => Some(radius),
+        NativeBorderRadiusValue::Inherit => Some(inherited_radius.corner(index)),
+        NativeBorderRadiusValue::Unset
+        | NativeBorderRadiusValue::Initial
+        | NativeBorderRadiusValue::Revert => Some(0),
+        NativeBorderRadiusValue::CustomProperty(_)
+        | NativeBorderRadiusValue::CustomPropertyFallback(_, _)
+        | NativeBorderRadiusValue::CustomPropertyCorner(_)
+        | NativeBorderRadiusValue::CustomPropertyCornerFallback(_, _) => None,
+    }
+}
+
 fn resolve_local_border_radius_declaration(
     candidates: [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderRadiusValue>>>;
         MAX_NATIVE_RADIUS_CASCADE_LAYERS]; 4],
     inherited_radius: NativeBorderRadius,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> NativeBorderRadius {
     let [top_left, top_right, bottom_right, bottom_left] = std::array::from_fn(|index| {
-        resolve_alignment_candidates(candidates[index], None, |declaration| match declaration {
-            LocalCascadeDeclaration::Value(value) => Some(Some(match value {
-                NativeBorderRadiusValue::Radius(radius) => radius.corner(index),
-                NativeBorderRadiusValue::Corner(radius) => radius,
-                NativeBorderRadiusValue::Inherit => inherited_radius.corner(index),
-                NativeBorderRadiusValue::Unset
-                | NativeBorderRadiusValue::Initial
-                | NativeBorderRadiusValue::Revert => 0,
-            })),
-            LocalCascadeDeclaration::Inherit => None,
-            LocalCascadeDeclaration::Reset => Some(Some(0)),
-            LocalCascadeDeclaration::RevertLayer => None,
+        resolve_alignment_candidates(candidates[index], None, |declaration| {
+            resolve_border_radius_declaration(
+                declaration,
+                index,
+                inherited_radius,
+                custom_properties,
+                0,
+            )
+            .map(Some)
         })
         .unwrap_or_default()
     });
@@ -16432,6 +16539,36 @@ fn parse_border_radius(value: &str) -> Option<NativeBorderRadius> {
     }
 }
 
+fn parse_border_radius_var_arguments(value: &str) -> Option<(u64, Option<&str>)> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    Some((parse_custom_property_name(name)?, fallback))
+}
+
+fn parse_border_radius_custom_property(value: &str) -> Option<NativeBorderRadiusValue> {
+    let (name_hash, fallback) = parse_border_radius_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_border_radius(fallback)
+            .map(|fallback| NativeBorderRadiusValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(NativeBorderRadiusValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_border_radius_corner_custom_property(value: &str) -> Option<NativeBorderRadiusValue> {
+    let (name_hash, fallback) = parse_border_radius_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_dimension(fallback).map(|fallback| {
+            NativeBorderRadiusValue::CustomPropertyCornerFallback(name_hash, fallback)
+        }),
+        None => Some(NativeBorderRadiusValue::CustomPropertyCorner(name_hash)),
+    }
+}
+
 fn parse_border_radius_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<NativeBorderRadiusValue>> {
@@ -16452,6 +16589,7 @@ fn parse_border_radius_declaration(
     };
     css_wide
         .or_else(|| parse_border_radius(value).map(NativeBorderRadiusValue::Radius))
+        .or_else(|| parse_border_radius_custom_property(value))
         .map(LocalCascadeDeclaration::Value)
 }
 
@@ -16475,6 +16613,7 @@ fn parse_border_radius_corner_declaration(
     };
     css_wide
         .or_else(|| parse_dimension(value).map(NativeBorderRadiusValue::Corner))
+        .or_else(|| parse_border_radius_corner_custom_property(value))
         .map(LocalCascadeDeclaration::Value)
 }
 
@@ -22668,6 +22807,123 @@ mod tests {
             ]
         );
         assert_eq!(declarations.border_radius_corner_orders, [1, 0, 0, 2]);
+    }
+
+    #[test]
+    fn border_radius_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let radius = parse_custom_property_name("--radius").unwrap();
+        assert_eq!(
+            parse_border_radius_declaration("var(--radius)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderRadiusValue::CustomProperty(radius)
+            ))
+        );
+        assert_eq!(
+            parse_border_radius_declaration("var(--radius, 1px 2px)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderRadiusValue::CustomPropertyFallback(
+                    radius,
+                    NativeBorderRadius {
+                        top_left: 1,
+                        top_right: 2,
+                        bottom_right: 1,
+                        bottom_left: 2,
+                    },
+                )
+            ))
+        );
+        assert_eq!(
+            parse_border_radius_corner_declaration("var(--radius, 3px)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderRadiusValue::CustomPropertyCornerFallback(radius, 3)
+            ))
+        );
+        assert_eq!(
+            parse_border_radius_declaration("var(--radius, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_border_radius_corner_declaration("var(--radius, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_border_radius_declaration("revert-layer"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+    }
+
+    #[test]
+    fn border_radius_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --radius: 1px 2px 3px 4px; --alias: var(--radius); border-radius: var(--alias); }
+            #child { border-radius: var(--alias); }
+            #fallback { border-radius: var(--missing, 5px 6px); }
+            #invalid { --bad: unsupported; border-radius: var(--bad, 7px); }
+            #cycle { --cycle: var(--cycle); border-radius: var(--cycle, 8px); }
+            #reset { --reset: initial; border-radius: var(--reset, 9px); }
+            #longhand { --corner: 10px; border-top-left-radius: var(--corner); }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='longhand'>Longhand</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let radius = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .border_radius()
+        };
+
+        assert_eq!(
+            radius("parent"),
+            NativeBorderRadius {
+                top_left: 1,
+                top_right: 2,
+                bottom_right: 3,
+                bottom_left: 4,
+            }
+        );
+        assert_eq!(radius("child"), radius("parent"));
+        assert_eq!(
+            radius("fallback"),
+            NativeBorderRadius {
+                top_left: 5,
+                top_right: 6,
+                bottom_right: 5,
+                bottom_left: 6,
+            }
+        );
+        assert_eq!(
+            radius("invalid"),
+            NativeBorderRadius {
+                top_left: 7,
+                top_right: 7,
+                bottom_right: 7,
+                bottom_left: 7,
+            }
+        );
+        assert_eq!(
+            radius("cycle"),
+            NativeBorderRadius {
+                top_left: 8,
+                top_right: 8,
+                bottom_right: 8,
+                bottom_left: 8,
+            }
+        );
+        assert_eq!(radius("reset"), NativeBorderRadius::default());
+        assert_eq!(
+            radius("longhand"),
+            NativeBorderRadius {
+                top_left: 10,
+                ..NativeBorderRadius::default()
+            }
+        );
     }
 
     #[test]

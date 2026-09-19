@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-618`, following completed
 `native-engine-browser-617`, following completed
 `native-engine-browser-616`, following completed
 `native-engine-browser-615`, following completed
@@ -520,6 +521,17 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed border-radius substitution follow-up is
+[`native-engine-browser-618`](tasks/native-engine-browser-618.md): native
+`border-radius` and the four physical corner longhands now accept bounded
+standalone `var(--name)` and pixel or bounded shorthand fallbacks. Resolution
+covers inherited aliases, CSS-wide reset mappings, invalid and cyclic values,
+corner-specific fallback resolution, local cascade, `revert-layer`, and
+logical-corner projection before computed border geometry. Existing bounded
+pixel-only radius grammar remains unchanged; percentage, slash, registered
+property, full variable grammar, and complete CSS and Web IDL parity remain
+issue #40 gates.
 
 The completed logical border-style substitution follow-up is
 [`native-engine-browser-617`](tasks/native-engine-browser-617.md): native

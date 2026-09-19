@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-602`, following completed
 `native-engine-browser-601`, following completed
 `native-engine-browser-600`, following completed
 `native-engine-browser-599`, following completed
@@ -504,6 +505,14 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed text-overflow substitution follow-up is
+[`native-engine-browser-602`](tasks/native-engine-browser-602.md): native
+`text-overflow` now accepts bounded standalone `var(--name)` and keyword
+fallbacks, resolving inherited aliases, CSS-wide mapped values, invalid values,
+and cyclic values before computed-style projection. Nested variable grammar,
+registered properties, full CSS variable grammar, and complete CSS/Web IDL
+parity remain issue #40 gates.
 
 The completed inherited pointer-events substitution follow-up is
 [`native-engine-browser-601`](tasks/native-engine-browser-601.md): native

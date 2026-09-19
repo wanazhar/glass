@@ -4894,6 +4894,17 @@ enum BorderWidthDeclarationValue {
     CustomPropertyFallback(u64, NativeBorderWidthValue),
     CustomPropertyShorthand(u64, u8),
     CustomPropertyShorthandFallback(u64, u8, NativeBorderWidthValue),
+    CustomPropertyPair(u64, u8),
+    CustomPropertyPairFallback(u64, u8, NativeBorderWidthValue),
+}
+
+impl BorderWidthDeclarationValue {
+    const fn is_css_wide(self) -> bool {
+        matches!(
+            self,
+            Self::Value(value) if value.is_css_wide()
+        )
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BorderStyleDeclarationValue {
@@ -9504,10 +9515,52 @@ fn resolve_border_width_value(
                     )
                 })
         }
+        BorderWidthDeclarationValue::CustomPropertyPair(name_hash, side)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_logical_border_width_pair(value))
+                .and_then(|declarations| declarations.get(side as usize).copied())
+                .and_then(|declaration| {
+                    resolve_border_width_declaration(
+                        declaration,
+                        inherited_width,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        BorderWidthDeclarationValue::CustomPropertyPairFallback(name_hash, side, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_logical_border_width_pair(value))
+                .and_then(|declarations| declarations.get(side as usize).copied())
+                .and_then(|declaration| {
+                    resolve_border_width_declaration(
+                        declaration,
+                        inherited_width,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or_else(|| {
+                    resolve_border_width_value(
+                        BorderWidthDeclarationValue::Value(fallback),
+                        inherited_width,
+                        custom_properties,
+                        depth,
+                    )
+                })
+        }
         BorderWidthDeclarationValue::CustomProperty(_)
         | BorderWidthDeclarationValue::CustomPropertyFallback(_, _)
         | BorderWidthDeclarationValue::CustomPropertyShorthand(_, _)
-        | BorderWidthDeclarationValue::CustomPropertyShorthandFallback(_, _, _) => None,
+        | BorderWidthDeclarationValue::CustomPropertyShorthandFallback(_, _, _)
+        | BorderWidthDeclarationValue::CustomPropertyPair(_, _)
+        | BorderWidthDeclarationValue::CustomPropertyPairFallback(_, _, _) => None,
         BorderWidthDeclarationValue::Value(value) => {
             Some(BorderWidthDeclarationValue::Value(match value {
                 NativeBorderWidthValue::Width(width) => NativeBorderWidthValue::Width(width),
@@ -9539,7 +9592,9 @@ fn resolve_local_border_width_declaration(
                 | BorderWidthDeclarationValue::CustomProperty(_)
                 | BorderWidthDeclarationValue::CustomPropertyFallback(_, _)
                 | BorderWidthDeclarationValue::CustomPropertyShorthand(_, _)
-                | BorderWidthDeclarationValue::CustomPropertyShorthandFallback(_, _, _) => None,
+                | BorderWidthDeclarationValue::CustomPropertyShorthandFallback(_, _, _)
+                | BorderWidthDeclarationValue::CustomPropertyPair(_, _)
+                | BorderWidthDeclarationValue::CustomPropertyPairFallback(_, _, _) => None,
             },
         )
     })
@@ -10431,34 +10486,8 @@ fn project_border_width_declaration(
 }
 fn project_logical_border_width_declaration(
     declaration: LocalCascadeDeclaration<NativeBorderDeclaration>,
-) -> Option<LocalCascadeDeclaration<NativeBorderWidthValue>> {
-    project_border_width_declaration(declaration).and_then(|declaration| match declaration {
-        LocalCascadeDeclaration::Value(BorderWidthDeclarationValue::Value(value)) => {
-            Some(LocalCascadeDeclaration::Value(value))
-        }
-        LocalCascadeDeclaration::Inherit => Some(LocalCascadeDeclaration::Inherit),
-        LocalCascadeDeclaration::Reset => Some(LocalCascadeDeclaration::Reset),
-        LocalCascadeDeclaration::RevertLayer => Some(LocalCascadeDeclaration::RevertLayer),
-        LocalCascadeDeclaration::Value(
-            BorderWidthDeclarationValue::CustomProperty(_)
-            | BorderWidthDeclarationValue::CustomPropertyFallback(_, _)
-            | BorderWidthDeclarationValue::CustomPropertyShorthand(_, _)
-            | BorderWidthDeclarationValue::CustomPropertyShorthandFallback(_, _, _),
-        ) => None,
-    })
-}
-
-fn wrap_border_width_declaration(
-    declaration: LocalCascadeDeclaration<NativeBorderWidthValue>,
-) -> LocalCascadeDeclaration<BorderWidthDeclarationValue> {
-    match declaration {
-        LocalCascadeDeclaration::Value(value) => {
-            LocalCascadeDeclaration::Value(BorderWidthDeclarationValue::Value(value))
-        }
-        LocalCascadeDeclaration::Inherit => LocalCascadeDeclaration::Inherit,
-        LocalCascadeDeclaration::Reset => LocalCascadeDeclaration::Reset,
-        LocalCascadeDeclaration::RevertLayer => LocalCascadeDeclaration::RevertLayer,
-    }
+) -> Option<LocalCascadeDeclaration<BorderWidthDeclarationValue>> {
+    project_border_width_declaration(declaration)
 }
 
 fn project_border_style_declaration(
@@ -10727,7 +10756,7 @@ struct NativeLogicalBorderDeclarations {
     border: [Option<LocalCascadeDeclaration<NativeBorderDeclaration>>; LOGICAL_BORDER_SIDES],
     border_order: [usize; LOGICAL_BORDER_SIDES],
     border_important: [bool; LOGICAL_BORDER_SIDES],
-    width: [Option<LocalCascadeDeclaration<NativeBorderWidthValue>>; LOGICAL_BORDER_SIDES],
+    width: [Option<LocalCascadeDeclaration<BorderWidthDeclarationValue>>; LOGICAL_BORDER_SIDES],
     width_order: [usize; LOGICAL_BORDER_SIDES],
     width_important: [bool; LOGICAL_BORDER_SIDES],
     style: [Option<LocalCascadeDeclaration<NativeBorderStyleValue>>; LOGICAL_BORDER_SIDES],
@@ -10779,7 +10808,7 @@ impl NativeLogicalBoxModelDeclarations {
 type NativeLogicalBorderCandidates<T> = [[Option<CascadeValue<LocalCascadeDeclaration<T>>>;
     MAX_NATIVE_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
 type NativeLogicalBorderWidthCandidates =
-    [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderWidthValue>>>;
+    [[Option<CascadeValue<LocalCascadeDeclaration<BorderWidthDeclarationValue>>>;
         MAX_NATIVE_BORDER_WIDTH_CASCADE_LAYERS]; LOGICAL_BORDER_SIDES];
 type NativeLogicalBorderStyleCandidates =
     [[Option<CascadeValue<LocalCascadeDeclaration<NativeBorderStyleValue>>>;
@@ -10984,12 +11013,7 @@ fn project_logical_border_candidates(
             }
             if let Some(candidate) = sources.width[logical_side][layer] {
                 merge_border_width_cascade_candidate(
-                    CascadeValue {
-                        value: wrap_border_width_declaration(candidate.value),
-                        specificity: candidate.specificity,
-                        order: candidate.order,
-                        inline: candidate.inline,
-                    },
+                    candidate,
                     layer,
                     &mut targets.width[physical_side],
                 );
@@ -11017,12 +11041,7 @@ fn project_logical_border_candidates(
         for layer in MAX_NATIVE_CASCADE_LAYERS..MAX_NATIVE_BORDER_WIDTH_CASCADE_LAYERS {
             if let Some(candidate) = sources.width[logical_side][layer] {
                 merge_border_width_cascade_candidate(
-                    CascadeValue {
-                        value: wrap_border_width_declaration(candidate.value),
-                        specificity: candidate.specificity,
-                        order: candidate.order,
-                        inline: candidate.inline,
-                    },
+                    candidate,
                     layer,
                     &mut targets.width[physical_side],
                 );
@@ -12850,7 +12869,9 @@ fn parse_declarations_with_diagnostics(
             "border-block-start-width"
             | "border-block-end-width"
             | "border-inline-start-width"
-            | "border-inline-end-width" => parse_border_width_side_declaration(value).is_some(),
+            | "border-inline-end-width" => {
+                parse_local_physical_border_width_side_declaration(value).is_some()
+            }
             "border-style" => parse_border_style_declaration(value).is_some(),
             "border-top-style"
             | "border-right-style"
@@ -13883,7 +13904,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                     &mut declarations.logical_border.width_order,
                     &mut declarations.logical_border.width_important,
                     LOGICAL_BORDER_BLOCK_START,
-                    parse_border_width_side_declaration(value),
+                    parse_local_physical_border_width_side_declaration(value),
                     declaration_order,
                     important,
                 );
@@ -13894,7 +13915,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                     &mut declarations.logical_border.width_order,
                     &mut declarations.logical_border.width_important,
                     LOGICAL_BORDER_BLOCK_END,
-                    parse_border_width_side_declaration(value),
+                    parse_local_physical_border_width_side_declaration(value),
                     declaration_order,
                     important,
                 );
@@ -13916,7 +13937,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                     &mut declarations.logical_border.width_order,
                     &mut declarations.logical_border.width_important,
                     LOGICAL_BORDER_INLINE_START,
-                    parse_border_width_side_declaration(value),
+                    parse_local_physical_border_width_side_declaration(value),
                     declaration_order,
                     important,
                 );
@@ -13927,7 +13948,7 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                     &mut declarations.logical_border.width_order,
                     &mut declarations.logical_border.width_important,
                     LOGICAL_BORDER_INLINE_END,
-                    parse_border_width_side_declaration(value),
+                    parse_local_physical_border_width_side_declaration(value),
                     declaration_order,
                     important,
                 );
@@ -14658,12 +14679,6 @@ fn parse_local_physical_border_width_side_declaration(
     parse_local_cascade_declaration(value, parse_border_width_property)
 }
 
-fn parse_border_width_side_declaration(
-    value: &str,
-) -> Option<LocalCascadeDeclaration<NativeBorderWidthValue>> {
-    parse_local_cascade_declaration(value, parse_border_width_value)
-}
-
 fn parse_border_width_value(value: &str) -> Option<NativeBorderWidthValue> {
     let value = value.trim();
     if value.eq_ignore_ascii_case("inherit") {
@@ -14823,12 +14838,64 @@ fn parse_logical_component_pair<T: Copy>(
 
 fn parse_logical_border_width_pair(
     value: &str,
-) -> Option<[LocalCascadeDeclaration<NativeBorderWidthValue>; 2]> {
-    parse_logical_component_pair(
-        value,
-        parse_border_width_value,
-        NativeBorderWidthValue::is_css_wide,
-    )
+) -> Option<[LocalCascadeDeclaration<BorderWidthDeclarationValue>; 2]> {
+    if value.trim().eq_ignore_ascii_case("revert-layer") {
+        return Some([LocalCascadeDeclaration::RevertLayer; 2]);
+    }
+    let values = split_css_value_tokens(value)?;
+    let declarations = match values.as_slice() {
+        [value] => [
+            LocalCascadeDeclaration::Value(parse_logical_border_width_value(value, 0)?),
+            LocalCascadeDeclaration::Value(parse_logical_border_width_value(value, 1)?),
+        ],
+        [start, end] => [
+            LocalCascadeDeclaration::Value(parse_logical_border_width_value(start, 0)?),
+            LocalCascadeDeclaration::Value(parse_logical_border_width_value(end, 1)?),
+        ],
+        _ => return None,
+    };
+    if declarations.iter().any(|declaration| {
+        matches!(
+            declaration,
+            LocalCascadeDeclaration::Value(value) if value.is_css_wide()
+        )
+    }) && values.len() != 1
+    {
+        return None;
+    }
+    Some(declarations)
+}
+
+fn parse_logical_border_width_value(value: &str, side: u8) -> Option<BorderWidthDeclarationValue> {
+    if let Some(value) = parse_border_width_value(value) {
+        return Some(BorderWidthDeclarationValue::Value(value));
+    }
+    let (name_hash, fallback) = parse_border_width_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => Some(BorderWidthDeclarationValue::CustomPropertyPairFallback(
+            name_hash,
+            side,
+            parse_logical_border_width_fallback(fallback, side)?,
+        )),
+        None => Some(BorderWidthDeclarationValue::CustomPropertyPair(
+            name_hash, side,
+        )),
+    }
+}
+
+fn parse_logical_border_width_fallback(value: &str, side: u8) -> Option<NativeBorderWidthValue> {
+    let values = split_css_value_tokens(value)?
+        .into_iter()
+        .map(parse_border_width_value)
+        .collect::<Option<Vec<_>>>()?;
+    if values.len() != 1 && values.iter().any(|value| value.is_css_wide()) {
+        return None;
+    }
+    match values.as_slice() {
+        [value] => Some(*value),
+        [start, end] => Some(if side == 0 { *start } else { *end }),
+        _ => None,
+    }
 }
 
 fn parse_logical_border_style_pair(
@@ -16805,11 +16872,12 @@ fn set_logical_border_pair<T: Copy>(
 }
 
 fn set_logical_border_width_pair(
-    sides: &mut [Option<LocalCascadeDeclaration<NativeBorderWidthValue>>; LOGICAL_BORDER_SIDES],
+    sides: &mut [Option<LocalCascadeDeclaration<BorderWidthDeclarationValue>>;
+             LOGICAL_BORDER_SIDES],
     orders: &mut [usize; LOGICAL_BORDER_SIDES],
     important_flags: &mut [bool; LOGICAL_BORDER_SIDES],
     indices: [usize; 2],
-    values: Option<[LocalCascadeDeclaration<NativeBorderWidthValue>; 2]>,
+    values: Option<[LocalCascadeDeclaration<BorderWidthDeclarationValue>; 2]>,
     declaration_order: usize,
     important: bool,
 ) {
@@ -16826,11 +16894,12 @@ fn set_logical_border_width_pair(
 }
 
 fn set_logical_border_width_side(
-    sides: &mut [Option<LocalCascadeDeclaration<NativeBorderWidthValue>>; LOGICAL_BORDER_SIDES],
+    sides: &mut [Option<LocalCascadeDeclaration<BorderWidthDeclarationValue>>;
+             LOGICAL_BORDER_SIDES],
     orders: &mut [usize; LOGICAL_BORDER_SIDES],
     important_flags: &mut [bool; LOGICAL_BORDER_SIDES],
     index: usize,
-    value: Option<LocalCascadeDeclaration<NativeBorderWidthValue>>,
+    value: Option<LocalCascadeDeclaration<BorderWidthDeclarationValue>>,
     declaration_order: usize,
     important: bool,
 ) {
@@ -23869,8 +23938,12 @@ mod tests {
         assert_eq!(
             parse_logical_border_width_pair("1px 2px"),
             Some([
-                LocalCascadeDeclaration::Value(NativeBorderWidthValue::Width(1)),
-                LocalCascadeDeclaration::Value(NativeBorderWidthValue::Width(2)),
+                LocalCascadeDeclaration::Value(BorderWidthDeclarationValue::Value(
+                    NativeBorderWidthValue::Width(1),
+                )),
+                LocalCascadeDeclaration::Value(BorderWidthDeclarationValue::Value(
+                    NativeBorderWidthValue::Width(2),
+                )),
             ])
         );
         assert_eq!(
@@ -23924,10 +23997,10 @@ mod tests {
             declarations.logical_border.width,
             [
                 Some(LocalCascadeDeclaration::Value(
-                    NativeBorderWidthValue::Width(2)
+                    BorderWidthDeclarationValue::Value(NativeBorderWidthValue::Width(2)),
                 )),
                 Some(LocalCascadeDeclaration::Value(
-                    NativeBorderWidthValue::Width(3)
+                    BorderWidthDeclarationValue::Value(NativeBorderWidthValue::Width(3)),
                 )),
                 None,
                 None,
@@ -24326,8 +24399,10 @@ mod tests {
                 "shorthand={value}"
             );
             assert_eq!(
-                parse_border_width_side_declaration(value),
-                Some(LocalCascadeDeclaration::Value(expected)),
+                parse_local_physical_border_width_side_declaration(value),
+                Some(LocalCascadeDeclaration::Value(
+                    BorderWidthDeclarationValue::Value(expected),
+                )),
                 "longhand={value}"
             );
         }
@@ -24335,10 +24410,13 @@ mod tests {
             assert_eq!(parse_border_width_declaration(value), None, "mixed={value}");
         }
         assert_eq!(
-            parse_border_width_side_declaration("ReVeRt-LaYeR"),
+            parse_local_physical_border_width_side_declaration("ReVeRt-LaYeR"),
             Some(LocalCascadeDeclaration::RevertLayer)
         );
-        assert_eq!(parse_border_width_side_declaration("1px 2px"), None);
+        assert_eq!(
+            parse_local_physical_border_width_side_declaration("1px 2px"),
+            None
+        );
     }
     #[test]
     fn border_width_parser_accepts_custom_property_aliases_and_fallbacks() {
@@ -24467,6 +24545,83 @@ mod tests {
         assert_eq!(style("cycle").border_widths(), [8; 4]);
         assert_eq!(style("reset").border_widths(), [0; 4]);
         assert_eq!(style("longhand").border_widths(), [0, 0, 0, 10]);
+    }
+
+    #[test]
+    fn logical_border_width_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let width = parse_custom_property_name("--width").unwrap();
+        assert_eq!(
+            parse_logical_border_width_pair("var(--width, 1px 2px)"),
+            Some([
+                LocalCascadeDeclaration::Value(
+                    BorderWidthDeclarationValue::CustomPropertyPairFallback(
+                        width,
+                        0,
+                        NativeBorderWidthValue::Width(1),
+                    )
+                ),
+                LocalCascadeDeclaration::Value(
+                    BorderWidthDeclarationValue::CustomPropertyPairFallback(
+                        width,
+                        1,
+                        NativeBorderWidthValue::Width(2),
+                    )
+                ),
+            ])
+        );
+        assert_eq!(
+            parse_local_physical_border_width_side_declaration("var(--width, 3px)"),
+            Some(LocalCascadeDeclaration::Value(
+                BorderWidthDeclarationValue::CustomPropertyFallback(
+                    width,
+                    NativeBorderWidthValue::Width(3),
+                )
+            ))
+        );
+        assert_eq!(
+            parse_logical_border_width_pair("var(--width, var(--other))"),
+            None
+        );
+        assert_eq!(parse_logical_border_width_pair("inherit 1px"), None);
+        assert_eq!(
+            parse_logical_border_width_pair("revert-layer"),
+            Some([LocalCascadeDeclaration::RevertLayer; 2])
+        );
+    }
+
+    #[test]
+    fn logical_border_width_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --width: 1px 2px; --alias: var(--width); border-block-width: var(--alias); border-style: solid; border-color: red; }
+            #child { border-block-width: var(--alias); border-style: solid; border-color: red; }
+            #fallback { border-block-width: var(--missing, 3px 4px); border-style: solid; border-color: red; }
+            #invalid { --bad: unsupported; border-block-width: var(--bad, 5px); border-style: solid; border-color: red; }
+            #cycle { --cycle: var(--cycle); border-block-width: var(--cycle, 6px); border-style: solid; border-color: red; }
+            #reset { --reset: initial; border-block-width: var(--reset, 7px); border-style: solid; border-color: red; }
+            #longhand { --side: 8px; border-inline-start-width: var(--side); border-style: solid; border-color: red; }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='longhand'>Longhand</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        assert_eq!(style("parent").border_widths(), [1, 0, 2, 0]);
+        assert_eq!(style("child").border_widths(), [1, 0, 2, 0]);
+        assert_eq!(style("fallback").border_widths(), [3, 0, 4, 0]);
+        assert_eq!(style("invalid").border_widths(), [5, 0, 5, 0]);
+        assert_eq!(style("cycle").border_widths(), [6, 0, 6, 0]);
+        assert_eq!(style("reset").border_widths(), [0; 4]);
+        assert_eq!(style("longhand").border_widths(), [0, 0, 0, 8]);
     }
 
     #[test]
@@ -30663,16 +30818,16 @@ mod tests {
             declarations.logical_border.width,
             [
                 Some(LocalCascadeDeclaration::Value(
-                    NativeBorderWidthValue::Width(1)
+                    BorderWidthDeclarationValue::Value(NativeBorderWidthValue::Width(1)),
                 )),
                 Some(LocalCascadeDeclaration::Value(
-                    NativeBorderWidthValue::Width(2)
+                    BorderWidthDeclarationValue::Value(NativeBorderWidthValue::Width(2)),
                 )),
                 Some(LocalCascadeDeclaration::Value(
-                    NativeBorderWidthValue::Width(3)
+                    BorderWidthDeclarationValue::Value(NativeBorderWidthValue::Width(3)),
                 )),
                 Some(LocalCascadeDeclaration::Value(
-                    NativeBorderWidthValue::Width(4)
+                    BorderWidthDeclarationValue::Value(NativeBorderWidthValue::Width(4)),
                 )),
             ]
         );

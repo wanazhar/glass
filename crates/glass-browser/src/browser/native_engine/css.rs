@@ -13761,6 +13761,7 @@ fn parse_relative_font_size(value: &str) -> Option<NativeFontSizeDeclarationValu
 }
 
 const MAX_NATIVE_FONT_SIZE_CALC_TERMS: usize = 16;
+const MAX_NATIVE_FONT_SIZE_CALC_PRODUCT_OPERANDS: usize = 8;
 
 fn merge_font_size_calculation(
     total: &mut NativeFontSizeCalculation,
@@ -13944,60 +13945,119 @@ fn scale_font_size_calculation(
 }
 
 fn parse_font_size_calculation_product(value: &str) -> Option<NativeFontSizeCalculation> {
-    let mut operator = None;
-    let mut operator_index = None;
-    for (index, byte) in value.bytes().enumerate() {
-        if !matches!(byte, b'*' | b'/') {
-            continue;
-        }
-        if operator.is_some() {
+    enum ProductValue {
+        Calculation(NativeFontSizeCalculation),
+        Unitless(u32),
+    }
+
+    fn parse_operand(value: &str) -> Option<ProductValue> {
+        parse_font_size_calculation_term_any(value)
+            .map(ProductValue::Calculation)
+            .or_else(|| {
+                parse_font_size_decimal_milli(value)
+                    .filter(|factor| {
+                        *factor <= super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000)
+                    })
+                    .map(ProductValue::Unitless)
+            })
+    }
+
+    fn scale_unitless(lhs: u32, rhs: u32, divide: bool) -> Option<u32> {
+        if divide && rhs == 0 {
             return None;
         }
-        operator = Some(byte);
-        operator_index = Some(index);
+        let denominator = if divide { u64::from(rhs) } else { 1_000 };
+        let product = u64::from(lhs).checked_mul(if divide { 1_000 } else { u64::from(rhs) })?;
+        let rounded = product
+            .checked_add(denominator / 2)?
+            .checked_div(denominator)?;
+        u32::try_from(rounded).ok()
     }
-    let Some(operator) = operator else {
-        return parse_font_size_calculation_term_any(value);
-    };
-    let operator_index = operator_index?;
-    let left = value.get(..operator_index)?.trim();
-    let right = value.get(operator_index.saturating_add(1)..)?.trim();
-    if left.is_empty() || right.is_empty() {
+
+    fn apply_product(
+        left: ProductValue,
+        operator: u8,
+        right: ProductValue,
+    ) -> Option<ProductValue> {
+        let divide = operator == b'/';
+        match (left, right, divide) {
+            (ProductValue::Calculation(calculation), ProductValue::Unitless(factor), divide) => {
+                scale_font_size_calculation(calculation, factor, divide)
+                    .map(ProductValue::Calculation)
+            }
+            (ProductValue::Unitless(factor), ProductValue::Calculation(calculation), false) => {
+                scale_font_size_calculation(calculation, factor, false)
+                    .map(ProductValue::Calculation)
+            }
+            (ProductValue::Unitless(left), ProductValue::Unitless(right), divide) => {
+                scale_unitless(left, right, divide).map(ProductValue::Unitless)
+            }
+            _ => None,
+        }
+    }
+
+    let mut current = None;
+    let mut operator = None;
+    let mut operand_start = 0;
+    let mut operand_count = 0_usize;
+    let mut depth = 0_usize;
+    for (index, byte) in value.bytes().enumerate() {
+        match byte {
+            b'(' => depth = depth.checked_add(1)?,
+            b')' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            b'*' | b'/' if depth == 0 => {
+                let operand = value.get(operand_start..index)?.trim();
+                if operand.is_empty() {
+                    return None;
+                }
+                operand_count = operand_count.saturating_add(1);
+                if operand_count > MAX_NATIVE_FONT_SIZE_CALC_PRODUCT_OPERANDS {
+                    return None;
+                }
+                let parsed = parse_operand(operand)?;
+                if let Some(left) = current.take() {
+                    current = Some(apply_product(left, operator?, parsed)?);
+                } else if operator.is_some() {
+                    return None;
+                } else {
+                    current = Some(parsed);
+                }
+                operator = Some(byte);
+                operand_start = index.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
         return None;
     }
-    let factor_left = parse_font_size_decimal_milli(left)
-        .filter(|factor| *factor <= super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000));
-    let factor_right = parse_font_size_decimal_milli(right)
-        .filter(|factor| *factor <= super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000));
-    match operator {
-        b'*' => {
-            if let Some(factor) = factor_right {
-                return scale_font_size_calculation(
-                    parse_font_size_calculation_term_any(left)?,
-                    factor,
-                    false,
-                );
-            }
-            if let Some(factor) = factor_left {
-                return scale_font_size_calculation(
-                    parse_font_size_calculation_term_any(right)?,
-                    factor,
-                    false,
-                );
-            }
-        }
-        b'/' => {
-            if let Some(factor) = factor_right {
-                return scale_font_size_calculation(
-                    parse_font_size_calculation_term_any(left)?,
-                    factor,
-                    true,
-                );
-            }
-        }
-        _ => {}
+
+    let operand = value.get(operand_start..)?.trim();
+    if operand.is_empty() {
+        return None;
     }
-    None
+    operand_count = operand_count.saturating_add(1);
+    if operand_count > MAX_NATIVE_FONT_SIZE_CALC_PRODUCT_OPERANDS {
+        return None;
+    }
+    let parsed = parse_operand(operand)?;
+    if let Some(left) = current.take() {
+        current = Some(apply_product(left, operator?, parsed)?);
+    } else if operator.is_some() {
+        return None;
+    } else {
+        current = Some(parsed);
+    }
+
+    match current? {
+        ProductValue::Calculation(calculation) => Some(calculation),
+        ProductValue::Unitless(_) => None,
+    }
 }
 
 fn parse_font_size_calculation(value: &str) -> Option<NativeFontSizeCalculation> {
@@ -25281,10 +25341,41 @@ mod tests {
                 }
             ))
         );
-        assert_eq!(parse_font_size_value("calc(1px / 0)"), None);
+        assert_eq!(
+            parse_font_size_value("calc(1px * 2 * 3)"),
+            Some(NativeFontSizeDeclarationValue::Calculation(
+                NativeFontSizeCalculation {
+                    absolute_milli: 6_000,
+                    ..NativeFontSizeCalculation::default()
+                }
+            ))
+        );
+        assert_eq!(
+            parse_font_size_value("calc(calc(1em * 2) * 3)"),
+            Some(NativeFontSizeDeclarationValue::Calculation(
+                NativeFontSizeCalculation {
+                    parent_scale_milli: 6_000,
+                    ..NativeFontSizeCalculation::default()
+                }
+            ))
+        );
+        assert_eq!(
+            parse_font_size_value("calc(2 / 3 * 1em)"),
+            Some(NativeFontSizeDeclarationValue::Calculation(
+                NativeFontSizeCalculation {
+                    parent_scale_milli: 667,
+                    ..NativeFontSizeCalculation::default()
+                }
+            ))
+        );
         assert_eq!(parse_font_size_value("calc(1px * 2px)"), None);
-        assert_eq!(parse_font_size_value("calc(1px * 2 * 3)"), None);
+        assert_eq!(parse_font_size_value("calc(1px / 2px / 2)"), None);
+        assert_eq!(parse_font_size_value("calc(1px / 0)"), None);
         assert_eq!(parse_font_size_value("calc(-1px + 2px)"), None);
+        assert_eq!(
+            parse_font_size_value("calc(1px * 2 * 3 * 4 * 5 * 6 * 7 * 8 * 9)"),
+            None
+        );
     }
 
     #[test]
@@ -27232,7 +27323,7 @@ mod tests {
     #[test]
     fn product_and_nested_calc_font_sizes_resolve() {
         let document = NativeDocument::parse(
-            "<style>#parent { font-size: 24px; } #times { font-size: calc(1em * 2); } #reverse { font-size: calc(2 * 1em); } #divide { font-size: calc(24px / 2); } #nested { font-size: calc(calc(1em + 2px) * 2); } #invalid { font-size: calc(1px / 0); }</style><div id='parent'><span id='times'>Times</span><span id='reverse'>Reverse</span><span id='divide'>Divide</span><span id='nested'>Nested</span><span id='invalid'>Invalid</span></div>",
+            "<style>#parent { font-size: 24px; } #times { font-size: calc(1em * 2); } #reverse { font-size: calc(2 * 1em); } #divide { font-size: calc(24px / 2); } #nested { font-size: calc(calc(1em + 2px) * 2); } #chain { font-size: calc(1em * 2 * 3); } #reverse-chain { font-size: calc(2 * 1em * 3); } #divide-chain { font-size: calc(24px / 2 / 2); } #nested-chain { font-size: calc(calc(1em * 2) * 3); } #invalid { font-size: calc(1px / 0); } #invalid-chain { font-size: calc(1px * 2px * 2); }</style><div id='parent'><span id='times'>Times</span><span id='reverse'>Reverse</span><span id='divide'>Divide</span><span id='nested'>Nested</span><span id='chain'>Chain</span><span id='reverse-chain'>Reverse chain</span><span id='divide-chain'>Divide chain</span><span id='nested-chain'>Nested chain</span><span id='invalid'>Invalid</span><span id='invalid-chain'>Invalid chain</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -27240,13 +27331,39 @@ mod tests {
         let reverse = document.resolve_target("id=reverse").unwrap();
         let divide = document.resolve_target("id=divide").unwrap();
         let nested = document.resolve_target("id=nested").unwrap();
+        let chain = document.resolve_target("id=chain").unwrap();
+        let reverse_chain = document.resolve_target("id=reverse-chain").unwrap();
+        let divide_chain = document.resolve_target("id=divide-chain").unwrap();
+        let nested_chain = document.resolve_target("id=nested-chain").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
+        let invalid_chain = document.resolve_target("id=invalid-chain").unwrap();
 
         assert_eq!(document.computed_style_for_layout(times).font_size(), 48);
         assert_eq!(document.computed_style_for_layout(reverse).font_size(), 48);
         assert_eq!(document.computed_style_for_layout(divide).font_size(), 12);
         assert_eq!(document.computed_style_for_layout(nested).font_size(), 52);
+        assert_eq!(document.computed_style_for_layout(chain).font_size(), 144);
+        assert_eq!(
+            document
+                .computed_style_for_layout(reverse_chain)
+                .font_size(),
+            144
+        );
+        assert_eq!(
+            document.computed_style_for_layout(divide_chain).font_size(),
+            6
+        );
+        assert_eq!(
+            document.computed_style_for_layout(nested_chain).font_size(),
+            144
+        );
         assert_eq!(document.computed_style_for_layout(invalid).font_size(), 24);
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid_chain)
+                .font_size(),
+            24
+        );
     }
 
     #[test]

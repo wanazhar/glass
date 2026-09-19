@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-571`, following
+expansion checkpoint is completed `native-engine-browser-572`, following
+completed `native-engine-browser-571`, following
 completed `native-engine-browser-570`, following
 completed `native-engine-browser-569`, following
 completed `native-engine-browser-568`, following
@@ -448,6 +449,16 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 572 extends bounded native custom-property substitution to inherited
+`text-decoration-color`. Standalone `var(--name)` and concrete
+`var(--name, color)` fallbacks now resolve inherited, nested, invalid, and
+cyclic values before normal decoration-color resolution, while `currentColor`,
+CSS-wide keywords, `revert-layer`, and the existing text-decoration cascade
+and paint model remain unchanged. Complete shorthand substitution, composite
+color functions, CSS-wide fallback values, registered properties, broader
+color properties, full CSS variable grammar, and complete CSS/Web IDL parity
+remain explicit issue #40 gates.
 
 Slice 571 extends bounded native custom-property substitution to inherited
 border color declarations. Standalone `var(--name)` and concrete

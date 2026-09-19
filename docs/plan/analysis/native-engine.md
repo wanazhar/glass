@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-569`, following
+expansion checkpoint is completed `native-engine-browser-570`, following
+completed `native-engine-browser-569`, following
 completed `native-engine-browser-568`, following
 completed `native-engine-browser-567`, following
 completed `native-engine-browser-566`, following
@@ -446,6 +447,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 570 extends bounded native custom-property substitution to inherited
+CSS `background-color`. Standalone `var(--name)` and concrete
+`var(--name, color)` fallbacks now resolve inherited, nested, invalid, and
+cyclic values before normal background-color resolution, while
+`currentColor`, CSS-wide keywords, and the existing paint/display-list color
+model remain unchanged. Composite color functions, CSS-wide fallback values,
+registered properties, broader color properties, full CSS variable grammar,
+and complete CSS/Web IDL parity remain explicit issue #40 gates.
 
 Slice 569 extends bounded native custom-property substitution to inherited
 CSS `color`. Standalone `var(--name)` and concrete `var(--name, color)`

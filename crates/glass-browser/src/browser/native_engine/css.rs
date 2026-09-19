@@ -1215,6 +1215,13 @@ impl NativeFontFeatureSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontFeatureSettingsDeclarationValue {
+    Value(NativeFontFeatureSettings),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontFeatureSettings),
+}
+
 /// One bounded OpenType variation axis value expressed in thousandths so the
 /// native style and content-process wire remain deterministic and float-free.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -4533,10 +4540,10 @@ impl NativeStylesheet {
                 inherited.font_variant_numeric,
                 NativeFontVariantNumeric::default(),
             ),
-            font_feature_settings: resolve_inherited_text_declaration(
+            font_feature_settings: resolve_font_feature_settings(
                 *font_feature_settings,
                 inherited.font_feature_settings,
-                NativeFontFeatureSettings::default(),
+                custom_properties,
             ),
             font_kerning: resolve_font_kerning(
                 *font_kerning,
@@ -4752,7 +4759,7 @@ struct NativeCascadeScratch {
     font_variation_settings: NativeTextCascadeCandidates<NativeFontVariationSettings>,
     font_variant_east_asian: NativeTextCascadeCandidates<NativeFontVariantEastAsian>,
     font_variant_numeric: NativeTextCascadeCandidates<NativeFontVariantNumeric>,
-    font_feature_settings: NativeTextCascadeCandidates<NativeFontFeatureSettings>,
+    font_feature_settings: NativeTextCascadeCandidates<FontFeatureSettingsDeclarationValue>,
     font_kerning: NativeTextCascadeCandidates<FontKerningDeclarationValue>,
     font_optical_sizing: NativeTextCascadeCandidates<FontOpticalSizingDeclarationValue>,
     font_palette: NativeTextCascadeCandidates<FontPaletteDeclarationValue>,
@@ -5468,6 +5475,98 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_feature_settings_declaration(
+    declaration: InheritedTextDeclaration<FontFeatureSettingsDeclarationValue>,
+    inherited: NativeFontFeatureSettings,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontFeatureSettingsDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_feature_settings_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => {
+            Some(FontFeatureSettingsDeclarationValue::Value(inherited))
+        }
+        InheritedTextDeclaration::Initial => Some(FontFeatureSettingsDeclarationValue::Value(
+            NativeFontFeatureSettings::default(),
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_feature_settings_value(
+    value: FontFeatureSettingsDeclarationValue,
+    inherited: NativeFontFeatureSettings,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontFeatureSettingsDeclarationValue> {
+    match value {
+        FontFeatureSettingsDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_feature_settings_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_feature_settings_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontFeatureSettingsDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_feature_settings_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_feature_settings_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontFeatureSettingsDeclarationValue::Value(fallback)))
+        }
+        FontFeatureSettingsDeclarationValue::CustomProperty(_)
+        | FontFeatureSettingsDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontFeatureSettingsDeclarationValue::Value(value) => {
+            Some(FontFeatureSettingsDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_font_feature_settings(
+    candidates: NativeTextCascadeCandidates<FontFeatureSettingsDeclarationValue>,
+    inherited: NativeFontFeatureSettings,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontFeatureSettings {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontFeatureSettingsDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_feature_settings_declaration(
+                declaration,
+                inherited,
+                custom_properties,
+                0,
+            )
+        },
+    );
+    match resolved {
+        FontFeatureSettingsDeclarationValue::Value(value) => value,
+        FontFeatureSettingsDeclarationValue::CustomProperty(_)
+        | FontFeatureSettingsDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_palette_declaration(
@@ -8214,7 +8313,7 @@ struct NativeDeclarations {
     font_variation_settings: Option<InheritedTextDeclaration<NativeFontVariationSettings>>,
     font_variant_east_asian: Option<InheritedTextDeclaration<NativeFontVariantEastAsian>>,
     font_variant_numeric: Option<InheritedTextDeclaration<NativeFontVariantNumeric>>,
-    font_feature_settings: Option<InheritedTextDeclaration<NativeFontFeatureSettings>>,
+    font_feature_settings: Option<InheritedTextDeclaration<FontFeatureSettingsDeclarationValue>>,
     font_kerning: Option<InheritedTextDeclaration<FontKerningDeclarationValue>>,
     font_optical_sizing: Option<InheritedTextDeclaration<FontOpticalSizingDeclarationValue>>,
     font_palette: Option<InheritedTextDeclaration<FontPaletteDeclarationValue>>,
@@ -16134,10 +16233,39 @@ pub(crate) fn format_font_feature_settings(settings: NativeFontFeatureSettings) 
         .join(", ")
 }
 
+fn parse_font_feature_settings_custom_property(
+    value: &str,
+) -> Option<FontFeatureSettingsDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_family_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_feature_settings(fallback).map(|fallback| {
+            FontFeatureSettingsDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(FontFeatureSettingsDeclarationValue::CustomProperty(
+            name_hash,
+        )),
+    }
+}
+
+fn parse_font_feature_settings_property(
+    value: &str,
+) -> Option<FontFeatureSettingsDeclarationValue> {
+    parse_font_feature_settings(value)
+        .map(FontFeatureSettingsDeclarationValue::Value)
+        .or_else(|| parse_font_feature_settings_custom_property(value))
+}
+
 fn parse_font_feature_settings_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontFeatureSettings>> {
-    parse_inherited_text_declaration(value, parse_font_feature_settings)
+) -> Option<InheritedTextDeclaration<FontFeatureSettingsDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_feature_settings_property)
 }
 
 fn parse_font_kerning(value: &str) -> Option<NativeFontKerning> {
@@ -26381,6 +26509,24 @@ mod tests {
         assert!(parse_font_feature_settings(r#""liga" -1"#).is_none());
         assert!(parse_font_feature_settings(r#""liga" 65536"#).is_none());
         assert!(parse_font_feature_settings(r#""liga" 1 extra"#).is_none());
+        let feature_name = parse_custom_property_name("--features").unwrap();
+        let fallback = parse_font_feature_settings(r#""liga" off, "kern" on"#).unwrap();
+        assert_eq!(
+            parse_font_feature_settings_property("var(--features)"),
+            Some(FontFeatureSettingsDeclarationValue::CustomProperty(
+                feature_name
+            ))
+        );
+        assert_eq!(
+            parse_font_feature_settings_declaration(r#"var(--features, "liga" off, "kern" on)"#),
+            Some(InheritedTextDeclaration::Value(
+                FontFeatureSettingsDeclarationValue::CustomPropertyFallback(feature_name, fallback)
+            ))
+        );
+        assert_eq!(
+            parse_font_feature_settings_property("var(--features, var(--other))"),
+            None
+        );
     }
     #[test]
     fn font_face_variant_descriptor_maps_to_bounded_features() {
@@ -28377,6 +28523,63 @@ mod tests {
         assert_eq!(inherit, parent);
         assert_eq!(clear, NativeFontFeatureSettings::default());
         assert_eq!(invalid, parent);
+    }
+
+    #[test]
+    fn inherited_font_feature_settings_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --features: "liga" off, "kern" on; --alias: var(--features); --cycle: var(--cycle); font-feature-settings: var(--features); }
+            #child { font-feature-settings: var(--alias); }
+            #fallback { font-feature-settings: var(--missing, "dlig" on); }
+            #invalid { --bad: "liga" 65536; font-feature-settings: var(--bad, "kern" off); }
+            #cycle { font-feature-settings: var(--cycle, normal); }
+            #wide-initial { --wide: initial; font-feature-settings: var(--wide); }
+            #wide-inherit { --wide: inherit; font-feature-settings: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_feature_settings()
+        };
+        let parent = style("parent");
+        let child = style("child");
+        let fallback = style("fallback");
+        let invalid = style("invalid");
+        let cycle = style("cycle");
+
+        assert_eq!(parent.count, 2);
+        assert_eq!(child, parent);
+        assert_eq!(fallback.count, 1);
+        assert_eq!(
+            fallback.values[0],
+            NativeFontFeature {
+                tag: *b"dlig",
+                value: 1
+            }
+        );
+        assert_eq!(invalid.count, 1);
+        assert_eq!(
+            invalid.values[0],
+            NativeFontFeature {
+                tag: *b"kern",
+                value: 0
+            }
+        );
+        assert_eq!(cycle, NativeFontFeatureSettings::default());
+        assert_eq!(style("wide-initial"), NativeFontFeatureSettings::default());
+        assert_eq!(style("wide-inherit"), parent);
     }
 
     #[test]

@@ -1,8 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-637`, following
-completed `native-engine-browser-636`,
+expansion checkpoint is completed `native-engine-browser-638`, following
+completed `native-engine-browser-637`, following completed
 completed `native-engine-browser-634`, following
 completed `native-engine-browser-633`, following
 completed `native-engine-browser-632`, following
@@ -513,6 +513,13 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 638 adds bounded inline `@media` parsing. Style rules retain their
+condition and both normal declarations and custom-property candidates apply
+the existing viewport media evaluator; layer propagation is retained and
+nested media remains fail-closed with a diagnostic. Full Media Queries grammar,
+nested conditional composition, complete CSS and Web IDL parity remain issue
+#40 gates.
 
 Slice 637 extends bounded custom-property substitution to physical
 `border-color` shorthand values. Side-indexed aliases and one- to four-color

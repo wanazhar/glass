@@ -1,8 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-637`, following completed
-`native-engine-browser-636`,
+`native-engine-browser-638`, following completed `native-engine-browser-637`,
+following completed `native-engine-browser-636`, following completed
 `native-engine-browser-634`, following completed
 `native-engine-browser-633`, following completed
 `native-engine-browser-632`, following completed
@@ -506,6 +506,13 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 638 adds bounded inline `@media` rule support to the native CSS
+stylesheet. Parsed rules retain their media condition and are filtered by the
+existing viewport evaluator in both declaration and custom-property cascade;
+`@layer` propagation remains intact and nested media is explicitly diagnosed.
+Full Media Queries grammar, nested conditional composition, complete CSS and
+Web IDL parity, and broader issue #40 conformance remain explicit gates.
 
 Slice 637 extends bounded native custom-property substitution to the physical
 `border-color` shorthand. Each physical edge retains a side-indexed alias

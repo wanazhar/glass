@@ -6849,6 +6849,7 @@ impl NativeDocument {
                     letter_spacing: inherited_letter_spacing,
                     pointer_events: inherited_pointer_events,
                 },
+                self.viewport,
             );
             if !root_element_seen && is_root_element {
                 inherited_root_font_size = style.font_size();

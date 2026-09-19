@@ -4614,7 +4614,7 @@ impl NativeStylesheet {
                 *visibility,
                 VisibilityValue::Other,
             ) == VisibilityValue::Hidden,
-            opacity: resolve_local_optional_cascade_declaration(*opacity),
+            opacity: resolve_opacity(*opacity, custom_properties),
             white_space: resolve_white_space(
                 *white_space,
                 inherited.white_space,
@@ -4844,6 +4844,13 @@ enum VisibilityValue {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpacityDeclarationValue {
+    Value(u8),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, u8),
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum OverflowValue {
     Hidden,
@@ -4913,7 +4920,7 @@ struct NativeCascadeScratch {
     grid_template_columns: NativeLocalCascadeCandidates<NativeGridTrackList>,
     grid_template_rows: NativeLocalCascadeCandidates<NativeGridTrackList>,
     visibility: NativeLocalCascadeCandidates<VisibilityValue>,
-    opacity: NativeLocalCascadeCandidates<u8>,
+    opacity: NativeLocalCascadeCandidates<OpacityDeclarationValue>,
     white_space: NativeTextCascadeCandidates<WhiteSpaceDeclarationValue>,
     text_align: NativeTextCascadeCandidates<TextAlignDeclarationValue>,
     text_align_last: NativeTextCascadeCandidates<TextAlignLastDeclarationValue>,
@@ -8316,6 +8323,79 @@ fn resolve_local_optional_cascade_declaration<T: Copy, const N: usize>(
     })
 }
 
+fn resolve_opacity_declaration(
+    declaration: LocalCascadeDeclaration<OpacityDeclarationValue>,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<Option<OpacityDeclarationValue>> {
+    match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_opacity_value(value, custom_properties, depth).map(Some)
+        }
+        LocalCascadeDeclaration::Inherit => None,
+        LocalCascadeDeclaration::Reset => Some(None),
+        LocalCascadeDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_opacity_value(
+    value: OpacityDeclarationValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<OpacityDeclarationValue> {
+    match value {
+        OpacityDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_opacity_declaration(value))
+                .and_then(|declaration| {
+                    resolve_opacity_declaration(
+                        declaration,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .flatten()
+        }
+        OpacityDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_opacity_declaration(value))
+                .and_then(|declaration| {
+                    resolve_opacity_declaration(
+                        declaration,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .flatten()
+                .or(Some(OpacityDeclarationValue::Value(fallback)))
+        }
+        OpacityDeclarationValue::CustomProperty(_)
+        | OpacityDeclarationValue::CustomPropertyFallback(_, _) => None,
+        OpacityDeclarationValue::Value(value) => Some(OpacityDeclarationValue::Value(value)),
+    }
+}
+
+fn resolve_opacity(
+    candidates: NativeLocalCascadeCandidates<OpacityDeclarationValue>,
+    custom_properties: &BTreeMap<u64, String>,
+) -> Option<u8> {
+    let resolved = resolve_alignment_candidates(candidates, None, |declaration| {
+        resolve_opacity_declaration(declaration, custom_properties, 0)
+    });
+    match resolved {
+        Some(OpacityDeclarationValue::Value(value)) => Some(value),
+        Some(OpacityDeclarationValue::CustomProperty(_))
+        | Some(OpacityDeclarationValue::CustomPropertyFallback(_, _))
+        | None => None,
+    }
+}
+
 fn resolve_native_color_value(
     value: NativeColorValue,
     inherited: Option<NativeColor>,
@@ -10316,7 +10396,7 @@ struct NativeDeclarations {
     grid_template_rows: Option<LocalCascadeDeclaration<NativeGridTrackList>>,
     grid_template_rows_important: bool,
     visibility: Option<LocalCascadeDeclaration<VisibilityValue>>,
-    opacity: Option<LocalCascadeDeclaration<u8>>,
+    opacity: Option<LocalCascadeDeclaration<OpacityDeclarationValue>>,
     local_importance: NativeLocalDeclarationImportance,
     dimension_importance: NativeDimensionDeclarationImportance,
     box_model_importance: NativeBoxModelDeclarationImportance,
@@ -16096,8 +16176,42 @@ fn parse_opacity(value: &str) -> Option<u8> {
     u8::try_from(alpha).ok()
 }
 
-fn parse_opacity_declaration(value: &str) -> Option<LocalCascadeDeclaration<u8>> {
-    parse_local_cascade_declaration(value, parse_opacity)
+fn parse_opacity_custom_property(value: &str) -> Option<OpacityDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_opacity(fallback)
+            .map(|fallback| OpacityDeclarationValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(OpacityDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_opacity_property(value: &str) -> Option<OpacityDeclarationValue> {
+    parse_opacity(value)
+        .map(OpacityDeclarationValue::Value)
+        .or_else(|| parse_opacity_custom_property(value))
+}
+
+fn parse_opacity_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<OpacityDeclarationValue>> {
+    parse_local_cascade_declaration(value, parse_opacity_property)
 }
 
 fn parse_decimal_milli(value: &str) -> Option<u32> {
@@ -20130,7 +20244,9 @@ mod tests {
         );
         assert_eq!(
             declarations.opacity,
-            Some(LocalCascadeDeclaration::Value(128))
+            Some(LocalCascadeDeclaration::Value(
+                OpacityDeclarationValue::Value(128)
+            ))
         );
         assert_eq!(
             declarations.white_space,
@@ -21308,7 +21424,9 @@ mod tests {
         );
         assert_eq!(
             declarations.opacity,
-            Some(LocalCascadeDeclaration::Value(128))
+            Some(LocalCascadeDeclaration::Value(
+                OpacityDeclarationValue::Value(128)
+            ))
         );
         assert!(declarations.local_importance.display);
         assert!(declarations.local_importance.visibility);
@@ -21325,7 +21443,12 @@ mod tests {
             preserved.visibility,
             Some(LocalCascadeDeclaration::Value(VisibilityValue::Hidden))
         );
-        assert_eq!(preserved.opacity, Some(LocalCascadeDeclaration::Value(128)));
+        assert_eq!(
+            preserved.opacity,
+            Some(LocalCascadeDeclaration::Value(
+                OpacityDeclarationValue::Value(128)
+            ))
+        );
         assert!(preserved.local_importance.display);
         assert!(preserved.local_importance.visibility);
         assert!(preserved.local_importance.opacity);
@@ -21343,7 +21466,9 @@ mod tests {
         );
         assert_eq!(
             normal.opacity,
-            Some(LocalCascadeDeclaration::Value(u8::MAX))
+            Some(LocalCascadeDeclaration::Value(
+                OpacityDeclarationValue::Value(u8::MAX)
+            ))
         );
         assert!(!normal.local_importance.display);
         assert!(!normal.local_importance.visibility);
@@ -24684,7 +24809,9 @@ mod tests {
         );
         assert_eq!(
             parse_opacity_declaration("50%"),
-            Some(LocalCascadeDeclaration::Value(128))
+            Some(LocalCascadeDeclaration::Value(
+                OpacityDeclarationValue::Value(128)
+            ))
         );
         for value in [
             "revert-layer 50%",
@@ -24698,12 +24825,49 @@ mod tests {
         }
         assert_eq!(
             parse_declarations("opacity: 50%; opacity: 1.001").opacity,
-            Some(LocalCascadeDeclaration::Value(128))
+            Some(LocalCascadeDeclaration::Value(
+                OpacityDeclarationValue::Value(128)
+            ))
         );
         assert_eq!(
             parse_declarations("opacity: 50% !important").opacity,
-            Some(LocalCascadeDeclaration::Value(128))
+            Some(LocalCascadeDeclaration::Value(
+                OpacityDeclarationValue::Value(128)
+            ))
         );
+    }
+
+    #[test]
+    fn opacity_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let opacity = parse_custom_property_name("--opacity").unwrap();
+        assert_eq!(
+            parse_opacity_property("50%"),
+            Some(OpacityDeclarationValue::Value(128))
+        );
+        assert_eq!(
+            parse_opacity_declaration("var(--opacity)"),
+            Some(LocalCascadeDeclaration::Value(
+                OpacityDeclarationValue::CustomProperty(opacity)
+            ))
+        );
+        assert_eq!(
+            parse_opacity_declaration("var(--opacity, 50%)"),
+            Some(LocalCascadeDeclaration::Value(
+                OpacityDeclarationValue::CustomPropertyFallback(opacity, 128)
+            ))
+        );
+        let numeric = parse_custom_property_name("--numeric").unwrap();
+        assert_eq!(
+            parse_opacity_declaration("var(--numeric, 0.25)"),
+            Some(LocalCascadeDeclaration::Value(
+                OpacityDeclarationValue::CustomPropertyFallback(numeric, 64)
+            ))
+        );
+        assert_eq!(
+            parse_opacity_declaration("var(--opacity, var(--other))"),
+            None
+        );
+        assert_eq!(parse_opacity_declaration("inherit"), None);
     }
 
     #[test]
@@ -24742,6 +24906,38 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn opacity_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --opacity: 50%; --alias: var(--opacity); --cycle: var(--cycle); opacity: var(--opacity); }
+            #child { opacity: var(--alias); }
+            #fallback { opacity: var(--missing, 25%); }
+            #invalid { --bad: 2; opacity: var(--bad, 75%); }
+            #cycle { opacity: var(--cycle, 80%); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .opacity()
+        };
+
+        assert_eq!(style("parent"), 128);
+        assert_eq!(style("child"), 128);
+        assert_eq!(style("fallback"), 64);
+        assert_eq!(style("invalid"), 191);
+        assert_eq!(style("cycle"), 204);
     }
 
     #[test]

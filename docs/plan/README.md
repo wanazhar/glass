@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-561`, following completed
 `native-engine-browser-560`, following completed
 `native-engine-browser-559`, following completed
 `native-engine-browser-558`, following completed
@@ -464,40 +465,46 @@ native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
 
+The completed multiplicative CSS `calc()` `font-size` follow-up is
+[`native-engine-browser-561`](tasks/native-engine-browser-561.md): bounded
+unitless multiplication/division and nested `calc()` groups now scale the
+deferred absolute, parent-relative, root-relative, and viewport coefficients,
+while dimension/dimension products and invalid factors fail closed. CSS
+variables, chained products, dynamic viewport recomputation, extra-precision
+CSS number grammar, and complete CSS font-size parity remain issue #40 gates.
+
 The completed additive CSS `calc()` `font-size` follow-up is
 [`native-engine-browser-560`](tasks/native-engine-browser-560.md): inherited
 element `font-size` now accepts bounded additive and subtractive `calc()`
 terms across absolute, parent-relative, root-relative, and viewport units,
-with deferred checked resolution and native cascade fallback. Multiplication
-and division, nested math functions, dynamic viewport recomputation,
-extra-precision CSS number grammar, and complete CSS font-size parity remain
-issue #40 gates.
+with deferred checked resolution and native cascade fallback. CSS variables,
+chained products, dynamic viewport recomputation, extra-precision CSS number
+grammar, and complete CSS font-size parity remain issue #40 gates.
 
 The completed CSS viewport-relative `font-size` follow-up is
 [`native-engine-browser-559`](tasks/native-engine-browser-559.md): inherited
 element `font-size` now accepts bounded `vw`, `vh`, `vmin`, and `vmax` values
 resolved against the validated configured viewport, with checked thousandths,
 half-up integer-pixel conversion, content-wire carry, and out-of-range cascade
-fallback. Multiplication and division, nested math functions, dynamic
-viewport recomputation, extra-precision CSS number grammar, and complete CSS
-font-size parity remain issue #40 gates.
+fallback. CSS variables, chained products, dynamic viewport recomputation,
+extra-precision CSS number grammar, and complete CSS font-size parity remain
+issue #40 gates.
 
 The completed CSS fractional-pixel `font-size` follow-up is
 [`native-engine-browser-558`](tasks/native-engine-browser-558.md): inherited
 element `font-size` now accepts bounded fractional `px` values, converts
 thousandths with checked half-up rounding, and preserves the native 1 through
-256 px result bound. Multiplication and division, nested math functions,
-extra-precision CSS number grammar, and complete CSS font-size parity remain
-issue #40 gates.
+256 px result bound. CSS variables, chained products, extra-precision CSS
+number grammar, and complete CSS font-size parity remain issue #40 gates.
 
 The completed CSS root-relative `font-size` follow-up is
 [`native-engine-browser-557`](tasks/native-engine-browser-557.md): inherited
 element `font-size` now accepts bounded `rem` values resolved against the
 computed root element size. Root-relative factors use the same checked
 thousandths and half-up integer-pixel path as `em` and percentages, with
-out-of-range results falling through to the existing cascade fallback.
-Multiplication and division, nested math functions, extra-precision CSS number
-grammar, and complete CSS font-size parity remain issue #40 gates.
+out-of-range results falling through to the existing cascade fallback. CSS
+variables, chained products, extra-precision CSS number grammar, and complete
+CSS font-size parity remain issue #40 gates.
 
 The completed CSS relative `font-size` follow-up is
 [`native-engine-browser-556`](tasks/native-engine-browser-556.md): inherited
@@ -505,17 +512,17 @@ element `font-size` now accepts bounded `em` and percentage values. Factors use
 the existing thousandths grammar, scale the computed parent size with checked
 half-up integer arithmetic, and preserve the native 1 through 256 px bound;
 out-of-range relative results fall through to the existing cascade fallback.
-Multiplication and division, nested math functions, extra-precision CSS number
-grammar, and complete CSS font-size parity remain issue #40 gates.
+CSS variables, chained products, extra-precision CSS number grammar, and
+complete CSS font-size parity remain issue #40 gates.
 
 The completed CSS absolute `font-size` follow-up is
 [`native-engine-browser-555`](tasks/native-engine-browser-555.md): inherited
 element `font-size` now accepts bounded CSS absolute units `pt`, `pc`, `in`,
 `cm`, and `mm` alongside the existing integer `px` path. Values resolve
 through the CSS 96 dpi reference pixel and round half-up to the native integer
-pixel model, with the existing 1 through 256 px bound. Multiplication and
-division, nested math functions, extra-precision CSS number grammar, and
-complete CSS font-size parity remain issue #40 gates.
+pixel model, with the existing 1 through 256 px bound. CSS variables, chained
+products, extra-precision CSS number grammar, and complete CSS font-size parity
+remain issue #40 gates.
 
 The completed FontFaceSet event-handler follow-up is
 [`native-engine-browser-554`](tasks/native-engine-browser-554.md):

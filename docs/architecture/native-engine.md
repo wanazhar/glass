@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-561`, following completed
 `native-engine-browser-560`, following completed
 `native-engine-browser-559`, following completed
 `native-engine-browser-558`, following completed
@@ -431,49 +432,56 @@ acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
 
+Slice 561 closes the bounded multiplicative CSS `calc()` `font-size` gap.
+Unitless multiplication/division and nested `calc()` groups scale deferred
+absolute, parent-relative, root-relative, and viewport coefficients; invalid
+factor or dimension/dimension combinations fail closed. CSS variables, chained
+products, dynamic viewport recomputation, extra-precision CSS number grammar,
+and complete CSS font-size parity remain issue #40 gates.
+
 Slice 560 closes the bounded additive CSS `calc()` `font-size` gap. Supported
 absolute, parent-relative, root-relative, and viewport terms remain deferred
 until computed-style resolution, where checked arithmetic and native cascade
-fallback preserve the 1 through 256 px contract. Multiplication and division,
-nested math functions, extra-precision CSS number grammar, and complete CSS
-font-size parity remain issue #40 gates.
+fallback preserve the 1 through 256 px contract. CSS variables, chained
+products, dynamic viewport recomputation, extra-precision CSS number grammar,
+and complete CSS font-size parity remain issue #40 gates.
 
 Slice 559 closes the bounded viewport-relative CSS `font-size` gap. The native
 parser accepts `vw`, `vh`, `vmin`, and `vmax`; checked thousandth factors use
 the validated configured viewport with half-up integer-pixel conversion,
 content-wire carry, and cascade fallback for rounded out-of-range results.
-Multiplication and division, nested math functions, dynamic viewport
-recomputation, extra-precision CSS number grammar, and complete CSS font-size
-parity remain issue #40 gates.
+CSS variables, chained products, dynamic viewport recomputation,
+extra-precision CSS number grammar, and complete CSS font-size parity remain
+issue #40 gates.
 
 Slice 558 closes the bounded fractional-pixel CSS `font-size` gap. The `px`
 branch now parses native thousandths and rounds half-up into the integer
 computed-style model while retaining the 1 through 256 px bound and fallback
-behavior for rounded out-of-range candidates. Multiplication and division,
-nested math functions, extra-precision CSS number grammar, and complete CSS
-font-size parity remain issue #40 gates.
+behavior for rounded out-of-range candidates. CSS variables, chained products,
+extra-precision CSS number grammar, and complete CSS font-size parity remain
+issue #40 gates.
 
 Slice 557 extends inherited CSS `font-size` with bounded root-relative `rem`
 values. The computed-style walk identifies the root element's resolved size,
 then applies checked thousandth-scale and half-up integer-pixel resolution to
 descendants. Results outside the native 1 through 256 px range fall through
-the existing cascade fallback. Multiplication and division, nested math
-functions, extra-precision CSS number grammar, and complete CSS font-size
-parity remain issue #40 gates.
+the existing cascade fallback. CSS variables, chained products,
+extra-precision CSS number grammar, and complete CSS font-size parity remain
+issue #40 gates.
 
 Slice 556 extends inherited CSS `font-size` with bounded parent-relative
 `em` and percentage values. Thousandth-scale factors resolve against the
 computed parent size with checked half-up integer arithmetic; values outside
 the native 1 through 256 px result range fall through the existing cascade
-fallback. Multiplication and division, nested math functions, extra-precision
-CSS number grammar, and complete CSS font-size parity remain issue #40 gates.
+fallback. CSS variables, chained products, extra-precision CSS number grammar,
+and complete CSS font-size parity remain issue #40 gates.
 
 Slice 555 adds bounded absolute CSS `font-size` units for inherited element
 styles. `pt`, `pc`, `in`, `cm`, and `mm` resolve through the CSS 96 dpi
 reference pixel and round half-up into the native integer-pixel computed style,
 while the existing 1 through 256 px bound and fail-closed parsing remain in
-force. Multiplication and division, nested math functions, extra-precision CSS
-number grammar, and complete CSS font-size parity remain issue #40 gates.
+force. CSS variables, chained products, extra-precision CSS number grammar,
+and complete CSS font-size parity remain issue #40 gates.
 
 Slice 554 adds the missing `FontFaceSet` event-handler IDL properties:
 `document.fonts.onloading`, `onloadingdone`, and `onloadingerror`. They reuse

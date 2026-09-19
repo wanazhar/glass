@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-628`, following completed
 `native-engine-browser-627`, following completed
 `native-engine-browser-626`, following completed
 `native-engine-browser-625`, following completed
@@ -530,6 +531,16 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed text-decoration presentation substitution follow-up is
+[`native-engine-browser-628`](tasks/native-engine-browser-628.md): native
+`text-decoration-style`, `text-decoration-skip-ink`,
+`text-decoration-skip-spaces`, `text-decoration-thickness`, and
+`text-underline-offset` now accept bounded standalone `var(--name)` values
+and concrete fallbacks. Resolution preserves inherited aliases, invalid and
+cyclic fallback handling, reset and `revert-layer` behavior, and declaration
+order. Full custom-property grammar, registered properties, and complete CSS
+and Web IDL parity remain issue #40 gates.
 
 The completed `place-content` substitution follow-up is
 [`native-engine-browser-627`](tasks/native-engine-browser-627.md): native

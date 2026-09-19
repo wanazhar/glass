@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-625`, following completed
 `native-engine-browser-624`, following completed
 `native-engine-browser-623`, following completed
 `native-engine-browser-622`, following completed
@@ -527,6 +528,15 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed flex order substitution follow-up is
+[`native-engine-browser-625`](tasks/native-engine-browser-625.md): native
+`order` now accepts bounded standalone `var(--name)` values and signed integer
+fallbacks. Resolution projects inherited aliases through non-inherited flex
+item order, handles invalid and cyclic values, preserves declaration-order
+precedence, and keeps existing reset and `revert-layer` behavior. Full
+custom-property grammar, registered properties, and complete CSS and Web IDL
+parity remain issue #40 gates.
 
 The completed flex shorthand substitution follow-up is
 [`native-engine-browser-624`](tasks/native-engine-browser-624.md): native

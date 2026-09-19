@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-625`, following completed
 `native-engine-browser-624`, following completed
 `native-engine-browser-623`, following completed
 `native-engine-browser-622`, following completed
@@ -494,6 +495,13 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 625 extends bounded native custom-property substitution to flex item
+`order`. Standalone `var(--name)` values and signed integer fallbacks now
+resolve inherited aliases through non-inherited flex item order, invalid and
+cyclic values, declaration-order precedence, and existing reset and
+`revert-layer` behavior. Full custom-property grammar, registered properties,
+and complete CSS and Web IDL parity remain explicit issue #40 gates.
 
 Slice 624 extends bounded native custom-property substitution to the
 `flex` shorthand. Standalone `var(--name)` values and concrete three-component

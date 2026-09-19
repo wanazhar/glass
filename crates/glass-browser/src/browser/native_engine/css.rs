@@ -841,6 +841,8 @@ enum JustifyContentDeclaration {
     Value(JustifyContentValue),
     CustomProperty(u64),
     CustomPropertyFallback(u64, JustifyContentValue),
+    CustomPropertyPlaceContent(u64),
+    CustomPropertyPlaceContentFallback(u64, JustifyContentValue),
     Inherit,
     Reset,
     RevertLayer,
@@ -905,6 +907,8 @@ enum AlignContentDeclaration {
     Value(AlignContentValue),
     CustomProperty(u64),
     CustomPropertyFallback(u64, AlignContentValue),
+    CustomPropertyPlaceContent(u64),
+    CustomPropertyPlaceContentFallback(u64, AlignContentValue),
     Inherit,
     Reset,
     RevertLayer,
@@ -6091,8 +6095,41 @@ fn resolve_justify_content_value(
                 })
                 .or(Some(fallback))
         }
+        JustifyContentDeclaration::CustomPropertyPlaceContent(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_place_content_declaration(value))
+                .and_then(|(_, justify_content)| {
+                    resolve_justify_content_value(
+                        justify_content,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        JustifyContentDeclaration::CustomPropertyPlaceContentFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_place_content_declaration(value))
+                .and_then(|(_, justify_content)| {
+                    resolve_justify_content_value(
+                        justify_content,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
         JustifyContentDeclaration::CustomProperty(_)
         | JustifyContentDeclaration::CustomPropertyFallback(_, _)
+        | JustifyContentDeclaration::CustomPropertyPlaceContent(_)
+        | JustifyContentDeclaration::CustomPropertyPlaceContentFallback(_, _)
         | JustifyContentDeclaration::RevertLayer => None,
     }
 }
@@ -6232,8 +6269,41 @@ fn resolve_align_content_value(
                 })
                 .or(Some(fallback))
         }
+        AlignContentDeclaration::CustomPropertyPlaceContent(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_place_content_declaration(value))
+                .and_then(|(align_content, _)| {
+                    resolve_align_content_value(
+                        align_content,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        AlignContentDeclaration::CustomPropertyPlaceContentFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_place_content_declaration(value))
+                .and_then(|(align_content, _)| {
+                    resolve_align_content_value(
+                        align_content,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
         AlignContentDeclaration::CustomProperty(_)
         | AlignContentDeclaration::CustomPropertyFallback(_, _)
+        | AlignContentDeclaration::CustomPropertyPlaceContent(_)
+        | AlignContentDeclaration::CustomPropertyPlaceContentFallback(_, _)
         | AlignContentDeclaration::RevertLayer => None,
     }
 }
@@ -19133,11 +19203,14 @@ fn parse_place_content_declaration(
             JustifyContentDeclaration::Inherit,
         ));
     }
-    let (align_content, justify_content) = parse_place_content(value)?;
-    Some((
-        AlignContentDeclaration::Value(align_content),
-        JustifyContentDeclaration::Value(justify_content),
-    ))
+    parse_place_content(value)
+        .map(|(align_content, justify_content)| {
+            (
+                AlignContentDeclaration::Value(align_content),
+                JustifyContentDeclaration::Value(justify_content),
+            )
+        })
+        .or_else(|| parse_place_content_custom_property(value))
 }
 
 fn parse_align_items(value: &str) -> Option<AlignItemsValue> {
@@ -19265,6 +19338,30 @@ fn parse_align_content_custom_property(value: &str) -> Option<AlignContentDeclar
         Some(fallback) => parse_align_content(fallback)
             .map(|fallback| AlignContentDeclaration::CustomPropertyFallback(name_hash, fallback)),
         None => Some(AlignContentDeclaration::CustomProperty(name_hash)),
+    }
+}
+fn parse_place_content_custom_property(
+    value: &str,
+) -> Option<(AlignContentDeclaration, JustifyContentDeclaration)> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => {
+            let (align_content, justify_content) = parse_place_content(fallback)?;
+            Some((
+                AlignContentDeclaration::CustomPropertyPlaceContentFallback(
+                    name_hash,
+                    align_content,
+                ),
+                JustifyContentDeclaration::CustomPropertyPlaceContentFallback(
+                    name_hash,
+                    justify_content,
+                ),
+            ))
+        }
+        None => Some((
+            AlignContentDeclaration::CustomPropertyPlaceContent(name_hash),
+            JustifyContentDeclaration::CustomPropertyPlaceContent(name_hash),
+        )),
     }
 }
 
@@ -29694,6 +29791,46 @@ mod tests {
                 )),
                 ..NativeDeclarations::default()
             }
+        );
+    }
+    #[test]
+    fn place_content_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let place = parse_custom_property_name("--place").unwrap();
+        assert_eq!(
+            parse_place_content_declaration("var(--place)"),
+            Some((
+                AlignContentDeclaration::CustomPropertyPlaceContent(place),
+                JustifyContentDeclaration::CustomPropertyPlaceContent(place),
+            ))
+        );
+        assert_eq!(
+            parse_place_content_declaration("var(--place, space-around flex-end)"),
+            Some((
+                AlignContentDeclaration::CustomPropertyPlaceContentFallback(
+                    place,
+                    AlignContentValue::SpaceAround
+                ),
+                JustifyContentDeclaration::CustomPropertyPlaceContentFallback(
+                    place,
+                    JustifyContentValue::FlexEnd
+                ),
+            ))
+        );
+        assert_eq!(
+            parse_declarations("place-content: var(--place)"),
+            NativeDeclarations {
+                align_content: Some(AlignContentDeclaration::CustomPropertyPlaceContent(place)),
+                justify_content: Some(JustifyContentDeclaration::CustomPropertyPlaceContent(place)),
+                ..NativeDeclarations::default()
+            }
+        );
+        assert_eq!(
+            parse_place_content_declaration("var(--place, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_place_content_declaration("var(--place, start center)"),
+            None
         );
     }
 
@@ -40715,6 +40852,87 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(auto).align_self(),
             AlignSelfValue::Auto
+        );
+    }
+
+    #[test]
+    fn place_content_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --place: space-around flex-end; --alias: var(--place); --cycle: var(--cycle); place-content: var(--alias); }
+            #child { place-content: var(--alias); }
+            #fallback { place-content: var(--missing, stretch flex-end); }
+            #invalid { --bad: unsupported; place-content: var(--bad, space-between center); }
+            #cycle { place-content: var(--cycle, space-evenly flex-start); }
+            #reset { --reset: initial; place-content: var(--reset, center flex-end); }
+            #override { --place: center; place-content: var(--place); align-content: flex-end; justify-content: space-between; }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='override'>Override</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        assert_eq!(
+            style("parent").align_content(),
+            AlignContentValue::SpaceAround
+        );
+        assert_eq!(
+            style("parent").justify_content(),
+            JustifyContentValue::FlexEnd
+        );
+        assert_eq!(
+            style("child").align_content(),
+            AlignContentValue::SpaceAround
+        );
+        assert_eq!(
+            style("child").justify_content(),
+            JustifyContentValue::FlexEnd
+        );
+        assert_eq!(
+            style("fallback").align_content(),
+            AlignContentValue::Stretch
+        );
+        assert_eq!(
+            style("fallback").justify_content(),
+            JustifyContentValue::FlexEnd
+        );
+        assert_eq!(
+            style("invalid").align_content(),
+            AlignContentValue::SpaceBetween
+        );
+        assert_eq!(
+            style("invalid").justify_content(),
+            JustifyContentValue::Center
+        );
+        assert_eq!(
+            style("cycle").align_content(),
+            AlignContentValue::SpaceEvenly
+        );
+        assert_eq!(
+            style("cycle").justify_content(),
+            JustifyContentValue::FlexStart
+        );
+        assert_eq!(style("reset").align_content(), AlignContentValue::FlexStart);
+        assert_eq!(
+            style("reset").justify_content(),
+            JustifyContentValue::FlexStart
+        );
+        assert_eq!(
+            style("override").align_content(),
+            AlignContentValue::FlexEnd
+        );
+        assert_eq!(
+            style("override").justify_content(),
+            JustifyContentValue::SpaceBetween
         );
     }
 

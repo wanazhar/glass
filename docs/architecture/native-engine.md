@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-627`, following completed
 `native-engine-browser-626`, following completed
 `native-engine-browser-625`, following completed
 `native-engine-browser-624`, following completed
@@ -496,6 +497,15 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 627 extends bounded native custom-property substitution to the
+`place-content` shorthand. Standalone `var(--name)` values and concrete
+one- or two-value fallbacks now project through the existing
+`align-content` and `justify-content` components, preserving inherited
+aliases, invalid and cyclic fallback handling, reset and `revert-layer`
+behavior, and same-block longhand precedence. Full custom-property grammar,
+registered properties, and complete CSS and Web IDL parity remain explicit
+issue #40 gates.
 
 Slice 626 extends bounded native custom-property substitution to
 `justify-content`, `align-items`, `align-self`, and `align-content`. Standalone

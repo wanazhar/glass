@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-564`, following
+expansion checkpoint is completed `native-engine-browser-565`, following
+completed `native-engine-browser-564`, following
 completed `native-engine-browser-563`, following
 completed `native-engine-browser-562`, following
 completed `native-engine-browser-561`, following
@@ -441,6 +442,14 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 565 adds bounded live viewport recomputation across the native engine
+seams. Updates validate and synchronize the content process, initialize newly
+prepared documents from the configured viewport, invalidate viewport-dependent
+computed styles, advance revision state, reset root scroll safely, and expose
+updated page viewport globals on the next evaluation. Resize-event dispatch,
+complete media/image re-selection, and full viewport-unit/API parity remain
+explicit issue #40 gates.
 
 Slice 564 extends bounded native CSS `font-size` products to left-to-right
 chains of up to eight operands. One deferred font-size dimension expression

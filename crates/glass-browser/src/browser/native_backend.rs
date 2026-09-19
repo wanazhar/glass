@@ -1274,6 +1274,13 @@ impl NativeEngineBackend {
             .map_err(native_error)
     }
 
+    pub async fn set_viewport(&self, viewport: Viewport) -> Result<(), BrowserBackendError> {
+        self.lock_engine(BackendOperation::Script)?
+            .set_viewport_async(viewport)
+            .await
+            .map_err(native_error)
+    }
+
     pub async fn pending_dialog(
         &self,
     ) -> Result<Option<crate::browser::session::PendingDialog>, BrowserBackendError> {

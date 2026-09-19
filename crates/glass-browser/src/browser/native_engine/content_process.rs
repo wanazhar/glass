@@ -1239,6 +1239,49 @@ impl NativeContentProcess {
         result
     }
 
+    pub(crate) async fn set_viewport(
+        &mut self,
+        viewport: Viewport,
+    ) -> Result<(), NativeEngineError> {
+        viewport.validate()?;
+        let id = self.next_id();
+        let response = match timeout(
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            self.exchange(json!({
+                "kind": "viewport_sync",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "width": viewport.width,
+                "height": viewport.height,
+                "device_scale_factor_milli": viewport.device_scale_factor_milli,
+            })),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                self.mark_failed(NativeWorkerFailureKind::Timeout);
+                let _ = self.child.start_kill();
+                return Err(NativeEngineError::worker_failure(
+                    "content process viewport synchronization",
+                    NativeWorkerFailureKind::Timeout,
+                    "content process viewport synchronization exceeded its deadline",
+                ));
+            }
+        };
+        let result = require_response_kind(
+            &response,
+            "viewport_synced",
+            id,
+            "content process viewport synchronization",
+        );
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+            let _ = self.child.start_kill();
+        }
+        result
+    }
+
     pub(crate) async fn sync_service_worker_clients(
         &mut self,
         clients: &[NativeServiceWorkerClientState],
@@ -4262,7 +4305,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let mut running = false;
-    let mut document = None;
+    let mut document: Option<NativeDocument> = None;
     let mut document_url = None;
     let mut document_origin = None;
     let mut viewport = Viewport::default();
@@ -4512,6 +4555,49 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     runtime.set_environment(next_environment);
                 }
                 json!({"kind":"environment_synced","id":id})
+            }
+            "viewport_sync" if protocol_matches(&request) && running => {
+                let width = request
+                    .get("width")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process viewport width",
+                            "must be a positive bounded integer",
+                        )
+                    })?;
+                let height = request
+                    .get("height")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process viewport height",
+                            "must be a positive bounded integer",
+                        )
+                    })?;
+                let device_scale_factor_milli = request
+                    .get("device_scale_factor_milli")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process viewport device scale factor",
+                            "must be a positive bounded integer",
+                        )
+                    })?;
+                let next_viewport = Viewport {
+                    width,
+                    height,
+                    device_scale_factor_milli,
+                };
+                next_viewport.validate()?;
+                viewport = next_viewport;
+                if let Some(document) = document.as_mut() {
+                    document.set_viewport(next_viewport)?;
+                }
+                json!({"kind":"viewport_synced","id":id})
             }
             "commit" if protocol_matches(&request) && running => {
                 json!({"kind":"committed","id":id})

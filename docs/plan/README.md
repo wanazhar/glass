@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-565`, following completed
 `native-engine-browser-564`, following completed
 `native-engine-browser-563`, following completed
 `native-engine-browser-562`, following completed
@@ -467,6 +468,14 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed dynamic native viewport follow-up is
+[`native-engine-browser-565`](tasks/native-engine-browser-565.md): live native
+viewport updates now synchronize the content process, invalidate
+viewport-dependent computed styles, advance the document revision, reset root
+scroll safely, and expose updated `innerWidth`/`innerHeight` values on the next
+page evaluation. Resize events, complete media/image re-selection, and full
+viewport-unit/API parity remain issue #40 gates.
 
 The completed chained CSS `calc()` `font-size` follow-up is
 [`native-engine-browser-564`](tasks/native-engine-browser-564.md): bounded

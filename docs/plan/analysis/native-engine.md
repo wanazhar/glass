@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-621`, following
-completed `native-engine-browser-620`, following
+expansion checkpoint is completed `native-engine-browser-622`, following
+completed `native-engine-browser-621`, following completed
+`native-engine-browser-620`, following completed
 completed `native-engine-browser-619`, following
 completed `native-engine-browser-618`, following
 completed `native-engine-browser-617`, following
@@ -499,7 +500,14 @@ native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
 
-Slice 621 extends bounded custom-property substitution to `visibility`.
+Slice 622 extends bounded custom-property substitution to `flex-direction`,
+`flex-wrap`, and `flex-flow`. Standalone `var(--name)` values and concrete
+direction, wrap, or flow fallbacks now resolve inherited custom-property
+aliases through both flex-flow components, invalid and cyclic fallback
+handling, longhand override precedence, and existing reset, inherit, and
+`revert-layer` behavior. Full custom-property grammar, registered properties,
+and complete CSS and Web IDL parity remain explicit issue #40 gates.
+
 Standalone `var(--name)` values and hidden or visible fallbacks now resolve
 inherited custom-property aliases, invalid and cyclic fallback handling, local
 cascade, and existing `revert-layer` behavior before the hidden-subtree owner.

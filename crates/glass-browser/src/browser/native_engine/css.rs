@@ -4789,24 +4789,12 @@ impl NativeStylesheet {
                 inherited.column_gap,
             ),
             row_gap: resolve_gap_axis((*gap).shorthand_row, (*gap).row_gap, inherited.row_gap),
-            width: resolve_local_inherited_nullable_cascade_declaration(*width, inherited.width),
-            height: resolve_local_inherited_nullable_cascade_declaration(*height, inherited.height),
-            min_width: resolve_local_inherited_nullable_cascade_declaration(
-                *min_width,
-                inherited.min_width,
-            ),
-            max_width: resolve_local_inherited_nullable_cascade_declaration(
-                *max_width,
-                inherited.max_width,
-            ),
-            min_height: resolve_local_inherited_nullable_cascade_declaration(
-                *min_height,
-                inherited.min_height,
-            ),
-            max_height: resolve_local_inherited_nullable_cascade_declaration(
-                *max_height,
-                inherited.max_height,
-            ),
+            width: resolve_dimension(*width, inherited.width, custom_properties),
+            height: resolve_dimension(*height, inherited.height, custom_properties),
+            min_width: resolve_dimension(*min_width, inherited.min_width, custom_properties),
+            max_width: resolve_dimension(*max_width, inherited.max_width, custom_properties),
+            min_height: resolve_dimension(*min_height, inherited.min_height, custom_properties),
+            max_height: resolve_dimension(*max_height, inherited.max_height, custom_properties),
             line_height: resolve_line_height(
                 *line_height,
                 inherited.line_height,
@@ -4870,6 +4858,13 @@ enum PositionOffsetDeclarationValue {
     Value(NativePositionOffset),
     CustomProperty(u64),
     CustomPropertyFallback(u64, NativePositionOffset),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DimensionDeclarationValue {
+    Value(u32),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4999,12 +4994,12 @@ struct NativeCascadeScratch {
     word_spacing: NativeTextCascadeCandidates<WordSpacingDeclarationValue>,
     letter_spacing: NativeTextCascadeCandidates<LetterSpacingDeclarationValue>,
     gap: GapCascade,
-    width: NativeLocalCascadeCandidates<u32>,
-    height: NativeLocalCascadeCandidates<u32>,
-    min_width: NativeLocalCascadeCandidates<u32>,
-    max_width: NativeLocalCascadeCandidates<u32>,
-    min_height: NativeLocalCascadeCandidates<u32>,
-    max_height: NativeLocalCascadeCandidates<u32>,
+    width: NativeLocalCascadeCandidates<DimensionDeclarationValue>,
+    height: NativeLocalCascadeCandidates<DimensionDeclarationValue>,
+    min_width: NativeLocalCascadeCandidates<DimensionDeclarationValue>,
+    max_width: NativeLocalCascadeCandidates<DimensionDeclarationValue>,
+    min_height: NativeLocalCascadeCandidates<DimensionDeclarationValue>,
+    max_height: NativeLocalCascadeCandidates<DimensionDeclarationValue>,
     line_height: NativeTextCascadeCandidates<LineHeightDeclarationValue>,
     background_color: NativePaintCascadeCandidates<NativeBackgroundColorValue>,
     background_image: NativePaintCascadeCandidates<NativeBackgroundImageValue>,
@@ -8397,6 +8392,76 @@ fn resolve_position_offset(
     }
 }
 
+fn resolve_dimension_declaration(
+    declaration: LocalCascadeDeclaration<DimensionDeclarationValue>,
+    inherited: Option<u32>,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<Option<u32>> {
+    match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_dimension_value(value, inherited, custom_properties, depth)
+        }
+        LocalCascadeDeclaration::Inherit => Some(inherited),
+        LocalCascadeDeclaration::Reset => Some(None),
+        LocalCascadeDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_dimension_value(
+    value: DimensionDeclarationValue,
+    inherited: Option<u32>,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<Option<u32>> {
+    match value {
+        DimensionDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_dimension_declaration(value))
+                .and_then(|declaration| {
+                    resolve_dimension_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        DimensionDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_dimension_declaration(value))
+                .and_then(|declaration| {
+                    resolve_dimension_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(Some(fallback)))
+        }
+        DimensionDeclarationValue::CustomProperty(_)
+        | DimensionDeclarationValue::CustomPropertyFallback(_, _) => None,
+        DimensionDeclarationValue::Value(value) => Some(Some(value)),
+    }
+}
+
+fn resolve_dimension(
+    candidates: NativeLocalCascadeCandidates<DimensionDeclarationValue>,
+    inherited: Option<u32>,
+    custom_properties: &BTreeMap<u64, String>,
+) -> Option<u32> {
+    resolve_alignment_candidates(candidates, None, |declaration| {
+        resolve_dimension_declaration(declaration, inherited, custom_properties, 0)
+    })
+}
+
 fn resolve_text_indent_declaration(
     declaration: LocalCascadeDeclaration<TextIndentDeclarationValue>,
     inherited: u32,
@@ -9067,18 +9132,6 @@ fn resolve_local_inherited_optional_cascade_declaration<T: Copy, const N: usize>
         LocalCascadeDeclaration::Value(value) => Some(Some(value)),
         LocalCascadeDeclaration::Inherit => Some(Some(inherited)),
         LocalCascadeDeclaration::Reset => None,
-        LocalCascadeDeclaration::RevertLayer => None,
-    })
-}
-
-fn resolve_local_inherited_nullable_cascade_declaration<T: Copy, const N: usize>(
-    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; N],
-    inherited: Option<T>,
-) -> Option<T> {
-    resolve_alignment_candidates(candidates, None, |declaration| match declaration {
-        LocalCascadeDeclaration::Value(value) => Some(Some(value)),
-        LocalCascadeDeclaration::Inherit => Some(inherited),
-        LocalCascadeDeclaration::Reset => Some(None),
         LocalCascadeDeclaration::RevertLayer => None,
     })
 }
@@ -10784,12 +10837,12 @@ struct NativeDeclarations {
     column_gap: Option<GapComponentDeclaration>,
     column_gap_order: usize,
     column_gap_important: bool,
-    width: Option<LocalCascadeDeclaration<u32>>,
-    height: Option<LocalCascadeDeclaration<u32>>,
-    min_width: Option<LocalCascadeDeclaration<u32>>,
-    max_width: Option<LocalCascadeDeclaration<u32>>,
-    min_height: Option<LocalCascadeDeclaration<u32>>,
-    max_height: Option<LocalCascadeDeclaration<u32>>,
+    width: Option<LocalCascadeDeclaration<DimensionDeclarationValue>>,
+    height: Option<LocalCascadeDeclaration<DimensionDeclarationValue>>,
+    min_width: Option<LocalCascadeDeclaration<DimensionDeclarationValue>>,
+    max_width: Option<LocalCascadeDeclaration<DimensionDeclarationValue>>,
+    min_height: Option<LocalCascadeDeclaration<DimensionDeclarationValue>>,
+    max_height: Option<LocalCascadeDeclaration<DimensionDeclarationValue>>,
     line_height: Option<InheritedTextDeclaration<LineHeightDeclarationValue>>,
     background_color: Option<LocalCascadeDeclaration<NativeBackgroundColorValue>>,
     background_color_important: bool,
@@ -20078,14 +20131,45 @@ fn parse_text_indent_declaration(
     parse_local_reset_cascade_declaration(value, parse_text_indent_property)
 }
 
-fn parse_local_dimension_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
+fn parse_dimension_custom_property(value: &str) -> Option<DimensionDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_dimension(fallback)
+            .map(|fallback| DimensionDeclarationValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(DimensionDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_dimension_property(value: &str) -> Option<DimensionDeclarationValue> {
+    parse_dimension(value)
+        .map(DimensionDeclarationValue::Value)
+        .or_else(|| parse_dimension_custom_property(value))
+}
+
+fn parse_local_dimension_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<DimensionDeclarationValue>> {
     if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
-    if is_local_reset_keyword(value) {
-        return Some(LocalCascadeDeclaration::Reset);
-    }
-    parse_local_cascade_declaration(value, parse_dimension)
+    parse_local_reset_cascade_declaration(value, parse_dimension_property)
 }
 
 fn parse_local_padding_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
@@ -20866,27 +20950,39 @@ mod tests {
         );
         assert_eq!(
             declarations.width,
-            Some(LocalCascadeDeclaration::Value(240))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(240)
+            ))
         );
         assert_eq!(
             declarations.height,
-            Some(LocalCascadeDeclaration::Value(30))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(30)
+            ))
         );
         assert_eq!(
             declarations.min_width,
-            Some(LocalCascadeDeclaration::Value(12))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(12)
+            ))
         );
         assert_eq!(
             declarations.max_width,
-            Some(LocalCascadeDeclaration::Value(400))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(400)
+            ))
         );
         assert_eq!(
             declarations.min_height,
-            Some(LocalCascadeDeclaration::Value(14))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(14)
+            ))
         );
         assert_eq!(
             declarations.max_height,
-            Some(LocalCascadeDeclaration::Value(500))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(500)
+            ))
         );
         assert_eq!(
             declarations.line_height,
@@ -30159,26 +30255,41 @@ mod tests {
         let declarations = parse_declarations(
             "width: 24px !IMPORTANT; height: 30px !important; min-width: 8px !important; max-width: 64px !important; min-height: 10px !important; max-height: 80px !important",
         );
-        assert_eq!(declarations.width, Some(LocalCascadeDeclaration::Value(24)));
+        assert_eq!(
+            declarations.width,
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(24)
+            ))
+        );
         assert_eq!(
             declarations.height,
-            Some(LocalCascadeDeclaration::Value(30))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(30)
+            ))
         );
         assert_eq!(
             declarations.min_width,
-            Some(LocalCascadeDeclaration::Value(8))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(8)
+            ))
         );
         assert_eq!(
             declarations.max_width,
-            Some(LocalCascadeDeclaration::Value(64))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(64)
+            ))
         );
         assert_eq!(
             declarations.min_height,
-            Some(LocalCascadeDeclaration::Value(10))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(10)
+            ))
         );
         assert_eq!(
             declarations.max_height,
-            Some(LocalCascadeDeclaration::Value(80))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(80)
+            ))
         );
         assert_eq!(
             declarations.dimension_importance,
@@ -30195,20 +30306,41 @@ mod tests {
         let preserved = parse_declarations(
             "width:24px !important;width:bad !important;height:30px !important;height:1px 2px !important;min-width:8px !important;min-width:-1px !important;max-width:64px !important;max-width:50% !important;min-height:10px !important;min-height:auto !important;max-height:80px !important;max-height:revert-layer 1px !important",
         );
-        assert_eq!(preserved.width, Some(LocalCascadeDeclaration::Value(24)));
-        assert_eq!(preserved.height, Some(LocalCascadeDeclaration::Value(30)));
-        assert_eq!(preserved.min_width, Some(LocalCascadeDeclaration::Value(8)));
+        assert_eq!(
+            preserved.width,
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(24)
+            ))
+        );
+        assert_eq!(
+            preserved.height,
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(30)
+            ))
+        );
+        assert_eq!(
+            preserved.min_width,
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(8)
+            ))
+        );
         assert_eq!(
             preserved.max_width,
-            Some(LocalCascadeDeclaration::Value(64))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(64)
+            ))
         );
         assert_eq!(
             preserved.min_height,
-            Some(LocalCascadeDeclaration::Value(10))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(10)
+            ))
         );
         assert_eq!(
             preserved.max_height,
-            Some(LocalCascadeDeclaration::Value(80))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(80)
+            ))
         );
         assert_eq!(
             preserved.dimension_importance,
@@ -32405,7 +32537,9 @@ mod tests {
         );
         assert_eq!(
             parse_local_dimension_declaration("24px"),
-            Some(LocalCascadeDeclaration::Value(24))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(24)
+            ))
         );
         assert_eq!(parse_local_dimension_declaration("revert-layer 24px"), None);
         assert_eq!(parse_local_dimension_declaration("-1px"), None);
@@ -32416,19 +32550,99 @@ mod tests {
         let declarations = parse_declarations(
             "width:24px;width:1px 2px;height:30px;height:bad;min-width:8px;min-width:-1px;max-height:40px;max-height:50%;",
         );
-        assert_eq!(declarations.width, Some(LocalCascadeDeclaration::Value(24)));
+        assert_eq!(
+            declarations.width,
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(24)
+            ))
+        );
         assert_eq!(
             declarations.height,
-            Some(LocalCascadeDeclaration::Value(30))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(30)
+            ))
         );
         assert_eq!(
             declarations.min_width,
-            Some(LocalCascadeDeclaration::Value(8))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(8)
+            ))
         );
         assert_eq!(
             declarations.max_height,
-            Some(LocalCascadeDeclaration::Value(40))
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::Value(40)
+            ))
         );
+    }
+
+    #[test]
+    fn dimension_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let dimension = parse_custom_property_name("--dimension").unwrap();
+        assert_eq!(
+            parse_dimension_property("12px"),
+            Some(DimensionDeclarationValue::Value(12))
+        );
+        assert_eq!(
+            parse_local_dimension_declaration("var(--dimension)"),
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::CustomProperty(dimension)
+            ))
+        );
+        assert_eq!(
+            parse_local_dimension_declaration("var(--dimension, 8px)"),
+            Some(LocalCascadeDeclaration::Value(
+                DimensionDeclarationValue::CustomPropertyFallback(dimension, 8)
+            ))
+        );
+        assert_eq!(
+            parse_local_dimension_declaration("var(--dimension, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_local_dimension_declaration("initial"),
+            Some(LocalCascadeDeclaration::Reset)
+        );
+        assert_eq!(
+            parse_local_dimension_declaration("inherit"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
+    }
+
+    #[test]
+    fn dimensions_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --size: 24px; --alias: var(--size); --cycle: var(--cycle); --bad: unsupported; --reset: initial; width: var(--size); height: var(--alias); min-width: var(--missing, 4px); max-width: var(--cycle, 40px); min-height: var(--bad, 6px); max-height: var(--reset, 30px); }
+            #child { width: var(--alias); }
+            #invalid { --bad: unsupported; width: var(--bad, 8px); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='invalid'>Invalid</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            let style = document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap());
+            [
+                style.width(),
+                style.height(),
+                style.min_width(),
+                style.max_width(),
+                style.min_height(),
+                style.max_height(),
+            ]
+        };
+
+        assert_eq!(
+            style("parent"),
+            [Some(24), Some(24), Some(4), Some(40), Some(6), None]
+        );
+        assert_eq!(style("child"), [Some(24), None, None, None, None, None]);
+        assert_eq!(style("invalid"), [Some(8), None, None, None, None, None]);
     }
 
     #[test]

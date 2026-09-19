@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-566`, following
+expansion checkpoint is completed `native-engine-browser-567`, following
+completed `native-engine-browser-566`, following
 completed `native-engine-browser-565`, following
 completed `native-engine-browser-564`, following
 completed `native-engine-browser-563`, following
@@ -443,6 +444,13 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 567 expands bounded inherited native CSS `font-size` variable
+substitution inside complete `calc()` expressions. Custom-property references,
+fallbacks, nested references, invalid-property fallback, expression/output
+bounds, and checked nesting now resolve before the existing fixed-point
+calculation path. Full CSS token grammar, registered properties, CSSOM
+mutation, and complete CSS variable parity remain explicit issue #40 gates.
 
 Slice 566 extends bounded inherited native CSS `font-size` custom-property
 resolution with one checked `var(--name, fallback)` form. Missing or invalid

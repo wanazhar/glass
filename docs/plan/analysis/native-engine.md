@@ -1,10 +1,11 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-639`, following
-completed `native-engine-browser-638`, following completed
+expansion checkpoint is completed `native-engine-browser-640`, following
+completed `native-engine-browser-639`, following completed
+`native-engine-browser-638`, following completed
 `native-engine-browser-637`, following completed
-completed `native-engine-browser-636`, following completed
+`native-engine-browser-636`, following completed
 `native-engine-browser-635`, following completed
 `native-engine-browser-634`, following
 completed `native-engine-browser-633`, following
@@ -516,6 +517,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 640 adds bounded pseudo-class parsing and document-aware matching.
+Structural forms (`:root`, `:first-child`, `:last-child`, `:only-child`, and
+`:empty`) inspect attached element relationships; checked, disabled, enabled,
+required, optional, link, and any-link forms use bounded native attributes.
+The shared matcher feeds CSS action locators and stylesheet cascade, while
+functional, dynamic, and pseudo-element forms remain rejected. Full selector
+grammar, child/sibling combinators, pseudo-elements, complete CSS and Web IDL
+parity remain explicit issue #40 gates.
 
 Slice 639 adds bounded inline `@supports` parsing. Rules retain supports
 conditions alongside media conditions, and both normal declarations and

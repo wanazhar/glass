@@ -27,12 +27,24 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed `native-engine-browser-639`,
-following completed `native-engine-browser-638`, following completed
+the browser-complete expansion has completed `native-engine-browser-640`,
+following completed `native-engine-browser-639`, following completed
+`native-engine-browser-638`, following completed
 `native-engine-browser-637`, following completed
 `native-engine-browser-636`, following completed
 `native-engine-browser-635`, following completed
 `native-engine-browser-634`, following completed
+
+The completed bounded pseudo-class selector follow-up is
+[`native-engine-browser-640`](tasks/native-engine-browser-640.md): native
+compound selectors now parse bounded structural pseudo-classes (`:root`,
+`:first-child`, `:last-child`, `:only-child`, `:empty`) plus bounded state and
+link forms (`:checked`, `:disabled`, `:enabled`, `:required`, `:optional`,
+`:link`, and `:any-link`). Document-aware matching feeds both CSS action
+locators and stylesheet cascade, while unsupported functional, dynamic, and
+pseudo-element forms remain fail-closed. Full selector grammar, child/sibling
+combinators, pseudo-elements, complete CSS parity, and complete Web IDL parity
+remain issue #40 gates.
 
 `native-engine-browser-633`, following completed
 `native-engine-browser-632`, following completed
@@ -542,6 +554,17 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed bounded pseudo-class selector follow-up is
+[`native-engine-browser-640`](tasks/native-engine-browser-640.md): native
+compound selectors now parse bounded structural pseudo-classes (`:root`,
+`:first-child`, `:last-child`, `:only-child`, `:empty`) plus bounded state and
+link forms (`:checked`, `:disabled`, `:enabled`, `:required`, `:optional`,
+`:link`, and `:any-link`). Document-aware matching feeds both CSS action
+locators and stylesheet cascade, while unsupported functional, dynamic, and
+pseudo-element forms remain fail-closed. Full selector grammar, child/sibling
+combinators, pseudo-elements, complete CSS parity, and complete Web IDL parity
+remain issue #40 gates.
 
 The completed inline supports-rule follow-up is
 [`native-engine-browser-639`](tasks/native-engine-browser-639.md): native

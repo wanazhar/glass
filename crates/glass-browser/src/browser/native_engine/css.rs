@@ -257,7 +257,15 @@ impl NativeBackgroundImageValue {
 }
 
 /// The single-layer background repeat modes understood by the bounded native
-/// display list.  Two-value `repeat` syntax is normalized while parsing.
+/// display list. Two-value `repeat` syntax is normalized while parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NativeBackgroundRepeatFallback {
+    Repeat,
+    RepeatX,
+    RepeatY,
+    NoRepeat,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeBackgroundRepeat {
     #[default]
@@ -265,6 +273,8 @@ pub(crate) enum NativeBackgroundRepeat {
     RepeatX,
     RepeatY,
     NoRepeat,
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeBackgroundRepeatFallback),
 }
 
 /// A background position component. Percentages use thousandths of the
@@ -4541,7 +4551,7 @@ impl NativeStylesheet {
         let resolved_background_image =
             resolve_local_background_image_declaration(*background_image, custom_properties);
         let resolved_background_repeat =
-            resolve_local_background_repeat_declaration(*background_repeat);
+            resolve_local_background_repeat_declaration(*background_repeat, custom_properties);
         let resolved_background_position =
             resolve_local_background_position_declaration(*background_position);
         let resolved_background_size = resolve_local_background_size_declaration(*background_size);
@@ -10062,16 +10072,68 @@ fn resolve_local_background_image_declaration(
         | LocalCascadeDeclaration::RevertLayer => None,
     })
 }
+fn resolve_native_background_repeat_value(
+    value: NativeBackgroundRepeat,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<NativeBackgroundRepeat> {
+    match value {
+        NativeBackgroundRepeat::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_background_repeat_value(value))
+                .and_then(|value| {
+                    resolve_native_background_repeat_value(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeBackgroundRepeat::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_background_repeat_value(value))
+                .and_then(|value| {
+                    resolve_native_background_repeat_value(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or_else(|| {
+                    Some(match fallback {
+                        NativeBackgroundRepeatFallback::Repeat => NativeBackgroundRepeat::Repeat,
+                        NativeBackgroundRepeatFallback::RepeatX => NativeBackgroundRepeat::RepeatX,
+                        NativeBackgroundRepeatFallback::RepeatY => NativeBackgroundRepeat::RepeatY,
+                        NativeBackgroundRepeatFallback::NoRepeat => {
+                            NativeBackgroundRepeat::NoRepeat
+                        }
+                    })
+                })
+        }
+        NativeBackgroundRepeat::CustomProperty(_)
+        | NativeBackgroundRepeat::CustomPropertyFallback(_, _) => None,
+        value => Some(value),
+    }
+}
 
 fn resolve_local_background_repeat_declaration(
     candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBackgroundRepeat>>>;
         MAX_NATIVE_PAINT_CASCADE_LAYERS],
+    custom_properties: &BTreeMap<u64, String>,
 ) -> NativeBackgroundRepeat {
     resolve_alignment_candidates(
         candidates,
         NativeBackgroundRepeat::default(),
         |declaration| match declaration {
-            LocalCascadeDeclaration::Value(value) => Some(value),
+            LocalCascadeDeclaration::Value(value) => {
+                resolve_native_background_repeat_value(value, custom_properties, 0)
+            }
             LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => {
                 Some(NativeBackgroundRepeat::default())
             }
@@ -16592,13 +16654,36 @@ fn parse_background_repeat(value: &str) -> Option<NativeBackgroundRepeat> {
     }
 }
 
+fn parse_background_repeat_fallback(value: &str) -> Option<NativeBackgroundRepeatFallback> {
+    match parse_background_repeat(value)? {
+        NativeBackgroundRepeat::Repeat => Some(NativeBackgroundRepeatFallback::Repeat),
+        NativeBackgroundRepeat::RepeatX => Some(NativeBackgroundRepeatFallback::RepeatX),
+        NativeBackgroundRepeat::RepeatY => Some(NativeBackgroundRepeatFallback::RepeatY),
+        NativeBackgroundRepeat::NoRepeat => Some(NativeBackgroundRepeatFallback::NoRepeat),
+        NativeBackgroundRepeat::CustomProperty(_)
+        | NativeBackgroundRepeat::CustomPropertyFallback(_, _) => None,
+    }
+}
+
+fn parse_background_repeat_value(value: &str) -> Option<NativeBackgroundRepeat> {
+    if let Some((name_hash, fallback)) = parse_flex_var_arguments(value) {
+        return match fallback {
+            Some(fallback) => parse_background_repeat_fallback(fallback).map(|fallback| {
+                NativeBackgroundRepeat::CustomPropertyFallback(name_hash, fallback)
+            }),
+            None => Some(NativeBackgroundRepeat::CustomProperty(name_hash)),
+        };
+    }
+    parse_background_repeat(value)
+}
+
 fn parse_background_repeat_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<NativeBackgroundRepeat>> {
     if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
-    parse_local_reset_cascade_declaration(value, parse_background_repeat)
+    parse_local_reset_cascade_declaration(value, parse_background_repeat_value)
 }
 
 fn parse_background_percentage(value: &str) -> Option<i32> {
@@ -24327,6 +24412,43 @@ mod tests {
     }
 
     #[test]
+    fn background_repeat_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let repeat = parse_custom_property_name("--repeat").unwrap();
+        assert_eq!(
+            parse_background_repeat_declaration("var(--repeat)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundRepeat::CustomProperty(repeat)
+            ))
+        );
+        assert_eq!(
+            parse_background_repeat_declaration("VAR(--repeat, repeat-x)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundRepeat::CustomPropertyFallback(
+                    repeat,
+                    NativeBackgroundRepeatFallback::RepeatX
+                )
+            ))
+        );
+        assert_eq!(
+            parse_background_repeat_declaration("var(--repeat, no-repeat repeat)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBackgroundRepeat::CustomPropertyFallback(
+                    repeat,
+                    NativeBackgroundRepeatFallback::RepeatY
+                )
+            ))
+        );
+        assert_eq!(
+            parse_background_repeat_declaration("var(--repeat, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_background_repeat_declaration("var(--repeat, inherit)"),
+            None
+        );
+    }
+
+    #[test]
     fn inherited_color_custom_properties_resolve_with_fallbacks() {
         let document = NativeDocument::parse(
             "<style>#parent { --accent: rgb(1, 2, 3); --alias: var(--accent); --cycle: var(--cycle); color: var(--accent); } #child { color: var(--alias); } #fallback { color: var(--missing, red); } #invalid { --bad: nonsense; color: var(--bad, white); } #cycle { color: var(--cycle, white); }</style><div id='parent'><span id='child'>Child</span><span id='fallback'>Fallback</span><span id='invalid'>Invalid</span><span id='cycle'>Cycle</span></div>",
@@ -24434,6 +24556,74 @@ mod tests {
                 .computed_style_for_layout(ordered)
                 .background_image(),
             Some(background_image_source_id("https://example.test/last.png"))
+        );
+    }
+
+    #[test]
+    fn background_repeat_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --repeat: no-repeat; background-repeat: var(--repeat); }
+            #child { --alias: var(--repeat); background-repeat: var(--alias); }
+            #fallback { background-repeat: var(--missing, repeat-x); }
+            #invalid { --bad: nonsense; background-repeat: var(--bad, no-repeat repeat); }
+            #cycle { --cycle: var(--cycle); background-repeat: var(--cycle, repeat-y); }
+            #explicit { --explicit: repeat-x; background-repeat: var(--explicit, no-repeat); }
+            #ordered { background-repeat: repeat; background-repeat: var(--missing, no-repeat); }
+            </style>
+            <div id='parent'><span id='child'>Child</span><span id='fallback'>Fallback</span><span id='invalid'>Invalid</span><span id='cycle'>Cycle</span><span id='explicit'>Explicit</span><span id='ordered'>Ordered</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let fallback = document.resolve_target("id=fallback").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let cycle = document.resolve_target("id=cycle").unwrap();
+        let explicit = document.resolve_target("id=explicit").unwrap();
+        let ordered = document.resolve_target("id=ordered").unwrap();
+
+        assert_eq!(
+            document
+                .computed_style_for_layout(parent)
+                .background_repeat(),
+            NativeBackgroundRepeat::NoRepeat
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(child)
+                .background_repeat(),
+            NativeBackgroundRepeat::NoRepeat
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(fallback)
+                .background_repeat(),
+            NativeBackgroundRepeat::RepeatX
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .background_repeat(),
+            NativeBackgroundRepeat::RepeatY
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(cycle)
+                .background_repeat(),
+            NativeBackgroundRepeat::RepeatY
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(explicit)
+                .background_repeat(),
+            NativeBackgroundRepeat::RepeatX
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(ordered)
+                .background_repeat(),
+            NativeBackgroundRepeat::NoRepeat
         );
     }
 

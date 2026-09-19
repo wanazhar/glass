@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-569`, following completed
 `native-engine-browser-568`, following completed
 `native-engine-browser-567`, following completed
 `native-engine-browser-566`, following completed
@@ -438,6 +439,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 569 extends bounded native custom-property substitution to inherited
+CSS `color`. Standalone `var(--name)` and concrete `var(--name, color)`
+fallbacks now resolve inherited, nested, invalid, and cyclic values before
+normal color inheritance, while the existing paint/display-list color model
+remains unchanged. Composite color functions, CSS-wide fallback values,
+registered properties, broader color properties, full CSS variable grammar,
+and complete CSS/Web IDL parity remain issue #40 gates.
 
 Slice 568 closes the native CSSOM style-cache invalidation gap. Validated
 script-driven attribute writes and removals now clear cached computed styles,

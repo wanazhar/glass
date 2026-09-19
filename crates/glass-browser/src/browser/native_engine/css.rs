@@ -100,6 +100,8 @@ enum NativeColorValue {
     Unset,
     Initial,
     Revert,
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeColor),
 }
 
 impl NativeColorValue {
@@ -111,6 +113,10 @@ impl NativeColorValue {
                 None => NativeColor::BLACK,
             },
             Self::Initial => NativeColor::BLACK,
+            Self::CustomProperty(_) | Self::CustomPropertyFallback(_, _) => match inherited {
+                Some(color) => color,
+                None => NativeColor::BLACK,
+            },
         }
     }
 }
@@ -4307,7 +4313,8 @@ impl NativeStylesheet {
         let border_styles = std::array::from_fn(|index| {
             resolved_border_style[index].unwrap_or(NativeBorderStyleValue::None)
         });
-        let resolved_color = resolve_local_color_declaration(*color, inherited.color);
+        let resolved_color =
+            resolve_local_color_declaration(*color, inherited.color, custom_properties);
         let current_color = resolved_color.unwrap_or(NativeColor::BLACK);
         let resolved_background_color = resolve_local_background_color_declaration(
             *background_color,
@@ -5535,13 +5542,65 @@ fn resolve_local_optional_cascade_declaration<T: Copy, const N: usize>(
     })
 }
 
+fn resolve_native_color_value(
+    value: NativeColorValue,
+    inherited: Option<NativeColor>,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<NativeColor> {
+    match value {
+        NativeColorValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_color_declaration(value))
+                .and_then(|declaration| match declaration {
+                    LocalCascadeDeclaration::Value(value) => resolve_native_color_value(
+                        value,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    ),
+                    LocalCascadeDeclaration::RevertLayer => None,
+                    LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => None,
+                })
+        }
+        NativeColorValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_color_declaration(value))
+                .and_then(|declaration| match declaration {
+                    LocalCascadeDeclaration::Value(value) => resolve_native_color_value(
+                        value,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    ),
+                    LocalCascadeDeclaration::RevertLayer => None,
+                    LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => None,
+                })
+                .or(Some(fallback))
+        }
+        NativeColorValue::CustomProperty(_) | NativeColorValue::CustomPropertyFallback(_, _) => {
+            None
+        }
+        value => Some(value.resolve(inherited)),
+    }
+}
+
 fn resolve_local_color_declaration(
     candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeColorValue>>>;
         MAX_NATIVE_PAINT_CASCADE_LAYERS],
     inherited: Option<NativeColor>,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> Option<NativeColor> {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
-        LocalCascadeDeclaration::Value(value) => Some(Some(value.resolve(inherited))),
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_native_color_value(value, inherited, custom_properties, 0).map(Some)
+        }
         LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::Reset => Some(None),
         LocalCascadeDeclaration::RevertLayer => None,
@@ -12287,6 +12346,22 @@ fn parse_text_decoration_color(value: &str) -> Option<NativeTextDecorationColorD
     parse_color(value).map(NativeTextDecorationColorDeclaration::Value)
 }
 
+fn parse_color_custom_property(value: &str) -> Option<NativeColorValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_color(fallback)
+            .map(|fallback| NativeColorValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(NativeColorValue::CustomProperty(name_hash)),
+    }
+}
+
 fn parse_local_color_declaration(value: &str) -> Option<LocalCascadeDeclaration<NativeColorValue>> {
     let value = value.trim();
     if value.eq_ignore_ascii_case("revert-layer") {
@@ -12307,6 +12382,7 @@ fn parse_local_color_declaration(value: &str) -> Option<LocalCascadeDeclaration<
     };
     keyword
         .or_else(|| parse_color(value).map(NativeColorValue::Color))
+        .or_else(|| parse_color_custom_property(value))
         .map(LocalCascadeDeclaration::Value)
 }
 
@@ -16244,6 +16320,27 @@ mod tests {
             );
         }
 
+        assert_eq!(
+            parse_local_color_declaration("var(--accent)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeColorValue::CustomProperty(custom_property_hash("--accent"))
+            ))
+        );
+        assert_eq!(
+            parse_local_color_declaration("VAR(--accent, red)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeColorValue::CustomPropertyFallback(
+                    custom_property_hash("--accent"),
+                    NativeColor::RED
+                )
+            ))
+        );
+        assert_eq!(
+            parse_local_color_declaration("var(--accent, var(--other))"),
+            None
+        );
+        assert_eq!(parse_local_color_declaration("var(accent)"), None);
+
         let document = NativeDocument::parse(
             "<style>#parent { color:green; } #current { color:currentColor; } #inherit { color:inherit; } #unset { color:unset; } #revert { color:revert; } #initial { color:initial; } #root { color:currentColor; }</style><div id='parent'><span id='current'>Current</span><span id='inherit'>Inherit</span><span id='unset'>Unset</span><span id='revert'>Revert</span><span id='initial'>Initial</span></div><div id='root'>Root</div>",
             &NativeEngineLimits::default(),
@@ -16332,6 +16429,47 @@ mod tests {
         assert_eq!(
             parse_declarations("color: REVERT-LAYER").color,
             Some(LocalCascadeDeclaration::RevertLayer)
+        );
+    }
+
+    #[test]
+    fn inherited_color_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            "<style>#parent { --accent: rgb(1, 2, 3); --alias: var(--accent); --cycle: var(--cycle); color: var(--accent); } #child { color: var(--alias); } #fallback { color: var(--missing, red); } #invalid { --bad: nonsense; color: var(--bad, white); } #cycle { color: var(--cycle, white); }</style><div id='parent'><span id='child'>Child</span><span id='fallback'>Fallback</span><span id='invalid'>Invalid</span><span id='cycle'>Cycle</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let fallback = document.resolve_target("id=fallback").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let cycle = document.resolve_target("id=cycle").unwrap();
+        let accent = NativeColor {
+            red: 1,
+            green: 2,
+            blue: 3,
+            alpha: u8::MAX,
+        };
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).color(),
+            Some(accent)
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).color(),
+            Some(accent)
+        );
+        assert_eq!(
+            document.computed_style_for_layout(fallback).color(),
+            Some(NativeColor::RED)
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).color(),
+            Some(NativeColor::WHITE)
+        );
+        assert_eq!(
+            document.computed_style_for_layout(cycle).color(),
+            Some(NativeColor::WHITE)
         );
     }
 

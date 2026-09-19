@@ -660,6 +660,13 @@ pub(crate) enum NativePointerEventsValue {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerEventsDeclarationValue {
+    Value(NativePointerEventsValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativePointerEventsValue),
+}
+
 impl NativePointerEventsValue {
     pub(crate) const fn allows_hit_testing(self) -> bool {
         matches!(self, Self::Auto)
@@ -4570,10 +4577,10 @@ impl NativeStylesheet {
             display: resolve_local_cascade_declaration(*display, DisplayValue::Auto),
             position: resolve_local_cascade_declaration(*position, NativePositionValue::Static),
             z_index: resolve_local_cascade_declaration(*z_index, NativeZIndexValue::Auto),
-            pointer_events: resolve_inherited_text_declaration(
+            pointer_events: resolve_pointer_events(
                 *pointer_events,
                 inherited.pointer_events,
-                NativePointerEventsValue::Auto,
+                custom_properties,
             ),
             top: resolve_local_cascade_declaration(*top, NativePositionOffset::Auto),
             right: resolve_local_cascade_declaration(*right, NativePositionOffset::Auto),
@@ -4867,7 +4874,7 @@ struct NativeCascadeScratch {
     display: NativeLocalCascadeCandidates<DisplayValue>,
     position: NativeLocalCascadeCandidates<NativePositionValue>,
     z_index: NativeLocalCascadeCandidates<NativeZIndexValue>,
-    pointer_events: NativeTextCascadeCandidates<NativePointerEventsValue>,
+    pointer_events: NativeTextCascadeCandidates<PointerEventsDeclarationValue>,
     top: NativeLocalCascadeCandidates<NativePositionOffset>,
     right: NativeLocalCascadeCandidates<NativePositionOffset>,
     bottom: NativeLocalCascadeCandidates<NativePositionOffset>,
@@ -6467,19 +6474,87 @@ fn resolve_text_transform(
     }
 }
 
-fn resolve_inherited_text_declaration<T: Copy>(
-    candidates: [Option<CascadeValue<InheritedTextDeclaration<T>>>; MAX_NATIVE_TEXT_CASCADE_LAYERS],
-    inherited: T,
-    initial: T,
-) -> T {
-    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
-        InheritedTextDeclaration::Value(value) => Some(value),
+fn resolve_pointer_events_declaration(
+    declaration: InheritedTextDeclaration<PointerEventsDeclarationValue>,
+    inherited: NativePointerEventsValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<PointerEventsDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_pointer_events_value(value, inherited, custom_properties, depth)
+        }
         InheritedTextDeclaration::Inherit
         | InheritedTextDeclaration::Unset
-        | InheritedTextDeclaration::Revert => Some(inherited),
-        InheritedTextDeclaration::Initial => Some(initial),
+        | InheritedTextDeclaration::Revert => Some(PointerEventsDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => Some(PointerEventsDeclarationValue::Value(
+            NativePointerEventsValue::Auto,
+        )),
         InheritedTextDeclaration::RevertLayer => None,
-    })
+    }
+}
+
+fn resolve_pointer_events_value(
+    value: PointerEventsDeclarationValue,
+    inherited: NativePointerEventsValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<PointerEventsDeclarationValue> {
+    match value {
+        PointerEventsDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_pointer_events_declaration(value))
+                .and_then(|declaration| {
+                    resolve_pointer_events_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        PointerEventsDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_pointer_events_declaration(value))
+                .and_then(|declaration| {
+                    resolve_pointer_events_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(PointerEventsDeclarationValue::Value(fallback)))
+        }
+        PointerEventsDeclarationValue::CustomProperty(_)
+        | PointerEventsDeclarationValue::CustomPropertyFallback(_, _) => None,
+        value => Some(value),
+    }
+}
+
+fn resolve_pointer_events(
+    candidates: NativeTextCascadeCandidates<PointerEventsDeclarationValue>,
+    inherited: NativePointerEventsValue,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativePointerEventsValue {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        PointerEventsDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_pointer_events_declaration(declaration, inherited, custom_properties, 0)
+        },
+    );
+    match resolved {
+        PointerEventsDeclarationValue::Value(value) => value,
+        PointerEventsDeclarationValue::CustomProperty(_)
+        | PointerEventsDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_variant_numeric_declaration(
@@ -10006,7 +10081,7 @@ struct NativeDeclarations {
     display: Option<LocalCascadeDeclaration<DisplayValue>>,
     position: Option<LocalCascadeDeclaration<NativePositionValue>>,
     z_index: Option<LocalCascadeDeclaration<NativeZIndexValue>>,
-    pointer_events: Option<InheritedTextDeclaration<NativePointerEventsValue>>,
+    pointer_events: Option<InheritedTextDeclaration<PointerEventsDeclarationValue>>,
     top: Option<LocalCascadeDeclaration<NativePositionOffset>>,
     right: Option<LocalCascadeDeclaration<NativePositionOffset>>,
     bottom: Option<LocalCascadeDeclaration<NativePositionOffset>>,
@@ -15529,10 +15604,43 @@ fn parse_pointer_events(value: &str) -> Option<NativePointerEventsValue> {
     }
 }
 
+fn parse_pointer_events_custom_property(value: &str) -> Option<PointerEventsDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_pointer_events(fallback).map(|fallback| {
+            PointerEventsDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(PointerEventsDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_pointer_events_property(value: &str) -> Option<PointerEventsDeclarationValue> {
+    parse_pointer_events(value)
+        .map(PointerEventsDeclarationValue::Value)
+        .or_else(|| parse_pointer_events_custom_property(value))
+}
+
 fn parse_pointer_events_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativePointerEventsValue>> {
-    parse_inherited_text_declaration(value, parse_pointer_events)
+) -> Option<InheritedTextDeclaration<PointerEventsDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_pointer_events_property)
 }
 
 fn parse_position_offset(value: &str) -> Option<NativePositionOffset> {
@@ -23434,6 +23542,40 @@ mod tests {
     }
 
     #[test]
+    fn pointer_events_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let mode = parse_custom_property_name("--mode").unwrap();
+        assert_eq!(
+            parse_pointer_events_property("auto"),
+            Some(PointerEventsDeclarationValue::Value(
+                NativePointerEventsValue::Auto
+            ))
+        );
+        assert_eq!(
+            parse_pointer_events_declaration("var(--mode)"),
+            Some(InheritedTextDeclaration::Value(
+                PointerEventsDeclarationValue::CustomProperty(mode)
+            ))
+        );
+        assert_eq!(
+            parse_pointer_events_declaration("var(--mode, none)"),
+            Some(InheritedTextDeclaration::Value(
+                PointerEventsDeclarationValue::CustomPropertyFallback(
+                    mode,
+                    NativePointerEventsValue::None
+                )
+            ))
+        );
+        assert_eq!(
+            parse_pointer_events_declaration("var(--mode, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_pointer_events_declaration("inherit"),
+            Some(InheritedTextDeclaration::Inherit)
+        );
+    }
+
+    #[test]
     fn computed_style_inherits_fixed_line_height_and_preserves_child_precedence() {
         let document = NativeDocument::parse(
             "<style>#parent { line-height: 28px; } #explicit { line-height: 32px; }</style><div id='parent'><section id='child'>Child</section><section id='explicit'>Explicit</section><section id='invalid' style='line-height:0px'>Invalid</section></div>",
@@ -23499,6 +23641,44 @@ mod tests {
         assert_eq!(style("cycle"), Some(16));
         assert_eq!(style("wide-initial"), None);
         assert_eq!(style("wide-inherit"), Some(28));
+    }
+
+    #[test]
+    fn inherited_pointer_events_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --pointer-events: none; --alias: var(--pointer-events); --cycle: var(--cycle); pointer-events: var(--pointer-events); }
+            #child { pointer-events: var(--alias); }
+            #fallback { pointer-events: var(--missing, auto); }
+            #invalid { --bad: visible; pointer-events: var(--bad, auto); }
+            #cycle { pointer-events: var(--cycle, auto); }
+            #wide-initial { --wide: initial; pointer-events: var(--wide); }
+            #wide-inherit { --wide: inherit; pointer-events: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .pointer_events()
+        };
+
+        assert_eq!(style("parent"), NativePointerEventsValue::None);
+        assert_eq!(style("child"), NativePointerEventsValue::None);
+        assert_eq!(style("fallback"), NativePointerEventsValue::Auto);
+        assert_eq!(style("invalid"), NativePointerEventsValue::Auto);
+        assert_eq!(style("cycle"), NativePointerEventsValue::Auto);
+        assert_eq!(style("wide-initial"), NativePointerEventsValue::Auto);
+        assert_eq!(style("wide-inherit"), NativePointerEventsValue::None);
     }
 
     #[test]

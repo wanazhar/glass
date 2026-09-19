@@ -1025,22 +1025,13 @@ impl TextDecorationValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTextDecorationDeclaration {
     Value(TextDecorationValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, TextDecorationValue),
     Inherit,
     Initial,
     Unset,
     Revert,
     RevertLayer,
-}
-
-impl NativeTextDecorationDeclaration {
-    const fn resolve(self, inherited: TextDecorationValue) -> TextDecorationValue {
-        match self {
-            Self::Value(value) => value,
-            Self::Inherit | Self::Unset | Self::Revert => inherited,
-            Self::Initial => TextDecorationValue::none(),
-            Self::RevertLayer => inherited,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -4661,7 +4652,11 @@ impl NativeStylesheet {
                 custom_properties,
             ),
             flex_basis: resolve_flex_basis(*flex_basis, inherited.flex_basis, custom_properties),
-            text_decoration: resolve_text_decoration(*text_decoration, inherited.text_decoration),
+            text_decoration: resolve_text_decoration(
+                *text_decoration,
+                inherited.text_decoration,
+                custom_properties,
+            ),
             text_decoration_style: resolve_text_decoration_style(
                 *text_decoration_style,
                 inherited.text_decoration_style,
@@ -11065,10 +11060,60 @@ fn resolve_text_underline_offset(
     }
 }
 
+fn resolve_native_text_decoration_value(
+    value: NativeTextDecorationDeclaration,
+    inherited: TextDecorationValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<TextDecorationValue> {
+    match value {
+        NativeTextDecorationDeclaration::Value(value) => Some(value),
+        NativeTextDecorationDeclaration::Inherit
+        | NativeTextDecorationDeclaration::Unset
+        | NativeTextDecorationDeclaration::Revert => Some(inherited),
+        NativeTextDecorationDeclaration::Initial => Some(TextDecorationValue::none()),
+        NativeTextDecorationDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_decoration_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_text_decoration_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeTextDecorationDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_decoration_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_text_decoration_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        NativeTextDecorationDeclaration::CustomProperty(_)
+        | NativeTextDecorationDeclaration::CustomPropertyFallback(_, _)
+        | NativeTextDecorationDeclaration::RevertLayer => None,
+    }
+}
+
 fn resolve_text_decoration(
     candidates: [Option<CascadeValue<NativeTextDecorationDeclaration>>;
         MAX_NATIVE_TEXT_CASCADE_LAYERS],
     inherited: TextDecorationValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> TextDecorationValue {
     let mut blocked = [false; MAX_NATIVE_TEXT_CASCADE_LAYERS];
     loop {
@@ -11094,7 +11139,13 @@ fn resolve_text_decoration(
             blocked[layer] = true;
             continue;
         }
-        return candidate.value.resolve(inherited);
+        let Some(value) =
+            resolve_native_text_decoration_value(candidate.value, inherited, custom_properties, 0)
+        else {
+            blocked[layer] = true;
+            continue;
+        };
+        return value;
     }
 }
 
@@ -20124,6 +20175,14 @@ fn parse_text_decoration(value: &str) -> Option<TextDecorationValue> {
 }
 
 fn parse_text_decoration_declaration(value: &str) -> Option<NativeTextDecorationDeclaration> {
+    if let Some((name_hash, fallback)) = parse_flex_var_arguments(value) {
+        return match fallback {
+            Some(fallback) => parse_text_decoration(fallback).map(|fallback| {
+                NativeTextDecorationDeclaration::CustomPropertyFallback(name_hash, fallback)
+            }),
+            None => Some(NativeTextDecorationDeclaration::CustomProperty(name_hash)),
+        };
+    }
     match value.trim().to_ascii_lowercase().as_str() {
         "inherit" => Some(NativeTextDecorationDeclaration::Inherit),
         "initial" => Some(NativeTextDecorationDeclaration::Initial),
@@ -34111,6 +34170,40 @@ mod tests {
             Some(NativeTextDecorationDeclaration::Initial)
         );
     }
+    #[test]
+    fn text_decoration_shorthand_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let decoration = parse_custom_property_name("--decoration").unwrap();
+        assert_eq!(
+            parse_text_decoration_declaration("var(--decoration)"),
+            Some(NativeTextDecorationDeclaration::CustomProperty(decoration))
+        );
+        assert_eq!(
+            parse_text_decoration_declaration("var(--decoration, underline overline)"),
+            Some(NativeTextDecorationDeclaration::CustomPropertyFallback(
+                decoration,
+                TextDecorationValue::new(true, true, false)
+            ))
+        );
+        assert_eq!(
+            parse_declarations("text-decoration-line: var(--decoration)").text_decoration,
+            Some(NativeTextDecorationDeclaration::CustomProperty(decoration))
+        );
+        assert_eq!(
+            parse_declarations("text-decoration: var(--decoration, none)").text_decoration,
+            Some(NativeTextDecorationDeclaration::CustomPropertyFallback(
+                decoration,
+                TextDecorationValue::none()
+            ))
+        );
+        assert_eq!(
+            parse_text_decoration_declaration("var(--decoration, var(--nested))"),
+            None
+        );
+        assert_eq!(
+            parse_text_decoration_declaration("var(--decoration, inherit)"),
+            None
+        );
+    }
 
     #[test]
     fn text_decoration_css_wide_resets_follow_parent_and_initial() {
@@ -34139,6 +34232,75 @@ mod tests {
             TextDecorationValue::new(true, false, false)
         );
         assert_eq!(line_for("root-initial"), TextDecorationValue::none());
+    }
+    #[test]
+    fn text_decoration_shorthand_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent {
+                --decoration: underline overline;
+                --alias: var(--decoration);
+                text-decoration-line: var(--alias);
+            }
+            #child { text-decoration: var(--alias); }
+            #fallback { text-decoration-line: var(--missing, line-through); }
+            #invalid {
+                --bad: unsupported;
+                text-decoration-line: var(--bad, underline);
+            }
+            #cycle {
+                --cycle: var(--cycle);
+                text-decoration-line: var(--cycle, overline);
+            }
+            #reset {
+                --reset: initial;
+                text-decoration-line: var(--reset, underline overline);
+            }
+            #override {
+                --decoration: none;
+                text-decoration-line: var(--decoration);
+                text-decoration-line: underline;
+            }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='override'>Override</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let decoration_for = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .text_decoration()
+        };
+        assert_eq!(
+            decoration_for("parent"),
+            TextDecorationValue::new(true, true, false)
+        );
+        assert_eq!(
+            decoration_for("child"),
+            TextDecorationValue::new(true, true, false)
+        );
+        assert_eq!(
+            decoration_for("fallback"),
+            TextDecorationValue::new(false, false, true)
+        );
+        assert_eq!(
+            decoration_for("invalid"),
+            TextDecorationValue::new(true, false, false)
+        );
+        assert_eq!(
+            decoration_for("cycle"),
+            TextDecorationValue::new(false, true, false)
+        );
+        assert_eq!(decoration_for("reset"), TextDecorationValue::none());
+        assert_eq!(
+            decoration_for("override"),
+            TextDecorationValue::new(true, false, false)
+        );
     }
 
     #[test]

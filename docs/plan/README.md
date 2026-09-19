@@ -27,11 +27,13 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed `native-engine-browser-638`,
-following completed `native-engine-browser-637`, following completed
+the browser-complete expansion has completed `native-engine-browser-639`,
+following completed `native-engine-browser-638`, following completed
+`native-engine-browser-637`, following completed
 `native-engine-browser-636`, following completed
 `native-engine-browser-635`, following completed
 `native-engine-browser-634`, following completed
+
 `native-engine-browser-633`, following completed
 `native-engine-browser-632`, following completed
 `native-engine-browser-631`, following completed
@@ -540,6 +542,15 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed inline supports-rule follow-up is
+[`native-engine-browser-639`](tasks/native-engine-browser-639.md): native
+stylesheets now retain bounded `@supports` conditions, including
+media-plus-supports composition, and filter both declarations and
+custom-property candidates through the existing supports evaluator. Repeated
+nested same-kind conditional rules remain explicitly diagnosed. Full
+Conditional Rules grammar, complete CSS parity, and complete Web IDL parity
+remain issue #40 gates.
 
 The completed inline media-rule follow-up is
 [`native-engine-browser-638`](tasks/native-engine-browser-638.md): native

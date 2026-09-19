@@ -1,10 +1,13 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-638`, following completed `native-engine-browser-637`,
-following completed `native-engine-browser-636`, following completed
+`native-engine-browser-639`, following completed `native-engine-browser-638`,
+following completed `native-engine-browser-637`, following completed
+`native-engine-browser-636`, following completed `native-engine-browser-635`,
+following completed
 `native-engine-browser-634`, following completed
 `native-engine-browser-633`, following completed
+
 `native-engine-browser-632`, following completed
 `native-engine-browser-631`, following completed
 `native-engine-browser-630`, following completed
@@ -506,6 +509,13 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 639 adds bounded inline `@supports` rule support. Rules retain their
+supports condition alongside any active media condition, declaration and
+custom-property cascade both use the existing supports evaluator, and
+repeated nesting of the same conditional kind is explicitly diagnosed. Full
+Conditional Rules grammar, complete CSS and Web IDL parity, and broader issue
+#40 conformance remain explicit gates.
 
 Slice 638 adds bounded inline `@media` rule support to the native CSS
 stylesheet. Parsed rules retain their media condition and are filtered by the

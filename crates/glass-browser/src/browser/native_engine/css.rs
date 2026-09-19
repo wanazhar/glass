@@ -2956,6 +2956,10 @@ impl NativeStylesheet {
                 .media
                 .as_deref()
                 .is_some_and(|media| !css_media_list_matches(media, viewport))
+                || rule
+                    .supports
+                    .as_deref()
+                    .is_some_and(|supports| !css_supports_condition_matches(supports))
                 || !matches(&rule.selector)
             {
                 continue;
@@ -3198,6 +3202,10 @@ impl NativeStylesheet {
                 .media
                 .as_deref()
                 .is_some_and(|media| !css_media_list_matches(media, viewport))
+                || rule
+                    .supports
+                    .as_deref()
+                    .is_some_and(|supports| !css_supports_condition_matches(supports))
                 || !matches(&rule.selector)
             {
                 continue;
@@ -13763,6 +13771,7 @@ struct NativeStyleRule {
     declarations: NativeDeclarations,
     custom_properties: Vec<NativeCustomPropertyDeclaration>,
     media: Option<String>,
+    supports: Option<String>,
     order: usize,
 }
 
@@ -13891,7 +13900,7 @@ fn parse_source(
         font_face_rules,
         palette_values,
     };
-    parse_source_block(&mut context, 0, end, None, None)
+    parse_source_block(&mut context, 0, end, None, None, None)
 }
 
 struct NativeCssParseContext<'a> {
@@ -13912,6 +13921,7 @@ fn parse_source_block(
     end: usize,
     current_layer: Option<usize>,
     current_media: Option<&str>,
+    current_supports: Option<&str>,
 ) -> Result<(), NativeEngineError> {
     let mut cursor = start;
     while cursor < end {
@@ -13982,7 +13992,32 @@ fn parse_source_block(
                     "nested-media",
                 );
             } else {
-                parse_source_block(context, open + 1, close, current_layer, Some(media_header))?;
+                parse_source_block(
+                    context,
+                    open + 1,
+                    close,
+                    current_layer,
+                    Some(media_header),
+                    current_supports,
+                )?;
+            }
+        } else if let Some(supports_header) = parse_supports_header(header) {
+            if current_supports.is_some() {
+                context.diagnostics.push(
+                    NativeDiagnosticCode::UnsupportedCssValue,
+                    context.diagnostic_source,
+                    cursor,
+                    "nested-supports",
+                );
+            } else {
+                parse_source_block(
+                    context,
+                    open + 1,
+                    close,
+                    current_layer,
+                    current_media,
+                    Some(supports_header),
+                )?;
             }
         } else if let Some(layer_header) = parse_layer_header(header) {
             if current_layer.is_some() {
@@ -14005,7 +14040,14 @@ fn parse_source_block(
                             cursor = close + 1;
                             continue;
                         };
-                        parse_source_block(context, open + 1, close, Some(layer), current_media)?;
+                        parse_source_block(
+                            context,
+                            open + 1,
+                            close,
+                            Some(layer),
+                            current_media,
+                            current_supports,
+                        )?;
                     }
                     Err(detail) => context.diagnostics.push(
                         NativeDiagnosticCode::UnsupportedCssValue,
@@ -14016,7 +14058,15 @@ fn parse_source_block(
                 }
             }
         } else {
-            parse_style_rule(context, cursor, open, close, current_layer, current_media)?;
+            parse_style_rule(
+                context,
+                cursor,
+                open,
+                close,
+                current_layer,
+                current_media,
+                current_supports,
+            )?;
         }
         cursor = close + 1;
     }
@@ -14026,6 +14076,19 @@ fn parse_source_block(
 fn parse_media_header(source: &str) -> Option<&str> {
     let source = source.trim();
     const KEYWORD: &str = "@media";
+    if source.len() <= KEYWORD.len()
+        || !source.as_bytes()[..KEYWORD.len()].eq_ignore_ascii_case(KEYWORD.as_bytes())
+        || !source.as_bytes()[KEYWORD.len()].is_ascii_whitespace()
+    {
+        return None;
+    }
+    let condition = source[KEYWORD.len()..].trim();
+    (!condition.is_empty()).then_some(condition)
+}
+
+fn parse_supports_header(source: &str) -> Option<&str> {
+    let source = source.trim();
+    const KEYWORD: &str = "@supports";
     if source.len() <= KEYWORD.len()
         || !source.as_bytes()[..KEYWORD.len()].eq_ignore_ascii_case(KEYWORD.as_bytes())
         || !source.as_bytes()[KEYWORD.len()].is_ascii_whitespace()
@@ -14423,6 +14486,7 @@ fn parse_style_rule(
     close: usize,
     layer: Option<usize>,
     media: Option<&str>,
+    supports: Option<&str>,
 ) -> Result<(), NativeEngineError> {
     let source = context.source;
     let declarations = parse_declarations_with_diagnostics(
@@ -14557,6 +14621,7 @@ fn parse_style_rule(
                 declarations,
                 custom_properties: custom_properties.clone(),
                 media: media.map(str::to_owned),
+                supports: supports.map(str::to_owned),
                 order: *context.next_order,
             });
             *context.next_order = context.next_order.saturating_add(1);
@@ -24568,6 +24633,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn inline_supports_rules_match_supported_declarations_and_composition() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#target { color: white; } @supports (display: grid) { #target { color: red; } } @supports (display: unsupported) { #target { color: black; } } @media screen and (min-width: 1000px) { @supports (display: grid) and (color: red) { #target { color: black; } } }"
+                .into(),
+        ])
+        .expect("supports stylesheet");
+        let element = node("<div id='target'>Target</div>");
+
+        assert_eq!(
+            stylesheet
+                .computed_for_with_viewport(&element, Viewport::default())
+                .color(),
+            Some(NativeColor::BLACK)
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for_with_viewport(
+                    &element,
+                    Viewport {
+                        width: 800,
+                        ..Viewport::default()
+                    }
+                )
+                .color(),
+            Some(NativeColor::RED)
+        );
+    }
+
+    #[test]
+    fn inline_supports_rules_filter_custom_properties_by_support() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#target { color: var(--accent, white); } @supports (display: grid) { #target { --accent: red; } } @supports (display: unsupported) { #target { --accent: black; } }"
+                .into(),
+        ])
+        .expect("supports custom-property stylesheet");
+        let element = node("<div id='target'>Target</div>");
+
+        assert_eq!(
+            stylesheet
+                .computed_for_with_viewport(&element, Viewport::default())
+                .color(),
+            Some(NativeColor::RED)
+        );
+    }
     #[test]
     fn css_url_escape_decoder_handles_hex_simple_and_line_continuation_forms() {
         assert_eq!(

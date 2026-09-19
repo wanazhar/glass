@@ -4598,10 +4598,10 @@ impl NativeStylesheet {
                 inherited.pointer_events,
                 custom_properties,
             ),
-            top: resolve_local_cascade_declaration(*top, NativePositionOffset::Auto),
-            right: resolve_local_cascade_declaration(*right, NativePositionOffset::Auto),
-            bottom: resolve_local_cascade_declaration(*bottom, NativePositionOffset::Auto),
-            left: resolve_local_cascade_declaration(*left, NativePositionOffset::Auto),
+            top: resolve_position_offset(*top, custom_properties),
+            right: resolve_position_offset(*right, custom_properties),
+            bottom: resolve_position_offset(*bottom, custom_properties),
+            left: resolve_position_offset(*left, custom_properties),
             grid_template_columns: resolve_local_cascade_declaration(
                 *grid_template_columns,
                 NativeGridTrackList::default(),
@@ -4866,6 +4866,13 @@ enum ZIndexDeclarationValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PositionOffsetDeclarationValue {
+    Value(NativePositionOffset),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativePositionOffset),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpacityDeclarationValue {
     Value(u8),
     CustomProperty(u64),
@@ -4934,10 +4941,10 @@ struct NativeCascadeScratch {
     position: NativeLocalCascadeCandidates<PositionDeclarationValue>,
     z_index: NativeLocalCascadeCandidates<ZIndexDeclarationValue>,
     pointer_events: NativeTextCascadeCandidates<PointerEventsDeclarationValue>,
-    top: NativeLocalCascadeCandidates<NativePositionOffset>,
-    right: NativeLocalCascadeCandidates<NativePositionOffset>,
-    bottom: NativeLocalCascadeCandidates<NativePositionOffset>,
-    left: NativeLocalCascadeCandidates<NativePositionOffset>,
+    top: NativeLocalCascadeCandidates<PositionOffsetDeclarationValue>,
+    right: NativeLocalCascadeCandidates<PositionOffsetDeclarationValue>,
+    bottom: NativeLocalCascadeCandidates<PositionOffsetDeclarationValue>,
+    left: NativeLocalCascadeCandidates<PositionOffsetDeclarationValue>,
     grid_template_columns: NativeLocalCascadeCandidates<NativeGridTrackList>,
     grid_template_rows: NativeLocalCascadeCandidates<NativeGridTrackList>,
     visibility: NativeLocalCascadeCandidates<VisibilityValue>,
@@ -8313,6 +8320,83 @@ fn resolve_z_index(
     }
 }
 
+fn resolve_position_offset_declaration(
+    declaration: LocalCascadeDeclaration<PositionOffsetDeclarationValue>,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<PositionOffsetDeclarationValue> {
+    match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_position_offset_value(value, custom_properties, depth)
+        }
+        LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => Some(
+            PositionOffsetDeclarationValue::Value(NativePositionOffset::Auto),
+        ),
+        LocalCascadeDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_position_offset_value(
+    value: PositionOffsetDeclarationValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<PositionOffsetDeclarationValue> {
+    match value {
+        PositionOffsetDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_position_offset_declaration(value))
+                .and_then(|declaration| {
+                    resolve_position_offset_declaration(
+                        declaration,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        PositionOffsetDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_position_offset_declaration(value))
+                .and_then(|declaration| {
+                    resolve_position_offset_declaration(
+                        declaration,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(PositionOffsetDeclarationValue::Value(fallback)))
+        }
+        PositionOffsetDeclarationValue::CustomProperty(_)
+        | PositionOffsetDeclarationValue::CustomPropertyFallback(_, _) => None,
+        PositionOffsetDeclarationValue::Value(value) => {
+            Some(PositionOffsetDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_position_offset(
+    candidates: NativeLocalCascadeCandidates<PositionOffsetDeclarationValue>,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativePositionOffset {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        PositionOffsetDeclarationValue::Value(NativePositionOffset::Auto),
+        |declaration| resolve_position_offset_declaration(declaration, custom_properties, 0),
+    );
+    match resolved {
+        PositionOffsetDeclarationValue::Value(value) => value,
+        PositionOffsetDeclarationValue::CustomProperty(_)
+        | PositionOffsetDeclarationValue::CustomPropertyFallback(_, _) => {
+            NativePositionOffset::Auto
+        }
+    }
+}
+
 fn resolve_text_indent_declaration(
     declaration: LocalCascadeDeclaration<TextIndentDeclarationValue>,
     inherited: u32,
@@ -10627,10 +10711,10 @@ struct NativeDeclarations {
     position: Option<LocalCascadeDeclaration<PositionDeclarationValue>>,
     z_index: Option<LocalCascadeDeclaration<ZIndexDeclarationValue>>,
     pointer_events: Option<InheritedTextDeclaration<PointerEventsDeclarationValue>>,
-    top: Option<LocalCascadeDeclaration<NativePositionOffset>>,
-    right: Option<LocalCascadeDeclaration<NativePositionOffset>>,
-    bottom: Option<LocalCascadeDeclaration<NativePositionOffset>>,
-    left: Option<LocalCascadeDeclaration<NativePositionOffset>>,
+    top: Option<LocalCascadeDeclaration<PositionOffsetDeclarationValue>>,
+    right: Option<LocalCascadeDeclaration<PositionOffsetDeclarationValue>>,
+    bottom: Option<LocalCascadeDeclaration<PositionOffsetDeclarationValue>>,
+    left: Option<LocalCascadeDeclaration<PositionOffsetDeclarationValue>>,
     grid_template_columns: Option<LocalCascadeDeclaration<NativeGridTrackList>>,
     grid_template_columns_important: bool,
     grid_template_rows: Option<LocalCascadeDeclaration<NativeGridTrackList>>,
@@ -16312,13 +16396,46 @@ fn parse_position_offset(value: &str) -> Option<NativePositionOffset> {
         .then_some(NativePositionOffset::Length(i32::try_from(value).ok()?))
 }
 
+fn parse_position_offset_custom_property(value: &str) -> Option<PositionOffsetDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_position_offset(fallback).map(|fallback| {
+            PositionOffsetDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(PositionOffsetDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_position_offset_property(value: &str) -> Option<PositionOffsetDeclarationValue> {
+    parse_position_offset(value)
+        .map(PositionOffsetDeclarationValue::Value)
+        .or_else(|| parse_position_offset_custom_property(value))
+}
+
 fn parse_position_offset_declaration(
     value: &str,
-) -> Option<LocalCascadeDeclaration<NativePositionOffset>> {
+) -> Option<LocalCascadeDeclaration<PositionOffsetDeclarationValue>> {
     if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
-    parse_local_reset_cascade_declaration(value, parse_position_offset)
+    parse_local_reset_cascade_declaration(value, parse_position_offset_property)
 }
 
 fn parse_grid_track_list_declaration(
@@ -21957,6 +22074,81 @@ mod tests {
         assert_eq!(style("invalid"), NativeZIndexValue::Integer(3));
         assert_eq!(style("cycle"), NativeZIndexValue::Integer(7));
         assert_eq!(style("reset"), NativeZIndexValue::Auto);
+    }
+
+    #[test]
+    fn position_offset_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let offset = parse_custom_property_name("--offset").unwrap();
+        assert_eq!(
+            parse_position_offset_property("12px"),
+            Some(PositionOffsetDeclarationValue::Value(
+                NativePositionOffset::Length(12)
+            ))
+        );
+        assert_eq!(
+            parse_position_offset_declaration("var(--offset)"),
+            Some(LocalCascadeDeclaration::Value(
+                PositionOffsetDeclarationValue::CustomProperty(offset)
+            ))
+        );
+        assert_eq!(
+            parse_position_offset_declaration("var(--offset, -4px)"),
+            Some(LocalCascadeDeclaration::Value(
+                PositionOffsetDeclarationValue::CustomPropertyFallback(
+                    offset,
+                    NativePositionOffset::Length(-4)
+                )
+            ))
+        );
+        assert_eq!(
+            parse_position_offset_declaration("var(--offset, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_position_offset_declaration("initial"),
+            Some(LocalCascadeDeclaration::Reset)
+        );
+        assert_eq!(
+            parse_position_offset_declaration("inherit"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
+    }
+
+    #[test]
+    fn position_offsets_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --offset: 12px; --alias: var(--offset); --cycle: var(--cycle); top: var(--offset); right: var(--alias); bottom: var(--missing, -4px); left: var(--cycle, 8px); }
+            #child { top: var(--alias); }
+            #invalid { --bad: unsupported; top: var(--bad, 3px); }
+            #reset { --reset: initial; top: var(--reset, 9px); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='invalid'>Invalid</span>
+              <span id='reset'>Reset</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            let style = document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap());
+            (style.top(), style.right(), style.bottom(), style.left())
+        };
+
+        assert_eq!(
+            style("parent"),
+            (
+                NativePositionOffset::Length(12),
+                NativePositionOffset::Length(12),
+                NativePositionOffset::Length(-4),
+                NativePositionOffset::Length(8)
+            )
+        );
+        assert_eq!(style("child").0, NativePositionOffset::Length(12));
+        assert_eq!(style("invalid").0, NativePositionOffset::Length(3));
+        assert_eq!(style("reset").0, NativePositionOffset::Auto);
     }
     #[test]
     fn local_presentation_important_parser_tracks_markers_and_invalid_preservation() {

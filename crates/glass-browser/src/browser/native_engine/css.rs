@@ -1560,6 +1560,13 @@ impl NativeFontFamilyList {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontFamilyDeclarationValue {
+    Value(NativeFontFamilyList),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontFamilyList),
+}
+
 /// A bounded `@font-face` descriptor set. Keeping ordered source candidates
 /// here lets the resource owner resolve and admit them without giving CSS
 /// parsing access to filesystem or network capabilities.
@@ -4536,10 +4543,10 @@ impl NativeStylesheet {
                 inherited.font_stretch,
                 custom_properties,
             ),
-            font_family: resolve_inherited_text_declaration(
+            font_family: resolve_font_family(
                 *font_family,
                 inherited.font_family,
-                NativeFontFamilyList::default(),
+                custom_properties,
             ),
             font_size: resolve_font_size(
                 *font_size,
@@ -4731,7 +4738,7 @@ struct NativeCascadeScratch {
     font_weight: NativeTextCascadeCandidates<FontWeightDeclarationValue>,
     font_style: NativeTextCascadeCandidates<FontStyleDeclarationValue>,
     font_stretch: NativeTextCascadeCandidates<FontStretchDeclarationValue>,
-    font_family: NativeTextCascadeCandidates<NativeFontFamilyList>,
+    font_family: NativeTextCascadeCandidates<FontFamilyDeclarationValue>,
     font_size: NativeTextCascadeCandidates<NativeFontSizeDeclarationValue>,
     word_break: NativeTextCascadeCandidates<WordBreakValue>,
     text_overflow: NativeTextLocalCascadeCandidates<TextOverflowValue>,
@@ -5440,6 +5447,89 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_family_declaration(
+    declaration: InheritedTextDeclaration<FontFamilyDeclarationValue>,
+    inherited: NativeFontFamilyList,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontFamilyDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_family_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(FontFamilyDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => Some(FontFamilyDeclarationValue::Value(
+            NativeFontFamilyList::default(),
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_family_value(
+    value: FontFamilyDeclarationValue,
+    inherited: NativeFontFamilyList,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontFamilyDeclarationValue> {
+    match value {
+        FontFamilyDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_family_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_family_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontFamilyDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_family_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_family_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontFamilyDeclarationValue::Value(fallback)))
+        }
+        FontFamilyDeclarationValue::CustomProperty(_)
+        | FontFamilyDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontFamilyDeclarationValue::Value(value) => Some(FontFamilyDeclarationValue::Value(value)),
+    }
+}
+
+fn resolve_font_family(
+    candidates: NativeTextCascadeCandidates<FontFamilyDeclarationValue>,
+    inherited: NativeFontFamilyList,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontFamilyList {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontFamilyDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_family_declaration(declaration, inherited, custom_properties, 0)
+        },
+    );
+    match resolved {
+        FontFamilyDeclarationValue::Value(value) => value,
+        FontFamilyDeclarationValue::CustomProperty(_)
+        | FontFamilyDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_stretch_declaration(
@@ -7848,7 +7938,7 @@ struct NativeDeclarations {
     font_weight: Option<InheritedTextDeclaration<FontWeightDeclarationValue>>,
     font_style: Option<InheritedTextDeclaration<FontStyleDeclarationValue>>,
     font_stretch: Option<InheritedTextDeclaration<FontStretchDeclarationValue>>,
-    font_family: Option<InheritedTextDeclaration<NativeFontFamilyList>>,
+    font_family: Option<InheritedTextDeclaration<FontFamilyDeclarationValue>>,
     font_size: Option<InheritedTextDeclaration<NativeFontSizeDeclarationValue>>,
     word_break: Option<InheritedTextDeclaration<WordBreakValue>>,
     text_overflow: Option<LocalCascadeDeclaration<TextOverflowValue>>,
@@ -15916,10 +16006,81 @@ fn parse_font_stretch_declaration(
     parse_inherited_text_declaration(value, parse_font_stretch_property)
 }
 
+fn parse_font_family_var_arguments(value: &str) -> Option<(&str, Option<&str>)> {
+    let mut depth = 0_usize;
+    let mut comma = None;
+    for (index, byte) in value.bytes().enumerate() {
+        match byte {
+            b'(' => depth = depth.checked_add(1)?,
+            b')' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            b',' if depth == 0 && comma.is_none() => comma = Some(index),
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    let (name, fallback) = comma
+        .map(|index| {
+            (
+                &value[..index],
+                Some(value[index.saturating_add(1)..].trim()),
+            )
+        })
+        .unwrap_or((value, None));
+    let name = name.trim();
+    if name.is_empty() || fallback.is_some_and(str::is_empty) {
+        return None;
+    }
+    Some((name, fallback))
+}
+
+fn parse_font_family_custom_property(value: &str) -> Option<FontFamilyDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_family_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_font_family(fallback).map(|fallback| {
+            FontFamilyDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(FontFamilyDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_font_family_property(value: &str) -> Option<FontFamilyDeclarationValue> {
+    let value = value.trim();
+    let is_var = value
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("var("));
+    if is_var {
+        parse_font_family_custom_property(value)
+    } else {
+        parse_font_family(value).map(FontFamilyDeclarationValue::Value)
+    }
+}
+
 fn parse_font_family_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontFamilyList>> {
-    parse_inherited_text_declaration(value, parse_font_family)
+) -> Option<InheritedTextDeclaration<FontFamilyDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_family_property)
 }
 
 fn parse_font_size_declaration(
@@ -26208,6 +26369,22 @@ mod tests {
         assert!(parse_font_family("sans-serif, ").is_none());
         assert!(parse_font_family("'unterminated").is_none());
         assert!(parse_font_family(", sans-serif").is_none());
+        let family_name = parse_custom_property_name("--family").unwrap();
+        let fallback = parse_font_family("\"Fallback\", serif").unwrap();
+        assert_eq!(
+            parse_font_family_property("var(--family)"),
+            Some(FontFamilyDeclarationValue::CustomProperty(family_name))
+        );
+        assert_eq!(
+            parse_font_family_declaration("var(--family, \"Fallback\", serif)"),
+            Some(InheritedTextDeclaration::Value(
+                FontFamilyDeclarationValue::CustomPropertyFallback(family_name, fallback)
+            ))
+        );
+        assert_eq!(
+            parse_font_family_property("var(--family, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -28665,6 +28842,48 @@ mod tests {
             document.computed_style_for_layout(rem_invalid).font_size(),
             32
         );
+    }
+
+    #[test]
+    fn inherited_font_family_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --family: "Missing Face", sans-serif; --alias: var(--family); --cycle: var(--cycle); font-family: var(--family); }
+            #child { font-family: var(--alias); }
+            #fallback { font-family: var(--missing, "Fallback", serif); }
+            #invalid { --bad: sans-serif,; font-family: var(--bad, monospace); }
+            #cycle { font-family: var(--cycle, cursive); }
+            #wide-initial { --wide: initial; font-family: var(--wide); }
+            #wide-inherit { --wide: inherit; font-family: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_family()
+        };
+        let parent = parse_font_family("\"Missing Face\", sans-serif").unwrap();
+        let fallback = parse_font_family("\"Fallback\", serif").unwrap();
+        let invalid = parse_font_family("monospace").unwrap();
+        let cycle = parse_font_family("cursive").unwrap();
+
+        assert_eq!(style("parent"), parent);
+        assert_eq!(style("child"), parent);
+        assert_eq!(style("fallback"), fallback);
+        assert_eq!(style("invalid"), invalid);
+        assert_eq!(style("cycle"), cycle);
+        assert_eq!(style("wide-initial"), NativeFontFamilyList::default());
+        assert_eq!(style("wide-inherit"), parent);
     }
 
     #[test]

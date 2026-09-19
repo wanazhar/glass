@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-598`, following completed
 `native-engine-browser-597`, following completed
 `native-engine-browser-596`, following completed
 `native-engine-browser-595`, following completed
@@ -467,6 +468,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 598 extends bounded native custom-property substitution to inherited
+`vertical-align`. Standalone `var(--name)` and keyword
+`var(--name, value)` fallbacks now resolve inherited aliases, CSS-wide mapped
+values, invalid values, and cyclic values before normal vertical alignment,
+while the existing supported values and computed-style projection remain
+unchanged. Nested variable grammar, registered properties, full CSS variable
+grammar, and complete CSS/Web IDL parity remain issue #40 gates.
 
 Slice 597 extends bounded native custom-property substitution to inherited
 `word-break`. Standalone `var(--name)` and keyword

@@ -1675,10 +1675,19 @@ enum InheritedTextDeclaration<T> {
     RevertLayer,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeViewportFontSizeUnit {
+    Width,
+    Height,
+    Min,
+    Max,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeFontSizeDeclarationValue {
     Pixels(u32),
     Relative(u32),
     RootRelative(u32),
+    Viewport(u32, NativeViewportFontSizeUnit),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1821,6 +1830,7 @@ pub(crate) struct NativeInheritedStyle {
     pub(crate) font_family: NativeFontFamilyList,
     pub(crate) font_size: u32,
     pub(crate) root_font_size: u32,
+    pub(crate) viewport: Viewport,
     pub(crate) word_break: WordBreakValue,
     pub(crate) text_overflow: TextOverflowValue,
     pub(crate) overflow_x: OverflowValue,
@@ -1894,6 +1904,7 @@ impl Default for NativeInheritedStyle {
             font_family: NativeFontFamilyList::default(),
             font_size: super::font::DEFAULT_NATIVE_FONT_SIZE,
             root_font_size: super::font::DEFAULT_NATIVE_FONT_SIZE,
+            viewport: Viewport::default(),
             word_break: WordBreakValue::Normal,
             text_overflow: TextOverflowValue::Clip,
             overflow_x: OverflowValue::Other,
@@ -4348,7 +4359,12 @@ impl NativeStylesheet {
                 inherited.font_family,
                 NativeFontFamilyList::default(),
             ),
-            font_size: resolve_font_size(*font_size, inherited.font_size, inherited.root_font_size),
+            font_size: resolve_font_size(
+                *font_size,
+                inherited.font_size,
+                inherited.root_font_size,
+                inherited.viewport,
+            ),
             word_break: resolve_inherited_text_declaration(
                 *word_break,
                 inherited.word_break,
@@ -4961,10 +4977,32 @@ fn scale_relative_font_size(base: u32, scale_milli: u32) -> Option<u32> {
         .then_some(value)
 }
 
+fn scale_viewport_font_size(
+    viewport: Viewport,
+    scale_milli: u32,
+    unit: NativeViewportFontSizeUnit,
+) -> Option<u32> {
+    let base = match unit {
+        NativeViewportFontSizeUnit::Width => viewport.width,
+        NativeViewportFontSizeUnit::Height => viewport.height,
+        NativeViewportFontSizeUnit::Min => viewport.width.min(viewport.height),
+        NativeViewportFontSizeUnit::Max => viewport.width.max(viewport.height),
+    };
+    let scaled = u64::from(base)
+        .checked_mul(u64::from(scale_milli))?
+        .checked_add(50_000)?
+        .checked_div(100_000)?;
+    let value = u32::try_from(scaled).ok()?;
+    (1..=super::font::MAX_NATIVE_FONT_SIZE)
+        .contains(&value)
+        .then_some(value)
+}
+
 fn resolve_font_size(
     candidates: NativeTextCascadeCandidates<NativeFontSizeDeclarationValue>,
     inherited: u32,
     root_font_size: u32,
+    viewport: Viewport,
 ) -> u32 {
     resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
         InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::Pixels(value)) => (1
@@ -4977,6 +5015,10 @@ fn resolve_font_size(
         InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::RootRelative(
             scale_milli,
         )) => scale_relative_font_size(root_font_size, scale_milli),
+        InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::Viewport(
+            scale_milli,
+            unit,
+        )) => scale_viewport_font_size(viewport, scale_milli, unit),
         InheritedTextDeclaration::Inherit
         | InheritedTextDeclaration::Unset
         | InheritedTextDeclaration::Revert => Some(inherited),
@@ -13312,15 +13354,44 @@ fn parse_font_size(value: &str) -> Option<u32> {
 }
 fn parse_relative_font_size(value: &str) -> Option<NativeFontSizeDeclarationValue> {
     let value = value.trim().to_ascii_lowercase();
-    let (number, root_relative, percentage) = if let Some(number) = value.strip_suffix('%') {
-        (number.trim(), false, true)
-    } else if let Some(number) = value.strip_suffix("rem") {
-        (number.trim(), true, false)
-    } else if let Some(number) = value.strip_suffix("em") {
-        (number.trim(), false, false)
-    } else {
-        return None;
-    };
+    let (number, root_relative, percentage, viewport_unit) =
+        if let Some(number) = value.strip_suffix('%') {
+            (number.trim(), false, true, None)
+        } else if let Some(number) = value.strip_suffix("rem") {
+            (number.trim(), true, false, None)
+        } else if let Some(number) = value.strip_suffix("vmin") {
+            (
+                number.trim(),
+                false,
+                false,
+                Some(NativeViewportFontSizeUnit::Min),
+            )
+        } else if let Some(number) = value.strip_suffix("vmax") {
+            (
+                number.trim(),
+                false,
+                false,
+                Some(NativeViewportFontSizeUnit::Max),
+            )
+        } else if let Some(number) = value.strip_suffix("vw") {
+            (
+                number.trim(),
+                false,
+                false,
+                Some(NativeViewportFontSizeUnit::Width),
+            )
+        } else if let Some(number) = value.strip_suffix("vh") {
+            (
+                number.trim(),
+                false,
+                false,
+                Some(NativeViewportFontSizeUnit::Height),
+            )
+        } else if let Some(number) = value.strip_suffix("em") {
+            (number.trim(), false, false, None)
+        } else {
+            return None;
+        };
     let milli = parse_decimal_milli(number)?;
     let scale_milli = if percentage {
         milli.checked_add(50)?.checked_div(100)?
@@ -13330,7 +13401,9 @@ fn parse_relative_font_size(value: &str) -> Option<NativeFontSizeDeclarationValu
     if !(1..=super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000)).contains(&scale_milli) {
         return None;
     }
-    Some(if root_relative {
+    Some(if let Some(unit) = viewport_unit {
+        NativeFontSizeDeclarationValue::Viewport(scale_milli, unit)
+    } else if root_relative {
         NativeFontSizeDeclarationValue::RootRelative(scale_milli)
     } else {
         NativeFontSizeDeclarationValue::Relative(scale_milli)
@@ -24437,6 +24510,36 @@ mod tests {
             Some(NativeFontSizeDeclarationValue::RootRelative(1_000))
         );
         assert_eq!(parse_font_size_value("0rem"), None);
+        assert_eq!(
+            parse_font_size_value("1vw"),
+            Some(NativeFontSizeDeclarationValue::Viewport(
+                1_000,
+                NativeViewportFontSizeUnit::Width,
+            ))
+        );
+        assert_eq!(
+            parse_font_size_value("1vh"),
+            Some(NativeFontSizeDeclarationValue::Viewport(
+                1_000,
+                NativeViewportFontSizeUnit::Height,
+            ))
+        );
+        assert_eq!(
+            parse_font_size_value("1vmin"),
+            Some(NativeFontSizeDeclarationValue::Viewport(
+                1_000,
+                NativeViewportFontSizeUnit::Min,
+            ))
+        );
+        assert_eq!(
+            parse_font_size_value("1vmax"),
+            Some(NativeFontSizeDeclarationValue::Viewport(
+                1_000,
+                NativeViewportFontSizeUnit::Max,
+            ))
+        );
+        assert_eq!(parse_font_size_value("0vw"), None);
+        assert_eq!(parse_font_size_value("256.001vh"), None);
     }
 
     #[test]
@@ -26315,6 +26418,36 @@ mod tests {
         assert_eq!(document.computed_style_for_layout(half_up).font_size(), 17);
         assert_eq!(document.computed_style_for_layout(down).font_size(), 16);
         assert_eq!(document.computed_style_for_layout(tiny).font_size(), 1);
+        assert_eq!(
+            document.computed_style_for_layout(too_large).font_size(),
+            20
+        );
+    }
+
+    #[test]
+    fn viewport_font_sizes_use_configured_dimensions_and_bounds() {
+        let mut document = NativeDocument::parse(
+            "<style>#parent { font-size: 20px; } #width { font-size: 2vw; } #height { font-size: 2vh; } #minimum { font-size: 2vmin; } #maximum { font-size: 2vmax; } #too-large { font-size: 30vw; }</style><div id='parent'><span id='width'>Width</span><span id='height'>Height</span><span id='minimum'>Minimum</span><span id='maximum'>Maximum</span><span id='too-large'>Too large</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        document
+            .set_viewport(Viewport {
+                width: 1_000,
+                height: 800,
+                device_scale_factor_milli: 1_000,
+            })
+            .unwrap();
+        let width = document.resolve_target("id=width").unwrap();
+        let height = document.resolve_target("id=height").unwrap();
+        let minimum = document.resolve_target("id=minimum").unwrap();
+        let maximum = document.resolve_target("id=maximum").unwrap();
+        let too_large = document.resolve_target("id=too-large").unwrap();
+
+        assert_eq!(document.computed_style_for_layout(width).font_size(), 20);
+        assert_eq!(document.computed_style_for_layout(height).font_size(), 16);
+        assert_eq!(document.computed_style_for_layout(minimum).font_size(), 16);
+        assert_eq!(document.computed_style_for_layout(maximum).font_size(), 20);
         assert_eq!(
             document.computed_style_for_layout(too_large).font_size(),
             20

@@ -196,6 +196,8 @@ pub(crate) struct NativeDocumentWire {
     pub(crate) nodes: Vec<NativeNodeWire>,
     pub(crate) computed_styles: Vec<NativeComputedStyle>,
     #[serde(default)]
+    pub(crate) viewport: Viewport,
+    #[serde(default)]
     pub(crate) font_resources: Vec<NativeFontFaceResourceWire>,
     #[serde(default)]
     pub(crate) blocked_inline_style_nodes: Vec<u32>,
@@ -728,6 +730,7 @@ pub struct NativeDocument {
     font_book: NativeFontBook,
     external_stylesheet_states: BTreeMap<u32, NativeExternalStylesheetState>,
     computed_styles: Option<Vec<NativeComputedStyle>>,
+    viewport: Viewport,
     diagnostics: Vec<NativeDiagnostic>,
     diagnostics_truncated: bool,
     script_node_ids: BTreeMap<u32, NativeNodeId>,
@@ -966,6 +969,7 @@ impl NativeDocument {
             font_resources: Vec::new(),
             font_book: NativeFontBook::system(),
             external_stylesheet_states: BTreeMap::new(),
+            viewport: Viewport::default(),
             computed_styles: None,
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
@@ -1153,6 +1157,15 @@ impl NativeDocument {
         document.diagnostics_truncated = diagnostics_truncated;
         document.normalize_select_defaults();
         Ok(document)
+    }
+
+    pub(crate) fn set_viewport(&mut self, viewport: Viewport) -> Result<(), NativeEngineError> {
+        viewport.validate()?;
+        if self.viewport != viewport {
+            self.viewport = viewport;
+            self.computed_styles = None;
+        }
+        Ok(())
     }
 
     pub(crate) fn inline_style_elements(&self) -> Vec<(u32, String, Option<String>)> {
@@ -2514,6 +2527,7 @@ impl NativeDocument {
         NativeDocumentWire {
             nodes,
             computed_styles,
+            viewport: self.viewport,
             font_resources,
             blocked_inline_style_nodes: self
                 .nodes
@@ -2550,6 +2564,8 @@ impl NativeDocument {
         limits: &NativeEngineLimits,
         generation: u32,
     ) -> Result<Self, NativeEngineError> {
+        let viewport = wire.viewport;
+        viewport.validate()?;
         limits.validate()?;
         if wire.nodes.is_empty() {
             return Err(NativeEngineError::Parse {
@@ -3360,6 +3376,7 @@ impl NativeDocument {
             font_resources: font_resources.clone(),
             font_book,
             external_stylesheet_states: BTreeMap::new(),
+            viewport,
             computed_styles: Some(wire.computed_styles),
             diagnostics,
             diagnostics_truncated,
@@ -3446,6 +3463,7 @@ impl NativeDocument {
             font_book: NativeFontBook::system(),
             external_stylesheet_states: BTreeMap::new(),
             computed_styles: None,
+            viewport: Viewport::default(),
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
             script_node_ids: BTreeMap::new(),
@@ -6818,6 +6836,7 @@ impl NativeDocument {
                     font_family: inherited_font_family,
                     font_size: inherited_font_size,
                     root_font_size: inherited_root_font_size,
+                    viewport: self.viewport,
                     word_break: inherited_word_break,
                     text_overflow: inherited_text_overflow,
                     overflow_x: inherited_overflow_x,

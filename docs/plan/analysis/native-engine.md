@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-558`, following
+expansion checkpoint is completed `native-engine-browser-559`, following
+completed `native-engine-browser-558`, following
 completed `native-engine-browser-557`, following
 completed `native-engine-browser-556`, following
 completed `native-engine-browser-555`, following
@@ -436,27 +437,32 @@ native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
 
+Slice 559 closes a bounded native CSS `font-size` viewport-unit gap. The
+parser accepts `vw`, `vh`, `vmin`, and `vmax`; checked thousandth factors use
+the validated configured viewport with half-up integer-pixel conversion,
+content-wire carry, and fallback for rounded out-of-range results. Unit
+algebra, dynamic viewport recomputation, extra-precision CSS number grammar,
+and complete CSS font-size parity remain explicit issue #40 gates.
+
 Slice 558 closes a bounded native CSS `font-size` fractional-pixel gap. The
 `px` branch now parses thousandths, applies checked half-up integer-pixel
 rounding, and rejects results outside 1..=256 px so inherited or lower-
-priority candidates still win. Viewport units, unit algebra, extra-precision
-CSS number grammar, and complete CSS font-size parity remain explicit issue
-#40 gates.
+priority candidates still win. Unit algebra, extra-precision CSS number
+grammar, and complete CSS font-size parity remain explicit issue #40 gates.
 
 Slice 557 extends the inherited native `font-size` path with bounded root-
 relative `rem` values. The computed-style walk identifies the resolved root
 element size and applies checked thousandth-scale, half-up integer-pixel
 resolution to descendants. Out-of-range results fall through to a lower-
-priority or inherited candidate. Viewport units, unit algebra, extra-precision
-CSS number grammar, and complete CSS font-size parity remain explicit issue #40
-gates.
+priority or inherited candidate. Unit algebra, extra-precision CSS number
+grammar, and complete CSS font-size parity remain explicit issue #40 gates.
 
 Slice 556 extends the inherited native `font-size` path with bounded parent-
 relative `em` and percentage values. The declaration stores a milli-scale
 factor, the computed-style walk resolves it against the already-computed parent
 size with checked half-up integer arithmetic, and out-of-range results allow
-lower-priority or inherited candidates to win. Viewport units, unit algebra,
-malformed precision, and complete CSS font-size parity remain explicit issue
+lower-priority or inherited candidates to win. Unit algebra, extra-precision
+CSS number grammar, and complete CSS font-size parity remain explicit issue
 #40 gates.
 
 Slice 555 closes a bounded CSS `font-size` gap in the native inherited-style
@@ -464,8 +470,8 @@ path. Element declarations using `pt`, `pc`, `in`, `cm`, or `mm` convert through
 the CSS 96 dpi reference pixel, round half-up to integer pixels, and retain the
 existing 1..=256 px bound. The implementation uses checked thousandth-unit
 arithmetic, preserving fail-closed behavior for malformed or over-budget
-absolute values. Viewport units, unit algebra, extra-precision CSS number
-grammar, and complete browser text parity remain explicit issue #40 gates.
+absolute values. Unit algebra, extra-precision CSS number grammar, and
+complete browser text parity remain explicit issue #40 gates.
 
 Slice 554 closes the native `FontFaceSet` event-handler properties
 `onloading`, `onloadingdone`, and `onloadingerror`. The properties are

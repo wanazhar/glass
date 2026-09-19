@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-623`, following completed
 `native-engine-browser-622`, following completed
 `native-engine-browser-621`, following completed
 `native-engine-browser-620`, following completed
@@ -525,6 +526,16 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed flex sizing substitution follow-up is
+[`native-engine-browser-623`](tasks/native-engine-browser-623.md): native
+`flex-grow`, `flex-shrink`, and `flex-basis` now accept bounded standalone
+`var(--name)` values and concrete numeric, `auto`, or pixel fallbacks.
+Resolution projects inherited custom-property aliases, handles invalid and
+cyclic fallback values, preserves non-inherited flex sizing, reset behavior,
+and declaration-order precedence. Full custom-property grammar, registered
+properties, flex shorthand substitution, and complete CSS and Web IDL parity
+remain issue #40 gates.
 
 The completed flex-flow substitution follow-up is
 [`native-engine-browser-622`](tasks/native-engine-browser-622.md): native

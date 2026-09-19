@@ -1688,6 +1688,18 @@ enum NativeFontSizeDeclarationValue {
     Relative(u32),
     RootRelative(u32),
     Viewport(u32, NativeViewportFontSizeUnit),
+    Calculation(NativeFontSizeCalculation),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeFontSizeCalculation {
+    absolute_milli: i64,
+    parent_scale_milli: i64,
+    root_scale_milli: i64,
+    viewport_width_scale_milli: i64,
+    viewport_height_scale_milli: i64,
+    viewport_min_scale_milli: i64,
+    viewport_max_scale_milli: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4998,6 +5010,44 @@ fn scale_viewport_font_size(
         .then_some(value)
 }
 
+fn resolve_font_size_calculation(
+    calculation: NativeFontSizeCalculation,
+    inherited: u32,
+    root_font_size: u32,
+    viewport: Viewport,
+) -> Option<u32> {
+    let mut total = calculation.absolute_milli.checked_mul(100)?;
+    total = total.checked_add(
+        i64::from(inherited)
+            .checked_mul(calculation.parent_scale_milli)?
+            .checked_mul(100)?,
+    )?;
+    total = total.checked_add(
+        i64::from(root_font_size)
+            .checked_mul(calculation.root_scale_milli)?
+            .checked_mul(100)?,
+    )?;
+    total = total.checked_add(
+        i64::from(viewport.width).checked_mul(calculation.viewport_width_scale_milli)?,
+    )?;
+    total = total.checked_add(
+        i64::from(viewport.height).checked_mul(calculation.viewport_height_scale_milli)?,
+    )?;
+    let minimum = i64::from(viewport.width.min(viewport.height));
+    total = total.checked_add(minimum.checked_mul(calculation.viewport_min_scale_milli)?)?;
+    let maximum = i64::from(viewport.width.max(viewport.height));
+    total = total.checked_add(maximum.checked_mul(calculation.viewport_max_scale_milli)?)?;
+    if total <= 0 {
+        return None;
+    }
+    let milli_pixels = total.checked_add(50)?.checked_div(100)?;
+    let pixels = milli_pixels.checked_add(500)?.checked_div(1_000)?;
+    let value = u32::try_from(pixels).ok()?;
+    (1..=super::font::MAX_NATIVE_FONT_SIZE)
+        .contains(&value)
+        .then_some(value)
+}
+
 fn resolve_font_size(
     candidates: NativeTextCascadeCandidates<NativeFontSizeDeclarationValue>,
     inherited: u32,
@@ -5019,6 +5069,9 @@ fn resolve_font_size(
             scale_milli,
             unit,
         )) => scale_viewport_font_size(viewport, scale_milli, unit),
+        InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::Calculation(
+            calculation,
+        )) => resolve_font_size_calculation(calculation, inherited, root_font_size, viewport),
         InheritedTextDeclaration::Inherit
         | InheritedTextDeclaration::Unset
         | InheritedTextDeclaration::Revert => Some(inherited),
@@ -13410,10 +13463,202 @@ fn parse_relative_font_size(value: &str) -> Option<NativeFontSizeDeclarationValu
     })
 }
 
+const MAX_NATIVE_FONT_SIZE_CALC_TERMS: usize = 16;
+
+fn merge_font_size_calculation(
+    total: &mut NativeFontSizeCalculation,
+    term: NativeFontSizeCalculation,
+    sign: i64,
+) -> Option<()> {
+    total.absolute_milli = total
+        .absolute_milli
+        .checked_add(sign.checked_mul(term.absolute_milli)?)?;
+    total.parent_scale_milli = total
+        .parent_scale_milli
+        .checked_add(sign.checked_mul(term.parent_scale_milli)?)?;
+    total.root_scale_milli = total
+        .root_scale_milli
+        .checked_add(sign.checked_mul(term.root_scale_milli)?)?;
+    total.viewport_width_scale_milli = total
+        .viewport_width_scale_milli
+        .checked_add(sign.checked_mul(term.viewport_width_scale_milli)?)?;
+    total.viewport_height_scale_milli = total
+        .viewport_height_scale_milli
+        .checked_add(sign.checked_mul(term.viewport_height_scale_milli)?)?;
+    total.viewport_min_scale_milli = total
+        .viewport_min_scale_milli
+        .checked_add(sign.checked_mul(term.viewport_min_scale_milli)?)?;
+    total.viewport_max_scale_milli = total
+        .viewport_max_scale_milli
+        .checked_add(sign.checked_mul(term.viewport_max_scale_milli)?)?;
+    Some(())
+}
+
+fn parse_font_size_calculation_term(value: &str) -> Option<NativeFontSizeCalculation> {
+    let value = value.trim();
+    let mut term = NativeFontSizeCalculation::default();
+    if let Some(number) = value.strip_suffix("px") {
+        let milli = parse_decimal_milli(number.trim())?;
+        (milli <= super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000)).then_some(())?;
+        term.absolute_milli = i64::from(milli);
+        return Some(term);
+    }
+    let (number, multiplier, denominator) = [
+        ("pt", 4_u64, 3_u64),
+        ("pc", 16_u64, 1_u64),
+        ("in", 96_u64, 1_u64),
+        ("cm", 4_800_u64, 127_u64),
+        ("mm", 480_u64, 127_u64),
+    ]
+    .iter()
+    .find_map(|(suffix, multiplier, denominator)| {
+        value
+            .strip_suffix(suffix)
+            .map(|number| (number.trim(), *multiplier, *denominator))
+    })?;
+    let milli_units = u64::from(parse_decimal_milli(number)?);
+    let milli_pixels = milli_units
+        .checked_mul(multiplier)?
+        .checked_add(denominator / 2)?
+        .checked_div(denominator)?;
+    if milli_pixels > u64::from(super::font::MAX_NATIVE_FONT_SIZE).saturating_mul(1_000) {
+        return None;
+    }
+    term.absolute_milli = i64::try_from(milli_pixels).ok()?;
+    Some(term)
+}
+
+fn parse_font_size_calculation_relative_term(
+    value: &str,
+) -> Option<(u32, Option<NativeViewportFontSizeUnit>, bool)> {
+    let (number, root_relative, percentage, viewport_unit) =
+        if let Some(number) = value.strip_suffix('%') {
+            (number.trim(), false, true, None)
+        } else if let Some(number) = value.strip_suffix("rem") {
+            (number.trim(), true, false, None)
+        } else if let Some(number) = value.strip_suffix("vmin") {
+            (
+                number.trim(),
+                false,
+                false,
+                Some(NativeViewportFontSizeUnit::Min),
+            )
+        } else if let Some(number) = value.strip_suffix("vmax") {
+            (
+                number.trim(),
+                false,
+                false,
+                Some(NativeViewportFontSizeUnit::Max),
+            )
+        } else if let Some(number) = value.strip_suffix("vw") {
+            (
+                number.trim(),
+                false,
+                false,
+                Some(NativeViewportFontSizeUnit::Width),
+            )
+        } else if let Some(number) = value.strip_suffix("vh") {
+            (
+                number.trim(),
+                false,
+                false,
+                Some(NativeViewportFontSizeUnit::Height),
+            )
+        } else if let Some(number) = value.strip_suffix("em") {
+            (number.trim(), false, false, None)
+        } else {
+            return None;
+        };
+    let milli = parse_decimal_milli(number)?;
+    let scale_milli = if percentage {
+        milli.checked_add(50)?.checked_div(100)?
+    } else {
+        milli
+    };
+    (scale_milli <= super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000)).then_some(())?;
+    Some((scale_milli, viewport_unit, root_relative))
+}
+
+fn parse_font_size_calculation_term_any(value: &str) -> Option<NativeFontSizeCalculation> {
+    let value = value.trim().to_ascii_lowercase();
+    if let Some(term) = parse_font_size_calculation_term(&value) {
+        return Some(term);
+    }
+    let (scale_milli, viewport_unit, root_relative) =
+        parse_font_size_calculation_relative_term(&value)?;
+    let mut term = NativeFontSizeCalculation::default();
+    match viewport_unit {
+        Some(NativeViewportFontSizeUnit::Width) => {
+            term.viewport_width_scale_milli = i64::from(scale_milli)
+        }
+        Some(NativeViewportFontSizeUnit::Height) => {
+            term.viewport_height_scale_milli = i64::from(scale_milli)
+        }
+        Some(NativeViewportFontSizeUnit::Min) => {
+            term.viewport_min_scale_milli = i64::from(scale_milli);
+        }
+        Some(NativeViewportFontSizeUnit::Max) => {
+            term.viewport_max_scale_milli = i64::from(scale_milli);
+        }
+        None if root_relative => term.root_scale_milli = i64::from(scale_milli),
+        None => term.parent_scale_milli = i64::from(scale_milli),
+    }
+    Some(term)
+}
+
+fn parse_font_size_calculation(value: &str) -> Option<NativeFontSizeCalculation> {
+    let value = value.trim().to_ascii_lowercase();
+    let source = value.strip_prefix("calc(")?.strip_suffix(')')?;
+    if source.trim().is_empty() {
+        return None;
+    }
+    let mut total = NativeFontSizeCalculation::default();
+    let mut start = 0;
+    let mut sign = 1_i64;
+    let mut term_count: usize = 0;
+    for (index, byte) in source.bytes().enumerate() {
+        if !matches!(byte, b'+' | b'-') {
+            continue;
+        }
+        let term = source.get(start..index)?.trim();
+        if term.is_empty() {
+            return None;
+        }
+        term_count = term_count.saturating_add(1);
+        if term_count > MAX_NATIVE_FONT_SIZE_CALC_TERMS {
+            return None;
+        }
+        merge_font_size_calculation(
+            &mut total,
+            parse_font_size_calculation_term_any(term)?,
+            sign,
+        )?;
+        sign = if byte == b'+' { 1 } else { -1 };
+        start = index.saturating_add(1);
+    }
+    let term = source.get(start..)?.trim();
+    if term.is_empty() {
+        return None;
+    }
+    term_count = term_count.saturating_add(1);
+    if term_count > MAX_NATIVE_FONT_SIZE_CALC_TERMS {
+        return None;
+    }
+    merge_font_size_calculation(
+        &mut total,
+        parse_font_size_calculation_term_any(term)?,
+        sign,
+    )?;
+    Some(total)
+}
+
 fn parse_font_size_value(value: &str) -> Option<NativeFontSizeDeclarationValue> {
     parse_font_size(value)
         .map(NativeFontSizeDeclarationValue::Pixels)
         .or_else(|| parse_relative_font_size(value))
+        .or_else(|| {
+            parse_font_size_calculation(value).map(NativeFontSizeDeclarationValue::Calculation)
+        })
 }
 
 fn parse_word_break(value: &str) -> Option<WordBreakValue> {
@@ -24540,6 +24785,28 @@ mod tests {
         );
         assert_eq!(parse_font_size_value("0vw"), None);
         assert_eq!(parse_font_size_value("256.001vh"), None);
+        assert_eq!(
+            parse_font_size_value("calc(1em + 2px)"),
+            Some(NativeFontSizeDeclarationValue::Calculation(
+                NativeFontSizeCalculation {
+                    absolute_milli: 2_000,
+                    parent_scale_milli: 1_000,
+                    ..NativeFontSizeCalculation::default()
+                }
+            ))
+        );
+        assert_eq!(
+            parse_font_size_value("calc(100% - 2px)"),
+            Some(NativeFontSizeDeclarationValue::Calculation(
+                NativeFontSizeCalculation {
+                    absolute_milli: -2_000,
+                    parent_scale_milli: 1_000,
+                    ..NativeFontSizeCalculation::default()
+                }
+            ))
+        );
+        assert_eq!(parse_font_size_value("calc(1px * 2)"), None);
+        assert_eq!(parse_font_size_value("calc(-1px + 2px)"), None);
     }
 
     #[test]
@@ -26451,6 +26718,36 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(too_large).font_size(),
             20
+        );
+    }
+
+    #[test]
+    fn additive_calc_font_sizes_resolve_against_style_context() {
+        let mut document = NativeDocument::parse(
+            "<style>#parent { font-size: 24px; } #sum { font-size: calc(1em + 2px); } #subtract { font-size: calc(100% - 2px); } #viewport { font-size: calc(1vw + 1vh); } #negative { font-size: calc(1px - 2em); } #too-large { font-size: calc(256px + 1px); }</style><div id='parent'><span id='sum'>Sum</span><span id='subtract'>Subtract</span><span id='viewport'>Viewport</span><span id='negative'>Negative</span><span id='too-large'>Too large</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        document
+            .set_viewport(Viewport {
+                width: 1_000,
+                height: 800,
+                device_scale_factor_milli: 1_000,
+            })
+            .unwrap();
+        let sum = document.resolve_target("id=sum").unwrap();
+        let subtract = document.resolve_target("id=subtract").unwrap();
+        let viewport = document.resolve_target("id=viewport").unwrap();
+        let negative = document.resolve_target("id=negative").unwrap();
+        let too_large = document.resolve_target("id=too-large").unwrap();
+
+        assert_eq!(document.computed_style_for_layout(sum).font_size(), 26);
+        assert_eq!(document.computed_style_for_layout(subtract).font_size(), 22);
+        assert_eq!(document.computed_style_for_layout(viewport).font_size(), 18);
+        assert_eq!(document.computed_style_for_layout(negative).font_size(), 24);
+        assert_eq!(
+            document.computed_style_for_layout(too_large).font_size(),
+            24
         );
     }
 

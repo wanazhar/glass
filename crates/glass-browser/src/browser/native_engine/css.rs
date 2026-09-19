@@ -726,6 +726,13 @@ pub(crate) enum WhiteSpaceValue {
     NoWrap,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WhiteSpaceDeclarationValue {
+    Value(WhiteSpaceValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, WhiteSpaceValue),
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum TextAlignValue {
     #[default]
@@ -4549,7 +4556,11 @@ impl NativeStylesheet {
                 VisibilityValue::Other,
             ) == VisibilityValue::Hidden,
             opacity: resolve_local_optional_cascade_declaration(*opacity),
-            white_space: resolve_white_space(*white_space, inherited.white_space),
+            white_space: resolve_white_space(
+                *white_space,
+                inherited.white_space,
+                custom_properties,
+            ),
             text_align: resolve_text_align(*text_align, inherited.text_align, custom_properties),
             text_align_last: resolve_text_align_last(
                 *text_align_last,
@@ -4829,7 +4840,7 @@ struct NativeCascadeScratch {
     grid_template_rows: NativeLocalCascadeCandidates<NativeGridTrackList>,
     visibility: NativeLocalCascadeCandidates<VisibilityValue>,
     opacity: NativeLocalCascadeCandidates<u8>,
-    white_space: NativeTextCascadeCandidates<WhiteSpaceValue>,
+    white_space: NativeTextCascadeCandidates<WhiteSpaceDeclarationValue>,
     text_align: NativeTextCascadeCandidates<TextAlignDeclarationValue>,
     text_align_last: NativeTextCascadeCandidates<TextAlignLastDeclarationValue>,
     text_justify: NativeTextCascadeCandidates<TextJustifyDeclarationValue>,
@@ -5059,12 +5070,85 @@ fn encode_cascade_specificity(specificity: u16, layer: Option<usize>) -> u16 {
         .saturating_add(specificity.min(MAX_NATIVE_SELECTOR_SPECIFICITY))
 }
 
-fn resolve_white_space(
-    candidates: [Option<CascadeValue<InheritedTextDeclaration<WhiteSpaceValue>>>;
-        MAX_NATIVE_TEXT_CASCADE_LAYERS],
+fn resolve_white_space_declaration(
+    declaration: InheritedTextDeclaration<WhiteSpaceDeclarationValue>,
     inherited: WhiteSpaceValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<WhiteSpaceDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_white_space_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(WhiteSpaceDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => {
+            Some(WhiteSpaceDeclarationValue::Value(WhiteSpaceValue::Normal))
+        }
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_white_space_value(
+    value: WhiteSpaceDeclarationValue,
+    inherited: WhiteSpaceValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<WhiteSpaceDeclarationValue> {
+    match value {
+        WhiteSpaceDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_white_space_declaration(value))
+                .and_then(|declaration| {
+                    resolve_white_space_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        WhiteSpaceDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_white_space_declaration(value))
+                .and_then(|declaration| {
+                    resolve_white_space_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(WhiteSpaceDeclarationValue::Value(fallback)))
+        }
+        WhiteSpaceDeclarationValue::CustomProperty(_)
+        | WhiteSpaceDeclarationValue::CustomPropertyFallback(_, _) => None,
+        WhiteSpaceDeclarationValue::Value(value) => Some(WhiteSpaceDeclarationValue::Value(value)),
+    }
+}
+
+fn resolve_white_space(
+    candidates: NativeTextCascadeCandidates<WhiteSpaceDeclarationValue>,
+    inherited: WhiteSpaceValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> WhiteSpaceValue {
-    resolve_inherited_text_declaration(candidates, inherited, WhiteSpaceValue::Normal)
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        WhiteSpaceDeclarationValue::Value(inherited),
+        |declaration| resolve_white_space_declaration(declaration, inherited, custom_properties, 0),
+    );
+    match resolved {
+        WhiteSpaceDeclarationValue::Value(value) => value,
+        WhiteSpaceDeclarationValue::CustomProperty(_)
+        | WhiteSpaceDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_line_height(
@@ -9506,7 +9590,7 @@ struct NativeDeclarations {
     box_model_importance: NativeBoxModelDeclarationImportance,
     flex_importance: NativeFlexDeclarationImportance,
     text_importance: NativeTextDeclarationImportance,
-    white_space: Option<InheritedTextDeclaration<WhiteSpaceValue>>,
+    white_space: Option<InheritedTextDeclaration<WhiteSpaceDeclarationValue>>,
     text_align: Option<InheritedTextDeclaration<TextAlignDeclarationValue>>,
     text_align_last: Option<InheritedTextDeclaration<TextAlignLastDeclarationValue>>,
     text_justify: Option<InheritedTextDeclaration<TextJustifyDeclarationValue>>,
@@ -15295,8 +15379,33 @@ fn parse_white_space(value: &str) -> Option<WhiteSpaceValue> {
     }
 }
 
-fn parse_white_space_declaration(value: &str) -> Option<InheritedTextDeclaration<WhiteSpaceValue>> {
-    parse_inherited_text_declaration(value, parse_white_space)
+fn parse_white_space_custom_property(value: &str) -> Option<WhiteSpaceDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_white_space(fallback).map(|fallback| {
+            WhiteSpaceDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(WhiteSpaceDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_white_space_property(value: &str) -> Option<WhiteSpaceDeclarationValue> {
+    parse_white_space(value)
+        .map(WhiteSpaceDeclarationValue::Value)
+        .or_else(|| parse_white_space_custom_property(value))
+}
+
+fn parse_white_space_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<WhiteSpaceDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_white_space_property)
 }
 
 fn parse_text_align(value: &str) -> Option<TextAlignValue> {
@@ -18983,7 +19092,9 @@ mod tests {
         );
         assert_eq!(
             declarations.white_space,
-            Some(InheritedTextDeclaration::Value(WhiteSpaceValue::PreLine))
+            Some(InheritedTextDeclaration::Value(
+                WhiteSpaceDeclarationValue::Value(WhiteSpaceValue::PreLine)
+            ))
         );
         assert_eq!(
             declarations.text_align,
@@ -23472,11 +23583,15 @@ mod tests {
         );
         assert_eq!(
             parse_white_space_declaration("PRE-WRAP"),
-            Some(InheritedTextDeclaration::Value(WhiteSpaceValue::PreWrap))
+            Some(InheritedTextDeclaration::Value(
+                WhiteSpaceDeclarationValue::Value(WhiteSpaceValue::PreWrap)
+            ))
         );
         assert_eq!(
             parse_white_space_declaration("pre-line"),
-            Some(InheritedTextDeclaration::Value(WhiteSpaceValue::PreLine))
+            Some(InheritedTextDeclaration::Value(
+                WhiteSpaceDeclarationValue::Value(WhiteSpaceValue::PreLine)
+            ))
         );
         assert_eq!(
             parse_white_space_declaration("InHeRiT"),
@@ -23497,6 +23612,22 @@ mod tests {
         assert_eq!(parse_white_space_declaration("inherit pre"), None);
         assert_eq!(parse_white_space_declaration("pre wrap"), None);
         assert_eq!(parse_white_space_declaration("revert-layer pre"), None);
+        let white_space_name = parse_custom_property_name("--white-space").unwrap();
+        let fallback = WhiteSpaceValue::NoWrap;
+        assert_eq!(
+            parse_white_space_property("var(--white-space)"),
+            Some(WhiteSpaceDeclarationValue::CustomProperty(white_space_name))
+        );
+        assert_eq!(
+            parse_white_space_declaration("var(--white-space, nowrap)"),
+            Some(InheritedTextDeclaration::Value(
+                WhiteSpaceDeclarationValue::CustomPropertyFallback(white_space_name, fallback)
+            ))
+        );
+        assert_eq!(
+            parse_white_space_property("var(--white-space, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -27413,7 +27544,9 @@ mod tests {
         );
         assert_eq!(
             preserved.white_space,
-            Some(InheritedTextDeclaration::Value(WhiteSpaceValue::Pre))
+            Some(InheritedTextDeclaration::Value(
+                WhiteSpaceDeclarationValue::Value(WhiteSpaceValue::Pre)
+            ))
         );
         assert_eq!(
             preserved.text_decoration,
@@ -30444,6 +30577,44 @@ mod tests {
             document.computed_style_for_layout(invalid).text_justify(),
             TextJustifyValue::None
         );
+    }
+
+    #[test]
+    fn inherited_white_space_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --white-space: pre-wrap; --alias: var(--white-space); --cycle: var(--cycle); white-space: var(--white-space); }
+            #child { white-space: var(--alias); }
+            #fallback { white-space: var(--missing, nowrap); }
+            #invalid { --bad: pre wrap; white-space: var(--bad, pre); }
+            #cycle { white-space: var(--cycle, normal); }
+            #wide-initial { --wide: initial; white-space: var(--wide); }
+            #wide-inherit { --wide: inherit; white-space: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .white_space()
+        };
+
+        assert_eq!(style("parent"), WhiteSpaceValue::PreWrap);
+        assert_eq!(style("child"), WhiteSpaceValue::PreWrap);
+        assert_eq!(style("fallback"), WhiteSpaceValue::NoWrap);
+        assert_eq!(style("invalid"), WhiteSpaceValue::Pre);
+        assert_eq!(style("cycle"), WhiteSpaceValue::Normal);
+        assert_eq!(style("wide-initial"), WhiteSpaceValue::Normal);
+        assert_eq!(style("wide-inherit"), WhiteSpaceValue::PreWrap);
     }
 
     #[test]

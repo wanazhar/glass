@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-571`, following completed
 `native-engine-browser-570`, following completed
 `native-engine-browser-569`, following completed
 `native-engine-browser-568`, following completed
@@ -440,6 +441,16 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 571 extends bounded native custom-property substitution to inherited
+border color declarations. Standalone `var(--name)` and concrete
+`var(--name, color)` fallbacks now resolve inherited, nested, invalid, and
+cyclic values before normal border-color resolution, while `currentColor`,
+CSS-wide keywords, `revert-layer`, and the existing border cascade and
+paint model remain unchanged. Complete border shorthand substitution,
+composite color functions, CSS-wide fallback values, registered properties,
+broader color properties, full CSS variable grammar, and complete CSS/Web IDL
+parity remain issue #40 gates.
 
 Slice 570 extends bounded native custom-property substitution to inherited
 CSS `background-color`. Standalone `var(--name)` and concrete

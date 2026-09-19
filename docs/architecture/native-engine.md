@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-563`, following completed
 `native-engine-browser-562`, following completed
 `native-engine-browser-561`, following completed
 `native-engine-browser-560`, following completed
@@ -432,6 +433,13 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 563 adds bounded custom-property resolution for inherited CSS
+`font-size`. Direct `var(--name)` references consume bounded values inherited
+through matched ancestors or supplied inline, with important/inline/specificity/
+source-order cascade precedence and checked recursive resolution. Variable
+fallback syntax, composite `var()` inside `calc()`, CSSOM mutation, registered
+properties, and complete CSS variable parity remain issue #40 gates.
 
 Slice 562 closes the bounded extra-precision CSS `font-size` gap. Direct
 absolute/relative, viewport, and `calc()` numbers accept up to six fractional

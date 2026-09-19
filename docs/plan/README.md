@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-563`, following completed
 `native-engine-browser-562`, following completed
 `native-engine-browser-561`, following completed
 `native-engine-browser-560`, following completed
@@ -465,6 +466,14 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed bounded CSS custom-property `font-size` follow-up is
+[`native-engine-browser-563`](tasks/native-engine-browser-563.md): direct
+`var(--name)` references now resolve bounded custom-property values inherited
+through matched ancestors and inline overrides with checked recursion and
+cascade precedence. Variable fallback syntax, composite `var()` inside
+`calc()`, CSSOM mutation, registered properties, and complete CSS variable
+parity remain issue #40 gates.
 
 The completed extra-precision CSS `font-size` follow-up is
 [`native-engine-browser-562`](tasks/native-engine-browser-562.md): bounded

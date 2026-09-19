@@ -24,6 +24,10 @@ pub(crate) const NATIVE_BACKGROUND_PERCENT_SCALE: i32 = 1_000;
 const MAX_NATIVE_BACKGROUND_PERCENT: i32 = 100_000;
 const MAX_SELECTOR_BYTES: usize = 256;
 const MAX_SELECTOR_PARTS: usize = 8;
+const MAX_NATIVE_CUSTOM_PROPERTIES_PER_RULE: usize = 16;
+const MAX_NATIVE_CUSTOM_PROPERTY_NAME_BYTES: usize = 64;
+const MAX_NATIVE_CUSTOM_PROPERTY_VALUE_BYTES: usize = 512;
+const MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH: usize = 8;
 const MAX_NATIVE_FONT_FACE_SOURCE_BYTES: usize = 512 * 1024;
 const MAX_NATIVE_FONT_FACE_SOURCES: usize = 8;
 pub(crate) const MAX_NATIVE_FONT_FACE_UNICODE_RANGES: usize = 32;
@@ -1689,6 +1693,7 @@ enum NativeFontSizeDeclarationValue {
     RootRelative(u32),
     Viewport(u32, NativeViewportFontSizeUnit),
     Calculation(NativeFontSizeCalculation),
+    CustomProperty(u64),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2601,13 +2606,77 @@ impl NativeStylesheet {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn computed_for(&self, node: &NativeNode) -> NativeComputedStyle {
-        self.computed_for_with_matcher(node, NativeInheritedStyle::default(), |selector| {
-            selector.matches(node)
-        })
+    fn custom_properties_for_node_with_matcher(
+        &self,
+        node: &NativeNode,
+        matches: impl Fn(&NativeSelector) -> bool,
+    ) -> BTreeMap<u64, String> {
+        let mut candidates = BTreeMap::new();
+        for rule in &self.rules {
+            if !matches(&rule.selector) {
+                continue;
+            }
+            apply_custom_property_declarations(
+                &mut candidates,
+                &rule.custom_properties,
+                rule.selector.specificity,
+                rule.order,
+                false,
+            );
+        }
+        if node.inline_style_allowed()
+            && let Some(inline_style) = node.attribute("style")
+        {
+            apply_custom_property_declarations(
+                &mut candidates,
+                &parse_custom_property_declarations(inline_style),
+                u16::MAX,
+                usize::MAX,
+                true,
+            );
+        }
+        candidates
+            .into_iter()
+            .map(|(name_hash, candidate)| (name_hash, candidate.value))
+            .collect()
     }
 
+    fn custom_properties_for_document(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+    ) -> BTreeMap<u64, String> {
+        let mut ancestry = Vec::new();
+        let mut current = Some(node_id);
+        while let Some(id) = current {
+            ancestry.push(id);
+            current = document.node(id).and_then(NativeNode::parent);
+        }
+        let mut values = BTreeMap::new();
+        for id in ancestry.into_iter().rev() {
+            let Some(node) = document.node(id) else {
+                continue;
+            };
+            values.extend(
+                self.custom_properties_for_node_with_matcher(node, |selector| {
+                    selector.matches_in_document(document, id)
+                }),
+            );
+        }
+        values
+    }
+
+    #[cfg(test)]
+    pub(crate) fn computed_for(&self, node: &NativeNode) -> NativeComputedStyle {
+        let custom_properties =
+            self.custom_properties_for_node_with_matcher(node, |selector| selector.matches(node));
+        self.computed_for_with_matcher_and_custom_properties(
+            node,
+            NativeInheritedStyle::default(),
+            &custom_properties,
+            |selector| selector.matches(node),
+        )
+    }
     #[cfg(test)]
     pub(crate) fn computed_for_in_document(
         &self,
@@ -2635,11 +2704,15 @@ impl NativeStylesheet {
         let Some(node) = document.node(node_id) else {
             return NativeComputedStyle::default();
         };
-        self.computed_for_with_matcher(node, inherited, |selector| {
-            selector.matches_in_document(document, node_id)
-        })
+        let custom_properties = self.custom_properties_for_document(document, node_id);
+        self.computed_for_with_matcher_and_custom_properties(
+            node,
+            inherited,
+            &custom_properties,
+            |selector| selector.matches_in_document(document, node_id),
+        )
     }
-
+    #[cfg(test)]
     // The cascade locals are mutable references into heap-owned scratch. The
     // explicit reborrows below keep each helper's mutable borrow short-lived
     // while preserving the stack-safe allocation boundary.
@@ -2648,6 +2721,23 @@ impl NativeStylesheet {
         &self,
         node: &NativeNode,
         inherited: NativeInheritedStyle,
+        matches: impl Fn(&NativeSelector) -> bool,
+    ) -> NativeComputedStyle {
+        let custom_properties = BTreeMap::new();
+        self.computed_for_with_matcher_and_custom_properties(
+            node,
+            inherited,
+            &custom_properties,
+            matches,
+        )
+    }
+
+    #[allow(clippy::explicit_auto_deref, clippy::needless_borrow)]
+    fn computed_for_with_matcher_and_custom_properties(
+        &self,
+        node: &NativeNode,
+        inherited: NativeInheritedStyle,
+        custom_properties: &BTreeMap<u64, String>,
         matches: impl Fn(&NativeSelector) -> bool,
     ) -> NativeComputedStyle {
         let mut scratch = NativeCascadeScratch::new_boxed();
@@ -4376,6 +4466,7 @@ impl NativeStylesheet {
                 inherited.font_size,
                 inherited.root_font_size,
                 inherited.viewport,
+                custom_properties,
             ),
             word_break: resolve_inherited_text_declaration(
                 *word_break,
@@ -5048,13 +5139,15 @@ fn resolve_font_size_calculation(
         .then_some(value)
 }
 
-fn resolve_font_size(
-    candidates: NativeTextCascadeCandidates<NativeFontSizeDeclarationValue>,
+fn resolve_font_size_declaration(
+    declaration: InheritedTextDeclaration<NativeFontSizeDeclarationValue>,
     inherited: u32,
     root_font_size: u32,
     viewport: Viewport,
-) -> u32 {
-    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<u32> {
+    match declaration {
         InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::Pixels(value)) => (1
             ..=super::font::MAX_NATIVE_FONT_SIZE)
             .contains(&value)
@@ -5072,11 +5165,48 @@ fn resolve_font_size(
         InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::Calculation(
             calculation,
         )) => resolve_font_size_calculation(calculation, inherited, root_font_size, viewport),
+        InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::CustomProperty(
+            name_hash,
+        )) if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH => custom_properties
+            .get(&name_hash)
+            .and_then(|value| parse_font_size_value(value))
+            .and_then(|value| {
+                resolve_font_size_declaration(
+                    InheritedTextDeclaration::Value(value),
+                    inherited,
+                    root_font_size,
+                    viewport,
+                    custom_properties,
+                    depth.saturating_add(1),
+                )
+            }),
         InheritedTextDeclaration::Inherit
         | InheritedTextDeclaration::Unset
         | InheritedTextDeclaration::Revert => Some(inherited),
         InheritedTextDeclaration::Initial => Some(super::font::DEFAULT_NATIVE_FONT_SIZE),
-        InheritedTextDeclaration::RevertLayer => None,
+        InheritedTextDeclaration::RevertLayer
+        | InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::CustomProperty(_)) => {
+            None
+        }
+    }
+}
+
+fn resolve_font_size(
+    candidates: NativeTextCascadeCandidates<NativeFontSizeDeclarationValue>,
+    inherited: u32,
+    root_font_size: u32,
+    viewport: Viewport,
+    custom_properties: &BTreeMap<u64, String>,
+) -> u32 {
+    resolve_alignment_candidates(candidates, inherited, |declaration| {
+        resolve_font_size_declaration(
+            declaration,
+            inherited,
+            root_font_size,
+            viewport,
+            custom_properties,
+            0,
+        )
     })
 }
 
@@ -7166,9 +7296,27 @@ fn apply_background_shorthand_declaration(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeCustomPropertyDeclaration {
+    name_hash: u64,
+    value: String,
+    important: bool,
+    order: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeCustomPropertyCandidate {
+    value: String,
+    specificity: u16,
+    order: usize,
+    important: bool,
+    inline: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeStyleRule {
     selector: NativeSelector,
     declarations: NativeDeclarations,
+    custom_properties: Vec<NativeCustomPropertyDeclaration>,
     order: usize,
 }
 
@@ -7811,6 +7959,7 @@ fn parse_style_rule(
         open.saturating_add(1),
         context.diagnostics,
     );
+    let custom_properties = parse_custom_property_declarations(&source[open + 1..close]);
     collect_background_image_sources(&source[open + 1..close], context.background_image_sources);
     let has_supported_declaration = declarations.display.is_some()
         || declarations.position.is_some()
@@ -7903,7 +8052,8 @@ fn parse_style_rule(
         || declarations.color.is_some()
         || declarations.overflow.is_some()
         || declarations.overflow_x.is_some()
-        || declarations.overflow_y.is_some();
+        || declarations.overflow_y.is_some()
+        || !custom_properties.is_empty();
     let selector_source = &source[selector_start..open];
     let mut selector_offset = selector_start;
     for selector_text in selector_source.split(',') {
@@ -7933,6 +8083,7 @@ fn parse_style_rule(
             context.rules.push(NativeStyleRule {
                 selector,
                 declarations,
+                custom_properties: custom_properties.clone(),
                 order: *context.next_order,
             });
             *context.next_order = context.next_order.saturating_add(1);
@@ -8010,6 +8161,114 @@ fn strip_important_suffix(value: &str) -> (&str, bool) {
     } else {
         (value, false)
     }
+}
+
+fn custom_property_hash(name: &str) -> u64 {
+    let mut hash = 1469598103934665603u64;
+    for byte in name.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    hash
+}
+
+fn parse_custom_property_name(property: &str) -> Option<u64> {
+    let property = property.trim();
+    if !property.starts_with("--")
+        || property.len() <= 2
+        || property.len() > MAX_NATIVE_CUSTOM_PROPERTY_NAME_BYTES
+        || !property[2..]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return None;
+    }
+    Some(custom_property_hash(property))
+}
+
+fn parse_custom_property_declarations(source: &str) -> Vec<NativeCustomPropertyDeclaration> {
+    let mut declarations = Vec::new();
+    for (order, (_, declaration)) in split_css_declarations(source).into_iter().enumerate() {
+        let Some((property, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        let Some(name_hash) = parse_custom_property_name(property) else {
+            continue;
+        };
+        let (value, important) = strip_important_suffix(value);
+        if value.len() > MAX_NATIVE_CUSTOM_PROPERTY_VALUE_BYTES {
+            continue;
+        }
+        if declarations.len() >= MAX_NATIVE_CUSTOM_PROPERTIES_PER_RULE {
+            break;
+        }
+        declarations.push(NativeCustomPropertyDeclaration {
+            name_hash,
+            value: value.to_owned(),
+            important,
+            order,
+        });
+    }
+    declarations
+}
+
+fn custom_property_candidate_precedes(
+    candidate: &NativeCustomPropertyCandidate,
+    current: &NativeCustomPropertyCandidate,
+) -> bool {
+    if candidate.important != current.important {
+        return candidate.important;
+    }
+    if candidate.inline != current.inline {
+        return candidate.inline;
+    }
+    if candidate.specificity != current.specificity {
+        return candidate.specificity > current.specificity;
+    }
+    candidate.order >= current.order
+}
+
+fn apply_custom_property_declarations(
+    candidates: &mut BTreeMap<u64, NativeCustomPropertyCandidate>,
+    declarations: &[NativeCustomPropertyDeclaration],
+    specificity: u16,
+    rule_order: usize,
+    inline: bool,
+) {
+    for declaration in declarations {
+        let candidate = NativeCustomPropertyCandidate {
+            value: declaration.value.clone(),
+            specificity,
+            order: rule_order
+                .saturating_mul(MAX_NATIVE_CUSTOM_PROPERTIES_PER_RULE + 1)
+                .saturating_add(declaration.order),
+            important: declaration.important,
+            inline,
+        };
+        let replace = candidates
+            .get(&declaration.name_hash)
+            .is_none_or(|current| custom_property_candidate_precedes(&candidate, current));
+        if replace {
+            candidates.insert(declaration.name_hash, candidate);
+        }
+    }
+}
+
+fn parse_font_size_custom_property(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.len() < 6
+        || !value
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("var("))
+        || !value.ends_with(')')
+    {
+        return None;
+    }
+    let name = value.get(4..value.len().saturating_sub(1))?.trim();
+    if name.contains(',') {
+        return None;
+    }
+    parse_custom_property_name(name)
 }
 
 fn parse_declarations_with_diagnostics(
@@ -13802,6 +14061,10 @@ fn parse_font_size_value(value: &str) -> Option<NativeFontSizeDeclarationValue> 
         .or_else(|| parse_relative_font_size(value))
         .or_else(|| {
             parse_font_size_calculation(value).map(NativeFontSizeDeclarationValue::Calculation)
+        })
+        .or_else(|| {
+            parse_font_size_custom_property(value)
+                .map(NativeFontSizeDeclarationValue::CustomProperty)
         })
 }
 
@@ -24903,6 +25166,18 @@ mod tests {
     }
 
     #[test]
+    fn font_size_parser_accepts_direct_custom_property_reference() {
+        assert_eq!(
+            parse_font_size_value("var(--size)"),
+            Some(NativeFontSizeDeclarationValue::CustomProperty(
+                custom_property_hash("--size")
+            ))
+        );
+        assert_eq!(parse_font_size_value("var(--size, 16px)"), None);
+        assert_eq!(parse_font_size_value("var(size)"), None);
+    }
+
+    #[test]
     fn font_size_parser_accepts_bounded_relative_units() {
         assert_eq!(
             parse_font_size_value("1.5em"),
@@ -26993,6 +27268,24 @@ mod tests {
             document.computed_style_for_layout(too_precise).font_size(),
             24
         );
+    }
+
+    #[test]
+    fn inherited_font_size_custom_properties_resolve_with_inline_override() {
+        let document = NativeDocument::parse(
+            "<style>#parent { --size: 1.5em; font-size: 24px; } #child { font-size: var(--size); } #invalid { font-size: var(--missing); }</style><div id='parent'><span id='child'>Child</span><span id='invalid'>Invalid</span><span id='inline' style='--size: 2em; font-size: var(--size)'>Inline</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let inline = document.resolve_target("id=inline").unwrap();
+
+        assert_eq!(document.computed_style_for_layout(parent).font_size(), 24);
+        assert_eq!(document.computed_style_for_layout(child).font_size(), 36);
+        assert_eq!(document.computed_style_for_layout(invalid).font_size(), 24);
+        assert_eq!(document.computed_style_for_layout(inline).font_size(), 48);
     }
 
     #[test]

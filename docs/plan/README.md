@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-575`, following completed
 `native-engine-browser-574`, following completed
 `native-engine-browser-573`, following completed
 `native-engine-browser-572`, following completed
@@ -477,6 +478,15 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed inherited font-stretch follow-up is
+[`native-engine-browser-575`](tasks/native-engine-browser-575.md): native
+`font-stretch` now accepts bounded standalone `var(--name)` and concrete
+`var(--name, stretch)` fallbacks, resolving inherited aliases, CSS-wide
+mapped values, invalid values, and cyclic values before normal font-stretch
+computation. Two-value descriptor ranges, complete shorthand substitution,
+non-concrete fallback grammar, registered properties, full CSS variable
+grammar, and complete CSS/Web IDL parity remain issue #40 gates.
 
 The completed inherited font-style follow-up is
 [`native-engine-browser-574`](tasks/native-engine-browser-574.md): native

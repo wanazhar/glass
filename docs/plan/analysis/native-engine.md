@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-574`, following
+expansion checkpoint is completed `native-engine-browser-575`, following
+completed `native-engine-browser-574`, following
 completed `native-engine-browser-573`, following
 completed `native-engine-browser-572`, following
 completed `native-engine-browser-571`, following
@@ -451,6 +452,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 575 extends bounded native custom-property substitution to inherited
+`font-stretch`. Standalone `var(--name)` and concrete `var(--name, stretch)`
+fallbacks now resolve inherited aliases, CSS-wide mapped values, invalid
+values, and cyclic values before normal font-stretch computation, while named
+values, bounded percentages, and the existing computed-style projection remain
+unchanged. Two-value descriptor ranges, complete shorthand substitution,
+non-concrete fallback grammar, registered properties, full CSS variable
+grammar, and complete CSS/Web IDL parity remain explicit issue #40 gates.
 
 Slice 574 extends bounded native custom-property substitution to inherited
 `font-style`. Standalone `var(--name)` and concrete `var(--name, style)`

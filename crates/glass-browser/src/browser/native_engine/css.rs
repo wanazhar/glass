@@ -1590,6 +1590,13 @@ pub(crate) struct NativeFontStretchRange {
     pub(crate) max: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontStretchDeclarationValue {
+    Value(NativeFontStretchRange),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontStretchRange),
+}
+
 impl Default for NativeFontStretchRange {
     fn default() -> Self {
         Self {
@@ -4524,10 +4531,10 @@ impl NativeStylesheet {
                 custom_properties,
             ),
             font_style: resolve_font_style(*font_style, inherited.font_style, custom_properties),
-            font_stretch: resolve_inherited_text_declaration(
+            font_stretch: resolve_font_stretch(
                 *font_stretch,
                 inherited.font_stretch,
-                NativeFontStretchRange::default(),
+                custom_properties,
             ),
             font_family: resolve_inherited_text_declaration(
                 *font_family,
@@ -4723,7 +4730,7 @@ struct NativeCascadeScratch {
     font_palette: NativeTextCascadeCandidates<NativeFontPalette>,
     font_weight: NativeTextCascadeCandidates<FontWeightDeclarationValue>,
     font_style: NativeTextCascadeCandidates<FontStyleDeclarationValue>,
-    font_stretch: NativeTextCascadeCandidates<NativeFontStretchRange>,
+    font_stretch: NativeTextCascadeCandidates<FontStretchDeclarationValue>,
     font_family: NativeTextCascadeCandidates<NativeFontFamilyList>,
     font_size: NativeTextCascadeCandidates<NativeFontSizeDeclarationValue>,
     word_break: NativeTextCascadeCandidates<WordBreakValue>,
@@ -5433,6 +5440,91 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_stretch_declaration(
+    declaration: InheritedTextDeclaration<FontStretchDeclarationValue>,
+    inherited: NativeFontStretchRange,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontStretchDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_stretch_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(FontStretchDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => Some(FontStretchDeclarationValue::Value(
+            NativeFontStretchRange::default(),
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_stretch_value(
+    value: FontStretchDeclarationValue,
+    inherited: NativeFontStretchRange,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontStretchDeclarationValue> {
+    match value {
+        FontStretchDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_stretch_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_stretch_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontStretchDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_stretch_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_stretch_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontStretchDeclarationValue::Value(fallback)))
+        }
+        FontStretchDeclarationValue::CustomProperty(_)
+        | FontStretchDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontStretchDeclarationValue::Value(value) => {
+            Some(FontStretchDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_font_stretch(
+    candidates: NativeTextCascadeCandidates<FontStretchDeclarationValue>,
+    inherited: NativeFontStretchRange,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontStretchRange {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontStretchDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_stretch_declaration(declaration, inherited, custom_properties, 0)
+        },
+    );
+    match resolved {
+        FontStretchDeclarationValue::Value(value) => value,
+        FontStretchDeclarationValue::CustomProperty(_)
+        | FontStretchDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn font_style_declaration_value(value: FontStyleValue) -> FontStyleDeclarationValue {
@@ -7755,7 +7847,7 @@ struct NativeDeclarations {
     font_palette: Option<InheritedTextDeclaration<NativeFontPalette>>,
     font_weight: Option<InheritedTextDeclaration<FontWeightDeclarationValue>>,
     font_style: Option<InheritedTextDeclaration<FontStyleDeclarationValue>>,
-    font_stretch: Option<InheritedTextDeclaration<NativeFontStretchRange>>,
+    font_stretch: Option<InheritedTextDeclaration<FontStretchDeclarationValue>>,
     font_family: Option<InheritedTextDeclaration<NativeFontFamilyList>>,
     font_size: Option<InheritedTextDeclaration<NativeFontSizeDeclarationValue>>,
     word_break: Option<InheritedTextDeclaration<WordBreakValue>>,
@@ -15784,15 +15876,44 @@ fn parse_font_style_declaration(
     parse_inherited_text_declaration(value, parse_font_style_property)
 }
 
+fn parse_font_stretch_custom_property(value: &str) -> Option<FontStretchDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_stretch_value(fallback).map(|stretch| {
+            FontStretchDeclarationValue::CustomPropertyFallback(
+                name_hash,
+                NativeFontStretchRange {
+                    min: stretch,
+                    max: stretch,
+                },
+            )
+        }),
+        None => Some(FontStretchDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_font_stretch_property(value: &str) -> Option<FontStretchDeclarationValue> {
+    parse_font_stretch_value(value)
+        .map(|stretch| {
+            FontStretchDeclarationValue::Value(NativeFontStretchRange {
+                min: stretch,
+                max: stretch,
+            })
+        })
+        .or_else(|| parse_font_stretch_custom_property(value))
+}
+
 fn parse_font_stretch_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontStretchRange>> {
-    parse_inherited_text_declaration(value, |value| {
-        parse_font_stretch_value(value).map(|stretch| NativeFontStretchRange {
-            min: stretch,
-            max: stretch,
-        })
-    })
+) -> Option<InheritedTextDeclaration<FontStretchDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_stretch_property)
 }
 
 fn parse_font_family_declaration(
@@ -25675,6 +25796,24 @@ mod tests {
         assert!(parse_font_stretch_range("201%").is_none());
         assert!(parse_font_stretch_range("125% 62.5%").is_none());
         assert!(parse_font_stretch_range("normal expanded extra-expanded").is_none());
+        let stretch_name = parse_custom_property_name("--stretch").unwrap();
+        assert_eq!(
+            parse_font_stretch_property("var(--stretch)"),
+            Some(FontStretchDeclarationValue::CustomProperty(stretch_name))
+        );
+        assert_eq!(
+            parse_font_stretch_declaration("var(--stretch, 75%)"),
+            Some(InheritedTextDeclaration::Value(
+                FontStretchDeclarationValue::CustomPropertyFallback(
+                    stretch_name,
+                    NativeFontStretchRange { min: 750, max: 750 }
+                )
+            ))
+        );
+        assert_eq!(
+            parse_font_stretch_property("var(--stretch, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -28413,6 +28552,54 @@ mod tests {
             document.computed_style_for_layout(invalid).font_stretch(),
             condensed
         );
+    }
+
+    #[test]
+    fn inherited_font_stretch_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --stretch: 75%; --alias: var(--stretch); --cycle: var(--cycle); font-stretch: var(--stretch); }
+            #child { font-stretch: var(--alias); }
+            #fallback { font-stretch: var(--missing, 62.5%); }
+            #invalid { --bad: 201%; font-stretch: var(--bad, condensed); }
+            #cycle { font-stretch: var(--cycle, 125%); }
+            #wide-initial { --wide: initial; font-stretch: var(--wide); }
+            #wide-inherit { --wide: inherit; font-stretch: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_stretch()
+        };
+        let parent = NativeFontStretchRange { min: 750, max: 750 };
+
+        assert_eq!(style("parent"), parent);
+        assert_eq!(style("child"), parent);
+        assert_eq!(
+            style("fallback"),
+            NativeFontStretchRange { min: 625, max: 625 }
+        );
+        assert_eq!(style("invalid"), parent);
+        assert_eq!(
+            style("cycle"),
+            NativeFontStretchRange {
+                min: 1250,
+                max: 1250
+            }
+        );
+        assert_eq!(style("wide-initial"), NativeFontStretchRange::default());
+        assert_eq!(style("wide-inherit"), parent);
     }
 
     #[test]

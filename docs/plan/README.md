@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-606`, following completed
 `native-engine-browser-605`, following completed
 `native-engine-browser-604`, following completed
 `native-engine-browser-603`, following completed
@@ -508,6 +509,14 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed display substitution follow-up is
+[`native-engine-browser-606`](tasks/native-engine-browser-606.md): native
+`display` now accepts bounded standalone `var(--name)` and display-keyword
+fallbacks, resolving inherited aliases, invalid values, and cyclic values
+before computed-style projection. Nested variable grammar, registered
+properties, full CSS variable grammar, and complete CSS/Web IDL parity remain
+issue #40 gates.
 
 The completed opacity substitution follow-up is
 [`native-engine-browser-605`](tasks/native-engine-browser-605.md): native

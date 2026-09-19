@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-605`, following
+expansion checkpoint is completed `native-engine-browser-606`, following
+completed `native-engine-browser-605`, following
 completed `native-engine-browser-604`, following
 completed `native-engine-browser-603`, following
 completed `native-engine-browser-602`, following
@@ -482,6 +483,14 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 606 extends bounded custom-property substitution to `display`.
+Standalone `var(--name)` and display-keyword fallbacks now resolve inherited
+aliases, invalid values, and cyclic values before computed-style projection,
+while existing display keyword mapping, local cascade precedence, and
+revert-layer behavior remain unchanged. Nested variable grammar, registered
+properties, full CSS variable grammar, and complete CSS/Web IDL parity remain
+explicit issue #40 gates.
 
 Slice 605 extends bounded custom-property substitution to `opacity`.
 Standalone `var(--name)` and percentage or numeric `var(--name, value)`

@@ -4590,7 +4590,7 @@ impl NativeStylesheet {
         let resolved_overflow_y =
             resolve_overflow_axis(*overflow_y, inherited.overflow_y, custom_properties);
         NativeComputedStyle {
-            display: resolve_local_cascade_declaration(*display, DisplayValue::Auto),
+            display: resolve_display(*display, custom_properties),
             position: resolve_local_cascade_declaration(*position, NativePositionValue::Static),
             z_index: resolve_local_cascade_declaration(*z_index, NativeZIndexValue::Auto),
             pointer_events: resolve_pointer_events(
@@ -4845,6 +4845,13 @@ enum VisibilityValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayDeclarationValue {
+    Value(DisplayValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, DisplayValue),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpacityDeclarationValue {
     Value(u8),
     CustomProperty(u64),
@@ -4909,7 +4916,7 @@ type NativePhysicalLocalBorderCandidates<T> =
 /// caller's finite thread stack while retaining the same cascade semantics.
 #[derive(Default)]
 struct NativeCascadeScratch {
-    display: NativeLocalCascadeCandidates<DisplayValue>,
+    display: NativeLocalCascadeCandidates<DisplayDeclarationValue>,
     position: NativeLocalCascadeCandidates<NativePositionValue>,
     z_index: NativeLocalCascadeCandidates<NativeZIndexValue>,
     pointer_events: NativeTextCascadeCandidates<PointerEventsDeclarationValue>,
@@ -8073,6 +8080,79 @@ fn resolve_local_cascade_declaration<T: Copy, const N: usize>(
     })
 }
 
+fn resolve_display_declaration(
+    declaration: LocalCascadeDeclaration<DisplayDeclarationValue>,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<DisplayDeclarationValue> {
+    match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_display_value(value, custom_properties, depth)
+        }
+        LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => {
+            Some(DisplayDeclarationValue::Value(DisplayValue::Auto))
+        }
+        LocalCascadeDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_display_value(
+    value: DisplayDeclarationValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<DisplayDeclarationValue> {
+    match value {
+        DisplayDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_display_declaration(value))
+                .and_then(|declaration| {
+                    resolve_display_declaration(
+                        declaration,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        DisplayDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_display_declaration(value))
+                .and_then(|declaration| {
+                    resolve_display_declaration(
+                        declaration,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(DisplayDeclarationValue::Value(fallback)))
+        }
+        DisplayDeclarationValue::CustomProperty(_)
+        | DisplayDeclarationValue::CustomPropertyFallback(_, _) => None,
+        DisplayDeclarationValue::Value(value) => Some(DisplayDeclarationValue::Value(value)),
+    }
+}
+
+fn resolve_display(
+    candidates: NativeLocalCascadeCandidates<DisplayDeclarationValue>,
+    custom_properties: &BTreeMap<u64, String>,
+) -> DisplayValue {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        DisplayDeclarationValue::Value(DisplayValue::Auto),
+        |declaration| resolve_display_declaration(declaration, custom_properties, 0),
+    );
+    match resolved {
+        DisplayDeclarationValue::Value(value) => value,
+        DisplayDeclarationValue::CustomProperty(_)
+        | DisplayDeclarationValue::CustomPropertyFallback(_, _) => DisplayValue::Auto,
+    }
+}
+
 fn resolve_text_indent_declaration(
     declaration: LocalCascadeDeclaration<TextIndentDeclarationValue>,
     inherited: u32,
@@ -10383,7 +10463,7 @@ struct NativeTextDeclarationImportance {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeDeclarations {
-    display: Option<LocalCascadeDeclaration<DisplayValue>>,
+    display: Option<LocalCascadeDeclaration<DisplayDeclarationValue>>,
     position: Option<LocalCascadeDeclaration<NativePositionValue>>,
     z_index: Option<LocalCascadeDeclaration<NativeZIndexValue>>,
     pointer_events: Option<InheritedTextDeclaration<PointerEventsDeclarationValue>>,
@@ -15844,13 +15924,48 @@ fn parse_display(value: &str) -> Option<DisplayValue> {
     }
 }
 
-fn parse_display_declaration(value: &str) -> Option<LocalCascadeDeclaration<DisplayValue>> {
-    parse_local_cascade_declaration(value, parse_display)
+fn parse_display_custom_property(value: &str) -> Option<DisplayDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_display(fallback.trim())
+            .map(|fallback| DisplayDeclarationValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(DisplayDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_display_property(value: &str) -> Option<DisplayDeclarationValue> {
+    parse_display(value)
+        .map(DisplayDeclarationValue::Value)
+        .or_else(|| parse_display_custom_property(value))
+}
+
+fn parse_display_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<DisplayDeclarationValue>> {
+    parse_local_cascade_declaration(value, parse_display_property)
 }
 
 fn supports_display_declaration(value: &str) -> bool {
     let value = value.trim();
     value.eq_ignore_ascii_case("revert-layer")
+        || parse_display_custom_property(value).is_some()
         || matches!(
             value.to_ascii_lowercase().as_str(),
             "none"
@@ -20216,7 +20331,9 @@ mod tests {
         );
         assert_eq!(
             declarations.display,
-            Some(LocalCascadeDeclaration::Value(DisplayValue::None))
+            Some(LocalCascadeDeclaration::Value(
+                DisplayDeclarationValue::Value(DisplayValue::None)
+            ))
         );
         let expected_grid_columns = {
             let mut tracks = NativeGridTrackList::default();
@@ -21361,7 +21478,9 @@ mod tests {
         );
         assert_eq!(
             declarations.display,
-            Some(LocalCascadeDeclaration::Value(DisplayValue::Block))
+            Some(LocalCascadeDeclaration::Value(
+                DisplayDeclarationValue::Value(DisplayValue::Block)
+            ))
         );
         assert_eq!(
             declarations.visibility,
@@ -21410,13 +21529,71 @@ mod tests {
     }
 
     #[test]
+    fn display_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let display = parse_custom_property_name("--display").unwrap();
+        assert_eq!(
+            parse_display_property("none"),
+            Some(DisplayDeclarationValue::Value(DisplayValue::None))
+        );
+        assert_eq!(
+            parse_display_declaration("var(--display)"),
+            Some(LocalCascadeDeclaration::Value(
+                DisplayDeclarationValue::CustomProperty(display)
+            ))
+        );
+        assert_eq!(
+            parse_display_declaration("var(--display, block)"),
+            Some(LocalCascadeDeclaration::Value(
+                DisplayDeclarationValue::CustomPropertyFallback(display, DisplayValue::Block)
+            ))
+        );
+        assert_eq!(
+            parse_display_declaration("var(--display, var(--other))"),
+            None
+        );
+    }
+
+    #[test]
+    fn display_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --display: none; --alias: var(--display); --cycle: var(--cycle); display: var(--display); }
+            #child { display: var(--alias); }
+            #fallback { display: var(--missing, block); }
+            #invalid { --bad: unsupported; display: var(--bad, none); }
+            #cycle { display: var(--cycle, contents); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .display()
+        };
+
+        assert_eq!(style("parent"), DisplayValue::None);
+        assert_eq!(style("child"), DisplayValue::None);
+        assert_eq!(style("fallback"), DisplayValue::Block);
+        assert_eq!(style("invalid"), DisplayValue::None);
+        assert_eq!(style("cycle"), DisplayValue::Contents);
+    }
+    #[test]
     fn local_presentation_important_parser_tracks_markers_and_invalid_preservation() {
         let declarations = parse_declarations(
             "display: none !IMPORTANT; visibility: hidden !important; opacity: 50% !important",
         );
         assert_eq!(
             declarations.display,
-            Some(LocalCascadeDeclaration::Value(DisplayValue::None))
+            Some(LocalCascadeDeclaration::Value(
+                DisplayDeclarationValue::Value(DisplayValue::None)
+            ))
         );
         assert_eq!(
             declarations.visibility,
@@ -21437,7 +21614,9 @@ mod tests {
         );
         assert_eq!(
             preserved.display,
-            Some(LocalCascadeDeclaration::Value(DisplayValue::None))
+            Some(LocalCascadeDeclaration::Value(
+                DisplayDeclarationValue::Value(DisplayValue::None)
+            ))
         );
         assert_eq!(
             preserved.visibility,
@@ -21458,7 +21637,9 @@ mod tests {
         );
         assert_eq!(
             normal.display,
-            Some(LocalCascadeDeclaration::Value(DisplayValue::Block))
+            Some(LocalCascadeDeclaration::Value(
+                DisplayDeclarationValue::Value(DisplayValue::Block)
+            ))
         );
         assert_eq!(
             normal.visibility,

@@ -408,6 +408,8 @@ enum NativeTextDecorationColorDeclaration {
     Initial,
     Revert,
     RevertLayer,
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeColor),
 }
 
 /// Bounded inherited glyph-intersection behavior for text decorations.
@@ -4439,6 +4441,7 @@ impl NativeStylesheet {
                 *text_decoration_color,
                 current_color,
                 inherited.text_decoration_color,
+                custom_properties,
             ),
             text_transform: resolve_inherited_text_declaration(
                 *text_transform,
@@ -6120,11 +6123,67 @@ fn resolve_text_decoration(
     }
 }
 
+fn resolve_native_text_decoration_color_value(
+    value: NativeTextDecorationColorDeclaration,
+    current_color: NativeColor,
+    inherited_color: NativeColor,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<NativeColor> {
+    match value {
+        NativeTextDecorationColorDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_decoration_color(value))
+                .and_then(|value| match value {
+                    NativeTextDecorationColorDeclaration::RevertLayer => None,
+                    value => resolve_native_text_decoration_color_value(
+                        value,
+                        current_color,
+                        inherited_color,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    ),
+                })
+        }
+        NativeTextDecorationColorDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_decoration_color(value))
+                .and_then(|value| match value {
+                    NativeTextDecorationColorDeclaration::RevertLayer => None,
+                    value => resolve_native_text_decoration_color_value(
+                        value,
+                        current_color,
+                        inherited_color,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    ),
+                })
+                .or(Some(fallback))
+        }
+        NativeTextDecorationColorDeclaration::CustomProperty(_)
+        | NativeTextDecorationColorDeclaration::CustomPropertyFallback(_, _)
+        | NativeTextDecorationColorDeclaration::RevertLayer => None,
+        NativeTextDecorationColorDeclaration::Value(value) => Some(value),
+        NativeTextDecorationColorDeclaration::CurrentColor => Some(current_color),
+        NativeTextDecorationColorDeclaration::Inherit => Some(inherited_color),
+        NativeTextDecorationColorDeclaration::Unset
+        | NativeTextDecorationColorDeclaration::Initial
+        | NativeTextDecorationColorDeclaration::Revert => Some(current_color),
+    }
+}
+
 fn resolve_text_decoration_color(
     candidates: [Option<CascadeValue<NativeTextDecorationColorDeclaration>>;
         MAX_NATIVE_PAINT_CASCADE_LAYERS],
     current_color: NativeColor,
     inherited_color: NativeColor,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> Option<NativeColor> {
     let mut blocked = [false; MAX_NATIVE_PAINT_CASCADE_LAYERS];
     loop {
@@ -6147,15 +6206,13 @@ fn resolve_text_decoration_color(
             blocked[layer] = true;
             continue;
         }
-        return match candidate.value {
-            NativeTextDecorationColorDeclaration::Value(value) => Some(value),
-            NativeTextDecorationColorDeclaration::CurrentColor => Some(current_color),
-            NativeTextDecorationColorDeclaration::Inherit => Some(inherited_color),
-            NativeTextDecorationColorDeclaration::Unset
-            | NativeTextDecorationColorDeclaration::Initial
-            | NativeTextDecorationColorDeclaration::Revert => Some(current_color),
-            NativeTextDecorationColorDeclaration::RevertLayer => unreachable!(),
-        };
+        return resolve_native_text_decoration_color_value(
+            candidate.value,
+            current_color,
+            inherited_color,
+            custom_properties,
+            0,
+        );
     }
 }
 
@@ -12493,7 +12550,28 @@ fn parse_text_decoration_color(value: &str) -> Option<NativeTextDecorationColorD
             return Some(declaration);
         }
     }
-    parse_color(value).map(NativeTextDecorationColorDeclaration::Value)
+    if let Some(value) = parse_color_custom_property(value) {
+        match value {
+            NativeColorValue::Color(color) => {
+                Some(NativeTextDecorationColorDeclaration::Value(color))
+            }
+            NativeColorValue::CurrentColor => {
+                Some(NativeTextDecorationColorDeclaration::CurrentColor)
+            }
+            NativeColorValue::Inherit => Some(NativeTextDecorationColorDeclaration::Inherit),
+            NativeColorValue::Unset => Some(NativeTextDecorationColorDeclaration::Unset),
+            NativeColorValue::Initial => Some(NativeTextDecorationColorDeclaration::Initial),
+            NativeColorValue::Revert => Some(NativeTextDecorationColorDeclaration::Revert),
+            NativeColorValue::CustomProperty(name_hash) => Some(
+                NativeTextDecorationColorDeclaration::CustomProperty(name_hash),
+            ),
+            NativeColorValue::CustomPropertyFallback(name_hash, fallback) => Some(
+                NativeTextDecorationColorDeclaration::CustomPropertyFallback(name_hash, fallback),
+            ),
+        }
+    } else {
+        parse_color(value).map(NativeTextDecorationColorDeclaration::Value)
+    }
 }
 
 fn parse_color_custom_property(value: &str) -> Option<NativeColorValue> {
@@ -23108,6 +23186,75 @@ mod tests {
             )
             .text_decoration_color,
             Some(NativeTextDecorationColorDeclaration::CurrentColor)
+        );
+        assert_eq!(
+            parse_text_decoration_color("var(--accent)"),
+            Some(NativeTextDecorationColorDeclaration::CustomProperty(
+                custom_property_hash("--accent")
+            ))
+        );
+        assert_eq!(
+            parse_text_decoration_color("VAR(--accent, red)"),
+            Some(
+                NativeTextDecorationColorDeclaration::CustomPropertyFallback(
+                    custom_property_hash("--accent"),
+                    NativeColor::RED
+                )
+            )
+        );
+        assert_eq!(
+            parse_text_decoration_color("var(--accent, var(--other))"),
+            None
+        );
+    }
+    #[test]
+    fn inherited_text_decoration_color_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            "<style>#parent { --accent: rgb(1, 2, 3); --alias: var(--accent); --cycle: var(--cycle); text-decoration-color: var(--accent); } #child { text-decoration-color: var(--alias); } #fallback { text-decoration-color: var(--missing, red); } #invalid { --bad: nonsense; text-decoration-color: var(--bad, white); } #cycle { text-decoration-color: var(--cycle, white); }</style><div id='parent'><span id='child'>Child</span><span id='fallback'>Fallback</span><span id='invalid'>Invalid</span><span id='cycle'>Cycle</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let fallback = document.resolve_target("id=fallback").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let cycle = document.resolve_target("id=cycle").unwrap();
+        let accent = NativeColor {
+            red: 1,
+            green: 2,
+            blue: 3,
+            alpha: u8::MAX,
+        };
+
+        assert_eq!(
+            document
+                .computed_style_for_layout(parent)
+                .text_decoration_color(),
+            Some(accent)
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(child)
+                .text_decoration_color(),
+            Some(accent)
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(fallback)
+                .text_decoration_color(),
+            Some(NativeColor::RED)
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid)
+                .text_decoration_color(),
+            Some(NativeColor::WHITE)
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(cycle)
+                .text_decoration_color(),
+            Some(NativeColor::WHITE)
         );
     }
 

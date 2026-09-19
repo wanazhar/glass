@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-572`, following completed
 `native-engine-browser-571`, following completed
 `native-engine-browser-570`, following completed
 `native-engine-browser-569`, following completed
@@ -474,6 +475,15 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed inherited decoration-color follow-up is
+[`native-engine-browser-572`](tasks/native-engine-browser-572.md): native
+`text-decoration-color` now accepts bounded standalone `var(--name)` and
+concrete `var(--name, color)` fallbacks, resolving inherited, nested, invalid,
+and cyclic custom-property values before normal decoration-color resolution.
+Complete shorthand substitution, composite color functions, CSS-wide fallback
+values, registered properties, broader color properties, full CSS variable
+grammar, and complete CSS/Web IDL parity remain issue #40 gates.
 
 The completed inherited border-variable follow-up is
 [`native-engine-browser-571`](tasks/native-engine-browser-571.md): native

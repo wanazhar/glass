@@ -1981,6 +1981,13 @@ pub(crate) enum TextOverflowValue {
     Ellipsis,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextOverflowDeclarationValue {
+    Value(TextOverflowValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, TextOverflowValue),
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum VerticalAlignValue {
     #[default]
@@ -4742,7 +4749,11 @@ impl NativeStylesheet {
                 custom_properties,
             ),
             word_break: resolve_word_break(*word_break, inherited.word_break, custom_properties),
-            text_overflow: resolve_text_overflow(*text_overflow, inherited.text_overflow),
+            text_overflow: resolve_text_overflow(
+                *text_overflow,
+                inherited.text_overflow,
+                custom_properties,
+            ),
             vertical_align: resolve_vertical_align(
                 *vertical_align,
                 inherited.vertical_align,
@@ -4927,7 +4938,7 @@ struct NativeCascadeScratch {
     font_family: NativeTextCascadeCandidates<FontFamilyDeclarationValue>,
     font_size: NativeTextCascadeCandidates<NativeFontSizeDeclarationValue>,
     word_break: NativeTextCascadeCandidates<WordBreakDeclarationValue>,
-    text_overflow: NativeTextLocalCascadeCandidates<TextOverflowValue>,
+    text_overflow: NativeTextLocalCascadeCandidates<TextOverflowDeclarationValue>,
     vertical_align: NativeTextCascadeCandidates<VerticalAlignDeclarationValue>,
     text_indent: NativeTextLocalCascadeCandidates<u32>,
     word_spacing: NativeTextCascadeCandidates<WordSpacingDeclarationValue>,
@@ -8048,19 +8059,87 @@ fn resolve_text_indent(
     })
 }
 
-fn resolve_text_overflow(
-    candidates: [Option<CascadeValue<LocalCascadeDeclaration<TextOverflowValue>>>;
-        MAX_NATIVE_TEXT_CASCADE_LAYERS],
+fn resolve_text_overflow_declaration(
+    declaration: LocalCascadeDeclaration<TextOverflowDeclarationValue>,
     inherited: TextOverflowValue,
-) -> TextOverflowValue {
-    resolve_alignment_candidates(candidates, TextOverflowValue::Clip, |declaration| {
-        match declaration {
-            LocalCascadeDeclaration::Value(value) => Some(value),
-            LocalCascadeDeclaration::Inherit => Some(inherited),
-            LocalCascadeDeclaration::Reset => Some(TextOverflowValue::Clip),
-            LocalCascadeDeclaration::RevertLayer => None,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<TextOverflowDeclarationValue> {
+    match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_text_overflow_value(value, inherited, custom_properties, depth)
         }
-    })
+        LocalCascadeDeclaration::Inherit => Some(TextOverflowDeclarationValue::Value(inherited)),
+        LocalCascadeDeclaration::Reset => {
+            Some(TextOverflowDeclarationValue::Value(TextOverflowValue::Clip))
+        }
+        LocalCascadeDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_text_overflow_value(
+    value: TextOverflowDeclarationValue,
+    inherited: TextOverflowValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<TextOverflowDeclarationValue> {
+    match value {
+        TextOverflowDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_overflow_declaration(value))
+                .and_then(|declaration| {
+                    resolve_text_overflow_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        TextOverflowDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_overflow_declaration(value))
+                .and_then(|declaration| {
+                    resolve_text_overflow_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(TextOverflowDeclarationValue::Value(fallback)))
+        }
+        TextOverflowDeclarationValue::CustomProperty(_)
+        | TextOverflowDeclarationValue::CustomPropertyFallback(_, _) => None,
+        TextOverflowDeclarationValue::Value(value) => {
+            Some(TextOverflowDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_text_overflow(
+    candidates: NativeTextLocalCascadeCandidates<TextOverflowDeclarationValue>,
+    inherited: TextOverflowValue,
+    custom_properties: &BTreeMap<u64, String>,
+) -> TextOverflowValue {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        TextOverflowDeclarationValue::Value(TextOverflowValue::Clip),
+        |declaration| {
+            resolve_text_overflow_declaration(declaration, inherited, custom_properties, 0)
+        },
+    );
+    match resolved {
+        TextOverflowDeclarationValue::Value(value) => value,
+        TextOverflowDeclarationValue::CustomProperty(_)
+        | TextOverflowDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_overflow_axis(
@@ -10141,7 +10220,7 @@ struct NativeDeclarations {
     font_family: Option<InheritedTextDeclaration<FontFamilyDeclarationValue>>,
     font_size: Option<InheritedTextDeclaration<NativeFontSizeDeclarationValue>>,
     word_break: Option<InheritedTextDeclaration<WordBreakDeclarationValue>>,
-    text_overflow: Option<LocalCascadeDeclaration<TextOverflowValue>>,
+    text_overflow: Option<LocalCascadeDeclaration<TextOverflowDeclarationValue>>,
     vertical_align: Option<InheritedTextDeclaration<VerticalAlignDeclarationValue>>,
     text_indent: Option<LocalCascadeDeclaration<u32>>,
     word_spacing: Option<InheritedTextDeclaration<WordSpacingDeclarationValue>>,
@@ -19192,13 +19271,46 @@ fn parse_vertical_align_declaration(
     parse_inherited_text_declaration(value, parse_vertical_align_property)
 }
 
+fn parse_text_overflow_custom_property(value: &str) -> Option<TextOverflowDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_text_overflow(fallback).map(|fallback| {
+            TextOverflowDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(TextOverflowDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_text_overflow_property(value: &str) -> Option<TextOverflowDeclarationValue> {
+    parse_text_overflow(value)
+        .map(TextOverflowDeclarationValue::Value)
+        .or_else(|| parse_text_overflow_custom_property(value))
+}
+
 fn parse_text_overflow_declaration(
     value: &str,
-) -> Option<LocalCascadeDeclaration<TextOverflowValue>> {
+) -> Option<LocalCascadeDeclaration<TextOverflowDeclarationValue>> {
     if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
-    parse_local_reset_cascade_declaration(value, parse_text_overflow)
+    parse_local_reset_cascade_declaration(value, parse_text_overflow_property)
 }
 
 fn parse_text_indent_declaration(value: &str) -> Option<LocalCascadeDeclaration<u32>> {
@@ -19944,7 +20056,9 @@ mod tests {
         );
         assert_eq!(
             declarations.text_overflow,
-            Some(LocalCascadeDeclaration::Value(TextOverflowValue::Ellipsis))
+            Some(LocalCascadeDeclaration::Value(
+                TextOverflowDeclarationValue::Value(TextOverflowValue::Ellipsis)
+            ))
         );
         assert_eq!(
             declarations.vertical_align,
@@ -30860,7 +30974,9 @@ mod tests {
         );
         assert_eq!(
             parse_text_overflow_declaration("ellipsis"),
-            Some(LocalCascadeDeclaration::Value(TextOverflowValue::Ellipsis))
+            Some(LocalCascadeDeclaration::Value(
+                TextOverflowDeclarationValue::Value(TextOverflowValue::Ellipsis)
+            ))
         );
         for keyword in ["INITIAL", "UnSeT", "ReVeRt"] {
             assert_eq!(
@@ -30915,7 +31031,9 @@ mod tests {
         );
         assert_eq!(
             declarations.text_overflow,
-            Some(LocalCascadeDeclaration::Value(TextOverflowValue::Ellipsis))
+            Some(LocalCascadeDeclaration::Value(
+                TextOverflowDeclarationValue::Value(TextOverflowValue::Ellipsis)
+            ))
         );
         let resets = parse_declarations("text-indent: initial; text-overflow: unset;");
         assert_eq!(resets.text_indent, Some(LocalCascadeDeclaration::Reset));
@@ -31213,7 +31331,7 @@ mod tests {
     }
 
     #[test]
-    fn text_overflow_parser_accepts_only_clip_and_ellipsis() {
+    fn text_overflow_parser_accepts_clip_ellipsis_and_custom_properties() {
         assert_eq!(parse_text_overflow("clip"), Some(TextOverflowValue::Clip));
         assert_eq!(
             parse_text_overflow("ELLIPSIS"),
@@ -31222,6 +31340,33 @@ mod tests {
         assert_eq!(parse_text_overflow("fade"), None);
         assert_eq!(parse_text_overflow("initial"), None);
         assert_eq!(parse_text_overflow(""), None);
+
+        let mode = parse_custom_property_name("--mode").unwrap();
+        assert_eq!(
+            parse_text_overflow_property("var(--mode)"),
+            Some(TextOverflowDeclarationValue::CustomProperty(mode))
+        );
+        assert_eq!(
+            parse_text_overflow_declaration("var(--mode, ellipsis)"),
+            Some(LocalCascadeDeclaration::Value(
+                TextOverflowDeclarationValue::CustomPropertyFallback(
+                    mode,
+                    TextOverflowValue::Ellipsis
+                )
+            ))
+        );
+        assert_eq!(
+            parse_text_overflow_declaration("var(--mode, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_text_overflow_declaration("initial"),
+            Some(LocalCascadeDeclaration::Reset)
+        );
+        assert_eq!(
+            parse_text_overflow_declaration("inherit"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
     }
 
     #[test]
@@ -33846,6 +33991,44 @@ mod tests {
         for id in ["reset", "unset", "revert"] {
             assert_eq!(style(id), TextOverflowValue::Clip, "text-overflow for {id}");
         }
+    }
+
+    #[test]
+    fn text_overflow_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --overflow: ellipsis; --cycle: var(--cycle); text-overflow: var(--overflow); }
+            #child { text-overflow: var(--overflow); }
+            #fallback { text-overflow: var(--missing, clip); }
+            #invalid { --bad: fade; text-overflow: var(--bad, ellipsis); }
+            #cycle { text-overflow: var(--cycle, ellipsis); }
+            #wide-initial { --wide: initial; text-overflow: var(--wide); }
+            #wide-inherit { --wide: inherit; text-overflow: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .text_overflow()
+        };
+
+        assert_eq!(style("parent"), TextOverflowValue::Ellipsis);
+        assert_eq!(style("child"), TextOverflowValue::Ellipsis);
+        assert_eq!(style("fallback"), TextOverflowValue::Clip);
+        assert_eq!(style("invalid"), TextOverflowValue::Ellipsis);
+        assert_eq!(style("cycle"), TextOverflowValue::Ellipsis);
+        assert_eq!(style("wide-initial"), TextOverflowValue::Clip);
+        assert_eq!(style("wide-inherit"), TextOverflowValue::Ellipsis);
     }
 
     #[test]

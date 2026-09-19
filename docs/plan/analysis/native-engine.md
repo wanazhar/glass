@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-601`, following
+expansion checkpoint is completed `native-engine-browser-602`, following
+completed `native-engine-browser-601`, following
 completed `native-engine-browser-600`, following
 completed `native-engine-browser-599`, following
 completed `native-engine-browser-598`, following
@@ -478,6 +479,14 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 602 extends bounded custom-property substitution to local
+`text-overflow`. Standalone `var(--name)` and keyword
+`var(--name, value)` fallbacks now resolve inherited aliases, CSS-wide mapped
+values, invalid values, and cyclic values before computed-style projection,
+while the existing local cascade precedence and supported values remain
+unchanged. Nested variable grammar, registered properties, full CSS variable
+grammar, and complete CSS/Web IDL parity remain explicit issue #40 gates.
 
 Slice 601 extends bounded custom-property substitution to the inherited
 `pointer-events`. Standalone `var(--name)` and keyword

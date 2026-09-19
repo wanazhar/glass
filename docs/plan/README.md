@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-586`, following completed
 `native-engine-browser-585`, following completed
 `native-engine-browser-584`, following completed
 `native-engine-browser-583`, following completed
@@ -488,6 +489,15 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed inherited font-variant-alternates follow-up is
+[`native-engine-browser-586`](tasks/native-engine-browser-586.md): native
+`font-variant-alternates` now accepts bounded standalone `var(--name)` and
+keyword fallbacks, resolving inherited aliases, CSS-wide mapped values,
+invalid values, and cyclic values before normal alternate computation.
+Complete shorthand substitution, nested variable grammar, registered
+properties, full CSS variable grammar, and complete CSS/Web IDL parity remain
+issue #40 gates.
 
 The completed inherited font-variant-position follow-up is
 [`native-engine-browser-585`](tasks/native-engine-browser-585.md): native

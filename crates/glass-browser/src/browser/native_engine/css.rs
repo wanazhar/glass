@@ -1081,6 +1081,12 @@ pub(crate) enum NativeFontVariantAlternates {
     Normal,
     HistoricalForms,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontVariantAlternatesDeclarationValue {
+    Value(NativeFontVariantAlternates),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontVariantAlternates),
+}
 
 /// The bounded OpenType language-system override exposed by
 /// `font-language-override`. CSS supplies this as a four-byte string tag;
@@ -4549,10 +4555,10 @@ impl NativeStylesheet {
                 inherited.font_variant_position,
                 custom_properties,
             ),
-            font_variant_alternates: resolve_inherited_text_declaration(
+            font_variant_alternates: resolve_font_variant_alternates(
                 *font_variant_alternates,
                 inherited.font_variant_alternates,
-                NativeFontVariantAlternates::Normal,
+                custom_properties,
             ),
             font_language_override: resolve_font_language_override(
                 *font_language_override,
@@ -4788,7 +4794,7 @@ struct NativeCascadeScratch {
     text_transform: NativeTextCascadeCandidates<TextTransformValue>,
     font_variant_ligatures: NativeTextCascadeCandidates<FontVariantLigaturesDeclarationValue>,
     font_variant_caps: NativeTextCascadeCandidates<FontVariantCapsDeclarationValue>,
-    font_variant_alternates: NativeTextCascadeCandidates<NativeFontVariantAlternates>,
+    font_variant_alternates: NativeTextCascadeCandidates<FontVariantAlternatesDeclarationValue>,
     font_language_override: NativeTextCascadeCandidates<FontLanguageOverrideDeclarationValue>,
     font_variation_settings: NativeTextCascadeCandidates<FontVariationSettingsDeclarationValue>,
     font_variant_east_asian: NativeTextCascadeCandidates<NativeFontVariantEastAsian>,
@@ -5509,6 +5515,98 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_variant_alternates_declaration(
+    declaration: InheritedTextDeclaration<FontVariantAlternatesDeclarationValue>,
+    inherited: NativeFontVariantAlternates,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariantAlternatesDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_variant_alternates_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => {
+            Some(FontVariantAlternatesDeclarationValue::Value(inherited))
+        }
+        InheritedTextDeclaration::Initial => Some(FontVariantAlternatesDeclarationValue::Value(
+            NativeFontVariantAlternates::Normal,
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_variant_alternates_value(
+    value: FontVariantAlternatesDeclarationValue,
+    inherited: NativeFontVariantAlternates,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariantAlternatesDeclarationValue> {
+    match value {
+        FontVariantAlternatesDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variant_alternates_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variant_alternates_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontVariantAlternatesDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variant_alternates_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variant_alternates_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontVariantAlternatesDeclarationValue::Value(fallback)))
+        }
+        FontVariantAlternatesDeclarationValue::CustomProperty(_)
+        | FontVariantAlternatesDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontVariantAlternatesDeclarationValue::Value(value) => {
+            Some(FontVariantAlternatesDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_font_variant_alternates(
+    candidates: NativeTextCascadeCandidates<FontVariantAlternatesDeclarationValue>,
+    inherited: NativeFontVariantAlternates,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontVariantAlternates {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontVariantAlternatesDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_variant_alternates_declaration(
+                declaration,
+                inherited,
+                custom_properties,
+                0,
+            )
+        },
+    );
+    match resolved {
+        FontVariantAlternatesDeclarationValue::Value(value) => value,
+        FontVariantAlternatesDeclarationValue::CustomProperty(_)
+        | FontVariantAlternatesDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_variant_position_declaration(
@@ -8802,7 +8900,8 @@ struct NativeDeclarations {
     font_variant_ligatures: Option<InheritedTextDeclaration<FontVariantLigaturesDeclarationValue>>,
     font_variant_caps: Option<InheritedTextDeclaration<FontVariantCapsDeclarationValue>>,
     font_variant_position: Option<InheritedTextDeclaration<FontVariantPositionDeclarationValue>>,
-    font_variant_alternates: Option<InheritedTextDeclaration<NativeFontVariantAlternates>>,
+    font_variant_alternates:
+        Option<InheritedTextDeclaration<FontVariantAlternatesDeclarationValue>>,
     font_language_override: Option<InheritedTextDeclaration<FontLanguageOverrideDeclarationValue>>,
     font_variation_settings:
         Option<InheritedTextDeclaration<FontVariationSettingsDeclarationValue>>,
@@ -10698,7 +10797,8 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                         Some(wrap_font_variant_caps_declaration(parsed.caps));
                     declarations.font_variant_position =
                         Some(wrap_font_variant_position_declaration(parsed.position));
-                    declarations.font_variant_alternates = Some(parsed.alternates);
+                    declarations.font_variant_alternates =
+                        Some(wrap_font_variant_alternates_declaration(parsed.alternates));
                     declarations.font_variant_east_asian = Some(parsed.east_asian);
                     declarations.font_variant_numeric = Some(parsed.numeric);
                     declarations.text_importance.font_variant_ligatures = important;
@@ -16249,10 +16349,54 @@ fn parse_font_variant_alternates(value: &str) -> Option<NativeFontVariantAlterna
     }
 }
 
+fn parse_font_variant_alternates_custom_property(
+    value: &str,
+) -> Option<FontVariantAlternatesDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_variant_alternates(fallback).map(|fallback| {
+            FontVariantAlternatesDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(FontVariantAlternatesDeclarationValue::CustomProperty(
+            name_hash,
+        )),
+    }
+}
+
+fn parse_font_variant_alternates_property(
+    value: &str,
+) -> Option<FontVariantAlternatesDeclarationValue> {
+    parse_font_variant_alternates(value)
+        .map(FontVariantAlternatesDeclarationValue::Value)
+        .or_else(|| parse_font_variant_alternates_custom_property(value))
+}
+
 fn parse_font_variant_alternates_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontVariantAlternates>> {
-    parse_inherited_text_declaration(value, parse_font_variant_alternates)
+) -> Option<InheritedTextDeclaration<FontVariantAlternatesDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_variant_alternates_property)
+}
+
+fn wrap_font_variant_alternates_declaration(
+    declaration: InheritedTextDeclaration<NativeFontVariantAlternates>,
+) -> InheritedTextDeclaration<FontVariantAlternatesDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            InheritedTextDeclaration::Value(FontVariantAlternatesDeclarationValue::Value(value))
+        }
+        InheritedTextDeclaration::Inherit => InheritedTextDeclaration::Inherit,
+        InheritedTextDeclaration::Initial => InheritedTextDeclaration::Initial,
+        InheritedTextDeclaration::Unset => InheritedTextDeclaration::Unset,
+        InheritedTextDeclaration::Revert => InheritedTextDeclaration::Revert,
+        InheritedTextDeclaration::RevertLayer => InheritedTextDeclaration::RevertLayer,
+    }
 }
 
 fn parse_font_language_override(value: &str) -> Option<NativeFontLanguageOverride> {
@@ -27522,6 +27666,27 @@ mod tests {
         assert!(parse_font_variant_alternates("inherit").is_none());
         assert!(parse_font_variant_alternates("normal historical-forms").is_none());
         assert!(parse_font_variant_alternates("stylistic(foo)").is_none());
+        let alternates_name = parse_custom_property_name("--alternates").unwrap();
+        let fallback = NativeFontVariantAlternates::HistoricalForms;
+        assert_eq!(
+            parse_font_variant_alternates_property("var(--alternates)"),
+            Some(FontVariantAlternatesDeclarationValue::CustomProperty(
+                alternates_name
+            ))
+        );
+        assert_eq!(
+            parse_font_variant_alternates_declaration("var(--alternates, historical-forms)"),
+            Some(InheritedTextDeclaration::Value(
+                FontVariantAlternatesDeclarationValue::CustomPropertyFallback(
+                    alternates_name,
+                    fallback
+                )
+            ))
+        );
+        assert_eq!(
+            parse_font_variant_alternates_property("var(--alternates, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -29851,6 +30016,53 @@ mod tests {
         assert_eq!(
             style("invalid").font_variant_position(),
             NativeFontVariantPosition::Super
+        );
+    }
+
+    #[test]
+    fn inherited_font_variant_alternates_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --alternates: historical-forms; --alias: var(--alternates); --cycle: var(--cycle); font-variant-alternates: var(--alternates); }
+            #child { font-variant-alternates: var(--alias); }
+            #fallback { font-variant-alternates: var(--missing, normal); }
+            #invalid { --bad: normal historical-forms; font-variant-alternates: var(--bad, historical-forms); }
+            #cycle { font-variant-alternates: var(--cycle, normal); }
+            #wide-initial { --wide: initial; font-variant-alternates: var(--wide); }
+            #wide-inherit { --wide: inherit; font-variant-alternates: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_variant_alternates()
+        };
+
+        assert_eq!(
+            style("parent"),
+            NativeFontVariantAlternates::HistoricalForms
+        );
+        assert_eq!(style("child"), NativeFontVariantAlternates::HistoricalForms);
+        assert_eq!(style("fallback"), NativeFontVariantAlternates::Normal);
+        assert_eq!(
+            style("invalid"),
+            NativeFontVariantAlternates::HistoricalForms
+        );
+        assert_eq!(style("cycle"), NativeFontVariantAlternates::Normal);
+        assert_eq!(style("wide-initial"), NativeFontVariantAlternates::Normal);
+        assert_eq!(
+            style("wide-inherit"),
+            NativeFontVariantAlternates::HistoricalForms
         );
     }
 

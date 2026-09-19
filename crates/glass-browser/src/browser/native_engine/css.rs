@@ -1006,6 +1006,12 @@ pub(crate) enum TextTransformValue {
     Uppercase,
     Lowercase,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextTransformDeclarationValue {
+    Value(TextTransformValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, TextTransformValue),
+}
 
 /// The bounded OpenType ligature controls exposed by
 /// `font-variant-ligatures`. The initial value enables common and contextual
@@ -4556,10 +4562,10 @@ impl NativeStylesheet {
                 inherited.text_decoration_color,
                 custom_properties,
             ),
-            text_transform: resolve_inherited_text_declaration(
+            text_transform: resolve_text_transform(
                 *text_transform,
                 inherited.text_transform,
-                TextTransformValue::None,
+                custom_properties,
             ),
             font_variant_ligatures: resolve_font_variant_ligatures(
                 *font_variant_ligatures,
@@ -4812,7 +4818,7 @@ struct NativeCascadeScratch {
     text_underline_offset: NativeTextDeclarationCandidates<NativeTextUnderlineOffsetDeclaration>,
     text_decoration_color: NativePaintDeclarationCandidates<NativeTextDecorationColorDeclaration>,
     font_variant_position: NativeTextCascadeCandidates<FontVariantPositionDeclarationValue>,
-    text_transform: NativeTextCascadeCandidates<TextTransformValue>,
+    text_transform: NativeTextCascadeCandidates<TextTransformDeclarationValue>,
     font_variant_ligatures: NativeTextCascadeCandidates<FontVariantLigaturesDeclarationValue>,
     font_variant_caps: NativeTextCascadeCandidates<FontVariantCapsDeclarationValue>,
     font_variant_alternates: NativeTextCascadeCandidates<FontVariantAlternatesDeclarationValue>,
@@ -5521,6 +5527,91 @@ fn resolve_font_size(
             0,
         )
     })
+}
+
+fn resolve_text_transform_declaration(
+    declaration: InheritedTextDeclaration<TextTransformDeclarationValue>,
+    inherited: TextTransformValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<TextTransformDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_text_transform_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(TextTransformDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => Some(TextTransformDeclarationValue::Value(
+            TextTransformValue::None,
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_text_transform_value(
+    value: TextTransformDeclarationValue,
+    inherited: TextTransformValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<TextTransformDeclarationValue> {
+    match value {
+        TextTransformDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_transform_declaration(value))
+                .and_then(|declaration| {
+                    resolve_text_transform_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        TextTransformDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_text_transform_declaration(value))
+                .and_then(|declaration| {
+                    resolve_text_transform_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(TextTransformDeclarationValue::Value(fallback)))
+        }
+        TextTransformDeclarationValue::CustomProperty(_)
+        | TextTransformDeclarationValue::CustomPropertyFallback(_, _) => None,
+        TextTransformDeclarationValue::Value(value) => {
+            Some(TextTransformDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_text_transform(
+    candidates: NativeTextCascadeCandidates<TextTransformDeclarationValue>,
+    inherited: TextTransformValue,
+    custom_properties: &BTreeMap<u64, String>,
+) -> TextTransformValue {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        TextTransformDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_text_transform_declaration(declaration, inherited, custom_properties, 0)
+        },
+    );
+    match resolved {
+        TextTransformDeclarationValue::Value(value) => value,
+        TextTransformDeclarationValue::CustomProperty(_)
+        | TextTransformDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_inherited_text_declaration<T: Copy>(
@@ -9101,7 +9192,7 @@ struct NativeDeclarations {
     text_underline_offset: Option<NativeTextUnderlineOffsetDeclaration>,
     text_decoration_color: Option<NativeTextDecorationColorDeclaration>,
     text_decoration_color_important: bool,
-    text_transform: Option<InheritedTextDeclaration<TextTransformValue>>,
+    text_transform: Option<InheritedTextDeclaration<TextTransformDeclarationValue>>,
     font_variant_ligatures: Option<InheritedTextDeclaration<FontVariantLigaturesDeclarationValue>>,
     font_variant_caps: Option<InheritedTextDeclaration<FontVariantCapsDeclarationValue>>,
     font_variant_position: Option<InheritedTextDeclaration<FontVariantPositionDeclarationValue>>,
@@ -16324,10 +16415,33 @@ fn parse_local_reset_cascade_declaration<T: Copy>(
     parse(value).map(LocalCascadeDeclaration::Value)
 }
 
+fn parse_text_transform_custom_property(value: &str) -> Option<TextTransformDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_text_transform(fallback).map(|fallback| {
+            TextTransformDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(TextTransformDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_text_transform_property(value: &str) -> Option<TextTransformDeclarationValue> {
+    parse_text_transform(value)
+        .map(TextTransformDeclarationValue::Value)
+        .or_else(|| parse_text_transform_custom_property(value))
+}
+
 fn parse_text_transform_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<TextTransformValue>> {
-    parse_inherited_text_declaration(value, parse_text_transform)
+) -> Option<InheritedTextDeclaration<TextTransformDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_text_transform_property)
 }
 
 fn parse_font_variant_ligatures(value: &str) -> Option<NativeFontVariantLigatures> {
@@ -27576,6 +27690,24 @@ mod tests {
         assert_eq!(parse_text_transform("capitalize"), None);
         assert_eq!(parse_text_transform("full-width"), None);
         assert_eq!(parse_text_transform("initial"), None);
+        let transform_name = parse_custom_property_name("--transform").unwrap();
+        let fallback = TextTransformValue::Lowercase;
+        assert_eq!(
+            parse_text_transform_property("var(--transform)"),
+            Some(TextTransformDeclarationValue::CustomProperty(
+                transform_name
+            ))
+        );
+        assert_eq!(
+            parse_text_transform_declaration("var(--transform, lowercase)"),
+            Some(InheritedTextDeclaration::Value(
+                TextTransformDeclarationValue::CustomPropertyFallback(transform_name, fallback)
+            ))
+        );
+        assert_eq!(
+            parse_text_transform_property("var(--transform, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -28932,7 +29064,7 @@ mod tests {
         assert_eq!(
             parse_text_transform_declaration("uppercase"),
             Some(InheritedTextDeclaration::Value(
-                TextTransformValue::Uppercase
+                TextTransformDeclarationValue::Value(TextTransformValue::Uppercase)
             ))
         );
     }
@@ -28974,7 +29106,7 @@ mod tests {
         assert_eq!(
             declarations.text_transform,
             Some(InheritedTextDeclaration::Value(
-                TextTransformValue::Uppercase
+                TextTransformDeclarationValue::Value(TextTransformValue::Uppercase)
             ))
         );
         assert_eq!(
@@ -29840,6 +29972,44 @@ mod tests {
                 .text_decoration(),
             TextDecorationValue::new(true, false, false)
         );
+    }
+
+    #[test]
+    fn inherited_text_transform_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --transform: uppercase; --alias: var(--transform); --cycle: var(--cycle); text-transform: var(--transform); }
+            #child { text-transform: var(--alias); }
+            #fallback { text-transform: var(--missing, lowercase); }
+            #invalid { --bad: capitalize; text-transform: var(--bad, none); }
+            #cycle { text-transform: var(--cycle, none); }
+            #wide-initial { --wide: initial; text-transform: var(--wide); }
+            #wide-inherit { --wide: inherit; text-transform: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .text_transform()
+        };
+
+        assert_eq!(style("parent"), TextTransformValue::Uppercase);
+        assert_eq!(style("child"), TextTransformValue::Uppercase);
+        assert_eq!(style("fallback"), TextTransformValue::Lowercase);
+        assert_eq!(style("invalid"), TextTransformValue::None);
+        assert_eq!(style("cycle"), TextTransformValue::None);
+        assert_eq!(style("wide-initial"), TextTransformValue::None);
+        assert_eq!(style("wide-inherit"), TextTransformValue::Uppercase);
     }
 
     #[test]

@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-641`, following
-completed `native-engine-browser-640`, following completed
+expansion checkpoint is completed `native-engine-browser-642`, following
+completed `native-engine-browser-641`, following completed
+`native-engine-browser-640`, following completed
 `native-engine-browser-639`, following completed
 `native-engine-browser-638`, following completed
 `native-engine-browser-637`, following completed
@@ -518,6 +519,14 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 642 adds bounded functional selector parsing and matching for
+`:not(...)`, `:is(...)`, and `:where(...)`. Nested selector lists retain
+bracket/function/quote boundaries, `:where` contributes zero specificity, and
+the other functions use the maximum argument specificity. Stylesheet rule
+selector splitting now shares the top-level list scanner, so functional commas
+remain inside one rule. Unsupported `:has()`, nth arithmetic, malformed
+arguments, namespaces, and pseudo-elements remain explicit issue #40 gates.
 
 Slice 641 adds bounded child and sibling combinator parsing and matching.
 Selector chains now retain descendant, child (`>`), adjacent-sibling (`+`), and

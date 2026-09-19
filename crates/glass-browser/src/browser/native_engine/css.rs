@@ -13796,7 +13796,7 @@ enum NativeSelectorCombinator {
     SubsequentSibling,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum NativePseudoClass {
     Root,
     FirstChild,
@@ -13810,10 +13810,13 @@ enum NativePseudoClass {
     Optional,
     Link,
     AnyLink,
+    Not(Vec<NativeSelector>),
+    Is(Vec<NativeSelector>),
+    Where(Vec<NativeSelector>),
 }
 
 impl NativePseudoClass {
-    fn matches_local(self, node: &NativeNode) -> bool {
+    fn matches_local(&self, node: &NativeNode) -> bool {
         match self {
             Self::Empty => node.children().is_empty(),
             Self::Checked => {
@@ -13827,11 +13830,17 @@ impl NativePseudoClass {
             Self::Required => node.attribute("required").is_some(),
             Self::Optional => node.attribute("required").is_none(),
             Self::Link | Self::AnyLink => node.attribute("href").is_some(),
+            Self::Not(selectors) => selectors
+                .iter()
+                .all(|selector| !selector.matches_local(node)),
+            Self::Is(selectors) | Self::Where(selectors) => selectors
+                .iter()
+                .any(|selector| selector.matches_local(node)),
             Self::Root | Self::FirstChild | Self::LastChild | Self::OnlyChild => false,
         }
     }
 
-    fn matches_in_document(self, document: &NativeDocument, node_id: NativeNodeId) -> bool {
+    fn matches_in_document(&self, document: &NativeDocument, node_id: NativeNodeId) -> bool {
         let Some(node) = document.node(node_id) else {
             return false;
         };
@@ -13871,6 +13880,12 @@ impl NativePseudoClass {
                     _ => false,
                 }
             }
+            Self::Not(selectors) => selectors
+                .iter()
+                .all(|selector| !selector.matches_in_document(document, node_id)),
+            Self::Is(selectors) | Self::Where(selectors) => selectors
+                .iter()
+                .any(|selector| selector.matches_in_document(document, node_id)),
             _ => self.matches_local(node),
         }
     }
@@ -13887,11 +13902,15 @@ struct NativeCompoundSelector {
 }
 
 impl NativeSelector {
-    #[cfg(test)]
-    fn matches(&self, node: &NativeNode) -> bool {
+    fn matches_local(&self, node: &NativeNode) -> bool {
         self.compounds
             .last()
-            .is_some_and(|compound| compound.matches(node))
+            .is_some_and(|compound| compound.matches_local(node))
+    }
+
+    #[cfg(test)]
+    fn matches(&self, node: &NativeNode) -> bool {
+        self.matches_local(node)
     }
 
     fn matches_in_document(&self, document: &NativeDocument, node_id: NativeNodeId) -> bool {
@@ -14032,13 +14051,11 @@ impl NativeCompoundSelector {
         })
     }
 
-    #[cfg(test)]
-    fn matches(&self, node: &NativeNode) -> bool {
+    fn matches_local(&self, node: &NativeNode) -> bool {
         self.matches_base(node)
             && self
                 .pseudo_classes
                 .iter()
-                .copied()
                 .all(|pseudo| pseudo.matches_local(node))
     }
 
@@ -14050,7 +14067,6 @@ impl NativeCompoundSelector {
             && self
                 .pseudo_classes
                 .iter()
-                .copied()
                 .all(|pseudo| pseudo.matches_in_document(document, node_id))
     }
 }
@@ -14770,20 +14786,16 @@ fn parse_style_rule(
         || declarations.overflow_y.is_some()
         || !custom_properties.is_empty();
     let selector_source = &source[selector_start..open];
-    let mut selector_offset = selector_start;
-    for selector_text in selector_source.split(',') {
+    let selector_parts = split_selector_list_with_offsets(selector_source)
+        .unwrap_or_else(|| vec![(0, selector_source)]);
+    for (selector_relative_offset, selector_text) in selector_parts {
         let Some(mut selector) = parse_selector(selector_text) else {
             context.diagnostics.push(
                 NativeDiagnosticCode::UnsupportedCssSelector,
                 context.diagnostic_source,
-                selector_offset.saturating_add(
-                    selector_text
-                        .len()
-                        .saturating_sub(selector_text.trim_start().len()),
-                ),
+                selector_start.saturating_add(selector_relative_offset),
                 selector_diagnostic_detail(selector_text),
             );
-            selector_offset = selector_offset.saturating_add(selector_text.len() + 1);
             continue;
         };
         if has_supported_declaration {
@@ -14805,7 +14817,6 @@ fn parse_style_rule(
             });
             *context.next_order = context.next_order.saturating_add(1);
         }
-        selector_offset = selector_offset.saturating_add(selector_text.len() + 1);
     }
     Ok(())
 }
@@ -24492,6 +24503,7 @@ fn split_selector_parts(source: &str) -> Option<(Vec<&str>, Vec<NativeSelectorCo
     let mut pending_whitespace = false;
     let mut cursor = 0;
     let mut bracket_depth = 0usize;
+    let mut parentheses = 0usize;
     let mut quote = None;
     while cursor < bytes.len() {
         let byte = bytes[cursor];
@@ -24503,6 +24515,7 @@ fn split_selector_parts(source: &str) -> Option<(Vec<&str>, Vec<NativeSelectorCo
             continue;
         }
         if bracket_depth == 0
+            && parentheses == 0
             && !byte.is_ascii_whitespace()
             && !matches!(byte, b'>' | b'+' | b'~')
             && token_start.is_none()
@@ -24526,13 +24539,17 @@ fn split_selector_parts(source: &str) -> Option<(Vec<&str>, Vec<NativeSelectorCo
                 }
                 bracket_depth -= 1;
             }
-            byte if byte.is_ascii_whitespace() && bracket_depth == 0 => {
+            b'(' if bracket_depth == 0 => parentheses = parentheses.saturating_add(1),
+            b')' if bracket_depth == 0 => {
+                parentheses = parentheses.checked_sub(1)?;
+            }
+            byte if byte.is_ascii_whitespace() && bracket_depth == 0 && parentheses == 0 => {
                 if let Some(start) = token_start.take() {
                     compounds.push(&source[start..cursor]);
                     pending_whitespace = true;
                 }
             }
-            byte @ (b'>' | b'+' | b'~') if bracket_depth == 0 => {
+            byte @ (b'>' | b'+' | b'~') if bracket_depth == 0 && parentheses == 0 => {
                 if let Some(start) = token_start.take() {
                     compounds.push(&source[start..cursor]);
                 }
@@ -24551,7 +24568,7 @@ fn split_selector_parts(source: &str) -> Option<(Vec<&str>, Vec<NativeSelectorCo
         }
         cursor += 1;
     }
-    if bracket_depth != 0 || quote.is_some() {
+    if bracket_depth != 0 || parentheses != 0 || quote.is_some() {
         return None;
     }
     if let Some(start) = token_start {
@@ -24609,9 +24626,18 @@ fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
             }
             b':' => {
                 let (name, next) = read_identifier(source, cursor + 1)?;
-                selector.pseudo_classes.push(parse_pseudo_class(&name)?);
-                selector.specificity = selector.specificity.saturating_add(10);
-                cursor = next;
+                if bytes.get(next) == Some(&b'(') {
+                    let close = find_selector_function_close(source, next)?;
+                    let (pseudo, specificity) =
+                        parse_functional_pseudo_class(&name, &source[next + 1..close])?;
+                    selector.pseudo_classes.push(pseudo);
+                    selector.specificity = selector.specificity.saturating_add(specificity);
+                    cursor = close + 1;
+                } else {
+                    selector.pseudo_classes.push(parse_pseudo_class(&name)?);
+                    selector.specificity = selector.specificity.saturating_add(10);
+                    cursor = next;
+                }
             }
             _ => return None,
         }
@@ -24641,6 +24667,130 @@ fn parse_pseudo_class(source: &str) -> Option<NativePseudoClass> {
         "any-link" => Some(NativePseudoClass::AnyLink),
         _ => None,
     }
+}
+
+fn parse_functional_pseudo_class(name: &str, argument: &str) -> Option<(NativePseudoClass, u16)> {
+    if argument.len() > MAX_SELECTOR_BYTES {
+        return None;
+    }
+    let selectors = split_selector_list(argument)?
+        .into_iter()
+        .map(parse_selector)
+        .collect::<Option<Vec<_>>>()?;
+    let specificity = selectors
+        .iter()
+        .map(|selector| selector.specificity)
+        .max()
+        .unwrap_or_default();
+    match name.to_ascii_lowercase().as_str() {
+        "not" => Some((NativePseudoClass::Not(selectors), specificity)),
+        "is" => Some((NativePseudoClass::Is(selectors), specificity)),
+        "where" => Some((NativePseudoClass::Where(selectors), 0)),
+        _ => None,
+    }
+}
+
+fn find_selector_function_close(source: &str, open: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut quote = None;
+    for cursor in open..bytes.len() {
+        let byte = bytes[cursor];
+        if let Some(delimiter) = quote {
+            if byte == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' if bracket_depth > 0 => quote = Some(byte),
+            b'[' => bracket_depth = bracket_depth.saturating_add(1),
+            b']' => {
+                if bracket_depth == 0 {
+                    return None;
+                }
+                bracket_depth -= 1;
+            }
+            b'(' if bracket_depth == 0 => depth = depth.saturating_add(1),
+            b')' if bracket_depth == 0 => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(cursor);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_selector_list(source: &str) -> Option<Vec<&str>> {
+    split_selector_list_with_offsets(source).map(|selectors| {
+        selectors
+            .into_iter()
+            .map(|(_, selector)| selector)
+            .collect()
+    })
+}
+
+fn split_selector_list_with_offsets(source: &str) -> Option<Vec<(usize, &str)>> {
+    let mut selectors = Vec::new();
+    let mut start = 0;
+    let mut bracket_depth = 0usize;
+    let mut parentheses = 0usize;
+    let mut quote = None;
+    for (cursor, byte) in source.bytes().enumerate() {
+        if let Some(delimiter) = quote {
+            if byte == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' if bracket_depth > 0 => quote = Some(byte),
+            b'[' => bracket_depth = bracket_depth.saturating_add(1),
+            b']' => {
+                if bracket_depth == 0 {
+                    return None;
+                }
+                bracket_depth -= 1;
+            }
+            b'(' if bracket_depth == 0 => parentheses = parentheses.saturating_add(1),
+            b')' if bracket_depth == 0 => {
+                parentheses = parentheses.checked_sub(1)?;
+            }
+            b',' if bracket_depth == 0 && parentheses == 0 => {
+                let raw_selector = &source[start..cursor];
+                let leading = raw_selector
+                    .len()
+                    .saturating_sub(raw_selector.trim_start().len());
+                let selector = raw_selector.trim();
+                if selector.is_empty() {
+                    return None;
+                }
+                selectors.push((start.saturating_add(leading), selector));
+                if selectors.len() > MAX_SELECTOR_PARTS {
+                    return None;
+                }
+                start = cursor.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    if bracket_depth != 0 || parentheses != 0 || quote.is_some() {
+        return None;
+    }
+    let raw_selector = &source[start..];
+    let leading = raw_selector
+        .len()
+        .saturating_sub(raw_selector.trim_start().len());
+    let selector = raw_selector.trim();
+    if selector.is_empty() {
+        return None;
+    }
+    selectors.push((start.saturating_add(leading), selector));
+    (selectors.len() <= MAX_SELECTOR_PARTS).then_some(selectors)
 }
 
 fn parse_attribute_selector(source: &str) -> Option<(String, Option<String>)> {
@@ -25105,9 +25255,26 @@ mod tests {
         let selector = parse_selector("button:first-child:checked").unwrap();
         assert_eq!(selector.specificity, 21);
         assert!(parse_selector(":empty").is_some());
+        assert_eq!(
+            parse_selector("button:not(.active)").unwrap().specificity,
+            11
+        );
+        assert_eq!(
+            parse_selector("button:is(.active, #primary)")
+                .unwrap()
+                .specificity,
+            101
+        );
+        assert_eq!(
+            parse_selector("button:where(.active, #primary)")
+                .unwrap()
+                .specificity,
+            1
+        );
         assert!(parse_selector("button:hover").is_none());
         assert!(parse_selector("button:nth-child(2)").is_none());
-        assert!(parse_selector("button:not(.active)").is_none());
+        assert!(parse_selector("button:has(.child)").is_none());
+        assert!(parse_selector("button:not(.active").is_none());
         assert!(parse_selector("button::before").is_none());
     }
 
@@ -25177,7 +25344,100 @@ mod tests {
         assert_eq!(matched_id("a:link"), Some("link"));
         assert_eq!(matched_id("a:any-link"), Some("link"));
         assert!(selector_matches_in_document(&document, "#normal:nth-child(1)").is_err());
-        assert!(selector_matches_in_document(&document, "#normal:not(input)").is_err());
+        assert!(
+            selector_matches_in_document(&document, "#normal:not(input)")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_negation_pseudo_class() {
+        let document = NativeDocument::parse(
+            "<main><button id='active' class='active'></button><button id='plain'></button><div id='other'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("negation pseudo-class fixture document");
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .map(|node_id| {
+                    document
+                        .node(node_id)
+                        .and_then(|node| node.attribute("id"))
+                        .expect("matched element id")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(matched_ids("button:not(.active)"), vec!["plain"]);
+        assert_eq!(matched_ids("#plain:not(.missing)"), vec!["plain"]);
+        assert!(matched_ids("#active:not(.active)").is_empty());
+        assert!(matched_ids("#plain:not(button)").is_empty());
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_selector_list_pseudos() {
+        let document = NativeDocument::parse(
+            "<main><button id='primary' class='primary'></button><button id='secondary' class='secondary'></button><span id='plain'></span></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("selector-list pseudo-class fixture document");
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .map(|node_id| {
+                    document
+                        .node(node_id)
+                        .and_then(|node| node.attribute("id"))
+                        .expect("matched element id")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            matched_ids(":is(button.primary, button.secondary)"),
+            vec!["primary", "secondary"]
+        );
+        assert_eq!(
+            matched_ids(":where(.primary, .secondary)"),
+            vec!["primary", "secondary"]
+        );
+        assert_eq!(
+            matched_ids("#primary:not(:is(.secondary, .other))"),
+            vec!["primary"]
+        );
+    }
+
+    #[test]
+    fn functional_pseudo_classes_apply_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            ".item { color: black; } .item:is(.primary, .secondary) { color: red; } .item:not(.secondary) { background-color: red; }"
+                .into(),
+        ])
+        .expect("functional pseudo-class stylesheet");
+        let document = NativeDocument::parse(
+            "<main><button id='primary' class='item primary'></button><button id='secondary' class='item secondary'></button><button id='plain' class='item'></button></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("functional pseudo-class cascade document");
+
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+        assert_eq!(style("primary").color(), Some(NativeColor::RED));
+        assert_eq!(style("secondary").color(), Some(NativeColor::RED));
+        assert_eq!(style("plain").color(), Some(NativeColor::BLACK));
+        assert_eq!(style("primary").background_color(), Some(NativeColor::RED));
+        assert_eq!(style("secondary").background_color(), None);
     }
 
     #[test]

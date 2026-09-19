@@ -1970,6 +1970,13 @@ pub(crate) enum VerticalAlignValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerticalAlignDeclarationValue {
+    Value(VerticalAlignValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, VerticalAlignValue),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeGapValue {
     row: u32,
     column: u32,
@@ -4715,10 +4722,10 @@ impl NativeStylesheet {
             ),
             word_break: resolve_word_break(*word_break, inherited.word_break, custom_properties),
             text_overflow: resolve_text_overflow(*text_overflow, inherited.text_overflow),
-            vertical_align: resolve_inherited_text_declaration(
+            vertical_align: resolve_vertical_align(
                 *vertical_align,
                 inherited.vertical_align,
-                VerticalAlignValue::Baseline,
+                custom_properties,
             ),
             text_indent: resolve_text_indent(*text_indent, inherited.text_indent),
             word_spacing: resolve_inherited_text_declaration(
@@ -4900,7 +4907,7 @@ struct NativeCascadeScratch {
     font_size: NativeTextCascadeCandidates<NativeFontSizeDeclarationValue>,
     word_break: NativeTextCascadeCandidates<WordBreakDeclarationValue>,
     text_overflow: NativeTextLocalCascadeCandidates<TextOverflowValue>,
-    vertical_align: NativeTextCascadeCandidates<VerticalAlignValue>,
+    vertical_align: NativeTextCascadeCandidates<VerticalAlignDeclarationValue>,
     text_indent: NativeTextLocalCascadeCandidates<u32>,
     word_spacing: NativeTextCascadeCandidates<u32>,
     letter_spacing: NativeTextCascadeCandidates<u32>,
@@ -5329,6 +5336,89 @@ fn resolve_word_break(
         WordBreakDeclarationValue::Value(value) => value,
         WordBreakDeclarationValue::CustomProperty(_)
         | WordBreakDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
+}
+
+fn resolve_vertical_align_declaration(
+    declaration: InheritedTextDeclaration<VerticalAlignDeclarationValue>,
+    inherited: VerticalAlignValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<VerticalAlignDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_vertical_align_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(VerticalAlignDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => Some(VerticalAlignDeclarationValue::Value(
+            VerticalAlignValue::Baseline,
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_vertical_align_value(
+    value: VerticalAlignDeclarationValue,
+    inherited: VerticalAlignValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<VerticalAlignDeclarationValue> {
+    match value {
+        VerticalAlignDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_vertical_align_declaration(value))
+                .and_then(|declaration| {
+                    resolve_vertical_align_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        VerticalAlignDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_vertical_align_declaration(value))
+                .and_then(|declaration| {
+                    resolve_vertical_align_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(VerticalAlignDeclarationValue::Value(fallback)))
+        }
+        VerticalAlignDeclarationValue::CustomProperty(_)
+        | VerticalAlignDeclarationValue::CustomPropertyFallback(_, _) => None,
+        value => Some(value),
+    }
+}
+
+fn resolve_vertical_align(
+    candidates: NativeTextCascadeCandidates<VerticalAlignDeclarationValue>,
+    inherited: VerticalAlignValue,
+    custom_properties: &BTreeMap<u64, String>,
+) -> VerticalAlignValue {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        VerticalAlignDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_vertical_align_declaration(declaration, inherited, custom_properties, 0)
+        },
+    );
+    match resolved {
+        VerticalAlignDeclarationValue::Value(value) => value,
+        VerticalAlignDeclarationValue::CustomProperty(_)
+        | VerticalAlignDeclarationValue::CustomPropertyFallback(_, _) => inherited,
     }
 }
 
@@ -9801,7 +9891,7 @@ struct NativeDeclarations {
     font_size: Option<InheritedTextDeclaration<NativeFontSizeDeclarationValue>>,
     word_break: Option<InheritedTextDeclaration<WordBreakDeclarationValue>>,
     text_overflow: Option<LocalCascadeDeclaration<TextOverflowValue>>,
-    vertical_align: Option<InheritedTextDeclaration<VerticalAlignValue>>,
+    vertical_align: Option<InheritedTextDeclaration<VerticalAlignDeclarationValue>>,
     text_indent: Option<LocalCascadeDeclaration<u32>>,
     word_spacing: Option<InheritedTextDeclaration<u32>>,
     letter_spacing: Option<InheritedTextDeclaration<u32>>,
@@ -18744,8 +18834,8 @@ fn parse_letter_spacing_declaration(value: &str) -> Option<InheritedTextDeclarat
 
 fn parse_vertical_align_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<VerticalAlignValue>> {
-    parse_inherited_text_declaration(value, parse_vertical_align)
+) -> Option<InheritedTextDeclaration<VerticalAlignDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_vertical_align_property)
 }
 
 fn parse_text_overflow_declaration(
@@ -18835,6 +18925,39 @@ fn parse_vertical_align(value: &str) -> Option<VerticalAlignValue> {
         "bottom" => Some(VerticalAlignValue::Bottom),
         _ => None,
     }
+}
+
+fn parse_vertical_align_custom_property(value: &str) -> Option<VerticalAlignDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_vertical_align(fallback).map(|fallback| {
+            VerticalAlignDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(VerticalAlignDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_vertical_align_property(value: &str) -> Option<VerticalAlignDeclarationValue> {
+    parse_vertical_align(value)
+        .map(VerticalAlignDeclarationValue::Value)
+        .or_else(|| parse_vertical_align_custom_property(value))
 }
 
 fn parse_visibility(value: &str) -> Option<VisibilityValue> {
@@ -19467,7 +19590,9 @@ mod tests {
         );
         assert_eq!(
             declarations.vertical_align,
-            Some(InheritedTextDeclaration::Value(VerticalAlignValue::Bottom))
+            Some(InheritedTextDeclaration::Value(
+                VerticalAlignDeclarationValue::Value(VerticalAlignValue::Bottom)
+            ))
         );
         assert_eq!(
             declarations.width,
@@ -30211,7 +30336,9 @@ mod tests {
         );
         assert_eq!(
             parse_vertical_align_declaration("middle"),
-            Some(InheritedTextDeclaration::Value(VerticalAlignValue::Middle))
+            Some(InheritedTextDeclaration::Value(
+                VerticalAlignDeclarationValue::Value(VerticalAlignValue::Middle)
+            ))
         );
         assert_eq!(
             parse_vertical_align_declaration("revert-layer middle"),
@@ -30223,7 +30350,29 @@ mod tests {
         let declarations = parse_declarations("vertical-align: bottom; vertical-align: 1px;");
         assert_eq!(
             declarations.vertical_align,
-            Some(InheritedTextDeclaration::Value(VerticalAlignValue::Bottom))
+            Some(InheritedTextDeclaration::Value(
+                VerticalAlignDeclarationValue::Value(VerticalAlignValue::Bottom)
+            ))
+        );
+        let vertical_align_name = parse_custom_property_name("--vertical-align").unwrap();
+        assert_eq!(
+            parse_vertical_align_property("var(--vertical-align)"),
+            Some(VerticalAlignDeclarationValue::CustomProperty(
+                vertical_align_name
+            ))
+        );
+        assert_eq!(
+            parse_vertical_align_declaration("var(--vertical-align, middle)"),
+            Some(InheritedTextDeclaration::Value(
+                VerticalAlignDeclarationValue::CustomPropertyFallback(
+                    vertical_align_name,
+                    VerticalAlignValue::Middle
+                )
+            ))
+        );
+        assert_eq!(
+            parse_vertical_align_property("var(--vertical-align, var(--other))"),
+            None
         );
     }
 
@@ -33268,6 +33417,44 @@ mod tests {
             document.computed_style_for_layout(invalid).vertical_align(),
             VerticalAlignValue::Middle
         );
+    }
+
+    #[test]
+    fn inherited_vertical_align_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --vertical-align: middle; --alias: var(--vertical-align); --cycle: var(--cycle); vertical-align: var(--vertical-align); }
+            #child { vertical-align: var(--alias); }
+            #fallback { vertical-align: var(--missing, top); }
+            #invalid { --bad: sub; vertical-align: var(--bad, bottom); }
+            #cycle { vertical-align: var(--cycle, baseline); }
+            #wide-initial { --wide: initial; vertical-align: var(--wide); }
+            #wide-inherit { --wide: inherit; vertical-align: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .vertical_align()
+        };
+
+        assert_eq!(style("parent"), VerticalAlignValue::Middle);
+        assert_eq!(style("child"), VerticalAlignValue::Middle);
+        assert_eq!(style("fallback"), VerticalAlignValue::Top);
+        assert_eq!(style("invalid"), VerticalAlignValue::Bottom);
+        assert_eq!(style("cycle"), VerticalAlignValue::Baseline);
+        assert_eq!(style("wide-initial"), VerticalAlignValue::Baseline);
+        assert_eq!(style("wide-inherit"), VerticalAlignValue::Middle);
     }
 
     #[test]

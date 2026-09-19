@@ -1294,6 +1294,13 @@ pub(crate) enum NativeFontKerning {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontKerningDeclarationValue {
+    Value(NativeFontKerning),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontKerning),
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeFontOpticalSizing {
     #[default]
@@ -4517,10 +4524,10 @@ impl NativeStylesheet {
                 inherited.font_feature_settings,
                 NativeFontFeatureSettings::default(),
             ),
-            font_kerning: resolve_inherited_text_declaration(
+            font_kerning: resolve_font_kerning(
                 *font_kerning,
                 inherited.font_kerning,
-                NativeFontKerning::Auto,
+                custom_properties,
             ),
             font_optical_sizing: resolve_inherited_text_declaration(
                 *font_optical_sizing,
@@ -4732,7 +4739,7 @@ struct NativeCascadeScratch {
     font_variant_east_asian: NativeTextCascadeCandidates<NativeFontVariantEastAsian>,
     font_variant_numeric: NativeTextCascadeCandidates<NativeFontVariantNumeric>,
     font_feature_settings: NativeTextCascadeCandidates<NativeFontFeatureSettings>,
-    font_kerning: NativeTextCascadeCandidates<NativeFontKerning>,
+    font_kerning: NativeTextCascadeCandidates<FontKerningDeclarationValue>,
     font_optical_sizing: NativeTextCascadeCandidates<NativeFontOpticalSizing>,
     font_palette: NativeTextCascadeCandidates<NativeFontPalette>,
     font_weight: NativeTextCascadeCandidates<FontWeightDeclarationValue>,
@@ -5447,6 +5454,91 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_kerning_declaration(
+    declaration: InheritedTextDeclaration<FontKerningDeclarationValue>,
+    inherited: NativeFontKerning,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontKerningDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_kerning_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(FontKerningDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => {
+            Some(FontKerningDeclarationValue::Value(NativeFontKerning::Auto))
+        }
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_kerning_value(
+    value: FontKerningDeclarationValue,
+    inherited: NativeFontKerning,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontKerningDeclarationValue> {
+    match value {
+        FontKerningDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_kerning_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_kerning_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontKerningDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_kerning_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_kerning_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontKerningDeclarationValue::Value(fallback)))
+        }
+        FontKerningDeclarationValue::CustomProperty(_)
+        | FontKerningDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontKerningDeclarationValue::Value(value) => {
+            Some(FontKerningDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_font_kerning(
+    candidates: NativeTextCascadeCandidates<FontKerningDeclarationValue>,
+    inherited: NativeFontKerning,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontKerning {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontKerningDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_kerning_declaration(declaration, inherited, custom_properties, 0)
+        },
+    );
+    match resolved {
+        FontKerningDeclarationValue::Value(value) => value,
+        FontKerningDeclarationValue::CustomProperty(_)
+        | FontKerningDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_family_declaration(
@@ -7932,7 +8024,7 @@ struct NativeDeclarations {
     font_variant_east_asian: Option<InheritedTextDeclaration<NativeFontVariantEastAsian>>,
     font_variant_numeric: Option<InheritedTextDeclaration<NativeFontVariantNumeric>>,
     font_feature_settings: Option<InheritedTextDeclaration<NativeFontFeatureSettings>>,
-    font_kerning: Option<InheritedTextDeclaration<NativeFontKerning>>,
+    font_kerning: Option<InheritedTextDeclaration<FontKerningDeclarationValue>>,
     font_optical_sizing: Option<InheritedTextDeclaration<NativeFontOpticalSizing>>,
     font_palette: Option<InheritedTextDeclaration<NativeFontPalette>>,
     font_weight: Option<InheritedTextDeclaration<FontWeightDeclarationValue>>,
@@ -15866,10 +15958,33 @@ fn parse_font_kerning(value: &str) -> Option<NativeFontKerning> {
     }
 }
 
+fn parse_font_kerning_custom_property(value: &str) -> Option<FontKerningDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_kerning(fallback).map(|fallback| {
+            FontKerningDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(FontKerningDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_font_kerning_property(value: &str) -> Option<FontKerningDeclarationValue> {
+    parse_font_kerning(value)
+        .map(FontKerningDeclarationValue::Value)
+        .or_else(|| parse_font_kerning_custom_property(value))
+}
+
 fn parse_font_kerning_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontKerning>> {
-    parse_inherited_text_declaration(value, parse_font_kerning)
+) -> Option<InheritedTextDeclaration<FontKerningDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_kerning_property)
 }
 
 fn parse_font_optical_sizing(value: &str) -> Option<NativeFontOpticalSizing> {
@@ -26109,6 +26224,24 @@ mod tests {
         assert_eq!(parse_font_kerning("none"), Some(NativeFontKerning::None));
         assert!(parse_font_kerning("inherit").is_none());
         assert!(parse_font_kerning("normal none").is_none());
+        let kerning_name = parse_custom_property_name("--kerning").unwrap();
+        assert_eq!(
+            parse_font_kerning_property("var(--kerning)"),
+            Some(FontKerningDeclarationValue::CustomProperty(kerning_name))
+        );
+        assert_eq!(
+            parse_font_kerning_declaration("var(--kerning, none)"),
+            Some(InheritedTextDeclaration::Value(
+                FontKerningDeclarationValue::CustomPropertyFallback(
+                    kerning_name,
+                    NativeFontKerning::None
+                )
+            ))
+        );
+        assert_eq!(
+            parse_font_kerning_property("var(--kerning, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -27994,6 +28127,44 @@ mod tests {
         assert_eq!(style("inherit").font_kerning(), NativeFontKerning::None);
         assert_eq!(style("clear").font_kerning(), NativeFontKerning::Auto);
         assert_eq!(style("invalid").font_kerning(), NativeFontKerning::None);
+    }
+
+    #[test]
+    fn inherited_font_kerning_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --kerning: none; --alias: var(--kerning); --cycle: var(--cycle); font-kerning: var(--kerning); }
+            #child { font-kerning: var(--alias); }
+            #fallback { font-kerning: var(--missing, normal); }
+            #invalid { --bad: unsupported; font-kerning: var(--bad, normal); }
+            #cycle { font-kerning: var(--cycle, normal); }
+            #wide-initial { --wide: initial; font-kerning: var(--wide); }
+            #wide-inherit { --wide: inherit; font-kerning: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_kerning()
+        };
+
+        assert_eq!(style("parent"), NativeFontKerning::None);
+        assert_eq!(style("child"), NativeFontKerning::None);
+        assert_eq!(style("fallback"), NativeFontKerning::Normal);
+        assert_eq!(style("invalid"), NativeFontKerning::Normal);
+        assert_eq!(style("cycle"), NativeFontKerning::Normal);
+        assert_eq!(style("wide-initial"), NativeFontKerning::Auto);
+        assert_eq!(style("wide-inherit"), NativeFontKerning::None);
     }
 
     #[test]

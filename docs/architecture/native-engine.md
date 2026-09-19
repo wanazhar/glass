@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-574`, following completed
 `native-engine-browser-573`, following completed
 `native-engine-browser-572`, following completed
 `native-engine-browser-571`, following completed
@@ -443,6 +444,15 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 574 extends bounded native custom-property substitution to inherited
+`font-style`. Standalone `var(--name)` and concrete `var(--name, style)`
+fallbacks now resolve inherited aliases, CSS-wide mapped values, invalid
+values, and cyclic values before normal font-style computation, while the
+existing normal/italic cascade and computed-style projection remain unchanged.
+Oblique angles, complete shorthand substitution, non-concrete fallback
+grammar, registered properties, full CSS variable grammar, and complete
+CSS/Web IDL parity remain issue #40 gates.
 
 Slice 573 extends bounded native custom-property substitution to inherited
 `font-weight`. Standalone `var(--name)` and concrete `var(--name, weight)`

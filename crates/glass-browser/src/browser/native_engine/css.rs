@@ -1458,6 +1458,14 @@ pub(crate) enum FontStyleValue {
     Italic,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontStyleDeclarationValue {
+    Normal,
+    Italic,
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, FontStyleValue),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeGenericFontFamily {
     SansSerif,
@@ -4515,11 +4523,7 @@ impl NativeStylesheet {
                 inherited.font_weight,
                 custom_properties,
             ),
-            font_style: resolve_inherited_text_declaration(
-                *font_style,
-                inherited.font_style,
-                FontStyleValue::Normal,
-            ),
+            font_style: resolve_font_style(*font_style, inherited.font_style, custom_properties),
             font_stretch: resolve_inherited_text_declaration(
                 *font_stretch,
                 inherited.font_stretch,
@@ -4718,7 +4722,7 @@ struct NativeCascadeScratch {
     font_optical_sizing: NativeTextCascadeCandidates<NativeFontOpticalSizing>,
     font_palette: NativeTextCascadeCandidates<NativeFontPalette>,
     font_weight: NativeTextCascadeCandidates<FontWeightDeclarationValue>,
-    font_style: NativeTextCascadeCandidates<FontStyleValue>,
+    font_style: NativeTextCascadeCandidates<FontStyleDeclarationValue>,
     font_stretch: NativeTextCascadeCandidates<NativeFontStretchRange>,
     font_family: NativeTextCascadeCandidates<NativeFontFamilyList>,
     font_size: NativeTextCascadeCandidates<NativeFontSizeDeclarationValue>,
@@ -5429,6 +5433,96 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn font_style_declaration_value(value: FontStyleValue) -> FontStyleDeclarationValue {
+    match value {
+        FontStyleValue::Normal => FontStyleDeclarationValue::Normal,
+        FontStyleValue::Italic => FontStyleDeclarationValue::Italic,
+    }
+}
+
+fn resolve_native_font_style_declaration(
+    declaration: InheritedTextDeclaration<FontStyleDeclarationValue>,
+    inherited: FontStyleValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontStyleDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_style_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(font_style_declaration_value(inherited)),
+        InheritedTextDeclaration::Initial => Some(FontStyleDeclarationValue::Normal),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_style_value(
+    value: FontStyleDeclarationValue,
+    inherited: FontStyleValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontStyleDeclarationValue> {
+    match value {
+        FontStyleDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_style_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_style_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontStyleDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_style_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_style_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or_else(|| Some(font_style_declaration_value(fallback)))
+        }
+        FontStyleDeclarationValue::CustomProperty(_)
+        | FontStyleDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontStyleDeclarationValue::Normal => Some(FontStyleDeclarationValue::Normal),
+        FontStyleDeclarationValue::Italic => Some(FontStyleDeclarationValue::Italic),
+    }
+}
+
+fn resolve_font_style(
+    candidates: NativeTextCascadeCandidates<FontStyleDeclarationValue>,
+    inherited: FontStyleValue,
+    custom_properties: &BTreeMap<u64, String>,
+) -> FontStyleValue {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        font_style_declaration_value(inherited),
+        |declaration| {
+            resolve_native_font_style_declaration(declaration, inherited, custom_properties, 0)
+        },
+    );
+    match resolved {
+        FontStyleDeclarationValue::Normal => FontStyleValue::Normal,
+        FontStyleDeclarationValue::Italic => FontStyleValue::Italic,
+        FontStyleDeclarationValue::CustomProperty(_)
+        | FontStyleDeclarationValue::CustomPropertyFallback(_, _) => FontStyleValue::Normal,
+    }
 }
 
 fn resolve_native_font_weight_declaration(
@@ -7660,7 +7754,7 @@ struct NativeDeclarations {
     font_optical_sizing: Option<InheritedTextDeclaration<NativeFontOpticalSizing>>,
     font_palette: Option<InheritedTextDeclaration<NativeFontPalette>>,
     font_weight: Option<InheritedTextDeclaration<FontWeightDeclarationValue>>,
-    font_style: Option<InheritedTextDeclaration<FontStyleValue>>,
+    font_style: Option<InheritedTextDeclaration<FontStyleDeclarationValue>>,
     font_stretch: Option<InheritedTextDeclaration<NativeFontStretchRange>>,
     font_family: Option<InheritedTextDeclaration<NativeFontFamilyList>>,
     font_size: Option<InheritedTextDeclaration<NativeFontSizeDeclarationValue>>,
@@ -15659,8 +15753,35 @@ fn parse_font_weight_declaration(
     parse_inherited_text_declaration(value, parse_font_weight_property)
 }
 
-fn parse_font_style_declaration(value: &str) -> Option<InheritedTextDeclaration<FontStyleValue>> {
-    parse_inherited_text_declaration(value, parse_font_style)
+fn parse_font_style_custom_property(value: &str) -> Option<FontStyleDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_style(fallback)
+            .map(|fallback| FontStyleDeclarationValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(FontStyleDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_font_style_property(value: &str) -> Option<FontStyleDeclarationValue> {
+    parse_font_style(value)
+        .map(|value| match value {
+            FontStyleValue::Normal => FontStyleDeclarationValue::Normal,
+            FontStyleValue::Italic => FontStyleDeclarationValue::Italic,
+        })
+        .or_else(|| parse_font_style_custom_property(value))
+}
+
+fn parse_font_style_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<FontStyleDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_style_property)
 }
 
 fn parse_font_stretch_declaration(
@@ -16397,7 +16518,9 @@ mod tests {
         );
         assert_eq!(
             declarations.font_style,
-            Some(InheritedTextDeclaration::Value(FontStyleValue::Italic))
+            Some(InheritedTextDeclaration::Value(
+                FontStyleDeclarationValue::Italic
+            ))
         );
         assert_eq!(
             declarations.word_break,
@@ -25509,6 +25632,24 @@ mod tests {
         assert_eq!(parse_font_style("oblique"), None);
         assert_eq!(parse_font_style("12deg"), None);
         assert_eq!(parse_font_style("initial"), None);
+        let style_name = parse_custom_property_name("--style").unwrap();
+        assert_eq!(
+            parse_font_style_property("var(--style)"),
+            Some(FontStyleDeclarationValue::CustomProperty(style_name))
+        );
+        assert_eq!(
+            parse_font_style_declaration("var(--style, italic)"),
+            Some(InheritedTextDeclaration::Value(
+                FontStyleDeclarationValue::CustomPropertyFallback(
+                    style_name,
+                    FontStyleValue::Italic
+                )
+            ))
+        );
+        assert_eq!(
+            parse_font_style_property("var(--style, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -26506,7 +26647,9 @@ mod tests {
         );
         assert_eq!(
             declarations.font_style,
-            Some(InheritedTextDeclaration::Value(FontStyleValue::Italic))
+            Some(InheritedTextDeclaration::Value(
+                FontStyleDeclarationValue::Italic
+            ))
         );
         assert_eq!(
             declarations.word_break,
@@ -28185,6 +28328,44 @@ mod tests {
             document.computed_style_for_layout(invalid).font_style(),
             FontStyleValue::Italic
         );
+    }
+
+    #[test]
+    fn inherited_font_style_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --style: italic; --alias: var(--style); --cycle: var(--cycle); font-style: var(--style); }
+            #child { font-style: var(--alias); }
+            #fallback { font-style: var(--missing, normal); }
+            #invalid { --bad: oblique; font-style: var(--bad, normal); }
+            #cycle { font-style: var(--cycle, normal); }
+            #wide-initial { --wide: initial; font-style: var(--wide); }
+            #wide-inherit { --wide: inherit; font-style: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_style()
+        };
+
+        assert_eq!(style("parent"), FontStyleValue::Italic);
+        assert_eq!(style("child"), FontStyleValue::Italic);
+        assert_eq!(style("fallback"), FontStyleValue::Normal);
+        assert_eq!(style("invalid"), FontStyleValue::Normal);
+        assert_eq!(style("cycle"), FontStyleValue::Normal);
+        assert_eq!(style("wide-initial"), FontStyleValue::Normal);
+        assert_eq!(style("wide-inherit"), FontStyleValue::Italic);
     }
 
     #[test]

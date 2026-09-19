@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-581`, following
+expansion checkpoint is completed `native-engine-browser-582`, following
+completed `native-engine-browser-581`, following
 completed `native-engine-browser-580`, following
 completed `native-engine-browser-579`, following
 completed `native-engine-browser-578`, following
@@ -458,6 +459,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 582 extends bounded native custom-property substitution to inherited
+`font-language-override`. Standalone `var(--name)` and quoted four-byte
+`var(--name, tag)` fallbacks now resolve inherited aliases, CSS-wide mapped
+values, invalid values, and cyclic values before normal language-override
+computation, while the existing four-byte tag validation and computed-style
+projection remain unchanged. Complete shorthand substitution, nested variable
+grammar, registered properties, full CSS variable grammar, and complete CSS
+Web IDL parity remain explicit issue #40 gates.
 
 Slice 581 extends bounded native custom-property substitution to inherited
 `font-variation-settings`. Standalone `var(--name)` and comma-list

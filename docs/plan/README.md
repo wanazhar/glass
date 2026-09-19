@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-582`, following completed
 `native-engine-browser-581`, following completed
 `native-engine-browser-580`, following completed
 `native-engine-browser-579`, following completed
@@ -484,6 +485,15 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed inherited font-language-override follow-up is
+[`native-engine-browser-582`](tasks/native-engine-browser-582.md): native
+`font-language-override` now accepts bounded standalone `var(--name)` and
+quoted four-byte `var(--name, tag)` fallbacks, resolving inherited aliases,
+CSS-wide mapped values, invalid values, and cyclic values before normal
+language-override computation. Complete shorthand substitution, nested
+variable grammar, registered properties, full CSS variable grammar, and
+complete CSS/Web IDL parity remain issue #40 gates.
 
 The completed inherited font-variation-settings follow-up is
 [`native-engine-browser-581`](tasks/native-engine-browser-581.md): native

@@ -1130,6 +1130,12 @@ pub(crate) struct NativeFontVariantEastAsian {
     pub(crate) width: NativeFontVariantEastAsianWidth,
     pub(crate) ruby: bool,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontVariantEastAsianDeclarationValue {
+    Value(NativeFontVariantEastAsian),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontVariantEastAsian),
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeFontVariantNumericFigure {
@@ -4570,10 +4576,10 @@ impl NativeStylesheet {
                 inherited.font_variation_settings,
                 custom_properties,
             ),
-            font_variant_east_asian: resolve_inherited_text_declaration(
+            font_variant_east_asian: resolve_font_variant_east_asian(
                 *font_variant_east_asian,
                 inherited.font_variant_east_asian,
-                NativeFontVariantEastAsian::default(),
+                custom_properties,
             ),
             font_variant_numeric: resolve_inherited_text_declaration(
                 *font_variant_numeric,
@@ -4797,7 +4803,7 @@ struct NativeCascadeScratch {
     font_variant_alternates: NativeTextCascadeCandidates<FontVariantAlternatesDeclarationValue>,
     font_language_override: NativeTextCascadeCandidates<FontLanguageOverrideDeclarationValue>,
     font_variation_settings: NativeTextCascadeCandidates<FontVariationSettingsDeclarationValue>,
-    font_variant_east_asian: NativeTextCascadeCandidates<NativeFontVariantEastAsian>,
+    font_variant_east_asian: NativeTextCascadeCandidates<FontVariantEastAsianDeclarationValue>,
     font_variant_numeric: NativeTextCascadeCandidates<NativeFontVariantNumeric>,
     font_feature_settings: NativeTextCascadeCandidates<FontFeatureSettingsDeclarationValue>,
     font_kerning: NativeTextCascadeCandidates<FontKerningDeclarationValue>,
@@ -5515,6 +5521,98 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_variant_east_asian_declaration(
+    declaration: InheritedTextDeclaration<FontVariantEastAsianDeclarationValue>,
+    inherited: NativeFontVariantEastAsian,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariantEastAsianDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_variant_east_asian_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => {
+            Some(FontVariantEastAsianDeclarationValue::Value(inherited))
+        }
+        InheritedTextDeclaration::Initial => Some(FontVariantEastAsianDeclarationValue::Value(
+            NativeFontVariantEastAsian::default(),
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_variant_east_asian_value(
+    value: FontVariantEastAsianDeclarationValue,
+    inherited: NativeFontVariantEastAsian,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariantEastAsianDeclarationValue> {
+    match value {
+        FontVariantEastAsianDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variant_east_asian_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variant_east_asian_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontVariantEastAsianDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variant_east_asian_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variant_east_asian_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontVariantEastAsianDeclarationValue::Value(fallback)))
+        }
+        FontVariantEastAsianDeclarationValue::CustomProperty(_)
+        | FontVariantEastAsianDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontVariantEastAsianDeclarationValue::Value(value) => {
+            Some(FontVariantEastAsianDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_font_variant_east_asian(
+    candidates: NativeTextCascadeCandidates<FontVariantEastAsianDeclarationValue>,
+    inherited: NativeFontVariantEastAsian,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontVariantEastAsian {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontVariantEastAsianDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_variant_east_asian_declaration(
+                declaration,
+                inherited,
+                custom_properties,
+                0,
+            )
+        },
+    );
+    match resolved {
+        FontVariantEastAsianDeclarationValue::Value(value) => value,
+        FontVariantEastAsianDeclarationValue::CustomProperty(_)
+        | FontVariantEastAsianDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_variant_alternates_declaration(
@@ -8905,7 +9003,7 @@ struct NativeDeclarations {
     font_language_override: Option<InheritedTextDeclaration<FontLanguageOverrideDeclarationValue>>,
     font_variation_settings:
         Option<InheritedTextDeclaration<FontVariationSettingsDeclarationValue>>,
-    font_variant_east_asian: Option<InheritedTextDeclaration<NativeFontVariantEastAsian>>,
+    font_variant_east_asian: Option<InheritedTextDeclaration<FontVariantEastAsianDeclarationValue>>,
     font_variant_numeric: Option<InheritedTextDeclaration<NativeFontVariantNumeric>>,
     font_feature_settings: Option<InheritedTextDeclaration<FontFeatureSettingsDeclarationValue>>,
     font_kerning: Option<InheritedTextDeclaration<FontKerningDeclarationValue>>,
@@ -10799,7 +10897,8 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                         Some(wrap_font_variant_position_declaration(parsed.position));
                     declarations.font_variant_alternates =
                         Some(wrap_font_variant_alternates_declaration(parsed.alternates));
-                    declarations.font_variant_east_asian = Some(parsed.east_asian);
+                    declarations.font_variant_east_asian =
+                        Some(wrap_font_variant_east_asian_declaration(parsed.east_asian));
                     declarations.font_variant_numeric = Some(parsed.numeric);
                     declarations.text_importance.font_variant_ligatures = important;
                     declarations.text_importance.font_variant_caps = important;
@@ -16653,10 +16752,54 @@ fn parse_font_variant_east_asian(value: &str) -> Option<NativeFontVariantEastAsi
     Some(result)
 }
 
+fn parse_font_variant_east_asian_custom_property(
+    value: &str,
+) -> Option<FontVariantEastAsianDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_variant_east_asian(fallback).map(|fallback| {
+            FontVariantEastAsianDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(FontVariantEastAsianDeclarationValue::CustomProperty(
+            name_hash,
+        )),
+    }
+}
+
+fn parse_font_variant_east_asian_property(
+    value: &str,
+) -> Option<FontVariantEastAsianDeclarationValue> {
+    parse_font_variant_east_asian(value)
+        .map(FontVariantEastAsianDeclarationValue::Value)
+        .or_else(|| parse_font_variant_east_asian_custom_property(value))
+}
+
 fn parse_font_variant_east_asian_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontVariantEastAsian>> {
-    parse_inherited_text_declaration(value, parse_font_variant_east_asian)
+) -> Option<InheritedTextDeclaration<FontVariantEastAsianDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_variant_east_asian_property)
+}
+
+fn wrap_font_variant_east_asian_declaration(
+    declaration: InheritedTextDeclaration<NativeFontVariantEastAsian>,
+) -> InheritedTextDeclaration<FontVariantEastAsianDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            InheritedTextDeclaration::Value(FontVariantEastAsianDeclarationValue::Value(value))
+        }
+        InheritedTextDeclaration::Inherit => InheritedTextDeclaration::Inherit,
+        InheritedTextDeclaration::Initial => InheritedTextDeclaration::Initial,
+        InheritedTextDeclaration::Unset => InheritedTextDeclaration::Unset,
+        InheritedTextDeclaration::Revert => InheritedTextDeclaration::Revert,
+        InheritedTextDeclaration::RevertLayer => InheritedTextDeclaration::RevertLayer,
+    }
 }
 
 fn parse_font_variant_shorthand(value: &str) -> Option<NativeFontVariantShorthand> {
@@ -27764,6 +27907,31 @@ mod tests {
         assert!(parse_font_variant_east_asian("full-width proportional-width").is_none());
         assert!(parse_font_variant_east_asian("ruby ruby").is_none());
         assert!(parse_font_variant_east_asian("oldstyle-nums").is_none());
+        let east_asian_name = parse_custom_property_name("--east-asian").unwrap();
+        let fallback = NativeFontVariantEastAsian {
+            form: NativeFontVariantEastAsianForm::Jis90,
+            width: NativeFontVariantEastAsianWidth::Full,
+            ruby: true,
+        };
+        assert_eq!(
+            parse_font_variant_east_asian_property("var(--east-asian)"),
+            Some(FontVariantEastAsianDeclarationValue::CustomProperty(
+                east_asian_name
+            ))
+        );
+        assert_eq!(
+            parse_font_variant_east_asian_declaration("var(--east-asian, jis90 full-width ruby)"),
+            Some(InheritedTextDeclaration::Value(
+                FontVariantEastAsianDeclarationValue::CustomPropertyFallback(
+                    east_asian_name,
+                    fallback
+                )
+            ))
+        );
+        assert_eq!(
+            parse_font_variant_east_asian_property("var(--east-asian, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -30262,6 +30430,59 @@ mod tests {
         assert_eq!(style("cycle"), NativeFontLanguageOverride::default());
         assert_eq!(style("wide-initial"), NativeFontLanguageOverride::default());
         assert_eq!(style("wide-inherit"), english);
+    }
+
+    #[test]
+    fn inherited_font_variant_east_asian_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --east-asian: jis90 full-width ruby; --alias: var(--east-asian); --cycle: var(--cycle); font-variant-east-asian: var(--east-asian); }
+            #child { font-variant-east-asian: var(--alias); }
+            #fallback { font-variant-east-asian: var(--missing, simplified proportional-width); }
+            #invalid { --bad: jis78 jis83; font-variant-east-asian: var(--bad, traditional ruby); }
+            #cycle { font-variant-east-asian: var(--cycle, normal); }
+            #wide-initial { --wide: initial; font-variant-east-asian: var(--wide); }
+            #wide-inherit { --wide: inherit; font-variant-east-asian: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_variant_east_asian()
+        };
+
+        let parent = NativeFontVariantEastAsian {
+            form: NativeFontVariantEastAsianForm::Jis90,
+            width: NativeFontVariantEastAsianWidth::Full,
+            ruby: true,
+        };
+        let fallback = NativeFontVariantEastAsian {
+            form: NativeFontVariantEastAsianForm::Simplified,
+            width: NativeFontVariantEastAsianWidth::Proportional,
+            ruby: false,
+        };
+        let invalid_fallback = NativeFontVariantEastAsian {
+            form: NativeFontVariantEastAsianForm::Traditional,
+            width: NativeFontVariantEastAsianWidth::Normal,
+            ruby: true,
+        };
+        assert_eq!(style("parent"), parent);
+        assert_eq!(style("child"), parent);
+        assert_eq!(style("fallback"), fallback);
+        assert_eq!(style("invalid"), invalid_fallback);
+        assert_eq!(style("cycle"), NativeFontVariantEastAsian::default());
+        assert_eq!(style("wide-initial"), NativeFontVariantEastAsian::default());
+        assert_eq!(style("wide-inherit"), parent);
     }
 
     #[test]

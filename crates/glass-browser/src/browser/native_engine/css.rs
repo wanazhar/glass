@@ -1852,6 +1852,13 @@ enum WordSpacingDeclarationValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LetterSpacingDeclarationValue {
+    Value(u32),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InheritedTextDeclaration<T> {
     Value(T),
     Inherit,
@@ -4740,10 +4747,10 @@ impl NativeStylesheet {
                 inherited.word_spacing,
                 custom_properties,
             ),
-            letter_spacing: resolve_inherited_text_declaration(
+            letter_spacing: resolve_letter_spacing(
                 *letter_spacing,
                 inherited.letter_spacing,
-                0,
+                custom_properties,
             ),
             gap: resolve_gap_axis(
                 (*gap).shorthand_column,
@@ -4917,7 +4924,7 @@ struct NativeCascadeScratch {
     vertical_align: NativeTextCascadeCandidates<VerticalAlignDeclarationValue>,
     text_indent: NativeTextLocalCascadeCandidates<u32>,
     word_spacing: NativeTextCascadeCandidates<WordSpacingDeclarationValue>,
-    letter_spacing: NativeTextCascadeCandidates<u32>,
+    letter_spacing: NativeTextCascadeCandidates<LetterSpacingDeclarationValue>,
     gap: GapCascade,
     width: NativeLocalCascadeCandidates<u32>,
     height: NativeLocalCascadeCandidates<u32>,
@@ -5507,6 +5514,87 @@ fn resolve_word_spacing(
         WordSpacingDeclarationValue::Value(value) => value,
         WordSpacingDeclarationValue::CustomProperty(_)
         | WordSpacingDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
+}
+
+fn resolve_letter_spacing_declaration(
+    declaration: InheritedTextDeclaration<LetterSpacingDeclarationValue>,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<LetterSpacingDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_letter_spacing_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(LetterSpacingDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => Some(LetterSpacingDeclarationValue::Value(0)),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_letter_spacing_value(
+    value: LetterSpacingDeclarationValue,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<LetterSpacingDeclarationValue> {
+    match value {
+        LetterSpacingDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_letter_spacing_declaration(value))
+                .and_then(|declaration| {
+                    resolve_letter_spacing_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        LetterSpacingDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_letter_spacing_declaration(value))
+                .and_then(|declaration| {
+                    resolve_letter_spacing_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(LetterSpacingDeclarationValue::Value(fallback)))
+        }
+        LetterSpacingDeclarationValue::CustomProperty(_)
+        | LetterSpacingDeclarationValue::CustomPropertyFallback(_, _) => None,
+        value => Some(value),
+    }
+}
+
+fn resolve_letter_spacing(
+    candidates: NativeTextCascadeCandidates<LetterSpacingDeclarationValue>,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+) -> u32 {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        LetterSpacingDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_letter_spacing_declaration(declaration, inherited, custom_properties, 0)
+        },
+    );
+    match resolved {
+        LetterSpacingDeclarationValue::Value(value) => value,
+        LetterSpacingDeclarationValue::CustomProperty(_)
+        | LetterSpacingDeclarationValue::CustomPropertyFallback(_, _) => inherited,
     }
 }
 
@@ -9982,7 +10070,7 @@ struct NativeDeclarations {
     vertical_align: Option<InheritedTextDeclaration<VerticalAlignDeclarationValue>>,
     text_indent: Option<LocalCascadeDeclaration<u32>>,
     word_spacing: Option<InheritedTextDeclaration<WordSpacingDeclarationValue>>,
-    letter_spacing: Option<InheritedTextDeclaration<u32>>,
+    letter_spacing: Option<InheritedTextDeclaration<LetterSpacingDeclarationValue>>,
     gap: Option<GapShorthandDeclaration>,
     gap_order: usize,
     gap_important: bool,
@@ -18951,8 +19039,43 @@ fn parse_word_spacing_declaration(
     parse_inherited_text_declaration(value, parse_word_spacing_property)
 }
 
-fn parse_letter_spacing_declaration(value: &str) -> Option<InheritedTextDeclaration<u32>> {
-    parse_inherited_text_declaration(value, parse_dimension)
+fn parse_letter_spacing_custom_property(value: &str) -> Option<LetterSpacingDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_dimension(fallback).map(|fallback| {
+            LetterSpacingDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(LetterSpacingDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_letter_spacing_property(value: &str) -> Option<LetterSpacingDeclarationValue> {
+    parse_dimension(value)
+        .map(LetterSpacingDeclarationValue::Value)
+        .or_else(|| parse_letter_spacing_custom_property(value))
+}
+
+fn parse_letter_spacing_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<LetterSpacingDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_letter_spacing_property)
 }
 
 fn parse_vertical_align_declaration(
@@ -19674,7 +19797,9 @@ mod tests {
         );
         assert_eq!(
             declarations.letter_spacing,
-            Some(InheritedTextDeclaration::Value(12))
+            Some(InheritedTextDeclaration::Value(
+                LetterSpacingDeclarationValue::Value(12)
+            ))
         );
         assert_eq!(
             declarations.gap,
@@ -30288,6 +30413,12 @@ mod tests {
                 WordSpacingDeclarationValue::Value(16)
             ))
         );
+        assert_eq!(
+            parse_letter_spacing_declaration("16px"),
+            Some(InheritedTextDeclaration::Value(
+                LetterSpacingDeclarationValue::Value(16)
+            ))
+        );
         assert_eq!(parse_letter_spacing_declaration("revert-layer 2px"), None);
         assert_eq!(
             parse_word_spacing_declaration("revert"),
@@ -30316,6 +30447,23 @@ mod tests {
         );
         assert_eq!(
             parse_word_spacing_property("var(--word-spacing, var(--other))"),
+            None
+        );
+        let letter_spacing_name = parse_custom_property_name("--letter-spacing").unwrap();
+        assert_eq!(
+            parse_letter_spacing_property("var(--letter-spacing)"),
+            Some(LetterSpacingDeclarationValue::CustomProperty(
+                letter_spacing_name
+            ))
+        );
+        assert_eq!(
+            parse_letter_spacing_declaration("var(--letter-spacing, 24px)"),
+            Some(InheritedTextDeclaration::Value(
+                LetterSpacingDeclarationValue::CustomPropertyFallback(letter_spacing_name, 24)
+            ))
+        );
+        assert_eq!(
+            parse_letter_spacing_property("var(--letter-spacing, var(--other))"),
             None
         );
     }
@@ -30357,7 +30505,9 @@ mod tests {
         );
         assert_eq!(
             declarations.letter_spacing,
-            Some(InheritedTextDeclaration::Value(13))
+            Some(InheritedTextDeclaration::Value(
+                LetterSpacingDeclarationValue::Value(13)
+            ))
         );
     }
 
@@ -33898,6 +34048,44 @@ mod tests {
             document
                 .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
                 .word_spacing()
+        };
+
+        assert_eq!(style("parent"), 16);
+        assert_eq!(style("child"), 16);
+        assert_eq!(style("fallback"), 24);
+        assert_eq!(style("invalid"), 20);
+        assert_eq!(style("cycle"), 8);
+        assert_eq!(style("wide-initial"), 0);
+        assert_eq!(style("wide-inherit"), 16);
+    }
+
+    #[test]
+    fn inherited_letter_spacing_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --letter-spacing: 16px; --alias: var(--letter-spacing); --cycle: var(--cycle); letter-spacing: var(--letter-spacing); }
+            #child { letter-spacing: var(--alias); }
+            #fallback { letter-spacing: var(--missing, 24px); }
+            #invalid { --bad: 1em; letter-spacing: var(--bad, 20px); }
+            #cycle { letter-spacing: var(--cycle, 8px); }
+            #wide-initial { --wide: initial; letter-spacing: var(--wide); }
+            #wide-inherit { --wide: inherit; letter-spacing: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .letter_spacing()
         };
 
         assert_eq!(style("parent"), 16);

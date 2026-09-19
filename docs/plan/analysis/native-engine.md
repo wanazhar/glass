@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-599`, following
+expansion checkpoint is completed `native-engine-browser-600`, following
+completed `native-engine-browser-599`, following
 completed `native-engine-browser-598`, following
 completed `native-engine-browser-597`, following
 completed `native-engine-browser-596`, following
@@ -476,6 +477,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 600 extends bounded custom-property substitution to the inherited
+`letter-spacing`. Standalone `var(--name)` and positive-pixel
+`var(--name, value)` fallbacks now resolve inherited aliases, CSS-wide mapped
+values, invalid values, and cyclic values before normal letter-spacing
+computation, while the existing supported values and computed-style projection
+remain unchanged. Nested variable grammar, registered properties, full CSS
+variable grammar, and complete CSS/Web IDL parity remain explicit issue #40
+gates.
 
 Slice 599 extends bounded custom-property substitution to the inherited
 `word-spacing`. Standalone `var(--name)` and positive-pixel

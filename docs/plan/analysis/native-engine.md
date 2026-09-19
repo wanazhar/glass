@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-634`, following
+expansion checkpoint is completed `native-engine-browser-635`, following
+completed `native-engine-browser-634`, following
 completed `native-engine-browser-633`, following
 completed `native-engine-browser-632`, following
 completed `native-engine-browser-631`, following
@@ -511,6 +512,13 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 635 extends bounded custom-property substitution to native grid track
+lists. Standalone `var(--name)` values and concrete track-list fallbacks
+resolve through `grid-template-columns` and `grid-template-rows`, preserving
+inherited aliases, invalid and cyclic handling, `none`, repeat expansion, and
+declaration-order precedence. Full grid grammar, registered properties, and
+complete CSS and Web IDL parity remain explicit issue #40 gates.
 
 Slice 634 extends bounded custom-property substitution to the full
 `background` shorthand. Standalone `var(--name)` values and concrete

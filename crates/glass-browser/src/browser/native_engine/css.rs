@@ -744,6 +744,12 @@ impl NativeGridTrackList {
         true
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GridTrackListDeclaration {
+    Value(NativeGridTrackList),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeGridTrackList),
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum WhiteSpaceValue {
@@ -4653,14 +4659,11 @@ impl NativeStylesheet {
             right: resolve_position_offset(*right, custom_properties),
             bottom: resolve_position_offset(*bottom, custom_properties),
             left: resolve_position_offset(*left, custom_properties),
-            grid_template_columns: resolve_local_cascade_declaration(
+            grid_template_columns: resolve_grid_track_list(
                 *grid_template_columns,
-                NativeGridTrackList::default(),
+                custom_properties,
             ),
-            grid_template_rows: resolve_local_cascade_declaration(
-                *grid_template_rows,
-                NativeGridTrackList::default(),
-            ),
+            grid_template_rows: resolve_grid_track_list(*grid_template_rows, custom_properties),
             visibility_hidden: resolve_visibility(*visibility, custom_properties)
                 == VisibilityValue::Hidden,
             opacity: resolve_opacity(*opacity, custom_properties),
@@ -5094,8 +5097,8 @@ struct NativeCascadeScratch {
     right: NativeLocalCascadeCandidates<PositionOffsetDeclarationValue>,
     bottom: NativeLocalCascadeCandidates<PositionOffsetDeclarationValue>,
     left: NativeLocalCascadeCandidates<PositionOffsetDeclarationValue>,
-    grid_template_columns: NativeLocalCascadeCandidates<NativeGridTrackList>,
-    grid_template_rows: NativeLocalCascadeCandidates<NativeGridTrackList>,
+    grid_template_columns: NativeLocalCascadeCandidates<GridTrackListDeclaration>,
+    grid_template_rows: NativeLocalCascadeCandidates<GridTrackListDeclaration>,
     visibility: NativeLocalCascadeCandidates<VisibilityValue>,
     opacity: NativeLocalCascadeCandidates<OpacityDeclarationValue>,
     white_space: NativeTextCascadeCandidates<WhiteSpaceDeclarationValue>,
@@ -8928,15 +8931,71 @@ fn resolve_visibility<const N: usize>(
     )
 }
 
-fn resolve_local_cascade_declaration<T: Copy, const N: usize>(
-    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; N],
-    fallback: T,
-) -> T {
-    resolve_alignment_candidates(candidates, fallback, |declaration| match declaration {
-        LocalCascadeDeclaration::Value(value) => Some(value),
-        LocalCascadeDeclaration::Inherit => None,
-        LocalCascadeDeclaration::Reset => None,
-        LocalCascadeDeclaration::RevertLayer => None,
+fn resolve_grid_track_list_source(
+    source: &str,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<NativeGridTrackList> {
+    if depth >= MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH {
+        return None;
+    }
+    if let Some((name_hash, fallback)) = parse_flex_var_arguments(source) {
+        return custom_properties
+            .get(&name_hash)
+            .and_then(|value| {
+                resolve_grid_track_list_source(value, custom_properties, depth.saturating_add(1))
+            })
+            .or_else(|| fallback.and_then(parse_grid_track_list));
+    }
+    parse_grid_track_list(source)
+}
+
+fn resolve_grid_track_list_value(
+    value: GridTrackListDeclaration,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<NativeGridTrackList> {
+    match value {
+        GridTrackListDeclaration::Value(value) => Some(value),
+        GridTrackListDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties.get(&name_hash).and_then(|value| {
+                resolve_grid_track_list_source(value, custom_properties, depth.saturating_add(1))
+            })
+        }
+        GridTrackListDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| {
+                    resolve_grid_track_list_source(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        GridTrackListDeclaration::CustomProperty(_)
+        | GridTrackListDeclaration::CustomPropertyFallback(_, _) => None,
+    }
+}
+
+fn resolve_grid_track_list(
+    candidates: NativeLocalCascadeCandidates<GridTrackListDeclaration>,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeGridTrackList {
+    resolve_alignment_candidates(candidates, NativeGridTrackList::default(), |declaration| {
+        match declaration {
+            LocalCascadeDeclaration::Value(value) => {
+                resolve_grid_track_list_value(value, custom_properties, 0)
+            }
+            LocalCascadeDeclaration::Inherit
+            | LocalCascadeDeclaration::Reset
+            | LocalCascadeDeclaration::RevertLayer => None,
+        }
     })
 }
 
@@ -13301,9 +13360,9 @@ struct NativeDeclarations {
     right: Option<LocalCascadeDeclaration<PositionOffsetDeclarationValue>>,
     bottom: Option<LocalCascadeDeclaration<PositionOffsetDeclarationValue>>,
     left: Option<LocalCascadeDeclaration<PositionOffsetDeclarationValue>>,
-    grid_template_columns: Option<LocalCascadeDeclaration<NativeGridTrackList>>,
+    grid_template_columns: Option<LocalCascadeDeclaration<GridTrackListDeclaration>>,
     grid_template_columns_important: bool,
-    grid_template_rows: Option<LocalCascadeDeclaration<NativeGridTrackList>>,
+    grid_template_rows: Option<LocalCascadeDeclaration<GridTrackListDeclaration>>,
     grid_template_rows_important: bool,
     visibility: Option<LocalCascadeDeclaration<VisibilityValue>>,
     opacity: Option<LocalCascadeDeclaration<OpacityDeclarationValue>>,
@@ -19620,7 +19679,7 @@ fn parse_position_offset_declaration(
 
 fn parse_grid_track_list_declaration(
     value: &str,
-) -> Option<LocalCascadeDeclaration<NativeGridTrackList>> {
+) -> Option<LocalCascadeDeclaration<GridTrackListDeclaration>> {
     let value = value.trim();
     if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
@@ -19631,7 +19690,22 @@ fn parse_grid_track_list_declaration(
     if value.eq_ignore_ascii_case("revert-layer") {
         return Some(LocalCascadeDeclaration::RevertLayer);
     }
-    parse_grid_track_list(value).map(LocalCascadeDeclaration::Value)
+    parse_grid_track_list_property(value).map(LocalCascadeDeclaration::Value)
+}
+
+fn parse_grid_track_list_property(value: &str) -> Option<GridTrackListDeclaration> {
+    parse_grid_track_list(value)
+        .map(GridTrackListDeclaration::Value)
+        .or_else(|| parse_grid_track_list_custom_property(value))
+}
+
+fn parse_grid_track_list_custom_property(value: &str) -> Option<GridTrackListDeclaration> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_grid_track_list(fallback)
+            .map(|fallback| GridTrackListDeclaration::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(GridTrackListDeclaration::CustomProperty(name_hash)),
+    }
 }
 
 fn parse_grid_track_list(value: &str) -> Option<NativeGridTrackList> {
@@ -24335,11 +24409,15 @@ mod tests {
         };
         assert_eq!(
             declarations.grid_template_columns,
-            Some(LocalCascadeDeclaration::Value(expected_grid_columns))
+            Some(LocalCascadeDeclaration::Value(
+                GridTrackListDeclaration::Value(expected_grid_columns)
+            ))
         );
         assert_eq!(
             declarations.grid_template_rows,
-            Some(LocalCascadeDeclaration::Value(expected_grid_rows))
+            Some(LocalCascadeDeclaration::Value(
+                GridTrackListDeclaration::Value(expected_grid_rows)
+            ))
         );
         assert_eq!(
             declarations.visibility,
@@ -24667,6 +24745,132 @@ mod tests {
                 },
             ))
         );
+    }
+    #[test]
+    fn grid_track_list_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let tracks = parse_custom_property_name("--tracks").unwrap();
+        let mut fallback = NativeGridTrackList::default();
+        fallback.push(NativeGridTrack::Length(12));
+        fallback.push(NativeGridTrack::Fr(1));
+        fallback.push(NativeGridTrack::Fr(1));
+
+        assert_eq!(
+            parse_grid_track_list_declaration("var(--tracks)"),
+            Some(LocalCascadeDeclaration::Value(
+                GridTrackListDeclaration::CustomProperty(tracks)
+            ))
+        );
+        assert_eq!(
+            parse_grid_track_list_declaration("VAR(--tracks, 12px repeat(2, 1fr))"),
+            Some(LocalCascadeDeclaration::Value(
+                GridTrackListDeclaration::CustomPropertyFallback(tracks, fallback)
+            ))
+        );
+        assert!(parse_grid_track_list_declaration("var(--tracks, var(--other))").is_none());
+        assert!(parse_grid_track_list_declaration("var(--tracks, inherit)").is_none());
+    }
+
+    #[test]
+    fn grid_track_list_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent {
+                --columns: 120px repeat(2, 1fr);
+                --rows: 40px auto;
+                grid-template-columns: var(--columns);
+                grid-template-rows: var(--rows);
+            }
+            #alias {
+                --columns-alias: var(--columns);
+                --rows-alias: var(--rows);
+                grid-template-columns: var(--columns-alias);
+                grid-template-rows: var(--rows-alias);
+            }
+            #fallback {
+                grid-template-columns: var(--missing, 80px 2fr);
+                grid-template-rows: var(--missing-rows, repeat(2, 24px));
+            }
+            #invalid {
+                --bad: nonsense;
+                grid-template-columns: var(--bad, 10px auto);
+                grid-template-rows: var(--bad-rows);
+            }
+            #cycle {
+                --cycle: var(--cycle);
+                grid-template-columns: var(--cycle, 12px);
+                grid-template-rows: var(--cycle-rows, none);
+            }
+            #ordered {
+                grid-template-columns: 10px;
+                grid-template-columns: var(--missing, 20px 30px);
+                grid-template-rows: 10px;
+                grid-template-rows: var(--missing-rows, 30px);
+            }
+            </style>
+            <div id='parent'>
+                <div id='alias'>Alias</div>
+            </div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='ordered'>Ordered</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        let mut expected_parent_columns = NativeGridTrackList::default();
+        expected_parent_columns.push(NativeGridTrack::Length(120));
+        expected_parent_columns.push(NativeGridTrack::Fr(1));
+        expected_parent_columns.push(NativeGridTrack::Fr(1));
+        let mut expected_parent_rows = NativeGridTrackList::default();
+        expected_parent_rows.push(NativeGridTrack::Length(40));
+        expected_parent_rows.push(NativeGridTrack::Auto);
+        let mut expected_fallback_columns = NativeGridTrackList::default();
+        expected_fallback_columns.push(NativeGridTrack::Length(80));
+        expected_fallback_columns.push(NativeGridTrack::Fr(2));
+        let mut expected_fallback_rows = NativeGridTrackList::default();
+        expected_fallback_rows.push(NativeGridTrack::Length(24));
+        expected_fallback_rows.push(NativeGridTrack::Length(24));
+        let mut expected_invalid_columns = NativeGridTrackList::default();
+        expected_invalid_columns.push(NativeGridTrack::Length(10));
+        expected_invalid_columns.push(NativeGridTrack::Auto);
+        let mut expected_cycle_columns = NativeGridTrackList::default();
+        expected_cycle_columns.push(NativeGridTrack::Length(12));
+        let mut expected_ordered_columns = NativeGridTrackList::default();
+        expected_ordered_columns.push(NativeGridTrack::Length(20));
+        expected_ordered_columns.push(NativeGridTrack::Length(30));
+        let mut expected_ordered_rows = NativeGridTrackList::default();
+        expected_ordered_rows.push(NativeGridTrack::Length(30));
+
+        for (target, columns, rows) in [
+            ("id=parent", expected_parent_columns, expected_parent_rows),
+            ("id=alias", expected_parent_columns, expected_parent_rows),
+            (
+                "id=fallback",
+                expected_fallback_columns,
+                expected_fallback_rows,
+            ),
+            (
+                "id=invalid",
+                expected_invalid_columns,
+                NativeGridTrackList::default(),
+            ),
+            (
+                "id=cycle",
+                expected_cycle_columns,
+                NativeGridTrackList::default(),
+            ),
+            (
+                "id=ordered",
+                expected_ordered_columns,
+                expected_ordered_rows,
+            ),
+        ] {
+            let node = document.resolve_target(target).unwrap();
+            let style = document.computed_style_for_layout(node);
+            assert_eq!(style.grid_template_columns(), columns, "target={target}");
+            assert_eq!(style.grid_template_rows(), rows, "target={target}");
+        }
     }
 
     #[test]

@@ -13280,8 +13280,12 @@ pub(crate) fn font_family_hash(value: &str) -> u64 {
 
 fn parse_font_size(value: &str) -> Option<u32> {
     let value = value.trim().to_ascii_lowercase();
-    if value.ends_with("px") {
-        return parse_dimension(&value).filter(|value| (1..=256).contains(value));
+    if let Some(number) = value.strip_suffix("px") {
+        let milli_pixels = u64::from(parse_decimal_milli(number.trim())?);
+        let pixels = milli_pixels.checked_add(500)?.checked_div(1_000)?;
+        return u32::try_from(pixels)
+            .ok()
+            .filter(|value| (1..=256).contains(value));
     }
     let (number, multiplier, denominator) = [
         ("pt", 4_u64, 3_u64),
@@ -24400,6 +24404,13 @@ mod tests {
         assert_eq!(parse_font_size("1cm"), Some(38));
         assert_eq!(parse_font_size("1mm"), Some(4));
         assert_eq!(parse_font_size("256px"), Some(256));
+        assert_eq!(parse_font_size("16.5px"), Some(17));
+        assert_eq!(parse_font_size("16.499px"), Some(16));
+        assert_eq!(parse_font_size("0.499px"), None);
+        assert_eq!(parse_font_size("0.5px"), Some(1));
+        assert_eq!(parse_font_size("256.499px"), Some(256));
+        assert_eq!(parse_font_size("256.5px"), None);
+        assert_eq!(parse_font_size("1.0000px"), None);
         assert_eq!(parse_font_size("0px"), None);
         assert_eq!(parse_font_size("257px"), None);
         assert_eq!(parse_font_size("257pt"), None);
@@ -26286,6 +26297,27 @@ mod tests {
         assert_eq!(
             document.computed_style_for_layout(rem_invalid).font_size(),
             32
+        );
+    }
+
+    #[test]
+    fn fractional_pixel_font_sizes_round_and_preserve_bounds() {
+        let document = NativeDocument::parse(
+            "<style>#parent { font-size: 20px; } #half-up { font-size: 16.5px; } #down { font-size: 16.499px; } #tiny { font-size: 0.5px; } #too-large { font-size: 256.5px; }</style><div id='parent'><span id='half-up'>Half up</span><span id='down'>Down</span><span id='tiny'>Tiny</span><span id='too-large'>Too large</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let half_up = document.resolve_target("id=half-up").unwrap();
+        let down = document.resolve_target("id=down").unwrap();
+        let tiny = document.resolve_target("id=tiny").unwrap();
+        let too_large = document.resolve_target("id=too-large").unwrap();
+
+        assert_eq!(document.computed_style_for_layout(half_up).font_size(), 17);
+        assert_eq!(document.computed_style_for_layout(down).font_size(), 16);
+        assert_eq!(document.computed_style_for_layout(tiny).font_size(), 1);
+        assert_eq!(
+            document.computed_style_for_layout(too_large).font_size(),
+            20
         );
     }
 

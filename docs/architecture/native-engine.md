@@ -1,8 +1,11 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-558`, following completed
 `native-engine-browser-557`, following completed
 `native-engine-browser-556`, following completed
+`native-engine-browser-555`, following completed
+`native-engine-browser-554`, following completed
 `native-engine-browser-553`, following completed
 `native-engine-browser-552`, following completed
 `native-engine-browser-551`, following completed
@@ -426,12 +429,19 @@ acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
 
+Slice 558 closes the bounded fractional-pixel CSS `font-size` gap. The `px`
+branch now parses native thousandths and rounds half-up into the integer
+computed-style model while retaining the 1 through 256 px bound and fallback
+behavior for rounded out-of-range candidates. Viewport units, unit algebra,
+extra-precision CSS number grammar, and complete CSS font-size parity remain
+issue #40 gates.
+
 Slice 557 extends inherited CSS `font-size` with bounded root-relative `rem`
 values. The computed-style walk identifies the root element's resolved size,
 then applies checked thousandth-scale and half-up integer-pixel resolution to
 descendants. Results outside the native 1 through 256 px range fall through
-the existing cascade fallback. Viewport units, unit algebra, malformed
-precision, and complete CSS font-size parity remain issue #40 gates.
+the existing cascade fallback. Viewport units, unit algebra, extra-precision
+CSS number grammar, and complete CSS font-size parity remain issue #40 gates.
 
 Slice 556 extends inherited CSS `font-size` with bounded parent-relative
 `em` and percentage values. Thousandth-scale factors resolve against the
@@ -444,7 +454,7 @@ Slice 555 adds bounded absolute CSS `font-size` units for inherited element
 styles. `pt`, `pc`, `in`, `cm`, and `mm` resolve through the CSS 96 dpi
 reference pixel and round half-up into the native integer-pixel computed style,
 while the existing 1 through 256 px bound and fail-closed parsing remain in
-force. Viewport units, unit algebra, fractional `px`, malformed precision, and
+force. Viewport units, unit algebra, extra-precision CSS number grammar, and
 complete CSS font-size parity remain issue #40 gates.
 
 Slice 554 adds the missing `FontFaceSet` event-handler IDL properties:

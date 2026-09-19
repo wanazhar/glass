@@ -13581,6 +13581,9 @@ fn parse_font_size_calculation_relative_term(
 
 fn parse_font_size_calculation_term_any(value: &str) -> Option<NativeFontSizeCalculation> {
     let value = value.trim().to_ascii_lowercase();
+    if value.starts_with("calc(") {
+        return parse_font_size_calculation(&value);
+    }
     if let Some(term) = parse_font_size_calculation_term(&value) {
         return Some(term);
     }
@@ -13606,6 +13609,100 @@ fn parse_font_size_calculation_term_any(value: &str) -> Option<NativeFontSizeCal
     Some(term)
 }
 
+fn scale_font_size_calculation(
+    calculation: NativeFontSizeCalculation,
+    factor_milli: u32,
+    divide: bool,
+) -> Option<NativeFontSizeCalculation> {
+    let factor = i64::from(factor_milli);
+    if divide && factor == 0 {
+        return None;
+    }
+    let scale = |value: i64| {
+        let denominator = if divide { factor } else { 1_000 };
+        let product = if divide {
+            value.checked_mul(1_000)?
+        } else {
+            value.checked_mul(factor)?
+        };
+        if product >= 0 {
+            product
+                .checked_add(denominator / 2)?
+                .checked_div(denominator)
+        } else {
+            product
+                .checked_sub(denominator / 2)?
+                .checked_div(denominator)
+        }
+    };
+    Some(NativeFontSizeCalculation {
+        absolute_milli: scale(calculation.absolute_milli)?,
+        parent_scale_milli: scale(calculation.parent_scale_milli)?,
+        root_scale_milli: scale(calculation.root_scale_milli)?,
+        viewport_width_scale_milli: scale(calculation.viewport_width_scale_milli)?,
+        viewport_height_scale_milli: scale(calculation.viewport_height_scale_milli)?,
+        viewport_min_scale_milli: scale(calculation.viewport_min_scale_milli)?,
+        viewport_max_scale_milli: scale(calculation.viewport_max_scale_milli)?,
+    })
+}
+
+fn parse_font_size_calculation_product(value: &str) -> Option<NativeFontSizeCalculation> {
+    let mut operator = None;
+    let mut operator_index = None;
+    for (index, byte) in value.bytes().enumerate() {
+        if !matches!(byte, b'*' | b'/') {
+            continue;
+        }
+        if operator.is_some() {
+            return None;
+        }
+        operator = Some(byte);
+        operator_index = Some(index);
+    }
+    let Some(operator) = operator else {
+        return parse_font_size_calculation_term_any(value);
+    };
+    let operator_index = operator_index?;
+    let left = value.get(..operator_index)?.trim();
+    let right = value.get(operator_index.saturating_add(1)..)?.trim();
+    if left.is_empty() || right.is_empty() {
+        return None;
+    }
+    let factor_left = parse_decimal_milli(left)
+        .filter(|factor| *factor <= super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000));
+    let factor_right = parse_decimal_milli(right)
+        .filter(|factor| *factor <= super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000));
+    match operator {
+        b'*' => {
+            if let Some(factor) = factor_right {
+                return scale_font_size_calculation(
+                    parse_font_size_calculation_term_any(left)?,
+                    factor,
+                    false,
+                );
+            }
+            if let Some(factor) = factor_left {
+                return scale_font_size_calculation(
+                    parse_font_size_calculation_term_any(right)?,
+                    factor,
+                    false,
+                );
+            }
+        }
+        b'/' => {
+            if let Some(factor) = factor_right {
+                return scale_font_size_calculation(
+                    parse_font_size_calculation_term_any(left)?,
+                    factor,
+                    true,
+                );
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
 fn parse_font_size_calculation(value: &str) -> Option<NativeFontSizeCalculation> {
     let value = value.trim().to_ascii_lowercase();
     let source = value.strip_prefix("calc(")?.strip_suffix(')')?;
@@ -13616,25 +13713,38 @@ fn parse_font_size_calculation(value: &str) -> Option<NativeFontSizeCalculation>
     let mut start = 0;
     let mut sign = 1_i64;
     let mut term_count: usize = 0;
+    let mut depth = 0_usize;
     for (index, byte) in source.bytes().enumerate() {
-        if !matches!(byte, b'+' | b'-') {
-            continue;
+        match byte {
+            b'(' => depth = depth.checked_add(1)?,
+            b')' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            b'+' | b'-' if depth == 0 => {
+                let term = source.get(start..index)?.trim();
+                if term.is_empty() {
+                    return None;
+                }
+                term_count = term_count.saturating_add(1);
+                if term_count > MAX_NATIVE_FONT_SIZE_CALC_TERMS {
+                    return None;
+                }
+                merge_font_size_calculation(
+                    &mut total,
+                    parse_font_size_calculation_product(term)?,
+                    sign,
+                )?;
+                sign = if byte == b'+' { 1 } else { -1 };
+                start = index.saturating_add(1);
+            }
+            _ => {}
         }
-        let term = source.get(start..index)?.trim();
-        if term.is_empty() {
-            return None;
-        }
-        term_count = term_count.saturating_add(1);
-        if term_count > MAX_NATIVE_FONT_SIZE_CALC_TERMS {
-            return None;
-        }
-        merge_font_size_calculation(
-            &mut total,
-            parse_font_size_calculation_term_any(term)?,
-            sign,
-        )?;
-        sign = if byte == b'+' { 1 } else { -1 };
-        start = index.saturating_add(1);
+    }
+    if depth != 0 {
+        return None;
     }
     let term = source.get(start..)?.trim();
     if term.is_empty() {
@@ -13644,11 +13754,7 @@ fn parse_font_size_calculation(value: &str) -> Option<NativeFontSizeCalculation>
     if term_count > MAX_NATIVE_FONT_SIZE_CALC_TERMS {
         return None;
     }
-    merge_font_size_calculation(
-        &mut total,
-        parse_font_size_calculation_term_any(term)?,
-        sign,
-    )?;
+    merge_font_size_calculation(&mut total, parse_font_size_calculation_product(term)?, sign)?;
     Some(total)
 }
 
@@ -24805,7 +24911,46 @@ mod tests {
                 }
             ))
         );
-        assert_eq!(parse_font_size_value("calc(1px * 2)"), None);
+        assert_eq!(
+            parse_font_size_value("calc(1px * 2)"),
+            Some(NativeFontSizeDeclarationValue::Calculation(
+                NativeFontSizeCalculation {
+                    absolute_milli: 2_000,
+                    ..NativeFontSizeCalculation::default()
+                }
+            ))
+        );
+        assert_eq!(
+            parse_font_size_value("calc(2 * 1em)"),
+            Some(NativeFontSizeDeclarationValue::Calculation(
+                NativeFontSizeCalculation {
+                    parent_scale_milli: 2_000,
+                    ..NativeFontSizeCalculation::default()
+                }
+            ))
+        );
+        assert_eq!(
+            parse_font_size_value("calc(2px / 2)"),
+            Some(NativeFontSizeDeclarationValue::Calculation(
+                NativeFontSizeCalculation {
+                    absolute_milli: 1_000,
+                    ..NativeFontSizeCalculation::default()
+                }
+            ))
+        );
+        assert_eq!(
+            parse_font_size_value("calc(calc(1em + 2px) * 2)"),
+            Some(NativeFontSizeDeclarationValue::Calculation(
+                NativeFontSizeCalculation {
+                    absolute_milli: 4_000,
+                    parent_scale_milli: 2_000,
+                    ..NativeFontSizeCalculation::default()
+                }
+            ))
+        );
+        assert_eq!(parse_font_size_value("calc(1px / 0)"), None);
+        assert_eq!(parse_font_size_value("calc(1px * 2px)"), None);
+        assert_eq!(parse_font_size_value("calc(1px * 2 * 3)"), None);
         assert_eq!(parse_font_size_value("calc(-1px + 2px)"), None);
     }
 
@@ -26749,6 +26894,26 @@ mod tests {
             document.computed_style_for_layout(too_large).font_size(),
             24
         );
+    }
+
+    #[test]
+    fn product_and_nested_calc_font_sizes_resolve() {
+        let document = NativeDocument::parse(
+            "<style>#parent { font-size: 24px; } #times { font-size: calc(1em * 2); } #reverse { font-size: calc(2 * 1em); } #divide { font-size: calc(24px / 2); } #nested { font-size: calc(calc(1em + 2px) * 2); } #invalid { font-size: calc(1px / 0); }</style><div id='parent'><span id='times'>Times</span><span id='reverse'>Reverse</span><span id='divide'>Divide</span><span id='nested'>Nested</span><span id='invalid'>Invalid</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let times = document.resolve_target("id=times").unwrap();
+        let reverse = document.resolve_target("id=reverse").unwrap();
+        let divide = document.resolve_target("id=divide").unwrap();
+        let nested = document.resolve_target("id=nested").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+
+        assert_eq!(document.computed_style_for_layout(times).font_size(), 48);
+        assert_eq!(document.computed_style_for_layout(reverse).font_size(), 48);
+        assert_eq!(document.computed_style_for_layout(divide).font_size(), 12);
+        assert_eq!(document.computed_style_for_layout(nested).font_size(), 52);
+        assert_eq!(document.computed_style_for_layout(invalid).font_size(), 24);
     }
 
     #[test]

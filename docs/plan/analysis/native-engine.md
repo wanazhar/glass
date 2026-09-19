@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-572`, following
+expansion checkpoint is completed `native-engine-browser-573`, following
+completed `native-engine-browser-572`, following
 completed `native-engine-browser-571`, following
 completed `native-engine-browser-570`, following
 completed `native-engine-browser-569`, following
@@ -449,6 +450,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 573 extends bounded native custom-property substitution to inherited
+`font-weight`. Standalone `var(--name)` and concrete `var(--name, weight)`
+fallbacks now resolve inherited aliases, relative keywords, CSS-wide mapped
+values, invalid values, and cyclic values before normal font-weight
+computation, while absolute weights and the existing font cascade remain
+unchanged. Complete shorthand substitution, non-concrete fallback grammar,
+registered properties, full CSS variable grammar, and complete CSS/Web IDL
+parity remain explicit issue #40 gates.
 
 Slice 572 extends bounded native custom-property substitution to inherited
 `text-decoration-color`. Standalone `var(--name)` and concrete

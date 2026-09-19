@@ -978,6 +978,8 @@ enum FlexItemOrderDeclaration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexGrowDeclaration {
     Value(u32),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, u32),
     Inherit,
     Reset,
     RevertLayer,
@@ -986,6 +988,8 @@ enum FlexGrowDeclaration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexShrinkDeclaration {
     Value(u32),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, u32),
     Inherit,
     Reset,
     RevertLayer,
@@ -994,6 +998,8 @@ enum FlexShrinkDeclaration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexBasisDeclaration {
     Value(FlexBasisValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, FlexBasisValue),
     Inherit,
     Reset,
     RevertLayer,
@@ -4658,9 +4664,13 @@ impl NativeStylesheet {
             direction: resolved_direction,
             flex_wrap: resolve_flex_wrap(*flex_wrap, inherited.flex_wrap, custom_properties),
             flex_item_order: resolve_flex_item_order(*flex_item_order, inherited.flex_item_order),
-            flex_grow: resolve_flex_grow(*flex_grow, inherited.flex_grow),
-            flex_shrink: resolve_flex_shrink(*flex_shrink, inherited.flex_shrink),
-            flex_basis: resolve_flex_basis(*flex_basis, inherited.flex_basis),
+            flex_grow: resolve_flex_grow(*flex_grow, inherited.flex_grow, custom_properties),
+            flex_shrink: resolve_flex_shrink(
+                *flex_shrink,
+                inherited.flex_shrink,
+                custom_properties,
+            ),
+            flex_basis: resolve_flex_basis(*flex_basis, inherited.flex_basis, custom_properties),
             text_decoration: resolve_text_decoration(*text_decoration, inherited.text_decoration),
             text_decoration_style: resolve_text_decoration_style(
                 *text_decoration_style,
@@ -6122,44 +6132,175 @@ fn resolve_flex_item_order(
     })
 }
 
-fn resolve_flex_grow(
-    candidates: [Option<CascadeValue<FlexGrowDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+fn resolve_flex_grow_value(
+    value: FlexGrowDeclaration,
     inherited: u32,
-) -> u32 {
-    resolve_alignment_candidates(candidates, 0, |declaration| match declaration {
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<u32> {
+    match value {
         FlexGrowDeclaration::Value(value) => Some(value),
         FlexGrowDeclaration::Inherit => Some(inherited),
         FlexGrowDeclaration::Reset => Some(0),
-        FlexGrowDeclaration::RevertLayer => None,
+        FlexGrowDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_grow_declaration(value))
+                .and_then(|declaration| {
+                    resolve_flex_grow_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FlexGrowDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_grow_declaration(value))
+                .and_then(|declaration| {
+                    resolve_flex_grow_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        FlexGrowDeclaration::CustomProperty(_)
+        | FlexGrowDeclaration::CustomPropertyFallback(_, _)
+        | FlexGrowDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_flex_shrink_value(
+    value: FlexShrinkDeclaration,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<u32> {
+    match value {
+        FlexShrinkDeclaration::Value(value) => Some(value),
+        FlexShrinkDeclaration::Inherit => Some(inherited),
+        FlexShrinkDeclaration::Reset => Some(1),
+        FlexShrinkDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_shrink_declaration(value))
+                .and_then(|declaration| {
+                    resolve_flex_shrink_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FlexShrinkDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_shrink_declaration(value))
+                .and_then(|declaration| {
+                    resolve_flex_shrink_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        FlexShrinkDeclaration::CustomProperty(_)
+        | FlexShrinkDeclaration::CustomPropertyFallback(_, _)
+        | FlexShrinkDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_flex_basis_value(
+    value: FlexBasisDeclaration,
+    inherited: FlexBasisValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FlexBasisValue> {
+    match value {
+        FlexBasisDeclaration::Value(value) => Some(value),
+        FlexBasisDeclaration::Inherit => Some(inherited),
+        FlexBasisDeclaration::Reset => Some(FlexBasisValue::Auto),
+        FlexBasisDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_basis_declaration(value))
+                .and_then(|declaration| {
+                    resolve_flex_basis_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FlexBasisDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_basis_declaration(value))
+                .and_then(|declaration| {
+                    resolve_flex_basis_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        FlexBasisDeclaration::CustomProperty(_)
+        | FlexBasisDeclaration::CustomPropertyFallback(_, _)
+        | FlexBasisDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_flex_grow(
+    candidates: [Option<CascadeValue<FlexGrowDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+) -> u32 {
+    resolve_alignment_candidates(candidates, 0, |declaration| {
+        resolve_flex_grow_value(declaration, inherited, custom_properties, 0)
     })
 }
 
 fn resolve_flex_shrink(
     candidates: [Option<CascadeValue<FlexShrinkDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
     inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> u32 {
-    resolve_alignment_candidates(candidates, 1, |declaration| match declaration {
-        FlexShrinkDeclaration::Value(value) => Some(value),
-        FlexShrinkDeclaration::Inherit => Some(inherited),
-        FlexShrinkDeclaration::Reset => Some(1),
-        FlexShrinkDeclaration::RevertLayer => None,
+    resolve_alignment_candidates(candidates, 1, |declaration| {
+        resolve_flex_shrink_value(declaration, inherited, custom_properties, 0)
     })
 }
 
 fn resolve_flex_basis(
     candidates: [Option<CascadeValue<FlexBasisDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
     inherited: FlexBasisValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> FlexBasisValue {
-    resolve_alignment_candidates(
-        candidates,
-        FlexBasisValue::Auto,
-        |declaration| match declaration {
-            FlexBasisDeclaration::Value(value) => Some(value),
-            FlexBasisDeclaration::Inherit => Some(inherited),
-            FlexBasisDeclaration::Reset => Some(FlexBasisValue::Auto),
-            FlexBasisDeclaration::RevertLayer => None,
-        },
-    )
+    resolve_alignment_candidates(candidates, FlexBasisValue::Auto, |declaration| {
+        resolve_flex_basis_value(declaration, inherited, custom_properties, 0)
+    })
 }
 
 fn resolve_text_align_declaration(
@@ -18983,6 +19124,33 @@ fn parse_flex_grow(value: &str) -> Option<u32> {
         .then_some(parsed)
 }
 
+fn parse_flex_grow_custom_property(value: &str) -> Option<FlexGrowDeclaration> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_flex_grow(fallback)
+            .map(|fallback| FlexGrowDeclaration::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(FlexGrowDeclaration::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_flex_shrink_custom_property(value: &str) -> Option<FlexShrinkDeclaration> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_flex_shrink(fallback)
+            .map(|fallback| FlexShrinkDeclaration::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(FlexShrinkDeclaration::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_flex_basis_custom_property(value: &str) -> Option<FlexBasisDeclaration> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_flex_basis(fallback)
+            .map(|fallback| FlexBasisDeclaration::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(FlexBasisDeclaration::CustomProperty(name_hash)),
+    }
+}
+
 fn parse_flex_grow_declaration(value: &str) -> Option<FlexGrowDeclaration> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some(FlexGrowDeclaration::RevertLayer);
@@ -18993,7 +19161,9 @@ fn parse_flex_grow_declaration(value: &str) -> Option<FlexGrowDeclaration> {
     if value.trim().eq_ignore_ascii_case("inherit") {
         return Some(FlexGrowDeclaration::Inherit);
     }
-    parse_flex_grow(value).map(FlexGrowDeclaration::Value)
+    parse_flex_grow(value)
+        .map(FlexGrowDeclaration::Value)
+        .or_else(|| parse_flex_grow_custom_property(value))
 }
 
 fn parse_flex_shrink(value: &str) -> Option<u32> {
@@ -19017,7 +19187,9 @@ fn parse_flex_shrink_declaration(value: &str) -> Option<FlexShrinkDeclaration> {
     if value.trim().eq_ignore_ascii_case("inherit") {
         return Some(FlexShrinkDeclaration::Inherit);
     }
-    parse_flex_shrink(value).map(FlexShrinkDeclaration::Value)
+    parse_flex_shrink(value)
+        .map(FlexShrinkDeclaration::Value)
+        .or_else(|| parse_flex_shrink_custom_property(value))
 }
 
 fn parse_flex_basis(value: &str) -> Option<FlexBasisValue> {
@@ -19038,7 +19210,9 @@ fn parse_flex_basis_declaration(value: &str) -> Option<FlexBasisDeclaration> {
     if value.trim().eq_ignore_ascii_case("inherit") {
         return Some(FlexBasisDeclaration::Inherit);
     }
-    parse_flex_basis(value).map(FlexBasisDeclaration::Value)
+    parse_flex_basis(value)
+        .map(FlexBasisDeclaration::Value)
+        .or_else(|| parse_flex_basis_custom_property(value))
 }
 
 fn parse_flex_shorthand(value: &str) -> Option<(u32, u32, FlexBasisValue)> {
@@ -28226,6 +28400,62 @@ mod tests {
         assert_eq!(
             parse_declarations("flex-basis: 12px; flex-basis: 1.5px").flex_basis,
             Some(FlexBasisDeclaration::Value(FlexBasisValue::Length(12)))
+        );
+    }
+    #[test]
+    fn flex_sizing_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let grow = parse_custom_property_name("--grow").unwrap();
+        let shrink = parse_custom_property_name("--shrink").unwrap();
+        let basis = parse_custom_property_name("--basis").unwrap();
+        assert_eq!(
+            parse_flex_grow_declaration("var(--grow)"),
+            Some(FlexGrowDeclaration::CustomProperty(grow))
+        );
+        assert_eq!(
+            parse_flex_grow_declaration("var(--grow, 3)"),
+            Some(FlexGrowDeclaration::CustomPropertyFallback(grow, 3))
+        );
+        assert_eq!(
+            parse_flex_shrink_declaration("var(--shrink, 2)"),
+            Some(FlexShrinkDeclaration::CustomPropertyFallback(shrink, 2))
+        );
+        assert_eq!(
+            parse_flex_basis_declaration("var(--basis)"),
+            Some(FlexBasisDeclaration::CustomProperty(basis))
+        );
+        assert_eq!(
+            parse_flex_basis_declaration("var(--basis, auto)"),
+            Some(FlexBasisDeclaration::CustomPropertyFallback(
+                basis,
+                FlexBasisValue::Auto
+            ))
+        );
+        assert_eq!(
+            parse_flex_basis_declaration("var(--basis, 12px)"),
+            Some(FlexBasisDeclaration::CustomPropertyFallback(
+                basis,
+                FlexBasisValue::Length(12)
+            ))
+        );
+        let declarations = parse_declarations(
+            "flex-grow: var(--grow); flex-shrink: var(--shrink); flex-basis: var(--basis)",
+        );
+        assert_eq!(
+            declarations.flex_grow,
+            Some(FlexGrowDeclaration::CustomProperty(grow))
+        );
+        assert_eq!(
+            declarations.flex_shrink,
+            Some(FlexShrinkDeclaration::CustomProperty(shrink))
+        );
+        assert_eq!(
+            declarations.flex_basis,
+            Some(FlexBasisDeclaration::CustomProperty(basis))
+        );
+        assert_eq!(parse_flex_grow_declaration("var(--grow, 1.5)"), None);
+        assert_eq!(
+            parse_flex_basis_declaration("var(--basis, var(--other))"),
+            None
         );
     }
 
@@ -39413,6 +39643,55 @@ mod tests {
         let specificity_style = document.computed_style_for_layout(specificity);
         assert_eq!(specificity_style.column_gap(), 11);
         assert_eq!(specificity_style.row_gap(), 7);
+    }
+
+    #[test]
+    fn flex_sizing_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --grow: 3; --shrink: 2; --basis: 12px; --grow-alias: var(--grow); --basis-alias: var(--basis); --cycle: var(--cycle); flex-grow: var(--grow-alias); flex-shrink: var(--shrink); flex-basis: var(--basis-alias); }
+            #child { flex-grow: var(--grow-alias); flex-shrink: var(--shrink); flex-basis: var(--basis-alias); }
+            #fallback { flex-grow: var(--missing, 4); flex-shrink: var(--missing-shrink, 3); flex-basis: var(--missing-basis, 14px); }
+            #invalid { --bad: unsupported; flex-grow: var(--bad, 5); flex-shrink: var(--bad, 4); flex-basis: var(--bad, 16px); }
+            #cycle { flex-grow: var(--cycle, 6); flex-shrink: var(--cycle, 5); flex-basis: var(--cycle, 18px); }
+            #reset { --reset: initial; flex-grow: var(--reset, 7); flex-shrink: var(--reset, 6); flex-basis: var(--reset, 20px); }
+            #override { --grow: 9; flex-grow: var(--grow); flex-grow: 4; --shrink: 8; flex-shrink: var(--shrink); flex-shrink: 2; --basis: 22px; flex-basis: var(--basis); flex-basis: 10px; }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='override'>Override</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        assert_eq!(style("parent").flex_grow(), 3);
+        assert_eq!(style("parent").flex_shrink(), 2);
+        assert_eq!(style("parent").flex_basis(), FlexBasisValue::Length(12));
+        assert_eq!(style("child").flex_grow(), 3);
+        assert_eq!(style("child").flex_shrink(), 2);
+        assert_eq!(style("child").flex_basis(), FlexBasisValue::Length(12));
+        assert_eq!(style("fallback").flex_grow(), 4);
+        assert_eq!(style("fallback").flex_shrink(), 3);
+        assert_eq!(style("fallback").flex_basis(), FlexBasisValue::Length(14));
+        assert_eq!(style("invalid").flex_grow(), 5);
+        assert_eq!(style("invalid").flex_shrink(), 4);
+        assert_eq!(style("invalid").flex_basis(), FlexBasisValue::Length(16));
+        assert_eq!(style("cycle").flex_grow(), 6);
+        assert_eq!(style("cycle").flex_shrink(), 5);
+        assert_eq!(style("cycle").flex_basis(), FlexBasisValue::Length(18));
+        assert_eq!(style("reset").flex_grow(), 0);
+        assert_eq!(style("reset").flex_shrink(), 1);
+        assert_eq!(style("reset").flex_basis(), FlexBasisValue::Auto);
+        assert_eq!(style("override").flex_grow(), 4);
+        assert_eq!(style("override").flex_shrink(), 2);
+        assert_eq!(style("override").flex_basis(), FlexBasisValue::Length(10));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-621`, following completed
 `native-engine-browser-620`, following completed
 `native-engine-browser-619`, following completed
 `native-engine-browser-618`, following completed
@@ -489,6 +490,15 @@ native grammar; malformed, reversed, out-of-range, or oversized values raise
 previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
+#40 gates.
+
+Slice 621 extends bounded native custom-property substitution to `visibility`.
+Standalone `var(--name)` values and hidden or visible fallbacks now resolve
+inherited custom-property aliases, invalid and cyclic fallback handling, local
+cascade, and existing `revert-layer` behavior before the hidden-subtree owner.
+The existing hidden/visible grammar remains unchanged; CSS-wide values beyond
+`revert-layer`, `collapse`, nested-variable, registered-property, full CSS
+variable grammar, and complete CSS and Web IDL parity remain explicit issue
 #40 gates.
 
 Slice 620 extends bounded native custom-property substitution to `gap`,

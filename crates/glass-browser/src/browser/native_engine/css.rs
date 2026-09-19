@@ -4619,10 +4619,8 @@ impl NativeStylesheet {
                 *grid_template_rows,
                 NativeGridTrackList::default(),
             ),
-            visibility_hidden: resolve_local_cascade_declaration(
-                *visibility,
-                VisibilityValue::Other,
-            ) == VisibilityValue::Hidden,
+            visibility_hidden: resolve_visibility(*visibility, custom_properties)
+                == VisibilityValue::Hidden,
             opacity: resolve_opacity(*opacity, custom_properties),
             white_space: resolve_white_space(
                 *white_space,
@@ -4846,6 +4844,8 @@ impl NativeStylesheet {
 enum VisibilityValue {
     Hidden,
     Other,
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8161,6 +8161,69 @@ fn relative_font_weight(inherited: FontWeightValue, bolder: bool) -> FontWeightV
         700
     };
     FontWeightValue::from_numeric(resolved).unwrap_or(FontWeightValue::Normal)
+}
+fn resolve_visibility_value(
+    value: VisibilityValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<VisibilityValue> {
+    match value {
+        VisibilityValue::Hidden | VisibilityValue::Other => Some(value),
+        VisibilityValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_visibility_declaration(value))
+                .and_then(|declaration| match declaration {
+                    LocalCascadeDeclaration::Value(value) => {
+                        resolve_visibility_value(value, custom_properties, depth + 1)
+                    }
+                    LocalCascadeDeclaration::Inherit
+                    | LocalCascadeDeclaration::Reset
+                    | LocalCascadeDeclaration::RevertLayer => None,
+                })
+        }
+        VisibilityValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_visibility_declaration(value))
+                .and_then(|declaration| match declaration {
+                    LocalCascadeDeclaration::Value(value) => {
+                        resolve_visibility_value(value, custom_properties, depth + 1)
+                    }
+                    LocalCascadeDeclaration::Inherit
+                    | LocalCascadeDeclaration::Reset
+                    | LocalCascadeDeclaration::RevertLayer => None,
+                })
+                .or(Some(if fallback {
+                    VisibilityValue::Hidden
+                } else {
+                    VisibilityValue::Other
+                }))
+        }
+        VisibilityValue::CustomProperty(_) | VisibilityValue::CustomPropertyFallback(_, _) => None,
+    }
+}
+
+fn resolve_visibility<const N: usize>(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<VisibilityValue>>>; N],
+    custom_properties: &BTreeMap<u64, String>,
+) -> VisibilityValue {
+    resolve_alignment_candidates(
+        candidates,
+        VisibilityValue::Other,
+        |declaration| match declaration {
+            LocalCascadeDeclaration::Value(value) => {
+                resolve_visibility_value(value, custom_properties, 0)
+            }
+            LocalCascadeDeclaration::Inherit
+            | LocalCascadeDeclaration::Reset
+            | LocalCascadeDeclaration::RevertLayer => None,
+        },
+    )
 }
 
 fn resolve_local_cascade_declaration<T: Copy, const N: usize>(
@@ -21832,12 +21895,40 @@ fn parse_vertical_align_property(value: &str) -> Option<VerticalAlignDeclaration
         .map(VerticalAlignDeclarationValue::Value)
         .or_else(|| parse_vertical_align_custom_property(value))
 }
+fn parse_visibility_var_arguments(value: &str) -> Option<(u64, Option<&str>)> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    Some((parse_custom_property_name(name)?, fallback))
+}
+
+fn parse_visibility_custom_property(value: &str) -> Option<VisibilityValue> {
+    let (name_hash, fallback) = parse_visibility_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => match parse_visibility(fallback)? {
+            VisibilityValue::Hidden => {
+                Some(VisibilityValue::CustomPropertyFallback(name_hash, true))
+            }
+            VisibilityValue::Other => {
+                Some(VisibilityValue::CustomPropertyFallback(name_hash, false))
+            }
+            VisibilityValue::CustomProperty(_) | VisibilityValue::CustomPropertyFallback(_, _) => {
+                None
+            }
+        },
+        None => Some(VisibilityValue::CustomProperty(name_hash)),
+    }
+}
 
 fn parse_visibility(value: &str) -> Option<VisibilityValue> {
     match value.to_ascii_lowercase().as_str() {
         "hidden" => Some(VisibilityValue::Hidden),
         "visible" => Some(VisibilityValue::Other),
-        _ => None,
+        _ => parse_visibility_custom_property(value),
     }
 }
 
@@ -23596,6 +23687,33 @@ mod tests {
         let node = node("<button id='shown' style='display:none'>Shown</button>");
         assert!(stylesheet.computed_for(&node).hidden());
     }
+    #[test]
+    fn visibility_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let mode = parse_custom_property_name("--mode").unwrap();
+        assert_eq!(
+            parse_visibility("var(--mode)"),
+            Some(VisibilityValue::CustomProperty(mode))
+        );
+        assert_eq!(
+            parse_visibility("var(--mode, hidden)"),
+            Some(VisibilityValue::CustomPropertyFallback(mode, true))
+        );
+        assert_eq!(
+            parse_visibility("var(--mode, visible)"),
+            Some(VisibilityValue::CustomPropertyFallback(mode, false))
+        );
+        assert_eq!(
+            parse_declarations("visibility: var(--mode)").visibility,
+            Some(LocalCascadeDeclaration::Value(
+                VisibilityValue::CustomProperty(mode)
+            ))
+        );
+        assert_eq!(parse_visibility("var(--mode, var(--other))"), None);
+        assert_eq!(
+            parse_visibility_declaration("revert-layer"),
+            Some(LocalCascadeDeclaration::RevertLayer)
+        );
+    }
 
     #[test]
     fn display_visibility_revert_layer_rolls_back_named_and_inline_candidates() {
@@ -23691,6 +23809,38 @@ mod tests {
                 .count(),
             1
         );
+    }
+    #[test]
+    fn visibility_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --visibility: hidden; --alias: var(--visibility); visibility: var(--alias); }
+            #child { visibility: var(--alias); }
+            #fallback { visibility: var(--missing, hidden); }
+            #invalid { --bad: unsupported; visibility: var(--bad, visible); }
+            #cycle { --cycle: var(--cycle); visibility: var(--cycle, hidden); }
+            #visible { --visible: visible; visibility: var(--visible); }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='visible'>Visible</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let hidden = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .hidden()
+        };
+
+        assert!(hidden("parent"));
+        assert!(hidden("child"));
+        assert!(hidden("fallback"));
+        assert!(!hidden("invalid"));
+        assert!(hidden("cycle"));
+        assert!(!hidden("visible"));
     }
 
     #[test]

@@ -1293,6 +1293,13 @@ impl NativeFontVariationSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontVariationSettingsDeclarationValue {
+    Value(NativeFontVariationSettings),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontVariationSettings),
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeFontKerning {
     #[default]
@@ -4525,10 +4532,10 @@ impl NativeStylesheet {
                 inherited.font_language_override,
                 NativeFontLanguageOverride::default(),
             ),
-            font_variation_settings: resolve_inherited_text_declaration(
+            font_variation_settings: resolve_font_variation_settings(
                 *font_variation_settings,
                 inherited.font_variation_settings,
-                NativeFontVariationSettings::default(),
+                custom_properties,
             ),
             font_variant_east_asian: resolve_inherited_text_declaration(
                 *font_variant_east_asian,
@@ -4756,7 +4763,7 @@ struct NativeCascadeScratch {
     font_variant_position: NativeTextCascadeCandidates<NativeFontVariantPosition>,
     font_variant_alternates: NativeTextCascadeCandidates<NativeFontVariantAlternates>,
     font_language_override: NativeTextCascadeCandidates<NativeFontLanguageOverride>,
-    font_variation_settings: NativeTextCascadeCandidates<NativeFontVariationSettings>,
+    font_variation_settings: NativeTextCascadeCandidates<FontVariationSettingsDeclarationValue>,
     font_variant_east_asian: NativeTextCascadeCandidates<NativeFontVariantEastAsian>,
     font_variant_numeric: NativeTextCascadeCandidates<NativeFontVariantNumeric>,
     font_feature_settings: NativeTextCascadeCandidates<FontFeatureSettingsDeclarationValue>,
@@ -5475,6 +5482,98 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_variation_settings_declaration(
+    declaration: InheritedTextDeclaration<FontVariationSettingsDeclarationValue>,
+    inherited: NativeFontVariationSettings,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariationSettingsDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_variation_settings_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => {
+            Some(FontVariationSettingsDeclarationValue::Value(inherited))
+        }
+        InheritedTextDeclaration::Initial => Some(FontVariationSettingsDeclarationValue::Value(
+            NativeFontVariationSettings::default(),
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_variation_settings_value(
+    value: FontVariationSettingsDeclarationValue,
+    inherited: NativeFontVariationSettings,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariationSettingsDeclarationValue> {
+    match value {
+        FontVariationSettingsDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variation_settings_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variation_settings_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontVariationSettingsDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variation_settings_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variation_settings_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontVariationSettingsDeclarationValue::Value(fallback)))
+        }
+        FontVariationSettingsDeclarationValue::CustomProperty(_)
+        | FontVariationSettingsDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontVariationSettingsDeclarationValue::Value(value) => {
+            Some(FontVariationSettingsDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_font_variation_settings(
+    candidates: NativeTextCascadeCandidates<FontVariationSettingsDeclarationValue>,
+    inherited: NativeFontVariationSettings,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontVariationSettings {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontVariationSettingsDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_variation_settings_declaration(
+                declaration,
+                inherited,
+                custom_properties,
+                0,
+            )
+        },
+    );
+    match resolved {
+        FontVariationSettingsDeclarationValue::Value(value) => value,
+        FontVariationSettingsDeclarationValue::CustomProperty(_)
+        | FontVariationSettingsDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_feature_settings_declaration(
@@ -8310,7 +8409,8 @@ struct NativeDeclarations {
     font_variant_position: Option<InheritedTextDeclaration<NativeFontVariantPosition>>,
     font_variant_alternates: Option<InheritedTextDeclaration<NativeFontVariantAlternates>>,
     font_language_override: Option<InheritedTextDeclaration<NativeFontLanguageOverride>>,
-    font_variation_settings: Option<InheritedTextDeclaration<NativeFontVariationSettings>>,
+    font_variation_settings:
+        Option<InheritedTextDeclaration<FontVariationSettingsDeclarationValue>>,
     font_variant_east_asian: Option<InheritedTextDeclaration<NativeFontVariantEastAsian>>,
     font_variant_numeric: Option<InheritedTextDeclaration<NativeFontVariantNumeric>>,
     font_feature_settings: Option<InheritedTextDeclaration<FontFeatureSettingsDeclarationValue>>,
@@ -15764,10 +15864,39 @@ pub(crate) fn format_font_variation_settings(settings: NativeFontVariationSettin
         .join(", ")
 }
 
+fn parse_font_variation_settings_custom_property(
+    value: &str,
+) -> Option<FontVariationSettingsDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_family_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_variation_settings(fallback).map(|fallback| {
+            FontVariationSettingsDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(FontVariationSettingsDeclarationValue::CustomProperty(
+            name_hash,
+        )),
+    }
+}
+
+fn parse_font_variation_settings_property(
+    value: &str,
+) -> Option<FontVariationSettingsDeclarationValue> {
+    parse_font_variation_settings(value)
+        .map(FontVariationSettingsDeclarationValue::Value)
+        .or_else(|| parse_font_variation_settings_custom_property(value))
+}
+
 fn parse_font_variation_settings_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontVariationSettings>> {
-    parse_inherited_text_declaration(value, parse_font_variation_settings)
+) -> Option<InheritedTextDeclaration<FontVariationSettingsDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_variation_settings_property)
 }
 
 fn parse_font_variant_east_asian(value: &str) -> Option<NativeFontVariantEastAsian> {
@@ -26597,6 +26726,29 @@ mod tests {
             format_font_variation_settings(merged),
             r#""wght" 700, "wdth" -12.25, "opsz" 12"#
         );
+        let variation_name = parse_custom_property_name("--variations").unwrap();
+        let fallback = parse_font_variation_settings(r#""wght" 550, "wdth" 90"#).unwrap();
+        assert_eq!(
+            parse_font_variation_settings_property("var(--variations)"),
+            Some(FontVariationSettingsDeclarationValue::CustomProperty(
+                variation_name
+            ))
+        );
+        assert_eq!(
+            parse_font_variation_settings_declaration(
+                r#"var(--variations, "wght" 550, "wdth" 90)"#
+            ),
+            Some(InheritedTextDeclaration::Value(
+                FontVariationSettingsDeclarationValue::CustomPropertyFallback(
+                    variation_name,
+                    fallback
+                )
+            ))
+        );
+        assert_eq!(
+            parse_font_variation_settings_property("var(--variations, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -29047,6 +29199,50 @@ mod tests {
             style("important").font_variation_settings().values()[0].value_milli,
             700_000
         );
+    }
+
+    #[test]
+    fn inherited_font_variation_settings_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --variations: "wght" 500, "wdth" 90; --alias: var(--variations); --cycle: var(--cycle); font-variation-settings: var(--variations); }
+            #child { font-variation-settings: var(--alias); }
+            #fallback { font-variation-settings: var(--missing, "opsz" 12); }
+            #invalid { --bad: "wght" 32768.001; font-variation-settings: var(--bad, "wdth" 80); }
+            #cycle { font-variation-settings: var(--cycle, normal); }
+            #wide-initial { --wide: initial; font-variation-settings: var(--wide); }
+            #wide-inherit { --wide: inherit; font-variation-settings: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_variation_settings()
+        };
+        let parent = parse_font_variation_settings(r#""wght" 500, "wdth" 90"#).unwrap();
+        let fallback = parse_font_variation_settings(r#""opsz" 12"#).unwrap();
+        let invalid = parse_font_variation_settings(r#""wdth" 80"#).unwrap();
+
+        assert_eq!(style("parent"), parent);
+        assert_eq!(style("child"), parent);
+        assert_eq!(style("fallback"), fallback);
+        assert_eq!(style("invalid"), invalid);
+        assert_eq!(style("cycle"), NativeFontVariationSettings::default());
+        assert_eq!(
+            style("wide-initial"),
+            NativeFontVariationSettings::default()
+        );
+        assert_eq!(style("wide-inherit"), parent);
     }
 
     #[test]

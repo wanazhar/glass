@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-581`, following completed
 `native-engine-browser-580`, following completed
 `native-engine-browser-579`, following completed
 `native-engine-browser-578`, following completed
@@ -450,6 +451,15 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 581 extends bounded native custom-property substitution to inherited
+`font-variation-settings`. Standalone `var(--name)` and comma-list
+`var(--name, "tag" value, fallback)` fallbacks now resolve inherited aliases,
+CSS-wide mapped values, invalid values, and cyclic values before normal
+variation-settings computation, while the existing ordered OpenType variation
+list and computed-style projection remain unchanged. Complete shorthand
+substitution, nested variable grammar, registered properties, full CSS variable
+grammar, and complete CSS Web IDL parity remain issue #40 gates.
 
 Slice 580 extends bounded native custom-property substitution to inherited
 `font-feature-settings`. Standalone `var(--name)` and comma-list

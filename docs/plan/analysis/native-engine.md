@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-578`, following
+expansion checkpoint is completed `native-engine-browser-579`, following
+completed `native-engine-browser-578`, following
 completed `native-engine-browser-577`, following
 completed `native-engine-browser-576`, following
 completed `native-engine-browser-575`, following
@@ -455,6 +456,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 579 extends bounded native custom-property substitution to inherited
+`font-palette`. Standalone `var(--name)` and concrete
+`var(--name, value)` fallbacks now resolve inherited aliases, CSS-wide mapped
+values, invalid values, and cyclic values before normal font-palette
+computation, while the existing normal/light/dark/named palette values and
+computed-style projection remain unchanged. Complete shorthand substitution,
+nested variable grammar, registered properties, full CSS variable grammar, and
+complete CSS Web IDL parity remain explicit issue #40 gates.
 
 Slice 578 extends bounded native custom-property substitution to inherited
 `font-optical-sizing`. Standalone `var(--name)` and concrete

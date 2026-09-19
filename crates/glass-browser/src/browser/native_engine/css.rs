@@ -1360,6 +1360,13 @@ pub(crate) enum NativeFontPalette {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontPaletteDeclarationValue {
+    Value(NativeFontPalette),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontPalette),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NativeFontPaletteOverride {
     pub(crate) palette_index: u16,
     pub(crate) color: NativeColor,
@@ -4541,10 +4548,10 @@ impl NativeStylesheet {
                 inherited.font_optical_sizing,
                 custom_properties,
             ),
-            font_palette: resolve_inherited_text_declaration(
+            font_palette: resolve_font_palette(
                 *font_palette,
                 inherited.font_palette,
-                NativeFontPalette::Normal,
+                custom_properties,
             ),
             font_weight: resolve_font_weight(
                 *font_weight,
@@ -4748,7 +4755,7 @@ struct NativeCascadeScratch {
     font_feature_settings: NativeTextCascadeCandidates<NativeFontFeatureSettings>,
     font_kerning: NativeTextCascadeCandidates<FontKerningDeclarationValue>,
     font_optical_sizing: NativeTextCascadeCandidates<FontOpticalSizingDeclarationValue>,
-    font_palette: NativeTextCascadeCandidates<NativeFontPalette>,
+    font_palette: NativeTextCascadeCandidates<FontPaletteDeclarationValue>,
     font_weight: NativeTextCascadeCandidates<FontWeightDeclarationValue>,
     font_style: NativeTextCascadeCandidates<FontStyleDeclarationValue>,
     font_stretch: NativeTextCascadeCandidates<FontStretchDeclarationValue>,
@@ -5461,6 +5468,91 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_palette_declaration(
+    declaration: InheritedTextDeclaration<FontPaletteDeclarationValue>,
+    inherited: NativeFontPalette,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontPaletteDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_palette_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(FontPaletteDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => Some(FontPaletteDeclarationValue::Value(
+            NativeFontPalette::Normal,
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_palette_value(
+    value: FontPaletteDeclarationValue,
+    inherited: NativeFontPalette,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontPaletteDeclarationValue> {
+    match value {
+        FontPaletteDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_palette_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_palette_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontPaletteDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_palette_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_palette_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontPaletteDeclarationValue::Value(fallback)))
+        }
+        FontPaletteDeclarationValue::CustomProperty(_)
+        | FontPaletteDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontPaletteDeclarationValue::Value(value) => {
+            Some(FontPaletteDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_font_palette(
+    candidates: NativeTextCascadeCandidates<FontPaletteDeclarationValue>,
+    inherited: NativeFontPalette,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontPalette {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontPaletteDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_palette_declaration(declaration, inherited, custom_properties, 0)
+        },
+    );
+    match resolved {
+        FontPaletteDeclarationValue::Value(value) => value,
+        FontPaletteDeclarationValue::CustomProperty(_)
+        | FontPaletteDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_optical_sizing_declaration(
@@ -8125,7 +8217,7 @@ struct NativeDeclarations {
     font_feature_settings: Option<InheritedTextDeclaration<NativeFontFeatureSettings>>,
     font_kerning: Option<InheritedTextDeclaration<FontKerningDeclarationValue>>,
     font_optical_sizing: Option<InheritedTextDeclaration<FontOpticalSizingDeclarationValue>>,
-    font_palette: Option<InheritedTextDeclaration<NativeFontPalette>>,
+    font_palette: Option<InheritedTextDeclaration<FontPaletteDeclarationValue>>,
     font_weight: Option<InheritedTextDeclaration<FontWeightDeclarationValue>>,
     font_style: Option<InheritedTextDeclaration<FontStyleDeclarationValue>>,
     font_stretch: Option<InheritedTextDeclaration<FontStretchDeclarationValue>>,
@@ -16135,10 +16227,33 @@ fn parse_font_palette(value: &str) -> Option<NativeFontPalette> {
     }
 }
 
+fn parse_font_palette_custom_property(value: &str) -> Option<FontPaletteDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_palette(fallback).map(|fallback| {
+            FontPaletteDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(FontPaletteDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_font_palette_property(value: &str) -> Option<FontPaletteDeclarationValue> {
+    parse_font_palette(value)
+        .map(FontPaletteDeclarationValue::Value)
+        .or_else(|| parse_font_palette_custom_property(value))
+}
+
 fn parse_font_palette_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontPalette>> {
-    parse_inherited_text_declaration(value, parse_font_palette)
+) -> Option<InheritedTextDeclaration<FontPaletteDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_palette_property)
 }
 
 fn parse_font_weight_custom_property(value: &str) -> Option<FontWeightDeclarationValue> {
@@ -26417,6 +26532,22 @@ mod tests {
         ));
         assert!(parse_font_palette("palette-one").is_none());
         assert!(parse_font_palette("normal light").is_none());
+        let palette_name = parse_custom_property_name("--palette").unwrap();
+        let fallback = parse_font_palette("--brand").unwrap();
+        assert_eq!(
+            parse_font_palette_property("var(--palette)"),
+            Some(FontPaletteDeclarationValue::CustomProperty(palette_name))
+        );
+        assert_eq!(
+            parse_font_palette_declaration("var(--palette, --brand)"),
+            Some(InheritedTextDeclaration::Value(
+                FontPaletteDeclarationValue::CustomPropertyFallback(palette_name, fallback)
+            ))
+        );
+        assert_eq!(
+            parse_font_palette_property("var(--palette, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -28417,6 +28548,46 @@ mod tests {
     }
 
     #[test]
+    fn inherited_font_palette_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --palette: --brand; --alias: var(--palette); --cycle: var(--cycle); font-palette: var(--palette); }
+            #child { font-palette: var(--alias); }
+            #fallback { font-palette: var(--missing, light); }
+            #invalid { --bad: unsupported; font-palette: var(--bad, dark); }
+            #cycle { font-palette: var(--cycle, normal); }
+            #wide-initial { --wide: initial; font-palette: var(--wide); }
+            #wide-inherit { --wide: inherit; font-palette: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_palette()
+        };
+        let brand = parse_font_palette("--brand").unwrap();
+
+        assert_eq!(style("parent"), brand);
+        assert_eq!(style("child"), brand);
+        assert_eq!(style("fallback"), NativeFontPalette::Light);
+        assert_eq!(style("invalid"), NativeFontPalette::Dark);
+        assert_eq!(style("cycle"), NativeFontPalette::Normal);
+        assert_eq!(style("wide-initial"), NativeFontPalette::Normal);
+        assert_eq!(style("wide-inherit"), brand);
+    }
+
+    #[test]
+
     fn named_font_palette_values_resolve_last_valid_base_palette() {
         let mut diagnostics = NativeDiagnosticSink::default();
         let stylesheet = NativeStylesheet::from_sources_with_diagnostics(

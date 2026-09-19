@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-635`, following
+expansion checkpoint is completed `native-engine-browser-636`, following
+completed `native-engine-browser-635`, following
 completed `native-engine-browser-634`, following
 completed `native-engine-browser-633`, following
 completed `native-engine-browser-632`, following
@@ -512,6 +513,13 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 636 extends bounded custom-property substitution to logical border
+colors. Logical block/inline color pairs retain side indices through aliases
+and concrete two-color fallbacks before direction-aware projection, preserving
+invalid/cyclic handling and declaration-order precedence. Full registered
+properties, complete color grammar, and complete CSS and Web IDL parity remain
+explicit issue #40 gates.
 
 Slice 635 extends bounded custom-property substitution to native grid track
 lists. Standalone `var(--name)` values and concrete track-list fallbacks

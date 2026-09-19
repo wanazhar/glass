@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-589`, following completed
 `native-engine-browser-588`, following completed
 `native-engine-browser-587`, following completed
 `native-engine-browser-586`, following completed
@@ -491,6 +492,14 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed `font-variant` shorthand substitution follow-up is
+[`native-engine-browser-589`](tasks/native-engine-browser-589.md): native
+shorthand declarations now resolve bounded standalone `var(--name)` and
+full-shorthand keyword fallbacks into their six inherited OpenType component
+values, including aliases, invalid values, cycles, and CSS-wide mapped values.
+Nested variable grammar, registered properties, full CSS variable grammar, and
+complete CSS/Web IDL parity remain issue #40 gates.
 
 The completed inherited font-variant-numeric follow-up is
 [`native-engine-browser-588`](tasks/native-engine-browser-588.md): native

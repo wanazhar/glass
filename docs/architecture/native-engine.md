@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-589`, following completed
 `native-engine-browser-588`, following completed
 `native-engine-browser-587`, following completed
 `native-engine-browser-586`, following completed
@@ -458,6 +459,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 589 extends bounded custom-property substitution to the inherited
+`font-variant` shorthand. Standalone `var(--name)` and full-shorthand keyword
+fallbacks now resolve into the six inherited OpenType component values,
+including aliases, invalid values, cycles, and CSS-wide mapped values, while
+the existing component cascade and computed-style projection remain unchanged.
+Nested variable grammar, registered properties, full CSS variable grammar, and
+complete CSS/Web IDL parity remain issue #40 gates.
 
 Slice 588 extends bounded native custom-property substitution to inherited
 `font-variant-numeric`. Standalone `var(--name)` and compound-keyword

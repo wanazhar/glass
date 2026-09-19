@@ -1029,6 +1029,13 @@ impl Default for NativeFontVariantLigatures {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontVariantLigaturesDeclarationValue {
+    Value(NativeFontVariantLigatures),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontVariantLigatures),
+}
+
 /// The bounded OpenType capitalization controls exposed by
 /// `font-variant-caps`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -4514,10 +4521,10 @@ impl NativeStylesheet {
                 inherited.text_transform,
                 TextTransformValue::None,
             ),
-            font_variant_ligatures: resolve_inherited_text_declaration(
+            font_variant_ligatures: resolve_font_variant_ligatures(
                 *font_variant_ligatures,
                 inherited.font_variant_ligatures,
-                NativeFontVariantLigatures::default(),
+                custom_properties,
             ),
             font_variant_caps: resolve_inherited_text_declaration(
                 *font_variant_caps,
@@ -4765,7 +4772,7 @@ struct NativeCascadeScratch {
     text_underline_offset: NativeTextDeclarationCandidates<NativeTextUnderlineOffsetDeclaration>,
     text_decoration_color: NativePaintDeclarationCandidates<NativeTextDecorationColorDeclaration>,
     text_transform: NativeTextCascadeCandidates<TextTransformValue>,
-    font_variant_ligatures: NativeTextCascadeCandidates<NativeFontVariantLigatures>,
+    font_variant_ligatures: NativeTextCascadeCandidates<FontVariantLigaturesDeclarationValue>,
     font_variant_caps: NativeTextCascadeCandidates<NativeFontVariantCaps>,
     font_variant_position: NativeTextCascadeCandidates<NativeFontVariantPosition>,
     font_variant_alternates: NativeTextCascadeCandidates<NativeFontVariantAlternates>,
@@ -5489,6 +5496,98 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_variant_ligatures_declaration(
+    declaration: InheritedTextDeclaration<FontVariantLigaturesDeclarationValue>,
+    inherited: NativeFontVariantLigatures,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariantLigaturesDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_variant_ligatures_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => {
+            Some(FontVariantLigaturesDeclarationValue::Value(inherited))
+        }
+        InheritedTextDeclaration::Initial => Some(FontVariantLigaturesDeclarationValue::Value(
+            NativeFontVariantLigatures::default(),
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_variant_ligatures_value(
+    value: FontVariantLigaturesDeclarationValue,
+    inherited: NativeFontVariantLigatures,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariantLigaturesDeclarationValue> {
+    match value {
+        FontVariantLigaturesDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variant_ligatures_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variant_ligatures_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontVariantLigaturesDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variant_ligatures_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variant_ligatures_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontVariantLigaturesDeclarationValue::Value(fallback)))
+        }
+        FontVariantLigaturesDeclarationValue::CustomProperty(_)
+        | FontVariantLigaturesDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontVariantLigaturesDeclarationValue::Value(value) => {
+            Some(FontVariantLigaturesDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_font_variant_ligatures(
+    candidates: NativeTextCascadeCandidates<FontVariantLigaturesDeclarationValue>,
+    inherited: NativeFontVariantLigatures,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontVariantLigatures {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontVariantLigaturesDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_variant_ligatures_declaration(
+                declaration,
+                inherited,
+                custom_properties,
+                0,
+            )
+        },
+    );
+    match resolved {
+        FontVariantLigaturesDeclarationValue::Value(value) => value,
+        FontVariantLigaturesDeclarationValue::CustomProperty(_)
+        | FontVariantLigaturesDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_language_override_declaration(
@@ -8503,7 +8602,7 @@ struct NativeDeclarations {
     text_decoration_color: Option<NativeTextDecorationColorDeclaration>,
     text_decoration_color_important: bool,
     text_transform: Option<InheritedTextDeclaration<TextTransformValue>>,
-    font_variant_ligatures: Option<InheritedTextDeclaration<NativeFontVariantLigatures>>,
+    font_variant_ligatures: Option<InheritedTextDeclaration<FontVariantLigaturesDeclarationValue>>,
     font_variant_caps: Option<InheritedTextDeclaration<NativeFontVariantCaps>>,
     font_variant_position: Option<InheritedTextDeclaration<NativeFontVariantPosition>>,
     font_variant_alternates: Option<InheritedTextDeclaration<NativeFontVariantAlternates>>,
@@ -10396,7 +10495,8 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
             }
             "font-variant" => {
                 if let Some(parsed) = parse_font_variant_shorthand_declaration(value) {
-                    declarations.font_variant_ligatures = Some(parsed.ligatures);
+                    declarations.font_variant_ligatures =
+                        Some(wrap_font_variant_ligatures_declaration(parsed.ligatures));
                     declarations.font_variant_caps = Some(parsed.caps);
                     declarations.font_variant_position = Some(parsed.position);
                     declarations.font_variant_alternates = Some(parsed.alternates);
@@ -15776,10 +15876,54 @@ fn parse_font_variant_ligatures(value: &str) -> Option<NativeFontVariantLigature
     Some(result)
 }
 
+fn parse_font_variant_ligatures_custom_property(
+    value: &str,
+) -> Option<FontVariantLigaturesDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_variant_ligatures(fallback).map(|fallback| {
+            FontVariantLigaturesDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(FontVariantLigaturesDeclarationValue::CustomProperty(
+            name_hash,
+        )),
+    }
+}
+
+fn parse_font_variant_ligatures_property(
+    value: &str,
+) -> Option<FontVariantLigaturesDeclarationValue> {
+    parse_font_variant_ligatures(value)
+        .map(FontVariantLigaturesDeclarationValue::Value)
+        .or_else(|| parse_font_variant_ligatures_custom_property(value))
+}
+
 fn parse_font_variant_ligatures_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontVariantLigatures>> {
-    parse_inherited_text_declaration(value, parse_font_variant_ligatures)
+) -> Option<InheritedTextDeclaration<FontVariantLigaturesDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_variant_ligatures_property)
+}
+
+fn wrap_font_variant_ligatures_declaration(
+    declaration: InheritedTextDeclaration<NativeFontVariantLigatures>,
+) -> InheritedTextDeclaration<FontVariantLigaturesDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            InheritedTextDeclaration::Value(FontVariantLigaturesDeclarationValue::Value(value))
+        }
+        InheritedTextDeclaration::Inherit => InheritedTextDeclaration::Inherit,
+        InheritedTextDeclaration::Initial => InheritedTextDeclaration::Initial,
+        InheritedTextDeclaration::Unset => InheritedTextDeclaration::Unset,
+        InheritedTextDeclaration::Revert => InheritedTextDeclaration::Revert,
+        InheritedTextDeclaration::RevertLayer => InheritedTextDeclaration::RevertLayer,
+    }
 }
 
 fn parse_font_variant_caps(value: &str) -> Option<NativeFontVariantCaps> {
@@ -26744,6 +26888,27 @@ mod tests {
         assert!(parse_font_variant_ligatures("normal common-ligatures").is_none());
         assert!(parse_font_variant_ligatures("none contextual").is_none());
         assert!(parse_font_variant_ligatures("unknown").is_none());
+        let ligature_name = parse_custom_property_name("--ligatures").unwrap();
+        let fallback = parse_font_variant_ligatures("none").unwrap();
+        assert_eq!(
+            parse_font_variant_ligatures_property("var(--ligatures)"),
+            Some(FontVariantLigaturesDeclarationValue::CustomProperty(
+                ligature_name
+            ))
+        );
+        assert_eq!(
+            parse_font_variant_ligatures_declaration("var(--ligatures, none)"),
+            Some(InheritedTextDeclaration::Value(
+                FontVariantLigaturesDeclarationValue::CustomPropertyFallback(
+                    ligature_name,
+                    fallback
+                )
+            ))
+        );
+        assert_eq!(
+            parse_font_variant_ligatures_property("var(--ligatures, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -28767,6 +28932,56 @@ mod tests {
                 .font_variant_ligatures(),
             disabled_common
         );
+    }
+
+    #[test]
+    fn inherited_font_variant_ligatures_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --ligatures: no-common-ligatures discretionary-ligatures; --alias: var(--ligatures); --cycle: var(--cycle); font-variant-ligatures: var(--ligatures); }
+            #child { font-variant-ligatures: var(--alias); }
+            #fallback { font-variant-ligatures: var(--missing, common-ligatures); }
+            #invalid { --bad: common-ligatures no-common-ligatures; font-variant-ligatures: var(--bad, none); }
+            #cycle { font-variant-ligatures: var(--cycle, normal); }
+            #wide-initial { --wide: initial; font-variant-ligatures: var(--wide); }
+            #wide-inherit { --wide: inherit; font-variant-ligatures: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_variant_ligatures()
+        };
+        let parent = NativeFontVariantLigatures {
+            common: false,
+            discretionary: true,
+            historical: false,
+            contextual: true,
+        };
+        let none = NativeFontVariantLigatures {
+            common: false,
+            discretionary: false,
+            historical: false,
+            contextual: false,
+        };
+
+        assert_eq!(style("parent"), parent);
+        assert_eq!(style("child"), parent);
+        assert_eq!(style("fallback"), NativeFontVariantLigatures::default());
+        assert_eq!(style("invalid"), none);
+        assert_eq!(style("cycle"), NativeFontVariantLigatures::default());
+        assert_eq!(style("wide-initial"), NativeFontVariantLigatures::default());
+        assert_eq!(style("wide-inherit"), parent);
     }
 
     #[test]

@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-568`, following completed
 `native-engine-browser-567`, following completed
 `native-engine-browser-566`, following completed
 `native-engine-browser-565`, following completed
@@ -470,6 +471,15 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed CSSOM recascade follow-up is
+[`native-engine-browser-568`](tasks/native-engine-browser-568.md): validated
+script-driven attribute writes and removals now invalidate cached native
+computed styles, so `CSSStyleDeclaration.setProperty()` and
+`removeProperty()` updates recascade inherited custom properties before the
+next layout or snapshot. Broader CSSOM mutation semantics, registered
+properties, full CSS variable grammar, and complete CSS/Web IDL parity remain
+issue #40 gates.
 
 The completed composite CSS variable-calculation follow-up is
 [`native-engine-browser-567`](tasks/native-engine-browser-567.md): inherited

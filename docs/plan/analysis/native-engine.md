@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-567`, following
+expansion checkpoint is completed `native-engine-browser-568`, following
+completed `native-engine-browser-567`, following
 completed `native-engine-browser-566`, following
 completed `native-engine-browser-565`, following
 completed `native-engine-browser-564`, following
@@ -444,6 +445,13 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 568 closes the native CSSOM style-cache invalidation gap. Validated
+script-driven attribute writes and removals now clear cached computed styles,
+so `CSSStyleDeclaration.setProperty()` and `removeProperty()` recascade
+inherited custom properties before the next layout or snapshot. Broader CSSOM
+mutation semantics, registered properties, full CSS variable grammar, and
+complete CSS/Web IDL parity remain explicit issue #40 gates.
 
 Slice 567 expands bounded inherited native CSS `font-size` variable
 substitution inside complete `calc()` expressions. Custom-property references,

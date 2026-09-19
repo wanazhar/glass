@@ -163,6 +163,8 @@ enum NativeBorderColorValue {
     Unset,
     Initial,
     Revert,
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeColor),
 }
 
 impl NativeBorderColorValue {
@@ -176,6 +178,7 @@ impl NativeBorderColorValue {
             Self::CurrentColor => current_color,
             Self::Inherit => inherited_color,
             Self::Unset | Self::Initial | Self::Revert => current_color,
+            Self::CustomProperty(_) | Self::CustomPropertyFallback(_, _) => current_color,
         }
     }
 }
@@ -4337,6 +4340,7 @@ impl NativeStylesheet {
                 border_color[index],
                 current_color,
                 inherited.border_color[index],
+                custom_properties,
             )
         });
         let border_colors =
@@ -5744,16 +5748,72 @@ fn resolve_local_background_size_declaration(
     })
 }
 
+fn resolve_native_border_color_value(
+    value: NativeBorderColorValue,
+    current_color: NativeColor,
+    inherited_color: NativeColor,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<Option<NativeColor>> {
+    match value {
+        NativeBorderColorValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_border_color_side_declaration(value))
+                .and_then(|declaration| match declaration {
+                    LocalCascadeDeclaration::Value(value) => resolve_native_border_color_value(
+                        value,
+                        current_color,
+                        inherited_color,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    ),
+                    LocalCascadeDeclaration::RevertLayer => None,
+                    LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => None,
+                })
+        }
+        NativeBorderColorValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_border_color_side_declaration(value))
+                .and_then(|declaration| match declaration {
+                    LocalCascadeDeclaration::Value(value) => resolve_native_border_color_value(
+                        value,
+                        current_color,
+                        inherited_color,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    ),
+                    LocalCascadeDeclaration::RevertLayer => None,
+                    LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => None,
+                })
+                .or(Some(Some(fallback)))
+        }
+        NativeBorderColorValue::CustomProperty(_)
+        | NativeBorderColorValue::CustomPropertyFallback(_, _) => None,
+        value => Some(Some(value.resolve(current_color, inherited_color))),
+    }
+}
+
 fn resolve_local_border_color_declaration(
     candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBorderColorValue>>>;
         MAX_NATIVE_BORDER_COLOR_CASCADE_LAYERS],
     current_color: NativeColor,
     inherited_color: NativeColor,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> Option<NativeColor> {
     resolve_alignment_candidates(candidates, None, |declaration| match declaration {
-        LocalCascadeDeclaration::Value(value) => {
-            Some(Some(value.resolve(current_color, inherited_color)))
-        }
+        LocalCascadeDeclaration::Value(value) => resolve_native_border_color_value(
+            value,
+            current_color,
+            inherited_color,
+            custom_properties,
+            0,
+        ),
         LocalCascadeDeclaration::Inherit => None,
         LocalCascadeDeclaration::Reset => Some(None),
         LocalCascadeDeclaration::RevertLayer => None,
@@ -10647,6 +10707,21 @@ fn parse_border_color_value(value: &str) -> Option<NativeBorderColorValue> {
         Some(NativeBorderColorValue::Initial)
     } else if value.eq_ignore_ascii_case("revert") {
         Some(NativeBorderColorValue::Revert)
+    } else if let Some(value) = parse_color_custom_property(value) {
+        match value {
+            NativeColorValue::Color(color) => Some(NativeBorderColorValue::Color(color)),
+            NativeColorValue::CurrentColor => Some(NativeBorderColorValue::CurrentColor),
+            NativeColorValue::Inherit => Some(NativeBorderColorValue::Inherit),
+            NativeColorValue::Unset => Some(NativeBorderColorValue::Unset),
+            NativeColorValue::Initial => Some(NativeBorderColorValue::Initial),
+            NativeColorValue::Revert => Some(NativeBorderColorValue::Revert),
+            NativeColorValue::CustomProperty(name_hash) => {
+                Some(NativeBorderColorValue::CustomProperty(name_hash))
+            }
+            NativeColorValue::CustomPropertyFallback(name_hash, fallback) => Some(
+                NativeBorderColorValue::CustomPropertyFallback(name_hash, fallback),
+            ),
+        }
     } else {
         parse_color(value).map(NativeBorderColorValue::Color)
     }
@@ -17887,6 +17962,30 @@ mod tests {
                 NativeBorderColorValue::CurrentColor
             ))
         );
+        assert_eq!(
+            parse_border_color_side_declaration("var(--accent)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderColorValue::CustomProperty(custom_property_hash("--accent"))
+            ))
+        );
+        assert_eq!(
+            parse_border_color_side_declaration("VAR(--accent, red)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderColorValue::CustomPropertyFallback(
+                    custom_property_hash("--accent"),
+                    NativeColor::RED
+                )
+            ))
+        );
+        assert_eq!(
+            parse_border_color_side_declaration("var(--accent, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_border_color("var(--accent)"),
+            Some([NativeBorderColorValue::CustomProperty(custom_property_hash("--accent")); 4])
+        );
+
         for (value, expected) in [
             ("InHeRiT", NativeBorderColorValue::Inherit),
             ("UnSeT", NativeBorderColorValue::Unset),
@@ -17915,6 +18014,46 @@ mod tests {
             assert_eq!(parse_border_color_declaration(value), None, "{value}");
         }
         assert_eq!(parse_border_color_side_declaration("red blue"), None);
+    }
+    #[test]
+    fn inherited_border_color_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            "<style>#parent { --accent: rgb(1, 2, 3); --alias: var(--accent); --cycle: var(--cycle); color: green; border-color: var(--accent); } #child { border-color: var(--alias); } #fallback { border-color: var(--missing, red); } #invalid { --bad: nonsense; border-color: var(--bad, white); } #cycle { border-color: var(--cycle, white); }</style><div id='parent'><span id='child'>Child</span><span id='fallback'>Fallback</span><span id='invalid'>Invalid</span><span id='cycle'>Cycle</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let parent = document.resolve_target("id=parent").unwrap();
+        let child = document.resolve_target("id=child").unwrap();
+        let fallback = document.resolve_target("id=fallback").unwrap();
+        let invalid = document.resolve_target("id=invalid").unwrap();
+        let cycle = document.resolve_target("id=cycle").unwrap();
+        let accent = NativeColor {
+            red: 1,
+            green: 2,
+            blue: 3,
+            alpha: u8::MAX,
+        };
+
+        assert_eq!(
+            document.computed_style_for_layout(parent).border_colors(),
+            [accent; 4]
+        );
+        assert_eq!(
+            document.computed_style_for_layout(child).border_colors(),
+            [accent; 4]
+        );
+        assert_eq!(
+            document.computed_style_for_layout(fallback).border_colors(),
+            [NativeColor::RED; 4]
+        );
+        assert_eq!(
+            document.computed_style_for_layout(invalid).border_colors(),
+            [NativeColor::WHITE; 4]
+        );
+        assert_eq!(
+            document.computed_style_for_layout(cycle).border_colors(),
+            [NativeColor::WHITE; 4]
+        );
     }
 
     #[test]

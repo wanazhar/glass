@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-610`, following
+expansion checkpoint is completed `native-engine-browser-611`, following
+completed `native-engine-browser-610`, following
 completed `native-engine-browser-609`, following
 completed `native-engine-browser-608`, following
 completed `native-engine-browser-607`, following
@@ -487,6 +488,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 611 extends bounded custom-property substitution to `box-sizing`.
+Standalone `var(--name)` and concrete `var(--name, content-box|border-box)`
+fallbacks now resolve inherited aliases, CSS-wide reset mappings, invalid
+values, and cyclic values before computed-style projection, while existing
+content-box fallback, local cascade precedence, and `revert-layer` behavior
+remain unchanged. Nested variable grammar, registered properties, full CSS
+variable grammar, and complete CSS/Web IDL parity remain explicit issue #40
+gates.
 
 Slice 610 extends bounded custom-property substitution to the dimension
 properties `width`, `height`, `min-width`, `max-width`, `min-height`, and

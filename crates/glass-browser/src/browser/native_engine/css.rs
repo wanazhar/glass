@@ -4584,7 +4584,7 @@ impl NativeStylesheet {
         });
 
         let resolved_box_sizing =
-            resolve_local_inherited_cascade_declaration(*box_sizing, inherited.box_sizing);
+            resolve_box_sizing(*box_sizing, inherited.box_sizing, custom_properties);
         let resolved_overflow_x =
             resolve_overflow_axis(*overflow_x, inherited.overflow_x, custom_properties);
         let resolved_overflow_y =
@@ -4868,6 +4868,13 @@ enum DimensionDeclarationValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoxSizingDeclarationValue {
+    Value(NativeBoxSizing),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeBoxSizing),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpacityDeclarationValue {
     Value(u8),
     CustomProperty(u64),
@@ -5020,7 +5027,7 @@ struct NativeCascadeScratch {
     logical_margin: NativeLogicalBoxModelCandidates<NativeMarginValue>,
     padding: NativePhysicalLocalBorderCandidates<u32>,
     margin: NativePhysicalLocalBorderCandidates<NativeMarginValue>,
-    box_sizing: NativeLocalCascadeCandidates<NativeBoxSizing>,
+    box_sizing: NativeLocalCascadeCandidates<BoxSizingDeclarationValue>,
     color: NativePaintCascadeCandidates<NativeColorValue>,
     overflow_x: NativeLocalCascadeCandidates<OverflowDeclarationValue>,
     overflow_y: NativeLocalCascadeCandidates<OverflowDeclarationValue>,
@@ -8462,6 +8469,85 @@ fn resolve_dimension(
     })
 }
 
+fn resolve_box_sizing_declaration(
+    declaration: LocalCascadeDeclaration<BoxSizingDeclarationValue>,
+    inherited: NativeBoxSizing,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<BoxSizingDeclarationValue> {
+    match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_box_sizing_value(value, inherited, custom_properties, depth)
+        }
+        LocalCascadeDeclaration::Inherit => Some(BoxSizingDeclarationValue::Value(inherited)),
+        LocalCascadeDeclaration::Reset => Some(BoxSizingDeclarationValue::Value(
+            NativeBoxSizing::ContentBox,
+        )),
+        LocalCascadeDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_box_sizing_value(
+    value: BoxSizingDeclarationValue,
+    inherited: NativeBoxSizing,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<BoxSizingDeclarationValue> {
+    match value {
+        BoxSizingDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_box_sizing_declaration(value))
+                .and_then(|declaration| {
+                    resolve_box_sizing_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        BoxSizingDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_box_sizing_declaration(value))
+                .and_then(|declaration| {
+                    resolve_box_sizing_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(BoxSizingDeclarationValue::Value(fallback)))
+        }
+        BoxSizingDeclarationValue::CustomProperty(_)
+        | BoxSizingDeclarationValue::CustomPropertyFallback(_, _) => None,
+        BoxSizingDeclarationValue::Value(value) => Some(BoxSizingDeclarationValue::Value(value)),
+    }
+}
+
+fn resolve_box_sizing(
+    candidates: NativeLocalCascadeCandidates<BoxSizingDeclarationValue>,
+    inherited: NativeBoxSizing,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeBoxSizing {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        BoxSizingDeclarationValue::Value(NativeBoxSizing::ContentBox),
+        |declaration| resolve_box_sizing_declaration(declaration, inherited, custom_properties, 0),
+    );
+    match resolved {
+        BoxSizingDeclarationValue::Value(value) => value,
+        BoxSizingDeclarationValue::CustomProperty(_)
+        | BoxSizingDeclarationValue::CustomPropertyFallback(_, _) => NativeBoxSizing::ContentBox,
+    }
+}
+
 fn resolve_text_indent_declaration(
     declaration: LocalCascadeDeclaration<TextIndentDeclarationValue>,
     inherited: u32,
@@ -9131,18 +9217,6 @@ fn resolve_local_inherited_optional_cascade_declaration<T: Copy, const N: usize>
     resolve_alignment_candidates(candidates, None, |declaration| match declaration {
         LocalCascadeDeclaration::Value(value) => Some(Some(value)),
         LocalCascadeDeclaration::Inherit => Some(Some(inherited)),
-        LocalCascadeDeclaration::Reset => None,
-        LocalCascadeDeclaration::RevertLayer => None,
-    })
-}
-
-fn resolve_local_inherited_cascade_declaration<T: Copy, const N: usize>(
-    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; N],
-    inherited: T,
-) -> T {
-    resolve_alignment_candidates(candidates, inherited, |declaration| match declaration {
-        LocalCascadeDeclaration::Value(value) => Some(value),
-        LocalCascadeDeclaration::Inherit => Some(inherited),
         LocalCascadeDeclaration::Reset => None,
         LocalCascadeDeclaration::RevertLayer => None,
     })
@@ -10878,7 +10952,7 @@ struct NativeDeclarations {
     padding_order: [usize; 4],
     margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; 4],
     margin_order: [usize; 4],
-    box_sizing: Option<LocalCascadeDeclaration<NativeBoxSizing>>,
+    box_sizing: Option<LocalCascadeDeclaration<BoxSizingDeclarationValue>>,
     color: Option<LocalCascadeDeclaration<NativeColorValue>>,
     color_important: bool,
     overflow: Option<LocalCascadeDeclaration<OverflowDeclarationValue>>,
@@ -20194,16 +20268,50 @@ fn parse_local_margin_declaration(
     parse_local_cascade_declaration(value, parse_margin_value)
 }
 
+fn parse_box_sizing_custom_property(value: &str) -> Option<BoxSizingDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_box_sizing(fallback.trim())
+            .map(|fallback| BoxSizingDeclarationValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(BoxSizingDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_box_sizing_property(value: &str) -> Option<BoxSizingDeclarationValue> {
+    parse_box_sizing(value)
+        .map(BoxSizingDeclarationValue::Value)
+        .or_else(|| parse_box_sizing_custom_property(value))
+}
+
 fn parse_local_box_sizing_declaration(
     value: &str,
-) -> Option<LocalCascadeDeclaration<NativeBoxSizing>> {
+) -> Option<LocalCascadeDeclaration<BoxSizingDeclarationValue>> {
     if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
     if is_local_reset_keyword(value) {
-        return Some(LocalCascadeDeclaration::Value(NativeBoxSizing::ContentBox));
+        return Some(LocalCascadeDeclaration::Value(
+            BoxSizingDeclarationValue::Value(NativeBoxSizing::ContentBox),
+        ));
     }
-    parse_local_cascade_declaration(value, parse_box_sizing)
+    parse_local_cascade_declaration(value, parse_box_sizing_property)
 }
 
 fn is_local_reset_keyword(value: &str) -> bool {
@@ -21029,7 +21137,9 @@ mod tests {
         );
         assert_eq!(
             declarations.box_sizing,
-            Some(LocalCascadeDeclaration::Value(NativeBoxSizing::BorderBox))
+            Some(LocalCascadeDeclaration::Value(
+                BoxSizingDeclarationValue::Value(NativeBoxSizing::BorderBox)
+            ))
         );
         assert_eq!(
             declarations.overflow,
@@ -30457,7 +30567,9 @@ mod tests {
         );
         assert_eq!(
             declarations.box_sizing,
-            Some(LocalCascadeDeclaration::Value(NativeBoxSizing::BorderBox))
+            Some(LocalCascadeDeclaration::Value(
+                BoxSizingDeclarationValue::Value(NativeBoxSizing::BorderBox)
+            ))
         );
         assert!(declarations.box_model_importance.box_sizing);
 
@@ -30492,7 +30604,9 @@ mod tests {
         );
         assert_eq!(
             preserved.box_sizing,
-            Some(LocalCascadeDeclaration::Value(NativeBoxSizing::BorderBox))
+            Some(LocalCascadeDeclaration::Value(
+                BoxSizingDeclarationValue::Value(NativeBoxSizing::BorderBox)
+            ))
         );
         assert!(preserved.box_model_importance.box_sizing);
     }
@@ -32814,11 +32928,15 @@ mod tests {
         );
         assert_eq!(
             parse_local_box_sizing_declaration("border-box"),
-            Some(LocalCascadeDeclaration::Value(NativeBoxSizing::BorderBox))
+            Some(LocalCascadeDeclaration::Value(
+                BoxSizingDeclarationValue::Value(NativeBoxSizing::BorderBox)
+            ))
         );
         assert_eq!(
             parse_local_box_sizing_declaration("UNSET"),
-            Some(LocalCascadeDeclaration::Value(NativeBoxSizing::ContentBox))
+            Some(LocalCascadeDeclaration::Value(
+                BoxSizingDeclarationValue::Value(NativeBoxSizing::ContentBox)
+            ))
         );
         assert_eq!(
             parse_local_box_sizing_declaration("revert-layer border-box"),
@@ -32849,8 +32967,81 @@ mod tests {
         );
         assert_eq!(
             declarations.box_sizing,
-            Some(LocalCascadeDeclaration::Value(NativeBoxSizing::BorderBox))
+            Some(LocalCascadeDeclaration::Value(
+                BoxSizingDeclarationValue::Value(NativeBoxSizing::BorderBox)
+            ))
         );
+    }
+
+    #[test]
+    fn box_sizing_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let box_sizing = parse_custom_property_name("--box-sizing").unwrap();
+        assert_eq!(
+            parse_box_sizing_property("border-box"),
+            Some(BoxSizingDeclarationValue::Value(NativeBoxSizing::BorderBox))
+        );
+        assert_eq!(
+            parse_local_box_sizing_declaration("var(--box-sizing)"),
+            Some(LocalCascadeDeclaration::Value(
+                BoxSizingDeclarationValue::CustomProperty(box_sizing)
+            ))
+        );
+        assert_eq!(
+            parse_local_box_sizing_declaration("var(--box-sizing, content-box)"),
+            Some(LocalCascadeDeclaration::Value(
+                BoxSizingDeclarationValue::CustomPropertyFallback(
+                    box_sizing,
+                    NativeBoxSizing::ContentBox
+                )
+            ))
+        );
+        assert_eq!(
+            parse_local_box_sizing_declaration("var(--box-sizing, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_local_box_sizing_declaration("initial"),
+            Some(LocalCascadeDeclaration::Value(
+                BoxSizingDeclarationValue::Value(NativeBoxSizing::ContentBox)
+            ))
+        );
+        assert_eq!(
+            parse_local_box_sizing_declaration("inherit"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
+    }
+
+    #[test]
+    fn box_sizing_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --box: border-box; --alias: var(--box); --cycle: var(--cycle); --reset: initial; box-sizing: var(--box); }
+            #child { box-sizing: var(--alias); }
+            #fallback { box-sizing: var(--missing, border-box); }
+            #invalid { --bad: unsupported; box-sizing: var(--bad, border-box); }
+            #cycle { --cycle: var(--cycle); box-sizing: var(--cycle, border-box); }
+            #reset { --reset: initial; box-sizing: var(--reset, border-box); }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .box_sizing()
+        };
+
+        assert_eq!(style("parent"), NativeBoxSizing::BorderBox);
+        assert_eq!(style("child"), NativeBoxSizing::BorderBox);
+        assert_eq!(style("fallback"), NativeBoxSizing::BorderBox);
+        assert_eq!(style("invalid"), NativeBoxSizing::BorderBox);
+        assert_eq!(style("cycle"), NativeBoxSizing::BorderBox);
+        assert_eq!(style("reset"), NativeBoxSizing::ContentBox);
     }
 
     #[test]

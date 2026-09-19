@@ -13778,6 +13778,7 @@ struct NativeStyleRule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeSelector {
     compounds: Vec<NativeCompoundSelector>,
+    combinators: Vec<NativeSelectorCombinator>,
     specificity: u16,
 }
 
@@ -13785,6 +13786,14 @@ struct NativeSelector {
 struct NativeAttributeSelector {
     name: String,
     value: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeSelectorCombinator {
+    Descendant,
+    Child,
+    NextSibling,
+    SubsequentSibling,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13899,30 +13908,95 @@ impl NativeSelector {
             return false;
         }
 
-        let mut ancestor = node.parent();
-        for compound in self.compounds.iter().rev().skip(1) {
-            let mut found = false;
-            for _ in 0..=MAX_NATIVE_DOM_DEPTH {
-                let Some(ancestor_id) = ancestor else {
-                    break;
-                };
-                let Some(ancestor_node) = document.node(ancestor_id) else {
-                    break;
-                };
-                ancestor = ancestor_node.parent();
-                if ancestor_node.element_name().is_some()
-                    && compound.matches_in_document(document, ancestor_id)
-                {
-                    found = true;
-                    break;
+        let mut current = node_id;
+        for index in (0..self.compounds.len().saturating_sub(1)).rev() {
+            let relation = self
+                .combinators
+                .get(index)
+                .copied()
+                .unwrap_or(NativeSelectorCombinator::Descendant);
+            let compound = &self.compounds[index];
+            let matched = match relation {
+                NativeSelectorCombinator::Descendant => {
+                    ancestor_matching_compound(document, current, compound)
                 }
-            }
-            if !found {
+                NativeSelectorCombinator::Child => {
+                    child_matching_compound(document, current, compound)
+                }
+                NativeSelectorCombinator::NextSibling => {
+                    sibling_matching_compound(document, current, compound, true)
+                }
+                NativeSelectorCombinator::SubsequentSibling => {
+                    sibling_matching_compound(document, current, compound, false)
+                }
+            };
+            let Some(matched) = matched else {
                 return false;
-            }
+            };
+            current = matched;
         }
         true
     }
+}
+
+fn ancestor_matching_compound(
+    document: &NativeDocument,
+    start: NativeNodeId,
+    compound: &NativeCompoundSelector,
+) -> Option<NativeNodeId> {
+    let mut candidate = document.node(start).and_then(|node| node.parent());
+    for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+        let candidate_id = candidate?;
+        let candidate_node = document.node(candidate_id)?;
+        if candidate_node.element_name().is_some()
+            && compound.matches_in_document(document, candidate_id)
+        {
+            return Some(candidate_id);
+        }
+        candidate = candidate_node.parent();
+    }
+    None
+}
+
+fn child_matching_compound(
+    document: &NativeDocument,
+    start: NativeNodeId,
+    compound: &NativeCompoundSelector,
+) -> Option<NativeNodeId> {
+    let parent_id = document.node(start).and_then(|node| node.parent())?;
+    let parent = document.node(parent_id)?;
+    (parent.element_name().is_some() && compound.matches_in_document(document, parent_id))
+        .then_some(parent_id)
+}
+
+fn sibling_matching_compound(
+    document: &NativeDocument,
+    start: NativeNodeId,
+    compound: &NativeCompoundSelector,
+    immediate: bool,
+) -> Option<NativeNodeId> {
+    let parent_id = document.node(start).and_then(|node| node.parent())?;
+    let parent = document.node(parent_id)?;
+    let position = parent
+        .children()
+        .iter()
+        .position(|child_id| *child_id == start)?;
+    let mut previous = parent.children()[..position]
+        .iter()
+        .rev()
+        .copied()
+        .filter(|candidate_id| {
+            document
+                .node(*candidate_id)
+                .is_some_and(|candidate| candidate.element_name().is_some())
+        });
+    if immediate {
+        let candidate_id = previous.next()?;
+        return compound
+            .matches_in_document(document, candidate_id)
+            .then_some(candidate_id);
+    }
+    previous.find(|candidate_id| compound.matches_in_document(document, *candidate_id))
 }
 
 impl NativeCompoundSelector {
@@ -24384,7 +24458,7 @@ fn parse_selector(source: &str) -> Option<NativeSelector> {
     if source.is_empty() || source.len() > MAX_SELECTOR_BYTES {
         return None;
     }
-    let compound_sources = split_selector_compounds(source)?;
+    let (compound_sources, combinators) = split_selector_parts(source)?;
     if compound_sources.len() > MAX_SELECTOR_PARTS {
         return None;
     }
@@ -24401,14 +24475,21 @@ fn parse_selector(source: &str) -> Option<NativeSelector> {
     }
     Some(NativeSelector {
         compounds,
+        combinators,
         specificity,
     })
 }
 
 fn split_selector_compounds(source: &str) -> Option<Vec<&str>> {
+    split_selector_parts(source).map(|(compounds, _)| compounds)
+}
+
+fn split_selector_parts(source: &str) -> Option<(Vec<&str>, Vec<NativeSelectorCombinator>)> {
     let bytes = source.as_bytes();
     let mut compounds = Vec::new();
-    let mut start = 0;
+    let mut combinators = Vec::new();
+    let mut token_start = None;
+    let mut pending_whitespace = false;
     let mut cursor = 0;
     let mut bracket_depth = 0usize;
     let mut quote = None;
@@ -24421,6 +24502,21 @@ fn split_selector_compounds(source: &str) -> Option<Vec<&str>> {
             cursor += 1;
             continue;
         }
+        if bracket_depth == 0
+            && !byte.is_ascii_whitespace()
+            && !matches!(byte, b'>' | b'+' | b'~')
+            && token_start.is_none()
+        {
+            if !compounds.is_empty() && combinators.len() == compounds.len().saturating_sub(1) {
+                if pending_whitespace {
+                    combinators.push(NativeSelectorCombinator::Descendant);
+                } else {
+                    return None;
+                }
+            }
+            token_start = Some(cursor);
+            pending_whitespace = false;
+        }
         match byte {
             b'\'' | b'"' if bracket_depth > 0 => quote = Some(byte),
             b'[' => bracket_depth = bracket_depth.saturating_add(1),
@@ -24431,14 +24527,25 @@ fn split_selector_compounds(source: &str) -> Option<Vec<&str>> {
                 bracket_depth -= 1;
             }
             byte if byte.is_ascii_whitespace() && bracket_depth == 0 => {
-                if start < cursor {
+                if let Some(start) = token_start.take() {
+                    compounds.push(&source[start..cursor]);
+                    pending_whitespace = true;
+                }
+            }
+            byte @ (b'>' | b'+' | b'~') if bracket_depth == 0 => {
+                if let Some(start) = token_start.take() {
                     compounds.push(&source[start..cursor]);
                 }
-                while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-                    cursor += 1;
+                if compounds.is_empty() || combinators.len() != compounds.len().saturating_sub(1) {
+                    return None;
                 }
-                start = cursor;
-                continue;
+                combinators.push(match byte {
+                    b'>' => NativeSelectorCombinator::Child,
+                    b'+' => NativeSelectorCombinator::NextSibling,
+                    b'~' => NativeSelectorCombinator::SubsequentSibling,
+                    _ => unreachable!("selector combinator was matched above"),
+                });
+                pending_whitespace = false;
             }
             _ => {}
         }
@@ -24447,10 +24554,11 @@ fn split_selector_compounds(source: &str) -> Option<Vec<&str>> {
     if bracket_depth != 0 || quote.is_some() {
         return None;
     }
-    if start < source.len() {
+    if let Some(start) = token_start {
         compounds.push(&source[start..]);
     }
-    (!compounds.is_empty()).then_some(compounds)
+    (compounds.len() > 0 && combinators.len() + 1 == compounds.len())
+        .then_some((compounds, combinators))
 }
 
 fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
@@ -24890,8 +24998,12 @@ mod tests {
         let selector = parse_selector("main .card button[data-state=ready]").unwrap();
         assert_eq!(selector.specificity, 22);
         assert!(parse_selector("button[data-label='ready now']").is_some());
-        assert!(parse_selector("main > button").is_none());
-        assert!(parse_selector("main + button").is_none());
+        assert!(parse_selector("main > button").is_some());
+        assert!(parse_selector("main + button").is_some());
+        assert!(parse_selector("main ~ button").is_some());
+        assert!(parse_selector("main >").is_none());
+        assert!(parse_selector("> button").is_none());
+        assert!(parse_selector("main ++ button").is_none());
         assert!(parse_selector("button:hover").is_none());
         let too_many = ["div"; MAX_SELECTOR_PARTS + 1].join(" ");
         assert!(parse_selector(&too_many).is_none());
@@ -24899,6 +25011,93 @@ mod tests {
             selector_diagnostic_detail(&too_many),
             "selector-too-complex"
         );
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_child_combinators() {
+        let document = NativeDocument::parse(
+            "<main><section><button id='first'></button><button id='second'></button><div><button id='deep'></button></div><button id='last'></button></section></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("child combinator fixture document");
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .map(|node_id| {
+                    document
+                        .node(node_id)
+                        .and_then(|node| node.attribute("id"))
+                        .expect("matched element id")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            matched_ids("main > section > button"),
+            vec!["first", "second", "last"]
+        );
+        assert_eq!(matched_ids("section > div > button"), vec!["deep"]);
+        assert_eq!(
+            matched_ids("main section button"),
+            vec!["first", "second", "deep", "last"]
+        );
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "main > section > button { color: red; } #first + button { color: blue; }".into(),
+        ])
+        .expect("combinator stylesheet");
+        let blue = NativeColor {
+            red: 0,
+            green: 0,
+            blue: u8::MAX,
+            alpha: u8::MAX,
+        };
+        assert_eq!(
+            stylesheet
+                .computed_for_in_document(
+                    &document,
+                    document.resolve_target("id=second").unwrap(),
+                    None,
+                )
+                .color(),
+            Some(blue)
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for_in_document(
+                    &document,
+                    document.resolve_target("id=last").unwrap(),
+                    None,
+                )
+                .color(),
+            Some(NativeColor::RED)
+        );
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_sibling_combinators() {
+        let document = NativeDocument::parse(
+            "<main><button id='first'></button><button id='second'></button><div id='middle'></div><button id='last'></button></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("sibling combinator fixture document");
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .map(|node_id| {
+                    document
+                        .node(node_id)
+                        .and_then(|node| node.attribute("id"))
+                        .expect("matched element id")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(matched_ids("#first + button"), vec!["second"]);
+        assert_eq!(matched_ids("#first ~ button"), vec!["second", "last"]);
     }
 
     #[test]

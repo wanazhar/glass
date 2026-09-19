@@ -594,6 +594,8 @@ fn background_image_paint_commands(
         NativeBackgroundRepeat::RepeatX => (true, false),
         NativeBackgroundRepeat::RepeatY => (false, true),
         NativeBackgroundRepeat::NoRepeat => (false, false),
+        NativeBackgroundRepeat::CustomProperty(_)
+        | NativeBackgroundRepeat::CustomPropertyFallback(_, _) => (true, true),
     };
     let x_starts = background_tile_starts(
         i64::from(bounds.x),

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-630`, following
+expansion checkpoint is completed `native-engine-browser-631`, following
+completed `native-engine-browser-630`, following
 completed `native-engine-browser-629`, following completed
 `native-engine-browser-628`,
 completed `native-engine-browser-627`, following
@@ -507,6 +508,13 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 631 extends bounded custom-property substitution to `background-repeat`.
+Standalone `var(--name)` values and normalized repeat-mode fallbacks resolve
+through the existing paint cascade, preserving inherited aliases, invalid and
+cyclic fallback handling, and declaration-order precedence. Full repeat-list
+grammar, registered properties, and complete CSS and Web IDL parity remain
+explicit issue #40 gates.
 
 Slice 630 extends bounded custom-property substitution to `background-image`.
 Standalone `var(--name)` values and concrete URL or `none` fallbacks resolve

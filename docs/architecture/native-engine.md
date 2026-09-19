@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-596`, following completed
 `native-engine-browser-595`, following completed
 `native-engine-browser-594`, following completed
 `native-engine-browser-593`, following completed
@@ -465,6 +466,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 596 extends bounded native custom-property substitution to inherited
+`line-height`. Standalone `var(--name)` and positive-pixel
+`var(--name, value)` fallbacks now resolve inherited aliases, CSS-wide mapped
+values, invalid values, and cyclic values before normal line-height
+computation, while the existing supported values and computed-style projection
+remain unchanged. Nested variable grammar, registered properties, full CSS
+variable grammar, and complete CSS/Web IDL parity remain issue #40 gates.
 
 Slice 595 extends bounded native custom-property substitution to inherited
 `white-space`. Standalone `var(--name)` and keyword

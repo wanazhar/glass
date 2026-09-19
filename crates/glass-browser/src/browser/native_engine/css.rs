@@ -13820,6 +13820,10 @@ enum NativePseudoClass {
     Is(Vec<NativeSelector>),
     Where(Vec<NativeSelector>),
     Has(Vec<NativeRelativeSelector>),
+    NthChild { a: i32, b: i32 },
+    NthLastChild { a: i32, b: i32 },
+    NthOfType { a: i32, b: i32 },
+    NthLastOfType { a: i32, b: i32 },
 }
 
 impl NativePseudoClass {
@@ -13843,7 +13847,11 @@ impl NativePseudoClass {
             Self::Is(selectors) | Self::Where(selectors) => selectors
                 .iter()
                 .any(|selector| selector.matches_local(node)),
-            Self::Has(_) => false,
+            Self::Has(_)
+            | Self::NthChild { .. }
+            | Self::NthLastChild { .. }
+            | Self::NthOfType { .. }
+            | Self::NthLastOfType { .. } => false,
             Self::Root | Self::FirstChild | Self::LastChild | Self::OnlyChild => false,
         }
     }
@@ -13897,6 +13905,14 @@ impl NativePseudoClass {
             Self::Has(selectors) => selectors
                 .iter()
                 .any(|relative| relative_selector_matches(document, node_id, relative)),
+            Self::NthChild { a, b } => nth_pseudo_matches(document, node_id, *a, *b, false, false),
+            Self::NthLastChild { a, b } => {
+                nth_pseudo_matches(document, node_id, *a, *b, true, false)
+            }
+            Self::NthOfType { a, b } => nth_pseudo_matches(document, node_id, *a, *b, false, true),
+            Self::NthLastOfType { a, b } => {
+                nth_pseudo_matches(document, node_id, *a, *b, true, true)
+            }
             _ => self.matches_local(node),
         }
     }
@@ -14026,6 +14042,58 @@ fn sibling_matching_compound(
             .then_some(candidate_id);
     }
     previous.find(|candidate_id| compound.matches_in_document(document, *candidate_id))
+}
+
+fn nth_pseudo_matches(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    a: i32,
+    b: i32,
+    from_end: bool,
+    of_type: bool,
+) -> bool {
+    let Some(node) = document.node(node_id) else {
+        return false;
+    };
+    let Some(node_name) = node.element_name() else {
+        return false;
+    };
+    let Some(parent) = node.parent().and_then(|parent_id| document.node(parent_id)) else {
+        return false;
+    };
+    let mut siblings = parent.children().iter().copied().filter(|candidate_id| {
+        document.node(*candidate_id).is_some_and(|candidate| {
+            candidate.element_name().is_some()
+                && (!of_type || candidate.element_name() == Some(node_name))
+        })
+    });
+    let position = if from_end {
+        siblings
+            .rev()
+            .position(|candidate_id| candidate_id == node_id)
+    } else {
+        siblings.position(|candidate_id| candidate_id == node_id)
+    };
+    position
+        .and_then(|position| position.checked_add(1))
+        .is_some_and(|position| matches_nth_index(position, a, b))
+}
+
+fn matches_nth_index(position: usize, a: i32, b: i32) -> bool {
+    let Ok(position) = i64::try_from(position) else {
+        return false;
+    };
+    let a = i64::from(a);
+    let b = i64::from(b);
+    if a == 0 {
+        return position == b;
+    }
+    let delta = position - b;
+    if a > 0 {
+        delta >= 0 && delta % a == 0
+    } else {
+        delta <= 0 && delta % a == 0
+    }
 }
 
 fn relative_selector_matches(
@@ -24815,6 +24883,20 @@ fn parse_functional_pseudo_class(name: &str, argument: &str) -> Option<(NativePs
         return None;
     }
     let name = name.to_ascii_lowercase();
+    if matches!(
+        name.as_str(),
+        "nth-child" | "nth-last-child" | "nth-of-type" | "nth-last-of-type"
+    ) {
+        let (a, b) = parse_nth_formula(argument)?;
+        let pseudo = match name.as_str() {
+            "nth-child" => NativePseudoClass::NthChild { a, b },
+            "nth-last-child" => NativePseudoClass::NthLastChild { a, b },
+            "nth-of-type" => NativePseudoClass::NthOfType { a, b },
+            "nth-last-of-type" => NativePseudoClass::NthLastOfType { a, b },
+            _ => return None,
+        };
+        return Some((pseudo, 10));
+    }
     if name == "has" {
         let selectors = split_selector_list(argument)?
             .into_iter()
@@ -24842,6 +24924,52 @@ fn parse_functional_pseudo_class(name: &str, argument: &str) -> Option<(NativePs
         "where" => Some((NativePseudoClass::Where(selectors), 0)),
         _ => None,
     }
+}
+
+fn parse_nth_formula(argument: &str) -> Option<(i32, i32)> {
+    let argument = argument.trim();
+    if argument.eq_ignore_ascii_case("odd") {
+        return Some((2, 1));
+    }
+    if argument.eq_ignore_ascii_case("even") {
+        return Some((2, 0));
+    }
+    let mut compact = String::with_capacity(argument.len());
+    for byte in argument.bytes() {
+        if byte.is_ascii_whitespace() {
+            continue;
+        }
+        let byte = byte.to_ascii_lowercase();
+        if !matches!(byte, b'+' | b'-' | b'n' | b'0'..=b'9') {
+            return None;
+        }
+        compact.push(char::from(byte));
+    }
+    if compact.is_empty() {
+        return None;
+    }
+    let Some(n_index) = compact.find('n') else {
+        return compact.parse::<i32>().ok().map(|b| (0, b));
+    };
+    if compact[n_index + 1..].contains('n') {
+        return None;
+    }
+    let coefficient = &compact[..n_index];
+    let remainder = &compact[n_index + 1..];
+    let a = match coefficient {
+        "" | "+" => 1,
+        "-" => -1,
+        coefficient => coefficient.parse::<i32>().ok()?,
+    };
+    if matches!(remainder, "+" | "-") {
+        return None;
+    }
+    let b = if remainder.is_empty() {
+        0
+    } else {
+        remainder.parse::<i32>().ok()?
+    };
+    Some((a, b))
 }
 
 fn parse_relative_selector(source: &str) -> Option<NativeRelativeSelector> {
@@ -25441,7 +25569,19 @@ mod tests {
             1
         );
         assert!(parse_selector("button:hover").is_none());
-        assert!(parse_selector("button:nth-child(2)").is_none());
+        assert_eq!(
+            parse_selector("button:nth-child(2)").unwrap().specificity,
+            11
+        );
+        assert_eq!(
+            parse_selector("button:nth-child(2n+1)")
+                .unwrap()
+                .specificity,
+            11
+        );
+        assert!(parse_selector("button:nth-child(odd)").is_some());
+        assert!(parse_selector("button:nth-child(2n+)").is_none());
+        assert!(parse_selector("button:nth-child(2 of .item)").is_none());
         assert_eq!(
             parse_selector("button:has(.child)").unwrap().specificity,
             11
@@ -25520,12 +25660,73 @@ mod tests {
         assert_eq!(matched_id("#normal:optional"), Some("normal"));
         assert_eq!(matched_id("a:link"), Some("link"));
         assert_eq!(matched_id("a:any-link"), Some("link"));
-        assert!(selector_matches_in_document(&document, "#normal:nth-child(1)").is_err());
+        assert!(
+            selector_matches_in_document(&document, "#normal:nth-child(1)")
+                .unwrap()
+                .is_empty()
+        );
         assert!(
             selector_matches_in_document(&document, "#normal:not(input)")
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_nth_pseudo_classes() {
+        let document = NativeDocument::parse(
+            "<ul id='items'><li id='one'></li><li id='two'></li><span id='marker'></span><li id='three'></li><li id='four'></li></ul>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("nth pseudo-class fixture document");
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .map(|node_id| {
+                    document
+                        .node(node_id)
+                        .and_then(|node| node.attribute("id"))
+                        .expect("matched element id")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(matched_ids("li:nth-child(2)"), vec!["two"]);
+        assert_eq!(matched_ids("li:nth-last-child(1)"), vec!["four"]);
+        assert_eq!(matched_ids("li:nth-child(2n+1)"), vec!["one", "four"]);
+        assert_eq!(matched_ids("li:nth-child(-n+2)"), vec!["one", "two"]);
+        assert_eq!(matched_ids("li:nth-of-type(2)"), vec!["two"]);
+        assert_eq!(matched_ids("li:nth-last-of-type(1)"), vec!["four"]);
+        assert_eq!(matched_ids("li:nth-of-type(odd)"), vec!["one", "three"]);
+    }
+
+    #[test]
+    fn nth_pseudo_classes_apply_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "li { color: black; } li:nth-child(2n+1) { color: red; } li:nth-last-of-type(1) { background-color: red; }"
+                .into(),
+        ])
+        .expect("nth pseudo-class stylesheet");
+        let document = NativeDocument::parse(
+            "<ul><li id='one'></li><li id='two'></li><span></span><li id='three'></li><li id='four'></li></ul>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("nth pseudo-class cascade document");
+
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+        assert_eq!(style("one").color(), Some(NativeColor::RED));
+        assert_eq!(style("two").color(), Some(NativeColor::BLACK));
+        assert_eq!(style("four").color(), Some(NativeColor::RED));
+        assert_eq!(style("four").background_color(), Some(NativeColor::RED));
+        assert_eq!(style("three").background_color(), None);
     }
 
     #[test]

@@ -1,8 +1,10 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-643`, following
-completed `native-engine-browser-642`, following completed
+expansion checkpoint is completed `native-engine-browser-644`, following
+completed `native-engine-browser-643`, following
+completed `native-engine-browser-642`, following
+completed `native-engine-browser-641`, following completed
 `native-engine-browser-640`, following completed
 `native-engine-browser-639`, following completed
 `native-engine-browser-638`, following completed
@@ -519,6 +521,14 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 644 adds bounded arithmetic position pseudo-class parsing and matching
+for `:nth-child()`, `:nth-last-child()`, `:nth-of-type()`, and
+`:nth-last-of-type()`. Integer, `odd`/`even`, and bounded `an+b` formulas use
+attached-document sibling positions for CSS action locators and stylesheet
+cascade. Malformed formulas and unsupported `of` clauses remain fail-closed;
+full selector grammar, namespaces, pseudo-elements, complete CSS and Web IDL
+parity remain explicit issue #40 gates.
 
 Slice 643 adds bounded relative-selector parsing and document-aware matching
 for `:has(...)`. Relative argument lists support default descendants plus

@@ -1308,6 +1308,13 @@ pub(crate) enum NativeFontOpticalSizing {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontOpticalSizingDeclarationValue {
+    Value(NativeFontOpticalSizing),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontOpticalSizing),
+}
+
 const MAX_NATIVE_FONT_PALETTE_NAME_BYTES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -4529,10 +4536,10 @@ impl NativeStylesheet {
                 inherited.font_kerning,
                 custom_properties,
             ),
-            font_optical_sizing: resolve_inherited_text_declaration(
+            font_optical_sizing: resolve_font_optical_sizing(
                 *font_optical_sizing,
                 inherited.font_optical_sizing,
-                NativeFontOpticalSizing::Auto,
+                custom_properties,
             ),
             font_palette: resolve_inherited_text_declaration(
                 *font_palette,
@@ -4740,7 +4747,7 @@ struct NativeCascadeScratch {
     font_variant_numeric: NativeTextCascadeCandidates<NativeFontVariantNumeric>,
     font_feature_settings: NativeTextCascadeCandidates<NativeFontFeatureSettings>,
     font_kerning: NativeTextCascadeCandidates<FontKerningDeclarationValue>,
-    font_optical_sizing: NativeTextCascadeCandidates<NativeFontOpticalSizing>,
+    font_optical_sizing: NativeTextCascadeCandidates<FontOpticalSizingDeclarationValue>,
     font_palette: NativeTextCascadeCandidates<NativeFontPalette>,
     font_weight: NativeTextCascadeCandidates<FontWeightDeclarationValue>,
     font_style: NativeTextCascadeCandidates<FontStyleDeclarationValue>,
@@ -5454,6 +5461,98 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_optical_sizing_declaration(
+    declaration: InheritedTextDeclaration<FontOpticalSizingDeclarationValue>,
+    inherited: NativeFontOpticalSizing,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontOpticalSizingDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_optical_sizing_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => {
+            Some(FontOpticalSizingDeclarationValue::Value(inherited))
+        }
+        InheritedTextDeclaration::Initial => Some(FontOpticalSizingDeclarationValue::Value(
+            NativeFontOpticalSizing::Auto,
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_optical_sizing_value(
+    value: FontOpticalSizingDeclarationValue,
+    inherited: NativeFontOpticalSizing,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontOpticalSizingDeclarationValue> {
+    match value {
+        FontOpticalSizingDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_optical_sizing_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_optical_sizing_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontOpticalSizingDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_optical_sizing_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_optical_sizing_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontOpticalSizingDeclarationValue::Value(fallback)))
+        }
+        FontOpticalSizingDeclarationValue::CustomProperty(_)
+        | FontOpticalSizingDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontOpticalSizingDeclarationValue::Value(value) => {
+            Some(FontOpticalSizingDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_font_optical_sizing(
+    candidates: NativeTextCascadeCandidates<FontOpticalSizingDeclarationValue>,
+    inherited: NativeFontOpticalSizing,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontOpticalSizing {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontOpticalSizingDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_optical_sizing_declaration(
+                declaration,
+                inherited,
+                custom_properties,
+                0,
+            )
+        },
+    );
+    match resolved {
+        FontOpticalSizingDeclarationValue::Value(value) => value,
+        FontOpticalSizingDeclarationValue::CustomProperty(_)
+        | FontOpticalSizingDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_kerning_declaration(
@@ -8025,7 +8124,7 @@ struct NativeDeclarations {
     font_variant_numeric: Option<InheritedTextDeclaration<NativeFontVariantNumeric>>,
     font_feature_settings: Option<InheritedTextDeclaration<NativeFontFeatureSettings>>,
     font_kerning: Option<InheritedTextDeclaration<FontKerningDeclarationValue>>,
-    font_optical_sizing: Option<InheritedTextDeclaration<NativeFontOpticalSizing>>,
+    font_optical_sizing: Option<InheritedTextDeclaration<FontOpticalSizingDeclarationValue>>,
     font_palette: Option<InheritedTextDeclaration<NativeFontPalette>>,
     font_weight: Option<InheritedTextDeclaration<FontWeightDeclarationValue>>,
     font_style: Option<InheritedTextDeclaration<FontStyleDeclarationValue>>,
@@ -15995,10 +16094,35 @@ fn parse_font_optical_sizing(value: &str) -> Option<NativeFontOpticalSizing> {
     }
 }
 
+fn parse_font_optical_sizing_custom_property(
+    value: &str,
+) -> Option<FontOpticalSizingDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_optical_sizing(fallback).map(|fallback| {
+            FontOpticalSizingDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(FontOpticalSizingDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_font_optical_sizing_property(value: &str) -> Option<FontOpticalSizingDeclarationValue> {
+    parse_font_optical_sizing(value)
+        .map(FontOpticalSizingDeclarationValue::Value)
+        .or_else(|| parse_font_optical_sizing_custom_property(value))
+}
+
 fn parse_font_optical_sizing_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontOpticalSizing>> {
-    parse_inherited_text_declaration(value, parse_font_optical_sizing)
+) -> Option<InheritedTextDeclaration<FontOpticalSizingDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_optical_sizing_property)
 }
 
 fn parse_font_palette(value: &str) -> Option<NativeFontPalette> {
@@ -26257,6 +26381,26 @@ mod tests {
         assert!(parse_font_optical_sizing("inherit").is_none());
         assert!(parse_font_optical_sizing("auto none").is_none());
         assert!(parse_font_optical_sizing("on").is_none());
+        let sizing_name = parse_custom_property_name("--sizing").unwrap();
+        assert_eq!(
+            parse_font_optical_sizing_property("var(--sizing)"),
+            Some(FontOpticalSizingDeclarationValue::CustomProperty(
+                sizing_name
+            ))
+        );
+        assert_eq!(
+            parse_font_optical_sizing_declaration("var(--sizing, none)"),
+            Some(InheritedTextDeclaration::Value(
+                FontOpticalSizingDeclarationValue::CustomPropertyFallback(
+                    sizing_name,
+                    NativeFontOpticalSizing::None
+                )
+            ))
+        );
+        assert_eq!(
+            parse_font_optical_sizing_property("var(--sizing, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -28205,6 +28349,44 @@ mod tests {
             style("invalid").font_optical_sizing(),
             NativeFontOpticalSizing::None
         );
+    }
+
+    #[test]
+    fn inherited_font_optical_sizing_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --sizing: none; --alias: var(--sizing); --cycle: var(--cycle); font-optical-sizing: var(--sizing); }
+            #child { font-optical-sizing: var(--alias); }
+            #fallback { font-optical-sizing: var(--missing, auto); }
+            #invalid { --bad: unsupported; font-optical-sizing: var(--bad, auto); }
+            #cycle { font-optical-sizing: var(--cycle, auto); }
+            #wide-initial { --wide: initial; font-optical-sizing: var(--wide); }
+            #wide-inherit { --wide: inherit; font-optical-sizing: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_optical_sizing()
+        };
+
+        assert_eq!(style("parent"), NativeFontOpticalSizing::None);
+        assert_eq!(style("child"), NativeFontOpticalSizing::None);
+        assert_eq!(style("fallback"), NativeFontOpticalSizing::Auto);
+        assert_eq!(style("invalid"), NativeFontOpticalSizing::Auto);
+        assert_eq!(style("cycle"), NativeFontOpticalSizing::Auto);
+        assert_eq!(style("wide-initial"), NativeFontOpticalSizing::Auto);
+        assert_eq!(style("wide-inherit"), NativeFontOpticalSizing::None);
     }
 
     #[test]

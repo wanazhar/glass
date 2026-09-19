@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-613`, following completed
 `native-engine-browser-612`, following completed
 `native-engine-browser-611`, following completed
 `native-engine-browser-610`, following completed
@@ -482,6 +483,16 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 613 extends bounded native custom-property substitution to physical
+`margin` shorthand and `margin-top`, `margin-right`, `margin-bottom`, and
+`margin-left`. Standalone `var(--name)` and concrete pixel or `auto`
+fallbacks, including one-to-four-value shorthand expansion, now resolve
+inherited aliases, CSS-wide reset mappings, invalid values, and cyclic values
+before computed-style projection. Logical-margin projection, local cascade
+precedence, auto-edge provenance, and `revert-layer` rollback remain unchanged.
+Nested variable grammar, registered properties, full CSS variable grammar, and
+complete CSS/Web IDL parity remain issue #40 gates.
 
 Slice 612 extends bounded native custom-property substitution to physical
 `padding` shorthand and longhands. Standalone `var(--name)` and concrete

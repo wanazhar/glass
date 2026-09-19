@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-613`, following completed
 `native-engine-browser-612`, following completed
 `native-engine-browser-611`, following completed
 `native-engine-browser-610`, following completed
@@ -515,6 +516,17 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed margin substitution follow-up is
+[`native-engine-browser-613`](tasks/native-engine-browser-613.md): native
+physical `margin` shorthand and `margin-top`, `margin-right`, `margin-bottom`,
+and `margin-left` now accept bounded standalone `var(--name)` and concrete
+pixel or `auto` fallbacks, including one-to-four-value shorthand expansion.
+Resolution covers inherited aliases, CSS-wide reset mappings, invalid and
+cyclic values, while preserving logical-margin projection, local cascade
+precedence, auto-edge provenance, and `revert-layer` rollback. Nested variable
+grammar, registered properties, full CSS variable grammar, and complete CSS
+and Web IDL parity remain issue #40 gates.
 
 The completed padding substitution follow-up is
 [`native-engine-browser-612`](tasks/native-engine-browser-612.md): native

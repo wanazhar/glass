@@ -202,6 +202,21 @@ impl NativeBorderWidthValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeBackgroundColorShorthandFallback {
+    Color(NativeColor),
+    CurrentColor,
+}
+
+impl NativeBackgroundColorShorthandFallback {
+    const fn resolve(self, current_color: NativeColor) -> NativeColor {
+        match self {
+            Self::Color(color) => color,
+            Self::CurrentColor => current_color,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeBackgroundColorValue {
     Color(NativeColor),
     CurrentColor,
@@ -211,6 +226,8 @@ enum NativeBackgroundColorValue {
     Revert,
     CustomProperty(u64),
     CustomPropertyFallback(u64, NativeColor),
+    CustomPropertyShorthand(u64),
+    CustomPropertyShorthandFallback(u64, NativeBackgroundColorShorthandFallback),
 }
 
 impl NativeBackgroundColorValue {
@@ -224,7 +241,10 @@ impl NativeBackgroundColorValue {
             Self::CurrentColor => Some(current_color),
             Self::Inherit => inherited_background,
             Self::Unset | Self::Initial | Self::Revert => None,
-            Self::CustomProperty(_) | Self::CustomPropertyFallback(_, _) => None,
+            Self::CustomProperty(_)
+            | Self::CustomPropertyFallback(_, _)
+            | Self::CustomPropertyShorthand(_)
+            | Self::CustomPropertyShorthandFallback(_, _) => None,
         }
     }
 }
@@ -239,6 +259,8 @@ enum NativeBackgroundImageValue {
     Revert,
     CustomProperty(u64),
     CustomPropertyFallback(u64, Option<u32>),
+    CustomPropertyShorthand(u64),
+    CustomPropertyShorthandFallback(u64, Option<u32>),
 }
 
 impl NativeBackgroundImageValue {
@@ -251,7 +273,9 @@ impl NativeBackgroundImageValue {
             | Self::Initial
             | Self::Revert
             | Self::CustomProperty(_)
-            | Self::CustomPropertyFallback(_, _) => None,
+            | Self::CustomPropertyFallback(_, _)
+            | Self::CustomPropertyShorthand(_)
+            | Self::CustomPropertyShorthandFallback(_, _) => None,
         }
     }
 }
@@ -275,6 +299,8 @@ pub(crate) enum NativeBackgroundRepeat {
     NoRepeat,
     CustomProperty(u64),
     CustomPropertyFallback(u64, NativeBackgroundRepeatFallback),
+    CustomPropertyShorthand(u64),
+    CustomPropertyShorthandFallback(u64, NativeBackgroundRepeatFallback),
 }
 
 /// A background position component. Percentages use thousandths of the
@@ -304,6 +330,8 @@ enum NativeBackgroundPositionDeclaration {
     Value(NativeBackgroundPosition),
     CustomProperty(u64),
     CustomPropertyFallback(u64, NativeBackgroundPosition),
+    CustomPropertyShorthand(u64),
+    CustomPropertyShorthandFallback(u64, NativeBackgroundPosition),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -336,11 +364,15 @@ enum NativeBackgroundSizeDeclaration {
     Value(NativeBackgroundSize),
     CustomProperty(u64),
     CustomPropertyFallback(u64, NativeBackgroundSize),
+    CustomPropertyShorthand(u64),
+    CustomPropertyShorthandFallback(u64, NativeBackgroundSize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeBackgroundShorthandDeclaration {
     Value(NativeBackgroundShorthand),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeBackgroundShorthand),
     Inherit,
     Reset,
     RevertLayer,
@@ -9958,6 +9990,29 @@ fn resolve_local_color_declaration(
     })
 }
 
+fn resolve_native_background_shorthand_source(
+    source: &str,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<NativeBackgroundShorthand> {
+    if depth >= MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH {
+        return None;
+    }
+    if let Some((name_hash, fallback)) = parse_flex_var_arguments(source) {
+        return custom_properties
+            .get(&name_hash)
+            .and_then(|value| {
+                resolve_native_background_shorthand_source(
+                    value,
+                    custom_properties,
+                    depth.saturating_add(1),
+                )
+            })
+            .or_else(|| fallback.and_then(parse_background_shorthand));
+    }
+    parse_background_shorthand(source)
+}
+
 fn resolve_native_background_color_value(
     value: NativeBackgroundColorValue,
     inherited_background: Option<NativeColor>,
@@ -10002,6 +10057,51 @@ fn resolve_native_background_color_value(
                     LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => None,
                 })
                 .or(Some(Some(fallback)))
+        }
+        NativeBackgroundColorValue::CustomPropertyShorthand(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| {
+                    resolve_native_background_shorthand_source(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .and_then(|value| {
+                    resolve_native_background_color_value(
+                        value.color,
+                        inherited_background,
+                        current_color,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeBackgroundColorValue::CustomPropertyShorthandFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| {
+                    resolve_native_background_shorthand_source(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .and_then(|value| {
+                    resolve_native_background_color_value(
+                        value.color,
+                        inherited_background,
+                        current_color,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(Some(fallback.resolve(current_color))))
         }
         NativeBackgroundColorValue::CustomProperty(_)
         | NativeBackgroundColorValue::CustomPropertyFallback(_, _) => None,
@@ -10065,6 +10165,47 @@ fn resolve_native_background_image_value(
                 })
                 .or(Some(fallback))
         }
+        NativeBackgroundImageValue::CustomPropertyShorthand(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| {
+                    resolve_native_background_shorthand_source(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .and_then(|value| {
+                    resolve_native_background_image_value(
+                        value.image,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeBackgroundImageValue::CustomPropertyShorthandFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| {
+                    resolve_native_background_shorthand_source(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .and_then(|value| {
+                    resolve_native_background_image_value(
+                        value.image,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
         NativeBackgroundImageValue::CustomProperty(_)
         | NativeBackgroundImageValue::CustomPropertyFallback(_, _) => None,
         value => Some(value.resolve()),
@@ -10114,6 +10255,56 @@ fn resolve_native_background_repeat_value(
                 .and_then(|value| {
                     resolve_native_background_repeat_value(
                         value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or_else(|| {
+                    Some(match fallback {
+                        NativeBackgroundRepeatFallback::Repeat => NativeBackgroundRepeat::Repeat,
+                        NativeBackgroundRepeatFallback::RepeatX => NativeBackgroundRepeat::RepeatX,
+                        NativeBackgroundRepeatFallback::RepeatY => NativeBackgroundRepeat::RepeatY,
+                        NativeBackgroundRepeatFallback::NoRepeat => {
+                            NativeBackgroundRepeat::NoRepeat
+                        }
+                    })
+                })
+        }
+        NativeBackgroundRepeat::CustomPropertyShorthand(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| {
+                    resolve_native_background_shorthand_source(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .and_then(|value| {
+                    resolve_native_background_repeat_value(
+                        value.repeat,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeBackgroundRepeat::CustomPropertyShorthandFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| {
+                    resolve_native_background_shorthand_source(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .and_then(|value| {
+                    resolve_native_background_repeat_value(
+                        value.repeat,
                         custom_properties,
                         depth.saturating_add(1),
                     )
@@ -10190,8 +10381,50 @@ fn resolve_native_background_position_value(
                 })
                 .or(Some(fallback))
         }
+        NativeBackgroundPositionDeclaration::CustomPropertyShorthand(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| {
+                    resolve_native_background_shorthand_source(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .and_then(|value| {
+                    resolve_native_background_position_value(
+                        NativeBackgroundPositionDeclaration::Value(value.position),
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeBackgroundPositionDeclaration::CustomPropertyShorthandFallback(
+            name_hash,
+            fallback,
+        ) if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH => custom_properties
+            .get(&name_hash)
+            .and_then(|value| {
+                resolve_native_background_shorthand_source(
+                    value,
+                    custom_properties,
+                    depth.saturating_add(1),
+                )
+            })
+            .and_then(|value| {
+                resolve_native_background_position_value(
+                    NativeBackgroundPositionDeclaration::Value(value.position),
+                    custom_properties,
+                    depth.saturating_add(1),
+                )
+            })
+            .or(Some(fallback)),
         NativeBackgroundPositionDeclaration::CustomProperty(_)
-        | NativeBackgroundPositionDeclaration::CustomPropertyFallback(_, _) => None,
+        | NativeBackgroundPositionDeclaration::CustomPropertyFallback(_, _)
+        | NativeBackgroundPositionDeclaration::CustomPropertyShorthand(_)
+        | NativeBackgroundPositionDeclaration::CustomPropertyShorthandFallback(_, _) => None,
         NativeBackgroundPositionDeclaration::Value(value) => Some(value),
     }
 }
@@ -10251,8 +10484,51 @@ fn resolve_native_background_size_value(
                 })
                 .or(Some(fallback))
         }
+        NativeBackgroundSizeDeclaration::CustomPropertyShorthand(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| {
+                    resolve_native_background_shorthand_source(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .and_then(|value| {
+                    resolve_native_background_size_value(
+                        NativeBackgroundSizeDeclaration::Value(value.size),
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        NativeBackgroundSizeDeclaration::CustomPropertyShorthandFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| {
+                    resolve_native_background_shorthand_source(
+                        value,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .and_then(|value| {
+                    resolve_native_background_size_value(
+                        NativeBackgroundSizeDeclaration::Value(value.size),
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
         NativeBackgroundSizeDeclaration::CustomProperty(_)
-        | NativeBackgroundSizeDeclaration::CustomPropertyFallback(_, _) => None,
+        | NativeBackgroundSizeDeclaration::CustomPropertyFallback(_, _)
+        | NativeBackgroundSizeDeclaration::CustomPropertyShorthand(_)
+        | NativeBackgroundSizeDeclaration::CustomPropertyShorthandFallback(_, _) => None,
         NativeBackgroundSizeDeclaration::Value(value) => Some(value),
     }
 }
@@ -13160,6 +13436,73 @@ fn apply_background_shorthand_declaration(
             )),
             LocalCascadeDeclaration::Value(NativeBackgroundSizeDeclaration::Value(value.size)),
         ),
+        NativeBackgroundShorthandDeclaration::CustomProperty(name_hash) => (
+            LocalCascadeDeclaration::Value(NativeBackgroundColorValue::CustomPropertyShorthand(
+                name_hash,
+            )),
+            LocalCascadeDeclaration::Value(NativeBackgroundImageValue::CustomPropertyShorthand(
+                name_hash,
+            )),
+            LocalCascadeDeclaration::Value(NativeBackgroundRepeat::CustomPropertyShorthand(
+                name_hash,
+            )),
+            LocalCascadeDeclaration::Value(
+                NativeBackgroundPositionDeclaration::CustomPropertyShorthand(name_hash),
+            ),
+            LocalCascadeDeclaration::Value(
+                NativeBackgroundSizeDeclaration::CustomPropertyShorthand(name_hash),
+            ),
+        ),
+        NativeBackgroundShorthandDeclaration::CustomPropertyFallback(name_hash, value) => {
+            let color = match value.color {
+                NativeBackgroundColorValue::Color(color) => {
+                    NativeBackgroundColorShorthandFallback::Color(color)
+                }
+                NativeBackgroundColorValue::CurrentColor => {
+                    NativeBackgroundColorShorthandFallback::CurrentColor
+                }
+                _ => NativeBackgroundColorShorthandFallback::Color(NativeColor {
+                    red: 0,
+                    green: 0,
+                    blue: 0,
+                    alpha: 0,
+                }),
+            };
+            let image = match value.image {
+                NativeBackgroundImageValue::Url(source) => Some(source),
+                NativeBackgroundImageValue::None => None,
+                _ => None,
+            };
+            let repeat = match value.repeat {
+                NativeBackgroundRepeat::Repeat => NativeBackgroundRepeatFallback::Repeat,
+                NativeBackgroundRepeat::RepeatX => NativeBackgroundRepeatFallback::RepeatX,
+                NativeBackgroundRepeat::RepeatY => NativeBackgroundRepeatFallback::RepeatY,
+                NativeBackgroundRepeat::NoRepeat => NativeBackgroundRepeatFallback::NoRepeat,
+                _ => NativeBackgroundRepeatFallback::Repeat,
+            };
+            (
+                LocalCascadeDeclaration::Value(
+                    NativeBackgroundColorValue::CustomPropertyShorthandFallback(name_hash, color),
+                ),
+                LocalCascadeDeclaration::Value(
+                    NativeBackgroundImageValue::CustomPropertyShorthandFallback(name_hash, image),
+                ),
+                LocalCascadeDeclaration::Value(
+                    NativeBackgroundRepeat::CustomPropertyShorthandFallback(name_hash, repeat),
+                ),
+                LocalCascadeDeclaration::Value(
+                    NativeBackgroundPositionDeclaration::CustomPropertyShorthandFallback(
+                        name_hash,
+                        value.position,
+                    ),
+                ),
+                LocalCascadeDeclaration::Value(
+                    NativeBackgroundSizeDeclaration::CustomPropertyShorthandFallback(
+                        name_hash, value.size,
+                    ),
+                ),
+            )
+        }
         NativeBackgroundShorthandDeclaration::Inherit => (
             LocalCascadeDeclaration::Inherit,
             LocalCascadeDeclaration::Inherit,
@@ -16719,7 +17062,9 @@ fn parse_background_image_value(value: &str) -> Option<NativeBackgroundImageValu
                 | NativeBackgroundImageValue::Initial
                 | NativeBackgroundImageValue::Revert
                 | NativeBackgroundImageValue::CustomProperty(_)
-                | NativeBackgroundImageValue::CustomPropertyFallback(_, _) => None,
+                | NativeBackgroundImageValue::CustomPropertyFallback(_, _)
+                | NativeBackgroundImageValue::CustomPropertyShorthand(_)
+                | NativeBackgroundImageValue::CustomPropertyShorthandFallback(_, _) => None,
             },
             None => Some(NativeBackgroundImageValue::CustomProperty(name_hash)),
         };
@@ -16764,7 +17109,9 @@ fn parse_background_repeat_fallback(value: &str) -> Option<NativeBackgroundRepea
         NativeBackgroundRepeat::RepeatY => Some(NativeBackgroundRepeatFallback::RepeatY),
         NativeBackgroundRepeat::NoRepeat => Some(NativeBackgroundRepeatFallback::NoRepeat),
         NativeBackgroundRepeat::CustomProperty(_)
-        | NativeBackgroundRepeat::CustomPropertyFallback(_, _) => None,
+        | NativeBackgroundRepeat::CustomPropertyFallback(_, _)
+        | NativeBackgroundRepeat::CustomPropertyShorthand(_)
+        | NativeBackgroundRepeat::CustomPropertyShorthandFallback(_, _) => None,
     }
 }
 
@@ -17089,6 +17436,16 @@ fn parse_background_shorthand_declaration(
     }
     if is_local_reset_keyword(value) {
         return Some(NativeBackgroundShorthandDeclaration::Reset);
+    }
+    if let Some((name_hash, fallback)) = parse_flex_var_arguments(value) {
+        return match fallback {
+            Some(fallback) => parse_background_shorthand(fallback).map(|fallback| {
+                NativeBackgroundShorthandDeclaration::CustomPropertyFallback(name_hash, fallback)
+            }),
+            None => Some(NativeBackgroundShorthandDeclaration::CustomProperty(
+                name_hash,
+            )),
+        };
     }
     parse_background_shorthand(value).map(NativeBackgroundShorthandDeclaration::Value)
 }
@@ -24507,6 +24864,37 @@ mod tests {
     }
 
     #[test]
+    fn background_shorthand_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let background = parse_custom_property_name("--background").unwrap();
+        let fallback = parse_background_shorthand(
+            "red url('https://example.test/background.png') no-repeat right bottom / cover",
+        )
+        .unwrap();
+        assert_eq!(
+            parse_background_shorthand_declaration("var(--background)"),
+            Some(NativeBackgroundShorthandDeclaration::CustomProperty(
+                background
+            ))
+        );
+        assert_eq!(
+            parse_background_shorthand_declaration(
+                "VAR(--background, red url('https://example.test/background.png') no-repeat right bottom / cover)"
+            ),
+            Some(
+                NativeBackgroundShorthandDeclaration::CustomPropertyFallback(background, fallback)
+            )
+        );
+        assert_eq!(
+            parse_background_shorthand_declaration("var(--background, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_background_shorthand_declaration("var(--background, inherit)"),
+            None
+        );
+    }
+
+    #[test]
     fn background_image_parser_accepts_custom_property_aliases_and_fallbacks() {
         let image = parse_custom_property_name("--image").unwrap();
         let source = background_image_source_id("https://example.test/image.png");
@@ -24987,6 +25375,170 @@ mod tests {
                 width: NativeBackgroundSizeComponent::Length(10),
                 height: NativeBackgroundSizeComponent::Length(20),
             }
+        );
+    }
+
+    #[test]
+    fn background_shorthand_custom_properties_resolve_all_components() {
+        let parent = node("<div id='parent'>Parent</div>");
+        let child = node("<div id='child'>Child</div>");
+        let fallback = node("<div id='fallback'>Fallback</div>");
+        let invalid = node("<div id='invalid'>Invalid</div>");
+        let cycle = node("<div id='cycle'>Cycle</div>");
+        let ordered = node("<div id='ordered'>Ordered</div>");
+        let parent_css = "#parent { --background: rgb(1, 2, 3) url('https://example.test/parent.png') no-repeat right bottom / cover; background: var(--background); }";
+        let child_css = "#child { --background: rgb(1, 2, 3) url('https://example.test/parent.png') no-repeat right bottom / cover; --alias: var(--background); background: var(--alias); }";
+        let fallback_css = "#fallback { background: var(--missing, red url('https://example.test/fallback.png') repeat-x left top / 50% 24px); }";
+        let invalid_css =
+            "#invalid { --bad: nonsense; background: var(--bad, red no-repeat center / contain); }";
+        let cycle_css = "#cycle { --cycle: var(--cycle); background: var(--cycle, red repeat-y right center / 12px 18px); }";
+        let ordered_css = "#ordered { background: red; background: var(--missing, red no-repeat center / cover); }";
+        let style_for = |target: &NativeNode, source: &str| {
+            NativeStylesheet::from_sources(vec![source.to_owned()])
+                .expect("shorthand fixture stylesheet")
+                .computed_for(target)
+        };
+        let accent = NativeColor {
+            red: 1,
+            green: 2,
+            blue: 3,
+            alpha: u8::MAX,
+        };
+
+        for (target, source) in [(&parent, parent_css), (&child, child_css)] {
+            let style = style_for(target, source);
+            assert_eq!(
+                style.background_color(),
+                Some(accent),
+                "background source: {source}"
+            );
+            assert_eq!(
+                style.background_image(),
+                Some(background_image_source_id(
+                    "https://example.test/parent.png"
+                ))
+            );
+            assert_eq!(style.background_repeat(), NativeBackgroundRepeat::NoRepeat);
+            assert_eq!(
+                style.background_position(),
+                NativeBackgroundPosition {
+                    x: NativeBackgroundPositionComponent::Percentage(
+                        NATIVE_BACKGROUND_PERCENT_SCALE
+                    ),
+                    y: NativeBackgroundPositionComponent::Percentage(
+                        NATIVE_BACKGROUND_PERCENT_SCALE
+                    ),
+                }
+            );
+            assert_eq!(style.background_size(), NativeBackgroundSize::Cover);
+        }
+
+        let fallback_style = style_for(&fallback, fallback_css);
+        assert_eq!(fallback_style.background_color(), Some(NativeColor::RED));
+        assert_eq!(
+            fallback_style.background_image(),
+            Some(background_image_source_id(
+                "https://example.test/fallback.png"
+            ))
+        );
+        assert_eq!(
+            fallback_style.background_repeat(),
+            NativeBackgroundRepeat::RepeatX
+        );
+        assert_eq!(
+            fallback_style.background_position(),
+            NativeBackgroundPosition {
+                x: NativeBackgroundPositionComponent::Percentage(0),
+                y: NativeBackgroundPositionComponent::Percentage(0),
+            }
+        );
+        assert_eq!(
+            fallback_style.background_size(),
+            NativeBackgroundSize::Explicit {
+                width: NativeBackgroundSizeComponent::Percentage(500),
+                height: NativeBackgroundSizeComponent::Length(24),
+            }
+        );
+        let invalid_style = style_for(&invalid, invalid_css);
+        assert_eq!(invalid_style.background_color(), Some(NativeColor::RED));
+        assert_eq!(invalid_style.background_image(), None);
+        assert_eq!(
+            invalid_style.background_repeat(),
+            NativeBackgroundRepeat::NoRepeat
+        );
+        assert_eq!(
+            invalid_style.background_position(),
+            NativeBackgroundPosition {
+                x: NativeBackgroundPositionComponent::Percentage(
+                    NATIVE_BACKGROUND_PERCENT_SCALE / 2
+                ),
+                y: NativeBackgroundPositionComponent::Percentage(
+                    NATIVE_BACKGROUND_PERCENT_SCALE / 2
+                ),
+            }
+        );
+        assert_eq!(
+            invalid_style.background_size(),
+            NativeBackgroundSize::Contain
+        );
+        let cycle_style = style_for(&cycle, cycle_css);
+        assert_eq!(cycle_style.background_color(), Some(NativeColor::RED));
+        assert_eq!(cycle_style.background_image(), None);
+        assert_eq!(
+            cycle_style.background_repeat(),
+            NativeBackgroundRepeat::RepeatY
+        );
+        assert_eq!(
+            cycle_style.background_position(),
+            NativeBackgroundPosition {
+                x: NativeBackgroundPositionComponent::Percentage(NATIVE_BACKGROUND_PERCENT_SCALE),
+                y: NativeBackgroundPositionComponent::Percentage(
+                    NATIVE_BACKGROUND_PERCENT_SCALE / 2
+                ),
+            }
+        );
+        assert_eq!(
+            cycle_style.background_size(),
+            NativeBackgroundSize::Explicit {
+                width: NativeBackgroundSizeComponent::Length(12),
+                height: NativeBackgroundSizeComponent::Length(18),
+            }
+        );
+        let ordered_style = style_for(&ordered, ordered_css);
+        assert_eq!(ordered_style.background_color(), Some(NativeColor::RED));
+        assert_eq!(
+            ordered_style.background_repeat(),
+            NativeBackgroundRepeat::NoRepeat
+        );
+        assert_eq!(ordered_style.background_size(), NativeBackgroundSize::Cover);
+        let inherited_document = NativeDocument::parse(
+            r#"<style>#parent { --background: rgb(1, 2, 3) url('https://example.test/inherited.png') no-repeat right bottom / cover; } #child { --alias: var(--background); background: var(--alias); }</style><div id='parent'><span id='child'>Child</span></div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let inherited_child = inherited_document.resolve_target("id=child").unwrap();
+        let inherited_style = inherited_document.computed_style_for_layout(inherited_child);
+        assert_eq!(inherited_style.background_color(), Some(accent));
+        assert_eq!(
+            inherited_style.background_image(),
+            Some(background_image_source_id(
+                "https://example.test/inherited.png"
+            ))
+        );
+        assert_eq!(
+            inherited_style.background_repeat(),
+            NativeBackgroundRepeat::NoRepeat
+        );
+        assert_eq!(
+            inherited_style.background_position(),
+            NativeBackgroundPosition {
+                x: NativeBackgroundPositionComponent::Percentage(NATIVE_BACKGROUND_PERCENT_SCALE),
+                y: NativeBackgroundPositionComponent::Percentage(NATIVE_BACKGROUND_PERCENT_SCALE),
+            }
+        );
+        assert_eq!(
+            inherited_style.background_size(),
+            NativeBackgroundSize::Cover
         );
     }
 

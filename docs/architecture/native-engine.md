@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-622`, following completed
 `native-engine-browser-621`, following completed
 `native-engine-browser-620`, following completed
 `native-engine-browser-619`, following completed
@@ -491,6 +492,15 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 622 extends bounded native custom-property substitution to
+`flex-direction`, `flex-wrap`, and `flex-flow`. Standalone `var(--name)`
+values and concrete direction, wrap, or flow fallbacks now resolve inherited
+custom-property aliases through both flex-flow components, invalid and cyclic
+fallback values, longhand override precedence, and existing reset, inherit,
+and `revert-layer` behavior. Full custom-property grammar, registered
+properties, and complete CSS and Web IDL parity remain explicit issue #40
+gates.
 
 Slice 621 extends bounded native custom-property substitution to `visibility`.
 Standalone `var(--name)` values and hidden or visible fallbacks now resolve

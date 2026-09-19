@@ -914,6 +914,10 @@ pub(crate) enum FlexDirectionValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexDirectionDeclaration {
     Value(FlexDirectionValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, FlexDirectionValue),
+    CustomPropertyFlow(u64),
+    CustomPropertyFlowFallback(u64, FlexDirectionValue),
     Inherit,
     Reset,
     RevertLayer,
@@ -944,6 +948,10 @@ pub(crate) enum FlexWrapValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexWrapDeclaration {
     Value(FlexWrapValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, FlexWrapValue),
+    CustomPropertyFlow(u64),
+    CustomPropertyFlowFallback(u64, FlexWrapValue),
     Inherit,
     Reset,
     RevertLayer,
@@ -4642,9 +4650,13 @@ impl NativeStylesheet {
             align_items: resolve_align_items(*align_items, inherited.align_items),
             align_self: resolve_align_self(*align_self, inherited.align_self),
             align_content: resolve_align_content(*align_content, inherited.align_content),
-            flex_direction: resolve_flex_direction(*flex_direction, inherited.flex_direction),
+            flex_direction: resolve_flex_direction(
+                *flex_direction,
+                inherited.flex_direction,
+                custom_properties,
+            ),
             direction: resolved_direction,
-            flex_wrap: resolve_flex_wrap(*flex_wrap, inherited.flex_wrap),
+            flex_wrap: resolve_flex_wrap(*flex_wrap, inherited.flex_wrap, custom_properties),
             flex_item_order: resolve_flex_item_order(*flex_item_order, inherited.flex_item_order),
             flex_grow: resolve_flex_grow(*flex_grow, inherited.flex_grow),
             flex_shrink: resolve_flex_shrink(*flex_shrink, inherited.flex_shrink),
@@ -5826,17 +5838,173 @@ fn resolve_direction(
     }
 }
 
+fn resolve_flex_direction_value(
+    value: FlexDirectionDeclaration,
+    inherited: FlexDirectionValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FlexDirectionValue> {
+    match value {
+        FlexDirectionDeclaration::Value(value) => Some(value),
+        FlexDirectionDeclaration::Inherit => Some(inherited),
+        FlexDirectionDeclaration::Reset => Some(FlexDirectionValue::Row),
+        FlexDirectionDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_direction_declaration(value))
+                .and_then(|declaration| {
+                    resolve_flex_direction_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FlexDirectionDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_direction_declaration(value))
+                .and_then(|declaration| {
+                    resolve_flex_direction_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        FlexDirectionDeclaration::CustomPropertyFlow(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_flow_declaration(value))
+                .and_then(|(direction, _)| {
+                    resolve_flex_direction_value(
+                        direction,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FlexDirectionDeclaration::CustomPropertyFlowFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_flow_declaration(value))
+                .and_then(|(direction, _)| {
+                    resolve_flex_direction_value(
+                        direction,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        FlexDirectionDeclaration::CustomProperty(_)
+        | FlexDirectionDeclaration::CustomPropertyFallback(_, _)
+        | FlexDirectionDeclaration::CustomPropertyFlow(_)
+        | FlexDirectionDeclaration::CustomPropertyFlowFallback(_, _)
+        | FlexDirectionDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_flex_wrap_value(
+    value: FlexWrapDeclaration,
+    inherited: FlexWrapValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FlexWrapValue> {
+    match value {
+        FlexWrapDeclaration::Value(value) => Some(value),
+        FlexWrapDeclaration::Inherit => Some(inherited),
+        FlexWrapDeclaration::Reset => Some(FlexWrapValue::NoWrap),
+        FlexWrapDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_wrap_declaration(value))
+                .and_then(|declaration| {
+                    resolve_flex_wrap_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FlexWrapDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_wrap_declaration(value))
+                .and_then(|declaration| {
+                    resolve_flex_wrap_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        FlexWrapDeclaration::CustomPropertyFlow(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_flow_declaration(value))
+                .and_then(|(_, wrap)| {
+                    resolve_flex_wrap_value(
+                        wrap,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FlexWrapDeclaration::CustomPropertyFlowFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_flow_declaration(value))
+                .and_then(|(_, wrap)| {
+                    resolve_flex_wrap_value(
+                        wrap,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        FlexWrapDeclaration::CustomProperty(_)
+        | FlexWrapDeclaration::CustomPropertyFallback(_, _)
+        | FlexWrapDeclaration::CustomPropertyFlow(_)
+        | FlexWrapDeclaration::CustomPropertyFlowFallback(_, _)
+        | FlexWrapDeclaration::RevertLayer => None,
+    }
+}
+
 fn resolve_flex_direction(
     candidates: [Option<CascadeValue<FlexDirectionDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
     inherited: FlexDirectionValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> FlexDirectionValue {
     resolve_alignment_candidates(candidates, FlexDirectionValue::Row, |declaration| {
-        match declaration {
-            FlexDirectionDeclaration::Value(value) => Some(value),
-            FlexDirectionDeclaration::Inherit => Some(inherited),
-            FlexDirectionDeclaration::Reset => Some(FlexDirectionValue::Row),
-            FlexDirectionDeclaration::RevertLayer => None,
-        }
+        resolve_flex_direction_value(declaration, inherited, custom_properties, 0)
     })
 }
 
@@ -5933,17 +6101,11 @@ fn resolve_align_content(
 fn resolve_flex_wrap(
     candidates: [Option<CascadeValue<FlexWrapDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
     inherited: FlexWrapValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> FlexWrapValue {
-    resolve_alignment_candidates(
-        candidates,
-        FlexWrapValue::NoWrap,
-        |declaration| match declaration {
-            FlexWrapDeclaration::Value(value) => Some(value),
-            FlexWrapDeclaration::Inherit => Some(inherited),
-            FlexWrapDeclaration::Reset => Some(FlexWrapValue::NoWrap),
-            FlexWrapDeclaration::RevertLayer => None,
-        },
-    )
+    resolve_alignment_candidates(candidates, FlexWrapValue::NoWrap, |declaration| {
+        resolve_flex_wrap_value(declaration, inherited, custom_properties, 0)
+    })
 }
 
 fn resolve_flex_item_order(
@@ -18599,6 +18761,54 @@ fn parse_align_content_declaration(value: &str) -> Option<AlignContentDeclaratio
     parse_align_content(value).map(AlignContentDeclaration::Value)
 }
 
+fn parse_flex_var_arguments(value: &str) -> Option<(u64, Option<&str>)> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    Some((parse_custom_property_name(name)?, fallback))
+}
+
+fn parse_flex_direction_custom_property(value: &str) -> Option<FlexDirectionDeclaration> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_flex_direction(fallback)
+            .map(|fallback| FlexDirectionDeclaration::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(FlexDirectionDeclaration::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_flex_wrap_custom_property(value: &str) -> Option<FlexWrapDeclaration> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_flex_wrap(fallback)
+            .map(|fallback| FlexWrapDeclaration::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(FlexWrapDeclaration::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_flex_flow_custom_property(
+    value: &str,
+) -> Option<(FlexDirectionDeclaration, FlexWrapDeclaration)> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => {
+            let (direction, wrap) = parse_flex_flow(fallback)?;
+            Some((
+                FlexDirectionDeclaration::CustomPropertyFlowFallback(name_hash, direction),
+                FlexWrapDeclaration::CustomPropertyFlowFallback(name_hash, wrap),
+            ))
+        }
+        None => Some((
+            FlexDirectionDeclaration::CustomPropertyFlow(name_hash),
+            FlexWrapDeclaration::CustomPropertyFlow(name_hash),
+        )),
+    }
+}
+
 fn parse_flex_direction(value: &str) -> Option<FlexDirectionValue> {
     match value.to_ascii_lowercase().as_str() {
         "row" => Some(FlexDirectionValue::Row),
@@ -18619,7 +18829,9 @@ fn parse_flex_direction_declaration(value: &str) -> Option<FlexDirectionDeclarat
     if value.trim().eq_ignore_ascii_case("inherit") {
         return Some(FlexDirectionDeclaration::Inherit);
     }
-    parse_flex_direction(value).map(FlexDirectionDeclaration::Value)
+    parse_flex_direction(value)
+        .map(FlexDirectionDeclaration::Value)
+        .or_else(|| parse_flex_direction_custom_property(value))
 }
 
 fn parse_direction(value: &str) -> Option<DirectionValue> {
@@ -18677,7 +18889,9 @@ fn parse_flex_wrap_declaration(value: &str) -> Option<FlexWrapDeclaration> {
     if value.trim().eq_ignore_ascii_case("inherit") {
         return Some(FlexWrapDeclaration::Inherit);
     }
-    parse_flex_wrap(value).map(FlexWrapDeclaration::Value)
+    parse_flex_wrap(value)
+        .map(FlexWrapDeclaration::Value)
+        .or_else(|| parse_flex_wrap_custom_property(value))
 }
 
 fn parse_flex_flow(value: &str) -> Option<(FlexDirectionValue, FlexWrapValue)> {
@@ -18720,11 +18934,14 @@ fn parse_flex_flow_declaration(
             FlexWrapDeclaration::Inherit,
         ));
     }
-    let (direction, wrap) = parse_flex_flow(value)?;
-    Some((
-        FlexDirectionDeclaration::Value(direction),
-        FlexWrapDeclaration::Value(wrap),
-    ))
+    parse_flex_flow(value)
+        .map(|(direction, wrap)| {
+            (
+                FlexDirectionDeclaration::Value(direction),
+                FlexWrapDeclaration::Value(wrap),
+            )
+        })
+        .or_else(|| parse_flex_flow_custom_property(value))
 }
 
 fn parse_flex_item_order(value: &str) -> Option<NativeOrderValue> {
@@ -28190,6 +28407,66 @@ mod tests {
                 flex_wrap: Some(FlexWrapDeclaration::RevertLayer),
                 ..NativeDeclarations::default()
             }
+        );
+    }
+    #[test]
+    fn flex_flow_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let direction = parse_custom_property_name("--direction").unwrap();
+        let wrap = parse_custom_property_name("--wrap").unwrap();
+        let flow = parse_custom_property_name("--flow").unwrap();
+        assert_eq!(
+            parse_flex_direction_declaration("var(--direction)"),
+            Some(FlexDirectionDeclaration::CustomProperty(direction))
+        );
+        assert_eq!(
+            parse_flex_direction_declaration("var(--direction, column)"),
+            Some(FlexDirectionDeclaration::CustomPropertyFallback(
+                direction,
+                FlexDirectionValue::Column
+            ))
+        );
+        assert_eq!(
+            parse_flex_wrap_declaration("var(--wrap, wrap-reverse)"),
+            Some(FlexWrapDeclaration::CustomPropertyFallback(
+                wrap,
+                FlexWrapValue::WrapReverse
+            ))
+        );
+        assert_eq!(
+            parse_flex_flow_declaration("var(--flow)"),
+            Some((
+                FlexDirectionDeclaration::CustomPropertyFlow(flow),
+                FlexWrapDeclaration::CustomPropertyFlow(flow),
+            ))
+        );
+        assert_eq!(
+            parse_flex_flow_declaration("var(--flow, column wrap)"),
+            Some((
+                FlexDirectionDeclaration::CustomPropertyFlowFallback(
+                    flow,
+                    FlexDirectionValue::Column
+                ),
+                FlexWrapDeclaration::CustomPropertyFlowFallback(flow, FlexWrapValue::Wrap),
+            ))
+        );
+        let declarations = parse_declarations(
+            "flex-flow: var(--flow); flex-direction: var(--direction); flex-wrap: var(--wrap)",
+        );
+        assert_eq!(
+            declarations.flex_direction,
+            Some(FlexDirectionDeclaration::CustomProperty(direction))
+        );
+        assert_eq!(
+            declarations.flex_wrap,
+            Some(FlexWrapDeclaration::CustomProperty(wrap))
+        );
+        assert_eq!(
+            parse_flex_direction_declaration("var(--direction, row wrap)"),
+            None
+        );
+        assert_eq!(
+            parse_flex_flow_declaration("var(--flow, var(--other))"),
+            None
         );
     }
 
@@ -39250,6 +39527,64 @@ mod tests {
         assert_eq!(child_style.flex_grow(), 0);
         assert_eq!(child_style.flex_shrink(), 1);
         assert_eq!(child_style.flex_basis(), FlexBasisValue::Auto);
+    }
+
+    #[test]
+    fn flex_flow_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --flow: column wrap; --alias: var(--flow); --cycle: var(--cycle); flex-flow: var(--alias); }
+            #child { flex-flow: var(--alias); }
+            #fallback { flex-flow: var(--missing, column wrap); }
+            #invalid { --bad: unsupported; flex-flow: var(--bad, row-reverse wrap); }
+            #cycle { flex-flow: var(--cycle, column wrap-reverse); }
+            #reset { --reset: initial; flex-flow: var(--reset, column wrap); }
+            #direction { --direction: row-reverse; --wrap: wrap-reverse; flex-direction: var(--direction); flex-wrap: var(--wrap); }
+            #longhand { --flow: column wrap; --direction: row-reverse; flex-flow: var(--flow); flex-direction: var(--direction, row); }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='direction'>Direction</div>
+            <div id='longhand'>Longhand</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        assert_eq!(style("parent").flex_direction(), FlexDirectionValue::Column);
+        assert_eq!(style("parent").flex_wrap(), FlexWrapValue::Wrap);
+        assert_eq!(style("child").flex_direction(), FlexDirectionValue::Column);
+        assert_eq!(style("child").flex_wrap(), FlexWrapValue::Wrap);
+        assert_eq!(
+            style("fallback").flex_direction(),
+            FlexDirectionValue::Column
+        );
+        assert_eq!(style("fallback").flex_wrap(), FlexWrapValue::Wrap);
+        assert_eq!(
+            style("invalid").flex_direction(),
+            FlexDirectionValue::RowReverse
+        );
+        assert_eq!(style("invalid").flex_wrap(), FlexWrapValue::Wrap);
+        assert_eq!(style("cycle").flex_direction(), FlexDirectionValue::Column);
+        assert_eq!(style("cycle").flex_wrap(), FlexWrapValue::WrapReverse);
+        assert_eq!(style("reset").flex_direction(), FlexDirectionValue::Row);
+        assert_eq!(style("reset").flex_wrap(), FlexWrapValue::NoWrap);
+        assert_eq!(
+            style("direction").flex_direction(),
+            FlexDirectionValue::RowReverse
+        );
+        assert_eq!(style("direction").flex_wrap(), FlexWrapValue::WrapReverse);
+        assert_eq!(
+            style("longhand").flex_direction(),
+            FlexDirectionValue::RowReverse
+        );
+        assert_eq!(style("longhand").flex_wrap(), FlexWrapValue::Wrap);
     }
 
     #[test]

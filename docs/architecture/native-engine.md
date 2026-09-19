@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-566`, following completed
 `native-engine-browser-565`, following completed
 `native-engine-browser-564`, following completed
 `native-engine-browser-563`, following completed
@@ -435,6 +436,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 566 extends bounded inherited native CSS `font-size` custom-property
+resolution with one checked `var(--name, fallback)` form. Missing or invalid
+references now use absolute, relative, viewport, `calc()`, or CSS-wide
+fallback values while direct references, cascade precedence, recursion bounds,
+and fail-closed handling remain intact. Composite substitution inside larger
+`calc()` expressions, registered properties, CSSOM mutation, and complete CSS
+variable parity remain issue #40 gates.
 
 Slice 565 adds bounded live viewport recomputation across the native engine
 seams. Updates validate and synchronize the content process, initialize newly

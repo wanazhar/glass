@@ -1687,6 +1687,20 @@ enum NativeViewportFontSizeUnit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeFontSizeFallbackValue {
+    Pixels(u32),
+    Relative(u32),
+    RootRelative(u32),
+    Viewport(u32, NativeViewportFontSizeUnit),
+    Calculation(NativeFontSizeCalculation),
+    Inherit,
+    Initial,
+    Unset,
+    Revert,
+    RevertLayer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeFontSizeDeclarationValue {
     Pixels(u32),
     Relative(u32),
@@ -1694,6 +1708,7 @@ enum NativeFontSizeDeclarationValue {
     Viewport(u32, NativeViewportFontSizeUnit),
     Calculation(NativeFontSizeCalculation),
     CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontSizeFallbackValue),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -5139,6 +5154,36 @@ fn resolve_font_size_calculation(
         .then_some(value)
 }
 
+fn resolve_font_size_fallback(
+    fallback: NativeFontSizeFallbackValue,
+    inherited: u32,
+    root_font_size: u32,
+    viewport: Viewport,
+) -> Option<u32> {
+    match fallback {
+        NativeFontSizeFallbackValue::Pixels(value) => (1..=super::font::MAX_NATIVE_FONT_SIZE)
+            .contains(&value)
+            .then_some(value),
+        NativeFontSizeFallbackValue::Relative(scale_milli) => {
+            scale_relative_font_size(inherited, scale_milli)
+        }
+        NativeFontSizeFallbackValue::RootRelative(scale_milli) => {
+            scale_relative_font_size(root_font_size, scale_milli)
+        }
+        NativeFontSizeFallbackValue::Viewport(scale_milli, unit) => {
+            scale_viewport_font_size(viewport, scale_milli, unit)
+        }
+        NativeFontSizeFallbackValue::Calculation(calculation) => {
+            resolve_font_size_calculation(calculation, inherited, root_font_size, viewport)
+        }
+        NativeFontSizeFallbackValue::Inherit
+        | NativeFontSizeFallbackValue::Unset
+        | NativeFontSizeFallbackValue::Revert => Some(inherited),
+        NativeFontSizeFallbackValue::Initial => Some(super::font::DEFAULT_NATIVE_FONT_SIZE),
+        NativeFontSizeFallbackValue::RevertLayer => None,
+    }
+}
+
 fn resolve_font_size_declaration(
     declaration: InheritedTextDeclaration<NativeFontSizeDeclarationValue>,
     inherited: u32,
@@ -5180,14 +5225,31 @@ fn resolve_font_size_declaration(
                     depth.saturating_add(1),
                 )
             }),
+        InheritedTextDeclaration::Value(
+            NativeFontSizeDeclarationValue::CustomPropertyFallback(name_hash, fallback),
+        ) if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH => custom_properties
+            .get(&name_hash)
+            .and_then(|value| parse_font_size_value(value))
+            .and_then(|value| {
+                resolve_font_size_declaration(
+                    InheritedTextDeclaration::Value(value),
+                    inherited,
+                    root_font_size,
+                    viewport,
+                    custom_properties,
+                    depth.saturating_add(1),
+                )
+            })
+            .or_else(|| resolve_font_size_fallback(fallback, inherited, root_font_size, viewport)),
         InheritedTextDeclaration::Inherit
         | InheritedTextDeclaration::Unset
         | InheritedTextDeclaration::Revert => Some(inherited),
         InheritedTextDeclaration::Initial => Some(super::font::DEFAULT_NATIVE_FONT_SIZE),
         InheritedTextDeclaration::RevertLayer
-        | InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::CustomProperty(_)) => {
-            None
-        }
+        | InheritedTextDeclaration::Value(NativeFontSizeDeclarationValue::CustomProperty(_))
+        | InheritedTextDeclaration::Value(
+            NativeFontSizeDeclarationValue::CustomPropertyFallback(_, _),
+        ) => None,
     }
 }
 
@@ -8254,7 +8316,78 @@ fn apply_custom_property_declarations(
     }
 }
 
-fn parse_font_size_custom_property(value: &str) -> Option<u64> {
+fn parse_font_size_var_arguments(value: &str) -> Option<(&str, Option<&str>)> {
+    let mut depth = 0_usize;
+    let mut comma = None;
+    for (index, byte) in value.bytes().enumerate() {
+        match byte {
+            b'(' => depth = depth.checked_add(1)?,
+            b')' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            b',' if depth == 0 => {
+                if comma.is_some() {
+                    return None;
+                }
+                comma = Some(index);
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    let (name, fallback) = comma
+        .map(|index| {
+            (
+                &value[..index],
+                Some(value[index.saturating_add(1)..].trim()),
+            )
+        })
+        .unwrap_or((value, None));
+    let name = name.trim();
+    if name.is_empty() || fallback.is_some_and(str::is_empty) {
+        return None;
+    }
+    Some((name, fallback))
+}
+
+fn parse_font_size_fallback_value(value: &str) -> Option<NativeFontSizeFallbackValue> {
+    let value = value.trim();
+    let keyword = value.to_ascii_lowercase();
+    match keyword.as_str() {
+        "inherit" => return Some(NativeFontSizeFallbackValue::Inherit),
+        "initial" => return Some(NativeFontSizeFallbackValue::Initial),
+        "unset" => return Some(NativeFontSizeFallbackValue::Unset),
+        "revert" => return Some(NativeFontSizeFallbackValue::Revert),
+        "revert-layer" => return Some(NativeFontSizeFallbackValue::RevertLayer),
+        _ => {}
+    }
+    parse_font_size(value)
+        .map(NativeFontSizeFallbackValue::Pixels)
+        .or_else(|| {
+            parse_relative_font_size(value).map(|value| match value {
+                NativeFontSizeDeclarationValue::Relative(scale_milli) => {
+                    NativeFontSizeFallbackValue::Relative(scale_milli)
+                }
+                NativeFontSizeDeclarationValue::RootRelative(scale_milli) => {
+                    NativeFontSizeFallbackValue::RootRelative(scale_milli)
+                }
+                NativeFontSizeDeclarationValue::Viewport(scale_milli, unit) => {
+                    NativeFontSizeFallbackValue::Viewport(scale_milli, unit)
+                }
+                _ => unreachable!("relative parser only emits relative values"),
+            })
+        })
+        .or_else(|| {
+            parse_font_size_calculation(value).map(NativeFontSizeFallbackValue::Calculation)
+        })
+}
+
+fn parse_font_size_custom_property(value: &str) -> Option<NativeFontSizeDeclarationValue> {
     let value = value.trim();
     if value.len() < 6
         || !value
@@ -8264,11 +8397,18 @@ fn parse_font_size_custom_property(value: &str) -> Option<u64> {
     {
         return None;
     }
-    let name = value.get(4..value.len().saturating_sub(1))?.trim();
-    if name.contains(',') {
-        return None;
-    }
-    parse_custom_property_name(name)
+    let arguments = value.get(4..value.len().saturating_sub(1))?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    fallback.map_or_else(
+        || Some(NativeFontSizeDeclarationValue::CustomProperty(name_hash)),
+        |fallback| {
+            Some(NativeFontSizeDeclarationValue::CustomPropertyFallback(
+                name_hash,
+                parse_font_size_fallback_value(fallback)?,
+            ))
+        },
+    )
 }
 
 fn parse_declarations_with_diagnostics(
@@ -14115,17 +14255,17 @@ fn parse_font_size_calculation(value: &str) -> Option<NativeFontSizeCalculation>
     Some(total)
 }
 
-fn parse_font_size_value(value: &str) -> Option<NativeFontSizeDeclarationValue> {
+fn parse_font_size_value_without_custom(value: &str) -> Option<NativeFontSizeDeclarationValue> {
     parse_font_size(value)
         .map(NativeFontSizeDeclarationValue::Pixels)
         .or_else(|| parse_relative_font_size(value))
         .or_else(|| {
             parse_font_size_calculation(value).map(NativeFontSizeDeclarationValue::Calculation)
         })
-        .or_else(|| {
-            parse_font_size_custom_property(value)
-                .map(NativeFontSizeDeclarationValue::CustomProperty)
-        })
+}
+
+fn parse_font_size_value(value: &str) -> Option<NativeFontSizeDeclarationValue> {
+    parse_font_size_value_without_custom(value).or_else(|| parse_font_size_custom_property(value))
 }
 
 fn parse_word_break(value: &str) -> Option<WordBreakValue> {
@@ -25226,14 +25366,33 @@ mod tests {
     }
 
     #[test]
-    fn font_size_parser_accepts_direct_custom_property_reference() {
+    fn font_size_parser_accepts_custom_property_fallbacks() {
         assert_eq!(
             parse_font_size_value("var(--size)"),
             Some(NativeFontSizeDeclarationValue::CustomProperty(
                 custom_property_hash("--size")
             ))
         );
-        assert_eq!(parse_font_size_value("var(--size, 16px)"), None);
+        assert_eq!(
+            parse_font_size_value("var(--size, 16px)"),
+            Some(NativeFontSizeDeclarationValue::CustomPropertyFallback(
+                custom_property_hash("--size"),
+                NativeFontSizeFallbackValue::Pixels(16),
+            ))
+        );
+        assert_eq!(
+            parse_font_size_value("var(--size, calc(1em + 2px))"),
+            Some(NativeFontSizeDeclarationValue::CustomPropertyFallback(
+                custom_property_hash("--size"),
+                NativeFontSizeFallbackValue::Calculation(NativeFontSizeCalculation {
+                    absolute_milli: 2_000,
+                    parent_scale_milli: 1_000,
+                    ..NativeFontSizeCalculation::default()
+                }),
+            ))
+        );
+        assert_eq!(parse_font_size_value("var(--size, var(--other))"), None);
+        assert_eq!(parse_font_size_value("var(--size, 16px, 18px)"), None);
         assert_eq!(parse_font_size_value("var(size)"), None);
     }
 
@@ -27406,18 +27565,34 @@ mod tests {
     #[test]
     fn inherited_font_size_custom_properties_resolve_with_inline_override() {
         let document = NativeDocument::parse(
-            "<style>#parent { --size: 1.5em; font-size: 24px; } #child { font-size: var(--size); } #invalid { font-size: var(--missing); }</style><div id='parent'><span id='child'>Child</span><span id='invalid'>Invalid</span><span id='inline' style='--size: 2em; font-size: var(--size)'>Inline</span></div>",
+            "<style>#parent { --size: 1.5em; --bad: nonsense; font-size: 24px; } #child { font-size: var(--size); } #invalid { font-size: var(--missing); } #fallback { font-size: var(--missing, 18px); } #invalid-fallback { font-size: var(--bad, 20px); } #calc-fallback { font-size: var(--missing, calc(1em + 2px)); }</style><div id='parent'><span id='child'>Child</span><span id='invalid'>Invalid</span><span id='fallback'>Fallback</span><span id='invalid-fallback'>Invalid fallback</span><span id='calc-fallback'>Calc fallback</span><span id='inline' style='--size: 2em; font-size: var(--size)'>Inline</span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
         let parent = document.resolve_target("id=parent").unwrap();
         let child = document.resolve_target("id=child").unwrap();
         let invalid = document.resolve_target("id=invalid").unwrap();
+        let fallback = document.resolve_target("id=fallback").unwrap();
+        let invalid_fallback = document.resolve_target("id=invalid-fallback").unwrap();
+        let calc_fallback = document.resolve_target("id=calc-fallback").unwrap();
         let inline = document.resolve_target("id=inline").unwrap();
 
         assert_eq!(document.computed_style_for_layout(parent).font_size(), 24);
         assert_eq!(document.computed_style_for_layout(child).font_size(), 36);
         assert_eq!(document.computed_style_for_layout(invalid).font_size(), 24);
+        assert_eq!(document.computed_style_for_layout(fallback).font_size(), 18);
+        assert_eq!(
+            document
+                .computed_style_for_layout(invalid_fallback)
+                .font_size(),
+            20
+        );
+        assert_eq!(
+            document
+                .computed_style_for_layout(calc_fallback)
+                .font_size(),
+            26
+        );
         assert_eq!(document.computed_style_for_layout(inline).font_size(), 48);
     }
 

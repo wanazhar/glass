@@ -1845,6 +1845,13 @@ enum WordBreakDeclarationValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordSpacingDeclarationValue {
+    Value(u32),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InheritedTextDeclaration<T> {
     Value(T),
     Inherit,
@@ -4728,10 +4735,10 @@ impl NativeStylesheet {
                 custom_properties,
             ),
             text_indent: resolve_text_indent(*text_indent, inherited.text_indent),
-            word_spacing: resolve_inherited_text_declaration(
+            word_spacing: resolve_word_spacing(
                 *word_spacing,
                 inherited.word_spacing,
-                0,
+                custom_properties,
             ),
             letter_spacing: resolve_inherited_text_declaration(
                 *letter_spacing,
@@ -4909,7 +4916,7 @@ struct NativeCascadeScratch {
     text_overflow: NativeTextLocalCascadeCandidates<TextOverflowValue>,
     vertical_align: NativeTextCascadeCandidates<VerticalAlignDeclarationValue>,
     text_indent: NativeTextLocalCascadeCandidates<u32>,
-    word_spacing: NativeTextCascadeCandidates<u32>,
+    word_spacing: NativeTextCascadeCandidates<WordSpacingDeclarationValue>,
     letter_spacing: NativeTextCascadeCandidates<u32>,
     gap: GapCascade,
     width: NativeLocalCascadeCandidates<u32>,
@@ -5419,6 +5426,87 @@ fn resolve_vertical_align(
         VerticalAlignDeclarationValue::Value(value) => value,
         VerticalAlignDeclarationValue::CustomProperty(_)
         | VerticalAlignDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
+}
+
+fn resolve_word_spacing_declaration(
+    declaration: InheritedTextDeclaration<WordSpacingDeclarationValue>,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<WordSpacingDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_word_spacing_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => Some(WordSpacingDeclarationValue::Value(inherited)),
+        InheritedTextDeclaration::Initial => Some(WordSpacingDeclarationValue::Value(0)),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_word_spacing_value(
+    value: WordSpacingDeclarationValue,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<WordSpacingDeclarationValue> {
+    match value {
+        WordSpacingDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_word_spacing_declaration(value))
+                .and_then(|declaration| {
+                    resolve_word_spacing_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        WordSpacingDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_word_spacing_declaration(value))
+                .and_then(|declaration| {
+                    resolve_word_spacing_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(WordSpacingDeclarationValue::Value(fallback)))
+        }
+        WordSpacingDeclarationValue::CustomProperty(_)
+        | WordSpacingDeclarationValue::CustomPropertyFallback(_, _) => None,
+        value => Some(value),
+    }
+}
+
+fn resolve_word_spacing(
+    candidates: NativeTextCascadeCandidates<WordSpacingDeclarationValue>,
+    inherited: u32,
+    custom_properties: &BTreeMap<u64, String>,
+) -> u32 {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        WordSpacingDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_word_spacing_declaration(declaration, inherited, custom_properties, 0)
+        },
+    );
+    match resolved {
+        WordSpacingDeclarationValue::Value(value) => value,
+        WordSpacingDeclarationValue::CustomProperty(_)
+        | WordSpacingDeclarationValue::CustomPropertyFallback(_, _) => inherited,
     }
 }
 
@@ -9893,7 +9981,7 @@ struct NativeDeclarations {
     text_overflow: Option<LocalCascadeDeclaration<TextOverflowValue>>,
     vertical_align: Option<InheritedTextDeclaration<VerticalAlignDeclarationValue>>,
     text_indent: Option<LocalCascadeDeclaration<u32>>,
-    word_spacing: Option<InheritedTextDeclaration<u32>>,
+    word_spacing: Option<InheritedTextDeclaration<WordSpacingDeclarationValue>>,
     letter_spacing: Option<InheritedTextDeclaration<u32>>,
     gap: Option<GapShorthandDeclaration>,
     gap_order: usize,
@@ -18824,8 +18912,43 @@ fn parse_word_break_declaration(
     parse_inherited_text_declaration(value, parse_word_break_property)
 }
 
-fn parse_word_spacing_declaration(value: &str) -> Option<InheritedTextDeclaration<u32>> {
-    parse_inherited_text_declaration(value, parse_dimension)
+fn parse_word_spacing_custom_property(value: &str) -> Option<WordSpacingDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_dimension(fallback).map(|fallback| {
+            WordSpacingDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(WordSpacingDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_word_spacing_property(value: &str) -> Option<WordSpacingDeclarationValue> {
+    parse_dimension(value)
+        .map(WordSpacingDeclarationValue::Value)
+        .or_else(|| parse_word_spacing_custom_property(value))
+}
+
+fn parse_word_spacing_declaration(
+    value: &str,
+) -> Option<InheritedTextDeclaration<WordSpacingDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_word_spacing_property)
 }
 
 fn parse_letter_spacing_declaration(value: &str) -> Option<InheritedTextDeclaration<u32>> {
@@ -19545,7 +19668,9 @@ mod tests {
         );
         assert_eq!(
             declarations.word_spacing,
-            Some(InheritedTextDeclaration::Value(12))
+            Some(InheritedTextDeclaration::Value(
+                WordSpacingDeclarationValue::Value(12)
+            ))
         );
         assert_eq!(
             declarations.letter_spacing,
@@ -30159,7 +30284,9 @@ mod tests {
         );
         assert_eq!(
             parse_word_spacing_declaration("16px"),
-            Some(InheritedTextDeclaration::Value(16))
+            Some(InheritedTextDeclaration::Value(
+                WordSpacingDeclarationValue::Value(16)
+            ))
         );
         assert_eq!(parse_letter_spacing_declaration("revert-layer 2px"), None);
         assert_eq!(
@@ -30174,6 +30301,23 @@ mod tests {
         assert_eq!(parse_word_spacing_declaration("-1px"), None);
         assert_eq!(parse_letter_spacing_declaration("1.5px"), None);
         assert_eq!(parse_word_spacing_declaration("2em"), None);
+        let word_spacing_name = parse_custom_property_name("--word-spacing").unwrap();
+        assert_eq!(
+            parse_word_spacing_property("var(--word-spacing)"),
+            Some(WordSpacingDeclarationValue::CustomProperty(
+                word_spacing_name
+            ))
+        );
+        assert_eq!(
+            parse_word_spacing_declaration("var(--word-spacing, 24px)"),
+            Some(InheritedTextDeclaration::Value(
+                WordSpacingDeclarationValue::CustomPropertyFallback(word_spacing_name, 24)
+            ))
+        );
+        assert_eq!(
+            parse_word_spacing_property("var(--word-spacing, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -30207,7 +30351,9 @@ mod tests {
         );
         assert_eq!(
             declarations.word_spacing,
-            Some(InheritedTextDeclaration::Value(12))
+            Some(InheritedTextDeclaration::Value(
+                WordSpacingDeclarationValue::Value(12)
+            ))
         );
         assert_eq!(
             declarations.letter_spacing,
@@ -33723,6 +33869,44 @@ mod tests {
             document.computed_style_for_layout(invalid).letter_spacing(),
             16
         );
+    }
+
+    #[test]
+    fn inherited_word_spacing_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --word-spacing: 16px; --alias: var(--word-spacing); --cycle: var(--cycle); word-spacing: var(--word-spacing); }
+            #child { word-spacing: var(--alias); }
+            #fallback { word-spacing: var(--missing, 24px); }
+            #invalid { --bad: 1em; word-spacing: var(--bad, 20px); }
+            #cycle { word-spacing: var(--cycle, 8px); }
+            #wide-initial { --wide: initial; word-spacing: var(--wide); }
+            #wide-inherit { --wide: inherit; word-spacing: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .word_spacing()
+        };
+
+        assert_eq!(style("parent"), 16);
+        assert_eq!(style("child"), 16);
+        assert_eq!(style("fallback"), 24);
+        assert_eq!(style("invalid"), 20);
+        assert_eq!(style("cycle"), 8);
+        assert_eq!(style("wide-initial"), 0);
+        assert_eq!(style("wide-inherit"), 16);
     }
 
     #[test]

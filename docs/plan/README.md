@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-614`, following completed
 `native-engine-browser-613`, following completed
 `native-engine-browser-612`, following completed
 `native-engine-browser-611`, following completed
@@ -516,6 +517,17 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed physical border-width substitution follow-up is
+[`native-engine-browser-614`](tasks/native-engine-browser-614.md): native
+`border-width` and `border-top-width`, `border-right-width`,
+`border-bottom-width`, and `border-left-width` now accept bounded standalone
+`var(--name)` and pixel or CSS-wide fallbacks, including one-to-four-value
+shorthand expansion. Resolution covers inherited aliases, CSS-wide reset
+mappings, invalid and cyclic values before border composition, while logical
+border-width and existing local cascade, `revert-layer`, and geometry behavior
+remain unchanged. Nested variable grammar, registered properties, full CSS
+variable grammar, and complete CSS and Web IDL parity remain issue #40 gates.
 
 The completed margin substitution follow-up is
 [`native-engine-browser-613`](tasks/native-engine-browser-613.md): native

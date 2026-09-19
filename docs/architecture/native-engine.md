@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-618`, following completed
 `native-engine-browser-617`, following completed
 `native-engine-browser-616`, following completed
 `native-engine-browser-615`, following completed
@@ -487,6 +488,15 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 618 extends bounded native custom-property substitution to
+`border-radius` and the four physical corner longhands. Standalone
+`var(--name)` and pixel or bounded shorthand fallbacks now resolve inherited
+aliases, CSS-wide reset mappings, invalid and cyclic values, corner-specific
+fallbacks, local cascade, `revert-layer`, and logical-corner projection before
+computed border geometry. The existing bounded pixel-only radius grammar
+remains unchanged. Percentage, slash, registered-property, full variable
+grammar, and complete CSS and Web IDL parity remain explicit issue #40 gates.
 
 Slice 617 extends bounded native custom-property substitution to logical
 `border-block-style`, `border-block-start-style`, `border-block-end-style`,

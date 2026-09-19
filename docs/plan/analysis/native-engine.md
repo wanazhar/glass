@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-644`, following
+expansion checkpoint is completed `native-engine-browser-645`, following
+completed `native-engine-browser-644`, following
 completed `native-engine-browser-643`, following
 completed `native-engine-browser-642`, following
 completed `native-engine-browser-641`, following completed
@@ -521,6 +522,14 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 645 adds bounded attribute-selector operator parsing and matching.
+Presence and exact forms now share a typed operator model with whitespace
+token (`~=`), language dash-match (`|=`), prefix (`^=`), suffix (`$=`), and
+substring (`*=`) forms. Document-aware matching feeds action locators and
+stylesheet cascade; malformed operators and values remain fail-closed. Full
+selector grammar, case-sensitivity flags, namespaces, pseudo-elements,
+complete CSS and Web IDL parity remain explicit issue #40 gates.
 
 Slice 644 adds bounded arithmetic position pseudo-class parsing and matching
 for `:nth-child()`, `:nth-last-child()`, `:nth-of-type()`, and

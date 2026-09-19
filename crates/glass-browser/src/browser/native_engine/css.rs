@@ -13782,9 +13782,21 @@ struct NativeSelector {
     specificity: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeAttributeOperator {
+    Exists,
+    Equals,
+    Includes,
+    DashMatch,
+    Prefix,
+    Suffix,
+    Substring,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeAttributeSelector {
     name: String,
+    operator: NativeAttributeOperator,
     value: Option<String>,
 }
 
@@ -14227,6 +14239,50 @@ fn following_sibling_matching_selector(
     }
 }
 
+fn attribute_selector_matches(selector: &NativeAttributeSelector, actual: Option<&str>) -> bool {
+    match selector.operator {
+        NativeAttributeOperator::Exists => actual.is_some(),
+        NativeAttributeOperator::Equals => actual.is_some_and(|actual| {
+            selector
+                .value
+                .as_deref()
+                .is_some_and(|expected| actual == expected)
+        }),
+        NativeAttributeOperator::Includes => actual.is_some_and(|actual| {
+            selector.value.as_deref().is_some_and(|expected| {
+                !expected.is_empty() && actual.split_ascii_whitespace().any(|item| item == expected)
+            })
+        }),
+        NativeAttributeOperator::DashMatch => actual.is_some_and(|actual| {
+            selector.value.as_deref().is_some_and(|expected| {
+                !expected.is_empty()
+                    && (actual == expected
+                        || actual
+                            .strip_prefix(expected)
+                            .is_some_and(|suffix| suffix.starts_with('-')))
+            })
+        }),
+        NativeAttributeOperator::Prefix => actual.is_some_and(|actual| {
+            selector
+                .value
+                .as_deref()
+                .is_some_and(|expected| !expected.is_empty() && actual.starts_with(expected))
+        }),
+        NativeAttributeOperator::Suffix => actual.is_some_and(|actual| {
+            selector
+                .value
+                .as_deref()
+                .is_some_and(|expected| !expected.is_empty() && actual.ends_with(expected))
+        }),
+        NativeAttributeOperator::Substring => actual.is_some_and(|actual| {
+            selector
+                .value
+                .as_deref()
+                .is_some_and(|expected| !expected.is_empty() && actual.contains(expected))
+        }),
+    }
+}
+
 impl NativeCompoundSelector {
     fn matches_base(&self, node: &NativeNode) -> bool {
         if self
@@ -14250,14 +14306,9 @@ impl NativeCompoundSelector {
         }) {
             return false;
         }
-        self.attributes.iter().all(|attribute| {
-            node.attribute(&attribute.name).is_some_and(|value| {
-                attribute
-                    .value
-                    .as_deref()
-                    .is_none_or(|expected| value == expected)
-            })
-        })
+        self.attributes
+            .iter()
+            .all(|attribute| attribute_selector_matches(attribute, node.attribute(&attribute.name)))
     }
 
     fn matches_local(&self, node: &NativeNode) -> bool {
@@ -24826,10 +24877,12 @@ fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
             b'[' => {
                 let close = source[cursor + 1..].find(']')? + cursor + 1;
                 let content = source[cursor + 1..close].trim();
-                let (name, value) = parse_attribute_selector(content)?;
-                selector
-                    .attributes
-                    .push(NativeAttributeSelector { name, value });
+                let (name, operator, value) = parse_attribute_selector(content)?;
+                selector.attributes.push(NativeAttributeSelector {
+                    name,
+                    operator,
+                    value,
+                });
                 selector.specificity = selector.specificity.saturating_add(10);
                 cursor = close + 1;
             }
@@ -25090,11 +25143,40 @@ fn split_selector_list_with_offsets(source: &str) -> Option<Vec<(usize, &str)>> 
     (selectors.len() <= MAX_SELECTOR_PARTS).then_some(selectors)
 }
 
-fn parse_attribute_selector(source: &str) -> Option<(String, Option<String>)> {
-    let (name, raw_value) = source
-        .split_once('=')
-        .map_or((source, None), |(name, value)| (name, Some(value.trim())));
-    let name = name.trim();
+fn parse_attribute_selector(
+    source: &str,
+) -> Option<(String, NativeAttributeOperator, Option<String>)> {
+    let source = source.trim();
+    let (name, operator, raw_value) =
+        source
+            .find('=')
+            .map_or((source, NativeAttributeOperator::Exists, None), |equals| {
+                let raw_name = source[..equals].trim();
+                let (name, operator) = match raw_name.as_bytes().last().copied() {
+                    Some(b'~') => (
+                        &raw_name[..raw_name.len().saturating_sub(1)],
+                        NativeAttributeOperator::Includes,
+                    ),
+                    Some(b'|') => (
+                        &raw_name[..raw_name.len().saturating_sub(1)],
+                        NativeAttributeOperator::DashMatch,
+                    ),
+                    Some(b'^') => (
+                        &raw_name[..raw_name.len().saturating_sub(1)],
+                        NativeAttributeOperator::Prefix,
+                    ),
+                    Some(b'$') => (
+                        &raw_name[..raw_name.len().saturating_sub(1)],
+                        NativeAttributeOperator::Suffix,
+                    ),
+                    Some(b'*') => (
+                        &raw_name[..raw_name.len().saturating_sub(1)],
+                        NativeAttributeOperator::Substring,
+                    ),
+                    _ => (raw_name, NativeAttributeOperator::Equals),
+                };
+                (name, operator, Some(source[equals + 1..].trim()))
+            });
     if name.is_empty()
         || !name.bytes().all(is_identifier_char)
         || !is_identifier_start(name.as_bytes()[0])
@@ -25114,14 +25196,21 @@ fn parse_attribute_selector(source: &str) -> Option<(String, Option<String>)> {
         Some(value)
             if value.is_empty()
                 || value.chars().any(char::is_whitespace)
-                || value.contains(['"', '\'']) =>
+                || value.contains(['"', '\'', '=']) =>
         {
             return None;
         }
         Some(value) => Some(value.to_owned()),
         None => None,
     };
-    Some((name.to_ascii_lowercase(), value))
+    if !matches!(
+        operator,
+        NativeAttributeOperator::Exists | NativeAttributeOperator::Equals
+    ) && value.as_deref().is_none_or(|value| value.is_empty())
+    {
+        return None;
+    }
+    Some((name.to_ascii_lowercase(), operator, value))
 }
 
 fn read_identifier(source: &str, start: usize) -> Option<(String, usize)> {
@@ -25445,6 +25534,15 @@ mod tests {
         let selector = parse_selector("main .card button[data-state=ready]").unwrap();
         assert_eq!(selector.specificity, 22);
         assert!(parse_selector("button[data-label='ready now']").is_some());
+        assert!(parse_selector("[data-token]").is_some());
+        assert!(parse_selector("[data-token='alpha beta']").is_some());
+        assert!(parse_selector("[data-token~=beta]").is_some());
+        assert!(parse_selector("[data-lang|=en]").is_some());
+        assert!(parse_selector("[data-prefix^=pre]").is_some());
+        assert!(parse_selector("[data-suffix$=suffix]").is_some());
+        assert!(parse_selector("[data-text*=middle]").is_some());
+        assert!(parse_selector("[data-token~=]").is_none());
+        assert!(parse_selector("[data-token?=beta]").is_none());
         assert!(parse_selector("main > button").is_some());
         assert!(parse_selector("main + button").is_some());
         assert!(parse_selector("main ~ button").is_some());
@@ -25458,6 +25556,63 @@ mod tests {
             selector_diagnostic_detail(&too_many),
             "selector-too-complex"
         );
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_attribute_operators() {
+        let document = NativeDocument::parse(
+            "<main><div id='primary' data-token='alpha beta' data-lang='en-US' data-prefix='prefix-value' data-suffix='value-suffix' data-text='middle-value' data-role='button'></div><div id='secondary' data-token='gamma' data-lang='fr'></div><div id='missing'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("attribute selector fixture document");
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .map(|node_id| {
+                    document
+                        .node(node_id)
+                        .and_then(|node| node.attribute("id"))
+                        .expect("matched element id")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(matched_ids("[data-token]"), vec!["primary", "secondary"]);
+        assert_eq!(matched_ids("[data-token='alpha beta']"), vec!["primary"]);
+        assert_eq!(matched_ids("[data-token~=beta]"), vec!["primary"]);
+        assert_eq!(matched_ids("[data-lang|=en]"), vec!["primary"]);
+        assert_eq!(matched_ids("[data-prefix^=prefix]"), vec!["primary"]);
+        assert_eq!(matched_ids("[data-suffix$=suffix]"), vec!["primary"]);
+        assert_eq!(matched_ids("[data-text*=middle]"), vec!["primary"]);
+        assert!(matched_ids("[data-lang|=e]").is_empty());
+    }
+
+    #[test]
+    fn attribute_selector_operators_apply_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "[data-token] { color: black; } [data-token~='beta'] { color: red; } [data-lang|='en'] { background-color: red; }"
+                .into(),
+        ])
+        .expect("attribute selector stylesheet");
+        let document = NativeDocument::parse(
+            "<main><div id='primary' data-token='alpha beta' data-lang='en-US'></div><div id='secondary' data-token='gamma' data-lang='fr'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("attribute selector cascade document");
+
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+        assert_eq!(style("primary").color(), Some(NativeColor::RED));
+        assert_eq!(style("primary").background_color(), Some(NativeColor::RED));
+        assert_eq!(style("secondary").color(), Some(NativeColor::BLACK));
+        assert_eq!(style("secondary").background_color(), None);
     }
 
     #[test]

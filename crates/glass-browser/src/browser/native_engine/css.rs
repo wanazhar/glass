@@ -970,6 +970,8 @@ pub(crate) struct NativeOrderValue(i32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexItemOrderDeclaration {
     Value(NativeOrderValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeOrderValue),
     Inherit,
     Reset,
     RevertLayer,
@@ -4669,7 +4671,11 @@ impl NativeStylesheet {
             ),
             direction: resolved_direction,
             flex_wrap: resolve_flex_wrap(*flex_wrap, inherited.flex_wrap, custom_properties),
-            flex_item_order: resolve_flex_item_order(*flex_item_order, inherited.flex_item_order),
+            flex_item_order: resolve_flex_item_order(
+                *flex_item_order,
+                inherited.flex_item_order,
+                custom_properties,
+            ),
             flex_grow: resolve_flex_grow(*flex_grow, inherited.flex_grow, custom_properties),
             flex_shrink: resolve_flex_shrink(
                 *flex_shrink,
@@ -6124,17 +6130,60 @@ fn resolve_flex_wrap(
     })
 }
 
+fn resolve_flex_item_order_value(
+    value: FlexItemOrderDeclaration,
+    inherited: NativeOrderValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<NativeOrderValue> {
+    match value {
+        FlexItemOrderDeclaration::Value(value) => Some(value),
+        FlexItemOrderDeclaration::Inherit => Some(inherited),
+        FlexItemOrderDeclaration::Reset => Some(NativeOrderValue::default()),
+        FlexItemOrderDeclaration::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_item_order_declaration(value))
+                .and_then(|declaration| {
+                    resolve_flex_item_order_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FlexItemOrderDeclaration::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_flex_item_order_declaration(value))
+                .and_then(|declaration| {
+                    resolve_flex_item_order_value(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(fallback))
+        }
+        FlexItemOrderDeclaration::CustomProperty(_)
+        | FlexItemOrderDeclaration::CustomPropertyFallback(_, _)
+        | FlexItemOrderDeclaration::RevertLayer => None,
+    }
+}
+
 fn resolve_flex_item_order(
     candidates: [Option<CascadeValue<FlexItemOrderDeclaration>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS],
     inherited: NativeOrderValue,
+    custom_properties: &BTreeMap<u64, String>,
 ) -> NativeOrderValue {
     resolve_alignment_candidates(candidates, NativeOrderValue::default(), |declaration| {
-        match declaration {
-            FlexItemOrderDeclaration::Value(value) => Some(value),
-            FlexItemOrderDeclaration::Inherit => Some(inherited),
-            FlexItemOrderDeclaration::Reset => Some(NativeOrderValue::default()),
-            FlexItemOrderDeclaration::RevertLayer => None,
-        }
+        resolve_flex_item_order_value(declaration, inherited, custom_properties, 0)
     })
 }
 
@@ -19205,6 +19254,15 @@ fn parse_flex_item_order(value: &str) -> Option<NativeOrderValue> {
         .then_some(NativeOrderValue(parsed))
 }
 
+fn parse_flex_item_order_custom_property(value: &str) -> Option<FlexItemOrderDeclaration> {
+    let (name_hash, fallback) = parse_flex_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_flex_item_order(fallback)
+            .map(|fallback| FlexItemOrderDeclaration::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(FlexItemOrderDeclaration::CustomProperty(name_hash)),
+    }
+}
+
 fn parse_flex_item_order_declaration(value: &str) -> Option<FlexItemOrderDeclaration> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some(FlexItemOrderDeclaration::RevertLayer);
@@ -19215,7 +19273,9 @@ fn parse_flex_item_order_declaration(value: &str) -> Option<FlexItemOrderDeclara
     if value.trim().eq_ignore_ascii_case("inherit") {
         return Some(FlexItemOrderDeclaration::Inherit);
     }
-    parse_flex_item_order(value).map(FlexItemOrderDeclaration::Value)
+    parse_flex_item_order(value)
+        .map(FlexItemOrderDeclaration::Value)
+        .or_else(|| parse_flex_item_order_custom_property(value))
 }
 
 fn parse_flex_grow(value: &str) -> Option<u32> {
@@ -29749,6 +29809,33 @@ mod tests {
         assert_eq!(parse_flex_item_order("+ 1"), None);
         assert_eq!(parse_flex_item_order("normal"), None);
         assert_eq!(parse_flex_item_order("1px"), None);
+    }
+    #[test]
+    fn flex_item_order_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let order = parse_custom_property_name("--order").unwrap();
+        assert_eq!(
+            parse_flex_item_order_declaration("var(--order)"),
+            Some(FlexItemOrderDeclaration::CustomProperty(order))
+        );
+        assert_eq!(
+            parse_flex_item_order_declaration("var(--order, -12)"),
+            Some(FlexItemOrderDeclaration::CustomPropertyFallback(
+                order,
+                NativeOrderValue(-12)
+            ))
+        );
+        assert_eq!(
+            parse_declarations("order: var(--order)").order,
+            Some(FlexItemOrderDeclaration::CustomProperty(order))
+        );
+        assert_eq!(
+            parse_flex_item_order_declaration("var(--order, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_flex_item_order_declaration("var(--order, 1025)"),
+            None
+        );
     }
 
     #[test]
@@ -40631,6 +40718,41 @@ mod tests {
             document.computed_style_for_layout(invalid).align_content(),
             AlignContentValue::FlexStart
         );
+    }
+
+    #[test]
+    fn flex_item_order_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --order: -12; --alias: var(--order); --cycle: var(--cycle); order: var(--alias); }
+            #child { order: var(--alias); }
+            #fallback { order: var(--missing, 8); }
+            #invalid { --bad: unsupported; order: var(--bad, -4); }
+            #cycle { order: var(--cycle, 6); }
+            #reset { --reset: initial; order: var(--reset, 7); }
+            #override { --order: -9; order: var(--order); order: -2; }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='override'>Override</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        assert_eq!(style("parent").flex_item_order(), NativeOrderValue(-12));
+        assert_eq!(style("child").flex_item_order(), NativeOrderValue(-12));
+        assert_eq!(style("fallback").flex_item_order(), NativeOrderValue(8));
+        assert_eq!(style("invalid").flex_item_order(), NativeOrderValue(-4));
+        assert_eq!(style("cycle").flex_item_order(), NativeOrderValue(6));
+        assert_eq!(style("reset").flex_item_order(), NativeOrderValue(0));
+        assert_eq!(style("override").flex_item_order(), NativeOrderValue(-2));
     }
 
     #[test]

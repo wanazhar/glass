@@ -13787,12 +13787,93 @@ struct NativeAttributeSelector {
     value: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativePseudoClass {
+    Root,
+    FirstChild,
+    LastChild,
+    OnlyChild,
+    Empty,
+    Checked,
+    Disabled,
+    Enabled,
+    Required,
+    Optional,
+    Link,
+    AnyLink,
+}
+
+impl NativePseudoClass {
+    fn matches_local(self, node: &NativeNode) -> bool {
+        match self {
+            Self::Empty => node.children().is_empty(),
+            Self::Checked => {
+                node.attribute("checked").is_some()
+                    || node
+                        .attribute("aria-checked")
+                        .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+            }
+            Self::Disabled => node.attribute("disabled").is_some(),
+            Self::Enabled => node.attribute("disabled").is_none(),
+            Self::Required => node.attribute("required").is_some(),
+            Self::Optional => node.attribute("required").is_none(),
+            Self::Link | Self::AnyLink => node.attribute("href").is_some(),
+            Self::Root | Self::FirstChild | Self::LastChild | Self::OnlyChild => false,
+        }
+    }
+
+    fn matches_in_document(self, document: &NativeDocument, node_id: NativeNodeId) -> bool {
+        let Some(node) = document.node(node_id) else {
+            return false;
+        };
+        match self {
+            Self::Root => {
+                node.parent() == Some(document.root())
+                    && document.node(document.root()).is_some_and(|root| {
+                        root.children()
+                            .iter()
+                            .copied()
+                            .filter(|child_id| {
+                                document
+                                    .node(*child_id)
+                                    .is_some_and(|child| child.element_name().is_some())
+                            })
+                            .next()
+                            == Some(node_id)
+                    })
+            }
+            Self::FirstChild | Self::LastChild | Self::OnlyChild => {
+                let Some(parent) = node.parent().and_then(|parent_id| document.node(parent_id))
+                else {
+                    return false;
+                };
+                let mut element_children = parent.children().iter().copied().filter(|child_id| {
+                    document
+                        .node(*child_id)
+                        .is_some_and(|child| child.element_name().is_some())
+                });
+                match self {
+                    Self::FirstChild => element_children.next() == Some(node_id),
+                    Self::LastChild => element_children.last() == Some(node_id),
+                    Self::OnlyChild => {
+                        element_children.next() == Some(node_id)
+                            && element_children.next().is_none()
+                    }
+                    _ => false,
+                }
+            }
+            _ => self.matches_local(node),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeCompoundSelector {
     tag: Option<String>,
     id: Option<String>,
     classes: Vec<String>,
     attributes: Vec<NativeAttributeSelector>,
+    pseudo_classes: Vec<NativePseudoClass>,
     specificity: u16,
 }
 
@@ -13814,7 +13895,7 @@ impl NativeSelector {
         let Some(target) = self.compounds.last() else {
             return false;
         };
-        if !target.matches(node) {
+        if !target.matches_in_document(document, node_id) {
             return false;
         }
 
@@ -13829,7 +13910,9 @@ impl NativeSelector {
                     break;
                 };
                 ancestor = ancestor_node.parent();
-                if ancestor_node.element_name().is_some() && compound.matches(ancestor_node) {
+                if ancestor_node.element_name().is_some()
+                    && compound.matches_in_document(document, ancestor_id)
+                {
                     found = true;
                     break;
                 }
@@ -13843,7 +13926,7 @@ impl NativeSelector {
 }
 
 impl NativeCompoundSelector {
-    fn matches(&self, node: &NativeNode) -> bool {
+    fn matches_base(&self, node: &NativeNode) -> bool {
         if self
             .tag
             .as_deref()
@@ -13873,6 +13956,28 @@ impl NativeCompoundSelector {
                     .is_none_or(|expected| value == expected)
             })
         })
+    }
+
+    #[cfg(test)]
+    fn matches(&self, node: &NativeNode) -> bool {
+        self.matches_base(node)
+            && self
+                .pseudo_classes
+                .iter()
+                .copied()
+                .all(|pseudo| pseudo.matches_local(node))
+    }
+
+    fn matches_in_document(&self, document: &NativeDocument, node_id: NativeNodeId) -> bool {
+        let Some(node) = document.node(node_id) else {
+            return false;
+        };
+        self.matches_base(node)
+            && self
+                .pseudo_classes
+                .iter()
+                .copied()
+                .all(|pseudo| pseudo.matches_in_document(document, node_id))
     }
 }
 
@@ -24356,6 +24461,7 @@ fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
         id: None,
         classes: Vec::new(),
         attributes: Vec::new(),
+        pseudo_classes: Vec::new(),
         specificity: 0,
     };
     if bytes.first() == Some(&b'*') {
@@ -24393,6 +24499,12 @@ fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
                 selector.specificity = selector.specificity.saturating_add(10);
                 cursor = close + 1;
             }
+            b':' => {
+                let (name, next) = read_identifier(source, cursor + 1)?;
+                selector.pseudo_classes.push(parse_pseudo_class(&name)?);
+                selector.specificity = selector.specificity.saturating_add(10);
+                cursor = next;
+            }
             _ => return None,
         }
     }
@@ -24400,8 +24512,27 @@ fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
         || selector.id.is_some()
         || !selector.classes.is_empty()
         || !selector.attributes.is_empty()
+        || !selector.pseudo_classes.is_empty()
         || source == "*")
         .then_some(selector)
+}
+
+fn parse_pseudo_class(source: &str) -> Option<NativePseudoClass> {
+    match source.to_ascii_lowercase().as_str() {
+        "root" => Some(NativePseudoClass::Root),
+        "first-child" => Some(NativePseudoClass::FirstChild),
+        "last-child" => Some(NativePseudoClass::LastChild),
+        "only-child" => Some(NativePseudoClass::OnlyChild),
+        "empty" => Some(NativePseudoClass::Empty),
+        "checked" => Some(NativePseudoClass::Checked),
+        "disabled" => Some(NativePseudoClass::Disabled),
+        "enabled" => Some(NativePseudoClass::Enabled),
+        "required" => Some(NativePseudoClass::Required),
+        "optional" => Some(NativePseudoClass::Optional),
+        "link" => Some(NativePseudoClass::Link),
+        "any-link" => Some(NativePseudoClass::AnyLink),
+        _ => None,
+    }
 }
 
 fn parse_attribute_selector(source: &str) -> Option<(String, Option<String>)> {
@@ -24767,6 +24898,136 @@ mod tests {
         assert_eq!(
             selector_diagnostic_detail(&too_many),
             "selector-too-complex"
+        );
+    }
+
+    #[test]
+    fn selector_parser_supports_bounded_pseudo_classes() {
+        let selector = parse_selector("button:first-child:checked").unwrap();
+        assert_eq!(selector.specificity, 21);
+        assert!(parse_selector(":empty").is_some());
+        assert!(parse_selector("button:hover").is_none());
+        assert!(parse_selector("button:nth-child(2)").is_none());
+        assert!(parse_selector("button:not(.active)").is_none());
+        assert!(parse_selector("button::before").is_none());
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_structural_pseudo_classes() {
+        let document = NativeDocument::parse(
+            "<main id='root'><div id='first'></div><section id='middle'><span id='only'></span></section><div id='empty'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("pseudo-class fixture document");
+
+        let matched_id = |source: &str| {
+            let matches = selector_matches_in_document(&document, source).unwrap();
+            assert_eq!(matches.len(), 1, "selector {source:?}");
+            document
+                .node(matches[0])
+                .and_then(|node| node.attribute("id"))
+        };
+        assert_eq!(matched_id("#first:first-child"), Some("first"));
+        assert_eq!(matched_id("#empty:last-child"), Some("empty"));
+        assert_eq!(matched_id("#only:only-child"), Some("only"));
+        assert_eq!(matched_id("#empty:empty"), Some("empty"));
+
+        let root_element = document
+            .node(document.root())
+            .expect("document root")
+            .children()
+            .iter()
+            .copied()
+            .find(|node_id| {
+                document
+                    .node(*node_id)
+                    .is_some_and(|node| node.element_name().is_some())
+            })
+            .expect("root element");
+        let root_name = document
+            .node(root_element)
+            .and_then(|node| node.element_name())
+            .expect("root element name")
+            .to_owned();
+        assert_eq!(
+            selector_matches_in_document(&document, &format!("{root_name}:root")).unwrap(),
+            vec![root_element]
+        );
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_state_pseudo_classes() {
+        let document = NativeDocument::parse(
+            "<form><input id='checked' type='checkbox' checked><input id='disabled' disabled><input id='normal'><input id='required' required><a id='link' href='/target'>Link</a></form>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("state pseudo-class fixture document");
+
+        let matched_id = |source: &str| {
+            let matches = selector_matches_in_document(&document, source).unwrap();
+            assert_eq!(matches.len(), 1, "selector {source:?}");
+            document
+                .node(matches[0])
+                .and_then(|node| node.attribute("id"))
+        };
+        assert_eq!(matched_id("#checked:checked"), Some("checked"));
+        assert_eq!(matched_id("#disabled:disabled"), Some("disabled"));
+        assert_eq!(matched_id("#normal:enabled"), Some("normal"));
+        assert_eq!(matched_id("#required:required"), Some("required"));
+        assert_eq!(matched_id("#normal:optional"), Some("normal"));
+        assert_eq!(matched_id("a:link"), Some("link"));
+        assert_eq!(matched_id("a:any-link"), Some("link"));
+        assert!(selector_matches_in_document(&document, "#normal:nth-child(1)").is_err());
+        assert!(selector_matches_in_document(&document, "#normal:not(input)").is_err());
+    }
+
+    #[test]
+    fn document_pseudo_classes_apply_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#first:first-child { color: red; } #empty:last-child { color: blue; } #only:only-child { color: black; }"
+                .into(),
+        ])
+        .expect("pseudo-class stylesheet");
+        let document = NativeDocument::parse(
+            "<main><div id='first'></div><section><span id='only'></span></section><div id='empty'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("pseudo-class cascade document");
+
+        assert_eq!(
+            stylesheet
+                .computed_for_in_document(
+                    &document,
+                    document.resolve_target("id=first").unwrap(),
+                    None
+                )
+                .color(),
+            Some(NativeColor::RED)
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for_in_document(
+                    &document,
+                    document.resolve_target("id=empty").unwrap(),
+                    None
+                )
+                .color(),
+            Some(NativeColor {
+                red: 0,
+                green: 0,
+                blue: u8::MAX,
+                alpha: u8::MAX,
+            })
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for_in_document(
+                    &document,
+                    document.resolve_target("id=only").unwrap(),
+                    None
+                )
+                .color(),
+            Some(NativeColor::BLACK)
         );
     }
 

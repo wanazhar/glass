@@ -1,10 +1,10 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-639`, following completed `native-engine-browser-638`,
-following completed `native-engine-browser-637`, following completed
-`native-engine-browser-636`, following completed `native-engine-browser-635`,
-following completed
+`native-engine-browser-640`, following completed `native-engine-browser-639`,
+following completed `native-engine-browser-638`, following completed
+`native-engine-browser-637`, following completed `native-engine-browser-636`,
+following completed `native-engine-browser-635`, following completed
 `native-engine-browser-634`, following completed
 `native-engine-browser-633`, following completed
 
@@ -509,6 +509,16 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 640 adds bounded pseudo-class selectors to the native CSS engine.
+Structural forms (`:root`, `:first-child`, `:last-child`, `:only-child`, and
+`:empty`) use attached-document relationships; bounded checked, disabled,
+enabled, required, optional, link, and any-link forms use native attributes.
+The document-aware matcher feeds both CSS action locators and stylesheet
+cascade, while unsupported functional, dynamic, and pseudo-element forms
+remain fail-closed. Full selector grammar, child/sibling combinators,
+pseudo-elements, complete CSS and Web IDL parity, and broader issue #40
+conformance remain explicit gates.
 
 Slice 639 adds bounded inline `@supports` rule support. Rules retain their
 supports condition alongside any active media condition, declaration and

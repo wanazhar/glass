@@ -28,6 +28,7 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
+`native-engine-browser-619`, following completed
 `native-engine-browser-618`, following completed
 `native-engine-browser-617`, following completed
 `native-engine-browser-616`, following completed
@@ -520,6 +521,18 @@ at construction/setter boundaries. Invalid or over-budget values fail
 transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
+gates.
+
+The completed complete-border substitution follow-up is
+[`native-engine-browser-619`](tasks/native-engine-browser-619.md): native
+`border` and the four physical side-border shorthands now accept bounded
+standalone `var(--name)` values and concrete-color complete-border fallbacks.
+Resolution projects inherited aliases through the width, style, and color
+component streams, preserving invalid and cyclic fallback handling, CSS-wide
+reset mappings, local cascade, and existing `revert-layer` behavior. The
+existing complete-border grammar remains unchanged; current-color, non-
+complete fallback forms, nested variable grammar, registered properties, full
+CSS variable grammar, and complete CSS and Web IDL parity remain issue #40
 gates.
 
 The completed border-radius substitution follow-up is

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-618`, following
+expansion checkpoint is completed `native-engine-browser-619`, following
+completed `native-engine-browser-618`, following
 completed `native-engine-browser-617`, following
 completed `native-engine-browser-616`, following
 completed `native-engine-browser-615`, following
@@ -495,6 +496,16 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 619 extends bounded custom-property substitution to complete
+`border` and the four physical side-border shorthands. Standalone
+`var(--name)` values and concrete-color complete-border fallbacks now project
+through the width, style, and color component streams, preserving inherited
+aliases, invalid and cyclic fallback handling, CSS-wide reset mappings, local
+cascade, and existing `revert-layer` behavior. The existing complete-border
+grammar remains unchanged; current-color, non-complete fallback forms, nested
+variable grammar, registered properties, full CSS variable grammar, and
+complete CSS and Web IDL parity remain explicit issue #40 gates.
 
 Slice 618 extends bounded custom-property substitution to
 `border-radius` and the four physical corner longhands. Standalone

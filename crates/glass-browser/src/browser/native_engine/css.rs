@@ -517,6 +517,8 @@ pub(crate) struct NativeBorderSide {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeBorderDeclaration {
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeBorderSide),
     Complete(NativeBorderSide),
     CompleteCurrentColor {
         width: u32,
@@ -4513,7 +4515,8 @@ impl NativeStylesheet {
         let resolved_margin = std::array::from_fn(|index| {
             resolve_margin_candidates(margin[index], inherited.margin[index], custom_properties)
         });
-        let resolved_border = (*border).map(resolve_local_optional_cascade_declaration);
+        let resolved_border = (*border)
+            .map(|candidates| resolve_local_border_declaration(candidates, custom_properties));
         let resolved_border_width: [Option<u32>; 4] = std::array::from_fn(|index| {
             resolve_local_border_width_declaration(
                 border_width[index],
@@ -9072,17 +9075,6 @@ fn resolve_overflow_axis(
     }
 }
 
-fn resolve_local_optional_cascade_declaration<T: Copy, const N: usize>(
-    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; N],
-) -> Option<T> {
-    resolve_alignment_candidates(candidates, None, |declaration| match declaration {
-        LocalCascadeDeclaration::Value(value) => Some(Some(value)),
-        LocalCascadeDeclaration::Inherit => None,
-        LocalCascadeDeclaration::Reset => Some(None),
-        LocalCascadeDeclaration::RevertLayer => None,
-    })
-}
-
 fn resolve_opacity_declaration(
     declaration: LocalCascadeDeclaration<OpacityDeclarationValue>,
     custom_properties: &BTreeMap<u64, String>,
@@ -9367,7 +9359,11 @@ fn resolve_native_border_color_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_border_color_side_declaration(value))
+                .and_then(|value| {
+                    parse_border_declaration(value)
+                        .and_then(project_border_color_declaration)
+                        .or_else(|| parse_border_color_side_declaration(value))
+                })
                 .and_then(|declaration| match declaration {
                     LocalCascadeDeclaration::Value(value) => resolve_native_border_color_value(
                         value,
@@ -9385,7 +9381,11 @@ fn resolve_native_border_color_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_border_color_side_declaration(value))
+                .and_then(|value| {
+                    parse_border_declaration(value)
+                        .and_then(project_border_color_declaration)
+                        .or_else(|| parse_border_color_side_declaration(value))
+                })
                 .and_then(|declaration| match declaration {
                     LocalCascadeDeclaration::Value(value) => resolve_native_border_color_value(
                         value,
@@ -9458,7 +9458,11 @@ fn resolve_border_width_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_local_physical_border_width_side_declaration(value))
+                .and_then(|value| {
+                    parse_border_declaration(value)
+                        .and_then(project_border_width_declaration)
+                        .or_else(|| parse_local_physical_border_width_side_declaration(value))
+                })
                 .and_then(|declaration| {
                     resolve_border_width_declaration(
                         declaration,
@@ -9473,7 +9477,11 @@ fn resolve_border_width_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_local_physical_border_width_side_declaration(value))
+                .and_then(|value| {
+                    parse_border_declaration(value)
+                        .and_then(project_border_width_declaration)
+                        .or_else(|| parse_local_physical_border_width_side_declaration(value))
+                })
                 .and_then(|declaration| {
                     resolve_border_width_declaration(
                         declaration,
@@ -9648,7 +9656,11 @@ fn resolve_border_style_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_local_physical_border_style_side_declaration(value))
+                .and_then(|value| {
+                    parse_border_declaration(value)
+                        .and_then(project_border_style_declaration)
+                        .or_else(|| parse_local_physical_border_style_side_declaration(value))
+                })
                 .and_then(|declaration| {
                     resolve_border_style_declaration(
                         declaration,
@@ -9663,7 +9675,11 @@ fn resolve_border_style_value(
         {
             custom_properties
                 .get(&name_hash)
-                .and_then(|value| parse_local_physical_border_style_side_declaration(value))
+                .and_then(|value| {
+                    parse_border_declaration(value)
+                        .and_then(project_border_style_declaration)
+                        .or_else(|| parse_local_physical_border_style_side_declaration(value))
+                })
                 .and_then(|declaration| {
                     resolve_border_style_declaration(
                         declaration,
@@ -10612,6 +10628,18 @@ fn project_border_width_declaration(
     declaration: LocalCascadeDeclaration<NativeBorderDeclaration>,
 ) -> Option<LocalCascadeDeclaration<BorderWidthDeclarationValue>> {
     match declaration {
+        LocalCascadeDeclaration::Value(NativeBorderDeclaration::CustomProperty(name_hash)) => Some(
+            LocalCascadeDeclaration::Value(BorderWidthDeclarationValue::CustomProperty(name_hash)),
+        ),
+        LocalCascadeDeclaration::Value(NativeBorderDeclaration::CustomPropertyFallback(
+            name_hash,
+            fallback,
+        )) => Some(LocalCascadeDeclaration::Value(
+            BorderWidthDeclarationValue::CustomPropertyFallback(
+                name_hash,
+                NativeBorderWidthValue::Width(fallback.width()),
+            ),
+        )),
         LocalCascadeDeclaration::Value(NativeBorderDeclaration::Complete(border)) => {
             Some(LocalCascadeDeclaration::Value(
                 BorderWidthDeclarationValue::Value(NativeBorderWidthValue::Width(border.width())),
@@ -10656,6 +10684,18 @@ fn project_border_style_declaration(
     declaration: LocalCascadeDeclaration<NativeBorderDeclaration>,
 ) -> Option<LocalCascadeDeclaration<BorderStyleDeclarationValue>> {
     match declaration {
+        LocalCascadeDeclaration::Value(NativeBorderDeclaration::CustomProperty(name_hash)) => Some(
+            LocalCascadeDeclaration::Value(BorderStyleDeclarationValue::CustomProperty(name_hash)),
+        ),
+        LocalCascadeDeclaration::Value(NativeBorderDeclaration::CustomPropertyFallback(
+            name_hash,
+            fallback,
+        )) => Some(LocalCascadeDeclaration::Value(
+            BorderStyleDeclarationValue::CustomPropertyFallback(
+                name_hash,
+                NativeBorderStyleValue::Paint(fallback.style()),
+            ),
+        )),
         LocalCascadeDeclaration::Value(NativeBorderDeclaration::Complete(border)) => {
             Some(LocalCascadeDeclaration::Value(
                 BorderStyleDeclarationValue::Value(NativeBorderStyleValue::Paint(border.style())),
@@ -10709,6 +10749,15 @@ fn project_border_color_declaration(
     declaration: LocalCascadeDeclaration<NativeBorderDeclaration>,
 ) -> Option<LocalCascadeDeclaration<NativeBorderColorValue>> {
     match declaration {
+        LocalCascadeDeclaration::Value(NativeBorderDeclaration::CustomProperty(name_hash)) => Some(
+            LocalCascadeDeclaration::Value(NativeBorderColorValue::CustomProperty(name_hash)),
+        ),
+        LocalCascadeDeclaration::Value(NativeBorderDeclaration::CustomPropertyFallback(
+            name_hash,
+            fallback,
+        )) => Some(LocalCascadeDeclaration::Value(
+            NativeBorderColorValue::CustomPropertyFallback(name_hash, fallback.color()),
+        )),
         LocalCascadeDeclaration::Value(NativeBorderDeclaration::Complete(border)) => Some(
             LocalCascadeDeclaration::Value(NativeBorderColorValue::Color(border.color())),
         ),
@@ -14698,6 +14747,82 @@ fn parse_complete_border(value: &str) -> Option<NativeBorderDeclaration> {
     }
 }
 
+fn parse_border_var_arguments(value: &str) -> Option<(u64, Option<&str>)> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    Some((parse_custom_property_name(name)?, fallback))
+}
+
+fn parse_border_custom_property(value: &str) -> Option<NativeBorderDeclaration> {
+    let (name_hash, fallback) = parse_border_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => match parse_complete_border(fallback)? {
+            NativeBorderDeclaration::Complete(fallback) => Some(
+                NativeBorderDeclaration::CustomPropertyFallback(name_hash, fallback),
+            ),
+            _ => None,
+        },
+        None => Some(NativeBorderDeclaration::CustomProperty(name_hash)),
+    }
+}
+
+fn resolve_border_declaration_value(
+    declaration: NativeBorderDeclaration,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<NativeBorderDeclaration> {
+    if depth >= MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH {
+        return None;
+    }
+    match declaration {
+        NativeBorderDeclaration::CustomProperty(name_hash) => custom_properties
+            .get(&name_hash)
+            .and_then(|value| parse_border_declaration(value))
+            .and_then(|declaration| match declaration {
+                LocalCascadeDeclaration::Value(value) => {
+                    resolve_border_declaration_value(value, custom_properties, depth + 1)
+                }
+                LocalCascadeDeclaration::Inherit
+                | LocalCascadeDeclaration::Reset
+                | LocalCascadeDeclaration::RevertLayer => None,
+            }),
+        NativeBorderDeclaration::CustomPropertyFallback(name_hash, fallback) => custom_properties
+            .get(&name_hash)
+            .and_then(|value| parse_border_declaration(value))
+            .and_then(|declaration| match declaration {
+                LocalCascadeDeclaration::Value(value) => {
+                    resolve_border_declaration_value(value, custom_properties, depth + 1)
+                }
+                LocalCascadeDeclaration::Inherit
+                | LocalCascadeDeclaration::Reset
+                | LocalCascadeDeclaration::RevertLayer => None,
+            })
+            .or(Some(NativeBorderDeclaration::Complete(fallback))),
+        value => Some(value),
+    }
+}
+
+fn resolve_local_border_declaration<const N: usize>(
+    candidates: [Option<CascadeValue<LocalCascadeDeclaration<NativeBorderDeclaration>>>; N],
+    custom_properties: &BTreeMap<u64, String>,
+) -> Option<NativeBorderDeclaration> {
+    resolve_alignment_candidates(candidates, None, |declaration| match declaration {
+        LocalCascadeDeclaration::Value(value) => Some(resolve_border_declaration_value(
+            value,
+            custom_properties,
+            0,
+        )),
+        LocalCascadeDeclaration::Inherit => None,
+        LocalCascadeDeclaration::Reset => Some(Some(NativeBorderDeclaration::None)),
+        LocalCascadeDeclaration::RevertLayer => None,
+    })
+}
+
 fn parse_border_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<NativeBorderDeclaration>> {
@@ -14725,7 +14850,9 @@ fn parse_border_declaration(
             return Some(LocalCascadeDeclaration::Value(declaration));
         }
     }
-    parse_complete_border(value).map(LocalCascadeDeclaration::Value)
+    parse_complete_border(value)
+        .or_else(|| parse_border_custom_property(value))
+        .map(LocalCascadeDeclaration::Value)
 }
 
 fn parse_border_width_edges(value: &str) -> Option<[NativeBorderWidthValue; 4]> {
@@ -24125,6 +24252,112 @@ mod tests {
             diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
                 && diagnostic.detail == "border"
         }));
+    }
+    #[test]
+    fn border_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let border = parse_custom_property_name("--border").unwrap();
+        assert_eq!(
+            parse_border_declaration("var(--border)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::CustomProperty(border)
+            ))
+        );
+        assert_eq!(
+            parse_border_declaration("var(--border, 2px solid red)"),
+            Some(LocalCascadeDeclaration::Value(
+                NativeBorderDeclaration::CustomPropertyFallback(
+                    border,
+                    border_side(2, NativeColor::RED)
+                )
+            ))
+        );
+        assert_eq!(
+            parse_declarations(
+                "border: var(--border); border-left: var(--border, 3px dashed white)"
+            )
+            .border,
+            [
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::CustomProperty(border)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::CustomProperty(border)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::CustomProperty(border)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    NativeBorderDeclaration::CustomPropertyFallback(
+                        border,
+                        styled_border_side(3, NativeBorderStyle::Dashed, NativeColor::WHITE)
+                    )
+                )),
+            ]
+        );
+        assert_eq!(
+            parse_border_declaration("var(--border, 2px solid currentColor)"),
+            None
+        );
+        assert_eq!(parse_border_declaration("var(--border, none)"), None);
+    }
+
+    #[test]
+    fn border_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --border: 1px solid red; --alias: var(--border); border: var(--alias); }
+            #child { border: var(--alias); }
+            #fallback { border: var(--missing, 5px dashed black); }
+            #invalid { --bad: unsupported; border: var(--bad, 7px dotted white); }
+            #cycle { --cycle: var(--cycle); border: var(--cycle, 8px double red); }
+            #reset { --reset: initial; border: var(--reset, 9px solid red); }
+            #none { --none: none; border: var(--none); }
+            #longhand { --side: 10px solid white; border-left: var(--side); }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='none'>None</div>
+            <div id='longhand'>Longhand</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        assert_eq!(style("parent").border_widths(), [1; 4]);
+        assert_eq!(
+            style("parent").border_styles(),
+            [NativeBorderStyleValue::Paint(NativeBorderStyle::Solid); 4]
+        );
+        assert_eq!(style("parent").border_colors(), [NativeColor::RED; 4]);
+        assert_eq!(style("child").border_widths(), [1; 4]);
+        assert_eq!(style("fallback").border_widths(), [5; 4]);
+        assert_eq!(
+            style("fallback").border_styles(),
+            [NativeBorderStyleValue::Paint(NativeBorderStyle::Dashed); 4]
+        );
+        assert_eq!(style("invalid").border_widths(), [7; 4]);
+        assert_eq!(
+            style("cycle").border_styles(),
+            [NativeBorderStyleValue::Paint(NativeBorderStyle::Double); 4]
+        );
+        assert_eq!(style("reset").border_widths(), [0; 4]);
+        assert_eq!(style("none").border_widths(), [0; 4]);
+        assert_eq!(style("longhand").border_widths(), [0, 0, 0, 10]);
+        assert_eq!(
+            style("longhand").border_colors(),
+            [
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                NativeColor::BLACK,
+                NativeColor::WHITE
+            ]
+        );
     }
 
     #[test]

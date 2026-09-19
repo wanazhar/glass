@@ -1050,6 +1050,13 @@ pub(crate) enum NativeFontVariantCaps {
     TitlingCaps,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontVariantCapsDeclarationValue {
+    Value(NativeFontVariantCaps),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontVariantCaps),
+}
+
 /// The bounded OpenType subscript/superscript controls exposed by
 /// `font-variant-position`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -4526,10 +4533,10 @@ impl NativeStylesheet {
                 inherited.font_variant_ligatures,
                 custom_properties,
             ),
-            font_variant_caps: resolve_inherited_text_declaration(
+            font_variant_caps: resolve_font_variant_caps(
                 *font_variant_caps,
                 inherited.font_variant_caps,
-                NativeFontVariantCaps::Normal,
+                custom_properties,
             ),
             font_variant_position: resolve_inherited_text_declaration(
                 *font_variant_position,
@@ -4773,7 +4780,7 @@ struct NativeCascadeScratch {
     text_decoration_color: NativePaintDeclarationCandidates<NativeTextDecorationColorDeclaration>,
     text_transform: NativeTextCascadeCandidates<TextTransformValue>,
     font_variant_ligatures: NativeTextCascadeCandidates<FontVariantLigaturesDeclarationValue>,
-    font_variant_caps: NativeTextCascadeCandidates<NativeFontVariantCaps>,
+    font_variant_caps: NativeTextCascadeCandidates<FontVariantCapsDeclarationValue>,
     font_variant_position: NativeTextCascadeCandidates<NativeFontVariantPosition>,
     font_variant_alternates: NativeTextCascadeCandidates<NativeFontVariantAlternates>,
     font_language_override: NativeTextCascadeCandidates<FontLanguageOverrideDeclarationValue>,
@@ -5496,6 +5503,98 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_variant_caps_declaration(
+    declaration: InheritedTextDeclaration<FontVariantCapsDeclarationValue>,
+    inherited: NativeFontVariantCaps,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariantCapsDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_variant_caps_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => {
+            Some(FontVariantCapsDeclarationValue::Value(inherited))
+        }
+        InheritedTextDeclaration::Initial => Some(FontVariantCapsDeclarationValue::Value(
+            NativeFontVariantCaps::Normal,
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_variant_caps_value(
+    value: FontVariantCapsDeclarationValue,
+    inherited: NativeFontVariantCaps,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariantCapsDeclarationValue> {
+    match value {
+        FontVariantCapsDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variant_caps_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variant_caps_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontVariantCapsDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variant_caps_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variant_caps_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontVariantCapsDeclarationValue::Value(fallback)))
+        }
+        FontVariantCapsDeclarationValue::CustomProperty(_)
+        | FontVariantCapsDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontVariantCapsDeclarationValue::Value(value) => {
+            Some(FontVariantCapsDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_font_variant_caps(
+    candidates: NativeTextCascadeCandidates<FontVariantCapsDeclarationValue>,
+    inherited: NativeFontVariantCaps,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontVariantCaps {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontVariantCapsDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_variant_caps_declaration(
+                declaration,
+                inherited,
+                custom_properties,
+                0,
+            )
+        },
+    );
+    match resolved {
+        FontVariantCapsDeclarationValue::Value(value) => value,
+        FontVariantCapsDeclarationValue::CustomProperty(_)
+        | FontVariantCapsDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_variant_ligatures_declaration(
@@ -8603,7 +8702,7 @@ struct NativeDeclarations {
     text_decoration_color_important: bool,
     text_transform: Option<InheritedTextDeclaration<TextTransformValue>>,
     font_variant_ligatures: Option<InheritedTextDeclaration<FontVariantLigaturesDeclarationValue>>,
-    font_variant_caps: Option<InheritedTextDeclaration<NativeFontVariantCaps>>,
+    font_variant_caps: Option<InheritedTextDeclaration<FontVariantCapsDeclarationValue>>,
     font_variant_position: Option<InheritedTextDeclaration<NativeFontVariantPosition>>,
     font_variant_alternates: Option<InheritedTextDeclaration<NativeFontVariantAlternates>>,
     font_language_override: Option<InheritedTextDeclaration<FontLanguageOverrideDeclarationValue>>,
@@ -10497,7 +10596,8 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 if let Some(parsed) = parse_font_variant_shorthand_declaration(value) {
                     declarations.font_variant_ligatures =
                         Some(wrap_font_variant_ligatures_declaration(parsed.ligatures));
-                    declarations.font_variant_caps = Some(parsed.caps);
+                    declarations.font_variant_caps =
+                        Some(wrap_font_variant_caps_declaration(parsed.caps));
                     declarations.font_variant_position = Some(parsed.position);
                     declarations.font_variant_alternates = Some(parsed.alternates);
                     declarations.font_variant_east_asian = Some(parsed.east_asian);
@@ -15939,10 +16039,48 @@ fn parse_font_variant_caps(value: &str) -> Option<NativeFontVariantCaps> {
     }
 }
 
+fn parse_font_variant_caps_custom_property(value: &str) -> Option<FontVariantCapsDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_variant_caps(fallback).map(|fallback| {
+            FontVariantCapsDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(FontVariantCapsDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_font_variant_caps_property(value: &str) -> Option<FontVariantCapsDeclarationValue> {
+    parse_font_variant_caps(value)
+        .map(FontVariantCapsDeclarationValue::Value)
+        .or_else(|| parse_font_variant_caps_custom_property(value))
+}
+
 fn parse_font_variant_caps_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontVariantCaps>> {
-    parse_inherited_text_declaration(value, parse_font_variant_caps)
+) -> Option<InheritedTextDeclaration<FontVariantCapsDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_variant_caps_property)
+}
+
+fn wrap_font_variant_caps_declaration(
+    declaration: InheritedTextDeclaration<NativeFontVariantCaps>,
+) -> InheritedTextDeclaration<FontVariantCapsDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            InheritedTextDeclaration::Value(FontVariantCapsDeclarationValue::Value(value))
+        }
+        InheritedTextDeclaration::Inherit => InheritedTextDeclaration::Inherit,
+        InheritedTextDeclaration::Initial => InheritedTextDeclaration::Initial,
+        InheritedTextDeclaration::Unset => InheritedTextDeclaration::Unset,
+        InheritedTextDeclaration::Revert => InheritedTextDeclaration::Revert,
+        InheritedTextDeclaration::RevertLayer => InheritedTextDeclaration::RevertLayer,
+    }
 }
 
 fn parse_font_variant_position(value: &str) -> Option<NativeFontVariantPosition> {
@@ -27170,6 +27308,22 @@ mod tests {
         assert!(parse_font_variant_caps("inherit").is_none());
         assert!(parse_font_variant_caps("small-caps all-small-caps").is_none());
         assert!(parse_font_variant_caps("none").is_none());
+        let caps_name = parse_custom_property_name("--caps").unwrap();
+        let fallback = NativeFontVariantCaps::AllSmallCaps;
+        assert_eq!(
+            parse_font_variant_caps_property("var(--caps)"),
+            Some(FontVariantCapsDeclarationValue::CustomProperty(caps_name))
+        );
+        assert_eq!(
+            parse_font_variant_caps_declaration("var(--caps, all-small-caps)"),
+            Some(InheritedTextDeclaration::Value(
+                FontVariantCapsDeclarationValue::CustomPropertyFallback(caps_name, fallback)
+            ))
+        );
+        assert_eq!(
+            parse_font_variant_caps_property("var(--caps, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -29425,6 +29579,44 @@ mod tests {
             style("invalid").font_variant_caps(),
             NativeFontVariantCaps::AllSmallCaps
         );
+    }
+
+    #[test]
+    fn inherited_font_variant_caps_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --caps: all-small-caps; --alias: var(--caps); --cycle: var(--cycle); font-variant-caps: var(--caps); }
+            #child { font-variant-caps: var(--alias); }
+            #fallback { font-variant-caps: var(--missing, unicase); }
+            #invalid { --bad: small-caps all-small-caps; font-variant-caps: var(--bad, titling-caps); }
+            #cycle { font-variant-caps: var(--cycle, normal); }
+            #wide-initial { --wide: initial; font-variant-caps: var(--wide); }
+            #wide-inherit { --wide: inherit; font-variant-caps: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_variant_caps()
+        };
+
+        assert_eq!(style("parent"), NativeFontVariantCaps::AllSmallCaps);
+        assert_eq!(style("child"), NativeFontVariantCaps::AllSmallCaps);
+        assert_eq!(style("fallback"), NativeFontVariantCaps::Unicase);
+        assert_eq!(style("invalid"), NativeFontVariantCaps::TitlingCaps);
+        assert_eq!(style("cycle"), NativeFontVariantCaps::Normal);
+        assert_eq!(style("wide-initial"), NativeFontVariantCaps::Normal);
+        assert_eq!(style("wide-inherit"), NativeFontVariantCaps::AllSmallCaps);
     }
 
     #[test]

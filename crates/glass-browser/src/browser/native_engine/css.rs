@@ -1170,6 +1170,12 @@ pub(crate) struct NativeFontVariantNumeric {
     pub(crate) ordinal: bool,
     pub(crate) slashed_zero: bool,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontVariantNumericDeclarationValue {
+    Value(NativeFontVariantNumeric),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeFontVariantNumeric),
+}
 
 const MAX_NATIVE_FONT_FEATURES: usize = 16;
 const MAX_NATIVE_FONT_VARIATIONS: usize = 8;
@@ -4581,10 +4587,10 @@ impl NativeStylesheet {
                 inherited.font_variant_east_asian,
                 custom_properties,
             ),
-            font_variant_numeric: resolve_inherited_text_declaration(
+            font_variant_numeric: resolve_font_variant_numeric(
                 *font_variant_numeric,
                 inherited.font_variant_numeric,
-                NativeFontVariantNumeric::default(),
+                custom_properties,
             ),
             font_feature_settings: resolve_font_feature_settings(
                 *font_feature_settings,
@@ -4804,7 +4810,7 @@ struct NativeCascadeScratch {
     font_language_override: NativeTextCascadeCandidates<FontLanguageOverrideDeclarationValue>,
     font_variation_settings: NativeTextCascadeCandidates<FontVariationSettingsDeclarationValue>,
     font_variant_east_asian: NativeTextCascadeCandidates<FontVariantEastAsianDeclarationValue>,
-    font_variant_numeric: NativeTextCascadeCandidates<NativeFontVariantNumeric>,
+    font_variant_numeric: NativeTextCascadeCandidates<FontVariantNumericDeclarationValue>,
     font_feature_settings: NativeTextCascadeCandidates<FontFeatureSettingsDeclarationValue>,
     font_kerning: NativeTextCascadeCandidates<FontKerningDeclarationValue>,
     font_optical_sizing: NativeTextCascadeCandidates<FontOpticalSizingDeclarationValue>,
@@ -5521,6 +5527,98 @@ fn resolve_inherited_text_declaration<T: Copy>(
         InheritedTextDeclaration::Initial => Some(initial),
         InheritedTextDeclaration::RevertLayer => None,
     })
+}
+
+fn resolve_native_font_variant_numeric_declaration(
+    declaration: InheritedTextDeclaration<FontVariantNumericDeclarationValue>,
+    inherited: NativeFontVariantNumeric,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariantNumericDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            resolve_native_font_variant_numeric_value(value, inherited, custom_properties, depth)
+        }
+        InheritedTextDeclaration::Inherit
+        | InheritedTextDeclaration::Unset
+        | InheritedTextDeclaration::Revert => {
+            Some(FontVariantNumericDeclarationValue::Value(inherited))
+        }
+        InheritedTextDeclaration::Initial => Some(FontVariantNumericDeclarationValue::Value(
+            NativeFontVariantNumeric::default(),
+        )),
+        InheritedTextDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_native_font_variant_numeric_value(
+    value: FontVariantNumericDeclarationValue,
+    inherited: NativeFontVariantNumeric,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<FontVariantNumericDeclarationValue> {
+    match value {
+        FontVariantNumericDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variant_numeric_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variant_numeric_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        FontVariantNumericDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_font_variant_numeric_declaration(value))
+                .and_then(|declaration| {
+                    resolve_native_font_variant_numeric_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(FontVariantNumericDeclarationValue::Value(fallback)))
+        }
+        FontVariantNumericDeclarationValue::CustomProperty(_)
+        | FontVariantNumericDeclarationValue::CustomPropertyFallback(_, _) => None,
+        FontVariantNumericDeclarationValue::Value(value) => {
+            Some(FontVariantNumericDeclarationValue::Value(value))
+        }
+    }
+}
+
+fn resolve_font_variant_numeric(
+    candidates: NativeTextCascadeCandidates<FontVariantNumericDeclarationValue>,
+    inherited: NativeFontVariantNumeric,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativeFontVariantNumeric {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        FontVariantNumericDeclarationValue::Value(inherited),
+        |declaration| {
+            resolve_native_font_variant_numeric_declaration(
+                declaration,
+                inherited,
+                custom_properties,
+                0,
+            )
+        },
+    );
+    match resolved {
+        FontVariantNumericDeclarationValue::Value(value) => value,
+        FontVariantNumericDeclarationValue::CustomProperty(_)
+        | FontVariantNumericDeclarationValue::CustomPropertyFallback(_, _) => inherited,
+    }
 }
 
 fn resolve_native_font_variant_east_asian_declaration(
@@ -9004,7 +9102,7 @@ struct NativeDeclarations {
     font_variation_settings:
         Option<InheritedTextDeclaration<FontVariationSettingsDeclarationValue>>,
     font_variant_east_asian: Option<InheritedTextDeclaration<FontVariantEastAsianDeclarationValue>>,
-    font_variant_numeric: Option<InheritedTextDeclaration<NativeFontVariantNumeric>>,
+    font_variant_numeric: Option<InheritedTextDeclaration<FontVariantNumericDeclarationValue>>,
     font_feature_settings: Option<InheritedTextDeclaration<FontFeatureSettingsDeclarationValue>>,
     font_kerning: Option<InheritedTextDeclaration<FontKerningDeclarationValue>>,
     font_optical_sizing: Option<InheritedTextDeclaration<FontOpticalSizingDeclarationValue>>,
@@ -10899,7 +10997,8 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                         Some(wrap_font_variant_alternates_declaration(parsed.alternates));
                     declarations.font_variant_east_asian =
                         Some(wrap_font_variant_east_asian_declaration(parsed.east_asian));
-                    declarations.font_variant_numeric = Some(parsed.numeric);
+                    declarations.font_variant_numeric =
+                        Some(wrap_font_variant_numeric_declaration(parsed.numeric));
                     declarations.text_importance.font_variant_ligatures = important;
                     declarations.text_importance.font_variant_caps = important;
                     declarations.text_importance.font_variant_position = important;
@@ -17110,10 +17209,52 @@ fn parse_font_variant_numeric(value: &str) -> Option<NativeFontVariantNumeric> {
     Some(result)
 }
 
+fn parse_font_variant_numeric_custom_property(
+    value: &str,
+) -> Option<FontVariantNumericDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback) => parse_font_variant_numeric(fallback).map(|fallback| {
+            FontVariantNumericDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+        }),
+        None => Some(FontVariantNumericDeclarationValue::CustomProperty(
+            name_hash,
+        )),
+    }
+}
+
+fn parse_font_variant_numeric_property(value: &str) -> Option<FontVariantNumericDeclarationValue> {
+    parse_font_variant_numeric(value)
+        .map(FontVariantNumericDeclarationValue::Value)
+        .or_else(|| parse_font_variant_numeric_custom_property(value))
+}
+
 fn parse_font_variant_numeric_declaration(
     value: &str,
-) -> Option<InheritedTextDeclaration<NativeFontVariantNumeric>> {
-    parse_inherited_text_declaration(value, parse_font_variant_numeric)
+) -> Option<InheritedTextDeclaration<FontVariantNumericDeclarationValue>> {
+    parse_inherited_text_declaration(value, parse_font_variant_numeric_property)
+}
+
+fn wrap_font_variant_numeric_declaration(
+    declaration: InheritedTextDeclaration<NativeFontVariantNumeric>,
+) -> InheritedTextDeclaration<FontVariantNumericDeclarationValue> {
+    match declaration {
+        InheritedTextDeclaration::Value(value) => {
+            InheritedTextDeclaration::Value(FontVariantNumericDeclarationValue::Value(value))
+        }
+        InheritedTextDeclaration::Inherit => InheritedTextDeclaration::Inherit,
+        InheritedTextDeclaration::Initial => InheritedTextDeclaration::Initial,
+        InheritedTextDeclaration::Unset => InheritedTextDeclaration::Unset,
+        InheritedTextDeclaration::Revert => InheritedTextDeclaration::Revert,
+        InheritedTextDeclaration::RevertLayer => InheritedTextDeclaration::RevertLayer,
+    }
 }
 
 pub(crate) fn parse_font_feature_settings(value: &str) -> Option<NativeFontFeatureSettings> {
@@ -28021,6 +28162,32 @@ mod tests {
         assert!(parse_font_variant_numeric("lining-nums oldstyle-nums").is_none());
         assert!(parse_font_variant_numeric("ordinal ordinal").is_none());
         assert!(parse_font_variant_numeric("unknown").is_none());
+        let numeric_name = parse_custom_property_name("--numeric").unwrap();
+        let fallback = NativeFontVariantNumeric {
+            figure: NativeFontVariantNumericFigure::Lining,
+            spacing: NativeFontVariantNumericSpacing::Tabular,
+            fraction: NativeFontVariantNumericFraction::Stacked,
+            ordinal: true,
+            slashed_zero: true,
+        };
+        assert_eq!(
+            parse_font_variant_numeric_property("var(--numeric)"),
+            Some(FontVariantNumericDeclarationValue::CustomProperty(
+                numeric_name
+            ))
+        );
+        assert_eq!(
+            parse_font_variant_numeric_declaration(
+                "var(--numeric, lining-nums tabular-nums stacked-fractions ordinal slashed-zero)"
+            ),
+            Some(InheritedTextDeclaration::Value(
+                FontVariantNumericDeclarationValue::CustomPropertyFallback(numeric_name, fallback)
+            ))
+        );
+        assert_eq!(
+            parse_font_variant_numeric_property("var(--numeric, var(--other))"),
+            None
+        );
     }
 
     #[test]
@@ -30599,6 +30766,65 @@ mod tests {
             style("invalid").font_variant_position(),
             NativeFontVariantPosition::Super
         );
+    }
+
+    #[test]
+    fn inherited_font_variant_numeric_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --numeric: oldstyle-nums tabular-nums stacked-fractions ordinal slashed-zero; --alias: var(--numeric); --cycle: var(--cycle); font-variant-numeric: var(--numeric); }
+            #child { font-variant-numeric: var(--alias); }
+            #fallback { font-variant-numeric: var(--missing, lining-nums proportional-nums diagonal-fractions); }
+            #invalid { --bad: lining-nums oldstyle-nums; font-variant-numeric: var(--bad, ordinal slashed-zero); }
+            #cycle { font-variant-numeric: var(--cycle, normal); }
+            #wide-initial { --wide: initial; font-variant-numeric: var(--wide); }
+            #wide-inherit { --wide: inherit; font-variant-numeric: var(--wide); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='wide-initial'>Initial</span>
+              <span id='wide-inherit'>Inherit</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .font_variant_numeric()
+        };
+
+        let parent = NativeFontVariantNumeric {
+            figure: NativeFontVariantNumericFigure::Oldstyle,
+            spacing: NativeFontVariantNumericSpacing::Tabular,
+            fraction: NativeFontVariantNumericFraction::Stacked,
+            ordinal: true,
+            slashed_zero: true,
+        };
+        let fallback = NativeFontVariantNumeric {
+            figure: NativeFontVariantNumericFigure::Lining,
+            spacing: NativeFontVariantNumericSpacing::Proportional,
+            fraction: NativeFontVariantNumericFraction::Diagonal,
+            ordinal: false,
+            slashed_zero: false,
+        };
+        let invalid_fallback = NativeFontVariantNumeric {
+            figure: NativeFontVariantNumericFigure::Normal,
+            spacing: NativeFontVariantNumericSpacing::Normal,
+            fraction: NativeFontVariantNumericFraction::Normal,
+            ordinal: true,
+            slashed_zero: true,
+        };
+        assert_eq!(style("parent"), parent);
+        assert_eq!(style("child"), parent);
+        assert_eq!(style("fallback"), fallback);
+        assert_eq!(style("invalid"), invalid_fallback);
+        assert_eq!(style("cycle"), NativeFontVariantNumeric::default());
+        assert_eq!(style("wide-initial"), NativeFontVariantNumeric::default());
+        assert_eq!(style("wide-inherit"), parent);
     }
 
     #[test]

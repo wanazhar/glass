@@ -1,9 +1,10 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-587`, following
-completed `native-engine-browser-586`, following
-completed `native-engine-browser-585`,
+expansion checkpoint is completed `native-engine-browser-588`, following
+completed `native-engine-browser-587`, following
+completed `native-engine-browser-586`,
+completed `native-engine-browser-585`, following
 completed `native-engine-browser-584`, following
 completed `native-engine-browser-583`, following
 completed `native-engine-browser-582`, following
@@ -464,6 +465,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 588 extends bounded native custom-property substitution to inherited
+`font-variant-numeric`. Standalone `var(--name)` and compound-keyword
+fallbacks now resolve inherited aliases, CSS-wide mapped values, invalid
+values, and cyclic values before normal numeric feature computation, while the
+existing supported numeric values and computed-style projection remain
+unchanged. Complete shorthand substitution, nested variable grammar,
+registered properties, full CSS variable grammar, and complete CSS Web IDL
+parity remain explicit issue #40 gates.
 
 Slice 587 extends bounded native custom-property substitution to inherited
 `font-variant-east-asian`. Standalone `var(--name)` and compound-keyword

@@ -4591,7 +4591,7 @@ impl NativeStylesheet {
             resolve_overflow_axis(*overflow_y, inherited.overflow_y, custom_properties);
         NativeComputedStyle {
             display: resolve_display(*display, custom_properties),
-            position: resolve_local_cascade_declaration(*position, NativePositionValue::Static),
+            position: resolve_position(*position, custom_properties),
             z_index: resolve_local_cascade_declaration(*z_index, NativeZIndexValue::Auto),
             pointer_events: resolve_pointer_events(
                 *pointer_events,
@@ -4852,6 +4852,13 @@ enum DisplayDeclarationValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PositionDeclarationValue {
+    Value(NativePositionValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativePositionValue),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpacityDeclarationValue {
     Value(u8),
     CustomProperty(u64),
@@ -4917,7 +4924,7 @@ type NativePhysicalLocalBorderCandidates<T> =
 #[derive(Default)]
 struct NativeCascadeScratch {
     display: NativeLocalCascadeCandidates<DisplayDeclarationValue>,
-    position: NativeLocalCascadeCandidates<NativePositionValue>,
+    position: NativeLocalCascadeCandidates<PositionDeclarationValue>,
     z_index: NativeLocalCascadeCandidates<NativeZIndexValue>,
     pointer_events: NativeTextCascadeCandidates<PointerEventsDeclarationValue>,
     top: NativeLocalCascadeCandidates<NativePositionOffset>,
@@ -8153,6 +8160,79 @@ fn resolve_display(
     }
 }
 
+fn resolve_position_declaration(
+    declaration: LocalCascadeDeclaration<PositionDeclarationValue>,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<PositionDeclarationValue> {
+    match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_position_value(value, custom_properties, depth)
+        }
+        LocalCascadeDeclaration::Inherit | LocalCascadeDeclaration::Reset => {
+            Some(PositionDeclarationValue::Value(NativePositionValue::Static))
+        }
+        LocalCascadeDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_position_value(
+    value: PositionDeclarationValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<PositionDeclarationValue> {
+    match value {
+        PositionDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_position_declaration(value))
+                .and_then(|declaration| {
+                    resolve_position_declaration(
+                        declaration,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        PositionDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_position_declaration(value))
+                .and_then(|declaration| {
+                    resolve_position_declaration(
+                        declaration,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(PositionDeclarationValue::Value(fallback)))
+        }
+        PositionDeclarationValue::CustomProperty(_)
+        | PositionDeclarationValue::CustomPropertyFallback(_, _) => None,
+        PositionDeclarationValue::Value(value) => Some(PositionDeclarationValue::Value(value)),
+    }
+}
+
+fn resolve_position(
+    candidates: NativeLocalCascadeCandidates<PositionDeclarationValue>,
+    custom_properties: &BTreeMap<u64, String>,
+) -> NativePositionValue {
+    let resolved = resolve_alignment_candidates(
+        candidates,
+        PositionDeclarationValue::Value(NativePositionValue::Static),
+        |declaration| resolve_position_declaration(declaration, custom_properties, 0),
+    );
+    match resolved {
+        PositionDeclarationValue::Value(value) => value,
+        PositionDeclarationValue::CustomProperty(_)
+        | PositionDeclarationValue::CustomPropertyFallback(_, _) => NativePositionValue::Static,
+    }
+}
+
 fn resolve_text_indent_declaration(
     declaration: LocalCascadeDeclaration<TextIndentDeclarationValue>,
     inherited: u32,
@@ -10464,7 +10544,7 @@ struct NativeTextDeclarationImportance {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeDeclarations {
     display: Option<LocalCascadeDeclaration<DisplayDeclarationValue>>,
-    position: Option<LocalCascadeDeclaration<NativePositionValue>>,
+    position: Option<LocalCascadeDeclaration<PositionDeclarationValue>>,
     z_index: Option<LocalCascadeDeclaration<NativeZIndexValue>>,
     pointer_events: Option<InheritedTextDeclaration<PointerEventsDeclarationValue>>,
     top: Option<LocalCascadeDeclaration<NativePositionOffset>>,
@@ -15994,11 +16074,45 @@ fn parse_position(value: &str) -> Option<NativePositionValue> {
     }
 }
 
-fn parse_position_declaration(value: &str) -> Option<LocalCascadeDeclaration<NativePositionValue>> {
+fn parse_position_custom_property(value: &str) -> Option<PositionDeclarationValue> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = arguments
+        .split_once(',')
+        .map_or((arguments, None), |(name, fallback)| (name, Some(fallback)));
+    let name_hash = parse_custom_property_name(name)?;
+    match fallback {
+        Some(fallback)
+            if fallback
+                .as_bytes()
+                .windows(4)
+                .any(|window| window.eq_ignore_ascii_case(b"var(")) =>
+        {
+            None
+        }
+        Some(fallback) => parse_position(fallback)
+            .map(|fallback| PositionDeclarationValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(PositionDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_position_property(value: &str) -> Option<PositionDeclarationValue> {
+    parse_position(value)
+        .map(PositionDeclarationValue::Value)
+        .or_else(|| parse_position_custom_property(value))
+}
+
+fn parse_position_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<PositionDeclarationValue>> {
     if is_inherit_keyword(value) {
         return Some(LocalCascadeDeclaration::Inherit);
     }
-    parse_local_reset_cascade_declaration(value, parse_position)
+    parse_local_reset_cascade_declaration(value, parse_position_property)
 }
 
 fn parse_z_index(value: &str) -> Option<NativeZIndexValue> {
@@ -21583,6 +21697,79 @@ mod tests {
         assert_eq!(style("fallback"), DisplayValue::Block);
         assert_eq!(style("invalid"), DisplayValue::None);
         assert_eq!(style("cycle"), DisplayValue::Contents);
+    }
+
+    #[test]
+    fn position_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let position = parse_custom_property_name("--position").unwrap();
+        assert_eq!(
+            parse_position_property("absolute"),
+            Some(PositionDeclarationValue::Value(
+                NativePositionValue::Absolute
+            ))
+        );
+        assert_eq!(
+            parse_position_declaration("var(--position)"),
+            Some(LocalCascadeDeclaration::Value(
+                PositionDeclarationValue::CustomProperty(position)
+            ))
+        );
+        assert_eq!(
+            parse_position_declaration("var(--position, sticky)"),
+            Some(LocalCascadeDeclaration::Value(
+                PositionDeclarationValue::CustomPropertyFallback(
+                    position,
+                    NativePositionValue::Sticky
+                )
+            ))
+        );
+        assert_eq!(
+            parse_position_declaration("var(--position, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_position_declaration("initial"),
+            Some(LocalCascadeDeclaration::Reset)
+        );
+        assert_eq!(
+            parse_position_declaration("inherit"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
+    }
+
+    #[test]
+    fn position_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --position: absolute; --alias: var(--position); --cycle: var(--cycle); position: var(--position); }
+            #child { position: var(--alias); }
+            #fallback { position: var(--missing, fixed); }
+            #invalid { --bad: unsupported; position: var(--bad, relative); }
+            #cycle { position: var(--cycle, sticky); }
+            #reset { --reset: initial; position: var(--reset, fixed); }
+            </style>
+            <div id='parent'>
+              <span id='child'>Child</span>
+              <span id='fallback'>Fallback</span>
+              <span id='invalid'>Invalid</span>
+              <span id='cycle'>Cycle</span>
+              <span id='reset'>Reset</span>
+            </div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+                .position()
+        };
+
+        assert_eq!(style("parent"), NativePositionValue::Absolute);
+        assert_eq!(style("child"), NativePositionValue::Absolute);
+        assert_eq!(style("fallback"), NativePositionValue::Fixed);
+        assert_eq!(style("invalid"), NativePositionValue::Relative);
+        assert_eq!(style("cycle"), NativePositionValue::Sticky);
+        assert_eq!(style("reset"), NativePositionValue::Static);
     }
     #[test]
     fn local_presentation_important_parser_tracks_markers_and_invalid_preservation() {

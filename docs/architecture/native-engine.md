@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-591`, following completed
 `native-engine-browser-590`, following completed
 `native-engine-browser-589`, following completed
 `native-engine-browser-588`, following completed
@@ -460,6 +461,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 591 extends bounded native custom-property substitution to inherited
+`text-align`. Standalone `var(--name)` and keyword
+`var(--name, value)` fallbacks now resolve inherited aliases, CSS-wide mapped
+values, invalid values, and cyclic values before normal alignment, while the
+existing supported alignment values and computed-style projection remain
+unchanged. Nested variable grammar, registered properties, full CSS variable
+grammar, and complete CSS Web IDL parity remain issue #40 gates.
 
 Slice 590 extends bounded native custom-property substitution to inherited
 `text-transform`. Standalone `var(--name)` and keyword

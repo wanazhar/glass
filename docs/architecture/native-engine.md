@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-615`, following completed
 `native-engine-browser-614`, following completed
 `native-engine-browser-613`, following completed
 `native-engine-browser-612`, following completed
@@ -484,6 +485,16 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 615 extends bounded native custom-property substitution to physical
+`border-style` and `border-top-style`, `border-right-style`,
+`border-bottom-style`, and `border-left-style`. Standalone `var(--name)` and
+style-keyword or CSS-wide fallbacks, including one-to-four-value shorthand
+expansion, now resolve inherited aliases, CSS-wide reset mappings, invalid
+values, and cyclic values before border composition. Logical border-style and
+existing local cascade, `revert-layer`, and geometry behavior remain
+unchanged. Nested variable grammar, registered properties, full CSS variable
+grammar, and complete CSS and Web IDL parity remain issue #40 gates.
 
 Slice 614 extends bounded native custom-property substitution to physical
 `border-width` and `border-top-width`, `border-right-width`,

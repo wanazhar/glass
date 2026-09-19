@@ -12,7 +12,7 @@ use super::bidi_backend::BidiBackendConfig;
 use super::native_backend::NativeFrameInspectionSnapshot;
 #[cfg(feature = "native-engine")]
 use super::native_engine::{
-    NativeEngineConfig, NativeFile, NativePreflightAction, NativeTargetPreflight,
+    NativeEngineConfig, NativeFile, NativePreflightAction, NativeTargetPreflight, Viewport,
 };
 #[cfg(feature = "native-engine")]
 use super::policy::BrowserPolicy;
@@ -665,6 +665,15 @@ impl BrowserRuntimeSession {
         match &self.backend {
             BackendStartup::Native(backend) => Ok(backend.set_timezone(timezone_id).await?),
             _ => Err("native timezone emulation is only available on the native runtime".into()),
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
+    pub async fn native_set_viewport(&self, viewport: Viewport) -> BrowserResult<()> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.set_viewport(viewport).await?),
+            _ => Err("native viewport updates are only available on the native runtime".into()),
         }
     }
 

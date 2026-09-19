@@ -27288,6 +27288,22 @@ mod tests {
             document.computed_style_for_layout(too_large).font_size(),
             20
         );
+
+        document
+            .set_viewport(Viewport {
+                width: 500,
+                height: 400,
+                device_scale_factor_milli: 1_000,
+            })
+            .unwrap();
+        assert_eq!(document.computed_style_for_layout(width).font_size(), 10);
+        assert_eq!(document.computed_style_for_layout(height).font_size(), 8);
+        assert_eq!(document.computed_style_for_layout(minimum).font_size(), 8);
+        assert_eq!(document.computed_style_for_layout(maximum).font_size(), 10);
+        assert_eq!(
+            document.computed_style_for_layout(too_large).font_size(),
+            150
+        );
     }
 
     #[test]

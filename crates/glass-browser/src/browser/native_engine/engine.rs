@@ -531,6 +531,30 @@ impl NativeEngine {
         &self.config
     }
 
+    /// Update the live CSS viewport and invalidate viewport-dependent
+    /// computed style and geometry state without navigating the document.
+    pub async fn set_viewport_async(
+        &mut self,
+        viewport: Viewport,
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("set viewport")?;
+        viewport.validate()?;
+        if self.config.viewport == viewport {
+            return Ok(());
+        }
+        if let Some(process) = self.content_process.as_mut() {
+            process.set_viewport(viewport).await?;
+        }
+        self.document.set_viewport(viewport)?;
+        let next_revision = self.next_revision()?;
+        self.document.set_revision(next_revision);
+        self.revision = next_revision;
+        self.config.viewport = viewport;
+        self.scroll_offset = NativePoint { x: 0, y: 0 };
+        self.nested_scroll_offsets.clear();
+        Ok(())
+    }
+
     /// Apply session-scoped network shaping to top-level navigation and every
     /// resource-loader owner used by the current document.
     pub async fn set_network_conditions_async(
@@ -6808,8 +6832,9 @@ impl NativeEngine {
             .iter()
             .map(|event| (event.node_index, event.kind))
             .collect();
-        let document =
+        let mut document =
             NativeDocument::from_content_wire(content.document, &self.config.limits, generation)?;
+        document.set_viewport(self.config.viewport)?;
         Ok(PreparedNavigation {
             resource: NativeResource {
                 url: content.url,
@@ -6844,6 +6869,7 @@ impl NativeEngine {
         })?;
         let mut document =
             NativeDocument::parse_with_generation(&resource.body, &self.config.limits, generation)?;
+        document.set_viewport(self.config.viewport)?;
         let initial_events = if is_file_url(&resource.url) {
             let (stylesheet_states, mut events) = load_local_initial_file_stylesheets(
                 &document,
@@ -9150,5 +9176,73 @@ mod tests {
             Some(NativeTargetErrorKind::StaleReference)
         );
         assert_eq!(result.revision, revision);
+    }
+
+    #[tokio::test]
+    async fn viewport_updates_recompute_css_and_script_dimensions() {
+        let config = NativeEngineConfig::default()
+            .with_initial_url("fixture://viewport.test/index")
+            .with_viewport(Viewport {
+                width: 1_000,
+                height: 800,
+                device_scale_factor_milli: 1_000,
+            })
+            .with_fixture(
+                "fixture://viewport.test/index",
+                "<style>#target { font-size: 2vw; }</style><span id='target'>Viewport</span>",
+            )
+            .expect("viewport fixture must validate");
+        let mut engine = NativeEngine::new(config).expect("native engine must construct");
+        engine.initialize().expect("native engine must initialize");
+        let target = engine
+            .resolve_target("id=target")
+            .expect("viewport target must resolve");
+
+        assert_eq!(
+            engine
+                .document
+                .computed_style_for_layout(target)
+                .font_size(),
+            20
+        );
+        assert_eq!(
+            engine
+                .evaluate_async("({ width: innerWidth, height: innerHeight })")
+                .await
+                .expect("initial viewport evaluation must succeed"),
+            serde_json::json!({"width": 1000, "height": 800})
+        );
+
+        engine
+            .set_viewport_async(Viewport {
+                width: 500,
+                height: 400,
+                device_scale_factor_milli: 1_000,
+            })
+            .await
+            .expect("viewport update must succeed");
+
+        assert_eq!(
+            engine
+                .document
+                .computed_style_for_layout(target)
+                .font_size(),
+            10
+        );
+        assert_eq!(
+            engine
+                .evaluate_async("({ width: innerWidth, height: innerHeight })")
+                .await
+                .expect("updated viewport evaluation must succeed"),
+            serde_json::json!({"width": 500, "height": 400})
+        );
+        assert_eq!(
+            engine
+                .snapshot()
+                .expect("snapshot must succeed")
+                .viewport
+                .width,
+            500
+        );
     }
 }

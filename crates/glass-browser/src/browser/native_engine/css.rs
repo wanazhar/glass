@@ -12455,6 +12455,44 @@ fn parse_decimal_milli(value: &str) -> Option<u32> {
     };
     whole.checked_mul(1_000)?.checked_add(fraction)
 }
+/// Parse a font-size number into the existing thousandth fixed-point model.
+///
+/// Font-size accepts up to six fractional decimal digits; values are rounded
+/// half-up to thousandths before the bounded resolver uses them. Keeping this
+/// conversion local avoids widening unrelated CSS numeric parsers while
+/// allowing CSS font-size declarations and calc factors to retain more input
+/// precision than the native integer-pixel output model.
+fn parse_font_size_decimal_milli(value: &str) -> Option<u32> {
+    let (whole, fraction, has_decimal) = match value.split_once('.') {
+        Some((whole, fraction)) => (whole, fraction, true),
+        None => (value, "", false),
+    };
+    if whole.is_empty() && !has_decimal || has_decimal && fraction.is_empty() {
+        return None;
+    }
+    if !whole.is_empty() && !whole.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if fraction.len() > 6 || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let whole = if whole.is_empty() {
+        0_u64
+    } else {
+        whole.parse::<u64>().ok()?
+    };
+    let fraction_len = fraction.len();
+    let fraction = if fraction.is_empty() {
+        0_u64
+    } else {
+        fraction.parse::<u64>().ok()?
+    };
+    let scale = 10_u64.checked_pow(u32::try_from(6_usize.saturating_sub(fraction_len)).ok()?)?;
+    let fraction_micro = fraction.checked_mul(scale)?;
+    let fraction_milli = fraction_micro.checked_add(500)?.checked_div(1_000)?;
+    let milli = whole.checked_mul(1_000)?.checked_add(fraction_milli)?;
+    u32::try_from(milli).ok()
+}
 
 fn parse_white_space(value: &str) -> Option<WhiteSpaceValue> {
     match value.to_ascii_lowercase().as_str() {
@@ -13376,7 +13414,7 @@ pub(crate) fn font_family_hash(value: &str) -> u64 {
 fn parse_font_size(value: &str) -> Option<u32> {
     let value = value.trim().to_ascii_lowercase();
     if let Some(number) = value.strip_suffix("px") {
-        let milli_pixels = u64::from(parse_decimal_milli(number.trim())?);
+        let milli_pixels = u64::from(parse_font_size_decimal_milli(number.trim())?);
         let pixels = milli_pixels.checked_add(500)?.checked_div(1_000)?;
         return u32::try_from(pixels)
             .ok()
@@ -13395,7 +13433,7 @@ fn parse_font_size(value: &str) -> Option<u32> {
             .strip_suffix(suffix)
             .map(|number| (number.trim(), *multiplier, *denominator))
     })?;
-    let milli_units = u64::from(parse_decimal_milli(number)?);
+    let milli_units = u64::from(parse_font_size_decimal_milli(number)?);
     let milli_pixels = milli_units
         .checked_mul(multiplier)?
         .checked_add(denominator / 2)?
@@ -13445,7 +13483,7 @@ fn parse_relative_font_size(value: &str) -> Option<NativeFontSizeDeclarationValu
         } else {
             return None;
         };
-    let milli = parse_decimal_milli(number)?;
+    let milli = parse_font_size_decimal_milli(number)?;
     let scale_milli = if percentage {
         milli.checked_add(50)?.checked_div(100)?
     } else {
@@ -13498,7 +13536,7 @@ fn parse_font_size_calculation_term(value: &str) -> Option<NativeFontSizeCalcula
     let value = value.trim();
     let mut term = NativeFontSizeCalculation::default();
     if let Some(number) = value.strip_suffix("px") {
-        let milli = parse_decimal_milli(number.trim())?;
+        let milli = parse_font_size_decimal_milli(number.trim())?;
         (milli <= super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000)).then_some(())?;
         term.absolute_milli = i64::from(milli);
         return Some(term);
@@ -13516,7 +13554,7 @@ fn parse_font_size_calculation_term(value: &str) -> Option<NativeFontSizeCalcula
             .strip_suffix(suffix)
             .map(|number| (number.trim(), *multiplier, *denominator))
     })?;
-    let milli_units = u64::from(parse_decimal_milli(number)?);
+    let milli_units = u64::from(parse_font_size_decimal_milli(number)?);
     let milli_pixels = milli_units
         .checked_mul(multiplier)?
         .checked_add(denominator / 2)?
@@ -13569,7 +13607,7 @@ fn parse_font_size_calculation_relative_term(
         } else {
             return None;
         };
-    let milli = parse_decimal_milli(number)?;
+    let milli = parse_font_size_decimal_milli(number)?;
     let scale_milli = if percentage {
         milli.checked_add(50)?.checked_div(100)?
     } else {
@@ -13668,9 +13706,9 @@ fn parse_font_size_calculation_product(value: &str) -> Option<NativeFontSizeCalc
     if left.is_empty() || right.is_empty() {
         return None;
     }
-    let factor_left = parse_decimal_milli(left)
+    let factor_left = parse_font_size_decimal_milli(left)
         .filter(|factor| *factor <= super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000));
-    let factor_right = parse_decimal_milli(right)
+    let factor_right = parse_font_size_decimal_milli(right)
         .filter(|factor| *factor <= super::font::MAX_NATIVE_FONT_SIZE.saturating_mul(1_000));
     match operator {
         b'*' => {
@@ -24834,14 +24872,34 @@ mod tests {
         assert_eq!(parse_font_size("0.5px"), Some(1));
         assert_eq!(parse_font_size("256.499px"), Some(256));
         assert_eq!(parse_font_size("256.5px"), None);
-        assert_eq!(parse_font_size("1.0000px"), None);
+        assert_eq!(parse_font_size("1.0000px"), Some(1));
         assert_eq!(parse_font_size("0px"), None);
         assert_eq!(parse_font_size("257px"), None);
         assert_eq!(parse_font_size("257pt"), None);
-        assert_eq!(parse_font_size("1.0000pt"), None);
+        assert_eq!(parse_font_size("1.0000pt"), Some(2));
         assert_eq!(parse_font_size("16rem"), None);
         assert_eq!(parse_font_size("50%"), None);
         assert_eq!(parse_font_size("1.5em"), None);
+    }
+
+    #[test]
+    fn font_size_parser_accepts_extra_decimal_precision() {
+        assert_eq!(parse_font_size_decimal_milli("1.000499"), Some(1_000));
+        assert_eq!(parse_font_size_decimal_milli("1.0005"), Some(1_001));
+        assert_eq!(parse_font_size_decimal_milli("1.0000001"), None);
+        assert_eq!(
+            parse_font_size_value("1.0005em"),
+            Some(NativeFontSizeDeclarationValue::Relative(1_001))
+        );
+        assert_eq!(
+            parse_font_size_value("calc(1.0005em * 2.0005)"),
+            Some(NativeFontSizeDeclarationValue::Calculation(
+                NativeFontSizeCalculation {
+                    parent_scale_milli: 2_003,
+                    ..NativeFontSizeCalculation::default()
+                }
+            ))
+        );
     }
 
     #[test]
@@ -26914,6 +26972,27 @@ mod tests {
         assert_eq!(document.computed_style_for_layout(divide).font_size(), 12);
         assert_eq!(document.computed_style_for_layout(nested).font_size(), 52);
         assert_eq!(document.computed_style_for_layout(invalid).font_size(), 24);
+    }
+
+    #[test]
+    fn extra_precision_font_sizes_round_into_native_model() {
+        let document = NativeDocument::parse(
+            "<style>#parent { font-size: 24px; } #direct { font-size: 16.0005px; } #relative { font-size: 1.0005em; } #tiny { font-size: 0.0005px; } #too-precise { font-size: 1.0000001em; }</style><div id='parent'><span id='direct'>Direct</span><span id='relative'>Relative</span><span id='tiny'>Tiny</span><span id='too-precise'>Too precise</span></div>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let direct = document.resolve_target("id=direct").unwrap();
+        let relative = document.resolve_target("id=relative").unwrap();
+        let tiny = document.resolve_target("id=tiny").unwrap();
+        let too_precise = document.resolve_target("id=too-precise").unwrap();
+
+        assert_eq!(document.computed_style_for_layout(direct).font_size(), 16);
+        assert_eq!(document.computed_style_for_layout(relative).font_size(), 24);
+        assert_eq!(document.computed_style_for_layout(tiny).font_size(), 24);
+        assert_eq!(
+            document.computed_style_for_layout(too_precise).font_size(),
+            24
+        );
     }
 
     #[test]

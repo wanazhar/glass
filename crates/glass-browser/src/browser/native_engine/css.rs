@@ -4495,22 +4495,19 @@ impl NativeStylesheet {
             inherited.padding,
             padding,
         );
-        project_logical_box_model_candidates(
+        project_logical_margin_candidates(
             &logical_margin,
             resolved_direction,
             inherited.direction,
             inherited.margin,
-            &mut margin,
+            margin,
         );
 
         let resolved_padding = std::array::from_fn(|index| {
             resolve_padding_candidates(padding[index], inherited.padding[index], custom_properties)
         });
         let resolved_margin = std::array::from_fn(|index| {
-            resolve_local_inherited_optional_cascade_declaration(
-                margin[index],
-                inherited.margin[index],
-            )
+            resolve_margin_candidates(margin[index], inherited.margin[index], custom_properties)
         });
         let resolved_border = (*border).map(resolve_local_optional_cascade_declaration);
         let resolved_border_width: [Option<u32>; 4] = std::array::from_fn(|index| {
@@ -4881,6 +4878,15 @@ enum PaddingDeclarationValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarginDeclarationValue {
+    Value(NativeMarginValue),
+    CustomProperty(u64),
+    CustomPropertyFallback(u64, NativeMarginValue),
+    CustomPropertyShorthand(u64, u8),
+    CustomPropertyShorthandFallback(u64, u8, NativeMarginValue),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpacityDeclarationValue {
     Value(u8),
     CustomProperty(u64),
@@ -5032,7 +5038,7 @@ struct NativeCascadeScratch {
     logical_padding: NativeLogicalBoxModelCandidates<u32>,
     logical_margin: NativeLogicalBoxModelCandidates<NativeMarginValue>,
     padding: NativePhysicalLocalBorderCandidates<PaddingDeclarationValue>,
-    margin: NativePhysicalLocalBorderCandidates<NativeMarginValue>,
+    margin: NativePhysicalLocalBorderCandidates<MarginDeclarationValue>,
     box_sizing: NativeLocalCascadeCandidates<BoxSizingDeclarationValue>,
     color: NativePaintCascadeCandidates<NativeColorValue>,
     overflow_x: NativeLocalCascadeCandidates<OverflowDeclarationValue>,
@@ -8667,6 +8673,121 @@ fn resolve_padding_candidates(
     })
 }
 
+fn resolve_margin_declaration(
+    declaration: LocalCascadeDeclaration<MarginDeclarationValue>,
+    inherited: NativeMarginValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<MarginDeclarationValue> {
+    match declaration {
+        LocalCascadeDeclaration::Value(value) => {
+            resolve_margin_value(value, inherited, custom_properties, depth)
+        }
+        LocalCascadeDeclaration::Inherit => Some(MarginDeclarationValue::Value(inherited)),
+        LocalCascadeDeclaration::Reset => {
+            Some(MarginDeclarationValue::Value(NativeMarginValue::Length(0)))
+        }
+        LocalCascadeDeclaration::RevertLayer => None,
+    }
+}
+
+fn resolve_margin_value(
+    value: MarginDeclarationValue,
+    inherited: NativeMarginValue,
+    custom_properties: &BTreeMap<u64, String>,
+    depth: usize,
+) -> Option<MarginDeclarationValue> {
+    match value {
+        MarginDeclarationValue::CustomProperty(name_hash)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_physical_margin_declaration(value))
+                .and_then(|declaration| {
+                    resolve_margin_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        MarginDeclarationValue::CustomPropertyFallback(name_hash, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_physical_margin_declaration(value))
+                .and_then(|declaration| {
+                    resolve_margin_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(MarginDeclarationValue::Value(fallback)))
+        }
+        MarginDeclarationValue::CustomPropertyShorthand(name_hash, edge)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_margin_edges(value))
+                .and_then(|declarations| declarations.get(edge as usize).copied())
+                .and_then(|declaration| {
+                    resolve_margin_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+        }
+        MarginDeclarationValue::CustomPropertyShorthandFallback(name_hash, edge, fallback)
+            if depth < MAX_NATIVE_CUSTOM_PROPERTY_RESOLUTION_DEPTH =>
+        {
+            custom_properties
+                .get(&name_hash)
+                .and_then(|value| parse_local_margin_edges(value))
+                .and_then(|declarations| declarations.get(edge as usize).copied())
+                .and_then(|declaration| {
+                    resolve_margin_declaration(
+                        declaration,
+                        inherited,
+                        custom_properties,
+                        depth.saturating_add(1),
+                    )
+                })
+                .or(Some(MarginDeclarationValue::Value(fallback)))
+        }
+        MarginDeclarationValue::CustomProperty(_)
+        | MarginDeclarationValue::CustomPropertyFallback(_, _)
+        | MarginDeclarationValue::CustomPropertyShorthand(_, _)
+        | MarginDeclarationValue::CustomPropertyShorthandFallback(_, _, _) => None,
+        MarginDeclarationValue::Value(value) => Some(MarginDeclarationValue::Value(value)),
+    }
+}
+
+fn resolve_margin_candidates(
+    candidates: NativeLocalCascadeCandidates<MarginDeclarationValue>,
+    inherited: NativeMarginValue,
+    custom_properties: &BTreeMap<u64, String>,
+) -> Option<NativeMarginValue> {
+    resolve_alignment_candidates(candidates, None, |declaration| {
+        resolve_margin_declaration(declaration, inherited, custom_properties, 0).map(|value| {
+            match value {
+                MarginDeclarationValue::Value(value) => Some(value),
+                MarginDeclarationValue::CustomProperty(_)
+                | MarginDeclarationValue::CustomPropertyFallback(_, _)
+                | MarginDeclarationValue::CustomPropertyShorthand(_, _)
+                | MarginDeclarationValue::CustomPropertyShorthandFallback(_, _, _) => None,
+            }
+        })
+    })
+}
+
 fn resolve_text_indent_declaration(
     declaration: LocalCascadeDeclaration<TextIndentDeclarationValue>,
     inherited: u32,
@@ -9327,18 +9448,6 @@ fn resolve_local_border_radius_declaration(
         bottom_right,
         bottom_left,
     }
-}
-
-fn resolve_local_inherited_optional_cascade_declaration<T: Copy, const N: usize>(
-    candidates: [Option<CascadeValue<LocalCascadeDeclaration<T>>>; N],
-    inherited: T,
-) -> Option<T> {
-    resolve_alignment_candidates(candidates, None, |declaration| match declaration {
-        LocalCascadeDeclaration::Value(value) => Some(Some(value)),
-        LocalCascadeDeclaration::Inherit => Some(Some(inherited)),
-        LocalCascadeDeclaration::Reset => None,
-        LocalCascadeDeclaration::RevertLayer => None,
-    })
 }
 
 fn resolve_alignment_candidates<T: Copy, U: Copy, const N: usize>(
@@ -10634,26 +10743,37 @@ fn project_logical_padding_candidates(
     }
 }
 
-fn project_logical_box_model_candidates<T: Copy>(
-    sources: &NativeLogicalBoxModelCandidates<T>,
+fn project_logical_margin_candidates(
+    sources: &NativeLogicalBoxModelCandidates<NativeMarginValue>,
     direction: DirectionValue,
     inherited_direction: DirectionValue,
-    inherited: [T; 4],
-    targets: &mut [[Option<CascadeValue<LocalCascadeDeclaration<T>>>; MAX_NATIVE_LOCAL_CASCADE_LAYERS];
-             4],
+    inherited: [NativeMarginValue; 4],
+    targets: &mut NativePhysicalLocalBorderCandidates<MarginDeclarationValue>,
 ) {
     for (logical_side, logical_candidates) in sources.iter().enumerate() {
         let physical_side = logical_border_physical_side(logical_side, direction);
         let inherited_physical_side =
             logical_border_physical_side(logical_side, inherited_direction);
-        for (layer, candidate) in logical_candidates.iter().copied().enumerate() {
-            let Some(mut candidate) = candidate else {
+        for (layer, source_candidate) in logical_candidates.iter().copied().enumerate() {
+            let Some(source_candidate) = source_candidate else {
                 continue;
             };
-            if matches!(candidate.value, LocalCascadeDeclaration::Inherit) {
-                candidate.value =
-                    LocalCascadeDeclaration::Value(inherited[inherited_physical_side]);
-            }
+            let value = match source_candidate.value {
+                LocalCascadeDeclaration::Value(value) => {
+                    LocalCascadeDeclaration::Value(MarginDeclarationValue::Value(value))
+                }
+                LocalCascadeDeclaration::Inherit => LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(inherited[inherited_physical_side]),
+                ),
+                LocalCascadeDeclaration::Reset => LocalCascadeDeclaration::Reset,
+                LocalCascadeDeclaration::RevertLayer => LocalCascadeDeclaration::RevertLayer,
+            };
+            let candidate = CascadeValue {
+                value,
+                specificity: source_candidate.specificity,
+                order: source_candidate.order,
+                inline: source_candidate.inline,
+            };
             if wins(
                 candidate.specificity,
                 candidate.order,
@@ -11112,7 +11232,7 @@ struct NativeDeclarations {
     logical_border_radius: NativeLogicalBorderRadiusDeclarations,
     padding: [Option<LocalCascadeDeclaration<PaddingDeclarationValue>>; 4],
     padding_order: [usize; 4],
-    margin: [Option<LocalCascadeDeclaration<NativeMarginValue>>; 4],
+    margin: [Option<LocalCascadeDeclaration<MarginDeclarationValue>>; 4],
     margin_order: [usize; 4],
     box_sizing: Option<LocalCascadeDeclaration<BoxSizingDeclarationValue>>,
     color: Option<LocalCascadeDeclaration<NativeColorValue>>,
@@ -12411,7 +12531,7 @@ fn parse_declarations_with_diagnostics(
                 parse_local_padding_declaration(value).is_some()
             }
             "margin-top" | "margin-right" | "margin-bottom" | "margin-left" => {
-                parse_local_margin_declaration(value).is_some()
+                parse_local_physical_margin_declaration(value).is_some()
             }
             "box-sizing" => parse_local_box_sizing_declaration(value).is_some(),
             "overflow" | "overflow-x" | "overflow-y" => parse_overflow_declaration(value)
@@ -13943,28 +14063,28 @@ fn parse_declarations(source: &str) -> NativeDeclarations {
                 }
             }
             "margin-top" => {
-                if let Some(value) = parse_local_margin_declaration(value) {
+                if let Some(value) = parse_local_physical_margin_declaration(value) {
                     declarations.margin[0] = Some(value);
                     declarations.margin_order[0] = declaration_order;
                     declarations.box_model_importance.margin[0] = important;
                 }
             }
             "margin-right" => {
-                if let Some(value) = parse_local_margin_declaration(value) {
+                if let Some(value) = parse_local_physical_margin_declaration(value) {
                     declarations.margin[1] = Some(value);
                     declarations.margin_order[1] = declaration_order;
                     declarations.box_model_importance.margin[1] = important;
                 }
             }
             "margin-bottom" => {
-                if let Some(value) = parse_local_margin_declaration(value) {
+                if let Some(value) = parse_local_physical_margin_declaration(value) {
                     declarations.margin[2] = Some(value);
                     declarations.margin_order[2] = declaration_order;
                     declarations.box_model_importance.margin[2] = important;
                 }
             }
             "margin-left" => {
-                if let Some(value) = parse_local_margin_declaration(value) {
+                if let Some(value) = parse_local_physical_margin_declaration(value) {
                     declarations.margin[3] = Some(value);
                     declarations.margin_order[3] = declaration_order;
                     declarations.box_model_importance.margin[3] = important;
@@ -15807,7 +15927,7 @@ fn parse_margin_edges(value: &str) -> Option<[NativeMarginValue; 4]> {
 
 fn parse_local_margin_edges(
     value: &str,
-) -> Option<[LocalCascadeDeclaration<NativeMarginValue>; 4]> {
+) -> Option<[LocalCascadeDeclaration<MarginDeclarationValue>; 4]> {
     if value.trim().eq_ignore_ascii_case("revert-layer") {
         return Some([LocalCascadeDeclaration::RevertLayer; 4]);
     }
@@ -15815,9 +15935,29 @@ fn parse_local_margin_edges(
         return Some([LocalCascadeDeclaration::Inherit; 4]);
     }
     if is_local_reset_keyword(value) {
-        return Some([LocalCascadeDeclaration::Value(NativeMarginValue::Length(0)); 4]);
+        return Some(
+            [LocalCascadeDeclaration::Value(MarginDeclarationValue::Value(
+                NativeMarginValue::Length(0),
+            )); 4],
+        );
     }
-    parse_margin_edges(value).map(|values| values.map(LocalCascadeDeclaration::Value))
+    if let Some(values) = parse_margin_edges(value) {
+        return Some(
+            values
+                .map(|value| LocalCascadeDeclaration::Value(MarginDeclarationValue::Value(value))),
+        );
+    }
+    let (name_hash, fallback) = parse_margin_shorthand_custom_property(value)?;
+    Some(std::array::from_fn(|index| {
+        LocalCascadeDeclaration::Value(match fallback {
+            Some(values) => MarginDeclarationValue::CustomPropertyShorthandFallback(
+                name_hash,
+                index as u8,
+                values[index],
+            ),
+            None => MarginDeclarationValue::CustomPropertyShorthand(name_hash, index as u8),
+        })
+    }))
 }
 
 fn parse_margin_edge_pair(value: &str) -> Option<[NativeMarginValue; 2]> {
@@ -20485,6 +20625,57 @@ fn parse_local_padding_declaration(value: &str) -> Option<LocalCascadeDeclaratio
     parse_local_cascade_declaration(value, parse_dimension)
 }
 
+fn parse_margin_var_arguments(value: &str) -> Option<(u64, Option<&str>)> {
+    let value = value.trim();
+    let arguments = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("var("))
+        .and_then(|_| value.strip_suffix(')'))?
+        .get(4..)?;
+    let (name, fallback) = parse_font_size_var_arguments(arguments)?;
+    Some((parse_custom_property_name(name)?, fallback))
+}
+
+fn parse_margin_custom_property(value: &str) -> Option<MarginDeclarationValue> {
+    let (name_hash, fallback) = parse_margin_var_arguments(value)?;
+    match fallback {
+        Some(fallback) => parse_margin_value(fallback)
+            .map(|fallback| MarginDeclarationValue::CustomPropertyFallback(name_hash, fallback)),
+        None => Some(MarginDeclarationValue::CustomProperty(name_hash)),
+    }
+}
+
+fn parse_margin_shorthand_custom_property(
+    value: &str,
+) -> Option<(u64, Option<[NativeMarginValue; 4]>)> {
+    let (name_hash, fallback) = parse_margin_var_arguments(value)?;
+    let fallback = match fallback {
+        Some(fallback) => Some(parse_margin_edges(fallback)?),
+        None => None,
+    };
+    Some((name_hash, fallback))
+}
+
+fn parse_margin_property(value: &str) -> Option<MarginDeclarationValue> {
+    parse_margin_value(value)
+        .map(MarginDeclarationValue::Value)
+        .or_else(|| parse_margin_custom_property(value))
+}
+
+fn parse_local_physical_margin_declaration(
+    value: &str,
+) -> Option<LocalCascadeDeclaration<MarginDeclarationValue>> {
+    if is_inherit_keyword(value) {
+        return Some(LocalCascadeDeclaration::Inherit);
+    }
+    if is_local_reset_keyword(value) {
+        return Some(LocalCascadeDeclaration::Value(
+            MarginDeclarationValue::Value(NativeMarginValue::Length(0)),
+        ));
+    }
+    parse_local_cascade_declaration(value, parse_margin_property)
+}
+
 fn parse_local_margin_declaration(
     value: &str,
 ) -> Option<LocalCascadeDeclaration<NativeMarginValue>> {
@@ -21364,7 +21555,9 @@ mod tests {
         );
         assert_eq!(
             declarations.margin,
-            [Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(3))); 4]
+            [Some(LocalCascadeDeclaration::Value(
+                MarginDeclarationValue::Value(NativeMarginValue::Length(3))
+            )); 4]
         );
         assert_eq!(
             declarations.box_sizing,
@@ -22148,20 +22341,36 @@ mod tests {
         assert_eq!(
             declarations.margin,
             [
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(6))),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(7))),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(8))),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(7))),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(6))
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(7))
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(8))
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(7))
+                )),
             ]
         );
         let declarations = parse_declarations("margin: 6px 7px; margin-bottom: 8px");
         assert_eq!(
             declarations.margin,
             [
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(6))),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(7))),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(8))),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(7))),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(6))
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(7))
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(8))
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(7))
+                )),
             ]
         );
         let declarations =
@@ -22174,7 +22383,9 @@ mod tests {
         );
         assert_eq!(
             declarations.margin,
-            [Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(2))); 4]
+            [Some(LocalCascadeDeclaration::Value(
+                MarginDeclarationValue::Value(NativeMarginValue::Length(2))
+            )); 4]
         );
     }
 
@@ -22206,10 +22417,18 @@ mod tests {
         assert_eq!(
             declarations.margin,
             [
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Auto)),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(2))),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Auto)),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(4))),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Auto)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(2))
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Auto)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(4))
+                )),
             ]
         );
     }
@@ -30804,10 +31023,18 @@ mod tests {
         assert_eq!(
             declarations.margin,
             [
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Auto)),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(2))),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Auto)),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(4))),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Auto)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(2))
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Auto)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(4))
+                )),
             ]
         );
         assert_eq!(
@@ -30849,10 +31076,18 @@ mod tests {
         assert_eq!(
             preserved.margin,
             [
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(6))),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(2))),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(3))),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(4))),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(6))
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(2))
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(3))
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(4))
+                )),
             ]
         );
         assert_eq!(
@@ -33220,10 +33455,16 @@ mod tests {
         assert_eq!(
             declarations.margin,
             [
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Auto)),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(2))),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Auto)
+                )),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(2))
+                )),
                 Some(LocalCascadeDeclaration::RevertLayer),
-                Some(LocalCascadeDeclaration::Value(NativeMarginValue::Length(2))),
+                Some(LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::Value(NativeMarginValue::Length(2))
+                )),
             ]
         );
         assert_eq!(
@@ -33231,6 +33472,173 @@ mod tests {
             Some(LocalCascadeDeclaration::Value(
                 BoxSizingDeclarationValue::Value(NativeBoxSizing::BorderBox)
             ))
+        );
+    }
+
+    #[test]
+    fn margin_parser_accepts_custom_property_aliases_and_fallbacks() {
+        let margin = parse_custom_property_name("--margin").unwrap();
+        assert_eq!(
+            parse_margin_property("auto"),
+            Some(MarginDeclarationValue::Value(NativeMarginValue::Auto))
+        );
+        assert_eq!(
+            parse_local_physical_margin_declaration("var(--margin)"),
+            Some(LocalCascadeDeclaration::Value(
+                MarginDeclarationValue::CustomProperty(margin)
+            ))
+        );
+        assert_eq!(
+            parse_local_physical_margin_declaration("var(--margin, auto)"),
+            Some(LocalCascadeDeclaration::Value(
+                MarginDeclarationValue::CustomPropertyFallback(margin, NativeMarginValue::Auto)
+            ))
+        );
+        assert_eq!(
+            parse_local_margin_edges("var(--margin)"),
+            Some([
+                LocalCascadeDeclaration::Value(MarginDeclarationValue::CustomPropertyShorthand(
+                    margin, 0
+                )),
+                LocalCascadeDeclaration::Value(MarginDeclarationValue::CustomPropertyShorthand(
+                    margin, 1
+                )),
+                LocalCascadeDeclaration::Value(MarginDeclarationValue::CustomPropertyShorthand(
+                    margin, 2
+                )),
+                LocalCascadeDeclaration::Value(MarginDeclarationValue::CustomPropertyShorthand(
+                    margin, 3
+                )),
+            ])
+        );
+        assert_eq!(
+            parse_local_margin_edges("var(--margin, auto 2px)"),
+            Some([
+                LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::CustomPropertyShorthandFallback(
+                        margin,
+                        0,
+                        NativeMarginValue::Auto
+                    )
+                ),
+                LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::CustomPropertyShorthandFallback(
+                        margin,
+                        1,
+                        NativeMarginValue::Length(2)
+                    )
+                ),
+                LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::CustomPropertyShorthandFallback(
+                        margin,
+                        2,
+                        NativeMarginValue::Auto
+                    )
+                ),
+                LocalCascadeDeclaration::Value(
+                    MarginDeclarationValue::CustomPropertyShorthandFallback(
+                        margin,
+                        3,
+                        NativeMarginValue::Length(2)
+                    )
+                ),
+            ])
+        );
+        assert_eq!(
+            parse_local_physical_margin_declaration("var(--margin, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_local_margin_edges("var(--margin, var(--other))"),
+            None
+        );
+        assert_eq!(
+            parse_local_physical_margin_declaration("initial"),
+            Some(LocalCascadeDeclaration::Value(
+                MarginDeclarationValue::Value(NativeMarginValue::Length(0))
+            ))
+        );
+        assert_eq!(
+            parse_local_physical_margin_declaration("inherit"),
+            Some(LocalCascadeDeclaration::Inherit)
+        );
+    }
+
+    #[test]
+    fn margin_custom_properties_resolve_with_fallbacks() {
+        let document = NativeDocument::parse(
+            r#"<style>
+            #parent { --margin: auto 2px 3px 4px; --alias: var(--margin); margin: var(--alias); }
+            #child { margin: var(--alias); }
+            #fallback { margin: var(--missing, 1px auto 3px 4px); }
+            #invalid { --bad: unsupported; margin: var(--bad, auto); }
+            #cycle { --cycle: var(--cycle); margin: var(--cycle, 6px); }
+            #reset { --reset: initial; margin: var(--reset, 7px); }
+            #longhand { --side: auto; margin-left: var(--side); }
+            </style>
+            <div id='parent'><span id='child'>Child</span></div>
+            <div id='fallback'>Fallback</div>
+            <div id='invalid'>Invalid</div>
+            <div id='cycle'>Cycle</div>
+            <div id='reset'>Reset</div>
+            <div id='longhand'>Longhand</div>"#,
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let style = |id: &str| {
+            document
+                .computed_style_for_layout(document.resolve_target(&format!("id={id}")).unwrap())
+        };
+
+        assert_eq!(
+            style("parent").margin(),
+            NativeBoxEdges::from_values([Some(0), Some(2), Some(3), Some(4)])
+        );
+        assert_eq!(
+            style("parent").margin_auto(),
+            NativeAutoEdges {
+                top: true,
+                right: false,
+                bottom: false,
+                left: false,
+            }
+        );
+        assert_eq!(style("child").margin(), style("parent").margin());
+        assert_eq!(style("child").margin_auto(), style("parent").margin_auto());
+        assert_eq!(
+            style("fallback").margin(),
+            NativeBoxEdges::from_values([Some(1), Some(0), Some(3), Some(4)])
+        );
+        assert_eq!(
+            style("fallback").margin_auto(),
+            NativeAutoEdges {
+                top: false,
+                right: true,
+                bottom: false,
+                left: false,
+            }
+        );
+        assert_eq!(style("invalid").margin(), NativeBoxEdges::default());
+        assert_eq!(
+            style("invalid").margin_auto(),
+            NativeAutoEdges::from_values([Some(NativeMarginValue::Auto); 4])
+        );
+        assert_eq!(
+            style("cycle").margin(),
+            NativeBoxEdges::from_values([Some(6); 4])
+        );
+        assert_eq!(style("cycle").margin_auto(), NativeAutoEdges::default());
+        assert_eq!(style("reset").margin(), NativeBoxEdges::default());
+        assert_eq!(style("reset").margin_auto(), NativeAutoEdges::default());
+        assert_eq!(style("longhand").margin(), NativeBoxEdges::default());
+        assert_eq!(
+            style("longhand").margin_auto(),
+            NativeAutoEdges {
+                top: false,
+                right: false,
+                bottom: false,
+                left: true,
+            }
         );
     }
 

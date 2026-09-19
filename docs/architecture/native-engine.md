@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
+`native-engine-browser-608`, following completed
 `native-engine-browser-607`, following completed
 `native-engine-browser-606`, following completed
 `native-engine-browser-605`, following completed
@@ -477,6 +478,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 608 extends bounded native custom-property substitution to `z-index`.
+Standalone `var(--name)` and integer or `auto` fallbacks now resolve
+inherited aliases, CSS-wide reset mappings, invalid values, and cyclic values
+before computed-style projection, while existing integer bounds, local cascade
+precedence, and revert-layer behavior remain unchanged. Nested variable
+grammar, registered properties, full CSS variable grammar, and complete CSS/Web
+IDL parity remain issue #40 gates.
 
 Slice 607 extends bounded native custom-property substitution to `position`.
 Standalone `var(--name)` and position-keyword fallbacks now resolve inherited

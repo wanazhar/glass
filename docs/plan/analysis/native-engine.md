@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-596`, following
+expansion checkpoint is completed `native-engine-browser-597`, following
+completed `native-engine-browser-596`, following
 completed `native-engine-browser-595`, following
 completed `native-engine-browser-594`, following
 completed `native-engine-browser-593`, following
@@ -473,6 +474,15 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 597 extends bounded custom-property substitution to the inherited
+`word-break`. Standalone `var(--name)` and keyword
+`var(--name, value)` fallbacks now resolve inherited aliases, CSS-wide mapped
+values, invalid values, and cyclic values before normal word-break
+computation, while the existing supported values and computed-style projection
+remain unchanged. Nested variable grammar, registered properties, full CSS
+variable grammar, and complete CSS/Web IDL parity remain explicit issue #40
+gates.
 
 Slice 596 extends bounded custom-property substitution to the inherited
 `line-height`. Standalone `var(--name)` and positive-pixel

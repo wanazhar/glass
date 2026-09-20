@@ -28,8 +28,9 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-659`, following completed `native-engine-browser-658`,
-following completed `native-engine-browser-657`, following completed
+`native-engine-browser-660`, following completed `native-engine-browser-659`,
+following completed `native-engine-browser-658`, following completed
+`native-engine-browser-657`, following completed
 `native-engine-browser-656`, following completed
 `native-engine-browser-655`, following completed
 `native-engine-browser-654`, following completed
@@ -583,6 +584,14 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The current bounded user-validation selector checkpoint adds `:user-valid`
+and `:user-invalid` from durable native user-interaction state. Semantic
+click, typing, clearing, selection, upload, and keyboard edits mark controls
+as user interacted; content-process wires and JavaScript snapshots preserve
+the state, and native/DOM selectors and stylesheet cascade consume it.
+Complete validation event semantics, full selector grammar, complete CSS
+parity, and complete Web IDL parity remain issue #40 gates.
 
 The current bounded scope-selector checkpoint adds `:scope` to native
 selectors and threads an explicit scoping root through JavaScript `matches`,

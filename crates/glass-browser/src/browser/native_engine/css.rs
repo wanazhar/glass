@@ -13892,6 +13892,8 @@ enum NativePseudoClass {
     Hover,
     Valid,
     Invalid,
+    UserValid,
+    UserInvalid,
     ReadOnly,
     ReadWrite,
     PlaceholderShown,
@@ -13955,6 +13957,8 @@ impl NativePseudoClass {
             | Self::Hover
             | Self::Valid
             | Self::Invalid
+            | Self::UserValid
+            | Self::UserInvalid
             | Self::ReadOnly
             | Self::ReadWrite
             | Self::PlaceholderShown
@@ -14044,6 +14048,12 @@ impl NativePseudoClass {
             Self::Hover => document.css_is_hovered(node_id),
             Self::Valid => document.css_validity(node_id).is_some_and(|valid| valid),
             Self::Invalid => document.css_validity(node_id).is_some_and(|valid| !valid),
+            Self::UserValid => document
+                .css_user_validity(node_id)
+                .is_some_and(|valid| valid),
+            Self::UserInvalid => document
+                .css_user_validity(node_id)
+                .is_some_and(|valid| !valid),
             Self::ReadOnly => document
                 .css_read_only(node_id)
                 .is_some_and(|read_only| read_only),
@@ -25397,9 +25407,11 @@ fn parse_pseudo_class(source: &str) -> Option<NativePseudoClass> {
         "hover" => Some(NativePseudoClass::Hover),
         "valid" => Some(NativePseudoClass::Valid),
         "invalid" => Some(NativePseudoClass::Invalid),
-        "read-only" => Some(NativePseudoClass::ReadOnly),
+        "user-valid" => Some(NativePseudoClass::UserValid),
         "read-write" => Some(NativePseudoClass::ReadWrite),
         "placeholder-shown" => Some(NativePseudoClass::PlaceholderShown),
+        "user-invalid" => Some(NativePseudoClass::UserInvalid),
+        "read-only" => Some(NativePseudoClass::ReadOnly),
         "default" => Some(NativePseudoClass::Default),
         "in-range" => Some(NativePseudoClass::InRange),
         "out-of-range" => Some(NativePseudoClass::OutOfRange),
@@ -26247,6 +26259,7 @@ mod tests {
         assert!(parse_selector("> button").is_none());
         assert!(parse_selector("main ++ button").is_none());
         assert!(parse_selector("button:hover").is_some());
+        assert!(parse_selector("div:user-valid").is_some());
         let too_many = ["div"; MAX_SELECTOR_PARTS + 1].join(" ");
         assert!(parse_selector(&too_many).is_none());
         assert_eq!(
@@ -27122,6 +27135,84 @@ mod tests {
             selector_matches_in_document(&document, "#normal:not(input)")
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_user_validation_state() {
+        let mut document = NativeDocument::parse(
+            "<form><input id='required' required><input id='optional'></form>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("user validation pseudo-class fixture document");
+        let required = document.resolve_target("id=required").unwrap();
+        let optional = document.resolve_target("id=optional").unwrap();
+        assert!(
+            selector_matches_in_document(&document, "#required:user-invalid")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            selector_matches_in_document(&document, "#required:user-valid")
+                .unwrap()
+                .is_empty()
+        );
+
+        document.apply_click(required).unwrap();
+        assert_eq!(
+            selector_matches_in_document(&document, "#required:user-invalid").unwrap(),
+            vec![required]
+        );
+        document.apply_type(required, "value").unwrap();
+        assert_eq!(
+            selector_matches_in_document(&document, "#required:user-valid").unwrap(),
+            vec![required]
+        );
+
+        document.apply_click(optional).unwrap();
+        assert_eq!(
+            selector_matches_in_document(&document, "#optional:user-valid").unwrap(),
+            vec![optional]
+        );
+    }
+
+    #[test]
+    fn user_validation_pseudo_classes_apply_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#required:user-invalid { background-color: red; } #required:user-valid { background-color: green; }"
+                .into(),
+        ])
+        .expect("user validation pseudo-class stylesheet");
+        let mut document = NativeDocument::parse(
+            "<form><input id='required' required></form>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("user validation pseudo-class cascade document");
+        let required = document.resolve_target("id=required").unwrap();
+        assert_eq!(
+            stylesheet
+                .computed_for_in_document(&document, required, None)
+                .background_color(),
+            None
+        );
+        document.apply_click(required).unwrap();
+        assert_eq!(
+            stylesheet
+                .computed_for_in_document(&document, required, None)
+                .background_color(),
+            Some(NativeColor::RED)
+        );
+        document.apply_type(required, "value").unwrap();
+        assert_eq!(
+            stylesheet
+                .computed_for_in_document(&document, required, None)
+                .background_color(),
+            Some(NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: u8::MAX,
+            })
         );
     }
 

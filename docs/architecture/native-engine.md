@@ -1,8 +1,9 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-658`, following completed `native-engine-browser-657`,
-following completed `native-engine-browser-656`, following completed
+`native-engine-browser-659`, following completed `native-engine-browser-658`,
+following completed `native-engine-browser-657`, following completed
+`native-engine-browser-656`, following completed
 `native-engine-browser-655`, following completed
 `native-engine-browser-654`, following completed
 `native-engine-browser-653`, following completed
@@ -527,6 +528,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 659 adds bounded `:scope` matching to native selectors and threads an
+explicit scoping root through JavaScript `matches`, `closest`, and
+query-selector traversal. Document queries use the document element as scope;
+element queries use their owner, so `:scope > ...` remains owner-relative
+across action locators, stylesheet cascade, and DOM queries. XML and
+shadow-root scoping, full selector grammar, complete CSS parity, and complete
+Web IDL parity remain explicit issue #40 gates.
 
 Slice 658 adds bounded `:hover` matching from semantic hover actions.
 Native hover state persists on the target and attached ancestors, crosses

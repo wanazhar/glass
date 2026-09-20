@@ -28,8 +28,9 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-658`, following completed `native-engine-browser-657`,
-following completed `native-engine-browser-656`, following completed
+`native-engine-browser-659`, following completed `native-engine-browser-658`,
+following completed `native-engine-browser-657`, following completed
+`native-engine-browser-656`, following completed
 `native-engine-browser-655`, following completed
 `native-engine-browser-654`, following completed
 `native-engine-browser-653`, following completed
@@ -582,6 +583,14 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The current bounded scope-selector checkpoint adds `:scope` to native
+selectors and threads an explicit scoping root through JavaScript `matches`,
+`closest`, and query-selector traversal. Document queries use the document
+element as scope; element queries use their owner, so `:scope > ...` remains
+owner-relative across action locators, stylesheet cascade, and DOM queries.
+XML and shadow-root scoping, full selector grammar, complete CSS parity, and
+complete Web IDL parity remain issue #40 gates.
 
 The current bounded hover-state selector checkpoint adds `:hover` matching
 from semantic hover actions. Native hover state persists on the target and

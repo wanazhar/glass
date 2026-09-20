@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-668`, following completed `native-engine-browser-667`,
+`native-engine-browser-669`, following completed `native-engine-browser-668`,
+following completed `native-engine-browser-667`,
 following completed `native-engine-browser-666`,
 following completed `native-engine-browser-665`,
 following completed `native-engine-browser-664`,
@@ -592,6 +593,12 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The current bounded JavaScript nth-of selector checkpoint implements filtered
+`:nth-child()` and `:nth-last-child()` sibling positions, including selector
+lists and fail-closed malformed `of` clauses. Query and `matches()` results
+share the filtered native element order; complete JavaScript selector grammar,
+complete CSS parity, and complete Web IDL parity remain issue #40 gates.
 
 The current bounded JavaScript sibling-combinator checkpoint aligns page-realm
 selector parsing and matching with native adjacent (`+`) and general (`~`)

@@ -18371,6 +18371,57 @@ mod native_selector_tests {
             serde_json::json!([true, false, true, true, true, true, true, true])
         );
     }
+    #[test]
+    fn javascript_nth_child_of_selector_queries_use_filtered_siblings() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("nth-of-selector-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<main><p id='first' class='item'></p><span id='skip'></span><p id='second' class='item'></p><p id='third' class='item'></p><p id='other' class='other'></p><p id='fourth' class='item'></p></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("nth-of selector document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const first = document.querySelector("#first");
+                    const second = document.querySelector("#second");
+                    const third = document.querySelector("#third");
+                    const skip = document.querySelector("#skip");
+                    const fourth = document.querySelector("#fourth");
+                    const oddItems = Array.from(
+                        document.querySelectorAll(":nth-child(odd of .item)")
+                    );
+                    const lastItems = Array.from(
+                        document.querySelectorAll("p:nth-last-child(2 of .item)")
+                    );
+                    let syntaxError = false;
+                    try {
+                        document.querySelectorAll(":nth-child(2 of)");
+                    } catch (error) {
+                        syntaxError = error instanceof SyntaxError;
+                    }
+                    return [
+                        second.matches("p:nth-child(2 of .item)"),
+                        third.matches("p:nth-last-child(2 of .item)"),
+                        fourth.matches(":nth-child(2n of .item)"),
+                        !skip.matches(":nth-child(2 of .item)"),
+                        first.matches("p:nth-child(2 of .item, .other)") === false,
+                        oddItems.map((element) => element.id).join(",") === "first,third",
+                        lastItems.length === 1 && lastItems[0].id === "third",
+                        syntaxError,
+                    ];
+                })()"##,
+                &document,
+                "fixture://nth-of-selector.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("nth-of selectors must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true, true, true, true, true])
+        );
+    }
 }
 
 #[cfg(test)]
@@ -38344,6 +38395,49 @@ fn document_bootstrap(
     const distance = position - offset;
     return distance / coefficient >= 0 && distance % Math.abs(coefficient) === 0;
   }};
+  const nthArgumentForSelector = (argument) => {{
+    const value = String(argument || "").trim();
+    let depth = 0;
+    let quote = "";
+    for (let index = 0; index <= value.length - 2; index += 1) {{
+      const character = value[index];
+      if (quote) {{
+        if (character === quote && value[index - 1] !== "\\") quote = "";
+        continue;
+      }}
+      if (character === "'" || character === '"') {{
+        quote = character;
+        continue;
+      }}
+      if (character === "[") {{
+        depth += 1;
+        continue;
+      }}
+      if (character === "]") {{
+        depth -= 1;
+        continue;
+      }}
+      const isOfKeyword = value.slice(index, index + 2).toLowerCase() === "of";
+      const hasBeforeBoundary = index === 0 || /\s/.test(value[index - 1]);
+      const hasAfterBoundary = index + 2 === value.length || /\s/.test(value[index + 2]);
+      if (depth !== 0 || !isOfKeyword || !hasBeforeBoundary || !hasAfterBoundary) continue;
+      const formula = value.slice(0, index).trim();
+      const filter = value.slice(index + 2).trim();
+      if (!formula || !filter) throw new SyntaxError("invalid nth-child selector");
+      return {{ formula, filter }};
+    }}
+    return {{ formula: value, filter: null }};
+  }};
+  const nthSiblingsForSelector = (element, argument) => {{
+    const parsed = nthArgumentForSelector(argument);
+    const siblings = elementChildren(element && element.parentElement);
+    if (!parsed.filter) return {{ siblings, formula: parsed.formula }};
+    return {{
+      siblings: siblings.filter((candidate) =>
+        matchesSelector(candidate, parsed.filter, candidate)),
+      formula: parsed.formula,
+    }};
+  }};
   const formValidityForSelector = (element) => {{
     if (!element) return null;
     if (element.tagName === "FORM") return Boolean(element.validity && element.validity.valid);
@@ -38455,6 +38549,11 @@ fn document_bootstrap(
         const position = siblings.indexOf(element) + 1;
         const typeSiblings = sameTypeSiblingsForSelector(element);
         const typePosition = typeSiblings.indexOf(element) + 1;
+        const nthFiltered = name === "nth-child" || name === "nth-last-child"
+          ? nthSiblingsForSelector(element, argument)
+          : null;
+        const nthSiblings = nthFiltered ? nthFiltered.siblings : siblings;
+        const nthPosition = nthSiblings.indexOf(element) + 1;
         if (name === "has") {{
           if (argument === undefined || !hasForSelector(element, argument)) return false;
         }} else if (name === "lang" && !languageMatchesForSelector(element, argument)) return false;
@@ -38467,14 +38566,18 @@ fn document_bootstrap(
         else if (name === "last-child" && position !== siblings.length) return false;
         else if (name === "only-child" && siblings.length !== 1) return false;
         else if (name === "nth-child"
-            && !nthFormulaMatchesForSelector(position, argument)) return false;
+            && (nthPosition < 1
+              || !nthFormulaMatchesForSelector(nthPosition, nthFiltered.formula))) return false;
         else if (name === "first-of-type" && typePosition !== 1) return false;
         else if (name === "last-of-type" && typePosition !== typeSiblings.length) return false;
         else if (name === "only-of-type" && typeSiblings.length !== 1) return false;
         else if (name === "nth-of-type"
             && !nthFormulaMatchesForSelector(typePosition, argument)) return false;
         else if (name === "nth-last-child"
-            && !nthFormulaMatchesForSelector(siblings.length - position + 1, argument)) return false;
+            && (nthPosition < 1
+              || !nthFormulaMatchesForSelector(
+                nthSiblings.length - nthPosition + 1,
+                nthFiltered.formula))) return false;
         else if (name === "nth-last-of-type"
             && !nthFormulaMatchesForSelector(typeSiblings.length - typePosition + 1, argument)) return false;
         else if (name === "scope" && element !== scope) return false;

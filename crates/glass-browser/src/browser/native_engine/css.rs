@@ -13883,6 +13883,7 @@ enum NativePseudoClass {
     Optional,
     Link,
     AnyLink,
+    Lang(String),
     Not(Vec<NativeSelector>),
     Is(Vec<NativeSelector>),
     Where(Vec<NativeSelector>),
@@ -13914,7 +13915,8 @@ impl NativePseudoClass {
             Self::Is(selectors) | Self::Where(selectors) => selectors
                 .iter()
                 .any(|selector| selector.matches_local(node)),
-            Self::Has(_)
+            Self::Lang(_)
+            | Self::Has(_)
             | Self::NthChild { .. }
             | Self::NthLastChild { .. }
             | Self::NthOfType { .. }
@@ -13981,6 +13983,7 @@ impl NativePseudoClass {
             Self::Is(selectors) | Self::Where(selectors) => selectors
                 .iter()
                 .any(|selector| selector.matches_in_document(document, node_id)),
+            Self::Lang(range) => language_pseudo_matches(document, node_id, range),
             Self::Has(selectors) => selectors
                 .iter()
                 .any(|relative| relative_selector_matches(document, node_id, relative)),
@@ -13995,6 +13998,38 @@ impl NativePseudoClass {
             _ => self.matches_local(node),
         }
     }
+}
+
+fn language_pseudo_matches(document: &NativeDocument, node_id: NativeNodeId, range: &str) -> bool {
+    let mut current = Some(node_id);
+    while let Some(current_id) = current {
+        let Some(node) = document.node(current_id) else {
+            return false;
+        };
+        if let Some(language) = node
+            .attribute("lang")
+            .or_else(|| node.attribute_in_namespace(Some(XML_NAMESPACE_URI), "lang"))
+        {
+            return language_range_matches(language, range);
+        }
+        current = node.parent();
+    }
+    false
+}
+
+fn language_range_matches(value: &str, range: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return false;
+    }
+    if range == "*" {
+        return true;
+    }
+    let base = range.strip_suffix("-*").unwrap_or(range);
+    value.eq_ignore_ascii_case(base)
+        || (value.len() > base.len()
+            && value.as_bytes().starts_with(base.as_bytes())
+            && value.as_bytes().get(base.len()) == Some(&b'-'))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25281,6 +25316,9 @@ fn parse_functional_pseudo_class(
         };
         return Some((pseudo, 10));
     }
+    if name == "lang" {
+        return Some((NativePseudoClass::Lang(parse_language_range(argument)?), 10));
+    }
     if name == "has" {
         let selectors = split_selector_list(argument)?
             .into_iter()
@@ -25308,6 +25346,37 @@ fn parse_functional_pseudo_class(
         "where" => Some((NativePseudoClass::Where(selectors), 0)),
         _ => None,
     }
+}
+
+fn parse_language_range(argument: &str) -> Option<String> {
+    let argument = argument.trim();
+    if argument.is_empty() {
+        return None;
+    }
+    let range = if argument.len() >= 2
+        && matches!(
+            (argument.as_bytes().first(), argument.as_bytes().last()),
+            (Some(b'\''), Some(b'\'')) | (Some(b'"'), Some(b'"'))
+        ) {
+        &argument[1..argument.len() - 1]
+    } else {
+        argument
+    };
+    let range = range.to_ascii_lowercase();
+    if range.is_empty()
+        || !range
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'*')
+    {
+        return None;
+    }
+    if range != "*" && range.split('-').any(str::is_empty) {
+        return None;
+    }
+    if range.contains('*') && range != "*" && !range.ends_with("-*") {
+        return None;
+    }
+    Some(range)
 }
 
 fn parse_nth_formula(argument: &str) -> Option<(i32, i32)> {
@@ -26477,6 +26546,11 @@ mod tests {
         );
         assert!(parse_selector("button:has(>)").is_none());
         assert!(parse_selector("button:not(.active").is_none());
+        assert_eq!(parse_selector(":lang(en)").unwrap().specificity, 10);
+        assert!(parse_selector(":lang('en-US')").is_some());
+        assert!(parse_selector(":lang(en-*)").is_some());
+        assert!(parse_selector(":lang(en us)").is_none());
+        assert!(parse_selector(":lang(en_*)").is_none());
         assert!(parse_selector("button::before").is_none());
     }
 
@@ -26521,9 +26595,75 @@ mod tests {
             .and_then(|node| node.element_name())
             .expect("root element name")
             .to_owned();
+
         assert_eq!(
             selector_matches_in_document(&document, &format!("{root_name}:root")).unwrap(),
             vec![root_element]
+        );
+    }
+    #[test]
+    fn document_selector_matches_bounded_language_pseudo_class() {
+        let document = NativeDocument::parse(
+            "<main id='english' lang='en'><section id='inherit'><p id='french' lang='fr-FR'><span id='french-child'></span></p><p id='german' xml:lang='de-DE'></p><p id='plain'></p></section></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("language pseudo-class fixture document");
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .filter_map(|node_id| document.node(node_id)?.attribute("id"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            matched_ids(":lang(en)"),
+            vec!["english", "inherit", "plain"]
+        );
+        assert_eq!(
+            matched_ids(":lang(en-*)"),
+            vec!["english", "inherit", "plain"]
+        );
+        assert_eq!(matched_ids(":lang(fr)"), vec!["french", "french-child"]);
+        assert_eq!(matched_ids(":lang(de)"), vec!["german"]);
+        assert!(matched_ids(":lang(es)").is_empty());
+    }
+
+    #[test]
+    fn language_pseudo_class_applies_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            ":lang(en) { background-color: red; } :lang(fr) { background-color: black; } :lang(de) { background-color: green; }"
+                .into(),
+        ])
+        .expect("language pseudo-class stylesheet");
+        let document = NativeDocument::parse(
+            "<main lang='en'><p id='plain'></p><p id='french' lang='fr-FR'><span id='french-child'></span></p><p id='german' xml:lang='de-DE'></p></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("language pseudo-class cascade document");
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+
+        assert_eq!(style("plain").background_color(), Some(NativeColor::RED));
+        assert_eq!(style("french").background_color(), Some(NativeColor::BLACK));
+        assert_eq!(
+            style("french-child").background_color(),
+            Some(NativeColor::BLACK)
+        );
+        assert_eq!(
+            style("german").background_color(),
+            Some(NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: u8::MAX,
+            })
         );
     }
 

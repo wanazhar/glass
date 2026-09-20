@@ -1,9 +1,10 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-650`, following
-completed `native-engine-browser-649`, following completed
-`native-engine-browser-648`, following
+expansion checkpoint is completed `native-engine-browser-651`, following
+completed `native-engine-browser-650`, following completed
+`native-engine-browser-649`, following
+completed `native-engine-browser-648`, following
 completed `native-engine-browser-647`, following
 completed `native-engine-browser-646`, following
 completed `native-engine-browser-645`, following
@@ -527,6 +528,12 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 651 adds bounded `:lang(...)` matching against inherited HTML `lang`
+and XML `xml:lang` attributes. Base language tags, descendant subtags, and a
+terminal wildcard are matched case-insensitively at the nearest declaration;
+malformed ranges fail closed. Full selector grammar, pseudo-elements, complete
+CSS and Web IDL parity remain explicit issue #40 gates.
 
 Slice 650 adds bounded `@namespace` declaration composition. Supported
 HTML, SVG, MathML, XML, XMLNS, and XLink URI constants bind named or default

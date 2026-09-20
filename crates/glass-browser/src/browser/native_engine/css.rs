@@ -13888,6 +13888,7 @@ enum NativePseudoClass {
     Focus,
     FocusWithin,
     FocusVisible,
+    Hover,
     Valid,
     Invalid,
     ReadOnly,
@@ -13950,6 +13951,7 @@ impl NativePseudoClass {
             | Self::Focus
             | Self::FocusWithin
             | Self::FocusVisible
+            | Self::Hover
             | Self::Valid
             | Self::Invalid
             | Self::ReadOnly
@@ -14037,6 +14039,7 @@ impl NativePseudoClass {
             }
             Self::Focus | Self::FocusVisible => document.css_is_focused(node_id),
             Self::FocusWithin => document.css_focus_within(node_id),
+            Self::Hover => document.css_is_hovered(node_id),
             Self::Valid => document.css_validity(node_id).is_some_and(|valid| valid),
             Self::Invalid => document.css_validity(node_id).is_some_and(|valid| !valid),
             Self::ReadOnly => document
@@ -25388,6 +25391,7 @@ fn parse_pseudo_class(source: &str) -> Option<NativePseudoClass> {
         "focus" => Some(NativePseudoClass::Focus),
         "focus-within" => Some(NativePseudoClass::FocusWithin),
         "focus-visible" => Some(NativePseudoClass::FocusVisible),
+        "hover" => Some(NativePseudoClass::Hover),
         "valid" => Some(NativePseudoClass::Valid),
         "invalid" => Some(NativePseudoClass::Invalid),
         "read-only" => Some(NativePseudoClass::ReadOnly),
@@ -26239,7 +26243,7 @@ mod tests {
         assert!(parse_selector("main >").is_none());
         assert!(parse_selector("> button").is_none());
         assert!(parse_selector("main ++ button").is_none());
-        assert!(parse_selector("button:hover").is_none());
+        assert!(parse_selector("button:hover").is_some());
         let too_many = ["div"; MAX_SELECTOR_PARTS + 1].join(" ");
         assert!(parse_selector(&too_many).is_none());
         assert_eq!(
@@ -26714,7 +26718,7 @@ mod tests {
                 .specificity,
             1
         );
-        assert!(parse_selector("button:hover").is_none());
+        assert!(parse_selector("button:hover").is_some());
         assert_eq!(
             parse_selector("button:nth-child(2)").unwrap().specificity,
             11
@@ -26765,6 +26769,7 @@ mod tests {
         for source in [
             "button:focus",
             "button:focus-within",
+            "button:hover",
             "button:focus-visible",
             "input:valid",
             "input:invalid",
@@ -27117,6 +27122,42 @@ mod tests {
     }
 
     #[test]
+    fn document_selector_matches_bounded_hover_state() {
+        let mut document = NativeDocument::parse(
+            "<main id='main'><section id='first'><button id='first-target'>First</button></section><section id='second'><button id='second-target'>Second</button></section></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("hover pseudo-class fixture document");
+        fn matched_ids(document: &NativeDocument, source: &str) -> Vec<String> {
+            selector_matches_in_document(document, source)
+                .unwrap()
+                .into_iter()
+                .filter_map(|node_id| document.node(node_id)?.attribute("id"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        }
+
+        let first_target = document.resolve_target("id=first-target").unwrap();
+        document.apply_hover(first_target).unwrap();
+        assert_eq!(
+            matched_ids(&document, ":hover"),
+            vec!["main", "first", "first-target"]
+        );
+        assert_eq!(
+            matched_ids(&document, "#second-target:hover"),
+            Vec::<String>::new()
+        );
+
+        let second_target = document.resolve_target("id=second-target").unwrap();
+        document.apply_hover(second_target).unwrap();
+        assert_eq!(
+            matched_ids(&document, ":hover"),
+            vec!["main", "second", "second-target"]
+        );
+        assert!(matched_ids(&document, "#first:hover").is_empty());
+    }
+
+    #[test]
     fn document_selector_matches_bounded_indeterminate_pseudo_class() {
         let document = NativeDocument::parse(
             "<form><input id='empty-a' type='radio' name='empty'><input id='empty-b' type='radio' name='empty'><input id='checked-radio' type='radio' name='checked' checked><input id='unchecked-radio' type='radio' name='checked'><progress id='pending'></progress><progress id='complete' value='1' max='2'></progress><progress id='invalid' value='bogus'></progress><input id='checkbox' type='checkbox'></form>",
@@ -27167,6 +27208,36 @@ mod tests {
             Some(NativeColor::BLACK)
         );
         assert_eq!(style("complete").background_color(), None);
+    }
+    #[test]
+    fn hover_pseudo_class_applies_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "section:hover { color: red; } button:hover { background-color: black; }".into(),
+        ])
+        .expect("hover pseudo-class stylesheet");
+        let mut document = NativeDocument::parse(
+            "<main><section id='section'><button id='hovered'>Hovered</button></section><button id='plain'>Plain</button></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("hover pseudo-class cascade document");
+        let hovered = document.resolve_target("id=hovered").unwrap();
+        document.apply_hover(hovered).unwrap();
+        let section_style = stylesheet.computed_for_in_document(
+            &document,
+            document.resolve_target("id=section").unwrap(),
+            None,
+        );
+        let hovered_style = stylesheet.computed_for_in_document(&document, hovered, None);
+        let plain_style = stylesheet.computed_for_in_document(
+            &document,
+            document.resolve_target("id=plain").unwrap(),
+            None,
+        );
+
+        assert_eq!(section_style.color(), Some(NativeColor::RED));
+        assert_eq!(hovered_style.background_color(), Some(NativeColor::BLACK));
+        assert_eq!(plain_style.color(), None);
+        assert_eq!(plain_style.background_color(), None);
     }
 
     #[test]

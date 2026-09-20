@@ -1,6 +1,9 @@
 use super::config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_VIEWPORT_DIMENSION, Viewport};
 use super::diagnostics::{NativeDiagnosticCode, NativeDiagnosticSink, NativeDiagnosticSource};
-use super::dom::{NativeDocument, NativeNode, NativeNodeId};
+use super::dom::{
+    HTML_NAMESPACE_URI, MATHML_NAMESPACE_URI, NativeDocument, NativeNode, NativeNodeId,
+    SVG_NAMESPACE_URI,
+};
 use super::error::NativeEngineError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -13783,6 +13786,27 @@ struct NativeSelector {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeSelectorNamespace {
+    Any,
+    NoNamespace,
+    Html,
+    Svg,
+    MathMl,
+}
+
+impl NativeSelectorNamespace {
+    fn matches(self, namespace_uri: Option<&str>) -> bool {
+        match self {
+            Self::Any => true,
+            Self::NoNamespace => namespace_uri.is_none(),
+            Self::Html => namespace_uri == Some(HTML_NAMESPACE_URI),
+            Self::Svg => namespace_uri == Some(SVG_NAMESPACE_URI),
+            Self::MathMl => namespace_uri == Some(MATHML_NAMESPACE_URI),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeAttributeOperator {
     Exists,
     Equals,
@@ -13956,6 +13980,7 @@ impl NativePseudoClass {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeCompoundSelector {
     tag: Option<String>,
+    tag_namespace: NativeSelectorNamespace,
     id: Option<String>,
     classes: Vec<String>,
     attributes: Vec<NativeAttributeSelector>,
@@ -14370,6 +14395,9 @@ fn attribute_selector_matches(selector: &NativeAttributeSelector, actual: Option
 
 impl NativeCompoundSelector {
     fn matches_base(&self, node: &NativeNode) -> bool {
+        if !self.tag_namespace.matches(node.namespace_uri()) {
+            return false;
+        }
         if self
             .tag
             .as_deref()
@@ -24923,24 +24951,71 @@ fn split_selector_parts(source: &str) -> Option<(Vec<&str>, Vec<NativeSelectorCo
         .then_some((compounds, combinators))
 }
 
+fn parse_selector_namespace(source: &str) -> Option<NativeSelectorNamespace> {
+    match source.to_ascii_lowercase().as_str() {
+        "html" => Some(NativeSelectorNamespace::Html),
+        "svg" => Some(NativeSelectorNamespace::Svg),
+        "math" | "mathml" => Some(NativeSelectorNamespace::MathMl),
+        _ => None,
+    }
+}
+
+fn parse_namespace_local_name(source: &str, start: usize) -> Option<(Option<String>, usize)> {
+    if source.as_bytes().get(start) == Some(&b'*') {
+        return Some((None, start + 1));
+    }
+    let (name, next) = read_identifier(source, start)?;
+    Some((Some(name.to_ascii_lowercase()), next))
+}
+
+fn parse_qualified_type_selector(
+    source: &str,
+) -> Option<(Option<String>, NativeSelectorNamespace, usize)> {
+    let bytes = source.as_bytes();
+    let Some(&first) = bytes.first() else {
+        return Some((None, NativeSelectorNamespace::Any, 0));
+    };
+    match first {
+        b'*' if bytes.get(1) == Some(&b'|') => {
+            let (tag, next) = parse_namespace_local_name(source, 2)?;
+            Some((tag, NativeSelectorNamespace::Any, next))
+        }
+        b'*' => Some((None, NativeSelectorNamespace::Any, 1)),
+        b'|' => {
+            let (tag, next) = parse_namespace_local_name(source, 1)?;
+            Some((tag, NativeSelectorNamespace::NoNamespace, next))
+        }
+        byte if is_identifier_start(byte) => {
+            let (prefix, next) = read_identifier(source, 0)?;
+            if bytes.get(next) != Some(&b'|') {
+                return Some((
+                    Some(prefix.to_ascii_lowercase()),
+                    NativeSelectorNamespace::Any,
+                    next,
+                ));
+            }
+            let namespace = parse_selector_namespace(&prefix)?;
+            let (tag, next) = parse_namespace_local_name(source, next + 1)?;
+            Some((tag, namespace, next))
+        }
+        _ => Some((None, NativeSelectorNamespace::Any, 0)),
+    }
+}
+
 fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
     let bytes = source.as_bytes();
-    let mut cursor = 0;
+    let (tag, tag_namespace, mut cursor) = parse_qualified_type_selector(source)?;
     let mut selector = NativeCompoundSelector {
-        tag: None,
+        tag,
+        tag_namespace,
         id: None,
         classes: Vec::new(),
         attributes: Vec::new(),
         pseudo_classes: Vec::new(),
         specificity: 0,
     };
-    if bytes.first() == Some(&b'*') {
-        cursor += 1;
-    } else if bytes.first().is_some_and(|byte| is_identifier_start(*byte)) {
-        let (name, next) = read_identifier(source, cursor)?;
-        selector.tag = Some(name.to_ascii_lowercase());
+    if selector.tag.is_some() {
         selector.specificity = 1;
-        cursor = next;
     }
     while cursor < bytes.len() {
         match bytes[cursor] {
@@ -24995,8 +25070,9 @@ fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
         || !selector.classes.is_empty()
         || !selector.attributes.is_empty()
         || !selector.pseudo_classes.is_empty()
-        || source == "*")
-        .then_some(selector)
+        || source == "*"
+        || source.contains('|'))
+    .then_some(selector)
 }
 
 fn parse_pseudo_class(source: &str) -> Option<NativePseudoClass> {
@@ -25690,6 +25766,25 @@ mod tests {
     }
 
     #[test]
+    fn selector_parser_supports_bounded_namespace_type_selectors() {
+        let svg = parse_selector("svg|circle").unwrap();
+        assert_eq!(svg.specificity, 1);
+        assert_eq!(svg.compounds[0].tag_namespace, NativeSelectorNamespace::Svg);
+        assert_eq!(
+            parse_selector("*|circle").unwrap().compounds[0].tag_namespace,
+            NativeSelectorNamespace::Any
+        );
+        assert_eq!(
+            parse_selector("|circle").unwrap().compounds[0].tag_namespace,
+            NativeSelectorNamespace::NoNamespace
+        );
+        assert!(parse_selector("svg|*").is_some());
+        assert!(parse_selector("foo|circle").is_none());
+        assert!(parse_selector("svg|").is_none());
+        assert!(parse_selector("*|").is_none());
+    }
+
+    #[test]
     fn document_selector_matches_bounded_attribute_operators() {
         let document = NativeDocument::parse(
             "<main><div id='primary' data-token='alpha beta' data-lang='en-US' data-prefix='prefix-value' data-suffix='value-suffix' data-text='middle-value' data-role='button'></div><div id='secondary' data-token='gamma' data-lang='fr'></div><div id='missing'></div></main>",
@@ -25718,6 +25813,36 @@ mod tests {
         assert_eq!(matched_ids("[data-suffix$=suffix]"), vec!["primary"]);
         assert_eq!(matched_ids("[data-text*=middle]"), vec!["primary"]);
         assert!(matched_ids("[data-lang|=e]").is_empty());
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_namespace_type_selectors() {
+        let document = NativeDocument::parse(
+            "<main><svg id='svg'><circle id='circle'></circle></svg><div id='html'></div><math><mi id='math'></mi></math></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("namespace selector fixture document");
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .map(|node_id| {
+                    document
+                        .node(node_id)
+                        .and_then(|node| node.attribute("id"))
+                        .expect("matched element id")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(matched_ids("svg|circle"), vec!["circle"]);
+        assert_eq!(matched_ids("*|circle"), vec!["circle"]);
+        assert_eq!(matched_ids("html|div"), vec!["html"]);
+        assert_eq!(matched_ids("math|mi"), vec!["math"]);
+        assert_eq!(matched_ids("svg|*"), vec!["svg", "circle"]);
+        assert!(matched_ids("|circle").is_empty());
+        assert!(matched_ids("html|circle").is_empty());
     }
 
     #[test]
@@ -25801,6 +25926,31 @@ mod tests {
         assert_eq!(style("mixed").background_color(), None);
         assert_eq!(style("exact").color(), Some(NativeColor::RED));
         assert_eq!(style("exact").background_color(), Some(NativeColor::RED));
+    }
+
+    #[test]
+    fn namespace_type_selectors_apply_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "svg|circle { color: red; } html|div { background-color: red; }".into(),
+        ])
+        .expect("namespace selector stylesheet");
+        let document = NativeDocument::parse(
+            "<main><svg><circle id='circle'></circle></svg><div id='html'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("namespace cascade document");
+
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+        assert_eq!(style("circle").color(), Some(NativeColor::RED));
+        assert_eq!(style("circle").background_color(), None);
+        assert_eq!(style("html").color(), None);
+        assert_eq!(style("html").background_color(), Some(NativeColor::RED));
     }
 
     #[test]

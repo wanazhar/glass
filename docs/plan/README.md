@@ -27,8 +27,9 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed `native-engine-browser-647`,
-following completed `native-engine-browser-646`, following completed
+the browser-complete expansion has completed `native-engine-browser-648`,
+following completed `native-engine-browser-647`, following completed
+`native-engine-browser-646`, following completed
 `native-engine-browser-645`, following completed
 `native-engine-browser-644`, following completed
 `native-engine-browser-643`, following completed
@@ -571,6 +572,15 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The completed bounded namespace type-selector follow-up is
+[`native-engine-browser-648`](tasks/native-engine-browser-648.md): native
+selectors now support bounded `svg|name`, `html|name`, `math|name`, `*|name`,
+`|name`, and namespace-qualified universal forms against the attached DOM.
+Matching feeds CSS action locators and stylesheet cascade; unknown prefixes and
+malformed namespace forms remain fail-closed. Full namespace declaration and
+attribute-namespace grammar, selector caching, complete CSS parity, and
+complete Web IDL parity remain issue #40 gates.
 
 The completed bounded typed-structure selector follow-up is
 [`native-engine-browser-646`](tasks/native-engine-browser-646.md): native

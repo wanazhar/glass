@@ -18177,6 +18177,49 @@ mod native_selector_tests {
             serde_json::json!([true, true, true, true, true, true, true, true, true, true])
         );
     }
+    #[test]
+    fn javascript_has_selector_queries_follow_native_relations() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("has-selector-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<main id='main'><section id='parent'><div id='child'><span id='deep'></span></div><p class='target' id='target'></p></section><section id='empty'></section><a id='anchor'></a><span id='next'></span><span id='later'></span></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("has selector document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const main = document.querySelector("#main");
+                    const parent = document.querySelector("#parent");
+                    const child = document.querySelector("#child");
+                    const empty = document.querySelector("#empty");
+                    const anchor = document.querySelector("#anchor");
+                    const sectionsWithDiv = Array.from(document.querySelectorAll("section:has(> div)"));
+                    const sectionsWithTarget = Array.from(document.querySelectorAll("section:has(.target)"));
+                    return [
+                        main.matches(":has(section > .target)"),
+                        parent.matches(":has(.target)"),
+                        parent.matches(":has(> div)"),
+                        parent.matches(":has(> span)"),
+                        child.matches(":has(> span)"),
+                        empty.matches(":has(span)"),
+                        anchor.matches(":has(+ span)"),
+                        anchor.matches(":has(~ span)"),
+                        sectionsWithDiv.length === 1 && sectionsWithDiv[0].id === "parent",
+                        sectionsWithTarget.length === 1 && sectionsWithTarget[0].id === "parent",
+                    ];
+                })()"##,
+                &document,
+                "fixture://has-selector.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("has selectors must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, false, true, false, true, true, true, true])
+        );
+    }
 }
 
 #[cfg(test)]
@@ -38057,6 +38100,40 @@ fn document_bootstrap(
   const elementChildren = (element) => element && Array.isArray(element.__glassChildren)
     ? element.__glassChildren.filter((child) => child && child.nodeType === 1)
     : [];
+  const descendantsForSelector = (element) => {{
+    const result = [];
+    const visit = (node) => {{
+      for (const child of elementChildren(node)) {{
+        result.push(child);
+        visit(child);
+      }}
+    }};
+    visit(element);
+    return result;
+  }};
+  const hasForSelector = (element, argument) => {{
+    const value = String(argument || "").trim();
+    if (!value) throw new SyntaxError(":has() requires a selector");
+    const relation = value[0];
+    const selector = relation === ">" || relation === "+" || relation === "~"
+      ? value.slice(1).trim()
+      : value;
+    if (!selector) throw new SyntaxError(":has() requires a selector");
+    let candidates;
+    if (relation === ">") {{
+      candidates = elementChildren(element);
+    }} else if (relation === "+" || relation === "~") {{
+      const siblings = elementChildren(element && element.parentElement);
+      const position = siblings.indexOf(element);
+      candidates = position < 0
+        ? []
+        : relation === "+" ? siblings.slice(position + 1, position + 2)
+        : siblings.slice(position + 1);
+    }} else {{
+      candidates = descendantsForSelector(element);
+    }}
+    return candidates.some((candidate) => matchesSelector(candidate, selector, element));
+  }};
   const sameTypeSiblingsForSelector = (element) => {{
     const siblings = elementChildren(element && element.parentElement);
     return siblings.filter((candidate) => candidate.tagName === element.tagName);
@@ -38190,7 +38267,9 @@ fn document_bootstrap(
         const position = siblings.indexOf(element) + 1;
         const typeSiblings = sameTypeSiblingsForSelector(element);
         const typePosition = typeSiblings.indexOf(element) + 1;
-        if (name === "not") {{
+        if (name === "has") {{
+          if (argument === undefined || !hasForSelector(element, argument)) return false;
+        }} else if (name === "not") {{
           if (argument === undefined || matchesSelector(element, argument, scope)) return false;
         }} else if (name === "is" || name === "where") {{
           if (argument === undefined || !matchesSelector(element, argument, scope)) return false;
@@ -38239,7 +38318,7 @@ fn document_bootstrap(
             && (!element.userInteracted || formValidityForSelector(element) !== true)) return false;
         else if (name === "user-invalid"
             && (!element.userInteracted || formValidityForSelector(element) !== false)) return false;
-        else if (name !== "not" && name !== "is" && name !== "where"
+        else if (name !== "has" && name !== "not" && name !== "is" && name !== "where"
             && name !== "only-child" && name !== "nth-child"
             && name !== "first-of-type" && name !== "last-of-type"
             && name !== "only-of-type" && name !== "nth-of-type"

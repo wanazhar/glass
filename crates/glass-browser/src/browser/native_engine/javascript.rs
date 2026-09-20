@@ -18138,7 +18138,7 @@ mod native_selector_tests {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("structural-selector-test")
             .expect("native JavaScript runtime must construct");
         let document = NativeDocument::parse(
-            "<main><p id='first'></p><span id='span'></span><p id='middle'></p><p id='last'></p></main>",
+            "<main><p id='first'></p><span id='span'></span><p id='middle'></p><p id='last'></p><aside id='only-parent'><i id='only'></i></aside></main>",
             &NativeEngineLimits::default(),
         )
         .expect("structural selector document must parse");
@@ -18150,13 +18150,20 @@ mod native_selector_tests {
                     const last = document.querySelector("#last");
                     const span = document.querySelector("#span");
                     const nthOfType = Array.from(document.querySelectorAll("p:nth-of-type(2)"));
+                    const only = document.querySelector("#only");
+                    const onlyParent = document.querySelector("#only-parent");
                     const oddChildren = Array.from(document.querySelectorAll("p:nth-child(2n + 1)"));
                     return [
                         first.matches(":first-of-type"),
+                        middle.matches(":first-of-type"),
+                        span.matches(":first-of-type"),
+                        last.matches(":first-of-type"),
+                        only.matches(":only-child"),
+                        middle.matches(":only-child"),
                         middle.matches(":nth-of-type(2)"),
                         last.matches(":last-of-type"),
                         first.matches(":nth-child(1)"),
-                        last.matches(":nth-last-child(1)"),
+                        onlyParent.matches(":nth-last-child(1)"),
                         first.matches("p:nth-child(2n + 1)"),
                         middle.matches("p:nth-child(2n + 1)"),
                         span.matches(":only-of-type"),
@@ -18174,7 +18181,10 @@ mod native_selector_tests {
             .expect("structural selectors must evaluate");
         assert_eq!(
             evaluation.value,
-            serde_json::json!([true, true, true, true, true, true, true, true, true, true])
+            serde_json::json!([
+                true, false, true, false, true, false, true, true, true, true, true, true, true,
+                true, true
+            ])
         );
     }
     #[test]
@@ -38414,8 +38424,10 @@ fn document_bootstrap(
           if (argument === undefined || !matchesSelector(element, argument, scope)) return false;
         }} else if (name === "first-child" && position !== 1) return false;
         else if (name === "last-child" && position !== siblings.length) return false;
+        else if (name === "only-child" && siblings.length !== 1) return false;
         else if (name === "nth-child"
             && !nthFormulaMatchesForSelector(position, argument)) return false;
+        else if (name === "first-of-type" && typePosition !== 1) return false;
         else if (name === "last-of-type" && typePosition !== typeSiblings.length) return false;
         else if (name === "only-of-type" && typeSiblings.length !== 1) return false;
         else if (name === "nth-of-type"

@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-666`, following completed `native-engine-browser-665`,
+`native-engine-browser-667`, following completed `native-engine-browser-666`,
+following completed `native-engine-browser-665`,
 following completed `native-engine-browser-664`,
 following completed `native-engine-browser-663`,
 following completed `native-engine-browser-662`,
@@ -590,6 +591,13 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The current bounded JavaScript structural-correction checkpoint completes
+`:first-of-type` and `:only-child` matching and adds negative/positive
+tree-order coverage. Structural pseudo-classes now reject non-leading
+same-type elements and multi-child elements instead of passing through the
+unsupported-selector allowlist; complete JavaScript selector grammar, complete
+CSS parity, and complete Web IDL parity remain issue #40 gates.
 
 The current bounded JavaScript hover-selector checkpoint projects durable
 native hover state through the DOM snapshot and aligns page-realm `:hover`

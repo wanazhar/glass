@@ -1,7 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-666`, following completed `native-engine-browser-665`,
+`native-engine-browser-667`, following completed `native-engine-browser-666`,
+following completed `native-engine-browser-665`,
 following completed `native-engine-browser-664`,
 following completed `native-engine-browser-663`,
 following completed `native-engine-browser-662`,
@@ -535,6 +536,13 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 667 completes JavaScript `:first-of-type` and `:only-child` matching
+and adds negative/positive tree-order coverage. Structural pseudo-classes now
+reject non-leading same-type elements and multi-child elements instead of
+passing through the unsupported-selector allowlist; complete JavaScript
+selector grammar, complete CSS parity, and complete Web IDL parity remain
+explicit issue #40 gates.
 
 Slice 666 projects durable native hover state through the DOM snapshot and
 aligns page-realm `:hover` matching with native ancestor-chain behavior.

@@ -635,6 +635,8 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) hidden: bool,
     pub(crate) focused: bool,
     #[serde(default)]
+    pub(crate) hovered: bool,
+    #[serde(default)]
     pub(crate) user_interacted: bool,
     pub(crate) validity: NativeValiditySnapshot,
     pub(crate) validation_message: String,
@@ -3790,6 +3792,7 @@ impl NativeDocument {
                     disabled: self.is_disabled(node.id()),
                     hidden: self.is_hidden(node.id()),
                     focused: node.state.focused,
+                    hovered: node.state.hovered,
                     user_interacted: node.state.user_interacted,
                     validity,
                     validation_message,

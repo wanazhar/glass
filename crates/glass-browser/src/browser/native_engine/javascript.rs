@@ -18278,6 +18278,48 @@ mod native_selector_tests {
             ])
         );
     }
+    #[test]
+    fn javascript_hover_selector_queries_follow_native_state() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("hover-selector-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<main id='main'><section id='parent'><button id='target'>Target</button></section><button id='plain'>Plain</button></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("hover selector document must parse");
+        let target = document
+            .resolve_target("id=target")
+            .expect("hover target must resolve");
+        document
+            .apply_hover(target)
+            .expect("native hover state must apply");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const main = document.querySelector("#main");
+                    const parent = document.querySelector("#parent");
+                    const target = document.querySelector("#target");
+                    const plain = document.querySelector("#plain");
+                    const hovered = Array.from(document.querySelectorAll(":hover"));
+                    return [
+                        main.matches(":hover"),
+                        parent.matches(":hover"),
+                        target.matches(":hover"),
+                        plain.matches(":hover"),
+                        hovered.map((element) => element.id).join(",") === "main,parent,target",
+                    ];
+                })()"##,
+                &document,
+                "fixture://hover-selector.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("hover selectors must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, false, true])
+        );
+    }
 }
 
 #[cfg(test)]
@@ -35993,6 +36035,7 @@ fn document_bootstrap(
       disabled,
       hidden,
       focused: entry.focused,
+      hovered: entry.hovered === true,
       userInteracted: entry.userInteracted === true,
       selectionEnd: entry.selectionEnd,
       selectionDirection: entry.selectionDirection,
@@ -36668,6 +36711,7 @@ fn document_bootstrap(
         disabled = Boolean(nextEntry.disabled);
         hidden = Boolean(nextEntry.hidden);
         element.focused = nextEntry.focused;
+        element.hovered = nextEntry.hovered === true;
         element.userInteracted = nextEntry.userInteracted === true;
         value = nextEntry.value === null
           ? (nextEntry.tagName.toLowerCase() === "option"
@@ -36725,6 +36769,7 @@ fn document_bootstrap(
       disabled: false,
       hidden: false,
       focused: false,
+      hovered: false,
       userInteracted: false,
       validity: {{ valid: true }},
       validationMessage: "",
@@ -38395,6 +38440,7 @@ fn document_bootstrap(
         else if (name === "in-range" && rangeForSelector(element) !== true) return false;
         else if (name === "out-of-range" && rangeForSelector(element) !== false) return false;
         else if (name === "indeterminate" && !indeterminateForSelector(element)) return false;
+        else if (name === "hover" && !element.hovered) return false;
         else if (name === "focus" && !element.focused) return false;
         else if (name === "focus-visible" && !element.focused) return false;
         else if (name === "focus-within" && !focusedWithinForSelector(element)) return false;
@@ -38423,6 +38469,7 @@ fn document_bootstrap(
             && name !== "disabled" && name !== "enabled"
             && name !== "link" && name !== "any-link" && name !== "target"
             && name !== "in-range" && name !== "out-of-range" && name !== "indeterminate"
+            && name !== "hover"
             && name !== "focus" && name !== "focus-visible" && name !== "focus-within"
             && name !== "valid" && name !== "invalid"
             && name !== "required" && name !== "optional"

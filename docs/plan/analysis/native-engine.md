@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-665`, following
-completed `native-engine-browser-664`, following completed
+expansion checkpoint is completed `native-engine-browser-666`, following
+completed `native-engine-browser-665`, following completed
+`native-engine-browser-664`, following completed
 `native-engine-browser-663`, following completed
 `native-engine-browser-662`, following completed
 `native-engine-browser-661`, following completed `native-engine-browser-660`,
@@ -541,6 +542,13 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 666 projects durable native hover state through the DOM snapshot and
+aligns page-realm `:hover` matching with native ancestor-chain behavior.
+Hovered targets, ancestors, and query-selector results remain coherent after
+semantic pointer movement; unsupported selector grammar remains fail-closed.
+Complete JavaScript selector grammar, complete CSS parity, and complete Web
+IDL parity remain explicit issue #40 gates.
 
 Slice 665 aligns page-realm `:lang()` and `:dir()` with native inherited
 language and direction state. HTML `lang`, XML language namespaces,

@@ -17933,6 +17933,50 @@ mod native_timer_probe_tests {
 }
 
 #[cfg(test)]
+mod native_selector_tests {
+    use super::super::config::NativeEngineLimits;
+    use super::*;
+
+    #[test]
+    fn javascript_scope_selector_queries_respect_owner() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("scope-selector-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<html><head></head><body><main id='main'><button id='button'>Button</button></main></body></html>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("scope selector document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const main = document.querySelector("#main");
+                    const documentScope = document.querySelector(":scope");
+                    const body = document.querySelector(":scope > body");
+                    const button = main.querySelector(":scope > button");
+                    return [
+                        documentScope && documentScope.tagName,
+                        body && body.tagName,
+                        button && button.id,
+                        main.querySelector(":scope") === null,
+                        main.matches(":scope"),
+                        main.querySelectorAll(":scope > button").length,
+                    ];
+                })()"##,
+                &document,
+                "fixture://scope-selector.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("scope selector query must evaluate");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["HTML", "BODY", "button", true, true, 1])
+        );
+    }
+}
+
+#[cfg(test)]
 mod native_font_face_tests {
     use super::super::config::NativeEngineLimits;
     use super::super::css::{
@@ -35704,10 +35748,10 @@ fn document_bootstrap(
         return null;
       }},
       querySelector(selector) {{
-        return descendantsInTree(element, (candidate) => matchesSelector(candidate, selector))[0] || null;
+        return descendantsInTree(element, (candidate) => matchesSelector(candidate, selector, element))[0] || null;
       }},
       querySelectorAll(selector) {{
-        return asNodeList(descendantsInTree(element, (candidate) => matchesSelector(candidate, selector)));
+        return asNodeList(descendantsInTree(element, (candidate) => matchesSelector(candidate, selector, element)));
       }},
       getElementsByTagName(name) {{
         const value = String(name).toLowerCase();
@@ -37381,14 +37425,14 @@ fn document_bootstrap(
           enumerable: false,
           configurable: false,
           value(selector) {{
-            return descendantsInTree(node, (candidate) => matchesSelector(candidate, selector))[0] || null;
+            return descendantsInTree(node, (candidate) => matchesSelector(candidate, selector, node))[0] || null;
           }},
         }});
         defineMissing(node, "querySelectorAll", {{
           enumerable: false,
           configurable: false,
           value(selector) {{
-            return asNodeList(descendantsInTree(node, (candidate) => matchesSelector(candidate, selector)));
+            return asNodeList(descendantsInTree(node, (candidate) => matchesSelector(candidate, selector, node)));
           }},
         }});
         defineMissing(node, "getElementsByTagName", {{
@@ -37809,7 +37853,7 @@ fn document_bootstrap(
   const elementChildren = (element) => element && Array.isArray(element.__glassChildren)
     ? element.__glassChildren.filter((child) => child && child.nodeType === 1)
     : [];
-  const matchesSimpleSelector = (element, selector) => {{
+  const matchesSimpleSelector = (element, selector, scope = element) => {{
     if (!element || element.nodeType !== 1) return false;
     let rest = String(selector).trim();
     const tag = rest.match(/^([A-Za-z][A-Za-z0-9:_-]*|\*)/);
@@ -37839,9 +37883,9 @@ fn document_bootstrap(
         const siblings = elementChildren(element.parentElement);
         const position = siblings.indexOf(element) + 1;
         if (name === "not") {{
-          if (argument === undefined || matchesSelector(element, argument)) return false;
+          if (argument === undefined || matchesSelector(element, argument, scope)) return false;
         }} else if (name === "is" || name === "where") {{
-          if (argument === undefined || !matchesSelector(element, argument)) return false;
+          if (argument === undefined || !matchesSelector(element, argument, scope)) return false;
         }} else if (name === "first-child" && position !== 1) return false;
         else if (name === "last-child" && position !== siblings.length) return false;
         else if (name === "only-child" && siblings.length !== 1) return false;
@@ -37851,7 +37895,8 @@ fn document_bootstrap(
             : value === "even" ? position % 2 === 0
             : Number.isInteger(Number(value)) && position === Number(value);
           if (!expected) return false;
-        }} else if (name === "root") {{
+        }} else if (name === "scope" && element !== scope) return false;
+        else if (name === "root") {{
           if (!element.ownerDocument || element.ownerDocument.documentElement !== element) return false;
         }} else if (name === "empty") {{
           if (Array.isArray(element.__glassChildren)
@@ -37862,8 +37907,8 @@ fn document_bootstrap(
         else if (name === "disabled" && !element.disabled) return false;
         else if (name === "enabled" && element.disabled) return false;
         else if (name !== "not" && name !== "is" && name !== "where"
-            && name !== "first-child" && name !== "last-child"
-            && name !== "only-child" && name !== "nth-child" && name !== "root"
+            && name !== "only-child" && name !== "nth-child"
+            && name !== "scope" && name !== "root"
             && name !== "empty" && name !== "checked" && name !== "selected"
             && name !== "disabled" && name !== "enabled") {{
           throw new SyntaxError("unsupported pseudo-class");
@@ -37875,10 +37920,10 @@ fn document_bootstrap(
     }}
     return true;
   }};
-  const matchesSelector = (element, selector) => splitSelectorList(selector).some((member) => {{
+  const matchesSelector = (element, selector, scope = element) => splitSelectorList(selector).some((member) => {{
     const chain = parseSelectorChain(member);
     const visit = (candidate, index) => {{
-      if (!candidate || !matchesSimpleSelector(candidate, chain[index].value)) return false;
+      if (!candidate || !matchesSimpleSelector(candidate, chain[index].value, scope)) return false;
       if (index === 0) return true;
       const combinator = chain[index - 1].value;
       if (combinator === ">") return visit(candidate.parentElement, index - 2);
@@ -37900,7 +37945,7 @@ fn document_bootstrap(
     return false;
   }};
   const descendantsMatching = (owner, candidates, selector) =>
-    candidates.filter((element) => isDescendantOf(element, owner) && matchesSelector(element, selector));
+    candidates.filter((element) => isDescendantOf(element, owner) && matchesSelector(element, selector, owner));
   const classToken = (value) => {{
     const token = String(value);
     if (!token || /\s/.test(token)) throw new TypeError("class token must be non-empty and whitespace-free");
@@ -38563,8 +38608,8 @@ fn document_bootstrap(
     if (!element || Number(element.nodeType) !== 1) throw new TypeError("getComputedStyle requires an element");
     return makeComputedStyle(element);
   }};
-  const matches = (element, selector) => matchesSelector(element, selector);
-  const findAll = (selector) => asNodeList(liveDocumentElements().filter((element) => matches(element, selector)));
+  const matches = (element, selector, scope = element) => matchesSelector(element, selector, scope);
+  const findAll = (selector) => asNodeList(liveDocumentElements().filter((element) => matches(element, selector, documentElement)));
   const body = elements.find((element) => element.tagName === "BODY") || null;
   const documentElement = elements.find((element) => element.tagName === "HTML") || null;
   const rootSnapshot = snapshotNodes.find((entry) => entry && Number(entry.nodeIndex) === 0);
@@ -41287,8 +41332,8 @@ fn document_bootstrap(
     : new Map();
   globalThis.__glassFrameDocumentCache = frameDocumentCache;
   globalThis.__glassFrameWindowCache = frameWindowCache;
-  const projectedFrameMatches = (element, selector) => {{
-    return matchesSelector(element, selector);
+  const projectedFrameMatches = (element, selector, scope = element) => {{
+    return matchesSelector(element, selector, scope);
   }};
   const makeFrameDocument = (
     binding,
@@ -41450,10 +41495,10 @@ fn document_bootstrap(
           return null;
         }},
         querySelector(selector) {{
-          return descendantsInTree(projected, (candidate) => matchesSelector(candidate, selector))[0] || null;
+          return descendantsInTree(projected, (candidate) => matchesSelector(candidate, selector, projected))[0] || null;
         }},
         querySelectorAll(selector) {{
-          return asNodeList(descendantsInTree(projected, (candidate) => matchesSelector(candidate, selector)));
+          return asNodeList(descendantsInTree(projected, (candidate) => matchesSelector(candidate, selector, projected)));
         }},
         getElementsByTagName(name) {{
           const value = String(name).toLowerCase();
@@ -42724,7 +42769,8 @@ fn document_bootstrap(
       }}
       return fragment;
     }};
-    const find = (selector) => frameElements.filter((element) => element.__glassAttached && projectedFrameMatches(element, selector));
+    const find = (selector) => frameElements.filter((element) =>
+      element.__glassAttached && projectedFrameMatches(element, selector, documentElement));
     const findById = (id) => frameElements.find((element) => element.__glassAttached && element.id === String(id)) || null;
     const body = frameElements.find((element) => element.tagName === "BODY") || null;
     const documentElement = frameElements.find((element) => element.tagName === "HTML") || null;

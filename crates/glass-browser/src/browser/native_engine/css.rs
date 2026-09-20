@@ -13869,6 +13869,7 @@ struct NativeRelativeSelector {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NativePseudoClass {
     Root,
+    Scope,
     FirstChild,
     LastChild,
     OnlyChild,
@@ -13968,6 +13969,7 @@ impl NativePseudoClass {
             | Self::NthOfType { .. }
             | Self::NthLastOfType { .. } => false,
             Self::Root
+            | Self::Scope
             | Self::FirstChild
             | Self::LastChild
             | Self::OnlyChild
@@ -13982,7 +13984,7 @@ impl NativePseudoClass {
             return false;
         };
         match self {
-            Self::Root => {
+            Self::Root | Self::Scope => {
                 node.parent() == Some(document.root())
                     && document.node(document.root()).is_some_and(|root| {
                         root.children()
@@ -25376,6 +25378,7 @@ fn parse_compound_selector(
 fn parse_pseudo_class(source: &str) -> Option<NativePseudoClass> {
     match source.to_ascii_lowercase().as_str() {
         "root" => Some(NativePseudoClass::Root),
+        "scope" => Some(NativePseudoClass::Scope),
         "first-child" => Some(NativePseudoClass::FirstChild),
         "last-child" => Some(NativePseudoClass::LastChild),
         "only-child" => Some(NativePseudoClass::OnlyChild),
@@ -26780,6 +26783,7 @@ mod tests {
             "input:default",
             "input:in-range",
             "input:out-of-range",
+            "div:scope",
             "div:target",
         ] {
             assert_eq!(parse_selector(source).unwrap().specificity, 11);
@@ -27122,6 +27126,33 @@ mod tests {
     }
 
     #[test]
+    fn document_selector_matches_bounded_scope_pseudo_class() {
+        let document = NativeDocument::parse(
+            "<html><head></head><body><main id='main'><button id='button'>Button</button></main></body></html>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("scope pseudo-class fixture document");
+
+        let scope = selector_matches_in_document(&document, ":scope").unwrap();
+        assert_eq!(scope.len(), 1);
+        assert_eq!(
+            document.node(scope[0]).and_then(|node| node.element_name()),
+            Some("html")
+        );
+        let body = selector_matches_in_document(&document, ":scope > body").unwrap();
+        assert_eq!(body.len(), 1);
+        assert_eq!(
+            document.node(body[0]).and_then(|node| node.element_name()),
+            Some("body")
+        );
+        assert!(
+            selector_matches_in_document(&document, "body:scope")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn document_selector_matches_bounded_hover_state() {
         let mut document = NativeDocument::parse(
             "<main id='main'><section id='first'><button id='first-target'>First</button></section><section id='second'><button id='second-target'>Second</button></section></main>",
@@ -27209,6 +27240,29 @@ mod tests {
         );
         assert_eq!(style("complete").background_color(), None);
     }
+    #[test]
+    fn scope_pseudo_class_applies_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            ":scope > body { background-color: black; }".into(),
+        ])
+        .expect("scope pseudo-class stylesheet");
+        let document = NativeDocument::parse(
+            "<html><head></head><body><main id='main'>Main</main></body></html>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("scope pseudo-class cascade document");
+        let main = document.resolve_target("id=main").unwrap();
+        let body = document
+            .node(main)
+            .and_then(|node| node.parent())
+            .expect("main parent body");
+        let body_style = stylesheet.computed_for_in_document(&document, body, None);
+        let main_style = stylesheet.computed_for_in_document(&document, main, None);
+
+        assert_eq!(body_style.background_color(), Some(NativeColor::BLACK));
+        assert_eq!(main_style.background_color(), None);
+    }
+
     #[test]
     fn hover_pseudo_class_applies_during_style_cascade() {
         let stylesheet = NativeStylesheet::from_sources(vec![

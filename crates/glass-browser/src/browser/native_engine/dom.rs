@@ -7501,6 +7501,39 @@ impl NativeDocument {
         }
     }
 
+    pub(crate) fn css_indeterminate(&self, id: NativeNodeId) -> bool {
+        let Some(node) = self.node(id) else {
+            return false;
+        };
+        match node.element_name() {
+            Some("progress") => node.attribute("value").is_none_or(|value| {
+                value
+                    .parse::<f64>()
+                    .ok()
+                    .is_none_or(|parsed| !parsed.is_finite() || parsed < 0.0)
+            }),
+            Some("input")
+                if node
+                    .attribute("type")
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("radio")) =>
+            {
+                let form_owner = self.form_owner(id);
+                let name = node.attribute("name");
+                !self.nodes.iter().any(|candidate| {
+                    self.is_attached(candidate.id())
+                        && candidate.element_name() == Some("input")
+                        && candidate
+                            .attribute("type")
+                            .is_some_and(|kind| kind.eq_ignore_ascii_case("radio"))
+                        && self.form_owner(candidate.id()) == form_owner
+                        && candidate.attribute("name") == name
+                        && candidate.state.checked
+                })
+            }
+            _ => false,
+        }
+    }
+
     fn css_is_editable(&self, id: NativeNodeId) -> bool {
         let Some(node) = self.node(id) else {
             return false;

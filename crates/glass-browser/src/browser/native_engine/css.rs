@@ -13897,6 +13897,7 @@ enum NativePseudoClass {
     InRange,
     OutOfRange,
     Target,
+    Indeterminate,
     Not(Vec<NativeSelector>),
     Is(Vec<NativeSelector>),
     Where(Vec<NativeSelector>),
@@ -13958,6 +13959,7 @@ impl NativePseudoClass {
             | Self::InRange
             | Self::OutOfRange
             | Self::Target
+            | Self::Indeterminate
             | Self::Has(_)
             | Self::NthChild { .. }
             | Self::NthLastChild { .. }
@@ -14052,6 +14054,7 @@ impl NativePseudoClass {
                 .css_range_validity(node_id)
                 .is_some_and(|in_range| !in_range),
             Self::Target => document.css_target(node_id),
+            Self::Indeterminate => document.css_indeterminate(node_id),
             Self::NthLastChild { a, b, of } => {
                 nth_pseudo_matches(document, node_id, *a, *b, true, false, of.as_deref())
             }
@@ -25393,6 +25396,7 @@ fn parse_pseudo_class(source: &str) -> Option<NativePseudoClass> {
         "default" => Some(NativePseudoClass::Default),
         "in-range" => Some(NativePseudoClass::InRange),
         "out-of-range" => Some(NativePseudoClass::OutOfRange),
+        "indeterminate" => Some(NativePseudoClass::Indeterminate),
         "target" => Some(NativePseudoClass::Target),
         "link" => Some(NativePseudoClass::Link),
         "any-link" => Some(NativePseudoClass::AnyLink),
@@ -26767,6 +26771,7 @@ mod tests {
             "input:read-only",
             "input:read-write",
             "input:placeholder-shown",
+            "input:indeterminate",
             "input:default",
             "input:in-range",
             "input:out-of-range",
@@ -27109,6 +27114,59 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_indeterminate_pseudo_class() {
+        let document = NativeDocument::parse(
+            "<form><input id='empty-a' type='radio' name='empty'><input id='empty-b' type='radio' name='empty'><input id='checked-radio' type='radio' name='checked' checked><input id='unchecked-radio' type='radio' name='checked'><progress id='pending'></progress><progress id='complete' value='1' max='2'></progress><progress id='invalid' value='bogus'></progress><input id='checkbox' type='checkbox'></form>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("indeterminate pseudo-class fixture document");
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .filter_map(|node_id| document.node(node_id)?.attribute("id"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(matched_ids("#empty-a:indeterminate"), vec!["empty-a"]);
+        assert_eq!(matched_ids("#empty-b:indeterminate"), vec!["empty-b"]);
+        assert!(matched_ids("#checked-radio:indeterminate").is_empty());
+        assert!(matched_ids("#unchecked-radio:indeterminate").is_empty());
+        assert_eq!(matched_ids("#pending:indeterminate"), vec!["pending"]);
+        assert!(matched_ids("#complete:indeterminate").is_empty());
+        assert_eq!(matched_ids("#invalid:indeterminate"), vec!["invalid"]);
+        assert!(matched_ids("#checkbox:indeterminate").is_empty());
+    }
+
+    #[test]
+    fn indeterminate_pseudo_class_applies_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "input:indeterminate, progress:indeterminate { background-color: black; }".into(),
+        ])
+        .expect("indeterminate pseudo-class stylesheet");
+        let document = NativeDocument::parse(
+            "<form><input id='radio' type='radio' name='group'><progress id='progress'></progress><progress id='complete' value='1'></progress></form>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("indeterminate pseudo-class cascade document");
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+
+        assert_eq!(style("radio").background_color(), Some(NativeColor::BLACK));
+        assert_eq!(
+            style("progress").background_color(),
+            Some(NativeColor::BLACK)
+        );
+        assert_eq!(style("complete").background_color(), None);
     }
 
     #[test]

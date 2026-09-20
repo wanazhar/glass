@@ -2,7 +2,7 @@ use super::config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_VIEWPORT_DIMENSION, Viewpor
 use super::diagnostics::{NativeDiagnosticCode, NativeDiagnosticSink, NativeDiagnosticSource};
 use super::dom::{
     HTML_NAMESPACE_URI, MATHML_NAMESPACE_URI, NativeDocument, NativeNode, NativeNodeId,
-    SVG_NAMESPACE_URI,
+    SVG_NAMESPACE_URI, XLINK_NAMESPACE_URI, XML_NAMESPACE_URI, XMLNS_NAMESPACE_URI,
 };
 use super::error::NativeEngineError;
 use serde::{Deserialize, Serialize};
@@ -13807,6 +13807,19 @@ impl NativeSelectorNamespace {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeAttributeNamespace {
+    Unqualified,
+    Any,
+    NoNamespace,
+    Html,
+    Svg,
+    MathMl,
+    Xml,
+    Xmlns,
+    Xlink,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeAttributeOperator {
     Exists,
     Equals,
@@ -13827,6 +13840,7 @@ enum NativeAttributeCaseSensitivity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeAttributeSelector {
     name: String,
+    namespace: NativeAttributeNamespace,
     operator: NativeAttributeOperator,
     value: Option<String>,
     case_sensitivity: NativeAttributeCaseSensitivity,
@@ -14347,6 +14361,35 @@ fn attribute_value_contains(
     }
 }
 
+fn attribute_value_for_selector<'a>(
+    selector: &NativeAttributeSelector,
+    node: &'a NativeNode,
+) -> Option<&'a str> {
+    match selector.namespace {
+        NativeAttributeNamespace::Unqualified => node.attribute(&selector.name),
+        NativeAttributeNamespace::Any => node.attribute_in_any_namespace(&selector.name),
+        NativeAttributeNamespace::NoNamespace => node.attribute_in_namespace(None, &selector.name),
+        NativeAttributeNamespace::Html => {
+            node.attribute_in_namespace(Some(HTML_NAMESPACE_URI), &selector.name)
+        }
+        NativeAttributeNamespace::Svg => {
+            node.attribute_in_namespace(Some(SVG_NAMESPACE_URI), &selector.name)
+        }
+        NativeAttributeNamespace::MathMl => {
+            node.attribute_in_namespace(Some(MATHML_NAMESPACE_URI), &selector.name)
+        }
+        NativeAttributeNamespace::Xml => {
+            node.attribute_in_namespace(Some(XML_NAMESPACE_URI), &selector.name)
+        }
+        NativeAttributeNamespace::Xmlns => {
+            node.attribute_in_namespace(Some(XMLNS_NAMESPACE_URI), &selector.name)
+        }
+        NativeAttributeNamespace::Xlink => {
+            node.attribute_in_namespace(Some(XLINK_NAMESPACE_URI), &selector.name)
+        }
+    }
+}
+
 fn attribute_selector_matches(selector: &NativeAttributeSelector, actual: Option<&str>) -> bool {
     let case_sensitivity = selector.case_sensitivity;
     match selector.operator {
@@ -14419,9 +14462,9 @@ impl NativeCompoundSelector {
         }) {
             return false;
         }
-        self.attributes
-            .iter()
-            .all(|attribute| attribute_selector_matches(attribute, node.attribute(&attribute.name)))
+        self.attributes.iter().all(|attribute| {
+            attribute_selector_matches(attribute, attribute_value_for_selector(attribute, node))
+        })
     }
 
     fn matches_local(&self, node: &NativeNode) -> bool {
@@ -25037,9 +25080,11 @@ fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
             b'[' => {
                 let close = source[cursor + 1..].find(']')? + cursor + 1;
                 let content = source[cursor + 1..close].trim();
-                let (name, operator, value, case_sensitivity) = parse_attribute_selector(content)?;
+                let (name, namespace, operator, value, case_sensitivity) =
+                    parse_attribute_selector(content)?;
                 selector.attributes.push(NativeAttributeSelector {
                     name,
+                    namespace,
                     operator,
                     value,
                     case_sensitivity,
@@ -25328,21 +25373,53 @@ fn split_attribute_case_modifier(source: &str) -> (&str, NativeAttributeCaseSens
     (source[..separator].trim_end(), case_sensitivity)
 }
 
+fn parse_attribute_namespace(source: &str) -> Option<NativeAttributeNamespace> {
+    match source.to_ascii_lowercase().as_str() {
+        "html" => Some(NativeAttributeNamespace::Html),
+        "svg" => Some(NativeAttributeNamespace::Svg),
+        "math" | "mathml" => Some(NativeAttributeNamespace::MathMl),
+        "xml" => Some(NativeAttributeNamespace::Xml),
+        "xmlns" => Some(NativeAttributeNamespace::Xmlns),
+        "xlink" => Some(NativeAttributeNamespace::Xlink),
+        _ => None,
+    }
+}
+
+fn parse_qualified_attribute_name(source: &str) -> Option<(String, NativeAttributeNamespace)> {
+    let source = source.trim();
+    let Some(separator) = source.find('|') else {
+        let (name, next) = read_identifier(source, 0)?;
+        return (next == source.len()).then_some((
+            name.to_ascii_lowercase(),
+            NativeAttributeNamespace::Unqualified,
+        ));
+    };
+    let namespace = match &source[..separator] {
+        "" => NativeAttributeNamespace::NoNamespace,
+        "*" => NativeAttributeNamespace::Any,
+        prefix => parse_attribute_namespace(prefix)?,
+    };
+    let local_name = &source[separator + 1..];
+    let (name, next) = read_identifier(local_name, 0)?;
+    (next == local_name.len()).then_some((name.to_ascii_lowercase(), namespace))
+}
+
 fn parse_attribute_selector(
     source: &str,
 ) -> Option<(
     String,
+    NativeAttributeNamespace,
     NativeAttributeOperator,
     Option<String>,
     NativeAttributeCaseSensitivity,
 )> {
     let source = source.trim();
-    let (name, operator, raw_value) =
+    let (raw_name, operator, raw_value) =
         source
             .find('=')
             .map_or((source, NativeAttributeOperator::Exists, None), |equals| {
                 let raw_name = source[..equals].trim();
-                let (name, operator) = match raw_name.as_bytes().last().copied() {
+                let (raw_name, operator) = match raw_name.as_bytes().last().copied() {
                     Some(b'~') => (
                         &raw_name[..raw_name.len().saturating_sub(1)],
                         NativeAttributeOperator::Includes,
@@ -25365,14 +25442,9 @@ fn parse_attribute_selector(
                     ),
                     _ => (raw_name, NativeAttributeOperator::Equals),
                 };
-                (name, operator, Some(source[equals + 1..].trim()))
+                (raw_name, operator, Some(source[equals + 1..].trim()))
             });
-    if name.is_empty()
-        || !name.bytes().all(is_identifier_char)
-        || !is_identifier_start(name.as_bytes()[0])
-    {
-        return None;
-    }
+    let (name, namespace) = parse_qualified_attribute_name(raw_name)?;
     let (raw_value, case_sensitivity) =
         raw_value.map_or((None, NativeAttributeCaseSensitivity::Default), |value| {
             let (value, case_sensitivity) = split_attribute_case_modifier(value);
@@ -25405,7 +25477,7 @@ fn parse_attribute_selector(
     {
         return None;
     }
-    Some((name.to_ascii_lowercase(), operator, value, case_sensitivity))
+    Some((name, namespace, operator, value, case_sensitivity))
 }
 
 fn read_identifier(source: &str, start: usize) -> Option<(String, usize)> {
@@ -25785,6 +25857,26 @@ mod tests {
     }
 
     #[test]
+    fn selector_parser_supports_bounded_attribute_namespace_selectors() {
+        let xlink = parse_selector("[xlink|href='target']").unwrap();
+        assert_eq!(
+            xlink.compounds[0].attributes[0].namespace,
+            NativeAttributeNamespace::Xlink
+        );
+        assert_eq!(
+            parse_selector("[*|href]").unwrap().compounds[0].attributes[0].namespace,
+            NativeAttributeNamespace::Any
+        );
+        assert_eq!(
+            parse_selector("[|href]").unwrap().compounds[0].attributes[0].namespace,
+            NativeAttributeNamespace::NoNamespace
+        );
+        assert!(parse_selector("[svg|href]").is_some());
+        assert!(parse_selector("[foo|href]").is_none());
+        assert!(parse_selector("[xlink|]").is_none());
+    }
+
+    #[test]
     fn document_selector_matches_bounded_attribute_operators() {
         let document = NativeDocument::parse(
             "<main><div id='primary' data-token='alpha beta' data-lang='en-US' data-prefix='prefix-value' data-suffix='value-suffix' data-text='middle-value' data-role='button'></div><div id='secondary' data-token='gamma' data-lang='fr'></div><div id='missing'></div></main>",
@@ -25843,6 +25935,35 @@ mod tests {
         assert_eq!(matched_ids("svg|*"), vec!["svg", "circle"]);
         assert!(matched_ids("|circle").is_empty());
         assert!(matched_ids("html|circle").is_empty());
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_attribute_namespace_selectors() {
+        let document = NativeDocument::parse(
+            "<main><svg id='svg' href='plain' xlink:href='target'></svg><div id='html' xml:lang='en'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("attribute namespace selector fixture document");
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .map(|node_id| {
+                    document
+                        .node(node_id)
+                        .and_then(|node| node.attribute("id"))
+                        .expect("matched element id")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(matched_ids("[xlink|href]"), vec!["svg"]);
+        assert_eq!(matched_ids("[xlink|href='target']"), vec!["svg"]);
+        assert_eq!(matched_ids("[*|href]"), vec!["svg"]);
+        assert_eq!(matched_ids("[|href]"), vec!["svg"]);
+        assert_eq!(matched_ids("[xml|lang='en']"), vec!["html"]);
+        assert!(matched_ids("[svg|href]").is_empty());
     }
 
     #[test]
@@ -25951,6 +26072,31 @@ mod tests {
         assert_eq!(style("circle").background_color(), None);
         assert_eq!(style("html").color(), None);
         assert_eq!(style("html").background_color(), Some(NativeColor::RED));
+    }
+
+    #[test]
+    fn attribute_namespace_selectors_apply_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "[xlink|href] { color: red; } [|href] { background-color: red; }".into(),
+        ])
+        .expect("attribute namespace stylesheet");
+        let document = NativeDocument::parse(
+            "<main><svg id='svg' href='plain' xlink:href='target'></svg><div id='html'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("attribute namespace cascade document");
+
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+        assert_eq!(style("svg").color(), Some(NativeColor::RED));
+        assert_eq!(style("svg").background_color(), Some(NativeColor::RED));
+        assert_eq!(style("html").color(), None);
+        assert_eq!(style("html").background_color(), None);
     }
 
     #[test]

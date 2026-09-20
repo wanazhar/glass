@@ -449,6 +449,34 @@ impl NativeNode {
         })
     }
 
+    /// Return a case-insensitive local-name match in one attribute namespace.
+    pub fn attribute_in_namespace(&self, namespace_uri: Option<&str>, name: &str) -> Option<&str> {
+        self.attributes()?.iter().find_map(|(attribute, value)| {
+            let local_name = attribute
+                .rsplit_once(':')
+                .map_or(attribute.as_str(), |(_, local_name)| local_name);
+            let attribute_namespace = self
+                .state
+                .attribute_namespaces
+                .get(attribute)
+                .map(String::as_str);
+            (attribute_namespace == namespace_uri && local_name.eq_ignore_ascii_case(name))
+                .then_some(value.as_str())
+        })
+    }
+
+    /// Return a case-insensitive local-name match in any attribute namespace.
+    pub fn attribute_in_any_namespace(&self, name: &str) -> Option<&str> {
+        self.attributes()?.iter().find_map(|(attribute, value)| {
+            let local_name = attribute
+                .rsplit_once(':')
+                .map_or(attribute.as_str(), |(_, local_name)| local_name);
+            local_name
+                .eq_ignore_ascii_case(name)
+                .then_some(value.as_str())
+        })
+    }
+
     /// Return the lower-case element name, or `None` for document/text nodes.
     pub fn element_name(&self) -> Option<&str> {
         match &self.kind {

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-645`, following
+expansion checkpoint is completed `native-engine-browser-646`, following
+completed `native-engine-browser-645`, following
 completed `native-engine-browser-644`, following
 completed `native-engine-browser-643`, following
 completed `native-engine-browser-642`, following
@@ -522,6 +523,14 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 646 adds typed sibling position pseudo-classes
+`:first-of-type`, `:last-of-type`, and `:only-of-type`. The existing bounded
+position matcher filters attached-document siblings by element name, so typed
+structural selectors feed both action locators and stylesheet cascade.
+Unsupported dynamic and pseudo-element forms remain fail-closed; full selector
+grammar, case-sensitivity flags, namespaces, complete CSS and Web IDL parity
+remain explicit issue #40 gates.
 
 Slice 645 adds bounded attribute-selector operator parsing and matching.
 Presence and exact forms now share a typed operator model with whitespace

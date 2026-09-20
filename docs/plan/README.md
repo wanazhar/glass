@@ -27,8 +27,9 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed `native-engine-browser-645`,
-following completed `native-engine-browser-644`, following completed
+the browser-complete expansion has completed `native-engine-browser-646`,
+following completed `native-engine-browser-645`, following completed
+`native-engine-browser-644`, following completed
 `native-engine-browser-643`, following completed
 `native-engine-browser-642`, following completed
 `native-engine-browser-641`, following completed
@@ -559,6 +560,15 @@ transactionally before `load()`, while valid normalized descriptors reach the
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue #40
 gates.
+
+The completed bounded typed-structure selector follow-up is
+[`native-engine-browser-646`](tasks/native-engine-browser-646.md): native
+selectors now support `:first-of-type`, `:last-of-type`, and `:only-of-type`
+through attached-document typed sibling positions. Matching feeds CSS action
+locators and stylesheet cascade while unsupported dynamic and pseudo-element
+forms remain fail-closed. Full selector grammar, case-sensitivity flags,
+namespaces, pseudo-elements, complete CSS parity, and complete Web IDL parity
+remain issue #40 gates.
 
 The completed bounded attribute-selector follow-up is
 [`native-engine-browser-645`](tasks/native-engine-browser-645.md): native

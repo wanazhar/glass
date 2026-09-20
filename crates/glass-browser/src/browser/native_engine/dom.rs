@@ -1,5 +1,6 @@
 use super::config::{
-    NativeEngineLimits, validate_url_text, validate_window_name, without_fragment,
+    NativeEngineLimits, decode_percent_encoded_fragment, validate_url_text, validate_window_name,
+    without_fragment,
 };
 use super::css::{
     DEFAULT_NATIVE_FONT_SIZE_ADJUST, NativeFontDisplay, NativeFontFaceRule,
@@ -758,6 +759,7 @@ pub struct NativeDocument {
     font_book: NativeFontBook,
     external_stylesheet_states: BTreeMap<u32, NativeExternalStylesheetState>,
     computed_styles: Option<Vec<NativeComputedStyle>>,
+    css_target_fragment: Option<String>,
     viewport: Viewport,
     diagnostics: Vec<NativeDiagnostic>,
     diagnostics_truncated: bool,
@@ -998,6 +1000,7 @@ impl NativeDocument {
             font_book: NativeFontBook::system(),
             external_stylesheet_states: BTreeMap::new(),
             viewport: Viewport::default(),
+            css_target_fragment: None,
             computed_styles: None,
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
@@ -1194,6 +1197,31 @@ impl NativeDocument {
             self.computed_styles = None;
         }
         Ok(())
+    }
+
+    pub(crate) fn set_css_target_fragment(&mut self, fragment: Option<String>) {
+        if self.css_target_fragment != fragment {
+            self.css_target_fragment = fragment;
+        }
+    }
+
+    pub(crate) fn set_css_target_from_url(
+        &mut self,
+        document_url: &str,
+    ) -> Result<(), NativeEngineError> {
+        let parsed = Url::parse(document_url).map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "document URL is not valid URL syntax".into(),
+        })?;
+        let fragment = parsed.fragment().and_then(decode_percent_encoded_fragment);
+        self.set_css_target_fragment(fragment);
+        Ok(())
+    }
+
+    pub(crate) fn css_target(&self, id: NativeNodeId) -> bool {
+        self.css_target_fragment
+            .as_deref()
+            .and_then(|fragment| self.fragment_target(fragment))
+            == Some(id)
     }
 
     pub(crate) fn inline_style_elements(&self) -> Vec<(u32, String, Option<String>)> {
@@ -3406,6 +3434,7 @@ impl NativeDocument {
             external_stylesheet_states: BTreeMap::new(),
             viewport,
             computed_styles: Some(wire.computed_styles),
+            css_target_fragment: None,
             diagnostics,
             diagnostics_truncated,
             script_node_ids,
@@ -3491,6 +3520,7 @@ impl NativeDocument {
             font_book: NativeFontBook::system(),
             external_stylesheet_states: BTreeMap::new(),
             computed_styles: None,
+            css_target_fragment: None,
             viewport: Viewport::default(),
             diagnostics: Vec::new(),
             diagnostics_truncated: false,

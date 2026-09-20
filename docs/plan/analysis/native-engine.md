@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-655`, following
-completed `native-engine-browser-654`, following completed
+expansion checkpoint is completed `native-engine-browser-656`, following
+completed `native-engine-browser-655`, following completed
+`native-engine-browser-654`, following completed
 `native-engine-browser-653`, following completed
 `native-engine-browser-652`, following completed
 `native-engine-browser-651`, following completed
@@ -532,6 +533,13 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 656 adds bounded `:target` matching against the decoded document
+fragment, including unique `id` targets and legacy named anchors. Initial,
+same-document, history, and content-process hash navigation refresh target
+state before style/layout evaluation; malformed or unresolved fragments remain
+fail-closed. Full selector grammar, complete CSS and Web IDL parity remain
+explicit issue #40 gates.
 
 Slice 655 adds bounded `:in-range` and `:out-of-range` matching for non-empty
 numeric and temporal input values with valid `min`/`max` constraints. Native

@@ -18473,6 +18473,49 @@ mod native_selector_tests {
             serde_json::json!([true, true, true, true, true, true, true, true, true, true])
         );
     }
+    #[test]
+    fn javascript_nested_functional_selectors_match_nested_arguments() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("nested-selector-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<main><div id='first' class='card'><span class='target'></span></div><div id='muted' class='card muted'><span></span></div><div id='last' class='card'><span class='target'></span></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("nested selector document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const first = document.querySelector("#first");
+                    const muted = document.querySelector("#muted");
+                    const last = document.querySelector("#last");
+                    let syntaxError = false;
+                    try {
+                        document.querySelectorAll("div:not(:is(.card)");
+                    } catch (error) {
+                        syntaxError = error instanceof SyntaxError;
+                    }
+                    return [
+                        first.matches(":is(.card:not(.muted))"),
+                        !muted.matches(":is(.card:not(.muted))"),
+                        !first.matches(":not(:has(> span.target))"),
+                        muted.matches(":not(:has(> span.target))"),
+                        last.matches(":where(.card:not(.muted))"),
+                        document.querySelectorAll("div:not(:is(.muted, #first))").length === 1,
+                        document.querySelector("div:is(.card, :not(.other))").id === "first",
+                        syntaxError,
+                    ];
+                })()"##,
+                &document,
+                "fixture://nested-selector.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("nested functional selectors must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true, true, true, true, true])
+        );
+    }
 }
 
 #[cfg(test)]
@@ -38616,6 +38659,51 @@ fn document_bootstrap(
       && candidate.getAttribute("name") === name
       && candidate.checked);
   }};
+  const parsePseudoSelector = (selector) => {{
+    const nameMatch = String(selector).match(/^:([A-Za-z-]+)/);
+    if (!nameMatch) return null;
+    const name = nameMatch[1];
+    const opening = nameMatch[0].length;
+    if (selector[opening] !== "(") {{
+      return {{ name, argument: undefined, length: opening }};
+    }}
+    let depth = 1;
+    let bracketDepth = 0;
+    let quote = "";
+    for (let index = opening + 1; index < selector.length; index += 1) {{
+      const character = selector[index];
+      if (quote) {{
+        if (character === quote && selector[index - 1] !== "\\") quote = "";
+        continue;
+      }}
+      if (character === "'" || character === '"') {{
+        quote = character;
+        continue;
+      }}
+      if (character === "[") {{
+        bracketDepth += 1;
+        continue;
+      }}
+      if (character === "]" && bracketDepth > 0) {{
+        bracketDepth -= 1;
+        continue;
+      }}
+      if (bracketDepth !== 0) continue;
+      if (character === "(") {{
+        depth += 1;
+      }} else if (character === ")") {{
+        depth -= 1;
+        if (depth === 0) {{
+          return {{
+            name,
+            argument: selector.slice(opening + 1, index),
+            length: index + 1,
+          }};
+        }}
+      }}
+    }}
+    throw new SyntaxError("unclosed pseudo-class");
+  }};
   const matchesSimpleSelector = (element, selector, scope = element) => {{
     if (!element || element.nodeType !== 1) return false;
     let rest = String(selector).trim();
@@ -38639,10 +38727,10 @@ fn document_bootstrap(
         if (!selectorAttribute(element, rest.slice(1, end))) return false;
         rest = rest.slice(end + 1);
       }} else if (rest[0] === ":") {{
-        const pseudo = rest.match(/^:([A-Za-z-]+)(?:\(([^()]*)\))?/);
+        const pseudo = parsePseudoSelector(rest);
         if (!pseudo) throw new SyntaxError("invalid pseudo-class");
-        const name = pseudo[1].toLowerCase();
-        const argument = pseudo[2];
+        const name = pseudo.name.toLowerCase();
+        const argument = pseudo.argument;
         const siblings = elementChildren(element.parentElement);
         const position = siblings.indexOf(element) + 1;
         const typeSiblings = sameTypeSiblingsForSelector(element);
@@ -38732,7 +38820,7 @@ fn document_bootstrap(
             && name !== "user-valid" && name !== "user-invalid") {{
           throw new SyntaxError("unsupported pseudo-class");
         }}
-        rest = rest.slice(pseudo[0].length);
+        rest = rest.slice(pseudo.length);
       }} else {{
         throw new SyntaxError("invalid selector token");
       }}

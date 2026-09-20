@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-653`, following
-completed `native-engine-browser-652`, following completed
+expansion checkpoint is completed `native-engine-browser-654`, following
+completed `native-engine-browser-653`, following completed
+`native-engine-browser-652`, following completed
 `native-engine-browser-651`, following completed
 `native-engine-browser-650`, following completed
 `native-engine-browser-649`, following
@@ -530,6 +531,14 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 654 adds bounded interaction and form-state pseudo-classes:
+`:focus`, `:focus-within`, `:focus-visible`, `:valid`, `:invalid`,
+`:read-only`, `:read-write`, `:placeholder-shown`, and `:default`. Native
+focus, validation, editable-state, placeholder, and default-control state feed
+CSS action selectors and stylesheet cascade; user-state, indeterminate, and
+pseudo-element forms remain fail-closed. Full selector grammar, complete CSS
+and Web IDL parity remain explicit issue #40 gates.
 
 Slice 653 adds bounded `of <selector-list>` filters to `:nth-child()` and
 `:nth-last-child()`. Filtered sibling positions count only elements matching

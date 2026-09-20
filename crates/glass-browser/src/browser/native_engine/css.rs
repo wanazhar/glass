@@ -13885,6 +13885,15 @@ enum NativePseudoClass {
     AnyLink,
     Lang(String),
     Dir(DirectionValue),
+    Focus,
+    FocusWithin,
+    FocusVisible,
+    Valid,
+    Invalid,
+    ReadOnly,
+    ReadWrite,
+    PlaceholderShown,
+    Default,
     Not(Vec<NativeSelector>),
     Is(Vec<NativeSelector>),
     Where(Vec<NativeSelector>),
@@ -13934,6 +13943,15 @@ impl NativePseudoClass {
                 .any(|selector| selector.matches_local(node)),
             Self::Lang(_)
             | Self::Dir(_)
+            | Self::Focus
+            | Self::FocusWithin
+            | Self::FocusVisible
+            | Self::Valid
+            | Self::Invalid
+            | Self::ReadOnly
+            | Self::ReadWrite
+            | Self::PlaceholderShown
+            | Self::Default
             | Self::Has(_)
             | Self::NthChild { .. }
             | Self::NthLastChild { .. }
@@ -14009,6 +14027,18 @@ impl NativePseudoClass {
             Self::NthChild { a, b, of } => {
                 nth_pseudo_matches(document, node_id, *a, *b, false, false, of.as_deref())
             }
+            Self::Focus | Self::FocusVisible => document.css_is_focused(node_id),
+            Self::FocusWithin => document.css_focus_within(node_id),
+            Self::Valid => document.css_validity(node_id).is_some_and(|valid| valid),
+            Self::Invalid => document.css_validity(node_id).is_some_and(|valid| !valid),
+            Self::ReadOnly => document
+                .css_read_only(node_id)
+                .is_some_and(|read_only| read_only),
+            Self::ReadWrite => document
+                .css_read_write(node_id)
+                .is_some_and(|read_write| read_write),
+            Self::PlaceholderShown => document.css_placeholder_shown(node_id),
+            Self::Default => document.css_default(node_id),
             Self::NthLastChild { a, b, of } => {
                 nth_pseudo_matches(document, node_id, *a, *b, true, false, of.as_deref())
             }
@@ -25339,6 +25369,15 @@ fn parse_pseudo_class(source: &str) -> Option<NativePseudoClass> {
         "enabled" => Some(NativePseudoClass::Enabled),
         "required" => Some(NativePseudoClass::Required),
         "optional" => Some(NativePseudoClass::Optional),
+        "focus" => Some(NativePseudoClass::Focus),
+        "focus-within" => Some(NativePseudoClass::FocusWithin),
+        "focus-visible" => Some(NativePseudoClass::FocusVisible),
+        "valid" => Some(NativePseudoClass::Valid),
+        "invalid" => Some(NativePseudoClass::Invalid),
+        "read-only" => Some(NativePseudoClass::ReadOnly),
+        "read-write" => Some(NativePseudoClass::ReadWrite),
+        "placeholder-shown" => Some(NativePseudoClass::PlaceholderShown),
+        "default" => Some(NativePseudoClass::Default),
         "link" => Some(NativePseudoClass::Link),
         "any-link" => Some(NativePseudoClass::AnyLink),
         _ => None,
@@ -26703,6 +26742,19 @@ mod tests {
         assert!(parse_selector(":dir(auto)").is_none());
         assert!(parse_selector(":dir('rtl')").is_none());
         assert!(parse_selector("button::before").is_none());
+        for source in [
+            "button:focus",
+            "button:focus-within",
+            "button:focus-visible",
+            "input:valid",
+            "input:invalid",
+            "input:read-only",
+            "input:read-write",
+            "input:placeholder-shown",
+            "input:default",
+        ] {
+            assert_eq!(parse_selector(source).unwrap().specificity, 11);
+        }
     }
 
     #[test]
@@ -26751,6 +26803,82 @@ mod tests {
             selector_matches_in_document(&document, &format!("{root_name}:root")).unwrap(),
             vec![root_element]
         );
+    }
+
+    #[test]
+    fn document_selector_matches_bounded_form_pseudo_classes() {
+        let mut document = NativeDocument::parse(
+            "<form id='form'><input id='valid' value='ok'><input id='invalid' required placeholder='Required'><input id='focused' placeholder='Name'><input id='readonly' readonly value='locked'><input id='placeholder' placeholder='Name'><input id='checked' type='checkbox' checked><select id='select'><option id='default-option' selected>Choice</option></select><div id='editable' contenteditable='true'></div><div id='plain'></div></form>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("form pseudo-class fixture document");
+        let focused = document.resolve_target("id=focused").unwrap();
+        document.apply_script_focus(focused).unwrap();
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .filter_map(|node_id| document.node(node_id)?.attribute("id"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(matched_ids("#focused:focus"), vec!["focused"]);
+        assert_eq!(matched_ids("#focused:focus-visible"), vec!["focused"]);
+        assert_eq!(matched_ids("form:focus-within"), vec!["form"]);
+        assert_eq!(matched_ids("#valid:valid"), vec!["valid"]);
+        assert_eq!(matched_ids("#invalid:invalid"), vec!["invalid"]);
+        assert_eq!(matched_ids("#readonly:read-only"), vec!["readonly"]);
+        assert_eq!(matched_ids("#valid:read-write"), vec!["valid"]);
+        assert_eq!(
+            matched_ids("#placeholder:placeholder-shown"),
+            vec!["placeholder"]
+        );
+        assert_eq!(matched_ids("#checked:default"), vec!["checked"]);
+        assert_eq!(
+            matched_ids("#default-option:default"),
+            vec!["default-option"]
+        );
+        assert_eq!(matched_ids("#editable:read-write"), vec!["editable"]);
+        assert_eq!(matched_ids("#plain:read-only"), vec!["plain"]);
+    }
+
+    #[test]
+    fn form_pseudo_classes_apply_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "input:valid { color: black; } input:invalid { color: red; } input:focus { color: red; } form:focus-within { background-color: red; } input:read-only { background-color: black; } input:placeholder-shown { background-color: red; } input:default { color: red; } option:default { color: black; }"
+                .into(),
+        ])
+        .expect("form pseudo-class stylesheet");
+        let mut document = NativeDocument::parse(
+            "<form id='form'><input id='valid' value='ok'><input id='invalid' required><input id='focused'><input id='readonly' readonly value='locked'><input id='placeholder' placeholder='Name'><input id='checked' type='checkbox' checked><select><option id='default-option' selected>Choice</option></select></form>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("form pseudo-class cascade document");
+        let focused = document.resolve_target("id=focused").unwrap();
+        document.apply_script_focus(focused).unwrap();
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+
+        assert_eq!(style("valid").color(), Some(NativeColor::BLACK));
+        assert_eq!(style("invalid").color(), Some(NativeColor::RED));
+        assert_eq!(style("focused").color(), Some(NativeColor::RED));
+        assert_eq!(style("form").background_color(), Some(NativeColor::RED));
+        assert_eq!(
+            style("readonly").background_color(),
+            Some(NativeColor::BLACK)
+        );
+        assert_eq!(
+            style("placeholder").background_color(),
+            Some(NativeColor::RED)
+        );
+        assert_eq!(style("checked").color(), Some(NativeColor::RED));
+        assert_eq!(style("default-option").color(), Some(NativeColor::BLACK));
     }
     #[test]
     fn document_selector_matches_bounded_language_pseudo_class() {

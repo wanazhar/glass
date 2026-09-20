@@ -143,6 +143,7 @@ pub(crate) struct NativeElementState {
     checked: bool,
     focused: bool,
     hovered: bool,
+    user_interacted: bool,
     selected: bool,
     custom_validity: String,
     selection_start: Option<usize>,
@@ -166,6 +167,7 @@ impl NativeElementState {
             files: Vec::new(),
             checked: attributes.contains_key("checked"),
             focused: false,
+            user_interacted: false,
             hovered: false,
             selected: attributes.contains_key("selected"),
             custom_validity: String::new(),
@@ -400,6 +402,8 @@ pub(crate) struct NativeElementStateWire {
     #[serde(default)]
     pub(crate) hovered: bool,
     #[serde(default)]
+    pub(crate) user_interacted: bool,
+    #[serde(default)]
     pub(crate) selected: bool,
     pub(crate) custom_validity: String,
     #[serde(default)]
@@ -630,6 +634,8 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) disabled: bool,
     pub(crate) hidden: bool,
     pub(crate) focused: bool,
+    #[serde(default)]
+    pub(crate) user_interacted: bool,
     pub(crate) validity: NativeValiditySnapshot,
     pub(crate) validation_message: String,
     pub(crate) custom_validity: String,
@@ -2423,12 +2429,13 @@ impl NativeDocument {
                         .namespace_uri
                         .clone()
                         .or_else(|| Some(String::new())),
-                    attribute_namespaces: node.state.attribute_namespaces.clone(),
                     value: node.state.value.clone(),
                     files: node.state.files.clone(),
+                    attribute_namespaces: node.state.attribute_namespaces.clone(),
                     checked: node.state.checked,
                     focused: node.state.focused,
                     hovered: node.state.hovered,
+                    user_interacted: node.state.user_interacted,
                     selected: node.state.selected,
                     custom_validity: node.state.custom_validity.clone(),
                     selection_start: node.state.selection_start,
@@ -2935,6 +2942,7 @@ impl NativeDocument {
                     checked: wire_node.state.checked,
                     focused: wire_node.state.focused,
                     hovered: wire_node.state.hovered,
+                    user_interacted: wire_node.state.user_interacted,
                     selected: wire_node.state.selected,
                     custom_validity: wire_node.state.custom_validity.clone(),
                     selection_start: wire_node.state.selection_start,
@@ -3782,6 +3790,7 @@ impl NativeDocument {
                     disabled: self.is_disabled(node.id()),
                     hidden: self.is_hidden(node.id()),
                     focused: node.state.focused,
+                    user_interacted: node.state.user_interacted,
                     validity,
                     validation_message,
                     custom_validity: node.state.custom_validity.clone(),
@@ -4250,6 +4259,7 @@ impl NativeDocument {
         };
 
         let mut events = self.focus_element(id);
+        self.mark_user_interacted(id)?;
         events.push((id, NativeEventKind::Click));
         match semantic.role.as_str() {
             "checkbox" => {
@@ -4457,12 +4467,18 @@ impl NativeDocument {
             });
         }
         let fake_path = format!(r"C:\fakepath\{}", files[0].name);
-        let state = &mut self
-            .node_mut(id)
+        {
+            let state = &mut self
+                .node_mut(id)
+                .ok_or(NativeEngineError::DetachedTarget)?
+                .state;
+            state.files = files.to_vec();
+        }
+        self.mark_user_interacted(id)?;
+        self.node_mut(id)
             .ok_or(NativeEngineError::DetachedTarget)?
-            .state;
-        state.files = files.to_vec();
-        state.value = Some(fake_path);
+            .state
+            .value = Some(fake_path);
         Ok(vec![
             (id, NativeEventKind::Input),
             (id, NativeEventKind::Change),
@@ -4513,6 +4529,7 @@ impl NativeDocument {
         }
 
         let mut events = self.focus_element(id);
+        self.mark_user_interacted(id)?;
         self.node_mut(id)
             .ok_or(NativeEngineError::DetachedTarget)?
             .state
@@ -4553,6 +4570,7 @@ impl NativeDocument {
         }
 
         let mut events = self.focus_element(id);
+        self.mark_user_interacted(id)?;
         let current = self.current_value(id).unwrap_or_default();
         if !current.is_empty() {
             self.node_mut(id)
@@ -4634,6 +4652,7 @@ impl NativeDocument {
             })?;
 
         let mut events = self.focus_element(id);
+        self.mark_user_interacted(id)?;
         let option_ids = self.select_option_ids(id);
         let mut changed = false;
         for option_id in option_ids {
@@ -4862,6 +4881,7 @@ impl NativeDocument {
                 reason: "key default target is not focused".into(),
             });
         }
+        self.mark_user_interacted(id)?;
         self.initialize_selection_if_needed(id);
         let (start, end, direction) = self
             .selection_snapshot(id)
@@ -6676,6 +6696,13 @@ impl NativeDocument {
         None
     }
 
+    fn mark_user_interacted(&mut self, id: NativeNodeId) -> Result<(), NativeEngineError> {
+        self.node_mut(id)
+            .ok_or(NativeEngineError::DetachedTarget)?
+            .state
+            .user_interacted = true;
+        Ok(())
+    }
     fn focus_element(&mut self, id: NativeNodeId) -> Vec<(NativeNodeId, NativeEventKind)> {
         let focused_ids = self
             .nodes
@@ -7423,6 +7450,12 @@ impl NativeDocument {
             return None;
         }
         Some(self.control_validity(id).0.valid)
+    }
+    pub(crate) fn css_user_validity(&self, id: NativeNodeId) -> Option<bool> {
+        let valid = self.css_validity(id)?;
+        self.node(id)
+            .is_some_and(|node| node.state.user_interacted)
+            .then_some(valid)
     }
     pub(crate) fn css_range_validity(&self, id: NativeNodeId) -> Option<bool> {
         let node = self.node(id)?;
@@ -10468,6 +10501,19 @@ mod tests {
             document.visible_text(1024).0,
             "one two one two first second"
         );
+    }
+
+    #[test]
+    fn content_wire_round_trips_user_interacted_state() {
+        let limits = NativeEngineLimits::default();
+        let mut document =
+            NativeDocument::parse("<form><input id='required' required></form>", &limits).unwrap();
+        let required = document.resolve_target("id=required").unwrap();
+        document.apply_click(required).unwrap();
+        let wire = document.to_content_wire();
+        let restored =
+            NativeDocument::from_content_wire(wire, &limits, document.generation()).unwrap();
+        assert_eq!(restored.css_user_validity(required), Some(false));
     }
 
     #[test]

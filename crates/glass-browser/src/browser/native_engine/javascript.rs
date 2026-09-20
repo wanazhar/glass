@@ -17974,6 +17974,65 @@ mod native_selector_tests {
             serde_json::json!(["HTML", "BODY", "button", true, true, 1])
         );
     }
+
+    #[test]
+    fn javascript_user_validation_selector_queries_follow_native_state() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("user-validation-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<form><input id='required' required></form>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("user validation selector document must parse");
+        let required = document
+            .resolve_target("id=required")
+            .expect("required control must resolve");
+        let initial = runtime
+            .evaluate(
+                r##"(() => {
+                    const input = document.querySelector("#required");
+                    return [
+                        input.matches(":user-invalid"),
+                        input.matches(":user-valid"),
+                        input.willValidate,
+                        input.validity.valid,
+                    ];
+                })()"##,
+                &document,
+                "fixture://user-validation-selector.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("initial user validation selectors must evaluate");
+        assert_eq!(
+            initial.value,
+            serde_json::json!([false, false, true, false])
+        );
+
+        document.apply_click(required).unwrap();
+        let invalid = runtime
+            .evaluate(
+                r##"document.querySelector("#required").matches(":user-invalid")"##,
+                &document,
+                "fixture://user-validation-selector.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("user-invalid selector must evaluate");
+        assert_eq!(invalid.value, serde_json::json!(true));
+
+        document.apply_type(required, "value").unwrap();
+        let valid = runtime
+            .evaluate(
+                r##"document.querySelector("#required").matches(":user-valid")"##,
+                &document,
+                "fixture://user-validation-selector.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("user-valid selector must evaluate");
+        assert_eq!(valid.value, serde_json::json!(true));
+    }
 }
 
 #[cfg(test)]
@@ -35689,7 +35748,7 @@ fn document_bootstrap(
       disabled,
       hidden,
       focused: entry.focused,
-      selectionStart: entry.selectionStart,
+      userInteracted: entry.userInteracted === true,
       selectionEnd: entry.selectionEnd,
       selectionDirection: entry.selectionDirection,
       get validity() {{ return validityFlags(entry); }},
@@ -36364,7 +36423,7 @@ fn document_bootstrap(
         disabled = Boolean(nextEntry.disabled);
         hidden = Boolean(nextEntry.hidden);
         element.focused = nextEntry.focused;
-        multiple = Object.prototype.hasOwnProperty.call(nextEntry.attributes, "multiple");
+        element.userInteracted = nextEntry.userInteracted === true;
         value = nextEntry.value === null
           ? (nextEntry.tagName.toLowerCase() === "option"
             ? (nextEntry.attributes.value === undefined ? nextEntry.text : nextEntry.attributes.value)
@@ -36421,6 +36480,7 @@ fn document_bootstrap(
       disabled: false,
       hidden: false,
       focused: false,
+      userInteracted: false,
       validity: {{ valid: true }},
       validationMessage: "",
       customValidity: "",
@@ -37906,11 +37966,16 @@ fn document_bootstrap(
         else if (name === "selected" && !element.selected) return false;
         else if (name === "disabled" && !element.disabled) return false;
         else if (name === "enabled" && element.disabled) return false;
+        else if (name === "user-valid"
+            && (!element.userInteracted || !element.willValidate || !element.validity.valid)) return false;
+        else if (name === "user-invalid"
+            && (!element.userInteracted || !element.willValidate || element.validity.valid)) return false;
         else if (name !== "not" && name !== "is" && name !== "where"
             && name !== "only-child" && name !== "nth-child"
             && name !== "scope" && name !== "root"
             && name !== "empty" && name !== "checked" && name !== "selected"
-            && name !== "disabled" && name !== "enabled") {{
+            && name !== "disabled" && name !== "enabled"
+            && name !== "user-valid" && name !== "user-invalid") {{
           throw new SyntaxError("unsupported pseudo-class");
         }}
         rest = rest.slice(pseudo[0].length);

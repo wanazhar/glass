@@ -1,8 +1,9 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-659`, following completed `native-engine-browser-658`,
-following completed `native-engine-browser-657`, following completed
+`native-engine-browser-660`, following completed `native-engine-browser-659`,
+following completed `native-engine-browser-658`, following completed
+`native-engine-browser-657`, following completed
 `native-engine-browser-656`, following completed
 `native-engine-browser-655`, following completed
 `native-engine-browser-654`, following completed
@@ -528,6 +529,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 660 adds bounded `:user-valid` and `:user-invalid` matching from
+durable native user-interaction state. Semantic click, typing, clearing,
+selection, upload, and keyboard edits mark controls as user interacted;
+content-process wires and JavaScript snapshots preserve the state, and
+native/DOM selectors and stylesheet cascade consume it. Complete validation
+event semantics, full selector grammar, complete CSS parity, and complete Web
+IDL parity remain explicit issue #40 gates.
 
 Slice 659 adds bounded `:scope` matching to native selectors and threads an
 explicit scoping root through JavaScript `matches`, `closest`, and

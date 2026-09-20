@@ -13820,6 +13820,9 @@ enum NativePseudoClass {
     FirstChild,
     LastChild,
     OnlyChild,
+    FirstOfType,
+    LastOfType,
+    OnlyOfType,
     Empty,
     Checked,
     Disabled,
@@ -13864,7 +13867,13 @@ impl NativePseudoClass {
             | Self::NthLastChild { .. }
             | Self::NthOfType { .. }
             | Self::NthLastOfType { .. } => false,
-            Self::Root | Self::FirstChild | Self::LastChild | Self::OnlyChild => false,
+            Self::Root
+            | Self::FirstChild
+            | Self::LastChild
+            | Self::OnlyChild
+            | Self::FirstOfType
+            | Self::LastOfType
+            | Self::OnlyOfType => false,
         }
     }
 
@@ -13907,6 +13916,12 @@ impl NativePseudoClass {
                     }
                     _ => false,
                 }
+            }
+            Self::FirstOfType => nth_pseudo_matches(document, node_id, 0, 1, false, true),
+            Self::LastOfType => nth_pseudo_matches(document, node_id, 0, 1, true, true),
+            Self::OnlyOfType => {
+                nth_pseudo_matches(document, node_id, 0, 1, false, true)
+                    && nth_pseudo_matches(document, node_id, 0, 1, true, true)
             }
             Self::Not(selectors) => selectors
                 .iter()
@@ -24919,6 +24934,9 @@ fn parse_pseudo_class(source: &str) -> Option<NativePseudoClass> {
         "first-child" => Some(NativePseudoClass::FirstChild),
         "last-child" => Some(NativePseudoClass::LastChild),
         "only-child" => Some(NativePseudoClass::OnlyChild),
+        "first-of-type" => Some(NativePseudoClass::FirstOfType),
+        "last-of-type" => Some(NativePseudoClass::LastOfType),
+        "only-of-type" => Some(NativePseudoClass::OnlyOfType),
         "empty" => Some(NativePseudoClass::Empty),
         "checked" => Some(NativePseudoClass::Checked),
         "disabled" => Some(NativePseudoClass::Disabled),
@@ -25707,6 +25725,9 @@ mod tests {
         let selector = parse_selector("button:first-child:checked").unwrap();
         assert_eq!(selector.specificity, 21);
         assert!(parse_selector(":empty").is_some());
+        assert!(parse_selector("button:first-of-type").is_some());
+        assert!(parse_selector("button:last-of-type").is_some());
+        assert!(parse_selector("button:only-of-type").is_some());
         assert_eq!(
             parse_selector("button:not(.active)").unwrap().specificity,
             11
@@ -25769,6 +25790,10 @@ mod tests {
         assert_eq!(matched_id("#empty:last-child"), Some("empty"));
         assert_eq!(matched_id("#only:only-child"), Some("only"));
         assert_eq!(matched_id("#empty:empty"), Some("empty"));
+        assert_eq!(matched_id("#first:first-of-type"), Some("first"));
+        assert_eq!(matched_id("#empty:last-of-type"), Some("empty"));
+        assert_eq!(matched_id("#middle:only-of-type"), Some("middle"));
+        assert_eq!(matched_id("#only:only-of-type"), Some("only"));
 
         let root_element = document
             .node(document.root())
@@ -26024,6 +26049,31 @@ mod tests {
         assert_eq!(style("plain").color(), Some(NativeColor::BLACK));
         assert_eq!(style("primary").background_color(), Some(NativeColor::RED));
         assert_eq!(style("secondary").background_color(), None);
+    }
+
+    #[test]
+    fn of_type_pseudo_classes_apply_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "div:first-of-type { color: red; } div:last-of-type { background-color: red; } span:only-of-type { color: red; }"
+                .into(),
+        ])
+        .expect("of-type pseudo-class stylesheet");
+        let document = NativeDocument::parse(
+            "<main><div id='first'></div><span id='only'></span><div id='last'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("of-type pseudo-class cascade document");
+
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+        assert_eq!(style("first").color(), Some(NativeColor::RED));
+        assert_eq!(style("only").color(), Some(NativeColor::RED));
+        assert_eq!(style("last").background_color(), Some(NativeColor::RED));
     }
 
     #[test]

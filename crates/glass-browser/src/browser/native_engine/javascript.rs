@@ -18033,6 +18033,58 @@ mod native_selector_tests {
             .expect("user-valid selector must evaluate");
         assert_eq!(valid.value, serde_json::json!(true));
     }
+
+    #[test]
+    fn javascript_form_pseudo_selector_queries_follow_native_state() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("form-selector-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<form id='form'><input id='valid' value='ok'><input id='invalid' required><input id='placeholder' placeholder='Name'><input id='readonly' readonly value='locked'><input id='checked' type='checkbox' checked><div id='editable' contenteditable='true'></div></form>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("form selector document must parse");
+        let valid = document
+            .resolve_target("id=valid")
+            .expect("valid control must resolve");
+        document.apply_script_focus(valid).unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const form = document.querySelector("#form");
+                    const valid = document.querySelector("#valid");
+                    const invalid = document.querySelector("#invalid");
+                    const placeholder = document.querySelector("#placeholder");
+                    const readonly = document.querySelector("#readonly");
+                    const checked = document.querySelector("#checked");
+                    const editable = document.querySelector("#editable");
+                    return [
+                        valid.matches(":valid"),
+                        invalid.matches(":invalid"),
+                        invalid.matches(":required"),
+                        valid.matches(":optional"),
+                        form.matches(":invalid"),
+                        form.matches(":focus-within"),
+                        valid.matches(":focus"),
+                        valid.matches(":focus-visible"),
+                        placeholder.matches(":placeholder-shown"),
+                        readonly.matches(":read-only"),
+                        editable.matches(":read-write"),
+                        checked.matches(":default"),
+                    ];
+                })()"##,
+                &document,
+                "fixture://form-selector.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("form pseudo selectors must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                true, true, true, true, true, true, true, true, true, true, true, true
+            ])
+        );
+    }
 }
 
 #[cfg(test)]
@@ -37913,6 +37965,37 @@ fn document_bootstrap(
   const elementChildren = (element) => element && Array.isArray(element.__glassChildren)
     ? element.__glassChildren.filter((child) => child && child.nodeType === 1)
     : [];
+  const formValidityForSelector = (element) => {{
+    if (!element) return null;
+    if (element.tagName === "FORM") return Boolean(element.validity && element.validity.valid);
+    if (!element.willValidate) return null;
+    return Boolean(element.validity && element.validity.valid);
+  }};
+  const editableForSelector = (element) => {{
+    if (!element) return false;
+    const contentEditable = element.getAttribute("contenteditable");
+    if (contentEditable !== null) {{
+      if (contentEditable === "" || contentEditable.toLowerCase() === "true") return true;
+      if (contentEditable.toLowerCase() === "false") return false;
+    }}
+    if (element.disabled || element.getAttribute("readonly") !== null) return false;
+    if (element.tagName === "TEXTAREA" || element.tagName === "SELECT") return true;
+    if (element.tagName !== "INPUT") return false;
+    const type = String(element.getAttribute("type") || "text").toLowerCase();
+    return !["button", "checkbox", "color", "file", "hidden", "image",
+      "radio", "range", "reset", "submit"].includes(type);
+  }};
+  const placeholderShownForSelector = (element) =>
+    (element.tagName === "INPUT" || element.tagName === "TEXTAREA")
+      && element.getAttribute("placeholder") !== null
+      && String(element.value || "").length === 0;
+  const defaultForSelector = (element) =>
+    ((element.tagName === "INPUT"
+      && ["checkbox", "radio"].includes(String(element.getAttribute("type") || "text").toLowerCase())
+      && element.getAttribute("checked") !== null)
+      || (element.tagName === "OPTION" && element.getAttribute("selected") !== null));
+  const focusedWithinForSelector = (element) =>
+    Boolean(element.focused) || descendantsInTree(element, (candidate) => Boolean(candidate.focused)).length > 0;
   const matchesSimpleSelector = (element, selector, scope = element) => {{
     if (!element || element.nodeType !== 1) return false;
     let rest = String(selector).trim();
@@ -37966,15 +38049,33 @@ fn document_bootstrap(
         else if (name === "selected" && !element.selected) return false;
         else if (name === "disabled" && !element.disabled) return false;
         else if (name === "enabled" && element.disabled) return false;
+        else if (name === "focus" && !element.focused) return false;
+        else if (name === "focus-visible" && !element.focused) return false;
+        else if (name === "focus-within" && !focusedWithinForSelector(element)) return false;
+        else if (name === "valid" && formValidityForSelector(element) !== true) return false;
+        else if (name === "invalid" && formValidityForSelector(element) !== false) return false;
+        else if (name === "required"
+            && (!element.willValidate || element.getAttribute("required") === null)) return false;
+        else if (name === "optional"
+            && (!element.willValidate || element.getAttribute("required") !== null)) return false;
+        else if (name === "read-only" && editableForSelector(element)) return false;
+        else if (name === "read-write" && !editableForSelector(element)) return false;
+        else if (name === "placeholder-shown" && !placeholderShownForSelector(element)) return false;
+        else if (name === "default" && !defaultForSelector(element)) return false;
         else if (name === "user-valid"
-            && (!element.userInteracted || !element.willValidate || !element.validity.valid)) return false;
+            && (!element.userInteracted || formValidityForSelector(element) !== true)) return false;
         else if (name === "user-invalid"
-            && (!element.userInteracted || !element.willValidate || element.validity.valid)) return false;
+            && (!element.userInteracted || formValidityForSelector(element) !== false)) return false;
         else if (name !== "not" && name !== "is" && name !== "where"
             && name !== "only-child" && name !== "nth-child"
             && name !== "scope" && name !== "root"
             && name !== "empty" && name !== "checked" && name !== "selected"
             && name !== "disabled" && name !== "enabled"
+            && name !== "focus" && name !== "focus-visible" && name !== "focus-within"
+            && name !== "valid" && name !== "invalid"
+            && name !== "required" && name !== "optional"
+            && name !== "read-only" && name !== "read-write"
+            && name !== "placeholder-shown" && name !== "default"
             && name !== "user-valid" && name !== "user-invalid") {{
           throw new SyntaxError("unsupported pseudo-class");
         }}

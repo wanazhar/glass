@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-660`, following
+expansion checkpoint is completed `native-engine-browser-661`, following
+completed `native-engine-browser-660`, following completed
 completed `native-engine-browser-659`, following completed
 completed `native-engine-browser-658`, following completed
 `native-engine-browser-657`, following completed
@@ -537,6 +538,13 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 661 aligns page-realm selector matching with native focus, validation,
+required/optional, editability, placeholder, and default-control state.
+`:focus-within` traverses projected descendants and form validity uses native
+validity snapshots; unsupported selector grammar remains fail-closed. Complete
+JavaScript selector grammar, dynamic control-state parity, complete CSS parity,
+and complete Web IDL parity remain explicit issue #40 gates.
 
 Slice 660 adds bounded `:user-valid` and `:user-invalid` matching from
 durable native user-interaction state. Semantic click, typing, clearing,

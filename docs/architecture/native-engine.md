@@ -1,8 +1,9 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-646`, following completed `native-engine-browser-645`,
-following completed `native-engine-browser-644`, following completed
+`native-engine-browser-647`, following completed `native-engine-browser-646`,
+following completed `native-engine-browser-645`, following completed
+`native-engine-browser-644`, following completed
 `native-engine-browser-643`, following completed
 `native-engine-browser-642`, following completed
 `native-engine-browser-641`, following completed
@@ -515,6 +516,15 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 647 adds bounded CSS attribute value case flags. Attribute selectors
+retain explicit `i` ASCII-insensitive and `s` case-sensitive modes across
+exact, whitespace-token, language dash-match, prefix, suffix, and substring
+operators. Matching feeds CSS action locators and stylesheet cascade;
+unseparated or unknown modifiers remain fail-closed. Full selector grammar,
+default enumerated-attribute semantics, namespaces, pseudo-elements, complete
+CSS and Web IDL parity, and broader issue #40 conformance remain explicit
+gates.
 
 Slice 646 adds bounded typed-structure pseudo-classes to the native selector
 matcher: `:first-of-type`, `:last-of-type`, and `:only-of-type` use the

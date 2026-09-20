@@ -13793,11 +13793,19 @@ enum NativeAttributeOperator {
     Substring,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeAttributeCaseSensitivity {
+    Default,
+    Insensitive,
+    Sensitive,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeAttributeSelector {
     name: String,
     operator: NativeAttributeOperator,
     value: Option<String>,
+    case_sensitivity: NativeAttributeCaseSensitivity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14254,46 +14262,108 @@ fn following_sibling_matching_selector(
     }
 }
 
+fn attribute_value_equals(
+    actual: &str,
+    expected: &str,
+    case_sensitivity: NativeAttributeCaseSensitivity,
+) -> bool {
+    match case_sensitivity {
+        NativeAttributeCaseSensitivity::Insensitive => actual.eq_ignore_ascii_case(expected),
+        NativeAttributeCaseSensitivity::Default | NativeAttributeCaseSensitivity::Sensitive => {
+            actual == expected
+        }
+    }
+}
+
+fn attribute_value_starts_with(
+    actual: &str,
+    expected: &str,
+    case_sensitivity: NativeAttributeCaseSensitivity,
+) -> bool {
+    match case_sensitivity {
+        NativeAttributeCaseSensitivity::Insensitive => actual
+            .get(..expected.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(expected)),
+        NativeAttributeCaseSensitivity::Default | NativeAttributeCaseSensitivity::Sensitive => {
+            actual.starts_with(expected)
+        }
+    }
+}
+
+fn attribute_value_ends_with(
+    actual: &str,
+    expected: &str,
+    case_sensitivity: NativeAttributeCaseSensitivity,
+) -> bool {
+    match case_sensitivity {
+        NativeAttributeCaseSensitivity::Insensitive => actual
+            .len()
+            .checked_sub(expected.len())
+            .and_then(|start| actual.get(start..))
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(expected)),
+        NativeAttributeCaseSensitivity::Default | NativeAttributeCaseSensitivity::Sensitive => {
+            actual.ends_with(expected)
+        }
+    }
+}
+
+fn attribute_value_contains(
+    actual: &str,
+    expected: &str,
+    case_sensitivity: NativeAttributeCaseSensitivity,
+) -> bool {
+    match case_sensitivity {
+        NativeAttributeCaseSensitivity::Insensitive => actual.char_indices().any(|(index, _)| {
+            attribute_value_starts_with(&actual[index..], expected, case_sensitivity)
+        }),
+        NativeAttributeCaseSensitivity::Default | NativeAttributeCaseSensitivity::Sensitive => {
+            actual.contains(expected)
+        }
+    }
+}
+
 fn attribute_selector_matches(selector: &NativeAttributeSelector, actual: Option<&str>) -> bool {
+    let case_sensitivity = selector.case_sensitivity;
     match selector.operator {
         NativeAttributeOperator::Exists => actual.is_some(),
         NativeAttributeOperator::Equals => actual.is_some_and(|actual| {
             selector
                 .value
                 .as_deref()
-                .is_some_and(|expected| actual == expected)
+                .is_some_and(|expected| attribute_value_equals(actual, expected, case_sensitivity))
         }),
         NativeAttributeOperator::Includes => actual.is_some_and(|actual| {
             selector.value.as_deref().is_some_and(|expected| {
-                !expected.is_empty() && actual.split_ascii_whitespace().any(|item| item == expected)
+                !expected.is_empty()
+                    && actual
+                        .split_ascii_whitespace()
+                        .any(|item| attribute_value_equals(item, expected, case_sensitivity))
             })
         }),
         NativeAttributeOperator::DashMatch => actual.is_some_and(|actual| {
             selector.value.as_deref().is_some_and(|expected| {
                 !expected.is_empty()
-                    && (actual == expected
-                        || actual
-                            .strip_prefix(expected)
-                            .is_some_and(|suffix| suffix.starts_with('-')))
+                    && (attribute_value_equals(actual, expected, case_sensitivity)
+                        || (attribute_value_starts_with(actual, expected, case_sensitivity)
+                            && actual.as_bytes().get(expected.len()) == Some(&b'-')))
             })
         }),
         NativeAttributeOperator::Prefix => actual.is_some_and(|actual| {
-            selector
-                .value
-                .as_deref()
-                .is_some_and(|expected| !expected.is_empty() && actual.starts_with(expected))
+            selector.value.as_deref().is_some_and(|expected| {
+                !expected.is_empty()
+                    && attribute_value_starts_with(actual, expected, case_sensitivity)
+            })
         }),
         NativeAttributeOperator::Suffix => actual.is_some_and(|actual| {
-            selector
-                .value
-                .as_deref()
-                .is_some_and(|expected| !expected.is_empty() && actual.ends_with(expected))
+            selector.value.as_deref().is_some_and(|expected| {
+                !expected.is_empty()
+                    && attribute_value_ends_with(actual, expected, case_sensitivity)
+            })
         }),
         NativeAttributeOperator::Substring => actual.is_some_and(|actual| {
-            selector
-                .value
-                .as_deref()
-                .is_some_and(|expected| !expected.is_empty() && actual.contains(expected))
+            selector.value.as_deref().is_some_and(|expected| {
+                !expected.is_empty() && attribute_value_contains(actual, expected, case_sensitivity)
+            })
         }),
     }
 }
@@ -24892,11 +24962,12 @@ fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
             b'[' => {
                 let close = source[cursor + 1..].find(']')? + cursor + 1;
                 let content = source[cursor + 1..close].trim();
-                let (name, operator, value) = parse_attribute_selector(content)?;
+                let (name, operator, value, case_sensitivity) = parse_attribute_selector(content)?;
                 selector.attributes.push(NativeAttributeSelector {
                     name,
                     operator,
                     value,
+                    case_sensitivity,
                 });
                 selector.specificity = selector.specificity.saturating_add(10);
                 cursor = close + 1;
@@ -25161,9 +25232,34 @@ fn split_selector_list_with_offsets(source: &str) -> Option<Vec<(usize, &str)>> 
     (selectors.len() <= MAX_SELECTOR_PARTS).then_some(selectors)
 }
 
+fn split_attribute_case_modifier(source: &str) -> (&str, NativeAttributeCaseSensitivity) {
+    let source = source.trim();
+    let Some(separator) = source
+        .char_indices()
+        .rev()
+        .find_map(|(index, character)| character.is_ascii_whitespace().then_some(index))
+    else {
+        return (source, NativeAttributeCaseSensitivity::Default);
+    };
+    let modifier = source[separator..].trim();
+    let case_sensitivity = if modifier.eq_ignore_ascii_case("i") {
+        NativeAttributeCaseSensitivity::Insensitive
+    } else if modifier.eq_ignore_ascii_case("s") {
+        NativeAttributeCaseSensitivity::Sensitive
+    } else {
+        return (source, NativeAttributeCaseSensitivity::Default);
+    };
+    (source[..separator].trim_end(), case_sensitivity)
+}
+
 fn parse_attribute_selector(
     source: &str,
-) -> Option<(String, NativeAttributeOperator, Option<String>)> {
+) -> Option<(
+    String,
+    NativeAttributeOperator,
+    Option<String>,
+    NativeAttributeCaseSensitivity,
+)> {
     let source = source.trim();
     let (name, operator, raw_value) =
         source
@@ -25201,6 +25297,11 @@ fn parse_attribute_selector(
     {
         return None;
     }
+    let (raw_value, case_sensitivity) =
+        raw_value.map_or((None, NativeAttributeCaseSensitivity::Default), |value| {
+            let (value, case_sensitivity) = split_attribute_case_modifier(value);
+            (Some(value), case_sensitivity)
+        });
     let value = match raw_value {
         Some(value)
             if value.len() >= 2
@@ -25228,7 +25329,7 @@ fn parse_attribute_selector(
     {
         return None;
     }
-    Some((name.to_ascii_lowercase(), operator, value))
+    Some((name.to_ascii_lowercase(), operator, value, case_sensitivity))
 }
 
 fn read_identifier(source: &str, start: usize) -> Option<(String, usize)> {
@@ -25559,6 +25660,18 @@ mod tests {
         assert!(parse_selector("[data-prefix^=pre]").is_some());
         assert!(parse_selector("[data-suffix$=suffix]").is_some());
         assert!(parse_selector("[data-text*=middle]").is_some());
+        let insensitive = parse_selector("[data-role='BUTTON' i]").unwrap();
+        assert_eq!(
+            insensitive.compounds[0].attributes[0].case_sensitivity,
+            NativeAttributeCaseSensitivity::Insensitive
+        );
+        let sensitive = parse_selector("[data-role=BUTTON s]").unwrap();
+        assert_eq!(
+            sensitive.compounds[0].attributes[0].case_sensitivity,
+            NativeAttributeCaseSensitivity::Sensitive
+        );
+        assert!(parse_selector("[data-role='BUTTON'i]").is_none());
+        assert!(parse_selector("[data-role='BUTTON' x]").is_none());
         assert!(parse_selector("[data-token~=]").is_none());
         assert!(parse_selector("[data-token?=beta]").is_none());
         assert!(parse_selector("main > button").is_some());
@@ -25608,6 +25721,37 @@ mod tests {
     }
 
     #[test]
+    fn document_selector_matches_attribute_case_flags() {
+        let document = NativeDocument::parse(
+            "<main><div id='mixed' data-eq='MiXeD' data-token='Alpha BETA' data-lang='EN-us' data-prefix='PreFix-value' data-suffix='value-SuFfIx' data-text='middle-VALUE'></div><div id='exact' data-eq='mixed'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("attribute case selector fixture document");
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .map(|node_id| {
+                    document
+                        .node(node_id)
+                        .and_then(|node| node.attribute("id"))
+                        .expect("matched element id")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(matched_ids("[data-eq='mixed' i]"), vec!["mixed", "exact"]);
+        assert_eq!(matched_ids("[data-eq='mixed' s]"), vec!["exact"]);
+        assert_eq!(matched_ids("[data-token~='beta' i]"), vec!["mixed"]);
+        assert_eq!(matched_ids("[data-lang|='en' i]"), vec!["mixed"]);
+        assert_eq!(matched_ids("[data-prefix^='prefix' i]"), vec!["mixed"]);
+        assert_eq!(matched_ids("[data-suffix$='suffix' i]"), vec!["mixed"]);
+        assert_eq!(matched_ids("[data-text*='middle-value' i]"), vec!["mixed"]);
+        assert_eq!(matched_ids("[data-eq='mixed']"), vec!["exact"]);
+    }
+
+    #[test]
     fn attribute_selector_operators_apply_during_style_cascade() {
         let stylesheet = NativeStylesheet::from_sources(vec![
             "[data-token] { color: black; } [data-token~='beta'] { color: red; } [data-lang|='en'] { background-color: red; }"
@@ -25631,6 +25775,32 @@ mod tests {
         assert_eq!(style("primary").background_color(), Some(NativeColor::RED));
         assert_eq!(style("secondary").color(), Some(NativeColor::BLACK));
         assert_eq!(style("secondary").background_color(), None);
+    }
+
+    #[test]
+    fn attribute_selector_case_flags_apply_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "[data-role='button' i] { color: red; } [data-role='button' s] { background-color: red; }"
+                .into(),
+        ])
+        .expect("attribute case selector stylesheet");
+        let document = NativeDocument::parse(
+            "<main><button id='mixed' data-role='BuTtOn'></button><button id='exact' data-role='button'></button></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("attribute case cascade document");
+
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+        assert_eq!(style("mixed").color(), Some(NativeColor::RED));
+        assert_eq!(style("mixed").background_color(), None);
+        assert_eq!(style("exact").color(), Some(NativeColor::RED));
+        assert_eq!(style("exact").background_color(), Some(NativeColor::RED));
     }
 
     #[test]

@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-646`, following
+expansion checkpoint is completed `native-engine-browser-647`, following
+completed `native-engine-browser-646`, following
 completed `native-engine-browser-645`, following
 completed `native-engine-browser-644`, following
 completed `native-engine-browser-643`, following
@@ -523,6 +524,14 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 647 adds bounded CSS attribute value case flags. Exact,
+whitespace-token, language dash-match, prefix, suffix, and substring
+operators now retain explicit `i` ASCII-insensitive and `s` case-sensitive
+modes. Document-aware matching feeds action locators and stylesheet cascade;
+unseparated or unknown modifiers remain fail-closed. Full selector grammar,
+default enumerated-attribute semantics, namespaces, pseudo-elements, complete
+CSS and Web IDL parity remain explicit issue #40 gates.
 
 Slice 646 adds typed sibling position pseudo-classes
 `:first-of-type`, `:last-of-type`, and `:only-of-type`. The existing bounded

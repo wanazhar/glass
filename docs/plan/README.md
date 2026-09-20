@@ -28,8 +28,9 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-654`, following completed `native-engine-browser-653`,
-following completed `native-engine-browser-652`, following completed
+`native-engine-browser-655`, following completed `native-engine-browser-654`,
+following completed `native-engine-browser-653`, following completed
+`native-engine-browser-652`, following completed
 `native-engine-browser-651`, following completed
 `native-engine-browser-650`, following completed
 `native-engine-browser-649`, following completed
@@ -578,6 +579,13 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The current bounded range-state selector checkpoint adds `:in-range` and
+`:out-of-range` for non-empty numeric and temporal input values with valid
+`min`/`max` constraints. Native range validity feeds action selectors and
+stylesheet cascade; unbounded, malformed, empty, disabled, and read-only
+controls remain fail-closed. Full selector grammar, complete CSS parity, and
+complete Web IDL parity remain issue #40 gates.
 
 The current bounded form-state selector checkpoint adds `:focus`,
 `:focus-within`, `:focus-visible`, `:valid`, `:invalid`, `:read-only`,

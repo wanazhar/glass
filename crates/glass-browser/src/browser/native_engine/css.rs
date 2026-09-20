@@ -13889,10 +13889,26 @@ enum NativePseudoClass {
     Is(Vec<NativeSelector>),
     Where(Vec<NativeSelector>),
     Has(Vec<NativeRelativeSelector>),
-    NthChild { a: i32, b: i32 },
-    NthLastChild { a: i32, b: i32 },
-    NthOfType { a: i32, b: i32 },
-    NthLastOfType { a: i32, b: i32 },
+    NthChild {
+        a: i32,
+        b: i32,
+        of: Option<Vec<NativeSelector>>,
+    },
+    NthLastChild {
+        a: i32,
+        b: i32,
+        of: Option<Vec<NativeSelector>>,
+    },
+    NthOfType {
+        a: i32,
+        b: i32,
+        of: Option<Vec<NativeSelector>>,
+    },
+    NthLastOfType {
+        a: i32,
+        b: i32,
+        of: Option<Vec<NativeSelector>>,
+    },
 }
 
 impl NativePseudoClass {
@@ -13973,11 +13989,11 @@ impl NativePseudoClass {
                     _ => false,
                 }
             }
-            Self::FirstOfType => nth_pseudo_matches(document, node_id, 0, 1, false, true),
-            Self::LastOfType => nth_pseudo_matches(document, node_id, 0, 1, true, true),
+            Self::FirstOfType => nth_pseudo_matches(document, node_id, 0, 1, false, true, None),
+            Self::LastOfType => nth_pseudo_matches(document, node_id, 0, 1, true, true, None),
             Self::OnlyOfType => {
-                nth_pseudo_matches(document, node_id, 0, 1, false, true)
-                    && nth_pseudo_matches(document, node_id, 0, 1, true, true)
+                nth_pseudo_matches(document, node_id, 0, 1, false, true, None)
+                    && nth_pseudo_matches(document, node_id, 0, 1, true, true, None)
             }
             Self::Not(selectors) => selectors
                 .iter()
@@ -13990,13 +14006,17 @@ impl NativePseudoClass {
             Self::Has(selectors) => selectors
                 .iter()
                 .any(|relative| relative_selector_matches(document, node_id, relative)),
-            Self::NthChild { a, b } => nth_pseudo_matches(document, node_id, *a, *b, false, false),
-            Self::NthLastChild { a, b } => {
-                nth_pseudo_matches(document, node_id, *a, *b, true, false)
+            Self::NthChild { a, b, of } => {
+                nth_pseudo_matches(document, node_id, *a, *b, false, false, of.as_deref())
             }
-            Self::NthOfType { a, b } => nth_pseudo_matches(document, node_id, *a, *b, false, true),
-            Self::NthLastOfType { a, b } => {
-                nth_pseudo_matches(document, node_id, *a, *b, true, true)
+            Self::NthLastChild { a, b, of } => {
+                nth_pseudo_matches(document, node_id, *a, *b, true, false, of.as_deref())
+            }
+            Self::NthOfType { a, b, of } => {
+                nth_pseudo_matches(document, node_id, *a, *b, false, true, of.as_deref())
+            }
+            Self::NthLastOfType { a, b, of } => {
+                nth_pseudo_matches(document, node_id, *a, *b, true, true, of.as_deref())
             }
             _ => self.matches_local(node),
         }
@@ -14192,6 +14212,7 @@ fn nth_pseudo_matches(
     b: i32,
     from_end: bool,
     of_type: bool,
+    of_selectors: Option<&[NativeSelector]>,
 ) -> bool {
     let Some(node) = document.node(node_id) else {
         return false;
@@ -14206,6 +14227,11 @@ fn nth_pseudo_matches(
         document.node(*candidate_id).is_some_and(|candidate| {
             candidate.element_name().is_some()
                 && (!of_type || candidate.element_name() == Some(node_name))
+                && of_selectors.is_none_or(|selectors| {
+                    selectors
+                        .iter()
+                        .any(|selector| selector.matches_in_document(document, *candidate_id))
+                })
         })
     });
     let position = if from_end {
@@ -25332,15 +25358,44 @@ fn parse_functional_pseudo_class(
         name.as_str(),
         "nth-child" | "nth-last-child" | "nth-of-type" | "nth-last-of-type"
     ) {
-        let (a, b) = parse_nth_formula(argument)?;
+        let (formula, of_source) = split_nth_of_clause(argument)?;
+        let (a, b) = parse_nth_formula(formula)?;
+        let of_selectors = match of_source {
+            Some(source) => {
+                if matches!(name.as_str(), "nth-of-type" | "nth-last-of-type") {
+                    return None;
+                }
+                Some(
+                    split_selector_list(source)?
+                        .into_iter()
+                        .map(|selector| parse_selector_with_namespaces(selector, namespaces))
+                        .collect::<Option<Vec<_>>>()?,
+                )
+            }
+            None => None,
+        };
+        let specificity = 10u16.saturating_add(
+            of_selectors
+                .as_ref()
+                .and_then(|selectors| selectors.iter().map(|selector| selector.specificity).max())
+                .unwrap_or_default(),
+        );
         let pseudo = match name.as_str() {
-            "nth-child" => NativePseudoClass::NthChild { a, b },
-            "nth-last-child" => NativePseudoClass::NthLastChild { a, b },
-            "nth-of-type" => NativePseudoClass::NthOfType { a, b },
-            "nth-last-of-type" => NativePseudoClass::NthLastOfType { a, b },
+            "nth-child" => NativePseudoClass::NthChild {
+                a,
+                b,
+                of: of_selectors,
+            },
+            "nth-last-child" => NativePseudoClass::NthLastChild {
+                a,
+                b,
+                of: of_selectors,
+            },
+            "nth-of-type" => NativePseudoClass::NthOfType { a, b, of: None },
+            "nth-last-of-type" => NativePseudoClass::NthLastOfType { a, b, of: None },
             _ => return None,
         };
-        return Some((pseudo, 10));
+        return Some((pseudo, specificity));
     }
     if name == "lang" {
         return Some((NativePseudoClass::Lang(parse_language_range(argument)?), 10));
@@ -25409,6 +25464,52 @@ fn parse_language_range(argument: &str) -> Option<String> {
         return None;
     }
     Some(range)
+}
+
+fn split_nth_of_clause(source: &str) -> Option<(&str, Option<&str>)> {
+    let bytes = source.as_bytes();
+    let mut bracket_depth = 0usize;
+    let mut parentheses = 0usize;
+    let mut quote = None;
+    for cursor in 0..bytes.len() {
+        let byte = bytes[cursor];
+        if let Some(delimiter) = quote {
+            if byte == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if bracket_depth == 0
+            && parentheses == 0
+            && cursor + 1 < bytes.len()
+            && bytes[cursor..cursor + 2].eq_ignore_ascii_case(b"of")
+            && (cursor == 0 || bytes[cursor - 1].is_ascii_whitespace())
+            && (cursor + 2 == bytes.len() || bytes[cursor + 2].is_ascii_whitespace())
+        {
+            let formula = source[..cursor].trim();
+            let selector_source = source[cursor + 2..].trim();
+            if formula.is_empty() || selector_source.is_empty() {
+                return None;
+            }
+            return Some((formula, Some(selector_source)));
+        }
+        match byte {
+            b'\'' | b'"' if bracket_depth > 0 => quote = Some(byte),
+            b'[' => bracket_depth = bracket_depth.saturating_add(1),
+            b']' => {
+                if bracket_depth == 0 {
+                    return None;
+                }
+                bracket_depth -= 1;
+            }
+            b'(' if bracket_depth == 0 => parentheses = parentheses.saturating_add(1),
+            b')' if bracket_depth == 0 => {
+                parentheses = parentheses.checked_sub(1)?;
+            }
+            _ => {}
+        }
+    }
+    (bracket_depth == 0 && parentheses == 0 && quote.is_none()).then_some((source.trim(), None))
 }
 
 fn parse_nth_formula(argument: &str) -> Option<(i32, i32)> {
@@ -26567,7 +26668,21 @@ mod tests {
         );
         assert!(parse_selector("button:nth-child(odd)").is_some());
         assert!(parse_selector("button:nth-child(2n+)").is_none());
-        assert!(parse_selector("button:nth-child(2 of .item)").is_none());
+        assert_eq!(
+            parse_selector("button:nth-child(2 of .item)")
+                .unwrap()
+                .specificity,
+            21
+        );
+        assert_eq!(
+            parse_selector("button:nth-child(2 of .item, #primary)")
+                .unwrap()
+                .specificity,
+            111
+        );
+        assert!(parse_selector("button:nth-of-type(2 of .item)").is_none());
+        assert!(parse_selector("button:nth-child(2 of)").is_none());
+        assert!(parse_selector("button:nth-child(2 of [data-label='of'])").is_some());
         assert_eq!(
             parse_selector("button:has(.child)").unwrap().specificity,
             11
@@ -26795,7 +26910,7 @@ mod tests {
     #[test]
     fn document_selector_matches_bounded_nth_pseudo_classes() {
         let document = NativeDocument::parse(
-            "<ul id='items'><li id='one'></li><li id='two'></li><span id='marker'></span><li id='three'></li><li id='four'></li></ul>",
+            "<ul id='items'><li id='one' data-kind='pick'></li><li id='two'></li><span id='marker'></span><li id='three' data-kind='pick'></li><li id='four' data-kind='pick'></li></ul>",
             &NativeEngineLimits::default(),
         )
         .expect("nth pseudo-class fixture document");
@@ -26820,17 +26935,27 @@ mod tests {
         assert_eq!(matched_ids("li:nth-of-type(2)"), vec!["two"]);
         assert_eq!(matched_ids("li:nth-last-of-type(1)"), vec!["four"]);
         assert_eq!(matched_ids("li:nth-of-type(odd)"), vec!["one", "three"]);
+        assert_eq!(matched_ids("li:nth-child(2 of li)"), vec!["two"]);
+        assert_eq!(matched_ids("li:nth-last-child(1 of li)"), vec!["four"]);
+        assert_eq!(
+            matched_ids("li:nth-child(2 of li:not(#two))"),
+            vec!["three"]
+        );
+        assert_eq!(
+            matched_ids("li:nth-child(2 of [data-kind=pick])"),
+            vec!["three"]
+        );
     }
 
     #[test]
     fn nth_pseudo_classes_apply_during_style_cascade() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "li { color: black; } li:nth-child(2n+1) { color: red; } li:nth-last-of-type(1) { background-color: red; }"
+            "li { color: black; } li:nth-child(2n+1) { color: red; } li:nth-child(2 of li[data-kind=pick]) { color: blue; } li:nth-child(2 of li) { background-color: red; } li:nth-last-of-type(1) { background-color: red; }"
                 .into(),
         ])
         .expect("nth pseudo-class stylesheet");
         let document = NativeDocument::parse(
-            "<ul><li id='one'></li><li id='two'></li><span></span><li id='three'></li><li id='four'></li></ul>",
+            "<ul><li id='one' data-kind='pick'></li><li id='two'></li><span></span><li id='three' data-kind='pick'></li><li id='four' data-kind='pick'></li></ul>",
             &NativeEngineLimits::default(),
         )
         .expect("nth pseudo-class cascade document");
@@ -26846,6 +26971,16 @@ mod tests {
         assert_eq!(style("two").color(), Some(NativeColor::BLACK));
         assert_eq!(style("four").color(), Some(NativeColor::RED));
         assert_eq!(style("four").background_color(), Some(NativeColor::RED));
+        assert_eq!(style("two").background_color(), Some(NativeColor::RED));
+        assert_eq!(
+            style("three").color(),
+            Some(NativeColor {
+                red: 0,
+                green: 0,
+                blue: u8::MAX,
+                alpha: u8::MAX,
+            })
+        );
         assert_eq!(style("three").background_color(), None);
     }
 

@@ -18422,6 +18422,57 @@ mod native_selector_tests {
             serde_json::json!([true, true, true, true, true, true, true, true])
         );
     }
+    #[test]
+    fn javascript_attribute_selectors_honor_namespaces_and_case_modifiers() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("attribute-selector-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<main><div id='exact' data-label='MiXeD'></div><svg id='icon'><use id='use'></use></svg></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("attribute selector document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const exact = document.querySelector("#exact");
+                    const use = document.querySelector("#use");
+                    use.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", "#one");
+                    let modifierError = false;
+                    let namespaceError = false;
+                    try {
+                        document.querySelectorAll("[data-label='mixed' q]");
+                    } catch (error) {
+                        modifierError = error instanceof SyntaxError;
+                    }
+                    try {
+                        document.querySelectorAll("[unknown|href]");
+                    } catch (error) {
+                        namespaceError = error instanceof SyntaxError;
+                    }
+                    return [
+                        exact.matches("[data-label='mixed' i]"),
+                        !exact.matches("[data-label='mixed' s]"),
+                        exact.matches("[data-label='MiXeD' s]"),
+                        document.querySelectorAll("[data-label='mixed' i]").length === 1,
+                        use.matches("[xlink|href='#one']"),
+                        use.matches("[*|href='#one']"),
+                        !use.matches("[|href='#one']"),
+                        !use.matches("[href='#one']"),
+                        modifierError,
+                        namespaceError,
+                    ];
+                })()"##,
+                &document,
+                "fixture://attribute-selector.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("attribute selectors must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true, true, true, true, true, true, true])
+        );
+    }
 }
 
 #[cfg(test)]
@@ -38269,26 +38320,73 @@ fn document_bootstrap(
     }}
     return tokens;
   }};
+  const attributeNamespaceForSelectorPrefix = (prefix) => {{
+    switch (String(prefix).toLowerCase()) {{
+      case "html": return HTML_NAMESPACE;
+      case "svg": return SVG_NAMESPACE;
+      case "math": return MATHML_NAMESPACE;
+      case "xml": return XML_NAMESPACE;
+      case "xmlns": return XMLNS_NAMESPACE;
+      case "xlink": return XLINK_NAMESPACE;
+      default: throw new SyntaxError("unsupported attribute namespace");
+    }}
+  }};
   const selectorAttribute = (element, expression) => {{
     const match = String(expression).trim().match(
-      /^([^\s~|^$*!=]+)\s*(?:(!=|[~|^$*]?=)\s*(.*?)\s*)?$/
+      /^((?:(?:\*|[^\s~|^$!=]+)?\|(?:\*|[^\s~|^$!=]+)|[^\s~|^$!=]+))\s*(?:(!=|[~|^$*]?=)\s*(.*?)\s*)?$/
     );
     if (!match) throw new SyntaxError("invalid attribute selector");
-    const name = match[1];
+    const qualifiedName = match[1];
     const operator = match[2] || null;
-    let expected = match[3] === undefined ? null : match[3].trim();
-    let insensitive = false;
-    if (expected && /\s+i$/i.test(expected)) {{
-      expected = expected.replace(/\s+i$/i, "").trim();
-      insensitive = true;
+    let expected = match[3] === undefined ? "" : match[3].trim();
+    let caseMode = null;
+    const modifier = expected.match(/\s+([A-Za-z]+)$/);
+    if (modifier) {{
+      const value = modifier[1].toLowerCase();
+      if (value !== "i" && value !== "s") throw new SyntaxError("invalid attribute selector");
+      caseMode = value;
+      expected = expected.slice(0, modifier.index).trim();
     }}
     if (expected && ((expected.startsWith('"') && expected.endsWith('"'))
         || (expected.startsWith("'") && expected.endsWith("'")))) {{
       expected = expected.slice(1, -1);
     }}
-    const actual = element.getAttribute(name);
+    const separator = qualifiedName.indexOf("|");
+    let localName = qualifiedName;
+    let namespaceMode = "name";
+    let namespaceURI = null;
+    if (separator >= 0) {{
+      const prefix = qualifiedName.slice(0, separator);
+      localName = qualifiedName.slice(separator + 1);
+      if (!localName) throw new SyntaxError("invalid attribute selector");
+      if (prefix === "*") namespaceMode = "any";
+      else namespaceURI = prefix
+        ? attributeNamespaceForSelectorPrefix(prefix)
+        : null;
+      if (!prefix) namespaceMode = "exact";
+    }} else if (qualifiedName.includes("*")) {{
+      throw new SyntaxError("invalid attribute selector");
+    }}
+    const qualifiedLookup = qualifiedName.toLowerCase();
+    const localLookup = localName.toLowerCase();
+    const attributeNames = typeof element.getAttributeNames === "function"
+      ? element.getAttributeNames()
+      : Object.keys(element.attributes || {{}});
+    const candidate = attributeNames.find((attributeName) => {{
+      const candidateNamespace = typeof element.__glassAttributeNamespace === "function"
+        ? element.__glassAttributeNamespace(attributeName)
+        : null;
+      if (separator < 0) return attributeName.toLowerCase() === qualifiedLookup;
+      const candidateLocal = attributeName.includes(":")
+        ? attributeName.slice(attributeName.indexOf(":") + 1)
+        : attributeName;
+      if (candidateLocal.toLowerCase() !== localLookup) return false;
+      return namespaceMode === "any" || candidateNamespace === namespaceURI;
+    }});
+    const actual = candidate === undefined ? null : element.getAttribute(candidate);
     if (!operator) return actual !== null;
     if (actual === null) return operator === "!=";
+    const insensitive = caseMode === "i";
     const left = insensitive ? actual.toLowerCase() : actual;
     const right = insensitive ? expected.toLowerCase() : expected;
     switch (operator) {{

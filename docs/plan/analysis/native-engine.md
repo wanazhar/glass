@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-669`, following
-completed `native-engine-browser-668`, following completed
+expansion checkpoint is completed `native-engine-browser-670`, following
+completed `native-engine-browser-669`, following completed
+`native-engine-browser-668`, following completed
 `native-engine-browser-667`, following completed
 `native-engine-browser-666`, following completed
 `native-engine-browser-665`, following completed
@@ -545,6 +546,12 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 670 supports qualified JavaScript attribute-selector namespace names,
+wildcard/no-namespace matching, and explicit `i` and `s` value modifiers.
+Invalid namespace prefixes and modifiers fail closed; default
+enumerated-attribute semantics, complete selector grammar, complete CSS
+parity, and complete Web IDL parity remain explicit issue #40 gates.
 
 Slice 669 implements filtered `:nth-child()` and `:nth-last-child()`
 sibling positions, including selector lists and fail-closed malformed `of`

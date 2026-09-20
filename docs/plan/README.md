@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-670`, following completed `native-engine-browser-669`,
+`native-engine-browser-671`, following completed `native-engine-browser-670`,
+following completed `native-engine-browser-669`,
 following completed `native-engine-browser-668`,
 following completed `native-engine-browser-667`,
 following completed `native-engine-browser-666`,
@@ -594,6 +595,12 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The current bounded JavaScript nested-functional-selector checkpoint parses
+balanced nested pseudo-class arguments and preserves nested `:is()`, `:where()`,
+`:not()`, and `:has()` semantics. Unclosed functional selectors fail with
+`SyntaxError`; complete JavaScript selector grammar, complete CSS parity, and
+complete Web IDL parity remain issue #40 gates.
 
 The current bounded JavaScript attribute-selector checkpoint supports
 qualified namespace names, wildcard/no-namespace matching, and explicit `i`

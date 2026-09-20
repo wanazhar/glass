@@ -1,7 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-670`, following completed `native-engine-browser-669`,
+`native-engine-browser-671`, following completed `native-engine-browser-670`,
+following completed `native-engine-browser-669`,
 following completed `native-engine-browser-668`,
 following completed `native-engine-browser-667`,
 following completed `native-engine-browser-666`,
@@ -539,6 +540,12 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 671 parses balanced nested JavaScript pseudo-class arguments and
+preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.
+Unclosed functional selectors fail with `SyntaxError`; complete JavaScript
+selector grammar, complete CSS parity, and complete Web IDL parity remain
+explicit issue #40 gates.
 
 Slice 670 supports qualified JavaScript attribute-selector namespace names,
 wildcard/no-namespace matching, and explicit `i` and `s` value modifiers.

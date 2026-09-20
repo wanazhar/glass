@@ -1,8 +1,9 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-654`, following completed `native-engine-browser-653`,
-following completed `native-engine-browser-652`, following completed
+`native-engine-browser-655`, following completed `native-engine-browser-654`,
+following completed `native-engine-browser-653`, following completed
+`native-engine-browser-652`, following completed
 `native-engine-browser-651`, following completed
 `native-engine-browser-650`, following completed
 `native-engine-browser-649`, following completed
@@ -523,6 +524,13 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 655 adds bounded `:in-range` and `:out-of-range` matching for
+non-empty numeric and temporal input values with valid `min`/`max` constraints.
+Native range validity feeds CSS action selectors and stylesheet cascade;
+unbounded, malformed, empty, disabled, and read-only controls remain
+fail-closed. Full selector grammar, complete CSS and Web IDL parity, and
+broader issue #40 conformance remain explicit gates.
 
 Slice 654 adds bounded interaction and form-state pseudo-classes:
 `:focus`, `:focus-within`, `:focus-visible`, `:valid`, `:invalid`,

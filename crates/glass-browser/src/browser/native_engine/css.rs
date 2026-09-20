@@ -13894,6 +13894,8 @@ enum NativePseudoClass {
     ReadWrite,
     PlaceholderShown,
     Default,
+    InRange,
+    OutOfRange,
     Not(Vec<NativeSelector>),
     Is(Vec<NativeSelector>),
     Where(Vec<NativeSelector>),
@@ -13952,6 +13954,8 @@ impl NativePseudoClass {
             | Self::ReadWrite
             | Self::PlaceholderShown
             | Self::Default
+            | Self::InRange
+            | Self::OutOfRange
             | Self::Has(_)
             | Self::NthChild { .. }
             | Self::NthLastChild { .. }
@@ -14039,6 +14043,12 @@ impl NativePseudoClass {
                 .is_some_and(|read_write| read_write),
             Self::PlaceholderShown => document.css_placeholder_shown(node_id),
             Self::Default => document.css_default(node_id),
+            Self::InRange => document
+                .css_range_validity(node_id)
+                .is_some_and(|in_range| in_range),
+            Self::OutOfRange => document
+                .css_range_validity(node_id)
+                .is_some_and(|in_range| !in_range),
             Self::NthLastChild { a, b, of } => {
                 nth_pseudo_matches(document, node_id, *a, *b, true, false, of.as_deref())
             }
@@ -25378,6 +25388,8 @@ fn parse_pseudo_class(source: &str) -> Option<NativePseudoClass> {
         "read-write" => Some(NativePseudoClass::ReadWrite),
         "placeholder-shown" => Some(NativePseudoClass::PlaceholderShown),
         "default" => Some(NativePseudoClass::Default),
+        "in-range" => Some(NativePseudoClass::InRange),
+        "out-of-range" => Some(NativePseudoClass::OutOfRange),
         "link" => Some(NativePseudoClass::Link),
         "any-link" => Some(NativePseudoClass::AnyLink),
         _ => None,
@@ -26752,6 +26764,8 @@ mod tests {
             "input:read-write",
             "input:placeholder-shown",
             "input:default",
+            "input:in-range",
+            "input:out-of-range",
         ] {
             assert_eq!(parse_selector(source).unwrap().specificity, 11);
         }
@@ -26808,7 +26822,7 @@ mod tests {
     #[test]
     fn document_selector_matches_bounded_form_pseudo_classes() {
         let mut document = NativeDocument::parse(
-            "<form id='form'><input id='valid' value='ok'><input id='invalid' required placeholder='Required'><input id='focused' placeholder='Name'><input id='readonly' readonly value='locked'><input id='placeholder' placeholder='Name'><input id='checked' type='checkbox' checked><select id='select'><option id='default-option' selected>Choice</option></select><div id='editable' contenteditable='true'></div><div id='plain'></div></form>",
+            "<form id='form'><input id='valid' value='ok'><input id='invalid' required placeholder='Required'><input id='focused' placeholder='Name'><input id='readonly' readonly value='locked'><input id='placeholder' placeholder='Name'><input id='checked' type='checkbox' checked><input id='low' type='number' value='2' min='3'><input id='mid' type='number' value='5' min='3' max='7'><input id='high' type='number' value='9' min='3' max='7'><input id='unbounded' type='number' value='5'><select id='select'><option id='default-option' selected>Choice</option></select><div id='editable' contenteditable='true'></div><div id='plain'></div></form>",
             &NativeEngineLimits::default(),
         )
         .expect("form pseudo-class fixture document");
@@ -26839,6 +26853,10 @@ mod tests {
             matched_ids("#default-option:default"),
             vec!["default-option"]
         );
+        assert_eq!(matched_ids("#mid:in-range"), vec!["mid"]);
+        assert_eq!(matched_ids("#low:out-of-range"), vec!["low"]);
+        assert_eq!(matched_ids("#high:out-of-range"), vec!["high"]);
+        assert!(matched_ids("#unbounded:in-range").is_empty());
         assert_eq!(matched_ids("#editable:read-write"), vec!["editable"]);
         assert_eq!(matched_ids("#plain:read-only"), vec!["plain"]);
     }
@@ -26846,12 +26864,12 @@ mod tests {
     #[test]
     fn form_pseudo_classes_apply_during_style_cascade() {
         let stylesheet = NativeStylesheet::from_sources(vec![
-            "input:valid { color: black; } input:invalid { color: red; } input:focus { color: red; } form:focus-within { background-color: red; } input:read-only { background-color: black; } input:placeholder-shown { background-color: red; } input:default { color: red; } option:default { color: black; }"
+            "input:valid { color: black; } input:invalid { color: red; } input:focus { color: red; } form:focus-within { background-color: red; } input:read-only { background-color: black; } input:placeholder-shown { background-color: red; } input:in-range { background-color: black; } input:out-of-range { background-color: red; } input:default { color: red; } option:default { color: black; }"
                 .into(),
         ])
         .expect("form pseudo-class stylesheet");
         let mut document = NativeDocument::parse(
-            "<form id='form'><input id='valid' value='ok'><input id='invalid' required><input id='focused'><input id='readonly' readonly value='locked'><input id='placeholder' placeholder='Name'><input id='checked' type='checkbox' checked><select><option id='default-option' selected>Choice</option></select></form>",
+            "<form id='form'><input id='valid' value='ok'><input id='invalid' required><input id='focused'><input id='readonly' readonly value='locked'><input id='placeholder' placeholder='Name'><input id='checked' type='checkbox' checked><input id='low' type='number' value='2' min='3'><input id='mid' type='number' value='5' min='3' max='7'><input id='high' type='number' value='9' min='3' max='7'><select><option id='default-option' selected>Choice</option></select></form>",
             &NativeEngineLimits::default(),
         )
         .expect("form pseudo-class cascade document");
@@ -26877,6 +26895,9 @@ mod tests {
             style("placeholder").background_color(),
             Some(NativeColor::RED)
         );
+        assert_eq!(style("mid").background_color(), Some(NativeColor::BLACK));
+        assert_eq!(style("low").background_color(), Some(NativeColor::RED));
+        assert_eq!(style("high").background_color(), Some(NativeColor::RED));
         assert_eq!(style("checked").color(), Some(NativeColor::RED));
         assert_eq!(style("default-option").color(), Some(NativeColor::BLACK));
     }

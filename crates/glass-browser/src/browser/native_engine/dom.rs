@@ -7366,6 +7366,60 @@ impl NativeDocument {
         }
         Some(self.control_validity(id).0.valid)
     }
+    pub(crate) fn css_range_validity(&self, id: NativeNodeId) -> Option<bool> {
+        let node = self.node(id)?;
+        if node.element_name() != Some("input") {
+            return None;
+        }
+        let input_type = node
+            .attribute("type")
+            .unwrap_or("text")
+            .to_ascii_lowercase();
+        let has_valid_constraint = match input_type.as_str() {
+            "number" | "range" => node.attributes().is_some_and(|attributes| {
+                attributes
+                    .get("min")
+                    .is_some_and(|value| value.parse::<f64>().ok().is_some_and(f64::is_finite))
+                    || attributes
+                        .get("max")
+                        .is_some_and(|value| value.parse::<f64>().ok().is_some_and(f64::is_finite))
+            }),
+            "date" => node.attributes().is_some_and(|attributes| {
+                attributes.get("min").is_some_and(|value| {
+                    parse_temporal_value(value, TemporalInputKind::Date).is_some()
+                }) || attributes.get("max").is_some_and(|value| {
+                    parse_temporal_value(value, TemporalInputKind::Date).is_some()
+                })
+            }),
+            "month" => node.attributes().is_some_and(|attributes| {
+                attributes.get("min").is_some_and(|value| {
+                    parse_temporal_value(value, TemporalInputKind::Month).is_some()
+                }) || attributes.get("max").is_some_and(|value| {
+                    parse_temporal_value(value, TemporalInputKind::Month).is_some()
+                })
+            }),
+            "time" => node.attributes().is_some_and(|attributes| {
+                attributes.get("min").is_some_and(|value| {
+                    parse_temporal_value(value, TemporalInputKind::Time).is_some()
+                }) || attributes.get("max").is_some_and(|value| {
+                    parse_temporal_value(value, TemporalInputKind::Time).is_some()
+                })
+            }),
+            "datetime-local" => node.attributes().is_some_and(|attributes| {
+                attributes.get("min").is_some_and(|value| {
+                    parse_temporal_value(value, TemporalInputKind::DateTimeLocal).is_some()
+                }) || attributes.get("max").is_some_and(|value| {
+                    parse_temporal_value(value, TemporalInputKind::DateTimeLocal).is_some()
+                })
+            }),
+            _ => false,
+        };
+        if !has_valid_constraint || self.current_value(id).is_none_or(|value| value.is_empty()) {
+            return None;
+        }
+        let (validity, will_validate, _) = self.control_validity(id);
+        will_validate.then_some(!validity.range_underflow && !validity.range_overflow)
+    }
 
     pub(crate) fn css_read_only(&self, id: NativeNodeId) -> Option<bool> {
         self.node(id)?.element_name()?;

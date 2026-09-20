@@ -1,8 +1,9 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-649`, following completed `native-engine-browser-648`,
-following completed `native-engine-browser-647`, following completed
+`native-engine-browser-650`, following completed `native-engine-browser-649`,
+following completed `native-engine-browser-648`, following completed
+`native-engine-browser-647`, following completed
 `native-engine-browser-646`, following completed
 `native-engine-browser-645`, following completed
 `native-engine-browser-644`, following completed
@@ -518,6 +519,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 650 adds bounded `@namespace` declaration composition. Supported
+HTML, SVG, MathML, XML, XMLNS, and XLink URI constants bind named or default
+prefixes for stylesheet type and attribute selectors, including nested
+functional selectors; unknown URIs, prefixes, and malformed forms remain
+diagnostic and fail-closed. Full namespace grammar, selector caching, complete
+CSS and Web IDL parity, and broader issue #40 conformance remain explicit
+gates.
 
 Slice 649 adds bounded namespace-qualified attribute selectors. The matcher
 retains HTML, SVG, MathML, XML, XMLNS, and XLink namespace metadata for

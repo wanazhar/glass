@@ -13792,6 +13792,9 @@ enum NativeSelectorNamespace {
     Html,
     Svg,
     MathMl,
+    Xml,
+    Xmlns,
+    Xlink,
 }
 
 impl NativeSelectorNamespace {
@@ -13802,6 +13805,9 @@ impl NativeSelectorNamespace {
             Self::Html => namespace_uri == Some(HTML_NAMESPACE_URI),
             Self::Svg => namespace_uri == Some(SVG_NAMESPACE_URI),
             Self::MathMl => namespace_uri == Some(MATHML_NAMESPACE_URI),
+            Self::Xml => namespace_uri == Some(XML_NAMESPACE_URI),
+            Self::Xmlns => namespace_uri == Some(XMLNS_NAMESPACE_URI),
+            Self::Xlink => namespace_uri == Some(XLINK_NAMESPACE_URI),
         }
     }
 }
@@ -14510,6 +14516,7 @@ fn parse_source(
         background_image_sources,
         font_face_rules,
         palette_values,
+        namespaces: BTreeMap::new(),
     };
     parse_source_block(&mut context, 0, end, None, None, None)
 }
@@ -14524,6 +14531,7 @@ struct NativeCssParseContext<'a> {
     background_image_sources: &'a mut BTreeMap<u32, String>,
     font_face_rules: &'a mut Vec<NativeFontFaceRule>,
     palette_values: &'a mut Vec<NativeFontPaletteValuesRule>,
+    namespaces: BTreeMap<String, NativeSelectorNamespace>,
 }
 
 fn parse_source_block(
@@ -14567,6 +14575,21 @@ fn parse_source_block(
                     cursor,
                     "layer-statement",
                 );
+                cursor = semicolon + 1;
+                continue;
+            }
+            if let Some(namespace) = parse_namespace_statement(&context.source[cursor..semicolon]) {
+                match namespace {
+                    Ok((prefix, namespace)) => {
+                        context.namespaces.insert(prefix, namespace);
+                    }
+                    Err(detail) => context.diagnostics.push(
+                        NativeDiagnosticCode::UnsupportedCssValue,
+                        context.diagnostic_source,
+                        cursor,
+                        detail,
+                    ),
+                }
                 cursor = semicolon + 1;
                 continue;
             }
@@ -14682,6 +14705,81 @@ fn parse_source_block(
         cursor = close + 1;
     }
     Ok(())
+}
+
+fn parse_namespace_statement(
+    source: &str,
+) -> Option<Result<(String, NativeSelectorNamespace), &'static str>> {
+    let source = source.trim();
+    const KEYWORD: &str = "@namespace";
+    if source.len() <= KEYWORD.len()
+        || !source.as_bytes()[..KEYWORD.len()].eq_ignore_ascii_case(KEYWORD.as_bytes())
+        || !source.as_bytes()[KEYWORD.len()].is_ascii_whitespace()
+    {
+        return None;
+    }
+    let remainder = source[KEYWORD.len()..].trim();
+    let (prefix, uri_source) = if remainder
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| *byte == b'\'' || *byte == b'"')
+        || remainder.len() >= 4 && remainder.as_bytes()[..4].eq_ignore_ascii_case(b"url(")
+    {
+        (String::new(), remainder)
+    } else {
+        let Some((prefix, next)) = read_identifier(remainder, 0) else {
+            return Some(Err("namespace-prefix"));
+        };
+        if !remainder
+            .as_bytes()
+            .get(next)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            return Some(Err("namespace-prefix"));
+        }
+        (prefix.to_ascii_lowercase(), remainder[next..].trim())
+    };
+    let Some(uri) = parse_namespace_uri(uri_source) else {
+        return Some(Err("namespace-uri"));
+    };
+    let Some(namespace) = selector_namespace_for_uri(uri) else {
+        return Some(Err("namespace-uri"));
+    };
+    Some(Ok((prefix, namespace)))
+}
+
+fn parse_namespace_uri(source: &str) -> Option<&str> {
+    let source = source.trim();
+    let value = if source.len() >= 4
+        && source.as_bytes()[..4].eq_ignore_ascii_case(b"url(")
+        && source.ends_with(')')
+    {
+        source[4..source.len().saturating_sub(1)].trim()
+    } else {
+        source
+    };
+    if value.len() >= 2
+        && matches!(
+            (value.as_bytes().first(), value.as_bytes().last()),
+            (Some(b'\''), Some(b'\'')) | (Some(b'"'), Some(b'"'))
+        )
+    {
+        return (!value[1..value.len().saturating_sub(1)].is_empty())
+            .then_some(&value[1..value.len().saturating_sub(1)]);
+    }
+    (!value.is_empty() && !value.chars().any(char::is_whitespace)).then_some(value)
+}
+
+fn selector_namespace_for_uri(source: &str) -> Option<NativeSelectorNamespace> {
+    match source {
+        HTML_NAMESPACE_URI => Some(NativeSelectorNamespace::Html),
+        SVG_NAMESPACE_URI => Some(NativeSelectorNamespace::Svg),
+        MATHML_NAMESPACE_URI => Some(NativeSelectorNamespace::MathMl),
+        XML_NAMESPACE_URI => Some(NativeSelectorNamespace::Xml),
+        XMLNS_NAMESPACE_URI => Some(NativeSelectorNamespace::Xmlns),
+        XLINK_NAMESPACE_URI => Some(NativeSelectorNamespace::Xlink),
+        _ => None,
+    }
 }
 
 fn parse_media_header(source: &str) -> Option<&str> {
@@ -15205,7 +15303,8 @@ fn parse_style_rule(
     let selector_parts = split_selector_list_with_offsets(selector_source)
         .unwrap_or_else(|| vec![(0, selector_source)]);
     for (selector_relative_offset, selector_text) in selector_parts {
-        let Some(mut selector) = parse_selector(selector_text) else {
+        let Some(mut selector) = parse_selector_with_namespaces(selector_text, &context.namespaces)
+        else {
             context.diagnostics.push(
                 NativeDiagnosticCode::UnsupportedCssSelector,
                 context.diagnostic_source,
@@ -24881,6 +24980,13 @@ pub(crate) fn selector_matches_in_document(
 }
 
 fn parse_selector(source: &str) -> Option<NativeSelector> {
+    parse_selector_with_namespaces(source, &BTreeMap::new())
+}
+
+fn parse_selector_with_namespaces(
+    source: &str,
+    namespaces: &BTreeMap<String, NativeSelectorNamespace>,
+) -> Option<NativeSelector> {
     let source = source.trim();
     if source.is_empty() || source.len() > MAX_SELECTOR_BYTES {
         return None;
@@ -24891,7 +24997,7 @@ fn parse_selector(source: &str) -> Option<NativeSelector> {
     }
     let compounds = compound_sources
         .into_iter()
-        .map(parse_compound_selector)
+        .map(|compound| parse_compound_selector(compound, namespaces))
         .collect::<Option<Vec<_>>>()?;
     let specificity = compounds.iter().try_fold(0u32, |specificity, compound| {
         specificity.checked_add(u32::from(compound.specificity))
@@ -24994,12 +25100,19 @@ fn split_selector_parts(source: &str) -> Option<(Vec<&str>, Vec<NativeSelectorCo
         .then_some((compounds, combinators))
 }
 
-fn parse_selector_namespace(source: &str) -> Option<NativeSelectorNamespace> {
-    match source.to_ascii_lowercase().as_str() {
+fn parse_selector_namespace(
+    source: &str,
+    namespaces: &BTreeMap<String, NativeSelectorNamespace>,
+) -> Option<NativeSelectorNamespace> {
+    let source = source.to_ascii_lowercase();
+    match source.as_str() {
         "html" => Some(NativeSelectorNamespace::Html),
         "svg" => Some(NativeSelectorNamespace::Svg),
         "math" | "mathml" => Some(NativeSelectorNamespace::MathMl),
-        _ => None,
+        "xml" => Some(NativeSelectorNamespace::Xml),
+        "xmlns" => Some(NativeSelectorNamespace::Xmlns),
+        "xlink" => Some(NativeSelectorNamespace::Xlink),
+        _ => namespaces.get(&source).copied(),
     }
 }
 
@@ -25013,17 +25126,22 @@ fn parse_namespace_local_name(source: &str, start: usize) -> Option<(Option<Stri
 
 fn parse_qualified_type_selector(
     source: &str,
+    namespaces: &BTreeMap<String, NativeSelectorNamespace>,
 ) -> Option<(Option<String>, NativeSelectorNamespace, usize)> {
     let bytes = source.as_bytes();
     let Some(&first) = bytes.first() else {
         return Some((None, NativeSelectorNamespace::Any, 0));
     };
+    let default_namespace = namespaces
+        .get("")
+        .copied()
+        .unwrap_or(NativeSelectorNamespace::Any);
     match first {
         b'*' if bytes.get(1) == Some(&b'|') => {
             let (tag, next) = parse_namespace_local_name(source, 2)?;
             Some((tag, NativeSelectorNamespace::Any, next))
         }
-        b'*' => Some((None, NativeSelectorNamespace::Any, 1)),
+        b'*' => Some((None, default_namespace, 1)),
         b'|' => {
             let (tag, next) = parse_namespace_local_name(source, 1)?;
             Some((tag, NativeSelectorNamespace::NoNamespace, next))
@@ -25031,13 +25149,9 @@ fn parse_qualified_type_selector(
         byte if is_identifier_start(byte) => {
             let (prefix, next) = read_identifier(source, 0)?;
             if bytes.get(next) != Some(&b'|') {
-                return Some((
-                    Some(prefix.to_ascii_lowercase()),
-                    NativeSelectorNamespace::Any,
-                    next,
-                ));
+                return Some((Some(prefix.to_ascii_lowercase()), default_namespace, next));
             }
-            let namespace = parse_selector_namespace(&prefix)?;
+            let namespace = parse_selector_namespace(&prefix, namespaces)?;
             let (tag, next) = parse_namespace_local_name(source, next + 1)?;
             Some((tag, namespace, next))
         }
@@ -25045,9 +25159,12 @@ fn parse_qualified_type_selector(
     }
 }
 
-fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
+fn parse_compound_selector(
+    source: &str,
+    namespaces: &BTreeMap<String, NativeSelectorNamespace>,
+) -> Option<NativeCompoundSelector> {
     let bytes = source.as_bytes();
-    let (tag, tag_namespace, mut cursor) = parse_qualified_type_selector(source)?;
+    let (tag, tag_namespace, mut cursor) = parse_qualified_type_selector(source, namespaces)?;
     let mut selector = NativeCompoundSelector {
         tag,
         tag_namespace,
@@ -25081,7 +25198,7 @@ fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
                 let close = source[cursor + 1..].find(']')? + cursor + 1;
                 let content = source[cursor + 1..close].trim();
                 let (name, namespace, operator, value, case_sensitivity) =
-                    parse_attribute_selector(content)?;
+                    parse_attribute_selector(content, namespaces)?;
                 selector.attributes.push(NativeAttributeSelector {
                     name,
                     namespace,
@@ -25097,7 +25214,7 @@ fn parse_compound_selector(source: &str) -> Option<NativeCompoundSelector> {
                 if bytes.get(next) == Some(&b'(') {
                     let close = find_selector_function_close(source, next)?;
                     let (pseudo, specificity) =
-                        parse_functional_pseudo_class(&name, &source[next + 1..close])?;
+                        parse_functional_pseudo_class(&name, &source[next + 1..close], namespaces)?;
                     selector.pseudo_classes.push(pseudo);
                     selector.specificity = selector.specificity.saturating_add(specificity);
                     cursor = close + 1;
@@ -25141,7 +25258,11 @@ fn parse_pseudo_class(source: &str) -> Option<NativePseudoClass> {
     }
 }
 
-fn parse_functional_pseudo_class(name: &str, argument: &str) -> Option<(NativePseudoClass, u16)> {
+fn parse_functional_pseudo_class(
+    name: &str,
+    argument: &str,
+    namespaces: &BTreeMap<String, NativeSelectorNamespace>,
+) -> Option<(NativePseudoClass, u16)> {
     if argument.len() > MAX_SELECTOR_BYTES {
         return None;
     }
@@ -25163,7 +25284,7 @@ fn parse_functional_pseudo_class(name: &str, argument: &str) -> Option<(NativePs
     if name == "has" {
         let selectors = split_selector_list(argument)?
             .into_iter()
-            .map(parse_relative_selector)
+            .map(|selector| parse_relative_selector(selector, namespaces))
             .collect::<Option<Vec<_>>>()?;
         let specificity = selectors
             .iter()
@@ -25174,7 +25295,7 @@ fn parse_functional_pseudo_class(name: &str, argument: &str) -> Option<(NativePs
     }
     let selectors = split_selector_list(argument)?
         .into_iter()
-        .map(parse_selector)
+        .map(|selector| parse_selector_with_namespaces(selector, namespaces))
         .collect::<Option<Vec<_>>>()?;
     let specificity = selectors
         .iter()
@@ -25235,7 +25356,10 @@ fn parse_nth_formula(argument: &str) -> Option<(i32, i32)> {
     Some((a, b))
 }
 
-fn parse_relative_selector(source: &str) -> Option<NativeRelativeSelector> {
+fn parse_relative_selector(
+    source: &str,
+    namespaces: &BTreeMap<String, NativeSelectorNamespace>,
+) -> Option<NativeRelativeSelector> {
     let source = source.trim_start();
     let (combinator, selector_source) = match source.as_bytes().first().copied() {
         Some(b'>') => (NativeSelectorCombinator::Child, &source[1..]),
@@ -25243,7 +25367,7 @@ fn parse_relative_selector(source: &str) -> Option<NativeRelativeSelector> {
         Some(b'~') => (NativeSelectorCombinator::SubsequentSibling, &source[1..]),
         _ => (NativeSelectorCombinator::Descendant, source),
     };
-    let selector = parse_selector(selector_source.trim())?;
+    let selector = parse_selector_with_namespaces(selector_source.trim(), namespaces)?;
     Some(NativeRelativeSelector {
         combinator,
         selector,
@@ -25373,19 +25497,44 @@ fn split_attribute_case_modifier(source: &str) -> (&str, NativeAttributeCaseSens
     (source[..separator].trim_end(), case_sensitivity)
 }
 
-fn parse_attribute_namespace(source: &str) -> Option<NativeAttributeNamespace> {
-    match source.to_ascii_lowercase().as_str() {
+fn attribute_namespace_from_selector_namespace(
+    namespace: NativeSelectorNamespace,
+) -> Option<NativeAttributeNamespace> {
+    match namespace {
+        NativeSelectorNamespace::Any => Some(NativeAttributeNamespace::Any),
+        NativeSelectorNamespace::NoNamespace => Some(NativeAttributeNamespace::NoNamespace),
+        NativeSelectorNamespace::Html => Some(NativeAttributeNamespace::Html),
+        NativeSelectorNamespace::Svg => Some(NativeAttributeNamespace::Svg),
+        NativeSelectorNamespace::MathMl => Some(NativeAttributeNamespace::MathMl),
+        NativeSelectorNamespace::Xml => Some(NativeAttributeNamespace::Xml),
+        NativeSelectorNamespace::Xmlns => Some(NativeAttributeNamespace::Xmlns),
+        NativeSelectorNamespace::Xlink => Some(NativeAttributeNamespace::Xlink),
+    }
+}
+
+fn parse_attribute_namespace(
+    source: &str,
+    namespaces: &BTreeMap<String, NativeSelectorNamespace>,
+) -> Option<NativeAttributeNamespace> {
+    let source = source.to_ascii_lowercase();
+    match source.as_str() {
         "html" => Some(NativeAttributeNamespace::Html),
         "svg" => Some(NativeAttributeNamespace::Svg),
         "math" | "mathml" => Some(NativeAttributeNamespace::MathMl),
         "xml" => Some(NativeAttributeNamespace::Xml),
         "xmlns" => Some(NativeAttributeNamespace::Xmlns),
         "xlink" => Some(NativeAttributeNamespace::Xlink),
-        _ => None,
+        _ => namespaces
+            .get(&source)
+            .copied()
+            .and_then(attribute_namespace_from_selector_namespace),
     }
 }
 
-fn parse_qualified_attribute_name(source: &str) -> Option<(String, NativeAttributeNamespace)> {
+fn parse_qualified_attribute_name(
+    source: &str,
+    namespaces: &BTreeMap<String, NativeSelectorNamespace>,
+) -> Option<(String, NativeAttributeNamespace)> {
     let source = source.trim();
     let Some(separator) = source.find('|') else {
         let (name, next) = read_identifier(source, 0)?;
@@ -25397,7 +25546,7 @@ fn parse_qualified_attribute_name(source: &str) -> Option<(String, NativeAttribu
     let namespace = match &source[..separator] {
         "" => NativeAttributeNamespace::NoNamespace,
         "*" => NativeAttributeNamespace::Any,
-        prefix => parse_attribute_namespace(prefix)?,
+        prefix => parse_attribute_namespace(prefix, namespaces)?,
     };
     let local_name = &source[separator + 1..];
     let (name, next) = read_identifier(local_name, 0)?;
@@ -25406,6 +25555,7 @@ fn parse_qualified_attribute_name(source: &str) -> Option<(String, NativeAttribu
 
 fn parse_attribute_selector(
     source: &str,
+    namespaces: &BTreeMap<String, NativeSelectorNamespace>,
 ) -> Option<(
     String,
     NativeAttributeNamespace,
@@ -25444,7 +25594,7 @@ fn parse_attribute_selector(
                 };
                 (raw_name, operator, Some(source[equals + 1..].trim()))
             });
-    let (name, namespace) = parse_qualified_attribute_name(raw_name)?;
+    let (name, namespace) = parse_qualified_attribute_name(raw_name, namespaces)?;
     let (raw_value, case_sensitivity) =
         raw_value.map_or((None, NativeAttributeCaseSensitivity::Default), |value| {
             let (value, case_sensitivity) = split_attribute_case_modifier(value);
@@ -25857,6 +26007,57 @@ mod tests {
     }
 
     #[test]
+    fn namespace_statement_parser_supports_bounded_aliases() {
+        assert_eq!(
+            parse_namespace_statement("@namespace icon url('http://www.w3.org/2000/svg')"),
+            Some(Ok(("icon".to_owned(), NativeSelectorNamespace::Svg,)))
+        );
+        assert_eq!(
+            parse_namespace_statement("@namespace url(http://www.w3.org/1999/xlink)"),
+            Some(Ok((String::new(), NativeSelectorNamespace::Xlink)))
+        );
+        assert_eq!(
+            parse_namespace_statement("@namespace icon url(http://example.com/custom)"),
+            Some(Err("namespace-uri"))
+        );
+        assert_eq!(
+            parse_namespace_statement("@namespacefoo url(http://www.w3.org/2000/svg)"),
+            None
+        );
+    }
+
+    #[test]
+    fn aliased_namespace_selectors_match_bounded_document_nodes() {
+        let document = NativeDocument::parse(
+            "<main><svg id='svg'><circle id='circle' xlink:href='target'></circle></svg><div id='html'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("aliased namespace selector fixture document");
+        let mut namespaces = BTreeMap::new();
+        namespaces.insert("icon".to_owned(), NativeSelectorNamespace::Svg);
+        namespaces.insert("link".to_owned(), NativeSelectorNamespace::Xlink);
+        let matched_ids = |source: &str| {
+            let selector = parse_selector_with_namespaces(source, &namespaces)
+                .expect("aliased namespace selector");
+            document
+                .element_node_ids()
+                .filter(|node_id| selector.matches_in_document(&document, *node_id))
+                .map(|node_id| {
+                    document
+                        .node(node_id)
+                        .and_then(|node| node.attribute("id"))
+                        .expect("matched element id")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(matched_ids("icon|circle"), vec!["circle"]);
+        assert_eq!(matched_ids("[link|href]"), vec!["circle"]);
+        assert!(matched_ids("html|circle").is_empty());
+    }
+
+    #[test]
     fn selector_parser_supports_bounded_attribute_namespace_selectors() {
         let xlink = parse_selector("[xlink|href='target']").unwrap();
         assert_eq!(
@@ -26096,6 +26297,48 @@ mod tests {
         assert_eq!(style("svg").color(), Some(NativeColor::RED));
         assert_eq!(style("svg").background_color(), Some(NativeColor::RED));
         assert_eq!(style("html").color(), None);
+        assert_eq!(style("html").background_color(), None);
+    }
+
+    #[test]
+    fn namespace_aliases_apply_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "@namespace icon url(http://www.w3.org/2000/svg); @namespace link url(http://www.w3.org/1999/xlink); @namespace url(http://www.w3.org/2000/svg); icon|circle { color: red; } :is(icon|circle) { color: blue; } circle { background-color: red; } [link|href] { background-color: black; } html|div { color: green; }"
+                .into(),
+        ])
+        .expect("namespace alias stylesheet");
+        let document = NativeDocument::parse(
+            "<main><svg><circle id='circle' xlink:href='target'></circle></svg><div id='html'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("namespace alias cascade document");
+
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+        assert_eq!(
+            style("circle").color(),
+            Some(NativeColor {
+                red: 0,
+                green: 0,
+                blue: u8::MAX,
+                alpha: u8::MAX,
+            })
+        );
+        assert_eq!(style("circle").background_color(), Some(NativeColor::BLACK));
+        assert_eq!(
+            style("html").color(),
+            Some(NativeColor {
+                red: 0,
+                green: 128,
+                blue: 0,
+                alpha: u8::MAX,
+            })
+        );
         assert_eq!(style("html").background_color(), None);
     }
 

@@ -28,8 +28,9 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-660`, following completed `native-engine-browser-659`,
-following completed `native-engine-browser-658`, following completed
+`native-engine-browser-661`, following completed `native-engine-browser-660`,
+following completed `native-engine-browser-659`, following completed
+`native-engine-browser-658`, following completed
 `native-engine-browser-657`, following completed
 `native-engine-browser-656`, following completed
 `native-engine-browser-655`, following completed
@@ -584,6 +585,14 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The current bounded JavaScript form-state selector checkpoint aligns page-realm
+selector matching with native focus, validation, required/optional,
+editability, placeholder, and default-control state. `:focus-within` traverses
+projected descendants and form validity uses native validity snapshots;
+unsupported selector grammar remains fail-closed. Complete JavaScript selector
+grammar, dynamic control-state parity, complete CSS parity, and complete Web
+IDL parity remain issue #40 gates.
 
 The current bounded user-validation selector checkpoint adds `:user-valid`
 and `:user-invalid` from durable native user-interaction state. Semantic

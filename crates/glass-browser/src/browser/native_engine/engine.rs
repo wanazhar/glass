@@ -3997,7 +3997,7 @@ impl NativeEngine {
             NativeAction::Hover { target } => {
                 let id = self.document.resolve_target(&target)?;
                 self.require_layout_actionable(id)?;
-                let preview = self.document.clone();
+                let mut preview = self.document.clone();
                 preview.apply_hover(id)?;
                 let mutation = {
                     let process =

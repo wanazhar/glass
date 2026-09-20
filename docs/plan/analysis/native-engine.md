@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-657`, following
-completed `native-engine-browser-656`, following completed
+expansion checkpoint is completed `native-engine-browser-658`, following
+completed `native-engine-browser-657`, following completed
+`native-engine-browser-656`, following completed
 `native-engine-browser-655`, following completed
 `native-engine-browser-654`, following completed
 `native-engine-browser-653`, following completed
@@ -534,6 +535,13 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 658 adds bounded `:hover` matching from semantic hover actions.
+Native hover state persists on the target and attached ancestors, crosses
+local/content-process wire snapshots, clears on the next hover action, and
+feeds CSS action selectors and stylesheet cascade. Pointer movement outside
+the semantic action surface and full dynamic pseudo-class timing remain
+explicit issue #40 gates, alongside complete CSS and Web IDL parity.
 
 Slice 657 adds bounded `:indeterminate` matching for radio groups with no
 checked member and `<progress>` elements whose `value` is missing, malformed,

@@ -28,8 +28,9 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-657`, following completed `native-engine-browser-656`,
-following completed `native-engine-browser-655`, following completed
+`native-engine-browser-658`, following completed `native-engine-browser-657`,
+following completed `native-engine-browser-656`, following completed
+`native-engine-browser-655`, following completed
 `native-engine-browser-654`, following completed
 `native-engine-browser-653`, following completed
 `native-engine-browser-652`, following completed
@@ -581,6 +582,14 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The current bounded hover-state selector checkpoint adds `:hover` matching
+from semantic hover actions. Native hover state persists on the target and
+attached ancestors, crosses local/content-process wire snapshots, clears on
+the next hover action, and feeds action selectors and stylesheet cascade.
+Pointer movement outside the semantic action surface and full dynamic
+pseudo-class timing remain explicit issue #40 gates, alongside complete CSS and
+Web IDL parity.
 
 The current bounded indeterminate-state selector checkpoint adds
 `:indeterminate` for radio groups with no checked member and `<progress>`

@@ -142,6 +142,7 @@ pub(crate) struct NativeElementState {
     files: Vec<NativeFile>,
     checked: bool,
     focused: bool,
+    hovered: bool,
     selected: bool,
     custom_validity: String,
     selection_start: Option<usize>,
@@ -165,6 +166,7 @@ impl NativeElementState {
             files: Vec::new(),
             checked: attributes.contains_key("checked"),
             focused: false,
+            hovered: false,
             selected: attributes.contains_key("selected"),
             custom_validity: String::new(),
             selection_start: None,
@@ -391,8 +393,13 @@ pub(crate) struct NativeElementStateWire {
     pub(crate) value: Option<String>,
     #[serde(default)]
     pub(crate) files: Vec<NativeFile>,
+    #[serde(default)]
     pub(crate) checked: bool,
+    #[serde(default)]
     pub(crate) focused: bool,
+    #[serde(default)]
+    pub(crate) hovered: bool,
+    #[serde(default)]
     pub(crate) selected: bool,
     pub(crate) custom_validity: String,
     #[serde(default)]
@@ -2421,6 +2428,7 @@ impl NativeDocument {
                     files: node.state.files.clone(),
                     checked: node.state.checked,
                     focused: node.state.focused,
+                    hovered: node.state.hovered,
                     selected: node.state.selected,
                     custom_validity: node.state.custom_validity.clone(),
                     selection_start: node.state.selection_start,
@@ -2926,6 +2934,7 @@ impl NativeDocument {
                     files: wire_node.state.files.clone(),
                     checked: wire_node.state.checked,
                     focused: wire_node.state.focused,
+                    hovered: wire_node.state.hovered,
                     selected: wire_node.state.selected,
                     custom_validity: wire_node.state.custom_validity.clone(),
                     selection_start: wire_node.state.selection_start,
@@ -4327,13 +4336,14 @@ impl NativeDocument {
         Ok(events)
     }
 
-    /// Deliver the pointer-enter events for one visible element.
+    /// Deliver the pointer-enter events for one visible element and retain
+    /// the hovered ancestor chain for CSS `:hover` matching.
     ///
     /// Pointer movement is represented as a semantic action rather than raw
     /// coordinates here. Layout hit testing and target routing are performed
     /// by the engine/backend; the document owns the DOM event order.
     pub(crate) fn apply_hover(
-        &self,
+        &mut self,
         id: NativeNodeId,
     ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
         let node = self.node(id).ok_or(NativeEngineError::DetachedTarget)?;
@@ -4355,6 +4365,20 @@ impl NativeDocument {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "target does not accept pointer events".into(),
             });
+        }
+        for node in &mut self.nodes {
+            node.state.hovered = false;
+        }
+        let mut current = Some(id);
+        for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+            let Some(current_id) = current else {
+                break;
+            };
+            let Some(node) = self.node_mut(current_id) else {
+                break;
+            };
+            node.state.hovered = true;
+            current = node.parent();
         }
         Ok(vec![
             (id, NativeEventKind::MouseOver),
@@ -7364,6 +7388,10 @@ impl NativeDocument {
 
     pub(crate) fn css_is_focused(&self, id: NativeNodeId) -> bool {
         self.is_attached(id) && self.node(id).is_some_and(|node| node.state.focused)
+    }
+
+    pub(crate) fn css_is_hovered(&self, id: NativeNodeId) -> bool {
+        self.is_attached(id) && self.node(id).is_some_and(|node| node.state.hovered)
     }
 
     pub(crate) fn css_focus_within(&self, id: NativeNodeId) -> bool {

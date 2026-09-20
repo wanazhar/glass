@@ -28,8 +28,9 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-656`, following completed `native-engine-browser-655`,
-following completed `native-engine-browser-654`, following completed
+`native-engine-browser-657`, following completed `native-engine-browser-656`,
+following completed `native-engine-browser-655`, following completed
+`native-engine-browser-654`, following completed
 `native-engine-browser-653`, following completed
 `native-engine-browser-652`, following completed
 `native-engine-browser-651`, following completed
@@ -580,6 +581,14 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The current bounded indeterminate-state selector checkpoint adds
+`:indeterminate` for radio groups with no checked member and `<progress>`
+elements with missing, malformed, or negative values. Checkbox indeterminate
+property semantics remain fail-closed because the bounded DOM surface does not
+expose that mutable state; native matching feeds action selectors and
+stylesheet cascade. Full selector grammar, complete CSS parity, and complete
+Web IDL parity remain issue #40 gates.
 
 The current bounded URL-target selector checkpoint adds `:target` matching
 against the decoded document fragment, including unique `id` targets and

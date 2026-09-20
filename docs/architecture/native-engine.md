@@ -1,8 +1,9 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-656`, following completed `native-engine-browser-655`,
-following completed `native-engine-browser-654`, following completed
+`native-engine-browser-657`, following completed `native-engine-browser-656`,
+following completed `native-engine-browser-655`, following completed
+`native-engine-browser-654`, following completed
 `native-engine-browser-653`, following completed
 `native-engine-browser-652`, following completed
 `native-engine-browser-651`, following completed
@@ -525,6 +526,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 657 adds bounded `:indeterminate` matching for radio groups with no
+checked member and `<progress>` elements whose `value` is missing, malformed,
+or negative. Checkbox indeterminate-property semantics remain fail-closed
+because the bounded DOM surface does not expose that mutable state; matching
+feeds CSS action selectors and stylesheet cascade. Full selector grammar,
+complete CSS and Web IDL parity, and broader issue #40 conformance remain
+explicit gates.
 
 Slice 656 adds bounded `:target` matching against the decoded document
 fragment, including unique `id` targets and legacy named anchors. Initial,

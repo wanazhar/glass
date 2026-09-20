@@ -18220,6 +18220,64 @@ mod native_selector_tests {
             serde_json::json!([true, true, true, false, true, false, true, true, true, true])
         );
     }
+    #[test]
+    fn javascript_language_and_direction_selectors_follow_native_inheritance() {
+        let runtime =
+            NativeJavaScriptRuntime::new_with_context_id("language-direction-selector-test")
+                .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<main id='english' lang='en'><section id='inherit'><p id='french' lang='fr-FR'><span id='french-child'></span></p><p id='german' xml:lang='de-DE'></p><p id='plain'></p><p id='rtl' dir='rtl'><span id='rtl-child'></span></p><p id='auto' dir='auto'></p></section></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("language direction selector document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const english = document.querySelector("#english");
+                    const inherit = document.querySelector("#inherit");
+                    const french = document.querySelector("#french");
+                    const frenchChild = document.querySelector("#french-child");
+                    const german = document.querySelector("#german");
+                    const plain = document.querySelector("#plain");
+                    const rtl = document.querySelector("#rtl");
+                    const rtlChild = document.querySelector("#rtl-child");
+                    const auto = document.querySelector("#auto");
+                    const frenchMatches = Array.from(document.querySelectorAll(":lang(fr)"));
+                    const rtlMatches = Array.from(document.querySelectorAll(":dir(rtl)"));
+                    return [
+                        english.matches(":lang(en)"),
+                        inherit.matches(":lang(en)"),
+                        plain.matches(":lang(en-*)"),
+                        french.matches(":lang(fr)"),
+                        french.matches(":lang('fr-FR')"),
+                        frenchChild.matches(":lang(fr)"),
+                        german.matches(":lang(de)"),
+                        english.matches(":lang(es)"),
+                        english.matches(":dir(ltr)"),
+                        inherit.matches(":dir(ltr)"),
+                        rtl.matches(":dir(rtl)"),
+                        rtlChild.matches(":dir(rtl)"),
+                        rtl.matches(":dir(ltr)"),
+                        auto.matches(":dir(ltr)"),
+                        auto.matches(":dir(rtl)"),
+                        frenchMatches.map((element) => element.id).join(",") === "french,french-child",
+                        rtlMatches.length === 2,
+                    ];
+                })()"##,
+                &document,
+                "fixture://language-direction-selector.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("language direction selectors must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                true, true, true, true, true, true, true, false, true, true, true, true, false,
+                false, false, true, true
+            ])
+        );
+    }
 }
 
 #[cfg(test)]
@@ -38134,6 +38192,40 @@ fn document_bootstrap(
     }}
     return candidates.some((candidate) => matchesSelector(candidate, selector, element));
   }};
+  const languageMatchesForSelector = (element, argument) => {{
+    let range = String(argument || "").trim().toLowerCase();
+    if ((range.startsWith('"') && range.endsWith('"'))
+        || (range.startsWith("'") && range.endsWith("'"))) {{
+      range = range.slice(1, -1);
+    }}
+    if (!range) return false;
+    let current = element;
+    while (current) {{
+      const language = current.getAttribute("lang");
+      const xmlLanguage = current.getAttribute("xml:lang");
+      const value = language !== null ? language : xmlLanguage;
+      if (value !== null) {{
+        const normalized = value.trim().toLowerCase();
+        if (!normalized) return false;
+        if (range === "*") return true;
+        const base = range.endsWith("-*") ? range.slice(0, -2) : range;
+        return normalized === base || normalized.startsWith(base + "-");
+      }}
+      current = current.parentElement;
+    }}
+    return false;
+  }};
+  const directionMatchesForSelector = (element, argument) => {{
+    const expected = String(argument || "").trim().toLowerCase();
+    if (expected !== "ltr" && expected !== "rtl") return false;
+    let current = element;
+    while (current) {{
+      const value = current.getAttribute("dir");
+      if (value !== null) return value.trim().toLowerCase() === expected;
+      current = current.parentElement;
+    }}
+    return expected === "ltr";
+  }};
   const sameTypeSiblingsForSelector = (element) => {{
     const siblings = elementChildren(element && element.parentElement);
     return siblings.filter((candidate) => candidate.tagName === element.tagName);
@@ -38269,7 +38361,9 @@ fn document_bootstrap(
         const typePosition = typeSiblings.indexOf(element) + 1;
         if (name === "has") {{
           if (argument === undefined || !hasForSelector(element, argument)) return false;
-        }} else if (name === "not") {{
+        }} else if (name === "lang" && !languageMatchesForSelector(element, argument)) return false;
+        else if (name === "dir" && !directionMatchesForSelector(element, argument)) return false;
+        else if (name === "not") {{
           if (argument === undefined || matchesSelector(element, argument, scope)) return false;
         }} else if (name === "is" || name === "where") {{
           if (argument === undefined || !matchesSelector(element, argument, scope)) return false;
@@ -38318,7 +38412,8 @@ fn document_bootstrap(
             && (!element.userInteracted || formValidityForSelector(element) !== true)) return false;
         else if (name === "user-invalid"
             && (!element.userInteracted || formValidityForSelector(element) !== false)) return false;
-        else if (name !== "has" && name !== "not" && name !== "is" && name !== "where"
+        else if (name !== "has" && name !== "lang" && name !== "dir"
+            && name !== "not" && name !== "is" && name !== "where"
             && name !== "only-child" && name !== "nth-child"
             && name !== "first-of-type" && name !== "last-of-type"
             && name !== "only-of-type" && name !== "nth-of-type"

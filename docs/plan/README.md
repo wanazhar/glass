@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-663`, following completed `native-engine-browser-662`,
+`native-engine-browser-664`, following completed `native-engine-browser-663`,
+following completed `native-engine-browser-662`,
 following completed `native-engine-browser-661`,
 following completed `native-engine-browser-660`, following completed
 `native-engine-browser-659`, following completed
@@ -587,6 +588,14 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The current bounded JavaScript relational-selector checkpoint aligns
+page-realm `:has()` with native descendant, child, adjacent-sibling, and
+general-sibling relations. Relative selector arguments project tree
+descendants and sibling order, including compound selectors and selector
+lists; unsupported selector grammar remains fail-closed. Complete JavaScript
+selector grammar, dynamic control-state parity, complete CSS parity, and
+complete Web IDL parity remain issue #40 gates.
 
 The current bounded JavaScript structural-selector checkpoint aligns
 page-realm `matches` and query traversal with native tree-order semantics for

@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-652`, following
-completed `native-engine-browser-651`, following completed
+expansion checkpoint is completed `native-engine-browser-653`, following
+completed `native-engine-browser-652`, following completed
+`native-engine-browser-651`, following completed
 `native-engine-browser-650`, following completed
 `native-engine-browser-649`, following
 completed `native-engine-browser-648`, following
@@ -529,6 +530,13 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 653 adds bounded `of <selector-list>` filters to `:nth-child()` and
+`:nth-last-child()`. Filtered sibling positions count only elements matching
+the selector list, its maximum specificity contributes to the pseudo-class,
+and malformed clauses fail closed; typed nth variants reject `of` clauses.
+Full selector grammar, pseudo-elements, complete CSS and Web IDL parity remain
+explicit issue #40 gates.
 
 Slice 652 adds bounded `:dir(ltr|rtl)` matching through inherited HTML
 `dir` attributes. Missing declarations default to LTR; nearest explicit

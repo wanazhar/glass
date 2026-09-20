@@ -7332,6 +7332,131 @@ impl NativeDocument {
         Ok(invalid)
     }
 
+    pub(crate) fn css_is_focused(&self, id: NativeNodeId) -> bool {
+        self.is_attached(id) && self.node(id).is_some_and(|node| node.state.focused)
+    }
+
+    pub(crate) fn css_focus_within(&self, id: NativeNodeId) -> bool {
+        if !self.is_attached(id) {
+            return false;
+        }
+        self.nodes
+            .iter()
+            .filter(|node| self.is_attached(node.id()) && node.state.focused)
+            .any(|focused| {
+                let mut current = Some(focused.id());
+                for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+                    if current == Some(id) {
+                        return true;
+                    }
+                    current = current
+                        .and_then(|current_id| self.node(current_id).and_then(NativeNode::parent));
+                }
+                false
+            })
+    }
+
+    pub(crate) fn css_validity(&self, id: NativeNodeId) -> Option<bool> {
+        let element = self.node(id)?.element_name()?;
+        if element == "form" {
+            return Some(self.script_validation_snapshot(id).0.valid);
+        }
+        if !matches!(element, "button" | "input" | "select" | "textarea") {
+            return None;
+        }
+        Some(self.control_validity(id).0.valid)
+    }
+
+    pub(crate) fn css_read_only(&self, id: NativeNodeId) -> Option<bool> {
+        self.node(id)?.element_name()?;
+        Some(!self.css_is_editable(id))
+    }
+
+    pub(crate) fn css_read_write(&self, id: NativeNodeId) -> Option<bool> {
+        self.node(id)?.element_name()?;
+        Some(self.css_is_editable(id))
+    }
+
+    pub(crate) fn css_placeholder_shown(&self, id: NativeNodeId) -> bool {
+        let Some(node) = self.node(id) else {
+            return false;
+        };
+        let supported = match node.element_name() {
+            Some("textarea") => true,
+            Some("input") => !matches!(
+                node.attribute("type")
+                    .unwrap_or("text")
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "hidden"
+                    | "button"
+                    | "checkbox"
+                    | "color"
+                    | "file"
+                    | "image"
+                    | "radio"
+                    | "range"
+                    | "reset"
+                    | "submit"
+            ),
+            _ => false,
+        };
+        supported
+            && node.attribute("placeholder").is_some()
+            && self.current_value(id).is_some_and(|value| value.is_empty())
+    }
+
+    pub(crate) fn css_default(&self, id: NativeNodeId) -> bool {
+        let Some(node) = self.node(id) else {
+            return false;
+        };
+        match node.element_name() {
+            Some("input") => node.attribute("checked").is_some(),
+            Some("option") => node.attribute("selected").is_some(),
+            _ => false,
+        }
+    }
+
+    fn css_is_editable(&self, id: NativeNodeId) -> bool {
+        let Some(node) = self.node(id) else {
+            return false;
+        };
+        if node
+            .attribute("contenteditable")
+            .is_some_and(|value| value.is_empty() || value.eq_ignore_ascii_case("true"))
+        {
+            return true;
+        }
+        if node
+            .attribute("contenteditable")
+            .is_some_and(|value| value.eq_ignore_ascii_case("false"))
+        {
+            return false;
+        }
+        if self.is_disabled(id) || self.is_read_only(id) {
+            return false;
+        }
+        match node.element_name() {
+            Some("textarea") => true,
+            Some("input") => !matches!(
+                node.attribute("type")
+                    .unwrap_or("text")
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "button"
+                    | "checkbox"
+                    | "color"
+                    | "hidden"
+                    | "image"
+                    | "radio"
+                    | "range"
+                    | "reset"
+                    | "submit"
+            ),
+            _ => false,
+        }
+    }
+
     fn script_validation_snapshot(
         &self,
         id: NativeNodeId,

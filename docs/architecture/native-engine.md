@@ -1,8 +1,9 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-650`, following completed `native-engine-browser-649`,
-following completed `native-engine-browser-648`, following completed
+`native-engine-browser-651`, following completed `native-engine-browser-650`,
+following completed `native-engine-browser-649`, following completed
+`native-engine-browser-648`, following completed
 `native-engine-browser-647`, following completed
 `native-engine-browser-646`, following completed
 `native-engine-browser-645`, following completed
@@ -519,6 +520,13 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 651 adds bounded `:lang(...)` pseudo-class matching. The matcher walks
+the nearest inherited HTML `lang` or XML `xml:lang` declaration and supports
+case-insensitive base-tag, descendant-subtag, and terminal-wildcard ranges;
+malformed ranges remain fail-closed. Full selector grammar, pseudo-elements,
+complete CSS and Web IDL parity, and broader issue #40 conformance remain
+explicit gates.
 
 Slice 650 adds bounded `@namespace` declaration composition. Supported
 HTML, SVG, MathML, XML, XMLNS, and XLink URI constants bind named or default

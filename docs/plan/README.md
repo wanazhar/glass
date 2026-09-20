@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-650`, following completed `native-engine-browser-649`,
+`native-engine-browser-651`, following completed `native-engine-browser-650`,
+`native-engine-browser-649`, following completed
 `native-engine-browser-648`, following completed
 `native-engine-browser-647`, following completed
 `native-engine-browser-646`, following completed
@@ -574,6 +575,13 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The current bounded language-selector checkpoint adds `:lang(...)` matching
+for inherited HTML `lang` and XML `xml:lang` values. ASCII language ranges
+support case-insensitive base-tag matching, descendant subtags, and a bounded
+terminal wildcard; malformed or unsupported forms remain fail-closed. Full
+selector grammar, pseudo-elements, complete CSS parity, and complete Web IDL
+parity remain issue #40 gates.
 
 The current bounded namespace-declaration checkpoint adds supported
 `@namespace` statements for the HTML, SVG, MathML, XML, XMLNS, and XLink URI

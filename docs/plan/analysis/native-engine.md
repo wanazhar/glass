@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-651`, following
-completed `native-engine-browser-650`, following completed
+expansion checkpoint is completed `native-engine-browser-652`, following
+completed `native-engine-browser-651`, following completed
+`native-engine-browser-650`, following completed
 `native-engine-browser-649`, following
 completed `native-engine-browser-648`, following
 completed `native-engine-browser-647`, following
@@ -527,6 +528,13 @@ values raise `SyntaxError`/`RangeError` before `load()`, and setter failures
 are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
+issue #40 gates.
+
+Slice 652 adds bounded `:dir(ltr|rtl)` matching through inherited HTML
+`dir` attributes. Missing declarations default to LTR; nearest explicit
+`ltr`/`rtl` values match case-insensitively, while `auto` and malformed
+arguments fail closed. Action selectors and stylesheet cascade share the
+matcher; writing-mode/bidi, complete CSS, and Web IDL parity remain explicit
 issue #40 gates.
 
 Slice 651 adds bounded `:lang(...)` matching against inherited HTML `lang`

@@ -13884,6 +13884,7 @@ enum NativePseudoClass {
     Link,
     AnyLink,
     Lang(String),
+    Dir(DirectionValue),
     Not(Vec<NativeSelector>),
     Is(Vec<NativeSelector>),
     Where(Vec<NativeSelector>),
@@ -13916,6 +13917,7 @@ impl NativePseudoClass {
                 .iter()
                 .any(|selector| selector.matches_local(node)),
             Self::Lang(_)
+            | Self::Dir(_)
             | Self::Has(_)
             | Self::NthChild { .. }
             | Self::NthLastChild { .. }
@@ -13984,6 +13986,7 @@ impl NativePseudoClass {
                 .iter()
                 .any(|selector| selector.matches_in_document(document, node_id)),
             Self::Lang(range) => language_pseudo_matches(document, node_id, range),
+            Self::Dir(direction) => direction_pseudo_matches(document, node_id, *direction),
             Self::Has(selectors) => selectors
                 .iter()
                 .any(|relative| relative_selector_matches(document, node_id, relative)),
@@ -14030,6 +14033,29 @@ fn language_range_matches(value: &str, range: &str) -> bool {
         || (value.len() > base.len()
             && value.as_bytes().starts_with(base.as_bytes())
             && value.as_bytes().get(base.len()) == Some(&b'-'))
+}
+
+fn direction_pseudo_matches(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    direction: DirectionValue,
+) -> bool {
+    let mut current = Some(node_id);
+    while let Some(current_id) = current {
+        let Some(node) = document.node(current_id) else {
+            return false;
+        };
+        if let Some(value) = node.attribute("dir") {
+            let value = value.trim();
+            return match value {
+                value if value.eq_ignore_ascii_case("ltr") => direction == DirectionValue::Ltr,
+                value if value.eq_ignore_ascii_case("rtl") => direction == DirectionValue::Rtl,
+                _ => false,
+            };
+        }
+        current = node.parent();
+    }
+    direction == DirectionValue::Ltr
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25319,6 +25345,12 @@ fn parse_functional_pseudo_class(
     if name == "lang" {
         return Some((NativePseudoClass::Lang(parse_language_range(argument)?), 10));
     }
+    if name == "dir" {
+        return Some((
+            NativePseudoClass::Dir(parse_direction(argument.trim())?),
+            10,
+        ));
+    }
     if name == "has" {
         let selectors = split_selector_list(argument)?
             .into_iter()
@@ -26551,6 +26583,10 @@ mod tests {
         assert!(parse_selector(":lang(en-*)").is_some());
         assert!(parse_selector(":lang(en us)").is_none());
         assert!(parse_selector(":lang(en_*)").is_none());
+        assert_eq!(parse_selector(":dir(rtl)").unwrap().specificity, 10);
+        assert!(parse_selector(":dir(LTR)").is_some());
+        assert!(parse_selector(":dir(auto)").is_none());
+        assert!(parse_selector(":dir('rtl')").is_none());
         assert!(parse_selector("button::before").is_none());
     }
 
@@ -26667,6 +26703,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn document_selector_matches_bounded_direction_pseudo_class() {
+        let document = NativeDocument::parse(
+            "<main id='default'><section id='rtl' dir='rtl'><p id='rtl-child'></p><p id='ltr' dir='ltr'><span id='ltr-child'></span></p><p id='auto' dir='auto'></p></section><p id='last'></p></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("direction pseudo-class fixture document");
+        let matched_ids = |source: &str| {
+            selector_matches_in_document(&document, source)
+                .unwrap()
+                .into_iter()
+                .filter_map(|node_id| document.node(node_id)?.attribute("id"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            matched_ids(":dir(ltr)"),
+            vec!["default", "ltr", "ltr-child", "last"]
+        );
+        assert_eq!(matched_ids(":dir(rtl)"), vec!["rtl", "rtl-child"]);
+    }
+
+    #[test]
+    fn direction_pseudo_class_applies_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            ":dir(ltr) { background-color: red; } :dir(rtl) { background-color: black; }".into(),
+        ])
+        .expect("direction pseudo-class stylesheet");
+        let document = NativeDocument::parse(
+            "<main id='default'><section id='rtl' dir='rtl'><p id='rtl-child'></p><p id='ltr' dir='ltr'><span id='ltr-child'></span></p><p id='auto' dir='auto'></p></section></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("direction pseudo-class cascade document");
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+
+        assert_eq!(style("default").background_color(), Some(NativeColor::RED));
+        assert_eq!(style("rtl").background_color(), Some(NativeColor::BLACK));
+        assert_eq!(
+            style("rtl-child").background_color(),
+            Some(NativeColor::BLACK)
+        );
+        assert_eq!(style("ltr").background_color(), Some(NativeColor::RED));
+        assert_eq!(
+            style("ltr-child").background_color(),
+            Some(NativeColor::RED)
+        );
+        assert_eq!(style("auto").background_color(), None);
+    }
     #[test]
     fn document_selector_matches_bounded_state_pseudo_classes() {
         let document = NativeDocument::parse(

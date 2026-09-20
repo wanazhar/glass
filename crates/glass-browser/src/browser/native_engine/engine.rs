@@ -6350,6 +6350,7 @@ impl NativeEngine {
                 return Err(error);
             }
         };
+        document.set_css_target_from_url(&self.url)?;
         let mut events = match mutation
             .events
             .into_iter()
@@ -6834,6 +6835,7 @@ impl NativeEngine {
             .collect();
         let mut document =
             NativeDocument::from_content_wire(content.document, &self.config.limits, generation)?;
+        document.set_css_target_from_url(&content.url)?;
         document.set_viewport(self.config.viewport)?;
         Ok(PreparedNavigation {
             resource: NativeResource {
@@ -6908,6 +6910,7 @@ impl NativeEngine {
         } else {
             load_local_initial_media(&mut document, &self.loader, &resource.url)?
         };
+        document.set_css_target_from_url(&resource.url)?;
         load_font_faces(&mut document, None, &mut self.loader, &resource.url)?;
         let frame_sources = self.loader.frame_sources_for_document(&resource.url)?;
         let navigate_to_sources = self.loader.navigation_sources_for_document(
@@ -7268,6 +7271,7 @@ impl NativeEngine {
         history_commit: HistoryCommit,
     ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         let old_url = self.url.clone();
+        self.document.set_css_target_from_url(&url)?;
         let (saved_scroll, saved_nested_scroll_offsets) = match &history_commit {
             HistoryCommit::Push | HistoryCommit::Replace => (
                 self.fragment_scroll_offset(&url)?,
@@ -7357,6 +7361,7 @@ impl NativeEngine {
         page_navigation_handoffs: usize,
     ) -> Result<(), NativeEngineError> {
         let old_url = self.url.clone();
+        self.document.set_css_target_from_url(&url)?;
         let (saved_scroll, saved_nested_scroll_offsets) = match &history_commit {
             HistoryCommit::Push | HistoryCommit::Replace => (
                 self.fragment_scroll_offset(&url)?,

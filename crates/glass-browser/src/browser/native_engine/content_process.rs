@@ -7619,6 +7619,7 @@ async fn load_content_resource(
         1,
         Some(&allowed_inline_style_nodes),
     )?;
+    document.set_css_target_from_url(&resource.url)?;
     document.set_viewport(viewport)?;
     document.set_external_stylesheet_states(external_stylesheet_states);
     document.mark_inline_style_reports_seen();
@@ -10191,6 +10192,7 @@ fn mutate_hash_change(
         &page_events,
     )?;
     let mut next = current.clone();
+    next.set_css_target_from_url(new_url)?;
     let mut history = Vec::new();
     let mut scroll_commands = extract_scroll_commands(&evaluation.commands);
     let (commands, navigation) = split_location_navigation(runtime, evaluation.commands)?;

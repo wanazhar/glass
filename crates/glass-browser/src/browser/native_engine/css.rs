@@ -13896,6 +13896,7 @@ enum NativePseudoClass {
     Default,
     InRange,
     OutOfRange,
+    Target,
     Not(Vec<NativeSelector>),
     Is(Vec<NativeSelector>),
     Where(Vec<NativeSelector>),
@@ -13956,6 +13957,7 @@ impl NativePseudoClass {
             | Self::Default
             | Self::InRange
             | Self::OutOfRange
+            | Self::Target
             | Self::Has(_)
             | Self::NthChild { .. }
             | Self::NthLastChild { .. }
@@ -14049,6 +14051,7 @@ impl NativePseudoClass {
             Self::OutOfRange => document
                 .css_range_validity(node_id)
                 .is_some_and(|in_range| !in_range),
+            Self::Target => document.css_target(node_id),
             Self::NthLastChild { a, b, of } => {
                 nth_pseudo_matches(document, node_id, *a, *b, true, false, of.as_deref())
             }
@@ -25390,6 +25393,7 @@ fn parse_pseudo_class(source: &str) -> Option<NativePseudoClass> {
         "default" => Some(NativePseudoClass::Default),
         "in-range" => Some(NativePseudoClass::InRange),
         "out-of-range" => Some(NativePseudoClass::OutOfRange),
+        "target" => Some(NativePseudoClass::Target),
         "link" => Some(NativePseudoClass::Link),
         "any-link" => Some(NativePseudoClass::AnyLink),
         _ => None,
@@ -26766,6 +26770,7 @@ mod tests {
             "input:default",
             "input:in-range",
             "input:out-of-range",
+            "div:target",
         ] {
             assert_eq!(parse_selector(source).unwrap().specificity, 11);
         }
@@ -26773,11 +26778,14 @@ mod tests {
 
     #[test]
     fn document_selector_matches_bounded_structural_pseudo_classes() {
-        let document = NativeDocument::parse(
+        let mut document = NativeDocument::parse(
             "<main id='root'><div id='first'></div><section id='middle'><span id='only'></span></section><div id='empty'></div></main>",
             &NativeEngineLimits::default(),
         )
         .expect("pseudo-class fixture document");
+        document
+            .set_css_target_from_url("fixture://example.test/page#middle")
+            .expect("target fragment URL");
 
         let matched_id = |source: &str| {
             let matches = selector_matches_in_document(&document, source).unwrap();
@@ -26816,6 +26824,53 @@ mod tests {
         assert_eq!(
             selector_matches_in_document(&document, &format!("{root_name}:root")).unwrap(),
             vec![root_element]
+        );
+        assert_eq!(matched_id("#middle:target"), Some("middle"));
+        assert!(
+            selector_matches_in_document(&document, "#empty:target")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn target_pseudo_class_applies_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "#middle:target { background-color: black; } #empty:target { background-color: red; }"
+                .into(),
+        ])
+        .expect("target pseudo-class stylesheet");
+        let mut document = NativeDocument::parse(
+            "<main><section id='middle'></section><div id='empty'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("target pseudo-class cascade document");
+        document
+            .set_css_target_from_url("fixture://example.test/page#middle")
+            .expect("middle target fragment");
+        let middle = document.resolve_target("id=middle").unwrap();
+        let empty = document.resolve_target("id=empty").unwrap();
+        assert_eq!(
+            stylesheet
+                .computed_for_in_document(&document, middle, None)
+                .background_color(),
+            Some(NativeColor::BLACK)
+        );
+        assert_eq!(
+            stylesheet
+                .computed_for_in_document(&document, empty, None)
+                .background_color(),
+            None
+        );
+
+        document
+            .set_css_target_from_url("fixture://example.test/page#empty")
+            .expect("empty target fragment");
+        assert_eq!(
+            stylesheet
+                .computed_for_in_document(&document, empty, None)
+                .background_color(),
+            Some(NativeColor::RED)
         );
     }
 

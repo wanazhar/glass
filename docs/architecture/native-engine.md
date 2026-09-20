@@ -1,7 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-668`, following completed `native-engine-browser-667`,
+`native-engine-browser-669`, following completed `native-engine-browser-668`,
+following completed `native-engine-browser-667`,
 following completed `native-engine-browser-666`,
 following completed `native-engine-browser-665`,
 following completed `native-engine-browser-664`,
@@ -537,6 +538,12 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 669 implements filtered `:nth-child()` and `:nth-last-child()`
+sibling positions, including selector lists and fail-closed malformed `of`
+clauses. Query and `matches()` results share the filtered native element
+order; complete JavaScript selector grammar, complete CSS parity, and
+complete Web IDL parity remain explicit issue #40 gates.
 
 Slice 668 aligns page-realm selector parsing and matching with native
 adjacent (`+`) and general (`~`) sibling relations. Previous siblings,

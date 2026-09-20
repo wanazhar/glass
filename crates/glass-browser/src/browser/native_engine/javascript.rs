@@ -18085,6 +18085,54 @@ mod native_selector_tests {
             ])
         );
     }
+
+    #[test]
+    fn javascript_action_selector_queries_follow_native_state() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("action-selector-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<form><a id='link' href='/target'>Link</a><a id='anchor' name='target'>Anchor</a><input id='low' type='number' value='2' min='3'><input id='mid' type='number' value='5' min='3' max='7'><input id='unbounded' type='number' value='5'><input id='radio-a' type='radio' name='empty'><input id='radio-b' type='radio' name='empty'><input id='radio-checked' type='radio' name='checked' checked><progress id='pending'></progress><progress id='complete' value='1' max='2'></progress></form>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("action selector document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const link = document.querySelector("#link");
+                    const anchor = document.querySelector("#anchor");
+                    const low = document.querySelector("#low");
+                    const mid = document.querySelector("#mid");
+                    const unbounded = document.querySelector("#unbounded");
+                    const radioA = document.querySelector("#radio-a");
+                    const radioChecked = document.querySelector("#radio-checked");
+                    const pending = document.querySelector("#pending");
+                    const complete = document.querySelector("#complete");
+                    return [
+                        link.matches(":link"),
+                        link.matches(":any-link"),
+                        anchor.matches(":target"),
+                        low.matches(":out-of-range"),
+                        mid.matches(":in-range"),
+                        unbounded.matches(":in-range"),
+                        radioA.matches(":indeterminate"),
+                        radioChecked.matches(":indeterminate"),
+                        pending.matches(":indeterminate"),
+                        complete.matches(":indeterminate"),
+                    ];
+                })()"##,
+                &document,
+                "fixture://action-selector.test/#target",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("action selectors must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                true, true, true, true, true, false, true, false, true, false
+            ])
+        );
+    }
 }
 
 #[cfg(test)]
@@ -37996,6 +38044,55 @@ fn document_bootstrap(
       || (element.tagName === "OPTION" && element.getAttribute("selected") !== null));
   const focusedWithinForSelector = (element) =>
     Boolean(element.focused) || descendantsInTree(element, (candidate) => Boolean(candidate.focused)).length > 0;
+  const linkForSelector = (element) =>
+    ["A", "AREA"].includes(element && element.tagName)
+      && element.getAttribute("href") !== null;
+  const targetForSelector = (element) => {{
+    if (!element || !element.ownerDocument) return false;
+    const source = String(element.ownerDocument.URL || "");
+    const hash = source.indexOf("#");
+    if (hash < 0 || hash === source.length - 1) return false;
+    let fragment = source.slice(hash + 1);
+    try {{ fragment = decodeURIComponent(fragment); }} catch (_error) {{ return false; }}
+    return element.id === fragment
+      || (["A", "AREA"].includes(element.tagName) && element.getAttribute("name") === fragment);
+  }};
+  const rangeForSelector = (element) => {{
+    if (!element || element.tagName !== "INPUT" || !element.willValidate) return null;
+    const type = String(element.getAttribute("type") || "text").toLowerCase();
+    if (!["number", "range", "date", "month", "time", "datetime-local"].includes(type)) return null;
+    if (String(element.value || "").length === 0) return null;
+    const min = element.getAttribute("min");
+    const max = element.getAttribute("max");
+    const numericConstraint = (value) => value !== null && value.trim() !== ""
+      && Number.isFinite(Number(value));
+    const temporalConstraint = (value) => value !== null && value.trim() !== ""
+      && /^[-0-9T:.]+$/.test(value);
+    const validConstraint = type === "number" || type === "range"
+      ? numericConstraint(min) || numericConstraint(max)
+      : temporalConstraint(min) || temporalConstraint(max);
+    if (!validConstraint) return null;
+    const validity = element.validity || {{}};
+    return !validity.rangeUnderflow && !validity.rangeOverflow;
+  }};
+  const indeterminateForSelector = (element) => {{
+    if (!element) return false;
+    if (element.tagName === "PROGRESS") {{
+      const value = element.getAttribute("value");
+      if (value === null || value.trim() === "") return true;
+      const parsed = Number(value);
+      return !Number.isFinite(parsed) || parsed < 0;
+    }}
+    if (element.tagName !== "INPUT"
+        || String(element.getAttribute("type") || "text").toLowerCase() !== "radio") return false;
+    const name = element.getAttribute("name");
+    return !liveDocumentElements().some((candidate) =>
+      candidate.tagName === "INPUT"
+      && String(candidate.getAttribute("type") || "text").toLowerCase() === "radio"
+      && candidate.formOwnerIndex === element.formOwnerIndex
+      && candidate.getAttribute("name") === name
+      && candidate.checked);
+  }};
   const matchesSimpleSelector = (element, selector, scope = element) => {{
     if (!element || element.nodeType !== 1) return false;
     let rest = String(selector).trim();
@@ -38049,6 +38146,11 @@ fn document_bootstrap(
         else if (name === "selected" && !element.selected) return false;
         else if (name === "disabled" && !element.disabled) return false;
         else if (name === "enabled" && element.disabled) return false;
+        else if ((name === "link" || name === "any-link") && !linkForSelector(element)) return false;
+        else if (name === "target" && !targetForSelector(element)) return false;
+        else if (name === "in-range" && rangeForSelector(element) !== true) return false;
+        else if (name === "out-of-range" && rangeForSelector(element) !== false) return false;
+        else if (name === "indeterminate" && !indeterminateForSelector(element)) return false;
         else if (name === "focus" && !element.focused) return false;
         else if (name === "focus-visible" && !element.focused) return false;
         else if (name === "focus-within" && !focusedWithinForSelector(element)) return false;
@@ -38071,6 +38173,8 @@ fn document_bootstrap(
             && name !== "scope" && name !== "root"
             && name !== "empty" && name !== "checked" && name !== "selected"
             && name !== "disabled" && name !== "enabled"
+            && name !== "link" && name !== "any-link" && name !== "target"
+            && name !== "in-range" && name !== "out-of-range" && name !== "indeterminate"
             && name !== "focus" && name !== "focus-visible" && name !== "focus-within"
             && name !== "valid" && name !== "invalid"
             && name !== "required" && name !== "optional"

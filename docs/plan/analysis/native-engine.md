@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-664`, following
-completed `native-engine-browser-663`, following completed
+expansion checkpoint is completed `native-engine-browser-665`, following
+completed `native-engine-browser-664`, following completed
+`native-engine-browser-663`, following completed
 `native-engine-browser-662`, following completed
 `native-engine-browser-661`, following completed `native-engine-browser-660`,
 completed `native-engine-browser-659`, following completed
@@ -540,6 +541,13 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 665 aligns page-realm `:lang()` and `:dir()` with native inherited
+language and direction state. HTML `lang`, XML language namespaces,
+wildcard/prefix language ranges, nearest `dir` attributes, and default LTR
+matching use the projected ancestor chain; unsupported selector grammar
+remains fail-closed. Complete JavaScript selector grammar, complete CSS
+parity, and complete Web IDL parity remain explicit issue #40 gates.
 
 Slice 664 aligns page-realm `:has()` with native descendant, child,
 adjacent-sibling, and general-sibling relations. Relative selector arguments

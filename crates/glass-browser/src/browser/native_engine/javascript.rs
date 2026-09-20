@@ -18330,6 +18330,47 @@ mod native_selector_tests {
             serde_json::json!([true, true, true, false, true])
         );
     }
+    #[test]
+    fn javascript_sibling_combinator_queries_follow_native_tree_order() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("sibling-combinator-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<main><button id='first'></button><button id='second'></button><div id='middle'></div><button id='last'></button></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("sibling combinator document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const first = document.querySelector("#first");
+                    const second = document.querySelector("#second");
+                    const middle = document.querySelector("#middle");
+                    const last = document.querySelector("#last");
+                    const adjacent = Array.from(document.querySelectorAll("#first + button"));
+                    const following = Array.from(document.querySelectorAll("#first ~ *"));
+                    const childAdjacent = document.querySelector("main > #first + button");
+                    return [
+                        second.matches("#first + button"),
+                        last.matches("#first + button"),
+                        middle.matches("#first ~ div"),
+                        last.matches("#first ~ button"),
+                        childAdjacent && childAdjacent.id === "second",
+                        adjacent.length === 1 && adjacent[0].id === "second",
+                        following.map((element) => element.id).join(",") === "second,middle,last",
+                        document.querySelectorAll("button + button").length === 1,
+                    ];
+                })()"##,
+                &document,
+                "fixture://sibling-combinator.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("sibling combinators must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, false, true, true, true, true, true, true])
+        );
+    }
 }
 
 #[cfg(test)]
@@ -38150,12 +38191,12 @@ fn document_bootstrap(
         depth -= 1;
         if (depth < 0) throw new SyntaxError("unbalanced selector");
         part += character;
-      }} else if (depth === 0 && character === ">") {{
+      }} else if (depth === 0 && [">", "+", "~"].includes(character)) {{
         pushSimple();
         if (tokens[tokens.length - 1] && tokens[tokens.length - 1].type === "combinator") {{
           throw new SyntaxError("invalid selector combinator");
         }}
-        tokens.push({{ type: "combinator", value: ">" }});
+        tokens.push({{ type: "combinator", value: character }});
         pendingSpace = false;
       }} else if (depth === 0 && /\s/.test(character)) {{
         pushSimple();
@@ -38505,6 +38546,18 @@ fn document_bootstrap(
       if (index === 0) return true;
       const combinator = chain[index - 1].value;
       if (combinator === ">") return visit(candidate.parentElement, index - 2);
+      const siblings = elementChildren(candidate.parentElement);
+      const position = siblings.indexOf(candidate);
+      if (combinator === "+") {{
+        return position > 0 && visit(siblings[position - 1], index - 2);
+      }}
+      if (combinator === "~") {{
+        for (let previous = position - 1; previous >= 0; previous -= 1) {{
+          if (visit(siblings[previous], index - 2)) return true;
+        }}
+        return false;
+      }}
+      if (combinator !== " ") return false;
       let ancestor = candidate.parentElement;
       while (ancestor) {{
         if (visit(ancestor, index - 2)) return true;

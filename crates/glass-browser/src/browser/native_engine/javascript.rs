@@ -18133,6 +18133,50 @@ mod native_selector_tests {
             ])
         );
     }
+    #[test]
+    fn javascript_structural_selector_queries_follow_native_tree_order() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("structural-selector-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<main><p id='first'></p><span id='span'></span><p id='middle'></p><p id='last'></p></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("structural selector document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const first = document.querySelector("#first");
+                    const middle = document.querySelector("#middle");
+                    const last = document.querySelector("#last");
+                    const span = document.querySelector("#span");
+                    const nthOfType = Array.from(document.querySelectorAll("p:nth-of-type(2)"));
+                    const oddChildren = Array.from(document.querySelectorAll("p:nth-child(2n + 1)"));
+                    return [
+                        first.matches(":first-of-type"),
+                        middle.matches(":nth-of-type(2)"),
+                        last.matches(":last-of-type"),
+                        first.matches(":nth-child(1)"),
+                        last.matches(":nth-last-child(1)"),
+                        first.matches("p:nth-child(2n + 1)"),
+                        middle.matches("p:nth-child(2n + 1)"),
+                        span.matches(":only-of-type"),
+                        nthOfType.length === 1 && nthOfType[0].id === "middle",
+                        oddChildren.length === 2
+                            && oddChildren[0].id === "first"
+                            && oddChildren[1].id === "middle",
+                    ];
+                })()"##,
+                &document,
+                "fixture://structural-selector.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("structural selectors must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true, true, true, true, true, true, true])
+        );
+    }
 }
 
 #[cfg(test)]
@@ -38013,6 +38057,28 @@ fn document_bootstrap(
   const elementChildren = (element) => element && Array.isArray(element.__glassChildren)
     ? element.__glassChildren.filter((child) => child && child.nodeType === 1)
     : [];
+  const sameTypeSiblingsForSelector = (element) => {{
+    const siblings = elementChildren(element && element.parentElement);
+    return siblings.filter((candidate) => candidate.tagName === element.tagName);
+  }};
+  const nthFormulaMatchesForSelector = (position, argument) => {{
+    const value = String(argument || "").replace(/\s+/g, "").toLowerCase();
+    if (value === "odd") return position % 2 === 1;
+    if (value === "even") return position % 2 === 0;
+    if (/^[+-]?\d+$/.test(value)) return position === Number(value);
+    const nIndex = value.indexOf("n");
+    if (nIndex < 0 || value.indexOf("n", nIndex + 1) >= 0) return false;
+    const coefficientText = value.slice(0, nIndex);
+    const offsetText = value.slice(nIndex + 1);
+    const coefficient = coefficientText === "" || coefficientText === "+"
+      ? 1
+      : coefficientText === "-" ? -1 : Number(coefficientText);
+    const offset = offsetText === "" ? 0 : Number(offsetText);
+    if (!Number.isInteger(coefficient) || !Number.isInteger(offset)) return false;
+    if (coefficient === 0) return position === offset;
+    const distance = position - offset;
+    return distance / coefficient >= 0 && distance % Math.abs(coefficient) === 0;
+  }};
   const formValidityForSelector = (element) => {{
     if (!element) return null;
     if (element.tagName === "FORM") return Boolean(element.validity && element.validity.valid);
@@ -38096,7 +38162,7 @@ fn document_bootstrap(
   const matchesSimpleSelector = (element, selector, scope = element) => {{
     if (!element || element.nodeType !== 1) return false;
     let rest = String(selector).trim();
-    const tag = rest.match(/^([A-Za-z][A-Za-z0-9:_-]*|\*)/);
+    const tag = rest.match(/^([A-Za-z][A-Za-z0-9_-]*|\*)/);
     if (tag) {{
       if (tag[1] !== "*" && element.tagName.toLowerCase() !== tag[1].toLowerCase()) return false;
       rest = rest.slice(tag[0].length);
@@ -38122,20 +38188,25 @@ fn document_bootstrap(
         const argument = pseudo[2];
         const siblings = elementChildren(element.parentElement);
         const position = siblings.indexOf(element) + 1;
+        const typeSiblings = sameTypeSiblingsForSelector(element);
+        const typePosition = typeSiblings.indexOf(element) + 1;
         if (name === "not") {{
           if (argument === undefined || matchesSelector(element, argument, scope)) return false;
         }} else if (name === "is" || name === "where") {{
           if (argument === undefined || !matchesSelector(element, argument, scope)) return false;
         }} else if (name === "first-child" && position !== 1) return false;
         else if (name === "last-child" && position !== siblings.length) return false;
-        else if (name === "only-child" && siblings.length !== 1) return false;
-        else if (name === "nth-child") {{
-          const value = String(argument || "").trim().toLowerCase();
-          const expected = value === "odd" ? position % 2 === 1
-            : value === "even" ? position % 2 === 0
-            : Number.isInteger(Number(value)) && position === Number(value);
-          if (!expected) return false;
-        }} else if (name === "scope" && element !== scope) return false;
+        else if (name === "nth-child"
+            && !nthFormulaMatchesForSelector(position, argument)) return false;
+        else if (name === "last-of-type" && typePosition !== typeSiblings.length) return false;
+        else if (name === "only-of-type" && typeSiblings.length !== 1) return false;
+        else if (name === "nth-of-type"
+            && !nthFormulaMatchesForSelector(typePosition, argument)) return false;
+        else if (name === "nth-last-child"
+            && !nthFormulaMatchesForSelector(siblings.length - position + 1, argument)) return false;
+        else if (name === "nth-last-of-type"
+            && !nthFormulaMatchesForSelector(typeSiblings.length - typePosition + 1, argument)) return false;
+        else if (name === "scope" && element !== scope) return false;
         else if (name === "root") {{
           if (!element.ownerDocument || element.ownerDocument.documentElement !== element) return false;
         }} else if (name === "empty") {{
@@ -38170,6 +38241,9 @@ fn document_bootstrap(
             && (!element.userInteracted || formValidityForSelector(element) !== false)) return false;
         else if (name !== "not" && name !== "is" && name !== "where"
             && name !== "only-child" && name !== "nth-child"
+            && name !== "first-of-type" && name !== "last-of-type"
+            && name !== "only-of-type" && name !== "nth-of-type"
+            && name !== "nth-last-child" && name !== "nth-last-of-type"
             && name !== "scope" && name !== "root"
             && name !== "empty" && name !== "checked" && name !== "selected"
             && name !== "disabled" && name !== "enabled"
@@ -38190,7 +38264,8 @@ fn document_bootstrap(
     }}
     return true;
   }};
-  const matchesSelector = (element, selector, scope = element) => splitSelectorList(selector).some((member) => {{
+  const matchesSelector = (element, selector, scope = element) => {{
+    return splitSelectorList(selector).some((member) => {{
     const chain = parseSelectorChain(member);
     const visit = (candidate, index) => {{
       if (!candidate || !matchesSimpleSelector(candidate, chain[index].value, scope)) return false;
@@ -38206,6 +38281,7 @@ fn document_bootstrap(
     }};
     return visit(element, chain.length - 1);
   }});
+  }};
   const isDescendantOf = (element, owner) => {{
     let parent = element && element.parentElement;
     while (parent) {{

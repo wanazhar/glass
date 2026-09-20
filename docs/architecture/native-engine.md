@@ -1,7 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-662`, following completed `native-engine-browser-661`,
+`native-engine-browser-663`, following completed `native-engine-browser-662`,
+following completed `native-engine-browser-661`,
 following completed `native-engine-browser-660`, following completed
 `native-engine-browser-659`, following completed
 `native-engine-browser-658`, following completed
@@ -531,6 +532,14 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 663 aligns page-realm `matches` and query traversal with native
+tree-order semantics for `nth-child`, `nth-last-child`,
+`first/last/only-of-type`, and `nth-of-type` formulas. Tag parsing no longer
+consumes pseudo-class suffixes, and odd/even, integer, and An+B formulas use
+projected sibling state. Unsupported selector grammar remains fail-closed;
+complete JavaScript selector grammar, dynamic control-state parity, complete
+CSS parity, and complete Web IDL parity remain explicit issue #40 gates.
 
 Slice 662 aligns page-realm `matches` and query traversal with native
 link/any-link, target, range, and indeterminate state. URL fragments decode

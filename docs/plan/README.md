@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-662`, following completed `native-engine-browser-661`,
+`native-engine-browser-663`, following completed `native-engine-browser-662`,
+following completed `native-engine-browser-661`,
 following completed `native-engine-browser-660`, following completed
 `native-engine-browser-659`, following completed
 `native-engine-browser-658`, following completed
@@ -586,6 +587,15 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The current bounded JavaScript structural-selector checkpoint aligns
+page-realm `matches` and query traversal with native tree-order semantics for
+`nth-child`, `nth-last-child`, `first/last/only-of-type`, and
+`nth-of-type` formulas. Tag parsing no longer consumes pseudo-class suffixes,
+and odd/even, integer, and An+B formulas use projected sibling state.
+Unsupported selector grammar remains fail-closed; complete JavaScript selector
+grammar, dynamic control-state parity, complete CSS parity, and complete Web
+IDL parity remain issue #40 gates.
 
 The current bounded JavaScript action-state selector checkpoint aligns
 page-realm `matches` and query traversal with native link/any-link, target,

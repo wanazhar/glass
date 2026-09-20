@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-647`, following
+expansion checkpoint is completed `native-engine-browser-648`, following
+completed `native-engine-browser-647`, following
 completed `native-engine-browser-646`, following
 completed `native-engine-browser-645`, following
 completed `native-engine-browser-644`, following
@@ -523,6 +524,14 @@ values raise `SyntaxError`/`RangeError` before `load()`, and setter failures
 are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
+issue #40 gates.
+
+Slice 648 adds bounded namespace-qualified type selectors. Built-in `svg`,
+`html`, and `math` prefixes map to attached element namespace URIs, while
+wildcard and no-namespace forms remain explicit. Qualified selectors feed
+action locators and stylesheet cascade; unknown prefixes and malformed forms
+remain fail-closed. Full namespace declaration and attribute-namespace
+grammar, selector caching, complete CSS and Web IDL parity remain explicit
 issue #40 gates.
 
 Slice 647 adds bounded CSS attribute value case flags. Exact,

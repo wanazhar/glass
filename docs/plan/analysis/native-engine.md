@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The current browser
-expansion checkpoint is completed `native-engine-browser-667`, following
-completed `native-engine-browser-666`, following completed
+expansion checkpoint is completed `native-engine-browser-668`, following
+completed `native-engine-browser-667`, following completed
+`native-engine-browser-666`, following completed
 `native-engine-browser-665`, following completed
 `native-engine-browser-664`, following completed
 `native-engine-browser-663`, following completed
@@ -543,6 +544,13 @@ are transactional. Valid normalized descriptors still reach the existing
 native install command. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain explicit
 issue #40 gates.
+
+Slice 668 aligns page-realm selector parsing and matching with native
+adjacent (`+`) and general (`~`) sibling relations. Previous siblings,
+compound chains, child boundaries, and query-selector traversal use projected
+element order; unsupported selector grammar remains fail-closed. Complete
+JavaScript selector grammar, complete CSS parity, and complete Web IDL parity
+remain explicit issue #40 gates.
 
 Slice 667 completes JavaScript `:first-of-type` and `:only-child` matching
 and adds negative/positive tree-order coverage. Structural pseudo-classes now

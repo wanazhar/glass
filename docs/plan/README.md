@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-667`, following completed `native-engine-browser-666`,
+`native-engine-browser-668`, following completed `native-engine-browser-667`,
+following completed `native-engine-browser-666`,
 following completed `native-engine-browser-665`,
 following completed `native-engine-browser-664`,
 following completed `native-engine-browser-663`,
@@ -591,6 +592,13 @@ cascade while malformed or unseparated modifiers remain fail-closed. Full
 selector grammar, default enumerated-attribute semantics, namespaces,
 pseudo-elements, complete CSS parity, and complete Web IDL parity remain issue
 #40 gates.
+
+The current bounded JavaScript sibling-combinator checkpoint aligns page-realm
+selector parsing and matching with native adjacent (`+`) and general (`~`)
+sibling relations. Previous siblings, compound chains, child boundaries, and
+query-selector traversal use projected element order; unsupported selector
+grammar remains fail-closed. Complete JavaScript selector grammar, complete
+CSS parity, and complete Web IDL parity remain issue #40 gates.
 
 The current bounded JavaScript structural-correction checkpoint completes
 `:first-of-type` and `:only-child` matching and adds negative/positive

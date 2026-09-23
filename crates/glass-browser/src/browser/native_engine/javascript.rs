@@ -27794,6 +27794,22 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         // In an HTML parsing context, an out-of-scope table end tag is ignored.
         return true;
       };
+      const consumeHtmlTableStructureEnd = (targetName) => {
+        const current = state.stack[state.stack.length - 1];
+        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
+        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
+          const candidate = state.stack[index];
+          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
+          const candidateName = String(candidate.localName || "").toLowerCase();
+          if (candidateName === targetName) {
+            state.stack.length = index;
+            return true;
+          }
+          if (candidateName === "html" || candidateName === "table" || candidateName === "template") return true;
+        }
+        // In an HTML parsing context, an out-of-scope table-structure end tag is ignored.
+        return true;
+      };
       const prepareHtmlTableStart = () => {
         const current = state.stack[state.stack.length - 1];
         if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return true;
@@ -27938,6 +27954,11 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           if (closing) {
             const name = closing.value.toLowerCase();
             if (name === "table" && consumeHtmlTableEnd()) {
+              state.cursor = end + 1;
+              continue;
+            }
+            if (["tbody", "tfoot", "thead", "tr"].includes(name)
+              && consumeHtmlTableStructureEnd(name)) {
               state.cursor = end + 1;
               continue;
             }
@@ -35278,6 +35299,23 @@ fn document_bootstrap(
       // The fragment context itself cannot satisfy table scope.
       return true;
     }};
+    const consumeHtmlTableStructureEnd = (targetName) => {{
+      const current = stack[stack.length - 1];
+      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
+      // stack[0] is the fragment context, not an open element in this parser.
+      for (let index = stack.length - 1; index > 0; index -= 1) {{
+        const candidate = stack[index];
+        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
+        const candidateName = String(candidate.localName || "").toLowerCase();
+        if (candidateName === targetName) {{
+          stack.length = index;
+          return true;
+        }}
+        if (candidateName === "html" || candidateName === "table" || candidateName === "template") return true;
+      }}
+      // The fragment context itself cannot satisfy table scope.
+      return true;
+    }};
     const insertImpliedTableElements = (incomingName) => {{
       const current = stack[stack.length - 1];
       if (!current || current.namespaceURI !== HTML_NAMESPACE) return;
@@ -35371,6 +35409,11 @@ fn document_bootstrap(
         }}
         const name = closing[1].toLowerCase();
         if (name === "table" && consumeHtmlTableEnd()) {{
+          cursor = end + 1;
+          continue;
+        }}
+        if (["tbody", "tfoot", "thead", "tr"].includes(name)
+          && consumeHtmlTableStructureEnd(name)) {{
           cursor = end + 1;
           continue;
         }}

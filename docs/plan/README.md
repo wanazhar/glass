@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-679`, following completed `native-engine-browser-678`,
+`native-engine-browser-680`, following completed `native-engine-browser-679`,
+following completed `native-engine-browser-678`,
 following completed `native-engine-browser-677`,
 following completed `native-engine-browser-676`,
 following completed `native-engine-browser-675`,
@@ -133,6 +134,14 @@ commit/same-turn projection, and XHR HTML parsing. It closes the nearest open
 HTML table, stops at `template`/`html` boundaries, and does not count a fragment
 context table as an open element. Focused tests passed 2/2 and the table-focused
 regression batch passed 41/41; general HTML parser conformance remains open.
+
+The completed [native-engine-browser-680](tasks/native-engine-browser-680.md)
+slice applies table scope to `</tbody>`, `</tfoot>`, `</thead>`, and `</tr>`
+across document parsing, fragment commit/same-turn projection, and XHR HTML
+parsing. It preserves nested-table and template boundaries, ignores
+same-named foreign elements, and excludes fragment roots from scope. The
+table-focused batch passed 43/43; the final nested-table/template-boundary
+fixture passed again 1/1.
 
 `native-engine-browser-633`, following completed
 `native-engine-browser-632`, following completed

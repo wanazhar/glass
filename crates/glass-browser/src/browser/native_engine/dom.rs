@@ -1145,6 +1145,13 @@ impl NativeDocument {
                     {
                         continue;
                     }
+                    if matches!(name.as_str(), "tbody" | "tfoot" | "thead" | "tr")
+                        && consume_html_table_structure_end_token(
+                            &document, &mut stack, None, &name,
+                        )?
+                    {
+                        continue;
+                    }
                     if let Some(index) = stack.iter().rposition(|id| {
                         document
                             .node(*id)
@@ -6266,6 +6273,16 @@ impl NativeDocument {
                     {
                         continue;
                     }
+                    if matches!(name.as_str(), "tbody" | "tfoot" | "thead" | "tr")
+                        && consume_html_table_structure_end_token(
+                            self,
+                            &mut stack,
+                            Some(id),
+                            &name,
+                        )?
+                    {
+                        continue;
+                    }
                     if let Some(index) = stack.iter().rposition(|current| {
                         self.raw_node(*current)
                             .and_then(NativeNode::element_name)
@@ -10269,6 +10286,52 @@ fn consume_html_table_end_token(
     Ok(true)
 }
 
+fn consume_html_table_structure_end_token(
+    document: &NativeDocument,
+    stack: &mut Vec<NativeNodeId>,
+    fragment_root: Option<NativeNodeId>,
+    target_name: &str,
+) -> Result<bool, NativeEngineError> {
+    let Some(current_id) = stack.last().copied() else {
+        return Ok(false);
+    };
+    let current = document
+        .node(current_id)
+        .ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder lost its current node while processing a table-structure end"
+                .into(),
+        })?;
+    if current.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+        return Ok(false);
+    }
+
+    for index in (0..stack.len()).rev() {
+        let id = stack[index];
+        if Some(id) == fragment_root {
+            continue;
+        }
+        let node = document.node(id).ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder table scope references an unknown node".into(),
+        })?;
+        if node.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+            continue;
+        }
+        match node.element_name() {
+            Some(name) if name == target_name => {
+                stack.truncate(index);
+                return Ok(true);
+            }
+            Some("html" | "table" | "template") => return Ok(true),
+            _ => {}
+        }
+    }
+
+    // An unmatched table-structure end tag is ignored in an HTML context.
+    Ok(true)
+}
+
 fn decode_entities(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut cursor = 0;
@@ -11357,6 +11420,99 @@ mod tests {
     }
 
     #[test]
+    fn javascript_xhr_and_fragments_share_table_structure_end_tag_scope() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("table-structure-end-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<main id='root'></main><table><tbody id='fragment-context'></tbody></table>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const markup = "<div id='host'><table id='table'><tbody id='body'><tr id='row'><td id='cell'><span id='inside'>x</span></tbody><tr id='next-row'><td>y</td></tr></table><svg id='svg'><tbody id='svg-body'><foreignObject><div id='foreign-host'><span>before</span></tbody><span id='foreign-after'>after</span></div></foreignObject></tbody></svg></div>";
+                    const root = document.querySelector("#root");
+                    root.innerHTML = markup;
+                    const fragmentContext = document.querySelector("#fragment-context");
+                    fragmentContext.innerHTML = "<tr id='fragment-row-one'><td>one</td></tr></tbody><tr id='fragment-row-two'><td>two</td></tr>";
+                    const response = globalThis.__glassParseHtmlDocument(
+                        markup,
+                        "https://example.test/table-structure-end.html",
+                        "text/html",
+                    );
+                    const validGroupAndForeignScope = (container) => {
+                        const table = container.querySelector("#table");
+                        const nextRow = container.querySelector("#next-row");
+                        const foreignHost = container.querySelector("#foreign-host");
+                        return nextRow.parentElement.localName === "tbody"
+                            && nextRow.parentElement.parentElement === table
+                            && container.querySelector("#foreign-after").parentElement === foreignHost
+                            && container.querySelector("#svg-body").namespaceURI === "http://www.w3.org/2000/svg";
+                    };
+                    return [
+                        validGroupAndForeignScope(root),
+                        fragmentContext.children.length === 2,
+                        fragmentContext.querySelector("#fragment-row-one").parentElement === fragmentContext,
+                        fragmentContext.querySelector("#fragment-row-two").parentElement === fragmentContext,
+                        validGroupAndForeignScope(response),
+                    ];
+                })()"##,
+                &document,
+                "fixture://table-structure-end.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("HTML table row-group and row end tags must honor scope");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true, true])
+        );
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("same-turn table fragments must commit through the native parser");
+
+        let root = document.find_element_by_id("root").unwrap();
+        let table = document.find_element_by_id("table").unwrap();
+        let next_row = document.find_element_by_id("next-row").unwrap();
+        let foreign_host = document.find_element_by_id("foreign-host").unwrap();
+        let foreign_after = document.find_element_by_id("foreign-after").unwrap();
+        let foreign_body = document.find_element_by_id("svg-body").unwrap();
+        let implied_group = document.node(next_row).unwrap().parent().unwrap();
+        assert_eq!(
+            document
+                .node(implied_group)
+                .and_then(NativeNode::element_name),
+            Some("tbody")
+        );
+        assert_eq!(document.node(implied_group).unwrap().parent(), Some(table));
+        assert_eq!(
+            document.node(foreign_after).unwrap().parent(),
+            Some(foreign_host)
+        );
+        assert_eq!(
+            document
+                .node(foreign_body)
+                .and_then(NativeNode::namespace_uri),
+            Some(SVG_NAMESPACE_URI)
+        );
+        assert_eq!(document.node(root).unwrap().children().len(), 1);
+
+        let fragment_context = document.find_element_by_id("fragment-context").unwrap();
+        let first_row = document.find_element_by_id("fragment-row-one").unwrap();
+        let second_row = document.find_element_by_id("fragment-row-two").unwrap();
+        assert_eq!(
+            document.node(first_row).unwrap().parent(),
+            Some(fragment_context)
+        );
+        assert_eq!(
+            document.node(second_row).unwrap().parent(),
+            Some(fragment_context)
+        );
+    }
+
+    #[test]
     fn script_remove_detaches_existing_subtree() {
         let limits = NativeEngineLimits::default();
         let mut document = NativeDocument::parse(
@@ -11805,6 +11961,44 @@ mod tests {
         );
         assert_eq!(document.node(cell_after).unwrap().parent(), Some(cell));
         assert_eq!(document.node(outside).unwrap().parent(), Some(host));
+    }
+
+    #[test]
+    fn html_table_row_group_end_tags_stop_at_nested_table_scope() {
+        let document = NativeDocument::parse(
+            "<main id='host'><table id='groups'><thead id='head'><tr><th>h</th></tr></thead><tbody id='body'><tr><td>b</td></tr></tbody><tfoot id='foot'><tr><td>f</td></tr></tfoot></table><table id='outer'><tfoot id='outer-foot'><tr id='outer-row'><td id='outer-cell'><table id='inner'><tbody id='inner-body'><tr id='inner-row'><td id='inner-cell'><span id='before'>before</span></tfoot><span id='after'>after</span></td></tr></tbody></table><template id='template'><span id='template-before'>before</span></tfoot><span id='template-after'>after</span></template><span id='outer-after'>tail</span></td></tr></tfoot></table></main>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        let groups = document.find_element_by_id("groups").unwrap();
+        for group_id in ["head", "body", "foot"] {
+            let group = document.find_element_by_id(group_id).unwrap();
+            assert_eq!(document.node(group).unwrap().parent(), Some(groups));
+        }
+        let outer = document.find_element_by_id("outer").unwrap();
+        let outer_foot = document.find_element_by_id("outer-foot").unwrap();
+        let outer_cell = document.find_element_by_id("outer-cell").unwrap();
+        let inner = document.find_element_by_id("inner").unwrap();
+        let inner_cell = document.find_element_by_id("inner-cell").unwrap();
+        let template = document.find_element_by_id("template").unwrap();
+        let template_after = document.find_element_by_id("template-after").unwrap();
+        let before = document.find_element_by_id("before").unwrap();
+        let after = document.find_element_by_id("after").unwrap();
+        let outer_after = document.find_element_by_id("outer-after").unwrap();
+
+        assert_eq!(document.node(outer_foot).unwrap().parent(), Some(outer));
+        assert_eq!(document.node(inner).unwrap().parent(), Some(outer_cell));
+        assert_eq!(document.node(before).unwrap().parent(), Some(inner_cell));
+        assert_eq!(document.node(after).unwrap().parent(), Some(inner_cell));
+        assert_eq!(
+            document.node(template_after).unwrap().parent(),
+            Some(template)
+        );
+        assert_eq!(
+            document.node(outer_after).unwrap().parent(),
+            Some(outer_cell)
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 # Native browser engine
 
 Status: Browser-complete expansion is locally complete through
+`native-engine-browser-689`, following locally completed
 `native-engine-browser-688`; issue #40 remains open. It follows completed
 `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
@@ -568,6 +569,18 @@ synthetic reference. See
 conformance remains open. The locked package check, 25-test HTML regression
 batch, formatting, whitespace, and maintainer documentation gates passed
 locally; remote CI was not run.
+
+Slice 689 corrects child element namespaces at SVG and MathML integration
+points across direct documents, Rust fragment commits, same-turn JavaScript
+projections, and XHR HTML documents. HTML child rules apply at SVG
+`foreignObject`/`desc`, MathML text integration points (except `mglyph` and
+`malignmark`), and HTML-encoded `annotation-xml`; the `annotation-xml` SVG
+exception is preserved. Outside these cases, children retain their SVG/MathML
+namespace. SVG `title` tokenizer state and complete foreign-content dispatch
+remain separate gaps. The package check, focused route test, 26-test HTML
+batch, formatting, whitespace, and maintainer docs gates passed locally;
+remote CI was not run. See
+[`slice 689`](../plan/tasks/native-engine-browser-689.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

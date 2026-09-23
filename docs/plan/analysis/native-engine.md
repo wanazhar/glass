@@ -1,8 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-688`; issue #40
-remains open. It follows completed
+completed browser expansion slice is `native-engine-browser-689`, following locally
+completed `native-engine-browser-688`; issue #40 remains open. It follows completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`, following completed
 `native-engine-browser-685`, `native-engine-browser-684`, and
@@ -726,6 +726,17 @@ cannot join characters and synthesize a reference.
 Its locked package check, 25-test HTML regression batch, formatting, whitespace,
 and maintainer documentation gates passed locally; remote CI was not run.
 See `docs/plan/tasks/native-engine-browser-688.md`.
+
+Slice 689 addresses a concrete namespace-selection gap in the foreign-content
+path. SVG `foreignObject`/`desc` and MathML integration points switch child
+start-tag handling to HTML rules, preserving the MathML `mglyph`/`malignmark`
+exceptions and the `annotation-xml` SVG exception. Other SVG/MathML descendants
+retain their foreign namespace. This bounded change does not claim a complete
+foreign-content dispatcher or fix SVG `title`'s tokenizer state. Exact
+four-route namespace and parentage parity is the acceptance test. The locked
+package check, focused route test, 26-test HTML batch, formatting, whitespace,
+and maintainer documentation gates passed locally; remote CI was not run.
+See `docs/plan/tasks/native-engine-browser-689.md`.
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

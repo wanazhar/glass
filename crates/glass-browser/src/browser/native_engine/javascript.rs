@@ -27720,15 +27720,30 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
   };
   const nativeHtmlRawElement = (name, parent) => {
     const parentNamespace = parent && parent.namespaceURI || nativeHtmlNamespaceUri;
-    const childNamespace = parentNamespace === nativeSvgNamespaceUri
-      && parent.localName === "foreignobject"
-      ? nativeHtmlNamespaceUri
-      : parentNamespace;
-    const namespaceURI = childNamespace === nativeSvgNamespaceUri || name === "svg"
+    const parentName = String(parent && parent.localName || "").toLowerCase();
+    const parentIsMathmlAnnotationXml = parentNamespace === nativeMathmlNamespaceUri
+      && parentName === "annotation-xml";
+    const encoding = parentIsMathmlAnnotationXml
+      ? String((parent.attributes || []).find((attribute) => attribute.name === "encoding")?.value || "").toLowerCase()
+      : "";
+    const usesHtmlRules = parentNamespace === nativeHtmlNamespaceUri
+      || (parentNamespace === nativeSvgNamespaceUri
+        && ["foreignobject", "desc", "title"].includes(parentName))
+      || (parentNamespace === nativeMathmlNamespaceUri
+        && (["mi", "mo", "mn", "ms", "mtext"].includes(parentName)
+          && !["mglyph", "malignmark"].includes(name)
+          || parentIsMathmlAnnotationXml
+            && (["text/html", "application/xhtml+xml"].includes(encoding) || name === "svg")));
+    const childNamespace = usesHtmlRules ? nativeHtmlNamespaceUri : parentNamespace;
+    const namespaceURI = childNamespace === nativeSvgNamespaceUri
       ? nativeSvgNamespaceUri
-      : name === "math" || childNamespace === nativeMathmlNamespaceUri
+      : childNamespace === nativeMathmlNamespaceUri
         ? nativeMathmlNamespaceUri
-        : nativeHtmlNamespaceUri;
+        : name === "svg"
+          ? nativeSvgNamespaceUri
+          : name === "math"
+            ? nativeMathmlNamespaceUri
+            : nativeHtmlNamespaceUri;
     return {
       type: "element",
       html: true,
@@ -37238,11 +37253,23 @@ fn document_bootstrap(
   }};
   const namespaceForChildElement = (parent, localName) => {{
     const parentNamespace = parent && parent.namespaceURI;
+    const parentName = String(parent && parent.localName || "").toLowerCase();
+    const parentIsMathmlAnnotationXml = parentNamespace === MATHML_NAMESPACE
+      && parentName === "annotation-xml";
+    const encoding = parentIsMathmlAnnotationXml && typeof parent.getAttribute === "function"
+      ? String(parent.getAttribute("encoding") || "").toLowerCase()
+      : "";
+    const usesHtmlRules = !parentNamespace || parentNamespace === HTML_NAMESPACE
+      || (parentNamespace === SVG_NAMESPACE
+        && ["foreignobject", "desc", "title"].includes(parentName))
+      || (parentNamespace === MATHML_NAMESPACE
+        && (["mi", "mo", "mn", "ms", "mtext"].includes(parentName)
+          && !["mglyph", "malignmark"].includes(localName)
+          || parentIsMathmlAnnotationXml
+            && (["text/html", "application/xhtml+xml"].includes(encoding) || localName === "svg")));
+    if (!usesHtmlRules) return parentNamespace;
     if (localName === "svg") return SVG_NAMESPACE;
     if (localName === "math") return MATHML_NAMESPACE;
-    if (parentNamespace === SVG_NAMESPACE && parent.localName === "foreignobject") return HTML_NAMESPACE;
-    if (parentNamespace === SVG_NAMESPACE) return SVG_NAMESPACE;
-    if (parentNamespace === MATHML_NAMESPACE) return MATHML_NAMESPACE;
     return HTML_NAMESPACE;
   }};
   const makeElement = (initialEntry) => {{

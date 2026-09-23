@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-692`; issue #40
-remains open. It follows locally completed `native-engine-browser-691`,
+completed browser expansion slice is `native-engine-browser-693`. Issue #40
+remains open. It follows locally completed `native-engine-browser-692` and
+`native-engine-browser-691`,
 `native-engine-browser-690`, and `native-engine-browser-689`; it follows completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`, following completed
@@ -774,6 +775,19 @@ package check, 4-test foreign batch, 31-test HTML batch, formatting,
 whitespace, and maintainer documentation gates passed locally; remote CI was
 not run. See
 [`slice 692`](../tasks/native-engine-browser-692.md).
+
+Slice 693 is complete locally. Foreign-content dispatch applies to end tags
+even when the current foreign node is an integration point. For `</br>` and
+`</p>`, unwind only to an HTML element or integration boundary, then reprocess
+under the active HTML insertion mode. Table-mode consumers run before the
+in-body fallback; column-group mode ignores these end tags. In-body handling
+inserts an HTML `br`, or closes an in-scope HTML `p` and otherwise reconstructs
+formatting and inserts/closes an empty one. Fragment parsing preserves its
+target and uses HTML rules after breakout. The foreign batch passed 6/6 and the
+scoped HTML batch 33/33; local package and documentation gates passed. Remote
+CI was not run. Keep other foreign end tags unchanged; general foreign-content
+and insertion-mode conformance remain open. See
+[`slice 693`](../tasks/native-engine-browser-693.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

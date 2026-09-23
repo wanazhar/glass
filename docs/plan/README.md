@@ -27,8 +27,9 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion through `native-engine-browser-692` is complete locally; issue #40
-remains open. The latest slice follows completed `native-engine-browser-691`.
+expansion through `native-engine-browser-693` is complete locally; issue #40
+remains open. The latest completed slice follows completed
+`native-engine-browser-692`.
 The earlier expansion chain includes completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`,
@@ -164,6 +165,15 @@ the focused HTML batch passed 31/31, and the locked package check, formatting,
 whitespace, and maintainer documentation gates passed locally. Remote CI was
 not run; end-tag breakout and general foreign-content conformance remain
 open.
+
+[`native-engine-browser-693`](tasks/native-engine-browser-693.md) is complete
+locally. It handles foreign-content `</br>` and `</p>` breakout through all
+four parser routes, including integration-point boundaries, button-scope
+paragraph recovery, table column-group mode, and foreign fragment contexts.
+The foreign batch passed 6/6 and the scoped HTML/table batch passed 33/33; the
+locked package check, formatting, whitespace, and maintainer documentation
+gates passed locally. Remote CI was not run. Full foreign-content and HTML
+parser conformance remain open.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

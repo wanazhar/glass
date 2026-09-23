@@ -1093,7 +1093,7 @@ impl NativeDocument {
                     let foster_location = if is_table_special_start_tag(&name, &attributes) {
                         None
                     } else {
-                        html_table_foster_location(&document, &stack)?
+                        html_table_foster_location(&document, &stack, None)?
                     };
                     let parent = foster_location
                         .map(|(parent, _)| parent)
@@ -1120,10 +1120,14 @@ impl NativeDocument {
                         name: name.clone(),
                         attributes,
                     };
-                    let id = if let Some((parent, before)) = foster_location {
-                        document.add_node_before(parent, before, kind, limits.max_nodes)?
-                    } else {
-                        document.add_node(parent, kind, limits.max_nodes)?
+                    let id = match foster_location {
+                        Some((parent, Some(before))) => {
+                            document.add_node_before(parent, before, kind, limits.max_nodes)?
+                        }
+                        Some((parent, None)) => {
+                            document.add_node(parent, kind, limits.max_nodes)?
+                        }
+                        None => document.add_node(parent, kind, limits.max_nodes)?,
                     };
                     document.assign_parsed_namespace_to_node(id, parent)?;
                     if !self_closing && !is_void_element(&name) {
@@ -1156,7 +1160,7 @@ impl NativeDocument {
                             .iter()
                             .any(|byte| !byte.is_ascii_whitespace())
                         {
-                            html_table_foster_location(&document, &stack)?
+                            html_table_foster_location(&document, &stack, None)?
                         } else {
                             None
                         };
@@ -1168,10 +1172,16 @@ impl NativeDocument {
                                 reason: "tree builder lost its document root".into(),
                             })?;
                         let kind = NativeNodeKind::Text(decoded);
-                        if let Some((parent, before)) = foster_location {
-                            document.add_node_before(parent, before, kind, limits.max_nodes)?;
-                        } else {
-                            document.add_node(parent, kind, limits.max_nodes)?;
+                        match foster_location {
+                            Some((parent, Some(before))) => {
+                                document.add_node_before(parent, before, kind, limits.max_nodes)?;
+                            }
+                            Some((parent, None)) => {
+                                document.add_node(parent, kind, limits.max_nodes)?;
+                            }
+                            None => {
+                                document.add_node(parent, kind, limits.max_nodes)?;
+                            }
                         }
                     }
                 }
@@ -6127,7 +6137,6 @@ impl NativeDocument {
         let available_nodes = self.max_nodes.saturating_sub(self.nodes.len());
         let max_tokens = available_nodes.saturating_mul(2).saturating_add(1).max(1);
         let tokens = tokenize(value, max_tokens)?;
-        let target_depth = self.element_depth(id);
         for child in old_children {
             self.detach_subtree(child)?;
         }
@@ -6152,7 +6161,19 @@ impl NativeDocument {
                     {
                         stack.pop();
                     }
-                    let current_depth = target_depth.saturating_add(stack.len().saturating_sub(1));
+                    let foster_location = if is_table_special_start_tag(&name, &attributes) {
+                        None
+                    } else {
+                        html_table_foster_location(self, &stack, Some(id))?
+                    };
+                    let parent = foster_location
+                        .map(|(parent, _)| parent)
+                        .or_else(|| stack.last().copied())
+                        .ok_or_else(|| NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "fragment parser lost its element parent".into(),
+                        })?;
+                    let current_depth = self.element_depth(parent);
                     if current_depth >= self.max_dom_depth {
                         return Err(NativeEngineError::limit(
                             "DOM depth",
@@ -6160,18 +6181,18 @@ impl NativeDocument {
                             current_depth.saturating_add(1),
                         ));
                     }
-                    let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
-                        offset: 0,
-                        reason: "fragment parser lost its element parent".into(),
-                    })?;
-                    let child = self.add_node(
-                        parent,
-                        NativeNodeKind::Element {
-                            name: name.clone(),
-                            attributes,
-                        },
-                        self.max_nodes,
-                    )?;
+                    let kind = NativeNodeKind::Element {
+                        name: name.clone(),
+                        attributes,
+                    };
+                    let child = match foster_location {
+                        Some((parent, Some(before))) => {
+                            self.add_node_before(parent, before, kind, self.max_nodes)?
+                        }
+                        Some((parent, None)) => self.add_node(parent, kind, self.max_nodes)?,
+                        None => self.add_node(parent, kind, self.max_nodes)?,
+                    };
+                    self.assign_parsed_namespace_to_node(child, parent)?;
                     if !self_closing && !is_void_element(&name) {
                         stack.push(child);
                     }
@@ -6188,15 +6209,35 @@ impl NativeDocument {
                 }
                 HtmlToken::Text(value) => {
                     if !value.is_empty() {
-                        let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
-                            offset: 0,
-                            reason: "fragment parser lost its text parent".into(),
-                        })?;
-                        self.add_node(
-                            parent,
-                            NativeNodeKind::Text(decode_entities(&value)),
-                            self.max_nodes,
-                        )?;
+                        let decoded = decode_entities(&value);
+                        let foster_location = if decoded
+                            .as_bytes()
+                            .iter()
+                            .any(|byte| !byte.is_ascii_whitespace())
+                        {
+                            html_table_foster_location(self, &stack, Some(id))?
+                        } else {
+                            None
+                        };
+                        let parent = foster_location
+                            .map(|(parent, _)| parent)
+                            .or_else(|| stack.last().copied())
+                            .ok_or_else(|| NativeEngineError::Parse {
+                                offset: 0,
+                                reason: "fragment parser lost its text parent".into(),
+                            })?;
+                        let kind = NativeNodeKind::Text(decoded);
+                        match foster_location {
+                            Some((parent, Some(before))) => {
+                                self.add_node_before(parent, before, kind, self.max_nodes)?;
+                            }
+                            Some((parent, None)) => {
+                                self.add_node(parent, kind, self.max_nodes)?;
+                            }
+                            None => {
+                                self.add_node(parent, kind, self.max_nodes)?;
+                            }
+                        }
                     }
                 }
                 HtmlToken::RawText(value) => {
@@ -9978,7 +10019,8 @@ fn is_table_special_start_tag(name: &str, attributes: &BTreeMap<String, String>)
 fn html_table_foster_location(
     document: &NativeDocument,
     stack: &[NativeNodeId],
-) -> Result<Option<(NativeNodeId, NativeNodeId)>, NativeEngineError> {
+    fragment_root: Option<NativeNodeId>,
+) -> Result<Option<(NativeNodeId, Option<NativeNodeId>)>, NativeEngineError> {
     let Some(current) = stack.last().and_then(|id| document.node(*id)) else {
         return Err(NativeEngineError::Parse {
             offset: 0,
@@ -9993,20 +10035,22 @@ fn html_table_foster_location(
     {
         return Ok(None);
     }
-    let table = stack
-        .iter()
-        .rev()
-        .copied()
-        .find(|id| {
-            document.node(*id).is_some_and(|node| {
+    let table = stack.iter().rev().copied().find(|id| {
+        Some(*id) != fragment_root
+            && document.node(*id).is_some_and(|node| {
                 node.namespace_uri() == Some(HTML_NAMESPACE_URI)
                     && node.element_name() == Some("table")
             })
-        })
-        .ok_or_else(|| NativeEngineError::Parse {
+    });
+    let Some(table) = table else {
+        if let Some(fragment_root) = fragment_root {
+            return Ok(Some((fragment_root, None)));
+        }
+        return Err(NativeEngineError::Parse {
             offset: 0,
             reason: "HTML table insertion context has no open table".into(),
-        })?;
+        });
+    };
     let parent = document
         .node(table)
         .and_then(NativeNode::parent)
@@ -10014,7 +10058,7 @@ fn html_table_foster_location(
             offset: 0,
             reason: "open HTML table has no insertion parent".into(),
         })?;
-    Ok(Some((parent, table)))
+    Ok(Some((parent, Some(table))))
 }
 
 fn decode_entities(value: &str) -> String {
@@ -10259,6 +10303,8 @@ fn append_bounded_markup(output: &mut String, value: &str, max_bytes: usize, tru
 #[cfg(test)]
 mod tests {
     use super::super::css::NativeFontPaletteName;
+    use super::super::javascript::NativeJavaScriptRuntime;
+    use super::super::origin::NativeOrigin;
     use super::*;
 
     #[test]
@@ -10480,6 +10526,195 @@ mod tests {
         );
         assert_eq!(document.node(old), None);
         assert_eq!(document.node(new).and_then(NativeNode::parent), Some(root));
+    }
+
+    #[test]
+    fn script_inner_html_fosters_table_text_and_elements_before_nested_table() {
+        let mut document = NativeDocument::parse(
+            "<main id='root'><p id='old'>old</p></main>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let root = document.find_element_by_id("root").unwrap();
+
+        document
+            .apply_script_commands(&[NativeScriptCommand::SetInnerHtml {
+                node_index: root.index(),
+                value: "<table><tbody id='section'>before<div id='foster'><span id='nested'>inside</span></div> &#32;<!--kept--><tr><td>cell</td></tr></tbody></table>".into(),
+            }])
+            .unwrap();
+
+        let foster = document.find_element_by_id("foster").unwrap();
+        let nested = document.find_element_by_id("nested").unwrap();
+        let section = document.find_element_by_id("section").unwrap();
+        let table = document.node(section).and_then(NativeNode::parent).unwrap();
+        assert_eq!(
+            document.node(foster).and_then(NativeNode::parent),
+            Some(root)
+        );
+        assert_eq!(
+            document.node(nested).and_then(NativeNode::parent),
+            Some(foster)
+        );
+        assert_eq!(
+            document.node(table).and_then(NativeNode::parent),
+            Some(root)
+        );
+
+        let root_children = document.node(root).unwrap().children();
+        assert_eq!(root_children.len(), 3);
+        assert!(matches!(
+            document.node(root_children[0]).map(NativeNode::kind),
+            Some(NativeNodeKind::Text(value)) if value == "before"
+        ));
+        assert_eq!(
+            document
+                .node(root_children[1])
+                .and_then(NativeNode::element_name),
+            Some("div")
+        );
+        assert_eq!(
+            document
+                .node(root_children[2])
+                .and_then(NativeNode::element_name),
+            Some("table")
+        );
+
+        let section_children = document.node(section).unwrap().children();
+        assert!(matches!(
+            document.node(section_children[0]).map(NativeNode::kind),
+            Some(NativeNodeKind::Text(value)) if value == "  "
+        ));
+        assert!(matches!(
+            document.node(section_children[1]).map(NativeNode::kind),
+            Some(NativeNodeKind::Comment(value)) if value == "kept"
+        ));
+        assert_eq!(
+            document.element_inner_html(section, 1024),
+            "  <!--kept--><tr><td>cell</td></tr>"
+        );
+    }
+
+    #[test]
+    fn script_inner_html_foster_parenting_stays_inside_table_fragment_context() {
+        let mut document = NativeDocument::parse(
+            "<table id='target'><caption>old</caption></table>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let target = document.find_element_by_id("target").unwrap();
+
+        document
+            .apply_script_commands(&[NativeScriptCommand::SetInnerHtml {
+                node_index: target.index(),
+                value: "<tbody id='section'>start<div id='foster'>inside</div> &#32;<!--kept--></tbody>".into(),
+            }])
+            .unwrap();
+
+        let foster = document.find_element_by_id("foster").unwrap();
+        let section = document.find_element_by_id("section").unwrap();
+        assert_eq!(
+            document.node(foster).and_then(NativeNode::parent),
+            Some(target)
+        );
+        assert_eq!(
+            document.node(section).and_then(NativeNode::parent),
+            Some(target)
+        );
+        let body = document.node(target).and_then(NativeNode::parent).unwrap();
+        assert_eq!(document.node(body).unwrap().children().len(), 1);
+        assert!(matches!(
+            document.node(document.node(section).unwrap().children()[0]).map(NativeNode::kind),
+            Some(NativeNodeKind::Text(value)) if value == "  "
+        ));
+        assert_eq!(
+            document.element_inner_html(target, 1024),
+            "<tbody id=\"section\">  <!--kept--></tbody>start<div id=\"foster\">inside</div>"
+        );
+    }
+
+    #[test]
+    fn script_inner_html_does_not_foster_svg_table_like_elements() {
+        let mut document =
+            NativeDocument::parse("<svg id='svg'></svg>", &NativeEngineLimits::default()).unwrap();
+        let svg = document.find_element_by_id("svg").unwrap();
+
+        document
+            .apply_script_commands(&[NativeScriptCommand::SetInnerHtml {
+                node_index: svg.index(),
+                value: "<table id='svg-table'><div id='svg-child'>inside</div></table>".into(),
+            }])
+            .unwrap();
+
+        let table = document.find_element_by_id("svg-table").unwrap();
+        let child = document.find_element_by_id("svg-child").unwrap();
+        assert_eq!(document.node(table).and_then(NativeNode::parent), Some(svg));
+        assert_eq!(
+            document.node(child).and_then(NativeNode::parent),
+            Some(table)
+        );
+        assert_eq!(
+            document.node(table).and_then(NativeNode::namespace_uri),
+            Some(SVG_NAMESPACE_URI)
+        );
+        assert_eq!(
+            document.node(child).and_then(NativeNode::namespace_uri),
+            Some(SVG_NAMESPACE_URI)
+        );
+    }
+
+    #[test]
+    fn javascript_inner_html_table_foster_preview_matches_committed_tree() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("table-fragment-foster-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const root = document.querySelector("#root");
+                    root.innerHTML = "<table><tbody>before<div id='foster'><span id='nested'>inside</span></div> &#32;<!--kept--><tr><td>cell</td></tr></tbody></table>";
+                    const foster = root.querySelector("#foster");
+                    const nested = root.querySelector("#nested");
+                    const table = root.querySelector("table");
+                    return [
+                        root.firstElementChild === foster,
+                        foster.parentElement === root,
+                        foster.nextElementSibling === table,
+                        nested.parentElement === foster,
+                    ];
+                })()"##,
+                &document,
+                "fixture://table-fragment-foster.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("table foster insertion preview must evaluate");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true])
+        );
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("the fragment projection must commit through the native parser");
+
+        let root = document.find_element_by_id("root").unwrap();
+        let foster = document.find_element_by_id("foster").unwrap();
+        let nested = document.find_element_by_id("nested").unwrap();
+        assert_eq!(
+            document.node(foster).and_then(NativeNode::parent),
+            Some(root)
+        );
+        assert_eq!(
+            document.node(nested).and_then(NativeNode::parent),
+            Some(foster)
+        );
+        assert_eq!(
+            document.element_inner_html(root, 1024),
+            "before<div id=\"foster\"><span id=\"nested\">inside</span></div><table><tbody>  <!--kept--><tr><td>cell</td></tr></tbody></table>"
+        );
     }
 
     #[test]

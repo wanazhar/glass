@@ -4,22 +4,24 @@
 
 The architecture and analysis summaries report completed browser slices
 650–671, but `docs/plan/tasks/` has detailed records only through slice 649 and
-then for slices 672–673; records 650–671 remain missing. The remote issue body
-still reports slice 531. An issue comment records local slice 672, while slice
-673 is verified locally. Audit authoritative commits and recover verifiable
+then for slices 672–674; records 650–671 remain missing. The remote issue body
+still reports slice 531. An issue comment records local slice 672, while slices
+673–674 are verified locally. Audit authoritative commits and recover verifiable
 scope/test evidence for the missing task records; do not infer passing checks
 from summary prose. Then reconcile the stale issue body and clearly separate
 local results from remote CI and promotion evidence.
 
 ## Native HTML parser-route parity
 
-Slice 673 changes `NativeDocument::parse` only. `NativeDocument::apply_script_inner_html`
-has a separate Rust fragment insertion loop, and the JavaScript
-`nativeHtmlParseDocument` function independently builds XHR
-`responseType="document"` results. Define one shared regression corpus and
-bring these parser routes into parity for foster parenting and subsequent
-tree-builder rules, while preserving fragment-context and same-turn DOM
-projection semantics. Do not describe slice 673 as general HTML parser parity.
+Slices 673–674 cover bounded table foster parenting in `NativeDocument::parse`,
+Rust `NativeDocument::apply_script_inner_html`, and the shared JavaScript
+`populateDetachedFragment` same-turn projection, with explicit fragment-root
+and namespace behavior. The independent JavaScript `nativeHtmlParseDocument`
+route still builds XHR
+`responseType="document"` results and remains unaddressed. Extend the shared
+regression corpus to that route and later tree-builder rules; preserve
+fragment-context and synchronous DOM projection semantics. Do not describe
+slices 673–674 as general HTML parser parity.
 
 ## Input: popup-opening mouse release completion
 

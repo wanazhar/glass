@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-673`, following completed `native-engine-browser-672`,
+`native-engine-browser-674`, following completed `native-engine-browser-673`,
+following completed `native-engine-browser-672`,
 following completed `native-engine-browser-671`,
 following completed `native-engine-browser-670`,
 following completed `native-engine-browser-669`,
@@ -85,6 +86,13 @@ locators and stylesheet cascade, while unsupported functional, dynamic, and
 pseudo-element forms remain fail-closed. Full selector grammar, child/sibling
 combinators, pseudo-elements, complete CSS parity, and complete Web IDL parity
 remain issue #40 gates.
+
+The completed [native-engine-browser-674](tasks/native-engine-browser-674.md)
+slice extends that bounded table foster behavior to Rust script `innerHTML` and
+the same-turn JavaScript detached-fragment projection. Fragment fostered nodes
+stay inside the fragment target, including when the target itself is a table;
+the XHR `responseType="document"` parser and full parser conformance remain
+separate issue #40 work.
 
 `native-engine-browser-633`, following completed
 `native-engine-browser-632`, following completed

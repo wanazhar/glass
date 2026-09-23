@@ -35055,6 +35055,33 @@ fn document_bootstrap(
     const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
     const rawTextElements = new Set(["script", "style"]);
     const rcdataElements = new Set(["textarea", "title"]);
+    const tableStructureElements = new Set(["table", "tbody", "tfoot", "thead", "tr"]);
+    const tableSpecialStartTags = new Set([
+      "caption", "col", "colgroup", "tbody", "tfoot", "thead", "tr", "td", "th",
+      "table", "style", "script", "template", "form",
+    ]);
+    const tableFosterLocation = () => {{
+      const current = stack[stack.length - 1];
+      if (!current || current.namespaceURI !== HTML_NAMESPACE
+          || !tableStructureElements.has(String(current.localName || "").toLowerCase())) return null;
+      for (let index = stack.length - 1; index > 0; index -= 1) {{
+        const candidate = stack[index];
+        if (candidate.namespaceURI !== HTML_NAMESPACE || candidate.localName !== "table") continue;
+        const fosterParent = candidate.__glassParent || null;
+        return fosterParent
+          ? {{ parent: fosterParent, before: candidate }}
+          : {{ parent: fragment, before: null }};
+      }}
+      return {{ parent: fragment, before: null }};
+    }};
+    const insertParsedNode = (parent, node, before = null) =>
+      before ? parent.insertBefore(node, before) : parent.appendChild(node);
+    const appendParsedText = (value) => {{
+      if (!value) return;
+      const fosterLocation = /[^\t\n\f\r ]/.test(value) ? tableFosterLocation() : null;
+      const insertionParent = fosterLocation ? fosterLocation.parent : stack[stack.length - 1];
+      insertParsedNode(insertionParent, createText(value), fosterLocation && fosterLocation.before);
+    }};
     const shouldAutoClose = (current, next) =>
       (current === "li" && next === "li")
       || (current === "p" && [
@@ -35116,7 +35143,9 @@ fn document_bootstrap(
       if (source[cursor] !== "<") {{
         const end = source.indexOf("<", cursor);
         const textEnd = end < 0 ? source.length : end;
-        if (textEnd > cursor) parent.appendChild(createText(decodeHtmlEntities(source.slice(cursor, textEnd))));
+        if (textEnd > cursor) {{
+          appendParsedText(decodeHtmlEntities(source.slice(cursor, textEnd)));
+        }}
         cursor = textEnd;
         continue;
       }}
@@ -35130,12 +35159,12 @@ fn document_bootstrap(
       if (source.startsWith("</", cursor)) {{
         const end = findTagEnd(cursor + 2);
         if (end < 0) {{
-          parent.appendChild(createText(decodeHtmlEntities(source.slice(cursor))));
+          appendParsedText(decodeHtmlEntities(source.slice(cursor)));
           break;
         }}
         const closing = /^\s*([A-Za-z][A-Za-z0-9:_-]*)/.exec(source.slice(cursor + 2, end));
         if (!closing) {{
-          parent.appendChild(createText(decodeHtmlEntities(source.slice(cursor, end + 1))));
+          appendParsedText(decodeHtmlEntities(source.slice(cursor, end + 1)));
           cursor = end + 1;
           continue;
         }}
@@ -35151,7 +35180,7 @@ fn document_bootstrap(
       }}
       const end = findTagEnd(cursor + 1);
       if (end < 0) {{
-        parent.appendChild(createText(decodeHtmlEntities(source.slice(cursor))));
+        appendParsedText(decodeHtmlEntities(source.slice(cursor)));
         break;
       }}
       const rawTag = source.slice(cursor + 1, end);
@@ -35165,16 +35194,12 @@ fn document_bootstrap(
           && shouldAutoClose(stack[stack.length - 1].localName, normalizedName)) {{
         stack.pop();
       }}
-      parent = stack[stack.length - 1];
-      const element = createElement(
-        opening[1],
-        namespaceForChildElement(parent, normalizedName),
-      );
       const selfClosing = /\/\s*$/.test(rawTag);
       const attributeSource = rawTag
         .slice(opening[0].length)
         .replace(/\/\s*$/, "");
       const attributes = /([A-Za-z_:][A-Za-z0-9:._-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+)))?/g;
+      const parsedAttributes = [];
       let attribute;
       while ((attribute = attributes.exec(attributeSource)) !== null) {{
         const value = attribute[2] !== undefined
@@ -35184,13 +35209,26 @@ fn document_bootstrap(
             : attribute[4] !== undefined
               ? attribute[4]
               : "";
-        if (!element.hasAttribute(attribute[1])) {{
-          const attributeNamespace = parsedAttributeNamespace(attribute[1], element.namespaceURI);
-          if (attributeNamespace === null) element.setAttribute(attribute[1], decodeHtmlEntities(value));
-          else element.setAttributeNS(attributeNamespace, attribute[1], decodeHtmlEntities(value));
+        parsedAttributes.push([attribute[1], decodeHtmlEntities(value)]);
+      }}
+      const hiddenInput = normalizedName === "input" && parsedAttributes.some(([name, value]) =>
+        name.toLowerCase() === "type" && value.toLowerCase() === "hidden");
+      const fosterLocation = tableSpecialStartTags.has(normalizedName) || hiddenInput
+        ? null
+        : tableFosterLocation();
+      parent = fosterLocation ? fosterLocation.parent : stack[stack.length - 1];
+      const element = createElement(
+        opening[1],
+        namespaceForChildElement(parent, normalizedName),
+      );
+      for (const [name, value] of parsedAttributes) {{
+        if (!element.hasAttribute(name)) {{
+          const attributeNamespace = parsedAttributeNamespace(name, element.namespaceURI);
+          if (attributeNamespace === null) element.setAttribute(name, value);
+          else element.setAttributeNS(attributeNamespace, name, value);
         }}
       }}
-      parent.appendChild(element);
+      insertParsedNode(parent, element, fosterLocation && fosterLocation.before);
       cursor = end + 1;
       if (selfClosing || voidElements.has(element.localName)) continue;
       if (rawTextElements.has(element.localName) || rcdataElements.has(element.localName)) {{

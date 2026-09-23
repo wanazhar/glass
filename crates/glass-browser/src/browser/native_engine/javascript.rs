@@ -27978,8 +27978,288 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           state.stack.push(implied);
         }
       };
+      const activeFormatting = [];
+      const htmlFormattingNames = new Set([
+        "a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small",
+        "strike", "strong", "tt", "u",
+      ]);
+      const htmlSpecialTreeNames = new Set([
+        "address", "applet", "area", "article", "aside", "base", "basefont", "bgsound",
+        "blockquote", "body", "br", "button", "caption", "center", "col", "colgroup",
+        "dd", "details", "dir", "div", "dl", "dt", "embed", "fieldset", "figcaption",
+        "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5",
+        "h6", "head", "header", "hgroup", "hr", "html", "iframe", "img", "input", "keygen", "li",
+        "link", "listing", "main", "marquee", "menu", "meta", "nav", "noembed", "noframes",
+        "noscript", "object", "ol", "p", "param", "plaintext", "pre", "script", "search",
+        "section", "select", "source", "style", "summary", "table", "tbody", "td", "template",
+        "textarea", "tfoot", "th", "thead", "title", "tr", "track", "ul", "wbr", "xmp",
+      ]);
+      const activeFormattingMarkerNames = new Set([
+        "applet", "caption", "marquee", "object", "template", "td", "th",
+      ]);
+      const markerSensitiveEndNames = new Set([
+        "applet", "caption", "marquee", "object", "table", "tbody", "td", "template",
+        "tfoot", "th", "thead", "tr",
+      ]);
+      const clearActiveFormattingToMarker = () => {
+        while (activeFormatting.length) {
+          if (activeFormatting.pop() === null) break;
+        }
+      };
+      const activeFormattingIndex = (name) => {
+        const first = activeFormatting.lastIndexOf(null) + 1;
+        for (let index = activeFormatting.length - 1; index >= first; index -= 1) {
+          const entry = activeFormatting[index];
+          if (entry && entry.namespaceURI === nativeHtmlNamespaceUri && entry.localName === name) return index;
+        }
+        return -1;
+      };
+      const sameFormattingAttributes = (left, right) => {
+        const attributes = (element) => (element.attributes || [])
+          .map((attribute) => JSON.stringify([
+            attribute.namespaceURI || "",
+            attribute.localName || attribute.name,
+            attribute.value,
+          ]))
+          .sort();
+        const leftAttributes = attributes(left);
+        const rightAttributes = attributes(right);
+        return left.localName === right.localName
+          && left.namespaceURI === right.namespaceURI
+          && leftAttributes.length === rightAttributes.length
+          && leftAttributes.every((attribute, index) => attribute === rightAttributes[index]);
+      };
+      const pushActiveFormatting = (element) => {
+        const marker = activeFormatting.lastIndexOf(null) + 1;
+        const equivalent = [];
+        for (let index = marker; index < activeFormatting.length; index += 1) {
+          const entry = activeFormatting[index];
+          if (entry && sameFormattingAttributes(entry, element)) equivalent.push(index);
+        }
+        if (equivalent.length >= 3) activeFormatting.splice(equivalent[0], 1);
+        activeFormatting.push(element);
+      };
+      const isScopeBoundary = (element) => {
+        if (!element) return true;
+        const name = String(element.localName || "").toLowerCase();
+        if (element.namespaceURI === nativeHtmlNamespaceUri) {
+          return ["applet", "caption", "html", "table", "td", "th", "marquee", "object", "select", "template"].includes(name);
+        }
+        if (element.namespaceURI === nativeMathmlNamespaceUri) {
+          return ["mi", "mo", "mn", "ms", "mtext", "annotation-xml"].includes(name);
+        }
+        return element.namespaceURI === nativeSvgNamespaceUri
+          && ["foreignobject", "desc", "title"].includes(name);
+      };
+      const elementInScope = (target) => {
+        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
+          const candidate = state.stack[index];
+          if (candidate === target) return true;
+          if (isScopeBoundary(candidate)) return false;
+        }
+        return false;
+      };
+      const isSpecialHtmlTreeElement = (element) => {
+        const name = String(element && element.localName || "").toLowerCase();
+        if (element && element.namespaceURI === nativeHtmlNamespaceUri) {
+          return htmlSpecialTreeNames.has(name);
+        }
+        if (element && element.namespaceURI === nativeMathmlNamespaceUri) {
+          return ["mi", "mo", "mn", "ms", "mtext", "annotation-xml"].includes(name);
+        }
+        return element && element.namespaceURI === nativeSvgNamespaceUri
+          && ["foreignobject", "desc", "title"].includes(name);
+      };
+      const assertRawHtmlDepth = (parent, root) => {
+        let parentDepth = 0;
+        for (let current = parent; current; current = current.parent || null) {
+          if (current.type === "element") parentDepth += 1;
+        }
+        let subtreeDepth = 0;
+        const pending = [[root, 0]];
+        while (pending.length) {
+          const [node, depth] = pending.pop();
+          const nextDepth = depth + Number(node.type === "element");
+          subtreeDepth = Math.max(subtreeDepth, nextDepth);
+          for (const child of node.children || []) pending.push([child, nextDepth]);
+        }
+        if (parentDepth + subtreeDepth > nativeXmlMaxDepth) throw new Error("native HTML depth limit exceeded");
+      };
+      const moveRawHtmlNode = (parent, node, before = null) => {
+        const oldParent = node.parent || null;
+        if (oldParent) {
+          const oldIndex = oldParent.children.indexOf(node);
+          if (oldIndex >= 0) oldParent.children.splice(oldIndex, 1);
+        }
+        node.parent = parent;
+        if (before === null) parent.children.push(node);
+        else {
+          const index = parent.children.indexOf(before);
+          if (index < 0) throw new Error("native HTML insertion reference is not a child");
+          parent.children.splice(index, 0, node);
+        }
+        assertRawHtmlDepth(parent, node);
+      };
+      const insertFormattingClone = (sourceElement, intendedParent, useFoster = true) => {
+        const foster = useFoster ? tableFosterLocation() : null;
+        const parent = foster ? foster.parent : intendedParent;
+        const clone = nativeHtmlRawElement(sourceElement.localName, parent);
+        clone.namespaceURI = nativeHtmlNamespaceUri;
+        clone.attributes = (sourceElement.attributes || []).map((attribute) => ({
+          ...attribute,
+          owner: clone,
+        }));
+        for (const _attribute of clone.attributes) nativeXmlAddNode(state, { type: "attribute" });
+        append(parent, clone, foster && foster.before);
+        assertRawHtmlDepth(parent, clone);
+        return clone;
+      };
+      const reconstructActiveFormatting = () => {
+        const current = state.stack[state.stack.length - 1];
+        if (current && current.namespaceURI !== nativeHtmlNamespaceUri
+            && !(current.namespaceURI === nativeSvgNamespaceUri
+              && ["foreignobject", "desc", "title"].includes(current.localName))
+            && !(current.namespaceURI === nativeMathmlNamespaceUri
+              && (["mi", "mo", "mn", "ms", "mtext"].includes(current.localName)
+                || (current.localName === "annotation-xml"
+                  && ["text/html", "application/xhtml+xml"].includes(
+                    String(current.attributes.find((attribute) => attribute.name === "encoding")?.value || "").toLowerCase()))))) return;
+        const last = activeFormatting.length - 1;
+        if (last < 0 || activeFormatting[last] === null || state.stack.includes(activeFormatting[last])) return;
+        let first = last;
+        while (first > 0 && activeFormatting[first - 1] !== null
+            && !state.stack.includes(activeFormatting[first - 1])) first -= 1;
+        for (let index = first; index < activeFormatting.length; index += 1) {
+          const oldElement = activeFormatting[index];
+          if (oldElement === null) continue;
+          const parent = state.stack[state.stack.length - 1];
+          const replacement = insertFormattingClone(oldElement, parent);
+          if (state.stack.length >= nativeXmlMaxDepth) throw new Error("native HTML depth limit exceeded");
+          state.stack.push(replacement);
+          activeFormatting[index] = replacement;
+        }
+      };
+      const adoptActiveFormatting = (subject) => {
+        const current = state.stack[state.stack.length - 1];
+        if (current && current.namespaceURI === nativeHtmlNamespaceUri
+            && current.localName === subject && activeFormattingIndex(subject) < 0) {
+          state.stack.pop();
+          return true;
+        }
+        for (let outer = 0; outer < 8; outer += 1) {
+          const formattingIndex = activeFormattingIndex(subject);
+          if (formattingIndex < 0) return false;
+          const formattingElement = activeFormatting[formattingIndex];
+          const formattingStackIndex = state.stack.indexOf(formattingElement);
+          if (formattingStackIndex < 0) {
+            activeFormatting.splice(formattingIndex, 1);
+            return true;
+          }
+          if (!elementInScope(formattingElement)) return true;
+          let furthestIndex = -1;
+          for (let index = state.stack.length - 1; index > formattingStackIndex; index -= 1) {
+            if (isSpecialHtmlTreeElement(state.stack[index])) {
+              furthestIndex = index;
+              break;
+            }
+          }
+          if (furthestIndex < 0) {
+            state.stack.length = formattingStackIndex;
+            activeFormatting.splice(formattingIndex, 1);
+            return true;
+          }
+          const furthestBlock = state.stack[furthestIndex];
+          const commonAncestor = state.stack[formattingStackIndex - 1];
+          if (!commonAncestor) return true;
+          let bookmark = formattingIndex;
+          let node = furthestBlock;
+          let lastNode = furthestBlock;
+          let removedNodeParent = null;
+          let inner = 0;
+          while (true) {
+            inner += 1;
+            let candidateIndex;
+            const nodeIndex = state.stack.indexOf(node);
+            if (nodeIndex >= 0) candidateIndex = nodeIndex - 1;
+            else if (removedNodeParent) candidateIndex = state.stack.indexOf(removedNodeParent);
+            else throw new Error("native HTML adoption agency lost its open node");
+            if (candidateIndex < 0) throw new Error("native HTML adoption agency reached the parser root");
+            const candidate = state.stack[candidateIndex];
+            if (candidate === formattingElement) break;
+            if (inner > 3) {
+              const oldActiveIndex = activeFormatting.indexOf(candidate);
+              if (oldActiveIndex >= 0) {
+                activeFormatting.splice(oldActiveIndex, 1);
+                if (oldActiveIndex < bookmark) bookmark -= 1;
+              }
+            }
+            const activeIndex = activeFormatting.indexOf(candidate);
+            if (activeIndex < 0) {
+              removedNodeParent = candidateIndex > 0 ? state.stack[candidateIndex - 1] : null;
+              node = candidate;
+              state.stack.splice(candidateIndex, 1);
+              continue;
+            }
+            const replacement = insertFormattingClone(candidate, commonAncestor);
+            activeFormatting[activeIndex] = replacement;
+            state.stack[candidateIndex] = replacement;
+            if (lastNode === furthestBlock) bookmark = activeIndex + 1;
+            moveRawHtmlNode(replacement, lastNode);
+            lastNode = replacement;
+            node = replacement;
+            removedNodeParent = null;
+          }
+          const foster = tableFosterLocation();
+          moveRawHtmlNode(foster ? foster.parent : commonAncestor, lastNode, foster && foster.before);
+          const furthestChildren = furthestBlock.children.slice();
+          const replacement = insertFormattingClone(formattingElement, furthestBlock, false);
+          for (const child of furthestChildren) moveRawHtmlNode(replacement, child);
+          moveRawHtmlNode(furthestBlock, replacement);
+          const oldFormattingIndex = activeFormatting.indexOf(formattingElement);
+          if (oldFormattingIndex >= 0) {
+            const insertionIndex = bookmark - Number(oldFormattingIndex < bookmark);
+            activeFormatting.splice(oldFormattingIndex, 1);
+            activeFormatting.splice(Math.min(insertionIndex, activeFormatting.length), 0, replacement);
+          }
+          const oldStackIndex = state.stack.indexOf(formattingElement);
+          const blockStackIndex = state.stack.indexOf(furthestBlock);
+          if (oldStackIndex < 0 || blockStackIndex < 0) throw new Error("native HTML adoption agency lost a boundary node");
+          state.stack.splice(oldStackIndex, 1);
+          state.stack.splice(state.stack.indexOf(furthestBlock) + 1, 0, replacement);
+        }
+        return true;
+      };
+      const consumeFormattingFallbackEnd = (subject) => {
+        const current = state.stack[state.stack.length - 1];
+        if (current && current.namespaceURI !== nativeHtmlNamespaceUri
+            && !(current.namespaceURI === nativeSvgNamespaceUri
+              && ["foreignobject", "desc", "title"].includes(current.localName))
+            && !(current.namespaceURI === nativeMathmlNamespaceUri
+              && (["mi", "mo", "mn", "ms", "mtext"].includes(current.localName)
+                || (current.localName === "annotation-xml"
+                  && ["text/html", "application/xhtml+xml"].includes(
+                    String(current.attributes.find((attribute) => attribute.name === "encoding")?.value || "").toLowerCase()))))) return false;
+        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
+          const candidate = state.stack[index];
+          if (candidate.type === "element" && candidate.namespaceURI === nativeHtmlNamespaceUri
+              && candidate.localName === subject) {
+            state.stack.length = index;
+            return true;
+          }
+          if (isSpecialHtmlTreeElement(candidate)) return true;
+        }
+        return true;
+      };
+      const clearMarkersForPoppedElements = (stackBefore) => {
+        if (!stackBefore) return;
+        for (const element of stackBefore.slice(state.stack.length).reverse()) {
+          if (element && element.namespaceURI === nativeHtmlNamespaceUri
+              && activeFormattingMarkerNames.has(element.localName)) clearActiveFormattingToMarker();
+        }
+      };
       const appendHtmlText = (value) => {
         if (!value) return;
+        reconstructActiveFormatting();
         const fosterLocation = /[^\t\n\f\r ]/.test(value) ? tableFosterLocation() : null;
         const parent = fosterLocation ? fosterLocation.parent : state.stack[state.stack.length - 1];
         append(parent, { type: "text", html: true, value }, fosterLocation && fosterLocation.before);
@@ -28073,34 +28353,25 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           const closing = nativeHtmlReadName(input, state.cursor + 2);
           if (closing) {
             const name = closing.value.toLowerCase();
-            if (name === "table" && consumeHtmlTableEnd()) {
+            const stackBefore = markerSensitiveEndNames.has(name) ? state.stack.slice() : null;
+            const consumed = (name === "table" && consumeHtmlTableEnd())
+              || consumeHtmlTableColumnGroupEnd(name)
+              || (["tbody", "tfoot", "thead", "tr", "td", "th"].includes(name)
+                && consumeHtmlTableStructureEnd(name))
+              || consumeHtmlTableCellIgnoredEnd(name)
+              || consumeHtmlTableRowIgnoredEnd(name)
+              || consumeHtmlTableCaptionIgnoredEnd(name)
+              || consumeHtmlTableModeIgnoredEnd(name);
+            if (consumed) {
+              clearMarkersForPoppedElements(stackBefore);
               state.cursor = end + 1;
               continue;
             }
-            if (consumeHtmlTableColumnGroupEnd(name)) {
-              state.cursor = end + 1;
-              continue;
-            }
-            if (["tbody", "tfoot", "thead", "tr", "td", "th"].includes(name)
-              && consumeHtmlTableStructureEnd(name)) {
-              state.cursor = end + 1;
-              continue;
-            }
-            if (consumeHtmlTableCellIgnoredEnd(name)) {
-              state.cursor = end + 1;
-              continue;
-            }
-            if (consumeHtmlTableRowIgnoredEnd(name)) {
-              state.cursor = end + 1;
-              continue;
-            }
-            if (consumeHtmlTableCaptionIgnoredEnd(name)) {
-              state.cursor = end + 1;
-              continue;
-            }
-            if (consumeHtmlTableModeIgnoredEnd(name)) {
-              state.cursor = end + 1;
-              continue;
+            if (htmlFormattingNames.has(name)) {
+              if (adoptActiveFormatting(name) || consumeFormattingFallbackEnd(name)) {
+                state.cursor = end + 1;
+                continue;
+              }
             }
             let found = -1;
             for (let index = state.stack.length - 1; index > 0; index -= 1) {
@@ -28110,6 +28381,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
               }
             }
             if (found >= 0) state.stack.length = found;
+            clearMarkersForPoppedElements(stackBefore);
           }
           state.cursor = end + 1;
           continue;
@@ -28127,11 +28399,18 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           continue;
         }
         const name = opening[1].toLowerCase();
-        if (name === "table" && !prepareHtmlTableStart()) {
-          state.cursor = end + 1;
-          continue;
+        if (name === "table") {
+          const stackBeforeTable = state.stack.slice();
+          const processTable = prepareHtmlTableStart();
+          clearMarkersForPoppedElements(stackBeforeTable);
+          if (!processTable) {
+            state.cursor = end + 1;
+            continue;
+          }
         }
+        const stackLengthBeforeCellRecovery = state.stack.length;
         prepareHtmlTableCellStructuralStart(name);
+        if (state.stack.length < stackLengthBeforeCellRecovery) clearActiveFormattingToMarker();
         while (state.stack.length > 1
             && nativeHtmlShouldAutoClose(state.stack[state.stack.length - 1].localName, name)) state.stack.pop();
         insertImpliedTableElements(name);
@@ -28139,6 +28418,16 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         parseAttributes(element, rawTag, opening[0].length);
         const hiddenInput = name === "input" && element.attributes.some((attribute) =>
           attribute.name === "type" && attribute.value.toLowerCase() === "hidden");
+        if (!tableSpecialStartTags.has(name) && !hiddenInput) {
+          reconstructActiveFormatting();
+          const nestedFormattingStart = (name === "a" && activeFormattingIndex("a") >= 0)
+            || (name === "nobr" && activeFormattingIndex("nobr") >= 0
+              && elementInScope(activeFormatting[activeFormattingIndex("nobr")]));
+          if (nestedFormattingStart) {
+            adoptActiveFormatting(name);
+            reconstructActiveFormatting();
+          }
+        }
         const fosterLocation = tableSpecialStartTags.has(name) || hiddenInput
           ? null
           : tableFosterLocation();
@@ -28165,6 +28454,10 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         }
         if (state.stack.length >= nativeXmlMaxDepth) throw new Error("native HTML depth limit exceeded");
         state.stack.push(element);
+        if (element.namespaceURI === nativeHtmlNamespaceUri) {
+          if (activeFormattingMarkerNames.has(name)) activeFormatting.push(null);
+          else if (htmlFormattingNames.has(name)) pushActiveFormatting(element);
+        }
       }
       const makeImplicitElement = (name, parent) => {
         const element = nativeHtmlRawElement(name, parent);
@@ -35366,8 +35659,276 @@ fn document_bootstrap(
     }};
     const insertParsedNode = (parent, node, before = null) =>
       before ? parent.insertBefore(node, before) : parent.appendChild(node);
+    const activeFormatting = [];
+    const htmlFormattingNames = new Set([
+      "a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small",
+      "strike", "strong", "tt", "u",
+    ]);
+    const htmlSpecialTreeNames = new Set([
+      "address", "applet", "area", "article", "aside", "base", "basefont", "bgsound",
+      "blockquote", "body", "br", "button", "caption", "center", "col", "colgroup",
+      "dd", "details", "dir", "div", "dl", "dt", "embed", "fieldset", "figcaption",
+      "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5",
+      "h6", "head", "header", "hgroup", "hr", "html", "iframe", "img", "input", "keygen", "li",
+      "link", "listing", "main", "marquee", "menu", "meta", "nav", "noembed", "noframes",
+      "noscript", "object", "ol", "p", "param", "plaintext", "pre", "script", "search",
+      "section", "select", "source", "style", "summary", "table", "tbody", "td", "template",
+      "textarea", "tfoot", "th", "thead", "title", "tr", "track", "ul", "wbr", "xmp",
+    ]);
+    const activeFormattingMarkerNames = new Set([
+      "applet", "caption", "marquee", "object", "template", "td", "th",
+    ]);
+    const markerSensitiveEndNames = new Set([
+      "applet", "caption", "marquee", "object", "table", "tbody", "td", "template",
+      "tfoot", "th", "thead", "tr",
+    ]);
+    const clearActiveFormattingToMarker = () => {{
+      while (activeFormatting.length) {{
+        if (activeFormatting.pop() === null) break;
+      }}
+    }};
+    const activeFormattingIndex = (name) => {{
+      const first = activeFormatting.lastIndexOf(null) + 1;
+      for (let index = activeFormatting.length - 1; index >= first; index -= 1) {{
+        const entry = activeFormatting[index];
+        if (entry && entry.namespaceURI === HTML_NAMESPACE && entry.localName === name) return index;
+      }}
+      return -1;
+    }};
+    const sameFormattingAttributes = (left, right) => {{
+      const attributes = (element) => Array.from(element.attributes || [])
+        .map((attribute) => JSON.stringify([
+          attribute.namespaceURI || "",
+          attribute.localName || attribute.name,
+          attribute.value,
+        ]))
+        .sort();
+      const leftAttributes = attributes(left);
+      const rightAttributes = attributes(right);
+      return left.localName === right.localName
+        && left.namespaceURI === right.namespaceURI
+        && leftAttributes.length === rightAttributes.length
+        && leftAttributes.every((attribute, index) => attribute === rightAttributes[index]);
+    }};
+    const pushActiveFormatting = (element) => {{
+      const marker = activeFormatting.lastIndexOf(null) + 1;
+      const equivalent = [];
+      for (let index = marker; index < activeFormatting.length; index += 1) {{
+        const entry = activeFormatting[index];
+        if (entry && sameFormattingAttributes(entry, element)) equivalent.push(index);
+      }}
+      if (equivalent.length >= 3) activeFormatting.splice(equivalent[0], 1);
+      activeFormatting.push(element);
+    }};
+    const isScopeBoundary = (element) => {{
+      if (!element || Number(element.nodeType) !== 1) return true;
+      const name = String(element.localName || "").toLowerCase();
+      if (element.namespaceURI === HTML_NAMESPACE) {{
+        return ["applet", "caption", "html", "table", "td", "th", "marquee", "object", "select", "template"].includes(name);
+      }}
+      if (element.namespaceURI === MATHML_NAMESPACE) {{
+        return ["mi", "mo", "mn", "ms", "mtext", "annotation-xml"].includes(name);
+      }}
+      return element.namespaceURI === SVG_NAMESPACE
+        && ["foreignobject", "desc", "title"].includes(name);
+    }};
+    const elementInScope = (target) => {{
+      for (let index = stack.length - 1; index >= 0; index -= 1) {{
+        const candidate = stack[index];
+        if (candidate === stack[0]) return false;
+        if (candidate === target) return true;
+        if (isScopeBoundary(candidate)) return false;
+      }}
+      return false;
+    }};
+    const specialTreeElement = (element) => {{
+      const name = String(element && element.localName || "").toLowerCase();
+      if (element && element.namespaceURI === HTML_NAMESPACE) {{
+        return htmlSpecialTreeNames.has(name);
+      }}
+      if (element && element.namespaceURI === MATHML_NAMESPACE) {{
+        return ["mi", "mo", "mn", "ms", "mtext", "annotation-xml"].includes(name);
+      }}
+      return element && element.namespaceURI === SVG_NAMESPACE
+        && ["foreignobject", "desc", "title"].includes(name);
+    }};
+    const assertDetachedTreeDepth = (parent, root) => {{
+      let parentDepth = 0;
+      for (let current = parent; current && Number(current.nodeType) === 1;
+          current = current.__glassParent || null) parentDepth += 1;
+      let subtreeDepth = 0;
+      const pending = [[root, 0]];
+      while (pending.length) {{
+        const [node, depth] = pending.pop();
+        const nextDepth = depth + Number(Number(node.nodeType) === 1);
+        subtreeDepth = Math.max(subtreeDepth, nextDepth);
+        for (const child of Array.from(node.childNodes || [])) pending.push([child, nextDepth]);
+      }}
+      if (parentDepth + subtreeDepth > nativeXmlMaxDepth) throw new Error("native HTML depth limit exceeded");
+    }};
+    const moveParsedNode = (parent, node, before = null) => {{
+      if (before === node) return;
+      insertParsedNode(parent, node, before);
+      assertDetachedTreeDepth(parent, node);
+    }};
+    const insertFormattingClone = (sourceElement, intendedParent, useFoster = true) => {{
+      const foster = useFoster ? tableFosterLocation() : null;
+      const parent = foster ? foster.parent : intendedParent;
+      const clone = createElement(sourceElement.localName, HTML_NAMESPACE);
+      for (const attribute of Array.from(sourceElement.attributes || [])) {{
+        if (attribute.namespaceURI) clone.setAttributeNS(attribute.namespaceURI, attribute.name, attribute.value);
+        else clone.setAttribute(attribute.name, attribute.value);
+      }}
+      insertParsedNode(parent, clone, foster && foster.before);
+      assertDetachedTreeDepth(parent, clone);
+      return clone;
+    }};
+    const reconstructActiveFormatting = () => {{
+      const current = stack[stack.length - 1];
+      if (current && Number(current.nodeType) === 1 && current.namespaceURI !== HTML_NAMESPACE
+          && !(current.namespaceURI === SVG_NAMESPACE
+            && ["foreignobject", "desc", "title"].includes(current.localName))
+          && !(current.namespaceURI === MATHML_NAMESPACE
+            && (["mi", "mo", "mn", "ms", "mtext"].includes(current.localName)
+              || (current.localName === "annotation-xml"
+                && ["text/html", "application/xhtml+xml"].includes(
+                  String(current.getAttribute("encoding") || "").toLowerCase()))))) return;
+      const last = activeFormatting.length - 1;
+      if (last < 0 || activeFormatting[last] === null || stack.includes(activeFormatting[last])) return;
+      let first = last;
+      while (first > 0 && activeFormatting[first - 1] !== null
+          && !stack.includes(activeFormatting[first - 1])) first -= 1;
+      for (let index = first; index < activeFormatting.length; index += 1) {{
+        const oldElement = activeFormatting[index];
+        if (oldElement === null) continue;
+        const parent = stack[stack.length - 1];
+        const replacement = insertFormattingClone(oldElement, parent);
+        if (stack.length >= nativeXmlMaxDepth) throw new Error("native HTML depth limit exceeded");
+        stack.push(replacement);
+        activeFormatting[index] = replacement;
+      }}
+    }};
+    const adoptActiveFormatting = (subject) => {{
+      const current = stack[stack.length - 1];
+      if (current && Number(current.nodeType) === 1 && current.namespaceURI === HTML_NAMESPACE
+          && current.localName === subject && activeFormattingIndex(subject) < 0) {{
+        stack.pop();
+        return true;
+      }}
+      for (let outer = 0; outer < 8; outer += 1) {{
+        const formattingIndex = activeFormattingIndex(subject);
+        if (formattingIndex < 0) return false;
+        const formattingElement = activeFormatting[formattingIndex];
+        const formattingStackIndex = stack.indexOf(formattingElement);
+        if (formattingStackIndex < 0) {{
+          activeFormatting.splice(formattingIndex, 1);
+          return true;
+        }}
+        if (!elementInScope(formattingElement)) return true;
+        let furthestIndex = -1;
+        for (let index = stack.length - 1; index > formattingStackIndex; index -= 1) {{
+          if (specialTreeElement(stack[index])) {{
+            furthestIndex = index;
+            break;
+          }}
+        }}
+        if (furthestIndex < 0) {{
+          stack.length = formattingStackIndex;
+          activeFormatting.splice(formattingIndex, 1);
+          return true;
+        }}
+        const furthestBlock = stack[furthestIndex];
+        const commonAncestor = stack[formattingStackIndex - 1];
+        if (!commonAncestor) return true;
+        let bookmark = formattingIndex;
+        let node = furthestBlock;
+        let lastNode = furthestBlock;
+        let removedNodeParent = null;
+        let inner = 0;
+        while (true) {{
+          inner += 1;
+          let candidateIndex;
+          const nodeIndex = stack.indexOf(node);
+          if (nodeIndex >= 0) candidateIndex = nodeIndex - 1;
+          else if (removedNodeParent) candidateIndex = stack.indexOf(removedNodeParent);
+          else throw new Error("native HTML adoption agency lost its open node");
+          if (candidateIndex < 0) throw new Error("native HTML adoption agency reached the parser root");
+          const candidate = stack[candidateIndex];
+          if (candidate === formattingElement) break;
+          if (inner > 3) {{
+            const oldActiveIndex = activeFormatting.indexOf(candidate);
+            if (oldActiveIndex >= 0) {{
+              activeFormatting.splice(oldActiveIndex, 1);
+              if (oldActiveIndex < bookmark) bookmark -= 1;
+            }}
+          }}
+          const activeIndex = activeFormatting.indexOf(candidate);
+          if (activeIndex < 0) {{
+            removedNodeParent = candidateIndex > 0 ? stack[candidateIndex - 1] : null;
+            node = candidate;
+            stack.splice(candidateIndex, 1);
+            continue;
+          }}
+          const replacement = insertFormattingClone(candidate, commonAncestor);
+          activeFormatting[activeIndex] = replacement;
+          stack[candidateIndex] = replacement;
+          if (lastNode === furthestBlock) bookmark = activeIndex + 1;
+          moveParsedNode(replacement, lastNode);
+          lastNode = replacement;
+          node = replacement;
+          removedNodeParent = null;
+        }}
+        const foster = tableFosterLocation();
+        moveParsedNode(foster ? foster.parent : commonAncestor, lastNode, foster && foster.before);
+        const furthestChildren = Array.from(furthestBlock.childNodes || []);
+        const replacement = insertFormattingClone(formattingElement, furthestBlock, false);
+        for (const child of furthestChildren) moveParsedNode(replacement, child);
+        moveParsedNode(furthestBlock, replacement);
+        const oldFormattingIndex = activeFormatting.indexOf(formattingElement);
+        if (oldFormattingIndex >= 0) {{
+          const insertionIndex = bookmark - Number(oldFormattingIndex < bookmark);
+          activeFormatting.splice(oldFormattingIndex, 1);
+          activeFormatting.splice(Math.min(insertionIndex, activeFormatting.length), 0, replacement);
+        }}
+        const oldStackIndex = stack.indexOf(formattingElement);
+        const blockStackIndex = stack.indexOf(furthestBlock);
+        if (oldStackIndex < 0 || blockStackIndex < 0) throw new Error("native HTML adoption agency lost a boundary node");
+        stack.splice(oldStackIndex, 1);
+        stack.splice(stack.indexOf(furthestBlock) + 1, 0, replacement);
+      }}
+      return true;
+    }};
+    const consumeFormattingFallbackEnd = (subject) => {{
+      const current = stack[stack.length - 1];
+      if (current && Number(current.nodeType) === 1 && current.namespaceURI !== HTML_NAMESPACE
+          && !(current.namespaceURI === SVG_NAMESPACE
+            && ["foreignobject", "desc", "title"].includes(current.localName))
+          && !(current.namespaceURI === MATHML_NAMESPACE
+            && (["mi", "mo", "mn", "ms", "mtext"].includes(current.localName)
+              || (current.localName === "annotation-xml"
+                && ["text/html", "application/xhtml+xml"].includes(
+                  String(current.getAttribute("encoding") || "").toLowerCase()))))) return false;
+      for (let index = stack.length - 1; index > 0; index -= 1) {{
+        const candidate = stack[index];
+        if (Number(candidate.nodeType) === 1 && candidate.namespaceURI === HTML_NAMESPACE
+            && candidate.localName === subject) {{
+          stack.length = index;
+          return true;
+        }}
+        if (specialTreeElement(candidate)) return true;
+      }}
+      return true;
+    }};
+    const clearMarkersForPoppedElements = (stackBefore) => {{
+      if (!stackBefore) return;
+      for (const element of stackBefore.slice(stack.length).reverse()) {{
+        if (element && element.namespaceURI === HTML_NAMESPACE
+            && activeFormattingMarkerNames.has(element.localName)) clearActiveFormattingToMarker();
+      }}
+    }};
     const appendParsedText = (value) => {{
       if (!value) return;
+      reconstructActiveFormatting();
       const fosterLocation = /[^\t\n\f\r ]/.test(value) ? tableFosterLocation() : null;
       const insertionParent = fosterLocation ? fosterLocation.parent : stack[stack.length - 1];
       insertParsedNode(insertionParent, createText(value), fosterLocation && fosterLocation.before);
@@ -35675,34 +36236,25 @@ fn document_bootstrap(
           continue;
         }}
         const name = closing[1].toLowerCase();
-        if (name === "table" && consumeHtmlTableEnd()) {{
+        const stackBefore = markerSensitiveEndNames.has(name) ? stack.slice() : null;
+        const consumed = (name === "table" && consumeHtmlTableEnd())
+          || consumeHtmlTableColumnGroupEnd(name)
+          || (["tbody", "tfoot", "thead", "tr", "td", "th"].includes(name)
+            && consumeHtmlTableStructureEnd(name))
+          || consumeHtmlTableCellIgnoredEnd(name)
+          || consumeHtmlTableRowIgnoredEnd(name)
+          || consumeHtmlTableCaptionIgnoredEnd(name)
+          || consumeHtmlTableModeIgnoredEnd(name);
+        if (consumed) {{
+          clearMarkersForPoppedElements(stackBefore);
           cursor = end + 1;
           continue;
         }}
-        if (consumeHtmlTableColumnGroupEnd(name)) {{
-          cursor = end + 1;
-          continue;
-        }}
-        if (["tbody", "tfoot", "thead", "tr", "td", "th"].includes(name)
-          && consumeHtmlTableStructureEnd(name)) {{
-          cursor = end + 1;
-          continue;
-        }}
-        if (consumeHtmlTableCellIgnoredEnd(name)) {{
-          cursor = end + 1;
-          continue;
-        }}
-        if (consumeHtmlTableRowIgnoredEnd(name)) {{
-          cursor = end + 1;
-          continue;
-        }}
-        if (consumeHtmlTableCaptionIgnoredEnd(name)) {{
-          cursor = end + 1;
-          continue;
-        }}
-        if (consumeHtmlTableModeIgnoredEnd(name)) {{
-          cursor = end + 1;
-          continue;
+        if (htmlFormattingNames.has(name)) {{
+          if (adoptActiveFormatting(name) || consumeFormattingFallbackEnd(name)) {{
+            cursor = end + 1;
+            continue;
+          }}
         }}
         for (let index = stack.length - 1; index > 0; index -= 1) {{
           if (stack[index].localName === name) {{
@@ -35710,6 +36262,7 @@ fn document_bootstrap(
             break;
           }}
         }}
+        clearMarkersForPoppedElements(stackBefore);
         cursor = end + 1;
         continue;
       }}
@@ -35725,11 +36278,18 @@ fn document_bootstrap(
         continue;
       }}
       const normalizedName = opening[1].toLowerCase();
-      if (normalizedName === "table" && !prepareHtmlTableStart()) {{
-        cursor = end + 1;
-        continue;
+      if (normalizedName === "table") {{
+        const stackBeforeTable = stack.slice();
+        const processTable = prepareHtmlTableStart();
+        clearMarkersForPoppedElements(stackBeforeTable);
+        if (!processTable) {{
+          cursor = end + 1;
+          continue;
+        }}
       }}
+      const stackLengthBeforeCellRecovery = stack.length;
       prepareHtmlTableCellStructuralStart(normalizedName);
+      if (stack.length < stackLengthBeforeCellRecovery) clearActiveFormattingToMarker();
       while (stack.length > 1
           && shouldAutoClose(stack[stack.length - 1].localName, normalizedName)) {{
         stack.pop();
@@ -35754,6 +36314,16 @@ fn document_bootstrap(
       }}
       const hiddenInput = normalizedName === "input" && parsedAttributes.some(([name, value]) =>
         name.toLowerCase() === "type" && value.toLowerCase() === "hidden");
+      if (!tableSpecialStartTags.has(normalizedName) && !hiddenInput) {{
+        reconstructActiveFormatting();
+        const nestedFormattingStart = (normalizedName === "a" && activeFormattingIndex("a") >= 0)
+          || (normalizedName === "nobr" && activeFormattingIndex("nobr") >= 0
+            && elementInScope(activeFormatting[activeFormattingIndex("nobr")]));
+        if (nestedFormattingStart) {{
+          adoptActiveFormatting(normalizedName);
+          reconstructActiveFormatting();
+        }}
+      }}
       const fosterLocation = tableSpecialStartTags.has(normalizedName) || hiddenInput
         ? null
         : tableFosterLocation();
@@ -35784,6 +36354,10 @@ fn document_bootstrap(
         continue;
       }}
       stack.push(element);
+      if (element.namespaceURI === HTML_NAMESPACE) {{
+        if (activeFormattingMarkerNames.has(element.localName)) activeFormatting.push(null);
+        else if (htmlFormattingNames.has(element.localName)) pushActiveFormatting(element);
+      }}
     }}
   }};
   const installReflectedAttributeProperties = (element) => {{
@@ -37637,6 +38211,10 @@ fn document_bootstrap(
         }} catch (error) {{
           dispatchTarget(node, createEvent("error"));
         }}
+      }}
+      if (element.namespaceURI === HTML_NAMESPACE) {{
+        if (activeFormattingMarkerNames.has(normalizedName)) activeFormatting.push(null);
+        else if (htmlFormattingNames.has(normalizedName)) pushActiveFormatting(element);
       }}
     }}
     for (const child of node.__glassChildren || []) executeInsertedScripts(child);

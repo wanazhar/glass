@@ -27,8 +27,9 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed `native-engine-browser-685`,
-following completed `native-engine-browser-684`, following completed
+the browser-complete expansion has completed `native-engine-browser-686`,
+following completed `native-engine-browser-685`, following completed `native-engine-browser-684`,
+following completed
 `native-engine-browser-683`, following completed `native-engine-browser-682`,
 following completed `native-engine-browser-681`, following completed `native-engine-browser-680`,
 following completed `native-engine-browser-679`,
@@ -88,6 +89,15 @@ bounded parser increment does not claim general HTML conformance. Its focused
 four-route regression passed 1/1 and the table-focused suite passed 46/46 after
 the locked package check; docs validators covered 1,313 Markdown files with no
 current-claim failures.
+
+[`native-engine-browser-686`](tasks/native-engine-browser-686.md) completes the
+active-formatting-list lifecycle relevant to the current HTML tree builder:
+reconstruction before in-body insertion, marker-scoped list management and the
+Noah's Ark limit, plus adoption-agency repair for misnested formatting tags.
+Exact-tree tests pass across document parsing, Rust `innerHTML`, same-turn
+JavaScript fragments, and XHR HTML documents; the focused active-formatting
+batch passed 2/2 and the table regression batch passed 46/46. Other insertion
+modes, tokenizer behavior, and general HTML parser conformance remain open.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

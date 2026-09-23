@@ -70,6 +70,11 @@ four-route fixture passed 1/1, the table-focused batch passed 46/46, and the
 locked package check passed; documentation validation reported 1,313 Markdown
 files and zero current-claim failures. See `tasks/native-engine-browser-685.md`.
 
+Slice 686 is complete: active-formatting-list reconstruction, marker and
+Noah's Ark handling, and the bounded adoption-agency algorithm now run in all
+four parser routes. The focused active-formatting tests pass 2/2 and the table
+regression batch passes 46/46; general HTML parser conformance remains open.
+
 ## Input: popup-opening mouse release completion
 
 The compare-018 diagnostic proves that an ordinary pointer click whose authored

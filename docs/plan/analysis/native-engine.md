@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-678`, following completed
+browser expansion slice is `native-engine-browser-679`, following completed
+`native-engine-browser-678`, following completed
 `native-engine-browser-677`, following completed `native-engine-browser-676`,
 following completed `native-engine-browser-675`,
 following completed `native-engine-browser-674`,
@@ -625,6 +626,17 @@ focused nested-table filter passed 4/4; the broader table-focused regression
 batch passed 39/39 after the locked scoped check. The implementation uses the
 existing stack as a bounded insertion-mode signal; it does not claim a full
 table insertion-mode machine or general HTML parser conformance.
+
+Slice 679 implements the complementary bounded `</table>` rule. It searches
+the open-element stack for an HTML `table` in table scope, stopping at HTML
+`template` or `html` scope boundaries; it closes the matching table and
+descendants when found, otherwise ignores the token in an HTML parsing
+context. The fragment context element itself is not counted as open, and
+foreign-current handling remains on its existing route. Document parsing,
+fragment commit/projection, and XHR document parsing share the behavior. The
+focused scope/context tests passed 2/2 and the table-focused regression batch
+passed 41/41 after the scoped locked check. This does not implement the
+remaining table insertion modes or general HTML conformance.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

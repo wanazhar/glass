@@ -1141,6 +1141,10 @@ impl NativeDocument {
                     }
                 }
                 HtmlToken::EndTag(name) => {
+                    if name == "table" && consume_html_table_end_token(&document, &mut stack, None)?
+                    {
+                        continue;
+                    }
                     if let Some(index) = stack.iter().rposition(|id| {
                         document
                             .node(*id)
@@ -6258,6 +6262,10 @@ impl NativeDocument {
                     }
                 }
                 HtmlToken::EndTag(name) => {
+                    if name == "table" && consume_html_table_end_token(self, &mut stack, Some(id))?
+                    {
+                        continue;
+                    }
                     if let Some(index) = stack.iter().rposition(|current| {
                         self.raw_node(*current)
                             .and_then(NativeNode::element_name)
@@ -10217,6 +10225,50 @@ fn prepare_html_table_start_token(
     }
 }
 
+fn consume_html_table_end_token(
+    document: &NativeDocument,
+    stack: &mut Vec<NativeNodeId>,
+    fragment_root: Option<NativeNodeId>,
+) -> Result<bool, NativeEngineError> {
+    let Some(current_id) = stack.last().copied() else {
+        return Ok(false);
+    };
+    let current = document
+        .node(current_id)
+        .ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder lost its current node while processing a table end".into(),
+        })?;
+    if current.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+        return Ok(false);
+    }
+
+    for index in (0..stack.len()).rev() {
+        let id = stack[index];
+        if Some(id) == fragment_root {
+            continue;
+        }
+        let node = document.node(id).ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder table scope references an unknown node".into(),
+        })?;
+        if node.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+            continue;
+        }
+        match node.element_name() {
+            Some("table") => {
+                stack.truncate(index);
+                return Ok(true);
+            }
+            Some("html" | "template") => return Ok(true),
+            _ => {}
+        }
+    }
+
+    // In an HTML parsing context, an out-of-scope table end tag is ignored.
+    Ok(true)
+}
+
 fn decode_entities(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut cursor = 0;
@@ -11211,6 +11263,100 @@ mod tests {
     }
 
     #[test]
+    fn javascript_and_xhr_table_end_tags_honor_scope_and_fragment_context() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("table-end-scope-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<main id='root'></main><table id='fragment-context'></table>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const markup = "<table id='outer'><tbody><tr><td id='cell'><table id='nested'><tbody><tr><td>nested</td></tr></tbody></table><template id='template'><span id='template-before'>before</span></table><span id='template-after'>after</span></template><span id='cell-after'>tail</span></td></tr></tbody></table><p id='outside'>outside</p>";
+                    const root = document.querySelector("#root");
+                    root.innerHTML = markup;
+                    const fragmentContext = document.querySelector("#fragment-context");
+                    fragmentContext.innerHTML = "<tbody><tr><td id='fragment-cell'><span id='fragment-before'>before</span></table><span id='fragment-after'>after</span></td></tr></tbody>";
+                    const response = globalThis.__glassParseHtmlDocument(
+                        "<main id='response-root'>" + markup + "</main>",
+                        "https://example.test/table-end-scope.html",
+                        "text/html",
+                    );
+                    if (!response) return null;
+                    const responseRoot = response.getElementById("response-root");
+                    const responseTemplate = response.getElementById("template");
+                    const responseCell = response.getElementById("cell");
+                    return [
+                        root.querySelector("#template-after").parentElement === root.querySelector("#template"),
+                        root.querySelector("#cell-after").parentElement === root.querySelector("#cell"),
+                        root.querySelector("#nested").parentElement === root.querySelector("#cell"),
+                        root.querySelector("#outside").parentElement === root,
+                        fragmentContext.querySelector("#fragment-after").parentElement === fragmentContext.querySelector("#fragment-cell"),
+                        response.getElementById("template-after").parentElement === responseTemplate,
+                        response.getElementById("cell-after").parentElement === responseCell,
+                        response.getElementById("nested").parentElement === responseCell,
+                        response.getElementById("outside").parentElement === responseRoot,
+                    ];
+                })()"##,
+                &document,
+                "fixture://table-end-scope.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("HTML table end tags must honor table scope");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true, true, true, true, true, true])
+        );
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("same-turn table fragments must commit through the native parser");
+
+        let root = document.find_element_by_id("root").unwrap();
+        let cell = document.find_element_by_id("cell").unwrap();
+        let nested = document.find_element_by_id("nested").unwrap();
+        let template = document.find_element_by_id("template").unwrap();
+        let template_after = document.find_element_by_id("template-after").unwrap();
+        let cell_after = document.find_element_by_id("cell-after").unwrap();
+        assert_eq!(document.node(nested).unwrap().parent(), Some(cell));
+        assert_eq!(
+            document.node(template_after).unwrap().parent(),
+            Some(template)
+        );
+        assert_eq!(document.node(cell_after).unwrap().parent(), Some(cell));
+        assert_eq!(document.node(root).unwrap().children().len(), 2);
+
+        let fragment_context = document.find_element_by_id("fragment-context").unwrap();
+        let fragment_cell = document.find_element_by_id("fragment-cell").unwrap();
+        let fragment_after = document.find_element_by_id("fragment-after").unwrap();
+        assert_eq!(
+            document.node(fragment_after).unwrap().parent(),
+            Some(fragment_cell)
+        );
+        let fragment_row = document.node(fragment_cell).unwrap().parent().unwrap();
+        assert_eq!(
+            document
+                .node(fragment_row)
+                .and_then(NativeNode::element_name),
+            Some("tr")
+        );
+        let fragment_body = document.node(fragment_row).unwrap().parent().unwrap();
+        assert_eq!(
+            document
+                .node(fragment_body)
+                .and_then(NativeNode::element_name),
+            Some("tbody")
+        );
+        assert_eq!(
+            document.node(fragment_body).unwrap().parent(),
+            Some(fragment_context)
+        );
+    }
+
+    #[test]
     fn script_remove_detaches_existing_subtree() {
         let limits = NativeEngineLimits::default();
         let mut document = NativeDocument::parse(
@@ -11627,6 +11773,38 @@ mod tests {
                 .and_then(NativeNode::namespace_uri),
             Some(SVG_NAMESPACE_URI)
         );
+    }
+
+    #[test]
+    fn html_table_end_tag_stops_at_template_scope_boundary() {
+        let document = NativeDocument::parse(
+            "<main id='host'><table id='outer'><tbody><tr><td id='cell'><table id='nested'><tbody><tr><td>nested</td></tr></tbody></table><template id='template'><span id='template-before'>before</span></table><span id='template-after'>after</span></template><span id='cell-after'>tail</span></td></tr></tbody></table><p id='outside'>outside</p></main>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let host = document.find_element_by_id("host").unwrap();
+        let outer = document.find_element_by_id("outer").unwrap();
+        let cell = document.find_element_by_id("cell").unwrap();
+        let nested = document.find_element_by_id("nested").unwrap();
+        let template = document.find_element_by_id("template").unwrap();
+        let template_before = document.find_element_by_id("template-before").unwrap();
+        let template_after = document.find_element_by_id("template-after").unwrap();
+        let cell_after = document.find_element_by_id("cell-after").unwrap();
+        let outside = document.find_element_by_id("outside").unwrap();
+
+        assert_eq!(document.node(outer).unwrap().parent(), Some(host));
+        assert_eq!(document.node(nested).unwrap().parent(), Some(cell));
+        assert_eq!(document.node(template).unwrap().parent(), Some(cell));
+        assert_eq!(
+            document.node(template_before).unwrap().parent(),
+            Some(template)
+        );
+        assert_eq!(
+            document.node(template_after).unwrap().parent(),
+            Some(template)
+        );
+        assert_eq!(document.node(cell_after).unwrap().parent(), Some(cell));
+        assert_eq!(document.node(outside).unwrap().parent(), Some(host));
     }
 
     #[test]

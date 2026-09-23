@@ -1,7 +1,12 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-674`, following completed `native-engine-browser-673`,
+`native-engine-browser-679`, following completed `native-engine-browser-678`,
+following completed `native-engine-browser-677`,
+following completed `native-engine-browser-676`,
+following completed `native-engine-browser-675`,
+following completed `native-engine-browser-674`,
+following completed `native-engine-browser-673`,
 following completed `native-engine-browser-672`,
 following completed `native-engine-browser-671`,
 following completed `native-engine-browser-670`,
@@ -444,6 +449,18 @@ boundaries retain their active parsing behavior. Tests cover document parsing,
 fragment commit and same-turn projection, and XHR HTML documents. The stack
 markers approximate the active insertion mode in the current parser; this is
 not a complete table insertion-mode state machine or general parser parity.
+
+Slice 679 extends that bounded tree-construction work to `</table>` end tags.
+When the current HTML parsing context has an HTML `table` in table scope, the
+parser pops that table and its descendants; an HTML `template` or `html`
+boundary encountered first makes the token ineffective. The fragment context
+element itself is not an open table, and a foreign-namespace current node does
+not enter this HTML-specific path. The behavior is aligned across document
+parsing, Rust `innerHTML` commits, same-turn JavaScript fragment projection,
+and XHR HTML response documents. Focused scope/context tests passed 2/2 and the
+table-focused regression batch passed 41/41. This is one end-tag scope rule,
+not complete table insertion-mode or HTML parser conformance; exact evidence is
+in [`slice 679`](../plan/tasks/native-engine-browser-679.md).
 
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
 property is exposed as a canonical percentage, face matching considers the

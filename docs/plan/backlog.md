@@ -13,15 +13,17 @@ local results from remote CI and promotion evidence.
 
 ## Native HTML parser-route parity
 
-Slices 673–675 align bounded table foster parenting across
+Slices 673–676 align bounded table tree-construction behavior across
 `NativeDocument::parse`, Rust `NativeDocument::apply_script_inner_html`, the
 shared JavaScript `populateDetachedFragment` same-turn projection, and the
 independent `nativeHtmlParseDocument` route for XHR
-`responseType="document"`. The shared fixture checks fostered node order,
-parentage, whitespace/comments, and fragment-root behavior, including the
-XHR parser's implicit document normalization. Continue expanding the corpus for
-other tree-construction rules; do not describe these slices as general HTML
-parser parity.
+`responseType="document"`. Slices 673–675 cover foster insertion; slice 676
+adds implicit `tbody`/`tr` construction, limit enforcement, and SVG versus
+`foreignObject` namespace behavior. The fixtures check parentage, authored
+order, explicit-section preservation, whitespace/comments, and fragment-root
+behavior, including XHR document materialization. Continue expanding the
+corpus for other tree-construction rules; do not describe these slices as
+general HTML parser parity.
 
 ## Input: popup-opening mouse release completion
 

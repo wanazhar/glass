@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-675`, following completed `native-engine-browser-674`,
+`native-engine-browser-676`, following completed `native-engine-browser-675`,
+following completed `native-engine-browser-674`,
 following completed `native-engine-browser-673`,
 following completed `native-engine-browser-672`,
 following completed `native-engine-browser-671`,
@@ -99,6 +100,15 @@ The completed [native-engine-browser-675](tasks/native-engine-browser-675.md)
 slice adds the same bounded foster-parent behavior to the independent XHR HTML
 document parser, keeping the fixture and node-order contract aligned across
 document parsing, script `innerHTML`, and XHR `responseType="document"`.
+
+The completed [native-engine-browser-676](tasks/native-engine-browser-676.md)
+slice synthesizes missing `tbody` and `tr` containers for direct table-row and
+cell tokens across document, fragment, same-turn JavaScript projection, and
+XHR document parsing. Explicit sections remain singular, SVG tables retain
+their namespace and do not synthesize HTML containers, `foreignObject`
+descendants resume HTML insertion behavior, and generated nodes obey the
+document node/depth limits. This is a focused tree-construction increment, not
+general HTML parser conformance.
 
 `native-engine-browser-633`, following completed
 `native-engine-browser-632`, following completed

@@ -415,6 +415,18 @@ whitespace/comment nodes in the materialized read-only response document. This
 is three-route foster behavior, not complete parser parity; insertion modes,
 template content, and broader HTML error recovery remain open.
 
+The completed [slice 676](../plan/tasks/native-engine-browser-676.md) adds
+HTML's implied table-section and row construction across document navigation,
+Rust `innerHTML` commit and same-turn JavaScript projection, and XHR
+`responseType="document"`. A `tr` directly under an HTML `table` receives a
+synthesized `tbody`; a `td`/`th` directly under a table receives `tbody` and
+`tr`; and a cell directly under `tbody`/`thead`/`tfoot` receives `tr`. The
+generated elements obey node/depth limits and HTML namespace transitions;
+SVG table-like elements stay in SVG, while descendants of `foreignObject`
+resume HTML table construction. The test matrix covers explicit sections,
+fragment contexts, XHR materialization, and limits. This is one bounded
+insertion-mode rule, not complete HTML parser conformance.
+
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
 property is exposed as a canonical percentage, face matching considers the
 closest bounded descriptor range after weight/style, and tied unicode-ranged

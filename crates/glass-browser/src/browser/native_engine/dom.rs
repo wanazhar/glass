@@ -1090,6 +1090,7 @@ impl NativeDocument {
                     {
                         stack.pop();
                     }
+                    document.insert_implied_html_table_elements(&mut stack, &name)?;
                     let foster_location = if is_table_special_start_tag(&name, &attributes) {
                         None
                     } else {
@@ -6104,6 +6105,53 @@ impl NativeDocument {
         self.apply_script_text_content(title_id.index(), value, &BTreeMap::new())
     }
 
+    fn insert_implied_html_table_elements(
+        &mut self,
+        stack: &mut Vec<NativeNodeId>,
+        incoming_name: &str,
+    ) -> Result<(), NativeEngineError> {
+        let Some(current) = stack.last().and_then(|id| self.raw_node(*id)) else {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "tree builder lost its current node".into(),
+            });
+        };
+        if current.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+            return Ok(());
+        }
+        let implied_names: &[&str] = match (current.element_name(), incoming_name) {
+            (Some("table"), "tr") => &["tbody"],
+            (Some("table"), "td" | "th") => &["tbody", "tr"],
+            (Some("tbody" | "thead" | "tfoot"), "td" | "th") => &["tr"],
+            _ => &[],
+        };
+        for name in implied_names {
+            let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "tree builder lost its insertion parent".into(),
+            })?;
+            let parent_depth = self.element_depth(parent);
+            if parent_depth >= self.max_dom_depth {
+                return Err(NativeEngineError::limit(
+                    "DOM depth",
+                    self.max_dom_depth,
+                    parent_depth.saturating_add(1),
+                ));
+            }
+            let implied = self.add_node(
+                parent,
+                NativeNodeKind::Element {
+                    name: (*name).to_owned(),
+                    attributes: BTreeMap::new(),
+                },
+                self.max_nodes,
+            )?;
+            self.assign_parsed_namespace_to_node(implied, parent)?;
+            stack.push(implied);
+        }
+        Ok(())
+    }
+
     fn apply_script_inner_html(
         &mut self,
         node_index: u32,
@@ -6161,6 +6209,7 @@ impl NativeDocument {
                     {
                         stack.pop();
                     }
+                    self.insert_implied_html_table_elements(&mut stack, &name)?;
                     let foster_location = if is_table_special_start_tag(&name, &attributes) {
                         None
                     } else {
@@ -10718,6 +10767,68 @@ mod tests {
     }
 
     #[test]
+    fn javascript_inner_html_projects_implied_table_containers_before_commit() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("implied-table-fragment-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<main id='root'></main><table id='target'></table>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const root = document.querySelector("#root");
+                    root.innerHTML = "<table id='rows'><tr id='row'><td id='cell'>row</td></tr></table><table id='section'><tbody id='body'><th id='section-cell'>section</th></tbody></table>";
+                    const target = document.querySelector("#target");
+                    target.innerHTML = "<td id='direct-cell'>direct</td>";
+                    const table = root.querySelector("#rows");
+                    const body = table.firstElementChild;
+                    const row = body.firstElementChild;
+                    const section = root.querySelector("#body");
+                    return [
+                        body.localName === "tbody",
+                        row.localName === "tr" && row.parentElement === body,
+                        row.firstElementChild.parentElement === row,
+                        section.firstElementChild.localName === "tr",
+                        target.firstElementChild.localName === "tbody",
+                        target.firstElementChild.firstElementChild.localName === "tr",
+                    ];
+                })()"##,
+                &document,
+                "fixture://implied-table-fragment.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("implicit table containers must project in the same turn");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true, true, true])
+        );
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("the projected fragment must commit through the native parser");
+
+        let root = document.find_element_by_id("root").unwrap();
+        let table = document.find_element_by_id("rows").unwrap();
+        let body = document.node(table).unwrap().children()[0];
+        let row = document.node(body).unwrap().children()[0];
+        let cell = document.find_element_by_id("cell").unwrap();
+        assert_eq!(document.node(cell).unwrap().parent(), Some(row));
+        assert_eq!(
+            document.element_inner_html(root, 2048),
+            "<table id=\"rows\"><tbody><tr id=\"row\"><td id=\"cell\">row</td></tr></tbody></table><table id=\"section\"><tbody id=\"body\"><tr><th id=\"section-cell\">section</th></tr></tbody></table>"
+        );
+
+        let target = document.find_element_by_id("target").unwrap();
+        assert_eq!(
+            document.element_inner_html(target, 1024),
+            "<tbody><tr><td id=\"direct-cell\">direct</td></tr></tbody>"
+        );
+    }
+
+    #[test]
     fn xhr_html_response_document_fosters_the_shared_table_fixture() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("xhr-html-foster-test")
             .expect("native JavaScript runtime must construct");
@@ -10766,6 +10877,57 @@ mod tests {
         assert_eq!(
             evaluation.value,
             serde_json::json!([true, true, true, true, true, true, true])
+        );
+    }
+
+    #[test]
+    fn xhr_html_response_document_implies_table_sections_and_rows() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("xhr-implied-table-test")
+            .expect("native JavaScript runtime must construct");
+        let document =
+            NativeDocument::parse("<main></main>", &NativeEngineLimits::default()).unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const response = globalThis.__glassParseHtmlDocument(
+                        "<main id='root'><table id='rows'><tr id='row'><td id='cell'>row</td></tr></table><table id='cells'><td id='direct-cell'>direct</td></table><table id='explicit'><tbody id='body'><tr id='explicit-row'><td>explicit</td></tr></tbody></table><svg><table id='svg-table'><tr id='svg-row'><td>svg</td></tr></table><foreignObject><table id='html-table'><tr id='html-row'><td>html</td></tr></table></foreignObject></svg></main>",
+                        "https://example.test/response.html",
+                        "text/html",
+                    );
+                    if (!response) return null;
+                    const rows = response.getElementById("rows");
+                    const row = response.getElementById("row");
+                    const body = rows && rows.children[0];
+                    const cells = response.getElementById("cells");
+                    const directCell = response.getElementById("direct-cell");
+                    const explicit = response.getElementById("explicit");
+                    const svgTable = response.getElementById("svg-table");
+                    const svgRow = response.getElementById("svg-row");
+                    const htmlTable = response.getElementById("html-table");
+                    const htmlRow = response.getElementById("html-row");
+                    return [
+                        body.localName === "tbody" && row.parentElement === body,
+                        row.children[0] === response.getElementById("cell"),
+                        directCell.parentElement.localName === "tr"
+                            && directCell.parentElement.parentElement.localName === "tbody",
+                        explicit.children.length === 1
+                            && explicit.children[0] === response.getElementById("body"),
+                        svgTable.children[0] === svgRow
+                            && svgRow.namespaceURI === "http://www.w3.org/2000/svg",
+                        htmlTable.children[0].localName === "tbody"
+                            && htmlRow.parentElement === htmlTable.children[0],
+                    ];
+                })()"##,
+                &document,
+                "fixture://xhr-implied-table.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("XHR HTML document must preserve implied table structure");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true, true, true])
         );
     }
 
@@ -11004,6 +11166,125 @@ mod tests {
     }
 
     #[test]
+    fn html_parser_implies_table_sections_and_rows_for_missing_containers() {
+        let document = NativeDocument::parse(
+            "<main><table id='rows'><tr id='row'><td id='cell'>row</td></tr></table><table id='cells'><td id='direct-cell'>direct</td></table><table id='section-cells'><tbody id='section'><th id='section-cell'>section</th></tbody></table><table id='explicit'><tbody id='explicit-body'><tr id='explicit-row'><td>explicit</td></tr></tbody></table></main>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        let rows = document.find_element_by_id("rows").unwrap();
+        let row = document.find_element_by_id("row").unwrap();
+        let cell = document.find_element_by_id("cell").unwrap();
+        let implied_body = document.node(rows).unwrap().children()[0];
+        assert_eq!(
+            document
+                .node(implied_body)
+                .and_then(NativeNode::element_name),
+            Some("tbody")
+        );
+        assert_eq!(document.node(implied_body).unwrap().children(), &[row]);
+        assert_eq!(document.node(row).unwrap().parent(), Some(implied_body));
+        assert_eq!(document.node(cell).unwrap().parent(), Some(row));
+
+        let cells = document.find_element_by_id("cells").unwrap();
+        let direct_cell = document.find_element_by_id("direct-cell").unwrap();
+        let implied_body = document.node(cells).unwrap().children()[0];
+        let implied_row = document.node(implied_body).unwrap().children()[0];
+        assert_eq!(
+            document
+                .node(implied_body)
+                .and_then(NativeNode::element_name),
+            Some("tbody")
+        );
+        assert_eq!(
+            document
+                .node(implied_row)
+                .and_then(NativeNode::element_name),
+            Some("tr")
+        );
+        assert_eq!(
+            document.node(direct_cell).unwrap().parent(),
+            Some(implied_row)
+        );
+
+        let section = document.find_element_by_id("section").unwrap();
+        let section_cell = document.find_element_by_id("section-cell").unwrap();
+        let implied_row = document.node(section).unwrap().children()[0];
+        assert_eq!(
+            document
+                .node(implied_row)
+                .and_then(NativeNode::element_name),
+            Some("tr")
+        );
+        assert_eq!(
+            document.node(section_cell).unwrap().parent(),
+            Some(implied_row)
+        );
+
+        let explicit = document.find_element_by_id("explicit").unwrap();
+        let explicit_body = document.find_element_by_id("explicit-body").unwrap();
+        let explicit_row = document.find_element_by_id("explicit-row").unwrap();
+        assert_eq!(
+            document.node(explicit).unwrap().children(),
+            &[explicit_body]
+        );
+        assert_eq!(
+            document.node(explicit_body).unwrap().children(),
+            &[explicit_row]
+        );
+    }
+
+    #[test]
+    fn implied_table_containers_follow_html_namespace_transitions_only() {
+        let document = NativeDocument::parse(
+            "<svg><table id='svg-table'><tr id='svg-row'><td>svg</td></tr></table><foreignObject><table id='html-table'><tr id='html-row'><td>html</td></tr></table></foreignObject></svg>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        let svg_table = document.find_element_by_id("svg-table").unwrap();
+        let svg_row = document.find_element_by_id("svg-row").unwrap();
+        assert_eq!(document.node(svg_table).unwrap().children(), &[svg_row]);
+        assert_eq!(
+            document.node(svg_row).and_then(NativeNode::namespace_uri),
+            Some(SVG_NAMESPACE_URI)
+        );
+
+        let html_table = document.find_element_by_id("html-table").unwrap();
+        let html_row = document.find_element_by_id("html-row").unwrap();
+        let implied_body = document.node(html_table).unwrap().children()[0];
+        assert_eq!(
+            document
+                .node(implied_body)
+                .and_then(NativeNode::element_name),
+            Some("tbody")
+        );
+        assert_eq!(document.node(implied_body).unwrap().children(), &[html_row]);
+        assert_eq!(
+            document.node(html_row).and_then(NativeNode::namespace_uri),
+            Some(HTML_NAMESPACE_URI)
+        );
+    }
+
+    #[test]
+    fn implied_table_containers_obey_node_and_depth_limits() {
+        let mut node_limited = NativeEngineLimits::default();
+        node_limited.max_nodes = 3;
+        assert!(matches!(
+            NativeDocument::parse("<table><tr><td>cell</td></tr></table>", &node_limited),
+            Err(NativeEngineError::LimitExceeded { resource, .. }) if resource == "DOM nodes"
+        ));
+
+        let mut depth_limited = NativeEngineLimits::default();
+        depth_limited.max_dom_depth = 1;
+        assert!(matches!(
+            NativeDocument::parse("<table><tr></tr></table>", &depth_limited),
+            Err(NativeEngineError::LimitExceeded { resource, .. }) if resource == "DOM depth"
+        ));
+    }
+
+    #[test]
     fn table_foster_parenting_preserves_whitespace_and_element_descendants() {
         let document = NativeDocument::parse(
             "<main id='host'><p id='before'>before</p><table id='table'> \n&#32;<!-- keep -->alpha <div id='misnested'><b id='inside'>inside</b></div>tail \t<input type='HIDDEN' id='hidden'><tr id='row'><td id='cell'>cell</td></tr></table><p id='after'>after</p></main>",
@@ -11027,7 +11308,19 @@ mod tests {
         assert_eq!(document.node(before).unwrap().parent(), Some(host));
         assert_eq!(document.node(after).unwrap().parent(), Some(host));
         assert_eq!(document.node(hidden).unwrap().parent(), Some(table));
-        assert_eq!(document.node(row).unwrap().parent(), Some(table));
+        let table_body = document
+            .node(table)
+            .unwrap()
+            .children()
+            .iter()
+            .copied()
+            .find(|child| document.node(*child).and_then(NativeNode::element_name) == Some("tbody"))
+            .unwrap();
+        assert_eq!(
+            document.node(table_body).and_then(NativeNode::element_name),
+            Some("tbody")
+        );
+        assert_eq!(document.node(row).unwrap().parent(), Some(table_body));
         assert_eq!(document.node(cell).unwrap().parent(), Some(row));
         assert_eq!(children.len(), 6);
         assert_eq!(children[0], before);

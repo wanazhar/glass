@@ -3699,7 +3699,7 @@ impl NativeDocument {
             .unwrap_or_default()
             .to_vec();
         for child in children {
-            self.assign_parsed_namespace_subtree(child, HTML_NAMESPACE_URI);
+            self.assign_parsed_namespace_subtree(child, self.root);
         }
     }
 
@@ -3714,15 +3714,6 @@ impl NativeDocument {
                 offset: 0,
                 reason: "tree builder referenced an unknown namespace parent".into(),
             })?;
-        let parent_name = parent_node.element_name();
-        let parent_namespace = parent_node.namespace_uri();
-        let parent_child_namespace = if parent_namespace == Some(SVG_NAMESPACE_URI)
-            && parent_name == Some("foreignobject")
-        {
-            HTML_NAMESPACE_URI
-        } else {
-            parent_namespace.unwrap_or(HTML_NAMESPACE_URI)
-        };
         let name = self
             .raw_node(id)
             .and_then(NativeNode::element_name)
@@ -3730,13 +3721,7 @@ impl NativeDocument {
                 offset: 0,
                 reason: "tree builder namespace assignment targeted a non-element".into(),
             })?;
-        let namespace = if parent_child_namespace == SVG_NAMESPACE_URI || name == "svg" {
-            SVG_NAMESPACE_URI
-        } else if name == "math" || parent_child_namespace == MATHML_NAMESPACE_URI {
-            MATHML_NAMESPACE_URI
-        } else {
-            HTML_NAMESPACE_URI
-        };
+        let namespace = parsed_child_namespace(parent_node, name);
         let node = self
             .raw_node_mut(id)
             .ok_or_else(|| NativeEngineError::Parse {
@@ -3747,7 +3732,10 @@ impl NativeDocument {
         Ok(())
     }
 
-    fn assign_parsed_namespace_subtree(&mut self, id: NativeNodeId, parent_namespace: &str) {
+    fn assign_parsed_namespace_subtree(&mut self, id: NativeNodeId, parent: NativeNodeId) {
+        let Some(parent_node) = self.raw_node(parent) else {
+            return;
+        };
         let Some(node) = self.raw_node(id) else {
             return;
         };
@@ -3755,23 +3743,12 @@ impl NativeDocument {
             return;
         };
         let children = node.children().to_vec();
-        let namespace = if parent_namespace == SVG_NAMESPACE_URI || name == "svg" {
-            SVG_NAMESPACE_URI
-        } else if name == "math" || parent_namespace == MATHML_NAMESPACE_URI {
-            MATHML_NAMESPACE_URI
-        } else {
-            HTML_NAMESPACE_URI
-        };
-        let child_namespace = if namespace == SVG_NAMESPACE_URI && name == "foreignobject" {
-            HTML_NAMESPACE_URI
-        } else {
-            namespace
-        };
+        let namespace = parsed_child_namespace(parent_node, &name);
         if let Some(node) = self.raw_node_mut(id) {
             node.state.namespace_uri = Some(namespace.to_owned());
         }
         for child in children {
-            self.assign_parsed_namespace_subtree(child, child_namespace);
+            self.assign_parsed_namespace_subtree(child, id);
         }
     }
 
@@ -10770,25 +10747,58 @@ fn parser_uses_foreign_character_rules(document: &NativeDocument, id: NativeNode
     let Some(node) = document.raw_node(id) else {
         return false;
     };
-    let Some(name) = node.element_name() else {
-        return false;
-    };
     match node.namespace_uri() {
         None | Some(HTML_NAMESPACE_URI) => false,
-        Some(SVG_NAMESPACE_URI) => !matches!(name, "foreignobject" | "desc" | "title"),
+        Some(SVG_NAMESPACE_URI) => !node_is_html_integration_point(node),
         Some(MATHML_NAMESPACE_URI) => {
-            if matches!(name, "mi" | "mo" | "mn" | "ms" | "mtext") {
-                return false;
-            }
-            if name == "annotation-xml" {
-                return !node.attribute("encoding").is_some_and(|encoding| {
-                    encoding.eq_ignore_ascii_case("text/html")
-                        || encoding.eq_ignore_ascii_case("application/xhtml+xml")
-                });
-            }
-            true
+            !node_is_mathml_text_integration_point(node) && !node_is_html_integration_point(node)
         }
         Some(_) => true,
+    }
+}
+
+fn node_is_html_integration_point(node: &NativeNode) -> bool {
+    match (node.namespace_uri(), node.element_name()) {
+        (Some(SVG_NAMESPACE_URI), Some("foreignobject" | "desc" | "title")) => true,
+        (Some(MATHML_NAMESPACE_URI), Some("annotation-xml")) => {
+            node.attribute("encoding").is_some_and(|encoding| {
+                encoding.eq_ignore_ascii_case("text/html")
+                    || encoding.eq_ignore_ascii_case("application/xhtml+xml")
+            })
+        }
+        _ => false,
+    }
+}
+
+fn node_is_mathml_text_integration_point(node: &NativeNode) -> bool {
+    node.namespace_uri() == Some(MATHML_NAMESPACE_URI)
+        && matches!(
+            node.element_name(),
+            Some("mi" | "mo" | "mn" | "ms" | "mtext")
+        )
+}
+
+fn parsed_child_namespace(parent: &NativeNode, child_name: &str) -> &'static str {
+    let parent_namespace = parent.namespace_uri().unwrap_or(HTML_NAMESPACE_URI);
+    let parent_is_mathml_annotation_xml =
+        parent_namespace == MATHML_NAMESPACE_URI && parent.element_name() == Some("annotation-xml");
+    let uses_html_rules = parent_namespace == HTML_NAMESPACE_URI
+        || node_is_html_integration_point(parent)
+        || (node_is_mathml_text_integration_point(parent)
+            && !matches!(child_name, "mglyph" | "malignmark"))
+        || (parent_is_mathml_annotation_xml && child_name == "svg");
+
+    if !uses_html_rules {
+        return match parent_namespace {
+            SVG_NAMESPACE_URI => SVG_NAMESPACE_URI,
+            MATHML_NAMESPACE_URI => MATHML_NAMESPACE_URI,
+            _ => HTML_NAMESPACE_URI,
+        };
+    }
+    match child_name {
+        "svg" => SVG_NAMESPACE_URI,
+        "math" => MATHML_NAMESPACE_URI,
+        _ => HTML_NAMESPACE_URI,
     }
 }
 
@@ -14509,6 +14519,145 @@ mod tests {
         document
             .apply_script_commands(&evaluation.commands)
             .expect("Rust fragment commit must apply contextual HTML null handling");
+        assert_eq!(summarize_native(&document), expected);
+    }
+
+    #[test]
+    fn html_integration_points_select_child_namespaces_across_parser_routes() {
+        let markup = concat!(
+            "<section id='zone'><svg id='svg-root'>",
+            "<desc id='svg-desc'><span id='svg-desc-child'></span><math id='svg-desc-math'><mi id='svg-desc-math-child'></mi></math></desc>",
+            "<foreignObject id='svg-foreignobject'><span id='svg-fo-child'></span><svg id='svg-fo-svg'></svg><math id='svg-fo-math'></math></foreignObject>",
+            "<g id='svg-g'><span id='svg-g-child'></span><math id='svg-g-math'></math></g>",
+            "</svg><math id='math-root'>",
+            "<mi id='math-mi'><span id='math-mi-span'></span><mglyph id='math-mi-glyph'/><malignmark id='math-mi-malignmark'/><svg id='math-mi-svg'></svg><math id='math-mi-math'></math></mi>",
+            "<mtext id='math-mtext'><strong id='math-mtext-strong'></strong></mtext>",
+            "<annotation-xml id='math-text-html-ann' encoding='TEXT/HTML'><span id='annotation-text-html-span'></span></annotation-xml>",
+            "<annotation-xml id='math-html-ann' encoding='APPLICATION/XHTML+XML'><span id='annotation-html-span'></span><svg id='annotation-html-svg'></svg></annotation-xml>",
+            "<annotation-xml id='math-plain-ann' encoding='application/xml'><span id='annotation-foreign-span'></span><svg id='annotation-foreign-svg'></svg></annotation-xml>",
+            "<mrow id='math-foreign'><span id='math-foreign-span'></span><svg id='math-foreign-svg'></svg></mrow>",
+            "</math></section>",
+        );
+        let expected_nodes = [
+            ("svg-root", SVG_NAMESPACE_URI, "zone"),
+            ("svg-desc", SVG_NAMESPACE_URI, "svg-root"),
+            ("svg-desc-child", HTML_NAMESPACE_URI, "svg-desc"),
+            ("svg-desc-math", MATHML_NAMESPACE_URI, "svg-desc"),
+            ("svg-desc-math-child", MATHML_NAMESPACE_URI, "svg-desc-math"),
+            ("svg-foreignobject", SVG_NAMESPACE_URI, "svg-root"),
+            ("svg-fo-child", HTML_NAMESPACE_URI, "svg-foreignobject"),
+            ("svg-fo-svg", SVG_NAMESPACE_URI, "svg-foreignobject"),
+            ("svg-fo-math", MATHML_NAMESPACE_URI, "svg-foreignobject"),
+            ("svg-g", SVG_NAMESPACE_URI, "svg-root"),
+            ("svg-g-child", SVG_NAMESPACE_URI, "svg-g"),
+            ("svg-g-math", SVG_NAMESPACE_URI, "svg-g"),
+            ("math-root", MATHML_NAMESPACE_URI, "zone"),
+            ("math-mi", MATHML_NAMESPACE_URI, "math-root"),
+            ("math-mi-span", HTML_NAMESPACE_URI, "math-mi"),
+            ("math-mi-glyph", MATHML_NAMESPACE_URI, "math-mi"),
+            ("math-mi-malignmark", MATHML_NAMESPACE_URI, "math-mi"),
+            ("math-mi-svg", SVG_NAMESPACE_URI, "math-mi"),
+            ("math-mi-math", MATHML_NAMESPACE_URI, "math-mi"),
+            ("math-mtext", MATHML_NAMESPACE_URI, "math-root"),
+            ("math-mtext-strong", HTML_NAMESPACE_URI, "math-mtext"),
+            ("math-text-html-ann", MATHML_NAMESPACE_URI, "math-root"),
+            (
+                "annotation-text-html-span",
+                HTML_NAMESPACE_URI,
+                "math-text-html-ann",
+            ),
+            ("math-html-ann", MATHML_NAMESPACE_URI, "math-root"),
+            ("annotation-html-span", HTML_NAMESPACE_URI, "math-html-ann"),
+            ("annotation-html-svg", SVG_NAMESPACE_URI, "math-html-ann"),
+            ("math-plain-ann", MATHML_NAMESPACE_URI, "math-root"),
+            (
+                "annotation-foreign-span",
+                MATHML_NAMESPACE_URI,
+                "math-plain-ann",
+            ),
+            (
+                "annotation-foreign-svg",
+                SVG_NAMESPACE_URI,
+                "math-plain-ann",
+            ),
+            ("math-foreign", MATHML_NAMESPACE_URI, "math-root"),
+            ("math-foreign-span", MATHML_NAMESPACE_URI, "math-foreign"),
+            ("math-foreign-svg", MATHML_NAMESPACE_URI, "math-foreign"),
+        ];
+        let expected = expected_nodes
+            .iter()
+            .map(|(_, namespace, parent)| serde_json::json!([namespace, parent]))
+            .collect::<Vec<_>>();
+        let summarize_native = |tree: &NativeDocument| {
+            expected_nodes
+                .iter()
+                .map(|(element_id, _, _)| {
+                    let element = tree.find_element_by_id(element_id).unwrap_or_else(|| {
+                        panic!("integration fixture element {element_id} must exist")
+                    });
+                    let node = tree
+                        .node(element)
+                        .expect("integration fixture element must resolve");
+                    let parent_id = node
+                        .parent()
+                        .and_then(|parent| tree.node(parent))
+                        .and_then(|parent| parent.attribute("id"))
+                        .expect("integration fixture parent must have an id");
+                    serde_json::json!([node.namespace_uri().unwrap(), parent_id])
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let direct = NativeDocument::parse(markup, &NativeEngineLimits::default())
+            .expect("document parser must select integration-point namespaces");
+        assert_eq!(summarize_native(&direct), expected);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("html-integration-point-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+            const markup = __HTML_MARKUP__;
+            const root = document.querySelector("#root");
+            root.innerHTML = markup;
+            const response = globalThis.__glassParseHtmlDocument(
+                markup,
+                "https://example.test/html-integration-points.html",
+                "text/html",
+            );
+            const ids = __ELEMENT_IDS__;
+            const summarize = (tree) => ids.map((id) => {
+                const element = tree.querySelector(`#${id}`);
+                return [element.namespaceURI, element.parentElement.getAttribute("id")];
+            });
+            return [summarize(root), summarize(response)];
+        })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(markup).unwrap())
+            .replace(
+                "__ELEMENT_IDS__",
+                &serde_json::to_string(
+                    &expected_nodes
+                        .iter()
+                        .map(|(element_id, _, _)| element_id)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            );
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://html-integration-points.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("fragment projection and XHR document must parse integration points");
+        assert_eq!(evaluation.value, serde_json::json!([expected, expected]));
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must select integration-point namespaces");
         assert_eq!(summarize_native(&document), expected);
     }
 

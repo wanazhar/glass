@@ -27,7 +27,8 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed locally through
+the browser-complete expansion is implementing
+`native-engine-browser-689`, following locally completed
 `native-engine-browser-688`; issue #40 remains open. It follows completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`,
@@ -123,6 +124,16 @@ integration points; tag/name, doctype, PLAINTEXT, and general tokenizer
 conformance remain open. Its package check, 25-test HTML regression batch,
 formatting, whitespace, and all maintainer documentation gates passed locally;
 there is no remote CI evidence for this checkpoint.
+
+[`native-engine-browser-689`](tasks/native-engine-browser-689.md) corrects
+child element namespace selection at SVG and MathML HTML
+integration points across the same four parser routes. MathML text points keep
+`mglyph` and `malignmark` foreign; `annotation-xml` recognizes both HTML
+encodings and its special SVG start-tag rule. Ordinary foreign children retain
+their parent namespace. SVG `title` tokenizer context and general foreign
+content dispatch remain separate work. The package check, focused integration
+route test, 26-test HTML regression batch, formatting, whitespace, and all
+maintainer documentation gates passed locally; remote CI was not run.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

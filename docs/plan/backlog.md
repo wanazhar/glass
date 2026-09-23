@@ -75,6 +75,13 @@ Noah's Ark handling, and the bounded adoption-agency algorithm now run in all
 four parser routes. The focused active-formatting tests pass 2/2 and the table
 regression batch passes 46/46; general HTML parser conformance remains open.
 
+Slice 689 is complete locally: select child element namespaces using SVG and MathML
+HTML integration-point rules across all four parser routes. Preserve the
+`mglyph`/`malignmark` exceptions, the `annotation-xml` SVG special case, and
+foreign-parent namespaces elsewhere. SVG `title` tokenizer state and complete
+foreign-content dispatch remain separate. See
+`tasks/native-engine-browser-689.md`.
+
 Slice 688 is complete locally: route literal U+0000 through the existing HTML data,
 RAWTEXT/RCDATA, comment, attribute-value, and foreign-content handling rules
 across all four parser routes. Ordinary HTML data ignores it; foreign data,

@@ -75,6 +75,16 @@ Noah's Ark handling, and the bounded adoption-agency algorithm now run in all
 four parser routes. The focused active-formatting tests pass 2/2 and the table
 regression batch passes 46/46; general HTML parser conformance remains open.
 
+Slice 688 is complete locally: route literal U+0000 through the existing HTML data,
+RAWTEXT/RCDATA, comment, attribute-value, and foreign-content handling rules
+across all four parser routes. Ordinary HTML data ignores it; foreign data,
+raw/RCDATA, comments, and attribute values replace it with U+FFFD. Numeric
+references to U+0000 also resolve to U+FFFD. Preserve HTML/foreign integration
+point selection; decode references before tree-builder NUL handling so removed
+NUL cannot join characters into a synthetic reference. Leave tag/attribute
+names, doctypes, and unsupported tokenizer states explicit for follow-up. See
+`tasks/native-engine-browser-688.md`.
+
 Slice 687 completes CRLF/lone-CR normalization to LF before tokenization in all
 four HTML parser routes, including text, attribute values, comments, script raw
 text, and RCDATA. Rust parse errors keep original-source offsets. The locked

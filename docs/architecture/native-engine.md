@@ -1,7 +1,9 @@
 # Native browser engine
 
-Status: Browser-complete expansion has completed locally
-`native-engine-browser-687`, following completed `native-engine-browser-686`,
+Status: Browser-complete expansion is locally complete through
+`native-engine-browser-688`; issue #40 remains open. It follows completed
+`native-engine-browser-687`,
+following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
 `native-engine-browser-684`,
 following completed `native-engine-browser-683`,
@@ -550,6 +552,22 @@ package check passed. Documentation validators covered 1,313 Markdown files
 with zero current-claim failures. See
 [`slice 685`](../plan/tasks/native-engine-browser-685.md); complete parser
 conformance remains open.
+
+Completed slice 688 applies context-specific HTML U+0000 handling across direct
+documents, Rust fragment commits, same-turn JavaScript fragment projections,
+and XHR HTML documents. Literal NUL in ordinary HTML data is ignored; foreign
+SVG/MathML character data and script/style RAWTEXT or title/textarea RCDATA
+produce U+FFFD. Comments and attribute values replace literal NUL, numeric
+references to U+0000 resolve to U+FFFD, and RAWTEXT/comment references remain
+literal. HTML/foreign-content integration points select the correct data
+behavior. NUL in tag/attribute names, doctypes, and unsupported tokenizer
+states remain out of scope. Character references are resolved before
+tree-builder NUL handling so a dropped NUL cannot join characters into a
+synthetic reference. See
+[`slice 688`](../plan/tasks/native-engine-browser-688.md); full HTML tokenizer
+conformance remains open. The locked package check, 25-test HTML regression
+batch, formatting, whitespace, and maintainer documentation gates passed
+locally; remote CI was not run.
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

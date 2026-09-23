@@ -27662,7 +27662,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         const next = value.charCodeAt(cursor + 1);
         if (next < 0xdc00 || next > 0xdfff) throw new Error("native HTML contains an unpaired surrogate");
         cursor += 1;
-      } else if (code >= 0xdc00 && code <= 0xdfff || code === 0 || code === 0xfffe || code === 0xffff) {
+      } else if (code >= 0xdc00 && code <= 0xdfff || code === 0xfffe || code === 0xffff) {
         throw new Error("native HTML contains an invalid character");
       }
     }
@@ -28258,12 +28258,31 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
               && activeFormattingMarkerNames.has(element.localName)) clearActiveFormattingToMarker();
         }
       };
+      const usesForeignCharacterRules = (element) => {
+        if (!element || element.type !== "element" || element.namespaceURI === nativeHtmlNamespaceUri) return false;
+        const name = String(element.localName || "").toLowerCase();
+        if (element.namespaceURI === nativeSvgNamespaceUri) {
+          return !["foreignobject", "desc", "title"].includes(name);
+        }
+        if (element.namespaceURI === nativeMathmlNamespaceUri) {
+          if (["mi", "mo", "mn", "ms", "mtext"].includes(name)) return false;
+          if (name === "annotation-xml") {
+            const encoding = (element.attributes || []).find((attribute) => attribute.name === "encoding")?.value || "";
+            return !["text/html", "application/xhtml+xml"].includes(String(encoding).toLowerCase());
+          }
+          return true;
+        }
+        return true;
+      };
       const appendHtmlText = (value) => {
-        if (!value) return;
+        const current = state.stack[state.stack.length - 1];
+        const nullReplacement = usesForeignCharacterRules(current) ? "\ufffd" : "";
+        const normalized = String(value).replace(/\u0000/g, nullReplacement);
+        if (!normalized) return;
         reconstructActiveFormatting();
-        const fosterLocation = /[^\t\n\f\r ]/.test(value) ? tableFosterLocation() : null;
+        const fosterLocation = /[^\t\n\f\r ]/.test(normalized) ? tableFosterLocation() : null;
         const parent = fosterLocation ? fosterLocation.parent : state.stack[state.stack.length - 1];
-        append(parent, { type: "text", html: true, value }, fosterLocation && fosterLocation.before);
+        append(parent, { type: "text", html: true, value: normalized }, fosterLocation && fosterLocation.before);
       };
       const parseAttributes = (element, rawTag, offset) => {
         const seen = new Set();
@@ -28303,7 +28322,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
             prefix: null,
             localName: attributeName,
             namespaceURI: null,
-            value: nativeHtmlDecodeEntities(value),
+            value: nativeHtmlDecodeEntities(value).replace(/\u0000/g, "\ufffd"),
             owner: element,
           });
         }
@@ -28321,7 +28340,10 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         if (input.startsWith("<!--", state.cursor)) {
           const end = input.indexOf("-->", state.cursor + 4);
           if (end < 0) throw new Error("native HTML comment is unterminated");
-          append(activeParent, { type: "comment", html: true, value: input.slice(state.cursor + 4, end) });
+          append(activeParent, {
+            type: "comment", html: true,
+            value: input.slice(state.cursor + 4, end).replace(/\u0000/g, "\ufffd"),
+          });
           state.cursor = end + 3;
           continue;
         }
@@ -28345,7 +28367,10 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         }
         if (input.startsWith("<!", state.cursor) || input.startsWith("<?", state.cursor)) {
           if (end < 0) throw new Error("native HTML declaration is unterminated");
-          append(activeParent, { type: "comment", html: true, value: input.slice(state.cursor + 2, end) });
+          append(activeParent, {
+            type: "comment", html: true,
+            value: input.slice(state.cursor + 2, end).replace(/\u0000/g, "\ufffd"),
+          });
           state.cursor = end + 1;
           continue;
         }
@@ -28446,9 +28471,9 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           if (textEnd > state.cursor) append(element, {
             type: "text",
             html: true,
-            value: nativeHtmlRawTextElements.has(name)
+            value: (nativeHtmlRawTextElements.has(name)
               ? input.slice(state.cursor, textEnd)
-              : nativeHtmlDecodeEntities(input.slice(state.cursor, textEnd)),
+              : nativeHtmlDecodeEntities(input.slice(state.cursor, textEnd))).replace(/\u0000/g, "\ufffd"),
           });
           state.cursor = special ? special.end : input.length;
           continue;
@@ -35614,6 +35639,7 @@ fn document_bootstrap(
     .replace(/&#39;/g, "'")
     .replace(/&#x([0-9a-f]+);/gi, (match, digits) => {{
       const codePoint = Number.parseInt(digits, 16);
+      if (codePoint === 0) return "\ufffd";
       return Number.isFinite(codePoint) && codePoint <= 0x10ffff
         && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
         ? String.fromCodePoint(codePoint)
@@ -35621,6 +35647,7 @@ fn document_bootstrap(
     }})
     .replace(/&#([0-9]+);/g, (match, digits) => {{
       const codePoint = Number.parseInt(digits, 10);
+      if (codePoint === 0) return "\ufffd";
       return Number.isFinite(codePoint) && codePoint <= 0x10ffff
         && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
         ? String.fromCodePoint(codePoint)
@@ -35928,12 +35955,31 @@ fn document_bootstrap(
             && activeFormattingMarkerNames.has(element.localName)) clearActiveFormattingToMarker();
       }}
     }};
+    const usesForeignCharacterRules = (element) => {{
+      if (!element || Number(element.nodeType) !== 1 || element.namespaceURI === HTML_NAMESPACE) return false;
+      const name = String(element.localName || "").toLowerCase();
+      if (element.namespaceURI === SVG_NAMESPACE) {{
+        return !["foreignobject", "desc", "title"].includes(name);
+      }}
+      if (element.namespaceURI === MATHML_NAMESPACE) {{
+        if (["mi", "mo", "mn", "ms", "mtext"].includes(name)) return false;
+        if (name === "annotation-xml") {{
+          const encoding = String(element.getAttribute("encoding") || "").toLowerCase();
+          return !["text/html", "application/xhtml+xml"].includes(encoding);
+        }}
+        return true;
+      }}
+      return true;
+    }};
     const appendParsedText = (value) => {{
-      if (!value) return;
+      const current = stack[stack.length - 1];
+      const replacement = usesForeignCharacterRules(current) ? "\ufffd" : "";
+      const normalized = String(value).replace(/\u0000/g, replacement);
+      if (!normalized) return;
       reconstructActiveFormatting();
-      const fosterLocation = /[^\t\n\f\r ]/.test(value) ? tableFosterLocation() : null;
+      const fosterLocation = /[^\t\n\f\r ]/.test(normalized) ? tableFosterLocation() : null;
       const insertionParent = fosterLocation ? fosterLocation.parent : stack[stack.length - 1];
-      insertParsedNode(insertionParent, createText(value), fosterLocation && fosterLocation.before);
+      insertParsedNode(insertionParent, createText(normalized), fosterLocation && fosterLocation.before);
     }};
     const shouldAutoClose = (current, next) =>
       (current === "li" && next === "li")
@@ -36205,7 +36251,7 @@ fn document_bootstrap(
       if (source.startsWith("<!--", cursor)) {{
         const end = source.indexOf("-->", cursor + 4);
         const commentEnd = end < 0 ? source.length : end;
-        parent.appendChild(createComment(source.slice(cursor + 4, commentEnd)));
+        parent.appendChild(createComment(source.slice(cursor + 4, commentEnd).replace(/\u0000/g, "\ufffd")));
         cursor = end < 0 ? source.length : end + 3;
         continue;
       }}
@@ -36221,7 +36267,9 @@ fn document_bootstrap(
       if (source.startsWith("<!", cursor) || source.startsWith("<?", cursor)) {{
         const end = findTagEnd(cursor + 2);
         const declaration = source.slice(cursor + 2, end < 0 ? source.length : end);
-        if (!/^doctype(?:\s|$)/i.test(declaration)) parent.appendChild(createComment(declaration));
+        if (!/^doctype(?:\s|$)/i.test(declaration)) {{
+          parent.appendChild(createComment(declaration.replace(/\u0000/g, "\ufffd")));
+        }}
         cursor = end < 0 ? source.length : end + 1;
         continue;
       }}
@@ -36312,7 +36360,7 @@ fn document_bootstrap(
             : attribute[4] !== undefined
               ? attribute[4]
               : "";
-        parsedAttributes.push([attribute[1], decodeHtmlEntities(value)]);
+        parsedAttributes.push([attribute[1], decodeHtmlEntities(value).replace(/\u0000/g, "\ufffd")]);
       }}
       const hiddenInput = normalizedName === "input" && parsedAttributes.some(([name, value]) =>
         name.toLowerCase() === "type" && value.toLowerCase() === "hidden");
@@ -36348,9 +36396,9 @@ fn document_bootstrap(
         const special = findSpecialEnd(cursor, element.localName);
         const textEnd = special ? special.start : source.length;
         if (textEnd > cursor) element.appendChild(createText(
-          rawTextElements.has(element.localName)
+          (rawTextElements.has(element.localName)
             ? source.slice(cursor, textEnd)
-            : decodeHtmlEntities(source.slice(cursor, textEnd)),
+            : decodeHtmlEntities(source.slice(cursor, textEnd))).replace(/\u0000/g, "\ufffd"),
         ));
         cursor = special ? special.end : source.length;
         continue;

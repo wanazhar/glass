@@ -1,7 +1,9 @@
 # Native engine browser-complete expansion analysis
 
-Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-687`, following completed
+Status: Active implementation analysis for issue #40. The latest locally
+completed browser expansion slice is `native-engine-browser-688`; issue #40
+remains open. It follows completed
+`native-engine-browser-687`, following completed
 `native-engine-browser-686`, following completed
 `native-engine-browser-685`, `native-engine-browser-684`, and
 `native-engine-browser-683`. It follows
@@ -711,6 +713,19 @@ batch passed 46/46, the locked package check passed, and documentation
 validators covered 1,313 Markdown files with zero current-claim failures. See
 `docs/plan/tasks/native-engine-browser-685.md`; general parser conformance
 remains open.
+
+Completed slice 688 applies HTML's context-specific U+0000 behavior across all four
+parser routes. Ordinary HTML data drops literal NUL; foreign SVG/MathML data
+and RAWTEXT/RCDATA emit U+FFFD; comments and attribute values replace it;
+numeric references to U+0000 resolve to U+FFFD. Foreign-content selection
+must account for SVG HTML integration points and MathML text/HTML integration
+points. Comment/RAWTEXT references remain literal. NUL in tag/attribute names,
+doctypes, and unsupported tokenizer states remains outside this bounded task.
+Text references are decoded before tree-builder NUL handling so removing NUL
+cannot join characters and synthesize a reference.
+Its locked package check, 25-test HTML regression batch, formatting, whitespace,
+and maintainer documentation gates passed locally; remote CI was not run.
+See `docs/plan/tasks/native-engine-browser-688.md`.
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

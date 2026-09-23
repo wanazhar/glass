@@ -1284,13 +1284,22 @@ impl NativeDocument {
                 }
                 HtmlToken::Text(value) => {
                     if !value.is_empty() {
+                        let current = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "tree builder lost its text insertion mode".into(),
+                        })?;
+                        let foreign_content =
+                            parser_uses_foreign_character_rules(&document, current);
+                        let decoded = decode_html_character_data(&value, foreign_content);
+                        if decoded.is_empty() {
+                            continue;
+                        }
                         reconstruct_active_formatting_elements(
                             &mut document,
                             &mut stack,
                             &mut active_formatting,
                             None,
                         )?;
-                        let decoded = decode_entities(&value);
                         let foster_location = if decoded
                             .as_bytes()
                             .iter()
@@ -6538,13 +6547,21 @@ impl NativeDocument {
                 }
                 HtmlToken::Text(value) => {
                     if !value.is_empty() {
+                        let current = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "fragment parser lost its text insertion mode".into(),
+                        })?;
+                        let foreign_content = parser_uses_foreign_character_rules(self, current);
+                        let decoded = decode_html_character_data(&value, foreign_content);
+                        if decoded.is_empty() {
+                            continue;
+                        }
                         reconstruct_active_formatting_elements(
                             self,
                             &mut stack,
                             &mut active_formatting,
                             Some(id),
                         )?;
-                        let decoded = decode_entities(&value);
                         let foster_location = if decoded
                             .as_bytes()
                             .iter()
@@ -9647,7 +9664,13 @@ fn tokenize_preprocessed_html(
                 relative_end.unwrap_or_else(|| source.len().saturating_sub(position + 4));
             push_token(
                 &mut tokens,
-                HtmlToken::Comment(source[position + 4..position + 4 + comment_end].to_owned()),
+                HtmlToken::Comment(
+                    replace_html_nulls(
+                        &source[position + 4..position + 4 + comment_end],
+                        "\u{FFFD}",
+                    )
+                    .into_owned(),
+                ),
                 max_tokens,
             )?;
             position = relative_end.map_or(source.len(), |end| position + 4 + end + 3);
@@ -9692,7 +9715,9 @@ fn tokenize_preprocessed_html(
             let comment_end = end.unwrap_or(source.len());
             push_token(
                 &mut tokens,
-                HtmlToken::Comment(source[position + 2..comment_end].to_owned()),
+                HtmlToken::Comment(
+                    replace_html_nulls(&source[position + 2..comment_end], "\u{FFFD}").into_owned(),
+                ),
                 max_tokens,
             )?;
             position = end.map_or(source.len(), |value| value + 1);
@@ -9757,9 +9782,9 @@ fn tokenize_preprocessed_html(
                     push_token(
                         &mut tokens,
                         if decode_entities {
-                            HtmlToken::Text(value)
+                            HtmlToken::Text(replace_html_nulls(&value, "\u{FFFD}").into_owned())
                         } else {
-                            HtmlToken::RawText(value)
+                            HtmlToken::RawText(replace_html_nulls(&value, "\u{FFFD}").into_owned())
                         },
                         max_tokens,
                     )?;
@@ -9769,9 +9794,9 @@ fn tokenize_preprocessed_html(
                 push_token(
                     &mut tokens,
                     if decode_entities {
-                        HtmlToken::Text(value)
+                        HtmlToken::Text(replace_html_nulls(&value, "\u{FFFD}").into_owned())
                     } else {
-                        HtmlToken::RawText(value)
+                        HtmlToken::RawText(replace_html_nulls(&value, "\u{FFFD}").into_owned())
                     },
                     max_tokens,
                 )?;
@@ -9887,7 +9912,7 @@ fn parse_start_tag(
         // ASCII-case-insensitive name and ignores later duplicates.
         attributes
             .entry(attribute_name)
-            .or_insert_with(|| decode_entities(&value));
+            .or_insert_with(|| decode_html_attribute_value(&value));
     }
     Ok((name, attributes, self_closing))
 }
@@ -10739,6 +10764,32 @@ fn is_special_tree_builder_element(document: &NativeDocument, id: NativeNodeId) 
                 .is_some_and(|name| matches!(name, "foreignobject" | "desc" | "title")),
             _ => false,
         })
+}
+
+fn parser_uses_foreign_character_rules(document: &NativeDocument, id: NativeNodeId) -> bool {
+    let Some(node) = document.raw_node(id) else {
+        return false;
+    };
+    let Some(name) = node.element_name() else {
+        return false;
+    };
+    match node.namespace_uri() {
+        None | Some(HTML_NAMESPACE_URI) => false,
+        Some(SVG_NAMESPACE_URI) => !matches!(name, "foreignobject" | "desc" | "title"),
+        Some(MATHML_NAMESPACE_URI) => {
+            if matches!(name, "mi" | "mo" | "mn" | "ms" | "mtext") {
+                return false;
+            }
+            if name == "annotation-xml" {
+                return !node.attribute("encoding").is_some_and(|encoding| {
+                    encoding.eq_ignore_ascii_case("text/html")
+                        || encoding.eq_ignore_ascii_case("application/xhtml+xml")
+                });
+            }
+            true
+        }
+        Some(_) => true,
+    }
 }
 
 fn is_html_scope_boundary(document: &NativeDocument, id: NativeNodeId) -> bool {
@@ -11815,6 +11866,25 @@ fn consume_html_table_mode_ignored_end_token(
     Ok(false)
 }
 
+fn replace_html_nulls<'a>(value: &'a str, replacement: &str) -> Cow<'a, str> {
+    if value.contains('\0') {
+        Cow::Owned(value.replace('\0', replacement))
+    } else {
+        Cow::Borrowed(value)
+    }
+}
+
+fn decode_html_attribute_value(value: &str) -> String {
+    let decoded = decode_entities(value);
+    replace_html_nulls(&decoded, "\u{FFFD}").into_owned()
+}
+
+fn decode_html_character_data(value: &str, foreign_content: bool) -> String {
+    let literal_null_replacement = if foreign_content { "\u{FFFD}" } else { "" };
+    let decoded = decode_entities(value);
+    replace_html_nulls(&decoded, literal_null_replacement).into_owned()
+}
+
 fn decode_entities(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut cursor = 0;
@@ -11853,9 +11923,21 @@ fn decode_entity(entity: &str) -> Option<char> {
         _ if entity.starts_with("#x") || entity.starts_with("#X") => {
             u32::from_str_radix(&entity[2..], 16)
                 .ok()
-                .and_then(char::from_u32)
+                .and_then(|code_point| {
+                    if code_point == 0 {
+                        Some('\u{FFFD}')
+                    } else {
+                        char::from_u32(code_point)
+                    }
+                })
         }
-        _ if entity.starts_with('#') => entity[1..].parse().ok().and_then(char::from_u32),
+        _ if entity.starts_with('#') => entity[1..].parse().ok().and_then(|code_point| {
+            if code_point == 0 {
+                Some('\u{FFFD}')
+            } else {
+                char::from_u32(code_point)
+            }
+        }),
         _ => None,
     }
 }
@@ -14258,6 +14340,176 @@ mod tests {
         let error = NativeDocument::parse("\r\n<div value=>", &NativeEngineLimits::default())
             .expect_err("missing attribute value must remain a parse error");
         assert!(matches!(error, NativeEngineError::Parse { offset: 2, .. }));
+    }
+
+    #[test]
+    fn html_null_characters_follow_tokenizer_and_tree_builder_context() {
+        let markup = concat!(
+            "<section id='zone' data-null='attr\0literal&#0;reference&\0#0;'>",
+            "<p id='body-data'>left\0right&#0;reference&\0#0;tail</p>",
+            "<!--comment\0literal &#0;reference-->",
+            "<!bogus\0literal &#0;reference>",
+            "<script id='script-data'>script\0literal&#0;raw-reference</script>",
+            "<style id='style-data'>style\0literal</style>",
+            "<textarea id='rcdata'>rc\0data&#0;reference</textarea>",
+            "<svg><text id='svg-data'>svg\0literal&#0;reference&\0#0;tail</text>",
+            "<foreignObject id='svg-html-data'>foreign\0object</foreignObject></svg>",
+            "<math><mtext id='math-html-data'>math\0text</mtext>",
+            "<mi id='math-mi-data'>math\0mi</mi></math>",
+            "<math><annotation-xml id='math-annotation-html' encoding='application/xhtml+xml'>anno\0xml</annotation-xml></math>",
+            "</section>",
+        );
+        let expected = serde_json::json!({
+            "values": [
+                "attr\u{FFFD}literal\u{FFFD}reference&\u{FFFD}#0;",
+                "leftright\u{FFFD}reference&#0;tail",
+                "script\u{FFFD}literal&#0;raw-reference",
+                "style\u{FFFD}literal",
+                "rc\u{FFFD}data\u{FFFD}reference",
+                "svg\u{FFFD}literal\u{FFFD}reference&\u{FFFD}#0;tail",
+                "foreignobject",
+                "mathtext",
+                "mathmi",
+                "annoxml",
+            ],
+            "comments": [
+                "comment\u{FFFD}literal &#0;reference",
+                "bogus\u{FFFD}literal &#0;reference",
+            ],
+            "parents": [
+                "section", "section", "section", "section", "svg", "svg", "math", "math", "math",
+            ]
+        });
+        let summarize_native = |tree: &NativeDocument| {
+            let text_content = |element_id: &str| {
+                let element = tree
+                    .find_element_by_id(element_id)
+                    .unwrap_or_else(|| panic!("null fixture element {element_id} must exist"));
+                tree.node(element)
+                    .expect("null fixture element must resolve")
+                    .children()
+                    .iter()
+                    .find_map(|child| match tree.node(*child).map(NativeNode::kind) {
+                        Some(NativeNodeKind::Text(value)) => Some(value.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("null fixture element {element_id} has no text"))
+            };
+            let zone = tree
+                .find_element_by_id("zone")
+                .expect("null fixture section must exist");
+            let zone_node = tree.node(zone).expect("null fixture section must resolve");
+            let comments = zone_node
+                .children()
+                .iter()
+                .filter_map(|child| match tree.node(*child).map(NativeNode::kind) {
+                    Some(NativeNodeKind::Comment(value)) => Some(value.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let ids = [
+                "body-data",
+                "script-data",
+                "style-data",
+                "rcdata",
+                "svg-data",
+                "svg-html-data",
+                "math-html-data",
+                "math-mi-data",
+                "math-annotation-html",
+            ];
+            let parents = ids
+                .iter()
+                .map(|element_id| {
+                    let element = tree.find_element_by_id(element_id).unwrap();
+                    let parent = tree.node(element).and_then(NativeNode::parent).unwrap();
+                    tree.node(parent)
+                        .and_then(NativeNode::element_name)
+                        .unwrap()
+                        .to_owned()
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "values": [
+                    zone_node.attribute("data-null").unwrap(),
+                    text_content("body-data"),
+                    text_content("script-data"),
+                    text_content("style-data"),
+                    text_content("rcdata"),
+                    text_content("svg-data"),
+                    text_content("svg-html-data"),
+                    text_content("math-html-data"),
+                    text_content("math-mi-data"),
+                    text_content("math-annotation-html"),
+                ],
+                "comments": comments,
+                "parents": parents,
+            })
+        };
+
+        let direct = NativeDocument::parse(markup, &NativeEngineLimits::default())
+            .expect("document parser must apply contextual HTML null handling");
+        assert_eq!(summarize_native(&direct), expected);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("html-null-context-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+            const markup = __HTML_MARKUP__;
+            const root = document.querySelector("#root");
+            root.innerHTML = markup;
+            const response = globalThis.__glassParseHtmlDocument(
+                markup,
+                "https://example.test/html-null-context.html",
+                "text/html",
+            );
+            const summarize = (tree) => {
+                const zone = tree.querySelector("#zone");
+                const comments = Array.from(zone.childNodes)
+                    .filter((node) => node.nodeType === 8)
+                    .map((node) => node.data);
+                const ids = [
+                    "body-data", "script-data", "style-data", "rcdata",
+                    "svg-data", "svg-html-data", "math-html-data", "math-mi-data",
+                    "math-annotation-html",
+                ];
+                return {
+                    values: [
+                        zone.getAttribute("data-null"),
+                        tree.querySelector("#body-data").textContent,
+                        tree.querySelector("#script-data").textContent,
+                        tree.querySelector("#style-data").textContent,
+                        tree.querySelector("#rcdata").textContent,
+                        tree.querySelector("#svg-data").textContent,
+                        tree.querySelector("#svg-html-data").textContent,
+                        tree.querySelector("#math-html-data").textContent,
+                        tree.querySelector("#math-mi-data").textContent,
+                        tree.querySelector("#math-annotation-html").textContent,
+                    ],
+                    comments,
+                    parents: ids.map((id) => tree.querySelector(`#${id}`).parentElement.localName),
+                };
+            };
+            return [summarize(root), summarize(response)];
+        })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(markup).unwrap());
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://html-null-context.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("same-turn and XHR parsers must apply contextual HTML null handling");
+        assert_eq!(evaluation.value, serde_json::json!([expected, expected]));
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must apply contextual HTML null handling");
+        assert_eq!(summarize_native(&document), expected);
     }
 
     #[test]

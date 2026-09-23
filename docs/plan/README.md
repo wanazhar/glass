@@ -27,8 +27,10 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed locally
-`native-engine-browser-687`, following completed `native-engine-browser-686`,
+the browser-complete expansion has completed locally through
+`native-engine-browser-688`; issue #40 remains open. It follows completed
+`native-engine-browser-687`, following completed
+`native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed `native-engine-browser-684`,
 following completed
 `native-engine-browser-683`, following completed `native-engine-browser-682`,
@@ -109,6 +111,18 @@ package check, 24-test HTML regression batch, formatting, whitespace, and all
 maintainer documentation gates passed locally. Context-specific U+0000
 handling and general tokenizer/parser conformance remain open; there is no
 remote CI evidence for this local checkpoint.
+
+[`native-engine-browser-688`](tasks/native-engine-browser-688.md) distinguishes
+literal U+0000 by tokenizer/tree-builder context:
+HTML data ignores it, foreign SVG/MathML data and RAWTEXT/RCDATA replace it,
+and comments/attribute values replace it. Numeric references to U+0000 resolve
+to U+FFFD, while comments and RAWTEXT do not resolve references. Resolve text
+references before discarding literal NUL so source characters cannot join into
+a new reference. The four native HTML parser routes must agree, including
+integration points; tag/name, doctype, PLAINTEXT, and general tokenizer
+conformance remain open. Its package check, 25-test HTML regression batch,
+formatting, whitespace, and all maintainer documentation gates passed locally;
+there is no remote CI evidence for this checkpoint.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

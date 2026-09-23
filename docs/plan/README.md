@@ -26,10 +26,9 @@ version claims.
 
 ## Active plan: Glass native browser engine (issue #40)
 
-Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion is implementing
-`native-engine-browser-689`, following locally completed
-`native-engine-browser-688`; issue #40 remains open. It follows completed
+Status: the bounded foundation through `native-engine-234` and browser-complete
+expansion through `native-engine-browser-690` are complete locally; issue #40
+remains open. It follows completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed `native-engine-browser-684`,
@@ -134,6 +133,14 @@ their parent namespace. SVG `title` tokenizer context and general foreign
 content dispatch remain separate work. The package check, focused integration
 route test, 26-test HTML regression batch, formatting, whitespace, and all
 maintainer documentation gates passed locally; remote CI was not run.
+
+[`native-engine-browser-690`](tasks/native-engine-browser-690.md) is complete
+locally. It restricts HTML RCDATA/RAWTEXT modes to HTML-namespace elements;
+foreign SVG/MathML elements with those names tokenize nested markup in the
+current namespace/integration context. The exact four-route regression passed
+1/1 and the HTML parser batch passed 27/27. The locked package check,
+formatting, whitespace, and maintainer documentation gates passed locally;
+remote CI was not run. Complete parser conformance remains open.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

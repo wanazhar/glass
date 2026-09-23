@@ -75,6 +75,12 @@ Noah's Ark handling, and the bounded adoption-agency algorithm now run in all
 four parser routes. The focused active-formatting tests pass 2/2 and the table
 regression batch passes 46/46; general HTML parser conformance remains open.
 
+Slice 690 is complete locally: select HTML RAWTEXT/RCDATA states only for
+HTML-namespace elements, and parse nested markup inside same-named SVG/MathML
+elements using the foreign/integration context across all four parser routes.
+The exact route test passed 1/1 and the HTML parser batch passed 27/27; complete
+parser conformance remains open. See `tasks/native-engine-browser-690.md`.
+
 Slice 689 is complete locally: select child element namespaces using SVG and MathML
 HTML integration-point rules across all four parser routes. Preserve the
 `mglyph`/`malignmark` exceptions, the `annotation-xml` SVG special case, and

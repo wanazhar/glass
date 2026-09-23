@@ -1,8 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is locally complete through
-`native-engine-browser-689`, following locally completed
-`native-engine-browser-688`; issue #40 remains open. It follows completed
+`native-engine-browser-690`, following locally completed
+`native-engine-browser-689` and `native-engine-browser-688`; issue #40 remains open. It follows completed
 `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
@@ -581,6 +581,16 @@ remain separate gaps. The package check, focused route test, 26-test HTML
 batch, formatting, whitespace, and maintainer docs gates passed locally;
 remote CI was not run. See
 [`slice 689`](../plan/tasks/native-engine-browser-689.md).
+
+Slice 690 makes RAWTEXT/RCDATA namespace-aware across document, fragment,
+same-turn, and XHR HTML parsing. Only HTML-namespace `script`, `style`,
+`title`, and `textarea` enter those tokenizer modes; foreign SVG/MathML
+elements with the same local names parse child markup in their namespace or
+integration-point context. Its exact four-route fixture passed 1/1 and the
+HTML parser batch passed 27/27. The locked package check, formatting, whitespace,
+and maintainer documentation gates passed locally; remote CI was not run. This
+does not complete HTML foreign-content dispatch. See
+[`slice 690`](../plan/tasks/native-engine-browser-690.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

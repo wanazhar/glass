@@ -14515,37 +14515,108 @@ fn attribute_value_contains(
     }
 }
 
-fn attribute_value_for_selector<'a>(
+const HTML_CASE_INSENSITIVE_ATTRIBUTE_NAMES: &[&str] = &[
+    "accept",
+    "accept-charset",
+    "align",
+    "alink",
+    "axis",
+    "bgcolor",
+    "charset",
+    "checked",
+    "clear",
+    "codetype",
+    "color",
+    "compact",
+    "declare",
+    "defer",
+    "dir",
+    "direction",
+    "disabled",
+    "enctype",
+    "face",
+    "frame",
+    "hreflang",
+    "http-equiv",
+    "lang",
+    "language",
+    "link",
+    "media",
+    "method",
+    "multiple",
+    "nohref",
+    "noresize",
+    "noshade",
+    "nowrap",
+    "readonly",
+    "rel",
+    "rev",
+    "rules",
+    "scope",
+    "scrolling",
+    "selected",
+    "shape",
+    "target",
+    "text",
+    "type",
+    "valign",
+    "valuetype",
+    "vlink",
+];
+
+fn attribute_selector_case_sensitivity(
     selector: &NativeAttributeSelector,
-    node: &'a NativeNode,
-) -> Option<&'a str> {
-    match selector.namespace {
-        NativeAttributeNamespace::Unqualified => node.attribute(&selector.name),
-        NativeAttributeNamespace::Any => node.attribute_in_any_namespace(&selector.name),
-        NativeAttributeNamespace::NoNamespace => node.attribute_in_namespace(None, &selector.name),
-        NativeAttributeNamespace::Html => {
-            node.attribute_in_namespace(Some(HTML_NAMESPACE_URI), &selector.name)
+    node: &NativeNode,
+    attribute_namespace_uri: Option<&str>,
+) -> NativeAttributeCaseSensitivity {
+    match selector.case_sensitivity {
+        NativeAttributeCaseSensitivity::Default
+            if node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+                && attribute_namespace_uri.is_none()
+                && HTML_CASE_INSENSITIVE_ATTRIBUTE_NAMES.contains(&selector.name.as_str()) =>
+        {
+            NativeAttributeCaseSensitivity::Insensitive
         }
-        NativeAttributeNamespace::Svg => {
-            node.attribute_in_namespace(Some(SVG_NAMESPACE_URI), &selector.name)
-        }
-        NativeAttributeNamespace::MathMl => {
-            node.attribute_in_namespace(Some(MATHML_NAMESPACE_URI), &selector.name)
-        }
-        NativeAttributeNamespace::Xml => {
-            node.attribute_in_namespace(Some(XML_NAMESPACE_URI), &selector.name)
-        }
-        NativeAttributeNamespace::Xmlns => {
-            node.attribute_in_namespace(Some(XMLNS_NAMESPACE_URI), &selector.name)
-        }
-        NativeAttributeNamespace::Xlink => {
-            node.attribute_in_namespace(Some(XLINK_NAMESPACE_URI), &selector.name)
-        }
+        case_sensitivity => case_sensitivity,
     }
 }
 
-fn attribute_selector_matches(selector: &NativeAttributeSelector, actual: Option<&str>) -> bool {
-    let case_sensitivity = selector.case_sensitivity;
+fn attribute_value_for_selector<'a>(
+    selector: &NativeAttributeSelector,
+    node: &'a NativeNode,
+) -> Option<(&'a str, Option<&'a str>)> {
+    match selector.namespace {
+        NativeAttributeNamespace::Unqualified => node.attribute_with_namespace_uri(&selector.name),
+        NativeAttributeNamespace::Any => node.attribute_in_any_namespace_with_uri(&selector.name),
+        NativeAttributeNamespace::NoNamespace => node
+            .attribute_in_namespace(None, &selector.name)
+            .map(|value| (value, None)),
+        NativeAttributeNamespace::Html => node
+            .attribute_in_namespace(Some(HTML_NAMESPACE_URI), &selector.name)
+            .map(|value| (value, Some(HTML_NAMESPACE_URI))),
+        NativeAttributeNamespace::Svg => node
+            .attribute_in_namespace(Some(SVG_NAMESPACE_URI), &selector.name)
+            .map(|value| (value, Some(SVG_NAMESPACE_URI))),
+        NativeAttributeNamespace::MathMl => node
+            .attribute_in_namespace(Some(MATHML_NAMESPACE_URI), &selector.name)
+            .map(|value| (value, Some(MATHML_NAMESPACE_URI))),
+        NativeAttributeNamespace::Xml => node
+            .attribute_in_namespace(Some(XML_NAMESPACE_URI), &selector.name)
+            .map(|value| (value, Some(XML_NAMESPACE_URI))),
+        NativeAttributeNamespace::Xmlns => node
+            .attribute_in_namespace(Some(XMLNS_NAMESPACE_URI), &selector.name)
+            .map(|value| (value, Some(XMLNS_NAMESPACE_URI))),
+        NativeAttributeNamespace::Xlink => node
+            .attribute_in_namespace(Some(XLINK_NAMESPACE_URI), &selector.name)
+            .map(|value| (value, Some(XLINK_NAMESPACE_URI))),
+    }
+}
+
+fn attribute_selector_matches(
+    selector: &NativeAttributeSelector,
+    actual: Option<&str>,
+    case_sensitivity: NativeAttributeCaseSensitivity,
+) -> bool {
     match selector.operator {
         NativeAttributeOperator::Exists => actual.is_some(),
         NativeAttributeOperator::Equals => actual.is_some_and(|actual| {
@@ -14617,7 +14688,13 @@ impl NativeCompoundSelector {
             return false;
         }
         self.attributes.iter().all(|attribute| {
-            attribute_selector_matches(attribute, attribute_value_for_selector(attribute, node))
+            let actual = attribute_value_for_selector(attribute, node);
+            let case_sensitivity = attribute_selector_case_sensitivity(
+                attribute,
+                node,
+                actual.and_then(|(_, namespace_uri)| namespace_uri),
+            );
+            attribute_selector_matches(attribute, actual.map(|(value, _)| value), case_sensitivity)
         })
     }
 
@@ -26477,6 +26554,90 @@ mod tests {
         assert_eq!(matched_ids("[data-suffix$='suffix' i]"), vec!["mixed"]);
         assert_eq!(matched_ids("[data-text*='middle-value' i]"), vec!["mixed"]);
         assert_eq!(matched_ids("[data-eq='mixed']"), vec!["exact"]);
+    }
+
+    #[test]
+    fn document_selector_applies_html_default_attribute_value_case_rules() {
+        assert_eq!(HTML_CASE_INSENSITIVE_ATTRIBUTE_NAMES.len(), 46);
+        let listed_attributes = HTML_CASE_INSENSITIVE_ATTRIBUTE_NAMES
+            .iter()
+            .map(|name| format!("{name}='MiXeD'"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let source = format!(
+            "<main><div id='listed' {listed_attributes}></div><div id='equals' type='TeXt'></div><div id='includes' type='alpha BETA'></div><div id='dash' type='EN-us'></div><div id='prefix' type='PreFix-value'></div><div id='suffix' type='value-SuFfIx'></div><div id='substring' type='middle-VALUE'></div><div id='editable' contenteditable='TRUE'></div><div id='custom' data-value='MiXeD'></div><div id='unicode' data-value='GrÜn'></div><div id='namespaced' xml:type='TeXt'></div><svg><g id='foreign' type='TeXt'></g></svg></main>"
+        );
+        let document = NativeDocument::parse(&source, &NativeEngineLimits::default())
+            .expect("HTML default attribute case fixture document");
+        let matched_ids = |selector: &str| {
+            selector_matches_in_document(&document, selector)
+                .unwrap()
+                .into_iter()
+                .map(|node_id| {
+                    document
+                        .node(node_id)
+                        .and_then(|node| node.attribute("id"))
+                        .expect("matched element id")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        for name in HTML_CASE_INSENSITIVE_ATTRIBUTE_NAMES {
+            assert_eq!(
+                matched_ids(&format!("[{name}='mixed']")),
+                vec!["listed"],
+                "HTML default value matching for [{name}=mixed]"
+            );
+        }
+        assert_eq!(matched_ids("[type='text']"), vec!["equals"]);
+        assert_eq!(matched_ids("[|type='text']"), vec!["equals"]);
+        assert_eq!(matched_ids("[*|type='text']"), vec!["equals"]);
+        assert_eq!(matched_ids("[type~='beta']"), vec!["includes"]);
+        assert_eq!(matched_ids("[type|='en']"), vec!["dash"]);
+        assert_eq!(matched_ids("[type^='prefix']"), vec!["prefix"]);
+        assert_eq!(matched_ids("[type$='suffix']"), vec!["suffix"]);
+        assert_eq!(matched_ids("[type*='middle']"), vec!["substring"]);
+        assert!(matched_ids("[type='text' s]").is_empty());
+        assert_eq!(matched_ids("#equals[type='text' i]"), vec!["equals"]);
+        assert!(matched_ids("[contenteditable='true']").is_empty());
+        assert_eq!(matched_ids("[contenteditable='true' i]"), vec!["editable"]);
+        assert!(matched_ids("[data-value='mixed']").is_empty());
+        assert_eq!(matched_ids("[data-value='mixed' i]"), vec!["custom"]);
+        assert!(matched_ids("[data-value='grün' i]").is_empty());
+        assert!(matched_ids("#foreign[type='text']").is_empty());
+        assert_eq!(matched_ids("#foreign[type='text' i]"), vec!["foreign"]);
+        assert!(matched_ids("#namespaced[xml|type='text']").is_empty());
+        assert_eq!(
+            matched_ids("#namespaced[xml|type='text' i]"),
+            vec!["namespaced"]
+        );
+    }
+
+    #[test]
+    fn html_default_attribute_value_case_rules_apply_during_style_cascade() {
+        let stylesheet = NativeStylesheet::from_sources(vec![
+            "[type='text'] { color: red; } [type='text' s] { background-color: red; } [data-value='mixed'] { color: black; }"
+                .into(),
+        ])
+        .expect("HTML default attribute case stylesheet");
+        let document = NativeDocument::parse(
+            "<main><div id='mixed' type='TeXt' data-value='MiXeD'></div><div id='exact' type='text' data-value='mixed'></div></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("HTML default attribute cascade document");
+
+        let style = |id: &str| {
+            stylesheet.computed_for_in_document(
+                &document,
+                document.resolve_target(&format!("id={id}")).unwrap(),
+                None,
+            )
+        };
+        assert_eq!(style("mixed").color(), Some(NativeColor::RED));
+        assert_eq!(style("mixed").background_color(), None);
+        assert_eq!(style("exact").color(), Some(NativeColor::BLACK));
+        assert_eq!(style("exact").background_color(), Some(NativeColor::RED));
     }
 
     #[test]

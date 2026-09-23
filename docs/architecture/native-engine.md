@@ -1,7 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-671`, following completed `native-engine-browser-670`,
+`native-engine-browser-672`, following completed `native-engine-browser-671`,
+following completed `native-engine-browser-670`,
 following completed `native-engine-browser-669`,
 following completed `native-engine-browser-668`,
 following completed `native-engine-browser-667`,
@@ -540,6 +541,13 @@ previous value. Valid descriptors continue through the existing native install
 acknowledgement. Variant/feature-setting parity, display timing,
 installed-font discovery, and complete FontFace/Web IDL parity remain issue
 #40 gates.
+
+Slice 672 implements HTML's fixed 46-name ASCII-insensitive default for
+namespace-less attribute values on HTML-namespace elements. Explicit `i` and
+`s` flags override that default, all other values remain case-sensitive, and
+the behavior is shared by document queries/action locators and stylesheet
+cascade. Page-realm JavaScript selector parity remains a separate issue #40
+gate; complete selector, CSS, and Web IDL parity remain explicit gates.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

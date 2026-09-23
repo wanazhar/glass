@@ -461,6 +461,21 @@ impl NativeNode {
         })
     }
 
+    /// Return a raw-name attribute value with its namespace URI, if any.
+    pub(crate) fn attribute_with_namespace_uri(&self, name: &str) -> Option<(&str, Option<&str>)> {
+        self.attributes()?.iter().find_map(|(attribute, value)| {
+            attribute.eq_ignore_ascii_case(name).then(|| {
+                (
+                    value.as_str(),
+                    self.state
+                        .attribute_namespaces
+                        .get(attribute)
+                        .map(String::as_str),
+                )
+            })
+        })
+    }
+
     /// Return a case-insensitive local-name match in one attribute namespace.
     pub fn attribute_in_namespace(&self, namespace_uri: Option<&str>, name: &str) -> Option<&str> {
         self.attributes()?.iter().find_map(|(attribute, value)| {
@@ -479,13 +494,28 @@ impl NativeNode {
 
     /// Return a case-insensitive local-name match in any attribute namespace.
     pub fn attribute_in_any_namespace(&self, name: &str) -> Option<&str> {
+        self.attribute_in_any_namespace_with_uri(name)
+            .map(|(value, _)| value)
+    }
+
+    /// Return a case-insensitive local-name match and its namespace URI.
+    pub(crate) fn attribute_in_any_namespace_with_uri(
+        &self,
+        name: &str,
+    ) -> Option<(&str, Option<&str>)> {
         self.attributes()?.iter().find_map(|(attribute, value)| {
             let local_name = attribute
                 .rsplit_once(':')
                 .map_or(attribute.as_str(), |(_, local_name)| local_name);
-            local_name
-                .eq_ignore_ascii_case(name)
-                .then_some(value.as_str())
+            local_name.eq_ignore_ascii_case(name).then(|| {
+                (
+                    value.as_str(),
+                    self.state
+                        .attribute_namespaces
+                        .get(attribute)
+                        .map(String::as_str),
+                )
+            })
         })
     }
 

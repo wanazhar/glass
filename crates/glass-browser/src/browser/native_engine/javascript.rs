@@ -27778,6 +27778,32 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         }
         return { parent: state.stack[0], before: null };
       };
+      const prepareHtmlTableStart = () => {
+        const current = state.stack[state.stack.length - 1];
+        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return true;
+        while (true) {
+          let tableIndex = -1;
+          for (let index = state.stack.length - 1; index >= 0; index -= 1) {
+            const candidate = state.stack[index];
+            const candidateName = String(candidate.localName || "").toLowerCase();
+            if (candidate.namespaceURI === nativeHtmlNamespaceUri && candidateName === "template") return true;
+            if (candidate.namespaceURI === nativeSvgNamespaceUri && candidateName === "foreignobject") return true;
+            if (candidate.namespaceURI === nativeHtmlNamespaceUri && candidateName === "table") {
+              tableIndex = index;
+              break;
+            }
+          }
+          if (tableIndex < 0) return true;
+          const hasModeBoundary = state.stack.slice(tableIndex + 1).some((candidate) => {
+            const candidateName = String(candidate.localName || "").toLowerCase();
+            return (candidate.namespaceURI === nativeHtmlNamespaceUri
+                && ["td", "th", "caption", "template"].includes(candidateName))
+              || (candidate.namespaceURI === nativeSvgNamespaceUri && candidateName === "foreignobject");
+          });
+          if (hasModeBoundary) return true;
+          state.stack.length = tableIndex;
+        }
+      };
       const insertImpliedTableElements = (incomingName) => {
         const current = state.stack[state.stack.length - 1];
         if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return;
@@ -27920,6 +27946,10 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           continue;
         }
         const name = opening[1].toLowerCase();
+        if (name === "table" && !prepareHtmlTableStart()) {
+          state.cursor = end + 1;
+          continue;
+        }
         while (state.stack.length > 1
             && nativeHtmlShouldAutoClose(state.stack[state.stack.length - 1].localName, name)) state.stack.pop();
         insertImpliedTableElements(name);
@@ -35173,6 +35203,44 @@ fn document_bootstrap(
       || (current === "tbody" && ["tbody", "tfoot"].includes(next))
       || (current === "tfoot" && next === "tbody")
       || (current === "colgroup" && ["colgroup", "tbody", "thead", "tfoot"].includes(next));
+    const prepareHtmlTableStart = () => {{
+      const current = stack[stack.length - 1];
+      if (!current || current.namespaceURI !== HTML_NAMESPACE) return true;
+      while (true) {{
+        let tableIndex = -1;
+        for (let index = stack.length - 1; index >= 0; index -= 1) {{
+          const candidate = stack[index];
+          const candidateName = String(candidate.localName || "").toLowerCase();
+          if (candidate.namespaceURI === HTML_NAMESPACE && candidateName === "template") return true;
+          if (candidate.namespaceURI === SVG_NAMESPACE && candidateName === "foreignobject") return true;
+          if (candidate.namespaceURI === HTML_NAMESPACE && candidateName === "table"
+              && candidate !== stack[0]) {{
+            tableIndex = index;
+            break;
+          }}
+        }}
+        if (tableIndex >= 0) {{
+          const hasModeBoundary = stack.slice(tableIndex + 1).some((candidate) => {{
+            const candidateName = String(candidate.localName || "").toLowerCase();
+            return (candidate.namespaceURI === HTML_NAMESPACE
+                && ["td", "th", "caption", "template"].includes(candidateName))
+              || (candidate.namespaceURI === SVG_NAMESPACE && candidateName === "foreignobject");
+          }});
+          if (hasModeBoundary) return true;
+          stack.length = tableIndex;
+          continue;
+        }}
+
+        const context = stack[0];
+        const contextName = String(context && context.localName || "").toLowerCase();
+        const contextEstablishesTableMode = context && context.namespaceURI === HTML_NAMESPACE
+          && ["table", "colgroup", "tbody", "tfoot", "thead", "tr"].includes(contextName);
+        const enteredCellOrCaption = stack.slice(1).some((candidate) =>
+          candidate.namespaceURI === HTML_NAMESPACE
+            && ["td", "th", "caption"].includes(String(candidate.localName || "").toLowerCase()));
+        return !contextEstablishesTableMode || enteredCellOrCaption;
+      }}
+    }};
     const insertImpliedTableElements = (incomingName) => {{
       const current = stack[stack.length - 1];
       if (!current || current.namespaceURI !== HTML_NAMESPACE) return;
@@ -35286,6 +35354,10 @@ fn document_bootstrap(
         continue;
       }}
       const normalizedName = opening[1].toLowerCase();
+      if (normalizedName === "table" && !prepareHtmlTableStart()) {{
+        cursor = end + 1;
+        continue;
+      }}
       while (stack.length > 1
           && shouldAutoClose(stack[stack.length - 1].localName, normalizedName)) {{
         stack.pop();

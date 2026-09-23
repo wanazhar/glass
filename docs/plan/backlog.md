@@ -3,28 +3,38 @@
 ## Issue #40: reconcile native-engine slice evidence
 
 The architecture and analysis status chain reports completed browser slices
-650–677, but `docs/plan/tasks/` has records through slice 649 and then for
-slices 672–677; detailed records 650–671 remain missing. On 2026-09-23, the
-remote issue body was synchronized through local native slice 677 at checkpoint
-`74e1ad74` and records the branch as 1,523 commits ahead and unpushed. Remote
-CI, release, registry, and cross-platform promotion evidence are not claimed.
+650–678, but `docs/plan/tasks/` has records through slice 649 and then for
+slices 672–678; detailed records 650–671 remain missing. Before slice 678, the
+remote issue body had been synchronized through local native slice 677 at
+checkpoint `74e1ad74` and recorded the branch as 1,524 commits ahead and
+unpushed. Remote CI, release, registry, and cross-platform promotion evidence
+are not claimed.
 Recover verifiable scope and test evidence for slices 650–671 from authoritative
 commits; do not infer passing checks from summary prose. Keep the issue body and
 this record explicit about local versus remote evidence.
 
 ## Native HTML parser-route parity
 
-Slices 673–677 align bounded table tree-construction behavior across
+Slices 673–678 align bounded table tree-construction behavior across
 `NativeDocument::parse`, Rust `NativeDocument::apply_script_inner_html`, the
 shared JavaScript `populateDetachedFragment` same-turn projection, and the
 independent `nativeHtmlParseDocument` route for XHR
 `responseType="document"`. Slices 673–675 cover foster insertion; slice 676
 adds implicit `tbody`/`tr`, and slice 677 adds implicit `colgroup`
-construction. The fixtures check parentage, authored order, explicit-section
-preservation, whitespace/comments, resource bounds, and SVG/MathML versus
-`foreignObject` namespace behavior, including XHR document materialization.
-Continue expanding the corpus for other tree-construction rules; do not
-describe these slices as general HTML parser parity.
+construction; slice 678 handles nested table starts and fragment context.
+Fixtures check parentage, authored order, explicit-section preservation,
+whitespace/comments, resource bounds, and namespace behavior across document,
+fragment, same-turn projection, and XHR routes. Continue expanding the corpus
+for other tree-construction rules; do not describe these slices as general
+HTML parser parity.
+
+Slice 678 completes one bounded WHATWG in-table start-tag recovery path across
+document parsing, Rust fragment commit, same-turn JavaScript projection, and
+XHR HTML parsing. It preserves cell/caption and template/foreign-content
+boundaries, closes active table-mode scopes, and ignores the token when a
+table-context fragment has no open table in its stack. `cargo check` passed;
+focused nested-table coverage passed 4/4 and the broader table-focused batch
+passed 39/39. Other insertion modes and general parser conformance remain open.
 
 ## Input: popup-opening mouse release completion
 

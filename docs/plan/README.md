@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-677`, following completed `native-engine-browser-676`,
+`native-engine-browser-678`, following completed `native-engine-browser-677`,
+following completed `native-engine-browser-676`,
 following completed `native-engine-browser-675`,
 following completed `native-engine-browser-674`,
 following completed `native-engine-browser-673`,
@@ -117,6 +118,13 @@ fragment, same-turn JavaScript projection, and XHR HTML parsing. Explicit
 groups remain singular; SVG/MathML nodes retain their namespace, while
 `foreignObject` descendants use HTML behavior. Remaining table insertion
 modes and general parser conformance are still open.
+
+The completed [native-engine-browser-678](tasks/native-engine-browser-678.md)
+slice closes and reprocesses `table` start tokens in active HTML table-mode
+scope, preserves nested tables in cells/captions and template/foreign-content
+boundaries, and ignores a context-table token when no table is open in a
+fragment stack. Document, fragment commit, same-turn projection, and XHR
+routes share the behavior; general parser conformance remains open.
 
 `native-engine-browser-633`, following completed
 `native-engine-browser-632`, following completed

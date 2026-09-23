@@ -1074,6 +1074,11 @@ impl NativeDocument {
                     attributes,
                     self_closing,
                 } => {
+                    if name == "table"
+                        && !prepare_html_table_start_token(&document, &mut stack, None)?
+                    {
+                        continue;
+                    }
                     while stack.len() > 1
                         && stack.last().is_some_and(|id| {
                             document
@@ -6201,6 +6206,11 @@ impl NativeDocument {
                     attributes,
                     self_closing,
                 } => {
+                    if name == "table"
+                        && !prepare_html_table_start_token(self, &mut stack, Some(id))?
+                    {
+                        continue;
+                    }
                     while stack.len() > 1
                         && stack.last().is_some_and(|current| {
                             self.raw_node(*current)
@@ -10111,6 +10121,102 @@ fn html_table_foster_location(
     Ok(Some((parent, Some(table))))
 }
 
+fn prepare_html_table_start_token(
+    document: &NativeDocument,
+    stack: &mut Vec<NativeNodeId>,
+    fragment_root: Option<NativeNodeId>,
+) -> Result<bool, NativeEngineError> {
+    let current = stack
+        .last()
+        .and_then(|id| document.node(*id))
+        .ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder lost its current node while processing a table start".into(),
+        })?;
+    if current.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+        return Ok(true);
+    }
+
+    loop {
+        let mut table_index = None;
+        for index in (0..stack.len()).rev() {
+            let id = stack[index];
+            let node = document.node(id).ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "tree builder table scope references an unknown node".into(),
+            })?;
+            if node.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+                if node.namespace_uri() == Some(SVG_NAMESPACE_URI)
+                    && node.element_name() == Some("foreignobject")
+                {
+                    return Ok(true);
+                }
+                continue;
+            }
+            match node.element_name() {
+                Some("template") => return Ok(true),
+                Some("table") if Some(id) != fragment_root => {
+                    table_index = Some(index);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(index) = table_index {
+            let table_mode_boundary = stack[index + 1..].iter().any(|id| {
+                document.node(*id).is_some_and(|node| {
+                    (node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+                        && matches!(
+                            node.element_name(),
+                            Some("td" | "th" | "caption" | "template")
+                        ))
+                        || (node.namespace_uri() == Some(SVG_NAMESPACE_URI)
+                            && node.element_name() == Some("foreignobject"))
+                })
+            });
+            if table_mode_boundary {
+                return Ok(true);
+            }
+
+            // Reprocessing the token after a table pop can expose another
+            // active table-mode scope, so remove each such table before the
+            // caller inserts this same start tag.
+            stack.truncate(index);
+            continue;
+        }
+
+        let Some(fragment_root) = fragment_root else {
+            return Ok(true);
+        };
+        let Some(root_index) = stack.iter().position(|id| *id == fragment_root) else {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "fragment parser lost its context element".into(),
+            });
+        };
+        let context_establishes_table_mode = document.node(fragment_root).is_some_and(|node| {
+            node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+                && matches!(
+                    node.element_name(),
+                    Some("table" | "colgroup" | "tbody" | "tfoot" | "thead" | "tr")
+                )
+        });
+        let entered_cell_or_caption = stack[root_index + 1..].iter().any(|id| {
+            document.node(*id).is_some_and(|node| {
+                node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+                    && matches!(node.element_name(), Some("td" | "th" | "caption"))
+            })
+        });
+        if context_establishes_table_mode && !entered_cell_or_caption {
+            // A fragment's context element selects the insertion mode but is
+            // not an element on the parser's open-elements stack.
+            return Ok(false);
+        }
+        return Ok(true);
+    }
+}
+
 fn decode_entities(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut cursor = 0;
@@ -10885,6 +10991,61 @@ mod tests {
     }
 
     #[test]
+    fn javascript_inner_html_recovers_nested_table_starts_by_fragment_context() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("nested-table-fragment-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<table id='target'></table><table id='nested-target'></table>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const target = document.querySelector("#target");
+                    target.innerHTML = "<table id='ignored'><tr id='flattened-row'><td id='flattened-cell'>row</td></tr></table>";
+                    const nestedTarget = document.querySelector("#nested-target");
+                    nestedTarget.innerHTML = "<tbody><tr><td id='nested-cell'><table id='valid-nested'><tr><td>nested</td></tr></table></td></tr></tbody>";
+                    const flattenedBody = target.firstElementChild;
+                    const flattenedRow = flattenedBody.firstElementChild;
+                    const nestedCell = nestedTarget.querySelector("#nested-cell");
+                    const validNested = nestedTarget.querySelector("#valid-nested");
+                    return [
+                        target.querySelector("#ignored") === null,
+                        flattenedBody.localName === "tbody",
+                        flattenedRow.localName === "tr" && flattenedRow.firstElementChild.id === "flattened-cell",
+                        nestedCell.firstElementChild === validNested,
+                        validNested.parentElement === nestedCell,
+                    ];
+                })()"##,
+                &document,
+                "fixture://nested-table-fragment.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("fragment table starts must respect context insertion mode");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true, true])
+        );
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("fragment table recovery must commit through the native parser");
+
+        let target = document.find_element_by_id("target").unwrap();
+        assert_eq!(
+            document.element_inner_html(target, 1024),
+            "<tbody><tr id=\"flattened-row\"><td id=\"flattened-cell\">row</td></tr></tbody>"
+        );
+        let nested_target = document.find_element_by_id("nested-target").unwrap();
+        assert_eq!(
+            document.element_inner_html(nested_target, 2048),
+            "<tbody><tr><td id=\"nested-cell\"><table id=\"valid-nested\"><tbody><tr><td>nested</td></tr></tbody></table></td></tr></tbody>"
+        );
+    }
+
+    #[test]
     fn xhr_html_response_document_fosters_the_shared_table_fixture() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("xhr-html-foster-test")
             .expect("native JavaScript runtime must construct");
@@ -11007,6 +11168,46 @@ mod tests {
                 true, true, true, true, true, true, true, true, true, true, true
             ])
         );
+    }
+
+    #[test]
+    fn xhr_html_response_document_recovers_nested_table_starts() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("xhr-nested-table-test")
+            .expect("native JavaScript runtime must construct");
+        let document =
+            NativeDocument::parse("<main></main>", &NativeEngineLimits::default()).unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const response = globalThis.__glassParseHtmlDocument(
+                        "<main id='root'><table id='outer'><tbody><tr><td>outer</td></tr><table id='inner'><tr><td>inner</td></tr></table></tbody><table id='cell-table'><tbody><tr><td id='cell'><table id='valid-nested'></table></td></tr></tbody></table></main>",
+                        "https://example.test/nested-table.html",
+                        "text/html",
+                    );
+                    if (!response) return null;
+                    const root = response.getElementById("root");
+                    const outer = response.getElementById("outer");
+                    const inner = response.getElementById("inner");
+                    const cellTable = response.getElementById("cell-table");
+                    const cell = response.getElementById("cell");
+                    const validNested = response.getElementById("valid-nested");
+                    return [
+                        root.children.length === 3
+                            && root.children[0] === outer
+                            && root.children[1] === inner
+                            && root.children[2] === cellTable,
+                        outer.parentElement === root && inner.parentElement === root,
+                        validNested.parentElement === cell,
+                    ];
+                })()"##,
+                &document,
+                "fixture://xhr-nested-table.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("XHR HTML table-start recovery must parse");
+
+        assert_eq!(evaluation.value, serde_json::json!([true, true, true]));
     }
 
     #[test]
@@ -11371,6 +11572,60 @@ mod tests {
         assert_eq!(
             document.node(html_group).unwrap().children(),
             &[html_column]
+        );
+    }
+
+    #[test]
+    fn html_parser_reprocesses_nested_table_starts_with_scope_boundaries() {
+        let document = NativeDocument::parse(
+            "<main id='host'><table id='outer'><tbody><tr><td>outer</td></tr><table id='middle'><tr><td>middle</td></tr><table id='inner'><tr><td>inner</td></tr></table></table></tbody><table id='cell-table'><tbody><tr><td id='cell'>before<table id='valid-nested'><tr><td>nested</td></tr></table>after</td></tr></tbody></table><table id='caption-table'><caption id='caption'><table id='caption-nested'></table></caption></table><table id='template-outer'><tbody><template id='template'><table id='template-table'></table></template></tbody></table><svg id='svg'><table id='svg-table'><table id='svg-nested'></table></table></svg></main>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let host = document.find_element_by_id("host").unwrap();
+        let outer = document.find_element_by_id("outer").unwrap();
+        let middle = document.find_element_by_id("middle").unwrap();
+        let inner = document.find_element_by_id("inner").unwrap();
+        let cell_table = document.find_element_by_id("cell-table").unwrap();
+        let caption_table = document.find_element_by_id("caption-table").unwrap();
+        let template_outer = document.find_element_by_id("template-outer").unwrap();
+        let svg = document.find_element_by_id("svg").unwrap();
+        assert_eq!(
+            document.node(host).unwrap().children(),
+            &[
+                outer,
+                middle,
+                inner,
+                cell_table,
+                caption_table,
+                template_outer,
+                svg,
+            ]
+        );
+
+        let cell = document.find_element_by_id("cell").unwrap();
+        let valid_nested = document.find_element_by_id("valid-nested").unwrap();
+        assert_eq!(document.node(valid_nested).unwrap().parent(), Some(cell));
+        let caption = document.find_element_by_id("caption").unwrap();
+        let caption_nested = document.find_element_by_id("caption-nested").unwrap();
+        assert_eq!(
+            document.node(caption_nested).unwrap().parent(),
+            Some(caption)
+        );
+        let template = document.find_element_by_id("template").unwrap();
+        let template_table = document.find_element_by_id("template-table").unwrap();
+        assert_eq!(
+            document.node(template_table).unwrap().parent(),
+            Some(template)
+        );
+        let svg_table = document.find_element_by_id("svg-table").unwrap();
+        let svg_nested = document.find_element_by_id("svg-nested").unwrap();
+        assert_eq!(document.node(svg_nested).unwrap().parent(), Some(svg_table));
+        assert_eq!(
+            document
+                .node(svg_nested)
+                .and_then(NativeNode::namespace_uri),
+            Some(SVG_NAMESPACE_URI)
         );
     }
 

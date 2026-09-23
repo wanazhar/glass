@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-677`, following completed
-`native-engine-browser-676`, following completed `native-engine-browser-675`,
+browser expansion slice is `native-engine-browser-678`, following completed
+`native-engine-browser-677`, following completed `native-engine-browser-676`,
+following completed `native-engine-browser-675`,
 following completed `native-engine-browser-674`,
 following completed `native-engine-browser-673`,
 following completed `native-engine-browser-672`,
@@ -617,6 +618,13 @@ SVG/MathML table-like elements remain foreign, while `foreignObject` children
 resume HTML behavior. Direct/explicit column parentage and XHR materialization
 are covered by the focused fixtures. Other table insertion modes and general
 HTML parser conformance remain open issue #40 requirements.
+
+Slice 678 implements one HTML in-table start-tag recovery path across document,
+fragment commit/same-turn projection, and XHR response-document parsing. Its
+focused nested-table filter passed 4/4; the broader table-focused regression
+batch passed 39/39 after the locked scoped check. The implementation uses the
+existing stack as a bounded insertion-mode signal; it does not claim a full
+table insertion-mode machine or general HTML parser conformance.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

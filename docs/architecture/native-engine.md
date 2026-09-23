@@ -436,6 +436,15 @@ and MathML table-like elements retain their own namespace, and
 cover authored column order and materialized XHR trees. This closes only this
 column-group rule, not the remaining table insertion modes.
 
+Slice 678 implements one bounded nested-table start-tag recovery path. An HTML
+`table` token closes active tables in table scope and is reprocessed; fragment
+context elements do not count as open tables in the fragment stack. Cell and
+caption content, templates, foreign namespaces, and SVG `foreignObject`
+boundaries retain their active parsing behavior. Tests cover document parsing,
+fragment commit and same-turn projection, and XHR HTML documents. The stack
+markers approximate the active insertion mode in the current parser; this is
+not a complete table insertion-mode state machine or general parser parity.
+
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
 property is exposed as a canonical percentage, face matching considers the
 closest bounded descriptor range after weight/style, and tied unicode-ranged

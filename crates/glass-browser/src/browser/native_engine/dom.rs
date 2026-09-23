@@ -1090,7 +1090,25 @@ impl NativeDocument {
                     {
                         stack.pop();
                     }
-                    let current_depth = stack.len().saturating_sub(1);
+                    let foster_location = if is_table_special_start_tag(&name, &attributes) {
+                        None
+                    } else {
+                        html_table_foster_location(&document, &stack)?
+                    };
+                    let parent = foster_location
+                        .map(|(parent, _)| parent)
+                        .or_else(|| stack.last().copied())
+                        .ok_or_else(|| NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "tree builder lost its document root".into(),
+                        })?;
+                    let current_depth =
+                        stack.iter().position(|id| *id == parent).ok_or_else(|| {
+                            NativeEngineError::Parse {
+                                offset: 0,
+                                reason: "tree builder insertion parent is not open".into(),
+                            }
+                        })?;
                     if current_depth >= limits.max_dom_depth {
                         return Err(NativeEngineError::limit(
                             "DOM depth",
@@ -1098,18 +1116,16 @@ impl NativeDocument {
                             current_depth.saturating_add(1),
                         ));
                     }
-                    let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
-                        offset: 0,
-                        reason: "tree builder lost its document root".into(),
-                    })?;
-                    let id = document.add_node(
-                        parent,
-                        NativeNodeKind::Element {
-                            name: name.clone(),
-                            attributes,
-                        },
-                        limits.max_nodes,
-                    )?;
+                    let kind = NativeNodeKind::Element {
+                        name: name.clone(),
+                        attributes,
+                    };
+                    let id = if let Some((parent, before)) = foster_location {
+                        document.add_node_before(parent, before, kind, limits.max_nodes)?
+                    } else {
+                        document.add_node(parent, kind, limits.max_nodes)?
+                    };
+                    document.assign_parsed_namespace_to_node(id, parent)?;
                     if !self_closing && !is_void_element(&name) {
                         stack.push(id);
                     }
@@ -1134,15 +1150,29 @@ impl NativeDocument {
                 }
                 HtmlToken::Text(value) => {
                     if !value.is_empty() {
-                        let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
-                            offset: 0,
-                            reason: "tree builder lost its document root".into(),
-                        })?;
-                        document.add_node(
-                            parent,
-                            NativeNodeKind::Text(decode_entities(&value)),
-                            limits.max_nodes,
-                        )?;
+                        let decoded = decode_entities(&value);
+                        let foster_location = if decoded
+                            .as_bytes()
+                            .iter()
+                            .any(|byte| !byte.is_ascii_whitespace())
+                        {
+                            html_table_foster_location(&document, &stack)?
+                        } else {
+                            None
+                        };
+                        let parent = foster_location
+                            .map(|(parent, _)| parent)
+                            .or_else(|| stack.last().copied())
+                            .ok_or_else(|| NativeEngineError::Parse {
+                                offset: 0,
+                                reason: "tree builder lost its document root".into(),
+                            })?;
+                        let kind = NativeNodeKind::Text(decoded);
+                        if let Some((parent, before)) = foster_location {
+                            document.add_node_before(parent, before, kind, limits.max_nodes)?;
+                        } else {
+                            document.add_node(parent, kind, limits.max_nodes)?;
+                        }
                     }
                 }
                 HtmlToken::RawText(value) => {
@@ -3516,6 +3546,50 @@ impl NativeDocument {
         for child in children {
             self.assign_parsed_namespace_subtree(child, HTML_NAMESPACE_URI);
         }
+    }
+
+    fn assign_parsed_namespace_to_node(
+        &mut self,
+        id: NativeNodeId,
+        parent: NativeNodeId,
+    ) -> Result<(), NativeEngineError> {
+        let parent_node = self
+            .raw_node(parent)
+            .ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "tree builder referenced an unknown namespace parent".into(),
+            })?;
+        let parent_name = parent_node.element_name();
+        let parent_namespace = parent_node.namespace_uri();
+        let parent_child_namespace = if parent_namespace == Some(SVG_NAMESPACE_URI)
+            && parent_name == Some("foreignobject")
+        {
+            HTML_NAMESPACE_URI
+        } else {
+            parent_namespace.unwrap_or(HTML_NAMESPACE_URI)
+        };
+        let name = self
+            .raw_node(id)
+            .and_then(NativeNode::element_name)
+            .ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "tree builder namespace assignment targeted a non-element".into(),
+            })?;
+        let namespace = if parent_child_namespace == SVG_NAMESPACE_URI || name == "svg" {
+            SVG_NAMESPACE_URI
+        } else if name == "math" || parent_child_namespace == MATHML_NAMESPACE_URI {
+            MATHML_NAMESPACE_URI
+        } else {
+            HTML_NAMESPACE_URI
+        };
+        let node = self
+            .raw_node_mut(id)
+            .ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "tree builder lost an element during namespace assignment".into(),
+            })?;
+        node.state.namespace_uri = Some(namespace.to_owned());
+        Ok(())
     }
 
     fn assign_parsed_namespace_subtree(&mut self, id: NativeNodeId, parent_namespace: &str) {
@@ -6368,6 +6442,47 @@ impl NativeDocument {
             });
         };
         parent_node.children.push(id);
+        Ok(id)
+    }
+
+    fn add_node_before(
+        &mut self,
+        parent: NativeNodeId,
+        before: NativeNodeId,
+        kind: NativeNodeKind,
+        max_nodes: usize,
+    ) -> Result<NativeNodeId, NativeEngineError> {
+        if self.raw_node(before).and_then(NativeNode::parent) != Some(parent) {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "foster-parent table is not a child of its insertion parent".into(),
+            });
+        }
+        let id = self.add_node(parent, kind, max_nodes)?;
+        let parent_node = self
+            .raw_node_mut(parent)
+            .ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "tree builder lost a foster-parent insertion parent".into(),
+            })?;
+        let child_index = parent_node
+            .children
+            .iter()
+            .position(|child| *child == id)
+            .ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "tree builder lost a foster-parented node".into(),
+            })?;
+        let before_index = parent_node
+            .children
+            .iter()
+            .position(|child| *child == before)
+            .ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "tree builder lost the foster-parent table".into(),
+            })?;
+        let child = parent_node.children.remove(child_index);
+        parent_node.children.insert(before_index, child);
         Ok(id)
     }
 
@@ -9837,6 +9952,71 @@ fn should_auto_close(current: &str, next: &str) -> bool {
         || (current == "colgroup" && matches!(next, "colgroup" | "tbody" | "thead" | "tfoot"))
 }
 
+fn is_table_special_start_tag(name: &str, attributes: &BTreeMap<String, String>) -> bool {
+    matches!(
+        name,
+        "caption"
+            | "col"
+            | "colgroup"
+            | "tbody"
+            | "tfoot"
+            | "thead"
+            | "tr"
+            | "td"
+            | "th"
+            | "table"
+            | "style"
+            | "script"
+            | "template"
+            | "form"
+    ) || (name == "input"
+        && attributes
+            .get("type")
+            .is_some_and(|value| value.eq_ignore_ascii_case("hidden")))
+}
+
+fn html_table_foster_location(
+    document: &NativeDocument,
+    stack: &[NativeNodeId],
+) -> Result<Option<(NativeNodeId, NativeNodeId)>, NativeEngineError> {
+    let Some(current) = stack.last().and_then(|id| document.node(*id)) else {
+        return Err(NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder lost its current node".into(),
+        });
+    };
+    if current.namespace_uri() != Some(HTML_NAMESPACE_URI)
+        || !matches!(
+            current.element_name(),
+            Some("table" | "tbody" | "tfoot" | "thead" | "tr")
+        )
+    {
+        return Ok(None);
+    }
+    let table = stack
+        .iter()
+        .rev()
+        .copied()
+        .find(|id| {
+            document.node(*id).is_some_and(|node| {
+                node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+                    && node.element_name() == Some("table")
+            })
+        })
+        .ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "HTML table insertion context has no open table".into(),
+        })?;
+    let parent = document
+        .node(table)
+        .and_then(NativeNode::parent)
+        .ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "open HTML table has no insertion parent".into(),
+        })?;
+    Ok(Some((parent, table)))
+}
+
 fn decode_entities(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut cursor = 0;
@@ -10534,6 +10714,118 @@ mod tests {
             document.visible_text(1024).0,
             "one two one two first second"
         );
+    }
+
+    #[test]
+    fn table_foster_parenting_preserves_whitespace_and_element_descendants() {
+        let document = NativeDocument::parse(
+            "<main id='host'><p id='before'>before</p><table id='table'> \n&#32;<!-- keep -->alpha <div id='misnested'><b id='inside'>inside</b></div>tail \t<input type='HIDDEN' id='hidden'><tr id='row'><td id='cell'>cell</td></tr></table><p id='after'>after</p></main>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let host = document.find_element_by_id("host").unwrap();
+        let table = document.find_element_by_id("table").unwrap();
+        let before = document.find_element_by_id("before").unwrap();
+        let misnested = document.find_element_by_id("misnested").unwrap();
+        let inside = document.find_element_by_id("inside").unwrap();
+        let after = document.find_element_by_id("after").unwrap();
+        let hidden = document.find_element_by_id("hidden").unwrap();
+        let row = document.find_element_by_id("row").unwrap();
+        let cell = document.find_element_by_id("cell").unwrap();
+        let children = document.node(host).unwrap().children();
+
+        assert_eq!(document.node(table).unwrap().parent(), Some(host));
+        assert_eq!(document.node(misnested).unwrap().parent(), Some(host));
+        assert_eq!(document.node(inside).unwrap().parent(), Some(misnested));
+        assert_eq!(document.node(before).unwrap().parent(), Some(host));
+        assert_eq!(document.node(after).unwrap().parent(), Some(host));
+        assert_eq!(document.node(hidden).unwrap().parent(), Some(table));
+        assert_eq!(document.node(row).unwrap().parent(), Some(table));
+        assert_eq!(document.node(cell).unwrap().parent(), Some(row));
+        assert_eq!(children.len(), 6);
+        assert_eq!(children[0], before);
+        assert_eq!(children[2], misnested);
+        assert_eq!(children[4], table);
+        assert_eq!(children[5], after);
+        assert!(matches!(
+            document.node(children[1]).map(NativeNode::kind),
+            Some(NativeNodeKind::Text(value)) if value == "alpha "
+        ));
+        assert!(matches!(
+            document.node(children[3]).map(NativeNode::kind),
+            Some(NativeNodeKind::Text(value)) if value == "tail \t"
+        ));
+        let table_children = document.node(table).unwrap().children();
+        assert!(matches!(
+            table_children.first().and_then(|id| document.node(*id)).map(NativeNode::kind),
+            Some(NativeNodeKind::Text(value)) if value == " \n "
+        ));
+        assert!(matches!(
+            table_children.get(1).and_then(|id| document.node(*id)).map(NativeNode::kind),
+            Some(NativeNodeKind::Comment(value)) if value == " keep "
+        ));
+    }
+
+    #[test]
+    fn table_foster_parenting_applies_to_section_and_row_contexts() {
+        for section in ["tbody", "tfoot", "thead", "tr"] {
+            let source = format!(
+                "<main id='host'><table id='table'><{section}>misnested</{section}></table></main>"
+            );
+            let document = NativeDocument::parse(&source, &NativeEngineLimits::default()).unwrap();
+            let host = document.find_element_by_id("host").unwrap();
+            let table = document.find_element_by_id("table").unwrap();
+            let host_children = document.node(host).unwrap().children();
+            let table_position = host_children
+                .iter()
+                .position(|child| *child == table)
+                .unwrap();
+            assert!(
+                table_position > 0,
+                "table must follow fostered text for {section}"
+            );
+            assert!(matches!(
+                document
+                    .node(host_children[table_position - 1])
+                    .map(NativeNode::kind),
+                Some(NativeNodeKind::Text(value)) if value == "misnested"
+            ));
+            assert_eq!(document.node(table).unwrap().parent(), Some(host));
+        }
+    }
+
+    #[test]
+    fn table_foster_parenting_respects_html_namespaces() {
+        let document = NativeDocument::parse(
+            "<svg><table id='table'><div id='child'>content</div></table></svg>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let table = document.find_element_by_id("table").unwrap();
+        let child = document.find_element_by_id("child").unwrap();
+        assert_eq!(
+            document.node(table).and_then(NativeNode::namespace_uri),
+            Some(SVG_NAMESPACE_URI)
+        );
+        assert_eq!(document.node(child).unwrap().parent(), Some(table));
+        assert_eq!(
+            document.node(child).and_then(NativeNode::namespace_uri),
+            Some(SVG_NAMESPACE_URI)
+        );
+
+        let document = NativeDocument::parse(
+            "<svg><foreignObject><main id='host'><table id='html-table'><div id='fostered'>content</div></table></main></foreignObject></svg>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let host = document.find_element_by_id("host").unwrap();
+        let table = document.find_element_by_id("html-table").unwrap();
+        let fostered = document.find_element_by_id("fostered").unwrap();
+        assert_eq!(
+            document.node(table).and_then(NativeNode::namespace_uri),
+            Some(HTML_NAMESPACE_URI)
+        );
+        assert_eq!(document.node(fostered).unwrap().parent(), Some(host));
     }
 
     #[test]

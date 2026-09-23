@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-686`, following completed
+browser expansion slice is `native-engine-browser-687`, following completed
+`native-engine-browser-686`, following completed
 `native-engine-browser-685`, `native-engine-browser-684`, and
 `native-engine-browser-683`. It follows
 completed `native-engine-browser-682`. It follows
@@ -710,6 +711,19 @@ batch passed 46/46, the locked package check passed, and documentation
 validators covered 1,313 Markdown files with zero current-claim failures. See
 `docs/plan/tasks/native-engine-browser-685.md`; general parser conformance
 remains open.
+
+Slice 687 completes normalization of each CRLF pair and lone CR to LF before
+HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript
+fragments, and XHR HTML documents. The Rust route retains submitted-source
+size accounting and maps syntax-error byte offsets back to the original
+source; the JavaScript routes apply the same transform without introducing
+shared top-level lexical bindings across embedded scripts. Exact route parity
+covers ordinary text, attributes, comments, script raw text, and RCDATA. The
+locked package check and 24-test HTML regression batch passed, as did
+formatting, whitespace, and maintainer documentation validation. The separate
+CSS-selector default-case test is outside this parser slice. Context-sensitive
+U+0000 handling, full tokenization, and general HTML conformance remain open.
+See `docs/plan/tasks/native-engine-browser-687.md`.
 
 Slice 686 closes the currently identified active-formatting-list gap as one
 cross-route tree-construction unit. The Rust document and `innerHTML` builders

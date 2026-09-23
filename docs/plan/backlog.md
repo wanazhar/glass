@@ -75,6 +75,14 @@ Noah's Ark handling, and the bounded adoption-agency algorithm now run in all
 four parser routes. The focused active-formatting tests pass 2/2 and the table
 regression batch passes 46/46; general HTML parser conformance remains open.
 
+Slice 687 completes CRLF/lone-CR normalization to LF before tokenization in all
+four HTML parser routes, including text, attribute values, comments, script raw
+text, and RCDATA. Rust parse errors keep original-source offsets. The locked
+package check and 24-test HTML regression batch passed; all maintainer docs
+gates passed over 1,315 Markdown files. Do not globally replace U+0000; its
+behavior is context-sensitive and remains a separate tokenizer/tree-
+construction task. See `tasks/native-engine-browser-687.md`.
+
 ## Input: popup-opening mouse release completion
 
 The compare-018 diagnostic proves that an ordinary pointer click whose authored

@@ -49,6 +49,7 @@ use super::{
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use url::Url;
@@ -9563,6 +9564,68 @@ enum HtmlToken {
 }
 
 fn tokenize(source: &str, max_tokens: usize) -> Result<Vec<HtmlToken>, NativeEngineError> {
+    let normalized_source = normalize_html_newlines(source);
+    tokenize_preprocessed_html(normalized_source.as_ref(), max_tokens).map_err(
+        |error| match error {
+            NativeEngineError::Parse { offset, reason } => NativeEngineError::Parse {
+                offset: original_html_source_offset(source, offset),
+                reason,
+            },
+            other => other,
+        },
+    )
+}
+
+fn normalize_html_newlines(source: &str) -> Cow<'_, str> {
+    if !source.as_bytes().contains(&b'\r') {
+        return Cow::Borrowed(source);
+    }
+
+    let mut normalized = String::with_capacity(source.len());
+    let mut copied_through = 0;
+    let mut search_from = 0;
+    while let Some(relative_cr) = source[search_from..].find('\r') {
+        let cr = search_from + relative_cr;
+        normalized.push_str(&source[copied_through..cr]);
+        normalized.push('\n');
+        search_from = cr + 1;
+        if source.as_bytes().get(search_from) == Some(&b'\n') {
+            search_from += 1;
+        }
+        copied_through = search_from;
+    }
+    normalized.push_str(&source[copied_through..]);
+    Cow::Owned(normalized)
+}
+
+fn original_html_source_offset(source: &str, normalized_offset: usize) -> usize {
+    let mut source_offset = 0;
+    let mut normalized_offset_seen = 0;
+    let bytes = source.as_bytes();
+    while source_offset < source.len() && normalized_offset_seen < normalized_offset {
+        if bytes[source_offset] == b'\r' {
+            source_offset += 1;
+            if bytes.get(source_offset) == Some(&b'\n') {
+                source_offset += 1;
+            }
+            normalized_offset_seen += 1;
+        } else {
+            let character = source[source_offset..]
+                .chars()
+                .next()
+                .expect("source offset is before the end of a valid UTF-8 string");
+            let width = character.len_utf8();
+            source_offset += width;
+            normalized_offset_seen += width;
+        }
+    }
+    source_offset
+}
+
+fn tokenize_preprocessed_html(
+    source: &str,
+    max_tokens: usize,
+) -> Result<Vec<HtmlToken>, NativeEngineError> {
     let mut tokens = Vec::new();
     let mut position = 0;
     while position < source.len() {
@@ -14079,6 +14142,122 @@ mod tests {
             document.visible_text(1024).0,
             "one two one two first second"
         );
+    }
+
+    #[test]
+    fn html_input_stream_newlines_are_normalized_across_parser_routes() {
+        let markup = concat!(
+            "<section id='newline-zone' data-lines='attr\r\npair and lone\rreturn'>",
+            "<p id='normal'>text\r\npair and lone\rreturn</p>",
+            "<!--comment\r\npair and lone\rreturn-->",
+            "<script id='raw'>raw\r\npair and lone\rreturn</script>",
+            "<textarea id='rcdata'>value\r\npair and lone\rreturn</textarea>",
+            "</section>",
+        );
+        let expected = serde_json::json!([
+            "attr\npair and lone\nreturn",
+            "text\npair and lone\nreturn",
+            "comment\npair and lone\nreturn",
+            "raw\npair and lone\nreturn",
+            "value\npair and lone\nreturn"
+        ]);
+        let assert_native_tree = |tree: &NativeDocument| {
+            let zone = tree
+                .find_element_by_id("newline-zone")
+                .expect("newline fixture zone must exist");
+            let zone_node = tree.node(zone).expect("newline fixture zone must resolve");
+            assert_eq!(
+                zone_node.attribute("data-lines"),
+                Some("attr\npair and lone\nreturn")
+            );
+            let text_content = |element_id: &str| {
+                let element = tree
+                    .find_element_by_id(element_id)
+                    .unwrap_or_else(|| panic!("newline fixture element {element_id} must exist"));
+                tree.node(element)
+                    .expect("newline fixture element must resolve")
+                    .children()
+                    .iter()
+                    .find_map(|child| match tree.node(*child).map(NativeNode::kind) {
+                        Some(NativeNodeKind::Text(value)) => Some(value.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("newline fixture element {element_id} has no text"))
+            };
+            let comment = zone_node
+                .children()
+                .iter()
+                .find_map(|child| match tree.node(*child).map(NativeNode::kind) {
+                    Some(NativeNodeKind::Comment(value)) => Some(value.as_str()),
+                    _ => None,
+                })
+                .expect("newline fixture comment must exist");
+            assert_eq!(
+                serde_json::json!([
+                    zone_node.attribute("data-lines").unwrap(),
+                    text_content("normal"),
+                    comment,
+                    text_content("raw"),
+                    text_content("rcdata")
+                ]),
+                expected
+            );
+        };
+
+        let direct = NativeDocument::parse(markup, &NativeEngineLimits::default())
+            .expect("document parser must preprocess HTML newlines");
+        assert_native_tree(&direct);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("html-newline-preprocess-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+            const markup = __HTML_MARKUP__;
+            const root = document.querySelector("#root");
+            root.innerHTML = markup;
+            const response = globalThis.__glassParseHtmlDocument(
+                markup,
+                "https://example.test/html-newline.html",
+                "text/html",
+            );
+            const summarize = (tree) => {
+                const zone = tree.querySelector("#newline-zone");
+                const comment = Array.from(zone.childNodes).find((node) => node.nodeType === 8);
+                return [
+                    zone.getAttribute("data-lines"),
+                    tree.querySelector("#normal").textContent,
+                    comment && comment.data,
+                    tree.querySelector("#raw").textContent,
+                    tree.querySelector("#rcdata").textContent,
+                ];
+            };
+            return [summarize(root), summarize(response)];
+        })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(markup).unwrap());
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://html-newline-preprocess.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("same-turn and XHR parsers must preprocess HTML newlines");
+        assert_eq!(evaluation.value, serde_json::json!([expected, expected]));
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must preprocess HTML newlines");
+        assert_native_tree(&document);
+    }
+
+    #[test]
+    fn html_newline_normalization_preserves_original_parse_error_offsets() {
+        let error = NativeDocument::parse("\r\n<div value=>", &NativeEngineLimits::default())
+            .expect_err("missing attribute value must remain a parse error");
+        assert!(matches!(error, NativeEngineError::Parse { offset: 2, .. }));
     }
 
     #[test]

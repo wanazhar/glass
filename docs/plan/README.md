@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-674`, following completed `native-engine-browser-673`,
+`native-engine-browser-675`, following completed `native-engine-browser-674`,
+following completed `native-engine-browser-673`,
 following completed `native-engine-browser-672`,
 following completed `native-engine-browser-671`,
 following completed `native-engine-browser-670`,
@@ -93,6 +94,11 @@ the same-turn JavaScript detached-fragment projection. Fragment fostered nodes
 stay inside the fragment target, including when the target itself is a table;
 the XHR `responseType="document"` parser and full parser conformance remain
 separate issue #40 work.
+
+The completed [native-engine-browser-675](tasks/native-engine-browser-675.md)
+slice adds the same bounded foster-parent behavior to the independent XHR HTML
+document parser, keeping the fixture and node-order contract aligned across
+document parsing, script `innerHTML`, and XHR `responseType="document"`.
 
 `native-engine-browser-633`, following completed
 `native-engine-browser-632`, following completed

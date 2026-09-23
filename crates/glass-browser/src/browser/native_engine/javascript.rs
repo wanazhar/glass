@@ -27734,12 +27734,42 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
       if (nativeXmlByteLength(input) > nativeXmlMaxBytes) throw new Error("native HTML response exceeds its limit");
       const state = { input, cursor: 0, nodes: 1 };
       const document = { type: "document", html: true, children: [] };
-      const append = (parent, node) => {
+      const append = (parent, node, before = null) => {
         node.parent = parent;
-        parent.children.push(node);
+        if (before === null) {
+          parent.children.push(node);
+        } else {
+          const index = parent.children.indexOf(before);
+          if (index < 0) throw new Error("native HTML foster table is not in its insertion parent");
+          parent.children.splice(index, 0, node);
+        }
         return nativeXmlAddNode(state, node);
       };
-      const appendElement = (parent, name) => append(parent, nativeHtmlRawElement(name, parent));
+      const tableStructureElements = new Set(["table", "tbody", "tfoot", "thead", "tr"]);
+      const tableSpecialStartTags = new Set([
+        "caption", "col", "colgroup", "tbody", "tfoot", "thead", "tr", "td", "th",
+        "table", "style", "script", "template", "form",
+      ]);
+      const tableFosterLocation = () => {
+        const current = state.stack[state.stack.length - 1];
+        if (!current || current.html !== true
+            || !tableStructureElements.has(String(current.localName || "").toLowerCase())) return null;
+        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
+          const candidate = state.stack[index];
+          if (candidate.html !== true || candidate.localName !== "table") continue;
+          const parent = candidate.parent || null;
+          return parent
+            ? { parent, before: candidate }
+            : { parent: state.stack[0], before: null };
+        }
+        return { parent: state.stack[0], before: null };
+      };
+      const appendHtmlText = (value) => {
+        if (!value) return;
+        const fosterLocation = /[^\t\n\f\r ]/.test(value) ? tableFosterLocation() : null;
+        const parent = fosterLocation ? fosterLocation.parent : state.stack[state.stack.length - 1];
+        append(parent, { type: "text", html: true, value }, fosterLocation && fosterLocation.before);
+      };
       const parseAttributes = (element, rawTag, offset) => {
         const seen = new Set();
         let cursor = offset;
@@ -27789,11 +27819,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         if (input[state.cursor] !== "<") {
           const end = input.indexOf("<", state.cursor);
           const textEnd = end < 0 ? input.length : end;
-          if (textEnd > state.cursor) append(activeParent, {
-            type: "text",
-            html: true,
-            value: nativeHtmlDecodeEntities(input.slice(state.cursor, textEnd)),
-          });
+          if (textEnd > state.cursor) appendHtmlText(nativeHtmlDecodeEntities(input.slice(state.cursor, textEnd)));
           state.cursor = textEnd;
           continue;
         }
@@ -27846,23 +27872,32 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           continue;
         }
         if (end < 0) {
-          append(activeParent, { type: "text", html: true, value: nativeHtmlDecodeEntities(input.slice(state.cursor)) });
+          appendHtmlText(nativeHtmlDecodeEntities(input.slice(state.cursor)));
           state.cursor = input.length;
           continue;
         }
         const rawTag = input.slice(state.cursor + 1, end);
         const opening = /^\s*([A-Za-z][A-Za-z0-9:_-]*)/.exec(rawTag);
         if (!opening) {
-          append(activeParent, { type: "text", html: true, value: "<" });
+          appendHtmlText("<");
           state.cursor += 1;
           continue;
         }
         const name = opening[1].toLowerCase();
         while (state.stack.length > 1
             && nativeHtmlShouldAutoClose(state.stack[state.stack.length - 1].localName, name)) state.stack.pop();
-        const parentForElement = state.stack[state.stack.length - 1];
-        const element = appendElement(parentForElement, name);
+        const element = nativeHtmlRawElement(name, state.stack[state.stack.length - 1]);
         parseAttributes(element, rawTag, opening[0].length);
+        const hiddenInput = name === "input" && element.attributes.some((attribute) =>
+          attribute.name === "type" && attribute.value.toLowerCase() === "hidden");
+        const fosterLocation = tableSpecialStartTags.has(name) || hiddenInput
+          ? null
+          : tableFosterLocation();
+        const parentForElement = fosterLocation
+          ? fosterLocation.parent
+          : state.stack[state.stack.length - 1];
+        element.parent = parentForElement;
+        append(parentForElement, element, fosterLocation && fosterLocation.before);
         const selfClosing = /\/\s*$/.test(rawTag);
         state.cursor = end + 1;
         if (selfClosing || nativeHtmlVoidElements.has(name)) continue;

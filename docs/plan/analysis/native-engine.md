@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-674`, following completed
-`native-engine-browser-673`, following completed `native-engine-browser-672`,
+browser expansion slice is `native-engine-browser-675`, following completed
+`native-engine-browser-674`, following completed `native-engine-browser-673`,
+following completed `native-engine-browser-672`,
 following completed
 `native-engine-browser-671`, following
 completed `native-engine-browser-670`, following completed
@@ -581,6 +582,19 @@ remain on the stack so descendants stay attached. Rust tree and same-turn JS
 projection tests cover nested-table, table-context, whitespace/comment, and
 namespace behavior. The XHR `responseType="document"` parser remains separate
 route work; full insertion modes and parser conformance remain open.
+
+Slice 675 applies the same bounded table foster-parent insertion to
+`nativeHtmlParseDocument`, which constructs the raw HTML response document
+before adding implicit `html`/`head`/`body` nodes and materializing the
+read-only DOM. The fragment slice's misnested-table fixture is mirrored in
+document input. Decoded non-ASCII-whitespace text and ordinary start tags are
+inserted before the nearest open HTML table; whitespace-only text, comments,
+and table-special starts retain their placement; fostered element descendants
+remain attached; node accounting, source order, parent links, and implicit
+document normalization are retained. A runtime test verifies observable
+parent/child order through the materialized XHR document. This closes the
+specific three-route foster gap, not full tree-construction, template-content,
+or parser-error-recovery parity.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

@@ -634,6 +634,20 @@ documentation gates passed. Remote CI was not run. Other foreign end tags and
 general parser conformance remain open. See
 [`slice 693`](../plan/tasks/native-engine-browser-693.md).
 
+Slice 694 implements the ordinary WHATWG foreign-content end-tag algorithm
+across document parsing, Rust fragment commit, same-turn JavaScript projection,
+and XHR HTML parsing. It pops through a matching foreign element before an
+HTML boundary, reprocesses at the first HTML boundary, and preserves the root
+fragment context. HTML any-other-end-tag recovery now matches only HTML
+elements and stops at special tree-builder elements, preventing foreign names
+from satisfying a reprocessed HTML end tag. The foreign batch passed 8/8 and
+the HTML batch passed 34/34 after the locked package check; formatting,
+whitespace, release-truth, documentation-depth, and shortcut validation
+passed locally. Full documentation inventory/link coverage was not run because
+this slice changed no CLI/MCP/module inventory and the debug CLI binaries were
+not built. Remote CI was not run. General parser conformance remains open. See
+[`slice 694`](../plan/tasks/native-engine-browser-694.md).
+
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript
 fragment projections, and XHR HTML documents. Text, attributes, comments,

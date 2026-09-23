@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-693`. Issue #40
-remains open. It follows locally completed `native-engine-browser-692` and
+completed browser expansion slice is `native-engine-browser-694`. Issue #40
+remains open. It follows locally completed `native-engine-browser-693` and
+`native-engine-browser-692` and
 `native-engine-browser-691`,
 `native-engine-browser-690`, and `native-engine-browser-689`; it follows completed
 `native-engine-browser-687`, following completed
@@ -788,6 +789,22 @@ scoped HTML batch 33/33; local package and documentation gates passed. Remote
 CI was not run. Keep other foreign end tags unchanged; general foreign-content
 and insertion-mode conformance remain open. See
 [`slice 693`](../tasks/native-engine-browser-693.md).
+
+Slice 694 implements ordinary foreign-content end-tag dispatch across
+document parsing, Rust fragment commit, same-turn JavaScript projection, and
+XHR HTML parsing. A matching foreign element is popped before an HTML boundary;
+otherwise the token is reprocessed at the first HTML boundary or consumed at
+the root without popping it. HTML end-tag recovery matches HTML elements only
+and stops at special tree-builder elements, so a foreign element with the same
+local name cannot satisfy a reprocessed HTML end tag across that boundary. The
+`</br>` and `</p>` breakout path is unchanged. The foreign batch passed 8/8 and
+the scoped HTML batch passed 34/34 after the locked package check. Formatting,
+whitespace, release-truth, documentation-depth, and shortcut validation passed
+locally. Full documentation inventory/link coverage was not run because this
+slice changed no CLI/MCP/module inventory and the debug CLI binaries were not
+built. Remote CI was not run.
+General foreign-content and parser conformance remain open. See
+[`slice 694`](../tasks/native-engine-browser-694.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

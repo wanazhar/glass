@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-679`, following completed
-`native-engine-browser-678`, following completed
+browser expansion slice is `native-engine-browser-680`, following completed
+`native-engine-browser-679`, following completed `native-engine-browser-678`,
+following completed
 `native-engine-browser-677`, following completed `native-engine-browser-676`,
 following completed `native-engine-browser-675`,
 following completed `native-engine-browser-674`,
@@ -637,6 +638,17 @@ fragment commit/projection, and XHR document parsing share the behavior. The
 focused scope/context tests passed 2/2 and the table-focused regression batch
 passed 41/41 after the scoped locked check. This does not implement the
 remaining table insertion modes or general HTML conformance.
+
+Slice 680 applies table-scope end-tag handling to HTML row-group and row
+tokens: `</tbody>`, `</tfoot>`, `</thead>`, and `</tr>`. Matching HTML targets
+close with their descendants; an unmatched target or a target beyond a
+`table`, `template`, or `html` boundary is ignored. Fragment roots are not
+counted as open elements, and same-named foreign elements do not satisfy HTML
+scope. Document parsing, fragment commit and same-turn projection, and XHR
+document parsing share the behavior. The table-focused regression batch
+passed 43/43; the final nested-table/template-boundary fixture passed again
+1/1 after the locked package check. The slice does not implement the full
+insertion-mode or active-formatting algorithms.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

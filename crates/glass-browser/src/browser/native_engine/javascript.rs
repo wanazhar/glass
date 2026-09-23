@@ -27831,6 +27831,22 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         }
         return false;
       };
+      const consumeHtmlTableRowIgnoredEnd = (targetName) => {
+        if (!["body", "caption", "col", "colgroup", "html"].includes(targetName)) return false;
+        const current = state.stack[state.stack.length - 1];
+        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
+        let rowContextInScope = false;
+        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
+          const candidate = state.stack[index];
+          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
+          const candidateName = String(candidate.localName || "").toLowerCase();
+          if (["td", "th", "caption", "colgroup"].includes(candidateName)) return false;
+          if (["tr", "tbody", "tfoot", "thead"].includes(candidateName)) rowContextInScope = true;
+          else if (candidateName === "table") return rowContextInScope;
+          else if (candidateName === "html" || candidateName === "template") return false;
+        }
+        return false;
+      };
       const prepareHtmlTableCellStructuralStart = (incomingName) => {
         if (!tableCellStructuralStartTags.has(incomingName)) return;
         const current = state.stack[state.stack.length - 1];
@@ -28008,6 +28024,10 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
               continue;
             }
             if (consumeHtmlTableCellIgnoredEnd(name)) {
+              state.cursor = end + 1;
+              continue;
+            }
+            if (consumeHtmlTableRowIgnoredEnd(name)) {
               state.cursor = end + 1;
               continue;
             }
@@ -35413,6 +35433,23 @@ fn document_bootstrap(
       }}
       return false;
     }};
+    const consumeHtmlTableRowIgnoredEnd = (targetName) => {{
+      if (!["body", "caption", "col", "colgroup", "html"].includes(targetName)) return false;
+      const current = stack[stack.length - 1];
+      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
+      // stack[0] is the fragment context and cannot satisfy row/table scope.
+      let rowContextInScope = false;
+      for (let index = stack.length - 1; index > 0; index -= 1) {{
+        const candidate = stack[index];
+        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
+        const candidateName = String(candidate.localName || "").toLowerCase();
+        if (["td", "th", "caption", "colgroup"].includes(candidateName)) return false;
+        if (["tr", "tbody", "tfoot", "thead"].includes(candidateName)) rowContextInScope = true;
+        else if (candidateName === "table") return rowContextInScope;
+        else if (candidateName === "html" || candidateName === "template") return false;
+      }}
+      return false;
+    }};
     const insertImpliedTableElements = (incomingName) => {{
       const current = stack[stack.length - 1];
       if (!current || current.namespaceURI !== HTML_NAMESPACE) return;
@@ -35515,6 +35552,10 @@ fn document_bootstrap(
           continue;
         }}
         if (consumeHtmlTableCellIgnoredEnd(name)) {{
+          cursor = end + 1;
+          continue;
+        }}
+        if (consumeHtmlTableRowIgnoredEnd(name)) {{
           cursor = end + 1;
           continue;
         }}

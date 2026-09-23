@@ -1,8 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-683`, after completed
-`native-engine-browser-682`. It follows completed
+browser expansion slice is `native-engine-browser-684`, following completed
+`native-engine-browser-683` and `native-engine-browser-682`. It follows
 `native-engine-browser-681`, following completed `native-engine-browser-680`,
 following completed
 `native-engine-browser-679`, following completed `native-engine-browser-678`,
@@ -682,6 +682,17 @@ foreign nodes do not satisfy HTML scope, and a foreign current node retains its
 existing route. The focused four-route fixture passed 1/1, the table batch
 passed 45/45, and the locked package check passed. See
 `docs/plan/tasks/native-engine-browser-683.md`; complete in-cell/parser
+conformance remains open.
+
+Slice 684 extends the same five ignored end tags to HTML table-row and
+row-group insertion contexts when no cell is active. Its scope probe requires
+an actual open `tr`, `tbody`, `tfoot`, or `thead` before the nearest HTML table;
+it stops at nested table, template, html, or fragment-context boundaries and
+does not consume tokens in caption/column-group contexts whose end tags have
+separate behavior. The document, fragment commit, same-turn projection, and
+XHR parser routes are included. Its focused regression passed 1/1, the table
+batch passed 45/45, and the locked package check passed. See
+`docs/plan/tasks/native-engine-browser-684.md`; full insertion-mode
 conformance remains open.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and

@@ -1159,6 +1159,9 @@ impl NativeDocument {
                     if consume_html_table_cell_ignored_end_token(&document, &stack, None, &name)? {
                         continue;
                     }
+                    if consume_html_table_row_ignored_end_token(&document, &stack, None, &name)? {
+                        continue;
+                    }
                     if let Some(index) = stack.iter().rposition(|id| {
                         document
                             .node(*id)
@@ -6300,6 +6303,9 @@ impl NativeDocument {
                     if consume_html_table_cell_ignored_end_token(self, &stack, Some(id), &name)? {
                         continue;
                     }
+                    if consume_html_table_row_ignored_end_token(self, &stack, Some(id), &name)? {
+                        continue;
+                    }
                     if let Some(index) = stack.iter().rposition(|current| {
                         self.raw_node(*current)
                             .and_then(NativeNode::element_name)
@@ -10470,6 +10476,54 @@ fn consume_html_table_cell_ignored_end_token(
     Ok(false)
 }
 
+fn consume_html_table_row_ignored_end_token(
+    document: &NativeDocument,
+    stack: &[NativeNodeId],
+    fragment_root: Option<NativeNodeId>,
+    target_name: &str,
+) -> Result<bool, NativeEngineError> {
+    if !matches!(
+        target_name,
+        "body" | "caption" | "col" | "colgroup" | "html"
+    ) {
+        return Ok(false);
+    }
+    let Some(current_id) = stack.last().copied() else {
+        return Ok(false);
+    };
+    let current = document
+        .node(current_id)
+        .ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder lost its current node while processing a row end tag".into(),
+        })?;
+    if current.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+        return Ok(false);
+    }
+
+    let mut row_context_in_scope = false;
+    for id in stack.iter().rev().copied() {
+        if Some(id) == fragment_root {
+            return Ok(false);
+        }
+        let node = document.node(id).ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder row scope references an unknown node".into(),
+        })?;
+        if node.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+            continue;
+        }
+        match node.element_name() {
+            Some("td" | "th" | "caption" | "colgroup") => return Ok(false),
+            Some("tr" | "tbody" | "tfoot" | "thead") => row_context_in_scope = true,
+            Some("table") => return Ok(row_context_in_scope),
+            Some("html" | "template") => return Ok(false),
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
 fn decode_entities(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut cursor = 0;
@@ -12071,6 +12125,120 @@ mod tests {
         document
             .apply_script_commands(&evaluation.commands)
             .expect("Rust fragment commit must ignore in-cell end tags");
+        assert_parentage(&document);
+    }
+
+    #[test]
+    fn javascript_xhr_and_fragments_ignore_row_end_tags_without_cells() {
+        let targets = ["body", "caption", "col", "colgroup", "html"];
+        let mut markup = String::new();
+        let mut expectations = Vec::new();
+        for context in ["row", "row-group"] {
+            for target in targets {
+                let (prefix, suffix) = match target {
+                    "body" | "html" => (
+                        format!(
+                            "<html id='ancestor-html-{context}-{target}'><body id='ancestor-body-{context}-{target}'>"
+                        ),
+                        "</body></html>".to_owned(),
+                    ),
+                    "caption" | "colgroup" => (
+                        format!("<{target} id='ancestor-{context}-{target}'>"),
+                        format!("</{target}>"),
+                    ),
+                    "col" => (String::new(), String::new()),
+                    _ => unreachable!("target list is exhaustive"),
+                };
+                let context_id = format!("context-{context}-{target}");
+                let marker_id = format!("after-{context}-{target}");
+                let open_context = if context == "row" {
+                    format!("<table><tbody><tr id='{context_id}'>")
+                } else {
+                    format!("<table><tbody id='{context_id}'>")
+                };
+                let close_context = if context == "row" {
+                    "</tr></tbody></table>"
+                } else {
+                    "</tbody></table>"
+                };
+                let marker = if context == "row" {
+                    format!("<td id='{marker_id}'>kept</td>")
+                } else {
+                    format!("<tr id='{marker_id}'></tr>")
+                };
+                markup.push_str(&prefix);
+                markup.push_str(&format!(
+                    "{open_context}<div></div></{target}>{marker}{close_context}{suffix}"
+                ));
+                expectations.push((context_id, marker_id));
+            }
+        }
+
+        let assert_parentage = |tree: &NativeDocument| {
+            for (context_id, marker_id) in &expectations {
+                let marker = tree
+                    .find_element_by_id(marker_id)
+                    .unwrap_or_else(|| panic!("missing row-context marker {marker_id}"));
+                let context_node = tree
+                    .find_element_by_id(context_id)
+                    .unwrap_or_else(|| panic!("missing active table context {context_id}"));
+                assert_eq!(
+                    tree.node(marker).and_then(NativeNode::parent),
+                    Some(context_node),
+                    "ignored end tag must not pop {context_id}"
+                );
+            }
+        };
+
+        let direct_document = NativeDocument::parse(&markup, &NativeEngineLimits::default())
+            .expect("document parser must ignore row-context end tags");
+        assert_parentage(&direct_document);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("table-row-end-ignore-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+                    const markup = __HTML_MARKUP__;
+                    const expectations = __EXPECTATIONS__;
+                    const root = document.querySelector("#root");
+                    root.innerHTML = markup;
+                    const response = globalThis.__glassParseHtmlDocument(
+                        markup,
+                        "https://example.test/table-row-end-ignore.html",
+                        "text/html",
+                    );
+                    const parentageMatches = (tree) => expectations.map(([contextId, markerId]) => {
+                        const marker = tree.querySelector(`#${markerId}`);
+                        const context = tree.querySelector(`#${contextId}`);
+                        return marker?.parentElement === context;
+                    });
+                    return [parentageMatches(root), parentageMatches(response)];
+                })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(&markup).unwrap())
+            .replace(
+                "__EXPECTATIONS__",
+                &serde_json::to_string(&expectations).unwrap(),
+            );
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://table-row-end-ignore.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("same-turn and XHR parsers must ignore row-context end tags");
+        let expected = vec![true; expectations.len()];
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([expected, vec![true; expectations.len()]])
+        );
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must ignore row-context end tags");
         assert_parentage(&document);
     }
 

@@ -27,9 +27,9 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed `native-engine-browser-683`
-after completed `native-engine-browser-682`, following completed `native-engine-browser-681`,
-following completed `native-engine-browser-680`,
+the browser-complete expansion has completed `native-engine-browser-684`
+after completed `native-engine-browser-683`, following completed `native-engine-browser-682`,
+following completed `native-engine-browser-681`, following completed `native-engine-browser-680`,
 following completed `native-engine-browser-679`,
 following completed `native-engine-browser-678`,
 following completed `native-engine-browser-677`,
@@ -76,6 +76,13 @@ following completed `native-engine-browser-660`, following completed
 `native-engine-browser-636`, following completed
 `native-engine-browser-635`, following completed
 `native-engine-browser-634`, following completed
+
+The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
+slice extends the five in-cell ignored end tags to row and row-group contexts
+without an open cell. The dedicated table, caption, and column-group end-tag
+rules remain separate across all four parser routes. The focused route test
+passed 1/1, the table batch passed 45/45, and the locked package check passed;
+the complete table insertion-mode contract remains open.
 
 The completed [`native-engine-browser-683`](tasks/native-engine-browser-683.md)
 slice ignores `</body>`, `</caption>`, `</col>`, `</colgroup>`, and `</html>`

@@ -1074,8 +1074,19 @@ impl NativeDocument {
                 HtmlToken::StartTag {
                     name,
                     attributes,
-                    self_closing,
+                    mut self_closing,
                 } => {
+                    if prepare_foreign_content_breakout_start_tag(
+                        &document,
+                        &mut stack,
+                        &name,
+                        &attributes,
+                        &mut active_formatting,
+                    )? {
+                        // The self-closing flag is ignored when the token is
+                        // reprocessed under HTML tree-construction rules.
+                        self_closing = false;
+                    }
                     if name == "table" {
                         let stack_before = stack.clone();
                         let process_table =
@@ -1120,6 +1131,7 @@ impl NativeDocument {
                             &mut stack,
                             &mut active_formatting,
                             None,
+                            false,
                         )?;
                         let nested_formatting_start =
                             (name == "a" && active_formatting_entry_index(&document, &active_formatting, "a").is_some())
@@ -1146,6 +1158,7 @@ impl NativeDocument {
                                 &mut stack,
                                 &mut active_formatting,
                                 None,
+                                false,
                             )?;
                         }
                     }
@@ -1189,11 +1202,11 @@ impl NativeDocument {
                         None => document.add_node(parent, kind, limits.max_nodes)?,
                     };
                     document.assign_parsed_namespace_to_node(id, parent)?;
-                    let html_void_element = document
+                    let html_namespace_element = document
                         .raw_node(id)
-                        .is_some_and(|node| node.namespace_uri() == Some(HTML_NAMESPACE_URI))
-                        && is_void_element(&name);
-                    if !self_closing && !html_void_element {
+                        .is_some_and(|node| node.namespace_uri() == Some(HTML_NAMESPACE_URI));
+                    let html_void_element = html_namespace_element && is_void_element(&name);
+                    if (!self_closing || html_namespace_element) && !html_void_element {
                         stack.push(id);
                         if document
                             .raw_node(id)
@@ -1303,6 +1316,7 @@ impl NativeDocument {
                             &mut stack,
                             &mut active_formatting,
                             None,
+                            false,
                         )?;
                         let foster_location = if decoded
                             .as_bytes()
@@ -3748,6 +3762,15 @@ impl NativeDocument {
         id: NativeNodeId,
         parent: NativeNodeId,
     ) -> Result<(), NativeEngineError> {
+        self.assign_parsed_namespace_to_node_with_html_context(id, parent, false)
+    }
+
+    fn assign_parsed_namespace_to_node_with_html_context(
+        &mut self,
+        id: NativeNodeId,
+        parent: NativeNodeId,
+        force_html_parent_rules: bool,
+    ) -> Result<(), NativeEngineError> {
         let parent_node = self
             .raw_node(parent)
             .ok_or_else(|| NativeEngineError::Parse {
@@ -3761,7 +3784,11 @@ impl NativeDocument {
                 offset: 0,
                 reason: "tree builder namespace assignment targeted a non-element".into(),
             })?;
-        let namespace = parsed_child_namespace(parent_node, name);
+        let namespace = if force_html_parent_rules {
+            parsed_html_child_namespace(name)
+        } else {
+            parsed_child_namespace(parent_node, name)
+        };
         let node = self
             .raw_node_mut(id)
             .ok_or_else(|| NativeEngineError::Parse {
@@ -6351,14 +6378,29 @@ impl NativeDocument {
             self.detach_subtree(child)?;
         }
         let mut stack = vec![id];
+        let mut fragment_html_context = false;
         let mut active_formatting = ActiveFormattingList::new();
         for token in tokens {
             match token {
                 HtmlToken::StartTag {
                     name,
                     attributes,
-                    self_closing,
+                    mut self_closing,
                 } => {
+                    if prepare_foreign_content_breakout_start_tag(
+                        self,
+                        &mut stack,
+                        &name,
+                        &attributes,
+                        &mut active_formatting,
+                    )? {
+                        self_closing = false;
+                        fragment_html_context |= stack.len() == 1
+                            && stack.first() == Some(&id)
+                            && stack.last().is_some_and(|current| {
+                                parser_uses_foreign_character_rules(self, *current)
+                            });
+                    }
                     if name == "table" {
                         let stack_before = stack.clone();
                         let process_table =
@@ -6399,6 +6441,7 @@ impl NativeDocument {
                             &mut stack,
                             &mut active_formatting,
                             Some(id),
+                            fragment_html_context,
                         )?;
                         let nested_formatting_start =
                             (name == "a" && active_formatting_entry_index(self, &active_formatting, "a").is_some())
@@ -6425,6 +6468,7 @@ impl NativeDocument {
                                 &mut stack,
                                 &mut active_formatting,
                                 Some(id),
+                                fragment_html_context,
                             )?;
                         }
                     }
@@ -6459,12 +6503,16 @@ impl NativeDocument {
                         Some((parent, None)) => self.add_node(parent, kind, self.max_nodes)?,
                         None => self.add_node(parent, kind, self.max_nodes)?,
                     };
-                    self.assign_parsed_namespace_to_node(child, parent)?;
-                    let html_void_element = self
+                    self.assign_parsed_namespace_to_node_with_html_context(
+                        child,
+                        parent,
+                        fragment_html_context && parent == id,
+                    )?;
+                    let html_namespace_element = self
                         .raw_node(child)
-                        .is_some_and(|node| node.namespace_uri() == Some(HTML_NAMESPACE_URI))
-                        && is_void_element(&name);
-                    if !self_closing && !html_void_element {
+                        .is_some_and(|node| node.namespace_uri() == Some(HTML_NAMESPACE_URI));
+                    let html_void_element = html_namespace_element && is_void_element(&name);
+                    if (!self_closing || html_namespace_element) && !html_void_element {
                         stack.push(child);
                         if self
                             .raw_node(child)
@@ -6568,7 +6616,8 @@ impl NativeDocument {
                             offset: 0,
                             reason: "fragment parser lost its text insertion mode".into(),
                         })?;
-                        let foreign_content = parser_uses_foreign_character_rules(self, current);
+                        let foreign_content = !(fragment_html_context && current == id)
+                            && parser_uses_foreign_character_rules(self, current);
                         let decoded = decode_html_character_data(&value, foreign_content);
                         if decoded.is_empty() {
                             continue;
@@ -6578,6 +6627,7 @@ impl NativeDocument {
                             &mut stack,
                             &mut active_formatting,
                             Some(id),
+                            fragment_html_context,
                         )?;
                         let foster_location = if decoded
                             .as_bytes()
@@ -10825,6 +10875,90 @@ fn parser_uses_foreign_character_rules(document: &NativeDocument, id: NativeNode
     }
 }
 
+fn foreign_content_breakout_start_tag(name: &str, attributes: &BTreeMap<String, String>) -> bool {
+    matches!(
+        name,
+        "b" | "big"
+            | "blockquote"
+            | "body"
+            | "br"
+            | "center"
+            | "code"
+            | "dd"
+            | "div"
+            | "dl"
+            | "dt"
+            | "em"
+            | "embed"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "head"
+            | "hr"
+            | "i"
+            | "img"
+            | "li"
+            | "listing"
+            | "menu"
+            | "meta"
+            | "nobr"
+            | "ol"
+            | "p"
+            | "pre"
+            | "ruby"
+            | "s"
+            | "small"
+            | "span"
+            | "strong"
+            | "strike"
+            | "sub"
+            | "sup"
+            | "table"
+            | "tt"
+            | "u"
+            | "ul"
+            | "var"
+    ) || (name == "font"
+        && ["color", "face", "size"]
+            .iter()
+            .any(|key| attributes.contains_key(*key)))
+}
+
+fn prepare_foreign_content_breakout_start_tag(
+    document: &NativeDocument,
+    stack: &mut Vec<NativeNodeId>,
+    name: &str,
+    attributes: &BTreeMap<String, String>,
+    active_formatting: &mut ActiveFormattingList,
+) -> Result<bool, NativeEngineError> {
+    if !foreign_content_breakout_start_tag(name, attributes) {
+        return Ok(false);
+    }
+    let Some(current) = stack.last().copied() else {
+        return Err(NativeEngineError::Parse {
+            offset: 0,
+            reason: "foreign-content breakout lost the open-elements stack".into(),
+        });
+    };
+    if !parser_uses_foreign_character_rules(document, current) {
+        return Ok(false);
+    }
+
+    let stack_before = stack.clone();
+    while stack.len() > 1 {
+        let current = *stack.last().expect("non-empty open-elements stack");
+        if !parser_uses_foreign_character_rules(document, current) {
+            break;
+        }
+        stack.pop();
+    }
+    clear_markers_for_popped_elements(document, &stack_before, stack, active_formatting);
+    Ok(true)
+}
+
 fn node_is_html_integration_point(node: &NativeNode) -> bool {
     match (node.namespace_uri(), node.element_name()) {
         (Some(SVG_NAMESPACE_URI), Some("foreignobject" | "desc" | "title")) => true,
@@ -10863,6 +10997,10 @@ fn parsed_child_namespace(parent: &NativeNode, child_name: &str) -> &'static str
             _ => HTML_NAMESPACE_URI,
         };
     }
+    parsed_html_child_namespace(child_name)
+}
+
+fn parsed_html_child_namespace(child_name: &str) -> &'static str {
     match child_name {
         "svg" => SVG_NAMESPACE_URI,
         "math" => MATHML_NAMESPACE_URI,
@@ -11067,29 +11205,33 @@ fn reconstruct_active_formatting_elements(
     stack: &mut Vec<NativeNodeId>,
     active: &mut ActiveFormattingList,
     fragment_root: Option<NativeNodeId>,
+    force_html_fragment_context: bool,
 ) -> Result<(), NativeEngineError> {
-    if stack
-        .last()
-        .and_then(|id| document.raw_node(*id))
-        .is_some_and(|node| {
-            node.namespace_uri().is_some_and(|namespace| {
-                namespace != HTML_NAMESPACE_URI
-                    && !(namespace == SVG_NAMESPACE_URI
-                        && matches!(
-                            node.element_name(),
-                            Some("foreignobject" | "desc" | "title")
-                        ))
-                    && !(namespace == MATHML_NAMESPACE_URI
-                        && (matches!(
-                            node.element_name(),
-                            Some("mi" | "mo" | "mn" | "ms" | "mtext")
-                        ) || (node.element_name() == Some("annotation-xml")
-                            && node.attribute("encoding").is_some_and(|value| {
-                                value.eq_ignore_ascii_case("text/html")
-                                    || value.eq_ignore_ascii_case("application/xhtml+xml")
-                            }))))
+    let current_is_forced_html_fragment_root =
+        force_html_fragment_context && stack.last().copied() == fragment_root;
+    if !current_is_forced_html_fragment_root
+        && stack
+            .last()
+            .and_then(|id| document.raw_node(*id))
+            .is_some_and(|node| {
+                node.namespace_uri().is_some_and(|namespace| {
+                    namespace != HTML_NAMESPACE_URI
+                        && !(namespace == SVG_NAMESPACE_URI
+                            && matches!(
+                                node.element_name(),
+                                Some("foreignobject" | "desc" | "title")
+                            ))
+                        && !(namespace == MATHML_NAMESPACE_URI
+                            && (matches!(
+                                node.element_name(),
+                                Some("mi" | "mo" | "mn" | "ms" | "mtext")
+                            ) || (node.element_name() == Some("annotation-xml")
+                                && node.attribute("encoding").is_some_and(|value| {
+                                    value.eq_ignore_ascii_case("text/html")
+                                        || value.eq_ignore_ascii_case("application/xhtml+xml")
+                                }))))
+                })
             })
-        })
     {
         return Ok(());
     }
@@ -12548,7 +12690,7 @@ mod tests {
     }
 
     #[test]
-    fn script_inner_html_does_not_foster_svg_table_like_elements() {
+    fn script_inner_html_reprocesses_svg_table_as_html_and_fosters_children() {
         let mut document =
             NativeDocument::parse("<svg id='svg'></svg>", &NativeEngineLimits::default()).unwrap();
         let svg = document.find_element_by_id("svg").unwrap();
@@ -12564,17 +12706,16 @@ mod tests {
         let child = document.find_element_by_id("svg-child").unwrap();
         assert_eq!(document.node(table).and_then(NativeNode::parent), Some(svg));
         assert_eq!(
-            document.node(child).and_then(NativeNode::parent),
-            Some(table)
-        );
-        assert_eq!(
             document.node(table).and_then(NativeNode::namespace_uri),
-            Some(SVG_NAMESPACE_URI)
+            Some(HTML_NAMESPACE_URI)
         );
         assert_eq!(
             document.node(child).and_then(NativeNode::namespace_uri),
-            Some(SVG_NAMESPACE_URI)
+            Some(HTML_NAMESPACE_URI)
         );
+        assert_eq!(document.node(child).and_then(NativeNode::parent), Some(svg));
+        assert!(document.node(table).unwrap().children().is_empty());
+        assert_eq!(document.node(svg).unwrap().children(), &[child, table]);
     }
 
     #[test]
@@ -12897,20 +13038,23 @@ mod tests {
                             && directCell.parentElement.parentElement.localName === "tbody",
                         explicit.children.length === 1
                             && explicit.children[0] === response.getElementById("body"),
-                        svgTable.children[0] === svgRow
-                            && svgRow.namespaceURI === "http://www.w3.org/2000/svg",
+                        svgTable.children[0].localName === "tbody"
+                            && svgRow.parentElement === svgTable.children[0]
+                            && svgRow.namespaceURI === "http://www.w3.org/1999/xhtml",
                         htmlTable.children[0].localName === "tbody"
                             && htmlRow.parentElement === htmlTable.children[0],
                         columns.children[0].localName === "colgroup"
                             && column.parentElement === columns.children[0],
                         explicitColumns.children.length === 1
                             && explicitColumns.children[0] === explicitGroup,
-                        svgColumns.children[0] === svgColumn
-                            && svgColumn.namespaceURI === "http://www.w3.org/2000/svg",
+                        svgColumns.children[0].localName === "colgroup"
+                            && svgColumn.parentElement === svgColumns.children[0]
+                            && svgColumn.namespaceURI === "http://www.w3.org/1999/xhtml",
                         htmlColumns.children[0].localName === "colgroup"
                             && htmlColumn.parentElement === htmlColumns.children[0],
-                        mathColumns.children[0] === mathColumn
-                            && mathColumn.namespaceURI === "http://www.w3.org/1998/Math/MathML",
+                        mathColumns.children[0].localName === "colgroup"
+                            && mathColumn.parentElement === mathColumns.children[0]
+                            && mathColumn.namespaceURI === "http://www.w3.org/1999/xhtml",
                     ];
                 })()"##,
                 &document,
@@ -14595,15 +14739,15 @@ mod tests {
         let markup = concat!(
             "<section id='zone'><svg id='svg-root'>",
             "<desc id='svg-desc'><span id='svg-desc-child'></span><math id='svg-desc-math'><mi id='svg-desc-math-child'></mi></math></desc>",
-            "<foreignObject id='svg-foreignobject'><span id='svg-fo-child'></span><svg id='svg-fo-svg'></svg><math id='svg-fo-math'></math></foreignObject>",
-            "<g id='svg-g'><span id='svg-g-child'></span><math id='svg-g-math'></math></g>",
+            "<foreignObject id='svg-foreignobject'><div id='svg-fo-child'/><span id='svg-fo-grandchild'></span></div><svg id='svg-fo-svg'></svg><math id='svg-fo-math'></math></foreignObject>",
+            "<g id='svg-g'><area id='svg-g-child'></area><math id='svg-g-math'></math></g>",
             "</svg><math id='math-root'>",
             "<mi id='math-mi'><span id='math-mi-span'></span><mglyph id='math-mi-glyph'/><malignmark id='math-mi-malignmark'/><svg id='math-mi-svg'></svg><math id='math-mi-math'></math></mi>",
             "<mtext id='math-mtext'><strong id='math-mtext-strong'></strong></mtext>",
             "<annotation-xml id='math-text-html-ann' encoding='TEXT/HTML'><span id='annotation-text-html-span'></span></annotation-xml>",
             "<annotation-xml id='math-html-ann' encoding='APPLICATION/XHTML+XML'><span id='annotation-html-span'></span><svg id='annotation-html-svg'></svg></annotation-xml>",
-            "<annotation-xml id='math-plain-ann' encoding='application/xml'><span id='annotation-foreign-span'></span><svg id='annotation-foreign-svg'></svg></annotation-xml>",
-            "<mrow id='math-foreign'><span id='math-foreign-span'></span><svg id='math-foreign-svg'></svg></mrow>",
+            "<annotation-xml id='math-plain-ann' encoding='application/xml'><area id='annotation-foreign-span'></area><svg id='annotation-foreign-svg'></svg></annotation-xml>",
+            "<mrow id='math-foreign'><area id='math-foreign-span'></area><svg id='math-foreign-svg'></svg></mrow>",
             "</math></section>",
         );
         let expected_nodes = [
@@ -14614,6 +14758,7 @@ mod tests {
             ("svg-desc-math-child", MATHML_NAMESPACE_URI, "svg-desc-math"),
             ("svg-foreignobject", SVG_NAMESPACE_URI, "svg-root"),
             ("svg-fo-child", HTML_NAMESPACE_URI, "svg-foreignobject"),
+            ("svg-fo-grandchild", HTML_NAMESPACE_URI, "svg-fo-child"),
             ("svg-fo-svg", SVG_NAMESPACE_URI, "svg-foreignobject"),
             ("svg-fo-math", MATHML_NAMESPACE_URI, "svg-foreignobject"),
             ("svg-g", SVG_NAMESPACE_URI, "svg-root"),
@@ -14830,6 +14975,268 @@ mod tests {
             .apply_script_commands(&evaluation.commands)
             .expect("Rust fragment commit must respect foreign text modes");
         assert_eq!(summarize_native(&document), expected);
+    }
+
+    #[test]
+    fn foreign_content_breakout_start_tag_set_matches_html_rules() {
+        let names = [
+            "b",
+            "big",
+            "blockquote",
+            "body",
+            "br",
+            "center",
+            "code",
+            "dd",
+            "div",
+            "dl",
+            "dt",
+            "em",
+            "embed",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "head",
+            "hr",
+            "i",
+            "img",
+            "li",
+            "listing",
+            "menu",
+            "meta",
+            "nobr",
+            "ol",
+            "p",
+            "pre",
+            "ruby",
+            "s",
+            "small",
+            "span",
+            "strong",
+            "strike",
+            "sub",
+            "sup",
+            "table",
+            "tt",
+            "u",
+            "ul",
+            "var",
+        ];
+        for name in names {
+            assert!(
+                foreign_content_breakout_start_tag(name, &BTreeMap::new()),
+                "{name} must break out of foreign content"
+            );
+        }
+        assert!(!foreign_content_breakout_start_tag(
+            "area",
+            &BTreeMap::new()
+        ));
+        assert!(!foreign_content_breakout_start_tag(
+            "font",
+            &BTreeMap::new()
+        ));
+        assert!(!foreign_content_breakout_start_tag(
+            "font",
+            &BTreeMap::from([("style".to_owned(), "color:red".to_owned())])
+        ));
+        for name in ["color", "face", "size"] {
+            assert!(foreign_content_breakout_start_tag(
+                "font",
+                &BTreeMap::from([(name.to_owned(), String::new())])
+            ));
+        }
+    }
+
+    #[test]
+    fn foreign_content_breakout_start_tags_reprocess_as_html_across_parser_routes() {
+        let markup = concat!(
+            "<section id='zone'>",
+            "<svg id='svg-area-root'><g id='svg-area-parent'>",
+            "<area id='svg-area'><g id='svg-area-child'></g></area></g></svg>",
+            "<svg id='font-root'><g id='font-no-trigger-parent'>",
+            "<font id='font-no-trigger'><g id='font-no-trigger-child'></g></font>",
+            "</g></svg>",
+            "<svg id='font-break-root'><g id='font-break-parent'>",
+            "<font id='font-trigger' color='red'><span id='font-trigger-child'>child</span></font>",
+            "</g></svg>",
+            "<svg id='svg-div-root'><g id='svg-div-parent'>",
+            "<div id='svg-div'/><span id='svg-div-child'>child</span></div>",
+            "</g></svg>",
+            "<math id='math-root'><mrow id='math-parent'>",
+            "<div id='math-div'><span id='math-div-child'>child</span></div>",
+            "</mrow></math>",
+            "<div id='html-div'/><span id='html-div-child'>child</span>",
+            "<svg id='svg-fo-root'><foreignObject id='svg-fo'>",
+            "<div id='svg-fo-child'/><span id='svg-fo-grandchild'></span></div></foreignObject></svg>",
+            "<math id='math-integration-root'><mi id='math-mi'>",
+            "<span id='math-mi-child'></span></mi></math>",
+            "</section>",
+        );
+        let expected_nodes = [
+            ("svg-area", SVG_NAMESPACE_URI, "svg-area-parent"),
+            ("svg-area-child", SVG_NAMESPACE_URI, "svg-area"),
+            (
+                "font-no-trigger",
+                SVG_NAMESPACE_URI,
+                "font-no-trigger-parent",
+            ),
+            (
+                "font-no-trigger-child",
+                SVG_NAMESPACE_URI,
+                "font-no-trigger",
+            ),
+            ("font-trigger", HTML_NAMESPACE_URI, "zone"),
+            ("font-trigger-child", HTML_NAMESPACE_URI, "font-trigger"),
+            ("svg-div", HTML_NAMESPACE_URI, "zone"),
+            ("svg-div-child", HTML_NAMESPACE_URI, "svg-div"),
+            ("math-div", HTML_NAMESPACE_URI, "zone"),
+            ("math-div-child", HTML_NAMESPACE_URI, "math-div"),
+            ("html-div", HTML_NAMESPACE_URI, "zone"),
+            ("html-div-child", HTML_NAMESPACE_URI, "html-div"),
+            ("svg-fo-child", HTML_NAMESPACE_URI, "svg-fo"),
+            ("svg-fo-grandchild", HTML_NAMESPACE_URI, "svg-fo-child"),
+            ("math-mi-child", HTML_NAMESPACE_URI, "math-mi"),
+        ];
+        let expected = expected_nodes
+            .iter()
+            .map(|(_, namespace, parent)| serde_json::json!([namespace, parent]))
+            .collect::<Vec<_>>();
+        let summarize_native = |tree: &NativeDocument| {
+            expected_nodes
+                .iter()
+                .map(|(element_id, _, _)| {
+                    let element = tree.find_element_by_id(element_id).unwrap_or_else(|| {
+                        panic!("foreign-breakout fixture element {element_id} must exist")
+                    });
+                    let node = tree
+                        .node(element)
+                        .expect("foreign-breakout fixture element must resolve");
+                    let parent_id = node
+                        .parent()
+                        .and_then(|parent| tree.node(parent))
+                        .and_then(|parent| parent.attribute("id"))
+                        .expect("foreign-breakout fixture parent must have an id");
+                    serde_json::json!([node.namespace_uri().unwrap(), parent_id])
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let direct = NativeDocument::parse(markup, &NativeEngineLimits::default())
+            .expect("document parser must reprocess foreign breakout tags as HTML");
+        assert_eq!(summarize_native(&direct), expected);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("foreign-breakout-context")
+            .expect("native JavaScript runtime must construct");
+        let mut projected =
+            NativeDocument::parse("<main id='host'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+            const markup = __HTML_MARKUP__;
+            const ids = __ELEMENT_IDS__;
+            const host = document.querySelector("#host");
+            host.innerHTML = markup;
+            const response = globalThis.__glassParseHtmlDocument(
+                markup,
+                "https://example.test/foreign-content-breakout.html",
+                "text/html",
+            );
+            const summarize = (tree) => ids.map((id) => {
+                const element = tree.querySelector(`#${id}`);
+                return [element.namespaceURI, element.parentElement.getAttribute("id")];
+            });
+            return [summarize(host), summarize(response)];
+        })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(markup).unwrap())
+            .replace(
+                "__ELEMENT_IDS__",
+                &serde_json::to_string(
+                    &expected_nodes
+                        .iter()
+                        .map(|(element_id, _, _)| element_id)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            );
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &projected,
+                "fixture://foreign-content-breakout.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("fragment projection and XHR parser must reprocess breakout tags");
+        assert_eq!(evaluation.value, serde_json::json!([expected, expected]));
+        projected
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must reprocess breakout tags");
+        assert_eq!(summarize_native(&projected), expected);
+    }
+
+    #[test]
+    fn foreign_fragment_breakout_keeps_target_and_uses_html_child_namespace() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("foreign-fragment-breakout")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<main><svg id='context'></svg></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("foreign fragment host document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const target = document.querySelector("#context");
+                    target.innerHTML = "<div id='fragment-div'/><span id='fragment-child'>child</span></div>";
+                    const element = target.querySelector("#fragment-div");
+                    const child = target.querySelector("#fragment-child");
+                    return [
+                        element.namespaceURI,
+                        element.parentElement.getAttribute("id"),
+                        child.namespaceURI,
+                        child.parentElement.getAttribute("id"),
+                    ];
+                })()"##,
+                &document,
+                "fixture://foreign-fragment-context.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("same-turn foreign fragment must reprocess breakout as HTML");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                HTML_NAMESPACE_URI,
+                "context",
+                HTML_NAMESPACE_URI,
+                "fragment-div"
+            ])
+        );
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must preserve the foreign context target");
+        let target = document.find_element_by_id("context").unwrap();
+        let element = document.find_element_by_id("fragment-div").unwrap();
+        let child = document.find_element_by_id("fragment-child").unwrap();
+        assert_eq!(
+            document.node(element).unwrap().namespace_uri(),
+            Some(HTML_NAMESPACE_URI)
+        );
+        assert_eq!(
+            document.node(element).and_then(NativeNode::parent),
+            Some(target)
+        );
+        assert_eq!(
+            document.node(child).unwrap().namespace_uri(),
+            Some(HTML_NAMESPACE_URI)
+        );
+        assert_eq!(
+            document.node(child).and_then(NativeNode::parent),
+            Some(element)
+        );
     }
 
     #[test]
@@ -15118,36 +15525,34 @@ mod tests {
             &[explicit_column]
         );
 
-        for (table_id, column_id, namespace) in [
-            ("svg-table", "svg-column", SVG_NAMESPACE_URI),
-            ("math-table", "math-column", MATHML_NAMESPACE_URI),
+        for (table_id, column_id) in [
+            ("svg-table", "svg-column"),
+            ("math-table", "math-column"),
+            ("html-table", "html-column"),
         ] {
             let table = document.find_element_by_id(table_id).unwrap();
             let column = document.find_element_by_id(column_id).unwrap();
-            assert_eq!(document.node(table).unwrap().children(), &[column]);
+            assert_eq!(
+                document.node(table).and_then(NativeNode::namespace_uri),
+                Some(HTML_NAMESPACE_URI)
+            );
+            let group = document.node(table).unwrap().children()[0];
+            assert_eq!(
+                document.node(group).and_then(NativeNode::element_name),
+                Some("colgroup")
+            );
+            assert_eq!(document.node(group).unwrap().children(), &[column]);
             assert_eq!(
                 document.node(column).and_then(NativeNode::namespace_uri),
-                Some(namespace)
+                Some(HTML_NAMESPACE_URI)
             );
         }
-
-        let html_table = document.find_element_by_id("html-table").unwrap();
-        let html_column = document.find_element_by_id("html-column").unwrap();
-        let html_group = document.node(html_table).unwrap().children()[0];
-        assert_eq!(
-            document.node(html_group).and_then(NativeNode::element_name),
-            Some("colgroup")
-        );
-        assert_eq!(
-            document.node(html_group).unwrap().children(),
-            &[html_column]
-        );
     }
 
     #[test]
     fn html_parser_reprocesses_nested_table_starts_with_scope_boundaries() {
         let document = NativeDocument::parse(
-            "<main id='host'><table id='outer'><tbody><tr><td>outer</td></tr><table id='middle'><tr><td>middle</td></tr><table id='inner'><tr><td>inner</td></tr></table></table></tbody><table id='cell-table'><tbody><tr><td id='cell'>before<table id='valid-nested'><tr><td>nested</td></tr></table>after</td></tr></tbody></table><table id='caption-table'><caption id='caption'><table id='caption-nested'></table></caption></table><table id='template-outer'><tbody><template id='template'><table id='template-table'></table></template></tbody></table><svg id='svg'><table id='svg-table'><table id='svg-nested'></table></table></svg></main>",
+            "<main id='host'><table id='outer'><tbody><tr><td>outer</td></tr><table id='middle'><tr><td>middle</td></tr><table id='inner'><tr><td>inner</td></tr></table></table></tbody><table id='cell-table'><tbody><tr><td id='cell'>before<table id='valid-nested'><tr><td>nested</td></tr></table>after</td></tr></tbody></table><table id='caption-table'><caption id='caption'><table id='caption-nested'></table></caption></table><table id='template-outer'><tbody><template id='template'><table id='template-table'></table></template></tbody></table><svg id='svg'><area id='svg-area'><g id='svg-area-child'></g></area></svg></main>",
             &NativeEngineLimits::default(),
         )
         .unwrap();
@@ -15187,12 +15592,19 @@ mod tests {
             document.node(template_table).unwrap().parent(),
             Some(template)
         );
-        let svg_table = document.find_element_by_id("svg-table").unwrap();
-        let svg_nested = document.find_element_by_id("svg-nested").unwrap();
-        assert_eq!(document.node(svg_nested).unwrap().parent(), Some(svg_table));
+        let svg_area = document.find_element_by_id("svg-area").unwrap();
+        let svg_area_child = document.find_element_by_id("svg-area-child").unwrap();
+        assert_eq!(
+            document.node(svg_area_child).unwrap().parent(),
+            Some(svg_area)
+        );
+        assert_eq!(
+            document.node(svg_area).and_then(NativeNode::namespace_uri),
+            Some(SVG_NAMESPACE_URI)
+        );
         assert_eq!(
             document
-                .node(svg_nested)
+                .node(svg_area_child)
                 .and_then(NativeNode::namespace_uri),
             Some(SVG_NAMESPACE_URI)
         );
@@ -15276,28 +15688,26 @@ mod tests {
         )
         .unwrap();
 
-        let svg_table = document.find_element_by_id("svg-table").unwrap();
-        let svg_row = document.find_element_by_id("svg-row").unwrap();
-        assert_eq!(document.node(svg_table).unwrap().children(), &[svg_row]);
-        assert_eq!(
-            document.node(svg_row).and_then(NativeNode::namespace_uri),
-            Some(SVG_NAMESPACE_URI)
-        );
-
-        let html_table = document.find_element_by_id("html-table").unwrap();
-        let html_row = document.find_element_by_id("html-row").unwrap();
-        let implied_body = document.node(html_table).unwrap().children()[0];
-        assert_eq!(
-            document
-                .node(implied_body)
-                .and_then(NativeNode::element_name),
-            Some("tbody")
-        );
-        assert_eq!(document.node(implied_body).unwrap().children(), &[html_row]);
-        assert_eq!(
-            document.node(html_row).and_then(NativeNode::namespace_uri),
-            Some(HTML_NAMESPACE_URI)
-        );
+        for (table_id, row_id) in [("svg-table", "svg-row"), ("html-table", "html-row")] {
+            let table = document.find_element_by_id(table_id).unwrap();
+            let row = document.find_element_by_id(row_id).unwrap();
+            assert_eq!(
+                document.node(table).and_then(NativeNode::namespace_uri),
+                Some(HTML_NAMESPACE_URI)
+            );
+            let implied_body = document.node(table).unwrap().children()[0];
+            assert_eq!(
+                document
+                    .node(implied_body)
+                    .and_then(NativeNode::element_name),
+                Some("tbody")
+            );
+            assert_eq!(document.node(implied_body).unwrap().children(), &[row]);
+            assert_eq!(
+                document.node(row).and_then(NativeNode::namespace_uri),
+                Some(HTML_NAMESPACE_URI)
+            );
+        }
     }
 
     #[test]
@@ -15418,12 +15828,18 @@ mod tests {
         let child = document.find_element_by_id("child").unwrap();
         assert_eq!(
             document.node(table).and_then(NativeNode::namespace_uri),
-            Some(SVG_NAMESPACE_URI)
+            Some(HTML_NAMESPACE_URI)
         );
-        assert_eq!(document.node(child).unwrap().parent(), Some(table));
         assert_eq!(
             document.node(child).and_then(NativeNode::namespace_uri),
-            Some(SVG_NAMESPACE_URI)
+            Some(HTML_NAMESPACE_URI)
+        );
+        let parent = document.node(table).unwrap().parent().unwrap();
+        assert_eq!(document.node(child).unwrap().parent(), Some(parent));
+        let children = document.node(parent).unwrap().children();
+        assert!(
+            children.iter().position(|child_id| *child_id == child)
+                < children.iter().position(|child_id| *child_id == table)
         );
 
         let document = NativeDocument::parse(

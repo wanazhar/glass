@@ -1,9 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-691`, following
-locally completed `native-engine-browser-690` and `native-engine-browser-689`;
-issue #40 remains open. It follows completed
+completed browser expansion slice is `native-engine-browser-692`; issue #40
+remains open. It follows locally completed `native-engine-browser-691`,
+`native-engine-browser-690`, and `native-engine-browser-689`; it follows completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`, following completed
 `native-engine-browser-685`, `native-engine-browser-684`, and
@@ -758,6 +758,22 @@ four routes. The exact test passed 1/1, the HTML batch passed 28/28, and local
 package/documentation gates passed; remote CI was not run. This does not claim
 complete foreign-content handling. See
 `docs/plan/tasks/native-engine-browser-691.md`.
+
+Slice 692 is complete locally. The WHATWG foreign-content dispatcher breaks out on
+the defined HTML start-tag set, plus `font` only when `color`, `face`, or
+`size` is present, then reprocesses that token using HTML rules. The current
+stack must unwind only to an HTML element or integration point. Fragment
+parsing needs the same behavior while retaining the foreign context element as
+the fragment target; a synthetic HTML fragment context cannot be represented
+by merely trusting the target's namespace. HTML-namespace elements ignore
+`/>` in every route, including at integration points and after breakout;
+explicit self-closing applies only to foreign-namespace elements. The four
+routes must agree on namespace and parentage. Foreign `</br>`/`</p>` breakout
+and foreign-attribute adjustment remain explicit follow-ups. The locked
+package check, 4-test foreign batch, 31-test HTML batch, formatting,
+whitespace, and maintainer documentation gates passed locally; remote CI was
+not run. See
+[`slice 692`](../tasks/native-engine-browser-692.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

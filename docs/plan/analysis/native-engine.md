@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-675`, following completed
-`native-engine-browser-674`, following completed `native-engine-browser-673`,
+browser expansion slice is `native-engine-browser-676`, following completed
+`native-engine-browser-675`, following completed `native-engine-browser-674`,
+following completed `native-engine-browser-673`,
 following completed `native-engine-browser-672`,
 following completed
 `native-engine-browser-671`, following
@@ -595,6 +596,18 @@ document normalization are retained. A runtime test verifies observable
 parent/child order through the materialized XHR document. This closes the
 specific three-route foster gap, not full tree-construction, template-content,
 or parser-error-recovery parity.
+
+Slice 676 synthesizes missing HTML table containers in every current parser
+route. A `tr` under `table` creates an implicit `tbody`; `td`/`th` under
+`table` create `tbody` plus `tr`; and cells under a table section create `tr`.
+The document and fragment parsers apply the same native node/depth limits, and
+the fragment's same-turn JavaScript projection mirrors the committed tree.
+The XHR parser carries HTML/SVG/MathML namespace identity through raw-node
+construction so SVG table-like elements are not rewritten, while
+`foreignObject` children resume HTML behavior. Tests cover direct and explicit
+sections, fragment-context insertion, XHR materialization, namespace
+transitions, and node/depth limits. Complete table insertion modes and general
+HTML parser conformance remain open issue #40 requirements.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

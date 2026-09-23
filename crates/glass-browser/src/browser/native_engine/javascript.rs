@@ -27629,6 +27629,8 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
       || mime.endsWith("+xml");
   };
   const nativeHtmlNamespaceUri = "http://www.w3.org/1999/xhtml";
+  const nativeSvgNamespaceUri = "http://www.w3.org/2000/svg";
+  const nativeMathmlNamespaceUri = "http://www.w3.org/1998/Math/MathML";
   const nativeHtmlVoidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
   const nativeHtmlRawTextElements = new Set(["script", "style"]);
   const nativeHtmlRcdataElements = new Set(["textarea", "title"]);
@@ -27716,17 +27718,29 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
     const match = /^[A-Za-z][A-Za-z0-9:_-]*/.exec(value.slice(offset));
     return match ? { value: match[0], next: offset + match[0].length } : null;
   };
-  const nativeHtmlRawElement = (name, parent) => ({
-    type: "element",
-    html: true,
-    name,
-    prefix: null,
-    localName: name,
-    namespaceURI: nativeHtmlNamespaceUri,
-    attributes: [],
-    children: [],
-    parent,
-  });
+  const nativeHtmlRawElement = (name, parent) => {
+    const parentNamespace = parent && parent.namespaceURI || nativeHtmlNamespaceUri;
+    const childNamespace = parentNamespace === nativeSvgNamespaceUri
+      && parent.localName === "foreignobject"
+      ? nativeHtmlNamespaceUri
+      : parentNamespace;
+    const namespaceURI = childNamespace === nativeSvgNamespaceUri || name === "svg"
+      ? nativeSvgNamespaceUri
+      : name === "math" || childNamespace === nativeMathmlNamespaceUri
+        ? nativeMathmlNamespaceUri
+        : nativeHtmlNamespaceUri;
+    return {
+      type: "element",
+      html: true,
+      name,
+      prefix: null,
+      localName: name,
+      namespaceURI,
+      attributes: [],
+      children: [],
+      parent,
+    };
+  };
   const nativeHtmlParseDocument = (source, url, contentType) => {
     try {
       const input = String(source);
@@ -27752,17 +27766,37 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
       ]);
       const tableFosterLocation = () => {
         const current = state.stack[state.stack.length - 1];
-        if (!current || current.html !== true
+        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri
             || !tableStructureElements.has(String(current.localName || "").toLowerCase())) return null;
         for (let index = state.stack.length - 1; index >= 0; index -= 1) {
           const candidate = state.stack[index];
-          if (candidate.html !== true || candidate.localName !== "table") continue;
+          if (candidate.namespaceURI !== nativeHtmlNamespaceUri || candidate.localName !== "table") continue;
           const parent = candidate.parent || null;
           return parent
             ? { parent, before: candidate }
             : { parent: state.stack[0], before: null };
         }
         return { parent: state.stack[0], before: null };
+      };
+      const insertImpliedTableElements = (incomingName) => {
+        const current = state.stack[state.stack.length - 1];
+        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return;
+        const currentName = String(current.localName || "").toLowerCase();
+        const impliedNames = currentName === "table" && incomingName === "tr"
+          ? ["tbody"]
+          : currentName === "table" && (incomingName === "td" || incomingName === "th")
+            ? ["tbody", "tr"]
+            : (currentName === "tbody" || currentName === "thead" || currentName === "tfoot")
+                && (incomingName === "td" || incomingName === "th")
+              ? ["tr"]
+              : [];
+        for (const impliedName of impliedNames) {
+          if (state.stack.length >= nativeXmlMaxDepth) throw new Error("native HTML depth limit exceeded");
+          const parent = state.stack[state.stack.length - 1];
+          const implied = nativeHtmlRawElement(impliedName, parent);
+          append(parent, implied);
+          state.stack.push(implied);
+        }
       };
       const appendHtmlText = (value) => {
         if (!value) return;
@@ -27886,6 +27920,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         const name = opening[1].toLowerCase();
         while (state.stack.length > 1
             && nativeHtmlShouldAutoClose(state.stack[state.stack.length - 1].localName, name)) state.stack.pop();
+        insertImpliedTableElements(name);
         const element = nativeHtmlRawElement(name, state.stack[state.stack.length - 1]);
         parseAttributes(element, rawTag, opening[0].length);
         const hiddenInput = name === "input" && element.attributes.some((attribute) =>
@@ -35136,6 +35171,28 @@ fn document_bootstrap(
       || (current === "tbody" && ["tbody", "tfoot"].includes(next))
       || (current === "tfoot" && next === "tbody")
       || (current === "colgroup" && ["colgroup", "tbody", "thead", "tfoot"].includes(next));
+    const insertImpliedTableElements = (incomingName) => {{
+      const current = stack[stack.length - 1];
+      if (!current || current.namespaceURI !== HTML_NAMESPACE) return;
+      const currentName = String(current.localName || "").toLowerCase();
+      const impliedNames = currentName === "table" && incomingName === "tr"
+        ? ["tbody"]
+        : currentName === "table" && (incomingName === "td" || incomingName === "th")
+          ? ["tbody", "tr"]
+          : (currentName === "tbody" || currentName === "thead" || currentName === "tfoot")
+              && (incomingName === "td" || incomingName === "th")
+            ? ["tr"]
+            : [];
+      for (const impliedName of impliedNames) {{
+        const parent = stack[stack.length - 1];
+        const element = createElement(
+          impliedName,
+          namespaceForChildElement(parent, impliedName),
+        );
+        insertParsedNode(parent, element);
+        stack.push(element);
+      }}
+    }};
     const findTagEnd = (from) => {{
       let quote = null;
       for (let index = from; index < source.length; index += 1) {{
@@ -35229,6 +35286,7 @@ fn document_bootstrap(
           && shouldAutoClose(stack[stack.length - 1].localName, normalizedName)) {{
         stack.pop();
       }}
+      insertImpliedTableElements(normalizedName);
       const selfClosing = /\/\s*$/.test(rawTag);
       const attributeSource = rawTag
         .slice(opening[0].length)

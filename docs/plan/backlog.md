@@ -2,14 +2,24 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The architecture, analysis, and plan summaries report completed browser slices
-650–671, but `docs/plan/tasks/` currently contains detailed browser task files
-only through slice 649. The remote issue body still reports slice 531; a dated
-issue comment now records local slice 672 and its evidence. Audit the
-authoritative commits and recover verifiable scope/test evidence for the
-missing task records; do not infer passing checks from summary prose. Then
-reconcile the stale issue body and clearly separate local results from remote
-CI and promotion evidence.
+The architecture and analysis summaries report completed browser slices
+650–671, but `docs/plan/tasks/` has detailed records only through slice 649 and
+then for slices 672–673; records 650–671 remain missing. The remote issue body
+still reports slice 531. An issue comment records local slice 672, while slice
+673 is verified locally. Audit authoritative commits and recover verifiable
+scope/test evidence for the missing task records; do not infer passing checks
+from summary prose. Then reconcile the stale issue body and clearly separate
+local results from remote CI and promotion evidence.
+
+## Native HTML parser-route parity
+
+Slice 673 changes `NativeDocument::parse` only. `NativeDocument::apply_script_inner_html`
+has a separate Rust fragment insertion loop, and the JavaScript
+`nativeHtmlParseDocument` function independently builds XHR
+`responseType="document"` results. Define one shared regression corpus and
+bring these parser routes into parity for foster parenting and subsequent
+tree-builder rules, while preserving fragment-context and same-turn DOM
+projection semantics. Do not describe slice 673 as general HTML parser parity.
 
 ## Input: popup-opening mouse release completion
 

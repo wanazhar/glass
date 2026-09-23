@@ -1,7 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-672`, following completed `native-engine-browser-671`,
+`native-engine-browser-673`, following completed `native-engine-browser-672`,
+following completed `native-engine-browser-671`,
 following completed `native-engine-browser-670`,
 following completed `native-engine-browser-669`,
 following completed `native-engine-browser-668`,
@@ -548,6 +549,21 @@ namespace-less attribute values on HTML-namespace elements. Explicit `i` and
 the behavior is shared by document queries/action locators and stylesheet
 cascade. Page-realm JavaScript selector parity remains a separate issue #40
 gate; complete selector, CSS, and Web IDL parity remain explicit gates.
+
+Slice 673 adds bounded table foster-parent insertion to the native HTML tree
+builder used by `NativeDocument::parse`. For an HTML-namespace `table`,
+`tbody`, `tfoot`, `thead`, or `tr` current node, non-ASCII-whitespace character
+runs and ordinary start tags are inserted immediately before the nearest open
+HTML table in its parent; a foster-inserted element is also pushed onto the
+open-element stack so its children remain inside it. ASCII-whitespace-only
+character runs and comments stay under the current table node. The parser
+assigns element namespaces as it builds the tree, so SVG/MathML table-like
+elements do not trigger HTML foster parenting. Table-special tokens retain the
+prior bounded parser behavior. The separate script `innerHTML` fragment parser
+and JavaScript XHR `responseType="document"` parser are not changed by this
+slice. Complete WHATWG insertion modes, parser-route parity, table
+normalization, foreign-content recovery, and parser conformance remain issue
+#40 gates.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

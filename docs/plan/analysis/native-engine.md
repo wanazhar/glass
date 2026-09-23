@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-672`, following completed
+browser expansion slice is `native-engine-browser-673`, following completed
+`native-engine-browser-672`, following completed
 `native-engine-browser-671`, following
 completed `native-engine-browser-670`, following completed
 `native-engine-browser-669`, following completed
@@ -555,6 +556,17 @@ namespace-less attribute values on HTML-namespace elements. Explicit `i` and
 the shared matcher covers document queries/action locators and stylesheet
 cascade. Page-realm JavaScript selector parity remains a separate issue #40
 gate.
+
+Slice 673 adds bounded table foster parenting to the `NativeDocument::parse`
+tree builder: non-whitespace character runs and ordinary start tags encountered
+with an HTML table-structure element as the current node are inserted before
+the nearest open HTML table, while ASCII-whitespace-only runs and comments
+remain in the table. Fostered elements remain the stack's current node for
+their descendants. Parse-time namespace assignment prevents SVG/MathML elements
+named like table elements from activating this HTML rule. Table-special tokens
+keep the preexisting bounded behavior. The distinct script `innerHTML` fragment
+and XHR `responseType="document"` parsers remain separate parity work; full
+insertion modes and parser conformance remain open.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

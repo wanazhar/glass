@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-672`, following completed `native-engine-browser-671`,
+`native-engine-browser-673`, following completed `native-engine-browser-672`,
+following completed `native-engine-browser-671`,
 following completed `native-engine-browser-670`,
 following completed `native-engine-browser-669`,
 following completed `native-engine-browser-668`,
@@ -67,8 +68,12 @@ following completed `native-engine-browser-660`, following completed
 `native-engine-browser-635`, following completed
 `native-engine-browser-634`, following completed
 
-The completed [native-engine-browser-672](tasks/native-engine-browser-672.md)
-slice applies HTML's fixed default case-insensitive attribute-value rules to
+The completed [native-engine-browser-673](tasks/native-engine-browser-673.md)
+slice adds bounded HTML table foster parenting and preserves whitespace,
+comments, table-special tokens, namespace boundaries, and fostered descendants;
+full insertion-mode and foreign-content conformance remain open. The completed
+[native-engine-browser-672](tasks/native-engine-browser-672.md) slice applies
+HTML's fixed default case-insensitive attribute-value rules to
 the shared CSS matcher. The preceding completed bounded pseudo-class selector
 follow-up is
 [`native-engine-browser-640`](tasks/native-engine-browser-640.md): native

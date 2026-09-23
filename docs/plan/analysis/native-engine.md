@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-684`, following completed
-`native-engine-browser-683` and `native-engine-browser-682`. It follows
+browser expansion slice is `native-engine-browser-685`, following completed
+`native-engine-browser-684` and `native-engine-browser-683`. It follows
+completed `native-engine-browser-682`. It follows
 `native-engine-browser-681`, following completed `native-engine-browser-680`,
 following completed
 `native-engine-browser-679`, following completed `native-engine-browser-678`,
@@ -694,6 +695,20 @@ XHR parser routes are included. Its focused regression passed 1/1, the table
 batch passed 45/45, and the locked package check passed. See
 `docs/plan/tasks/native-engine-browser-684.md`; full insertion-mode
 conformance remains open.
+
+Slice 685 implements end-tag rules for direct table, caption, and
+column-group contexts after preserving the existing cell and row/row-group
+handlers. Direct table mode ignores the WHATWG set `body`, `caption`, `col`,
+`colgroup`, `html`, `tbody`, `td`, `tfoot`, `th`, `thead`, and `tr`; caption
+mode ignores its specified non-caption end tags but still closes `</caption>`;
+column-group mode ignores `</col>`, conditionally closes `</colgroup>`, and
+pops/reprocesses other table-mode end tags. Scope respects nested table,
+template, HTML, foreign-current, and fragment-root boundaries across four
+parser routes. The focused cross-route regression passed 1/1, the table-focused
+batch passed 46/46, the locked package check passed, and documentation
+validators covered 1,313 Markdown files with zero current-claim failures. See
+`docs/plan/tasks/native-engine-browser-685.md`; general parser conformance
+remains open.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

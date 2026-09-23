@@ -1148,6 +1148,11 @@ impl NativeDocument {
                     {
                         continue;
                     }
+                    if consume_html_table_column_group_end_token(
+                        &document, &mut stack, None, &name,
+                    )? {
+                        continue;
+                    }
                     if matches!(
                         name.as_str(),
                         "tbody" | "tfoot" | "thead" | "tr" | "td" | "th"
@@ -1160,6 +1165,13 @@ impl NativeDocument {
                         continue;
                     }
                     if consume_html_table_row_ignored_end_token(&document, &stack, None, &name)? {
+                        continue;
+                    }
+                    if consume_html_table_caption_ignored_end_token(&document, &stack, None, &name)?
+                    {
+                        continue;
+                    }
+                    if consume_html_table_mode_ignored_end_token(&document, &stack, None, &name)? {
                         continue;
                     }
                     if let Some(index) = stack.iter().rposition(|id| {
@@ -6289,6 +6301,10 @@ impl NativeDocument {
                     {
                         continue;
                     }
+                    if consume_html_table_column_group_end_token(self, &mut stack, Some(id), &name)?
+                    {
+                        continue;
+                    }
                     if matches!(
                         name.as_str(),
                         "tbody" | "tfoot" | "thead" | "tr" | "td" | "th"
@@ -6304,6 +6320,13 @@ impl NativeDocument {
                         continue;
                     }
                     if consume_html_table_row_ignored_end_token(self, &stack, Some(id), &name)? {
+                        continue;
+                    }
+                    if consume_html_table_caption_ignored_end_token(self, &stack, Some(id), &name)?
+                    {
+                        continue;
+                    }
+                    if consume_html_table_mode_ignored_end_token(self, &stack, Some(id), &name)? {
                         continue;
                     }
                     if let Some(index) = stack.iter().rposition(|current| {
@@ -10429,6 +10452,90 @@ fn consume_html_table_structure_end_token(
     Ok(true)
 }
 
+fn consume_html_table_column_group_end_token(
+    document: &NativeDocument,
+    stack: &mut Vec<NativeNodeId>,
+    fragment_root: Option<NativeNodeId>,
+    target_name: &str,
+) -> Result<bool, NativeEngineError> {
+    if !matches!(
+        target_name,
+        "body"
+            | "caption"
+            | "col"
+            | "colgroup"
+            | "html"
+            | "tbody"
+            | "td"
+            | "tfoot"
+            | "th"
+            | "thead"
+            | "tr"
+    ) {
+        return Ok(false);
+    }
+    let Some(current_id) = stack.last().copied() else {
+        return Ok(false);
+    };
+    let current = document
+        .node(current_id)
+        .ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder lost its current node in a column-group end tag".into(),
+        })?;
+    if current.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+        return Ok(false);
+    }
+
+    let mut column_group_index = None;
+    for index in (0..stack.len()).rev() {
+        let id = stack[index];
+        if Some(id) == fragment_root {
+            return Ok(false);
+        }
+        let node = document.node(id).ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder column-group scope references an unknown node".into(),
+        })?;
+        if node.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+            continue;
+        }
+        match node.element_name() {
+            Some("td" | "th" | "tr" | "tbody" | "tfoot" | "thead" | "caption") => {
+                return Ok(false);
+            }
+            Some("colgroup") if column_group_index.is_none() => {
+                column_group_index = Some(index);
+            }
+            Some("table") => {
+                let Some(index) = column_group_index else {
+                    return Ok(false);
+                };
+                match target_name {
+                    "col" => return Ok(true),
+                    "colgroup" => {
+                        if index + 1 == stack.len() {
+                            stack.truncate(index);
+                        }
+                        return Ok(true);
+                    }
+                    _ => {
+                        // In column-group mode, other table end tags pop the
+                        // current group, then reprocess into table mode.
+                        if index + 1 == stack.len() {
+                            stack.truncate(index);
+                        }
+                        return Ok(true);
+                    }
+                }
+            }
+            Some("html" | "template") => return Ok(false),
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
 fn consume_html_table_cell_ignored_end_token(
     document: &NativeDocument,
     stack: &[NativeNodeId],
@@ -10517,6 +10624,114 @@ fn consume_html_table_row_ignored_end_token(
             Some("td" | "th" | "caption" | "colgroup") => return Ok(false),
             Some("tr" | "tbody" | "tfoot" | "thead") => row_context_in_scope = true,
             Some("table") => return Ok(row_context_in_scope),
+            Some("html" | "template") => return Ok(false),
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
+fn consume_html_table_caption_ignored_end_token(
+    document: &NativeDocument,
+    stack: &[NativeNodeId],
+    fragment_root: Option<NativeNodeId>,
+    target_name: &str,
+) -> Result<bool, NativeEngineError> {
+    if !matches!(
+        target_name,
+        "body" | "col" | "colgroup" | "html" | "tbody" | "td" | "tfoot" | "th" | "thead" | "tr"
+    ) {
+        return Ok(false);
+    }
+    let Some(current_id) = stack.last().copied() else {
+        return Ok(false);
+    };
+    let current = document
+        .node(current_id)
+        .ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder lost its current node in a caption end tag".into(),
+        })?;
+    if current.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+        return Ok(false);
+    }
+
+    let mut caption_in_scope = false;
+    for id in stack.iter().rev().copied() {
+        if Some(id) == fragment_root {
+            return Ok(false);
+        }
+        let node = document.node(id).ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder caption scope references an unknown node".into(),
+        })?;
+        if node.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+            continue;
+        }
+        match node.element_name() {
+            Some("td" | "th" | "tr" | "tbody" | "tfoot" | "thead" | "colgroup") => {
+                return Ok(false);
+            }
+            Some("caption") => caption_in_scope = true,
+            Some("table") => return Ok(caption_in_scope),
+            Some("html" | "template") => return Ok(false),
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
+fn consume_html_table_mode_ignored_end_token(
+    document: &NativeDocument,
+    stack: &[NativeNodeId],
+    fragment_root: Option<NativeNodeId>,
+    target_name: &str,
+) -> Result<bool, NativeEngineError> {
+    if !matches!(
+        target_name,
+        "body"
+            | "caption"
+            | "col"
+            | "colgroup"
+            | "html"
+            | "tbody"
+            | "td"
+            | "tfoot"
+            | "th"
+            | "thead"
+            | "tr"
+    ) {
+        return Ok(false);
+    }
+    let Some(current_id) = stack.last().copied() else {
+        return Ok(false);
+    };
+    let current = document
+        .node(current_id)
+        .ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder lost its current node in a table-mode end tag".into(),
+        })?;
+    if current.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+        return Ok(false);
+    }
+
+    for id in stack.iter().rev().copied() {
+        if Some(id) == fragment_root {
+            return Ok(false);
+        }
+        let node = document.node(id).ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder table-mode scope references an unknown node".into(),
+        })?;
+        if node.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+            continue;
+        }
+        match node.element_name() {
+            Some("td" | "th" | "tr" | "tbody" | "tfoot" | "thead" | "caption" | "colgroup") => {
+                return Ok(false);
+            }
+            Some("table") => return Ok(true),
             Some("html" | "template") => return Ok(false),
             _ => {}
         }
@@ -12239,6 +12454,150 @@ mod tests {
         document
             .apply_script_commands(&evaluation.commands)
             .expect("Rust fragment commit must ignore row-context end tags");
+        assert_parentage(&document);
+    }
+
+    #[test]
+    fn javascript_xhr_and_fragments_follow_table_end_tag_modes() {
+        let mut markup = String::from("<html id='outer-html'><body id='outer-body'>");
+        let mut parentage_expectations = Vec::new();
+
+        for target in [
+            "body", "caption", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead",
+            "tr",
+        ] {
+            let table_id = format!("table-mode-{target}");
+            let marker_id = format!("table-mode-after-{target}");
+            markup.push_str(&format!(
+                "<table id='{table_id}'><div></div></{target}><tbody id='{marker_id}'></tbody></table>"
+            ));
+            parentage_expectations.push((table_id, marker_id));
+        }
+
+        for target in [
+            "body", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr",
+        ] {
+            let table_id = format!("caption-table-{target}");
+            let caption_id = format!("active-caption-{target}");
+            let caption_child_id = format!("caption-child-{target}");
+            let after_caption_id = format!("caption-after-{target}");
+            markup.push_str(&format!(
+                "<table id='{table_id}'><caption id='{caption_id}'><div></div></{target}><span id='{caption_child_id}'></span></caption><tbody id='{after_caption_id}'></tbody></table>"
+            ));
+            parentage_expectations.push((caption_id, caption_child_id));
+            parentage_expectations.push((table_id, after_caption_id));
+        }
+
+        let explicit_caption_table = "explicit-caption-table";
+        let explicit_caption = "explicit-caption";
+        let after_explicit_caption = "after-explicit-caption";
+        markup.push_str(&format!(
+            "<table id='{explicit_caption_table}'><caption id='{explicit_caption}'><span></span></caption><tbody id='{after_explicit_caption}'></tbody></table>"
+        ));
+        parentage_expectations.push((
+            explicit_caption_table.to_owned(),
+            explicit_caption.to_owned(),
+        ));
+        parentage_expectations.push((
+            explicit_caption_table.to_owned(),
+            after_explicit_caption.to_owned(),
+        ));
+
+        for target in [
+            "body", "caption", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr",
+        ] {
+            let table_id = format!("column-table-{target}");
+            let column_group_id = format!("active-colgroup-{target}");
+            let marker_id = format!("column-after-{target}");
+            markup.push_str(&format!(
+                "<table id='{table_id}'><colgroup id='{column_group_id}'><col></{target}><tbody id='{marker_id}'></tbody></table>"
+            ));
+            parentage_expectations.push((table_id, marker_id));
+        }
+
+        let column_table = "column-table-col";
+        let active_column_group = "active-colgroup-col";
+        let after_ignored_column_end = "after-ignored-column-end";
+        let after_closed_column_group = "after-closed-column-group";
+        markup.push_str(&format!(
+            "<table id='{column_table}'><colgroup id='{active_column_group}'><col id='before-ignored-column-end'></col><col id='{after_ignored_column_end}'></col></colgroup><tbody id='{after_closed_column_group}'></tbody></table>"
+        ));
+        parentage_expectations.push((
+            active_column_group.to_owned(),
+            after_ignored_column_end.to_owned(),
+        ));
+        parentage_expectations.push((
+            column_table.to_owned(),
+            after_closed_column_group.to_owned(),
+        ));
+        markup.push_str("</body></html>");
+
+        let assert_parentage = |tree: &NativeDocument| {
+            for (parent_id, child_id) in &parentage_expectations {
+                let parent = tree
+                    .find_element_by_id(parent_id)
+                    .unwrap_or_else(|| panic!("missing table-mode parent {parent_id}"));
+                let child = tree
+                    .find_element_by_id(child_id)
+                    .unwrap_or_else(|| panic!("missing table-mode child {child_id}"));
+                assert_eq!(
+                    tree.node(child).and_then(NativeNode::parent),
+                    Some(parent),
+                    "table end-tag handling changed parentage for {child_id}"
+                );
+            }
+        };
+
+        let direct_document = NativeDocument::parse(&markup, &NativeEngineLimits::default())
+            .expect("document parser must follow table end-tag insertion modes");
+        assert_parentage(&direct_document);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("table-end-tag-modes-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+                    const markup = __HTML_MARKUP__;
+                    const expectations = __EXPECTATIONS__;
+                    const root = document.querySelector("#root");
+                    root.innerHTML = markup;
+                    const response = globalThis.__glassParseHtmlDocument(
+                        markup,
+                        "https://example.test/table-end-tag-modes.html",
+                        "text/html",
+                    );
+                    const parentageMatches = (tree) => {
+                        const byId = new Map(Array.from(tree.querySelectorAll("[id]"))
+                            .map((element) => [element.id, element]));
+                        return expectations.map(([parentId, childId]) =>
+                            byId.get(childId)?.parentElement === byId.get(parentId));
+                    };
+                    return [parentageMatches(root), parentageMatches(response)];
+                })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(&markup).unwrap())
+            .replace(
+                "__EXPECTATIONS__",
+                &serde_json::to_string(&parentage_expectations).unwrap(),
+            );
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://table-end-tag-modes.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("same-turn and XHR parsers must follow table end-tag modes");
+        let expected = vec![true; parentage_expectations.len()];
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([expected, vec![true; parentage_expectations.len()]])
+        );
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must follow table end-tag modes");
         assert_parentage(&document);
     }
 

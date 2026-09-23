@@ -3,8 +3,8 @@
 ## Issue #40: reconcile native-engine slice evidence
 
 The architecture and analysis status chain reports completed browser slices
-650–682, but `docs/plan/tasks/` has records through slice 649 and then for
-slices 672–682; detailed records 650–671 remain missing. The issue #40 body
+650–685, but `docs/plan/tasks/` has records through slice 649 and then for
+slices 672–685; detailed records 650–671 remain missing. The issue #40 body
 was restored after an accidental empty-body edit and reverified with all epic
 gates intact. Keep it as the remote status mirror and refresh it after each
 local slice checkpoint; the local branch remains unpushed. Remote CI, release,
@@ -15,7 +15,7 @@ this record explicit about local versus remote evidence.
 
 ## Native HTML parser-route parity
 
-Slices 673–682 align bounded table tree-construction behavior across
+Slices 673–685 align bounded table tree-construction behavior across
 `NativeDocument::parse`, Rust `NativeDocument::apply_script_inner_html`, the
 shared JavaScript `populateDetachedFragment` same-turn projection, and the
 independent `nativeHtmlParseDocument` route for XHR
@@ -59,6 +59,16 @@ caption, column-group, nested-table, template, and fragment-root behavior stays
 separate. The focused test passed 1/1, the table batch 45/45, and the locked
 package check passed. Full insertion-mode conformance remains open; see
 `tasks/native-engine-browser-684.md`.
+
+Slice 685 completes end-tag recovery in direct table, caption,
+and column-group contexts across document parsing, Rust fragment commit,
+same-turn JavaScript projection, and XHR HTML parsing. It complements the
+existing cell, row/row-group, and table-structure handlers while preserving
+each context's distinct ignore, close, and reprocess behavior. Actual table,
+namespace, template, and fragment-context boundaries remain explicit. The
+four-route fixture passed 1/1, the table-focused batch passed 46/46, and the
+locked package check passed; documentation validation reported 1,313 Markdown
+files and zero current-claim failures. See `tasks/native-engine-browser-685.md`.
 
 ## Input: popup-opening mouse release completion
 

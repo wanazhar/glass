@@ -52,6 +52,14 @@ XHR parsing. The focused route fixture passed 1/1, the table batch passed
 45/45, and the locked package check passed. Full in-cell parser conformance
 remains open; see `tasks/native-engine-browser-683.md`.
 
+Slice 684 ignores `</body>`, `</caption>`, `</col>`, `</colgroup>`, and
+`</html>` in open HTML row/row-group contexts without an active cell, before
+generic ancestor matching. The four parser routes share the scope probe, while
+caption, column-group, nested-table, template, and fragment-root behavior stays
+separate. The focused test passed 1/1, the table batch 45/45, and the locked
+package check passed. Full insertion-mode conformance remains open; see
+`tasks/native-engine-browser-684.md`.
+
 ## Input: popup-opening mouse release completion
 
 The compare-018 diagnostic proves that an ordinary pointer click whose authored

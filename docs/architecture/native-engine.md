@@ -1,7 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion remains active after completed
-`native-engine-browser-683`, following completed `native-engine-browser-682`,
+`native-engine-browser-684`, following completed `native-engine-browser-683`,
+following completed `native-engine-browser-682`,
 following completed `native-engine-browser-681`,
 following completed `native-engine-browser-680`,
 following completed `native-engine-browser-679`,
@@ -517,6 +518,19 @@ package check passed. This is one in-cell recovery rule, not a claim of
 complete insertion-mode conformance. See
 [`slice 683`](../plan/tasks/native-engine-browser-683.md) and the
 [WHATWG in-cell insertion mode](https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-incell).
+
+Slice 684 extends the table-context ignored-end-tag rule to open HTML table
+rows and row groups when no cell is open. In these contexts, `</body>`,
+`</caption>`, `</col>`, `</colgroup>`, and `</html>` must not fall through to
+generic name matching and pop an ancestor. Document parsing, Rust fragment
+commit, same-turn projection, and XHR HTML parsing share the bounded scope
+probe. The `table`, `caption`, and column-group insertion modes retain their
+separate end-tag behavior. The focused route regression passed 1/1 and the
+table-focused batch passed 45/45 after the locked package check. See
+[`slice 684`](../plan/tasks/native-engine-browser-684.md) and the WHATWG
+[in-table-body](https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-intablebody)
+and [in-row](https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inrow)
+rules; complete insertion-mode conformance remains open.
 
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
 property is exposed as a canonical percentage, face matching considers the

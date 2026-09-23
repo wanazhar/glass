@@ -27816,6 +27816,21 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         // In an HTML parsing context, an out-of-scope table-structure end tag is ignored.
         return true;
       };
+      const consumeHtmlTableCellIgnoredEnd = (targetName) => {
+        if (!["body", "caption", "col", "colgroup", "html"].includes(targetName)) return false;
+        const current = state.stack[state.stack.length - 1];
+        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
+        let cellInScope = false;
+        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
+          const candidate = state.stack[index];
+          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
+          const candidateName = String(candidate.localName || "").toLowerCase();
+          if (candidateName === "td" || candidateName === "th") cellInScope = true;
+          else if (candidateName === "table") return cellInScope;
+          else if (candidateName === "html" || candidateName === "template") return false;
+        }
+        return false;
+      };
       const prepareHtmlTableCellStructuralStart = (incomingName) => {
         if (!tableCellStructuralStartTags.has(incomingName)) return;
         const current = state.stack[state.stack.length - 1];
@@ -27989,6 +28004,10 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
             }
             if (["tbody", "tfoot", "thead", "tr", "td", "th"].includes(name)
               && consumeHtmlTableStructureEnd(name)) {
+              state.cursor = end + 1;
+              continue;
+            }
+            if (consumeHtmlTableCellIgnoredEnd(name)) {
               state.cursor = end + 1;
               continue;
             }
@@ -35378,6 +35397,22 @@ fn document_bootstrap(
       // The fragment context itself cannot satisfy table scope.
       return true;
     }};
+    const consumeHtmlTableCellIgnoredEnd = (targetName) => {{
+      if (!["body", "caption", "col", "colgroup", "html"].includes(targetName)) return false;
+      const current = stack[stack.length - 1];
+      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
+      // stack[0] is the fragment context and cannot satisfy cell/table scope.
+      let cellInScope = false;
+      for (let index = stack.length - 1; index > 0; index -= 1) {{
+        const candidate = stack[index];
+        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
+        const candidateName = String(candidate.localName || "").toLowerCase();
+        if (candidateName === "td" || candidateName === "th") cellInScope = true;
+        else if (candidateName === "table") return cellInScope;
+        else if (candidateName === "html" || candidateName === "template") return false;
+      }}
+      return false;
+    }};
     const insertImpliedTableElements = (incomingName) => {{
       const current = stack[stack.length - 1];
       if (!current || current.namespaceURI !== HTML_NAMESPACE) return;
@@ -35476,6 +35511,10 @@ fn document_bootstrap(
         }}
         if (["tbody", "tfoot", "thead", "tr", "td", "th"].includes(name)
           && consumeHtmlTableStructureEnd(name)) {{
+          cursor = end + 1;
+          continue;
+        }}
+        if (consumeHtmlTableCellIgnoredEnd(name)) {{
           cursor = end + 1;
           continue;
         }}

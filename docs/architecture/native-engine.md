@@ -1,7 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion remains active after completed
-`native-engine-browser-682`, following completed `native-engine-browser-681`,
+`native-engine-browser-683`, following completed `native-engine-browser-682`,
+following completed `native-engine-browser-681`,
 following completed `native-engine-browser-680`,
 following completed `native-engine-browser-679`,
 following completed `native-engine-browser-678`,
@@ -503,6 +504,19 @@ parser agree on exact parentage. The focused cross-route fixture passed 1/1,
 the table-focused batch passed 45/45, and the locked package check passed. See
 [`slice 682`](../plan/tasks/native-engine-browser-682.md); complete table
 insertion modes and active-formatting-list handling remain open.
+
+Slice 683 applies the in-cell end-tag ignore rule to `body`, `caption`, `col`,
+`colgroup`, and `html` while an actual HTML cell remains in HTML table scope.
+It must not let generic name matching close an ancestor through that cell. The
+document parser, Rust fragment commit, same-turn JavaScript projection, and XHR
+HTML parser share the scoped rule; fragment roots and nested-table/template
+boundaries remain explicit, while foreign nodes cannot satisfy HTML scope and
+a foreign current node retains its existing route. The focused cross-route
+fixture passed 1/1, the table-focused batch passed 45/45, and the locked
+package check passed. This is one in-cell recovery rule, not a claim of
+complete insertion-mode conformance. See
+[`slice 683`](../plan/tasks/native-engine-browser-683.md) and the
+[WHATWG in-cell insertion mode](https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-incell).
 
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
 property is exposed as a canonical percentage, face matching considers the

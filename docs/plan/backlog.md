@@ -45,6 +45,13 @@ foreign-namespace, nested-table, template, and fragment boundaries. The
 focused route fixture passed 1/1 and the table-focused batch passed 45/45.
 Other insertion modes and general parser conformance remain open.
 
+Slice 683 completes the in-cell ignored end tags `body`, `caption`, `col`,
+`colgroup`, and `html` before generic ancestor matching, with the same
+actual-cell/table scope across document, fragment, same-turn projection, and
+XHR parsing. The focused route fixture passed 1/1, the table batch passed
+45/45, and the locked package check passed. Full in-cell parser conformance
+remains open; see `tasks/native-engine-browser-683.md`.
+
 ## Input: popup-opening mouse release completion
 
 The compare-018 diagnostic proves that an ordinary pointer click whose authored

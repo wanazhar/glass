@@ -13,15 +13,15 @@ local results from remote CI and promotion evidence.
 
 ## Native HTML parser-route parity
 
-Slices 673–674 cover bounded table foster parenting in `NativeDocument::parse`,
-Rust `NativeDocument::apply_script_inner_html`, and the shared JavaScript
-`populateDetachedFragment` same-turn projection, with explicit fragment-root
-and namespace behavior. The independent JavaScript `nativeHtmlParseDocument`
-route still builds XHR
-`responseType="document"` results and remains unaddressed. Extend the shared
-regression corpus to that route and later tree-builder rules; preserve
-fragment-context and synchronous DOM projection semantics. Do not describe
-slices 673–674 as general HTML parser parity.
+Slices 673–675 align bounded table foster parenting across
+`NativeDocument::parse`, Rust `NativeDocument::apply_script_inner_html`, the
+shared JavaScript `populateDetachedFragment` same-turn projection, and the
+independent `nativeHtmlParseDocument` route for XHR
+`responseType="document"`. The shared fixture checks fostered node order,
+parentage, whitespace/comments, and fragment-root behavior, including the
+XHR parser's implicit document normalization. Continue expanding the corpus for
+other tree-construction rules; do not describe these slices as general HTML
+parser parity.
 
 ## Input: popup-opening mouse release completion
 

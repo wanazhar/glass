@@ -10718,6 +10718,58 @@ mod tests {
     }
 
     #[test]
+    fn xhr_html_response_document_fosters_the_shared_table_fixture() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("xhr-html-foster-test")
+            .expect("native JavaScript runtime must construct");
+        let document =
+            NativeDocument::parse("<main id='host'></main>", &NativeEngineLimits::default())
+                .unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const response = globalThis.__glassParseHtmlDocument(
+                        "<main id='root'><table><tbody id='section'>before<div id='foster'><span id='nested'>inside</span></div> &#32;<!--kept--><tr><td>cell</td></tr></tbody></table></main>",
+                        "https://example.test/response.html",
+                        "text/html",
+                    );
+                    if (!response) return null;
+                    const root = response.getElementById("root");
+                    const foster = response.getElementById("foster");
+                    const nested = response.getElementById("nested");
+                    const table = response.getElementsByTagName("table")[0];
+                    const section = response.getElementById("section");
+                    const rootChildren = Array.from(root.children);
+                    const sectionChildren = Array.from(section.childNodes);
+                    return [
+                        response.contentType === "text/html",
+                        root.parentElement === response.body,
+                        rootChildren.length === 2
+                            && rootChildren[0] === foster
+                            && rootChildren[1] === table,
+                        foster.parentElement === root,
+                        nested.parentElement === foster,
+                        table.children[0] === section,
+                        sectionChildren.length === 3
+                            && sectionChildren[0].nodeType === 3
+                            && sectionChildren[0].nodeValue === "  "
+                            && sectionChildren[1].nodeType === 8
+                            && sectionChildren[2].localName === "tr",
+                    ];
+                })()"##,
+                &document,
+                "fixture://xhr-html-foster.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("XHR HTML response document must parse");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true, true, true, true])
+        );
+    }
+
+    #[test]
     fn script_remove_detaches_existing_subtree() {
         let limits = NativeEngineLimits::default();
         let mut document = NativeDocument::parse(

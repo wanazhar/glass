@@ -403,6 +403,18 @@ remain implemented rendering gates; font-display timing, variable/color fonts,
 cross-realm FontFace projection, and complete FontFace/Web IDL parity
 remain issue #40 gates.
 
+The completed [slice 675](../plan/tasks/native-engine-browser-675.md) brings
+the same bounded foster-parenting behavior to the separate
+`nativeHtmlParseDocument` implementation used by XHR
+`responseType="document"`. It inserts ordinary start tags and decoded
+non-ASCII-whitespace text before the nearest open HTML table, preserves
+whitespace/comments/table-special starts, and keeps fostered descendants under
+their element before the raw tree is normalized and materialized. A runtime
+test confirms matching fostered element order, parentage, and retained
+whitespace/comment nodes in the materialized read-only response document. This
+is three-route foster behavior, not complete parser parity; insertion modes,
+template content, and broader HTML error recovery remain open.
+
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
 property is exposed as a canonical percentage, face matching considers the
 closest bounded descriptor range after weight/style, and tied unicode-ranged

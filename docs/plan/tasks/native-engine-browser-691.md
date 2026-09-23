@@ -37,7 +37,7 @@ HTML-document parsing, and serialization.
 - `docs/architecture/native-engine.md`
 - `docs/plan/analysis/native-engine.md`
 - `docs/plan/tasks/native-engine-browser-690.md`
-- [WHATWG HTML foreign-content parsing](https://html.spec.whatwg.org/multipage/parsing.html#parsing-tokens-in-foreign-content)
+- [WHATWG HTML foreign-content parsing](https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inforeign)
 - [WHATWG `innerHTML` setter](https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#the-innerhtml-property)
 
 ## Path

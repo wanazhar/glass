@@ -28289,6 +28289,16 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         }
         return true;
       };
+      const foreignContentBreakoutStartTags = new Set([
+        "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt",
+        "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head", "hr", "i", "img",
+        "li", "listing", "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s", "small",
+        "span", "strong", "strike", "sub", "sup", "table", "tt", "u", "ul", "var",
+      ]);
+      const isForeignContentBreakoutStartTag = (name, attributes) =>
+        foreignContentBreakoutStartTags.has(name)
+        || (name === "font" && attributes.some((attribute) =>
+          ["color", "face", "size"].includes(attribute.name)));
       const appendHtmlText = (value) => {
         const current = state.stack[state.stack.length - 1];
         const nullReplacement = usesForeignCharacterRules(current) ? "\ufffd" : "";
@@ -28440,6 +28450,23 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           continue;
         }
         const name = opening[1].toLowerCase();
+        let selfClosing = /\/\s*$/.test(rawTag);
+        let fontAttributes = null;
+        if (name === "font") {
+          const probe = nativeHtmlRawElement(name, state.stack[state.stack.length - 1]);
+          parseAttributes(probe, rawTag, opening[0].length);
+          fontAttributes = probe.attributes;
+        }
+        const foreignBreakout = isForeignContentBreakoutStartTag(name, fontAttributes || []);
+        if (foreignBreakout
+            && usesForeignCharacterRules(state.stack[state.stack.length - 1])) {
+          const stackBeforeBreakout = state.stack.slice();
+          while (state.stack.length > 1
+              && usesForeignCharacterRules(state.stack[state.stack.length - 1])) state.stack.pop();
+          clearMarkersForPoppedElements(stackBeforeBreakout);
+          // HTML ignores the self-closing flag on non-void elements.
+          selfClosing = false;
+        }
         if (name === "table") {
           const stackBeforeTable = state.stack.slice();
           const processTable = prepareHtmlTableStart();
@@ -28456,7 +28483,12 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
             && nativeHtmlShouldAutoClose(state.stack[state.stack.length - 1].localName, name)) state.stack.pop();
         insertImpliedTableElements(name);
         const element = nativeHtmlRawElement(name, state.stack[state.stack.length - 1]);
-        parseAttributes(element, rawTag, opening[0].length);
+        if (fontAttributes) {
+          element.attributes = fontAttributes;
+          for (const attribute of fontAttributes) attribute.owner = element;
+        } else {
+          parseAttributes(element, rawTag, opening[0].length);
+        }
         const hiddenInput = name === "input" && element.attributes.some((attribute) =>
           attribute.name === "type" && attribute.value.toLowerCase() === "hidden");
         if (!tableSpecialStartTags.has(name) && !hiddenInput) {
@@ -28477,9 +28509,8 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           : state.stack[state.stack.length - 1];
         element.parent = parentForElement;
         append(parentForElement, element, fosterLocation && fosterLocation.before);
-        const selfClosing = /\/\s*$/.test(rawTag);
         state.cursor = end + 1;
-        if (selfClosing
+        if ((selfClosing && element.namespaceURI !== nativeHtmlNamespaceUri)
             || (element.namespaceURI === nativeHtmlNamespaceUri && nativeHtmlVoidElements.has(name))) continue;
         if (element.namespaceURI === nativeHtmlNamespaceUri
             && (nativeHtmlRawTextElements.has(name) || nativeHtmlRcdataElements.has(name))) {
@@ -35674,6 +35705,7 @@ fn document_bootstrap(
     .replace(/&amp;/gi, "&");
   const populateDetachedFragment = (fragment, markup, createElement, createText, createComment) => {{
     const stack = [fragment];
+    let forceHtmlContext = false;
     const rawSource = String(markup);
     const source = rawSource.includes("\r") ? rawSource.replace(/\r\n?/g, "\n") : rawSource;
     const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
@@ -35728,6 +35760,12 @@ fn document_bootstrap(
     const markerSensitiveEndNames = new Set([
       "applet", "caption", "marquee", "object", "table", "tbody", "td", "template",
       "tfoot", "th", "thead", "tr",
+    ]);
+    const foreignContentBreakoutStartTags = new Set([
+      "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt",
+      "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head", "hr", "i", "img",
+      "li", "listing", "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s", "small",
+      "span", "strong", "strike", "sub", "sup", "table", "tt", "u", "ul", "var",
     ]);
     const clearActiveFormattingToMarker = () => {{
       while (activeFormatting.length) {{
@@ -35830,9 +35868,10 @@ fn document_bootstrap(
       assertDetachedTreeDepth(parent, clone);
       return clone;
     }};
-    const reconstructActiveFormatting = () => {{
+    const reconstructActiveFormatting = (forceHtmlFragmentRoot = false) => {{
       const current = stack[stack.length - 1];
-      if (current && Number(current.nodeType) === 1 && current.namespaceURI !== HTML_NAMESPACE
+      if (!(forceHtmlFragmentRoot && current === stack[0])
+          && current && Number(current.nodeType) === 1 && current.namespaceURI !== HTML_NAMESPACE
           && !(current.namespaceURI === SVG_NAMESPACE
             && ["foreignobject", "desc", "title"].includes(current.localName))
           && !(current.namespaceURI === MATHML_NAMESPACE
@@ -35991,10 +36030,11 @@ fn document_bootstrap(
     }};
     const appendParsedText = (value) => {{
       const current = stack[stack.length - 1];
-      const replacement = usesForeignCharacterRules(current) ? "\ufffd" : "";
+      const replacement = !(forceHtmlContext && current === fragment)
+        && usesForeignCharacterRules(current) ? "\ufffd" : "";
       const normalized = String(value).replace(/\u0000/g, replacement);
       if (!normalized) return;
-      reconstructActiveFormatting();
+      reconstructActiveFormatting(forceHtmlContext && current === fragment);
       const fosterLocation = /[^\t\n\f\r ]/.test(normalized) ? tableFosterLocation() : null;
       const insertionParent = fosterLocation ? fosterLocation.parent : stack[stack.length - 1];
       insertParsedNode(insertionParent, createText(normalized), fosterLocation && fosterLocation.before);
@@ -36346,6 +36386,35 @@ fn document_bootstrap(
         continue;
       }}
       const normalizedName = opening[1].toLowerCase();
+      let selfClosing = /\/\s*$/.test(rawTag);
+      const attributeSource = rawTag
+        .slice(opening[0].length)
+        .replace(/\/\s*$/, "");
+      const attributes = /([A-Za-z_:][A-Za-z0-9:._-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+)))?/g;
+      const parsedAttributes = [];
+      let attribute;
+      while ((attribute = attributes.exec(attributeSource)) !== null) {{
+        const value = attribute[2] !== undefined
+          ? attribute[2]
+          : attribute[3] !== undefined
+            ? attribute[3]
+            : attribute[4] !== undefined
+              ? attribute[4]
+              : "";
+        parsedAttributes.push([attribute[1], decodeHtmlEntities(value).replace(/\u0000/g, "\ufffd")]);
+      }}
+      const foreignBreakout = foreignContentBreakoutStartTags.has(normalizedName)
+        || (normalizedName === "font" && parsedAttributes.some(([name]) =>
+          ["color", "face", "size"].includes(name.toLowerCase())));
+      if (foreignBreakout && usesForeignCharacterRules(stack[stack.length - 1])) {{
+        const stackBeforeBreakout = stack.slice();
+        while (stack.length > 1 && usesForeignCharacterRules(stack[stack.length - 1])) stack.pop();
+        clearMarkersForPoppedElements(stackBeforeBreakout);
+        selfClosing = false;
+        forceHtmlContext ||= stack.length === 1
+          && stack[0] === fragment
+          && usesForeignCharacterRules(fragment);
+      }}
       if (normalizedName === "table") {{
         const stackBeforeTable = stack.slice();
         const processTable = prepareHtmlTableStart();
@@ -36363,33 +36432,16 @@ fn document_bootstrap(
         stack.pop();
       }}
       insertImpliedTableElements(normalizedName);
-      const selfClosing = /\/\s*$/.test(rawTag);
-      const attributeSource = rawTag
-        .slice(opening[0].length)
-        .replace(/\/\s*$/, "");
-      const attributes = /([A-Za-z_:][A-Za-z0-9:._-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+)))?/g;
-      const parsedAttributes = [];
-      let attribute;
-      while ((attribute = attributes.exec(attributeSource)) !== null) {{
-        const value = attribute[2] !== undefined
-          ? attribute[2]
-          : attribute[3] !== undefined
-            ? attribute[3]
-            : attribute[4] !== undefined
-              ? attribute[4]
-              : "";
-        parsedAttributes.push([attribute[1], decodeHtmlEntities(value).replace(/\u0000/g, "\ufffd")]);
-      }}
       const hiddenInput = normalizedName === "input" && parsedAttributes.some(([name, value]) =>
         name.toLowerCase() === "type" && value.toLowerCase() === "hidden");
       if (!tableSpecialStartTags.has(normalizedName) && !hiddenInput) {{
-        reconstructActiveFormatting();
+        reconstructActiveFormatting(forceHtmlContext && stack[stack.length - 1] === fragment);
         const nestedFormattingStart = (normalizedName === "a" && activeFormattingIndex("a") >= 0)
           || (normalizedName === "nobr" && activeFormattingIndex("nobr") >= 0
             && elementInScope(activeFormatting[activeFormattingIndex("nobr")]));
         if (nestedFormattingStart) {{
           adoptActiveFormatting(normalizedName);
-          reconstructActiveFormatting();
+          reconstructActiveFormatting(forceHtmlContext && stack[stack.length - 1] === fragment);
         }}
       }}
       const fosterLocation = tableSpecialStartTags.has(normalizedName) || hiddenInput
@@ -36398,7 +36450,7 @@ fn document_bootstrap(
       parent = fosterLocation ? fosterLocation.parent : stack[stack.length - 1];
       const element = createElement(
         opening[1],
-        namespaceForChildElement(parent, normalizedName),
+        namespaceForChildElement(parent, normalizedName, forceHtmlContext && parent === fragment),
       );
       for (const [name, value] of parsedAttributes) {{
         if (!element.hasAttribute(name)) {{
@@ -36409,7 +36461,7 @@ fn document_bootstrap(
       }}
       insertParsedNode(parent, element, fosterLocation && fosterLocation.before);
       cursor = end + 1;
-      if (selfClosing
+      if ((selfClosing && element.namespaceURI !== HTML_NAMESPACE)
           || (element.namespaceURI === HTML_NAMESPACE && voidElements.has(element.localName))) continue;
       if (element.namespaceURI === HTML_NAMESPACE
           && (rawTextElements.has(element.localName) || rcdataElements.has(element.localName))) {{
@@ -37256,7 +37308,7 @@ fn document_bootstrap(
     if (lower.startsWith("xlink:")) return XLINK_NAMESPACE;
     return null;
   }};
-  const namespaceForChildElement = (parent, localName) => {{
+  const namespaceForChildElement = (parent, localName, forceHtmlRules = false) => {{
     const parentNamespace = parent && parent.namespaceURI;
     const parentName = String(parent && parent.localName || "").toLowerCase();
     const parentIsMathmlAnnotationXml = parentNamespace === MATHML_NAMESPACE
@@ -37264,7 +37316,7 @@ fn document_bootstrap(
     const encoding = parentIsMathmlAnnotationXml && typeof parent.getAttribute === "function"
       ? String(parent.getAttribute("encoding") || "").toLowerCase()
       : "";
-    const usesHtmlRules = !parentNamespace || parentNamespace === HTML_NAMESPACE
+    const usesHtmlRules = forceHtmlRules || !parentNamespace || parentNamespace === HTML_NAMESPACE
       || (parentNamespace === SVG_NAMESPACE
         && ["foreignobject", "desc", "title"].includes(parentName))
       || (parentNamespace === MATHML_NAMESPACE

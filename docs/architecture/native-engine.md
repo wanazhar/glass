@@ -605,6 +605,22 @@ Its exact four-route namespace/parentage and serialization regression passed
 formatting, whitespace, and maintainer documentation gates passed locally.
 Remote CI was not run.
 
+Slice 692 implements WHATWG foreign-content breakout dispatch for the
+standard start-tag set and conditional `font` attributes across document,
+Rust fragment commit, same-turn JavaScript projection, and XHR HTML parsing.
+The stack unwinds only to an HTML or integration-point boundary before the
+token is reprocessed as HTML. A foreign fragment context keeps its target as
+parent while using the synthetic HTML fragment context after breakout. All
+HTML-namespace elements ignore the self-closing flag, including those created
+at integration points; explicit self-closing remains effective for
+foreign-namespace elements. The four-route breakout and integration-point
+fixtures passed; the `foreign_` tests passed 4/4 and the scoped `html_` batch
+passed 31/31 after the locked package check. Formatting, whitespace, and all
+maintainer documentation validators passed locally. Remote CI was not run.
+Foreign end-tag breakout, foreign attribute adjustment, and general parser
+conformance remain open. See
+[`slice 692`](../plan/tasks/native-engine-browser-692.md).
+
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript
 fragment projections, and XHR HTML documents. Text, attributes, comments,

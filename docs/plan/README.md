@@ -27,8 +27,9 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion through `native-engine-browser-691` are complete locally; issue #40
-remains open. It follows completed
+expansion through `native-engine-browser-692` is complete locally; issue #40
+remains open. The latest slice follows completed `native-engine-browser-691`.
+The earlier expansion chain includes completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed `native-engine-browser-684`,
@@ -150,6 +151,19 @@ HTML void element. The exact four-route regression passed 1/1 and the focused
 HTML batch passed 28/28. The locked package check, formatting, whitespace, and
 maintainer documentation gates passed locally; remote CI was not run. General
 foreign-content conformance remains open.
+
+[`native-engine-browser-692`](tasks/native-engine-browser-692.md) is complete
+locally. It adds the WHATWG foreign-content breakout start-tag set, including
+the conditional `font` attributes, across document, fragment, same-turn, and
+XHR parsing. Foreign stack unwinding stops at HTML/integration boundaries;
+foreign fragment contexts retain their target while switching the synthetic
+fragment insertion context to HTML. HTML-namespace elements ignore `/>`,
+including at integration points and after breakout; foreign-namespace
+elements retain explicit self-closing behavior. The foreign batch passed 4/4,
+the focused HTML batch passed 31/31, and the locked package check, formatting,
+whitespace, and maintainer documentation gates passed locally. Remote CI was
+not run; end-tag breakout and general foreign-content conformance remain
+open.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

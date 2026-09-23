@@ -2,10 +2,11 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The current architecture, analysis, and task record chain is locally complete
-through `native-engine-browser-691`; detailed records 650–671 remain missing.
-Keep issue #40 as the remote status mirror and refresh its current-checkout
-summary after each local slice checkpoint; the local branch remains unpushed.
+The latest locally completed parser slice is `native-engine-browser-692`.
+Detailed records 650–671 remain missing and must be recovered from authoritative
+commits rather than inferred from summary prose. Keep issue #40 as the remote
+status mirror and refresh its current-checkout summary after each local slice
+checkpoint; the local branch remains unpushed.
 Remote CI, release, registry, and cross-platform promotion evidence are not
 claimed.
 Recover verifiable scope and test evidence for slices 650–671 from authoritative
@@ -86,6 +87,17 @@ foreign SVG/MathML elements retain descendants unless explicitly self-closing;
 fragment `innerHTML` still parses when its target has an HTML void-element
 name. The exact four-route test passed 1/1 and the HTML batch passed 28/28;
 remote CI was not run. See `tasks/native-engine-browser-691.md`.
+
+Slice 692 is complete locally: implement the WHATWG foreign-content breakout
+start-tag set and conditional `font` trigger across all four parser routes.
+Stop stack unwinding at HTML/integration boundaries, preserve foreign
+fragment targets while switching to the synthetic HTML context, and ignore a
+`/>` flag for all HTML-namespace elements, including at integration points;
+explicit self-closing applies to foreign-namespace elements. Its foreign batch
+passed 4/4, HTML batch 31/31, and local package/documentation gates passed.
+Remote CI was not run; end-tag breakout and full foreign-content conformance
+remain open. See
+`tasks/native-engine-browser-692.md`.
 
 Slice 689 is complete locally: select child element namespaces using SVG and MathML
 HTML integration-point rules across all four parser routes. Preserve the

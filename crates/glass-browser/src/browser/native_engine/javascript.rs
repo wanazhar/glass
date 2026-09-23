@@ -28479,7 +28479,8 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         append(parentForElement, element, fosterLocation && fosterLocation.before);
         const selfClosing = /\/\s*$/.test(rawTag);
         state.cursor = end + 1;
-        if (selfClosing || nativeHtmlVoidElements.has(name)) continue;
+        if (selfClosing
+            || (element.namespaceURI === nativeHtmlNamespaceUri && nativeHtmlVoidElements.has(name))) continue;
         if (element.namespaceURI === nativeHtmlNamespaceUri
             && (nativeHtmlRawTextElements.has(name) || nativeHtmlRcdataElements.has(name))) {
           const special = nativeHtmlSpecialEnd(input, state.cursor, name);
@@ -28834,7 +28835,8 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         const raw = node.__glassXmlRaw;
         const attributes = Array.from(node.attributes).map((attribute) => " " + attribute.name + "=\"" + nativeXmlEscapeAttribute(attribute.value) + "\"").join("");
         const children = node.childNodes.map((child) => nativeXmlSerialize(child)).join("");
-        if (raw && raw.html && nativeHtmlVoidElements.has(raw.name)) return "<" + raw.name + attributes + ">";
+        if (raw && raw.html && raw.namespaceURI === nativeHtmlNamespaceUri
+            && nativeHtmlVoidElements.has(raw.name)) return "<" + raw.name + attributes + ">";
         const name = raw && raw.html ? raw.name : node.nodeName;
         if (!raw || !raw.html) return children ? "<" + name + attributes + ">" + children + "</" + name + ">" : "<" + name + attributes + "/>";
         return "<" + name + attributes + ">" + children + "</" + name + ">";
@@ -36407,7 +36409,8 @@ fn document_bootstrap(
       }}
       insertParsedNode(parent, element, fosterLocation && fosterLocation.before);
       cursor = end + 1;
-      if (selfClosing || voidElements.has(element.localName)) continue;
+      if (selfClosing
+          || (element.namespaceURI === HTML_NAMESPACE && voidElements.has(element.localName))) continue;
       if (element.namespaceURI === HTML_NAMESPACE
           && (rawTextElements.has(element.localName) || rcdataElements.has(element.localName))) {{
         const special = findSpecialEnd(cursor, element.localName);

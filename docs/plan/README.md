@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion through `native-engine-browser-690` are complete locally; issue #40
+expansion through `native-engine-browser-691` are complete locally; issue #40
 remains open. It follows completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`,
@@ -141,6 +141,15 @@ current namespace/integration context. The exact four-route regression passed
 1/1 and the HTML parser batch passed 27/27. The locked package check,
 formatting, whitespace, and maintainer documentation gates passed locally;
 remote CI was not run. Complete parser conformance remains open.
+
+[`native-engine-browser-691`](tasks/native-engine-browser-691.md) is complete
+locally. HTML void-element stack behavior and serialization depend on the HTML
+namespace: same-named SVG/MathML elements retain descendants unless
+self-closing, and fragment `innerHTML` is parsed even when its target is an
+HTML void element. The exact four-route regression passed 1/1 and the focused
+HTML batch passed 28/28. The locked package check, formatting, whitespace, and
+maintainer documentation gates passed locally; remote CI was not run. General
+foreign-content conformance remains open.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

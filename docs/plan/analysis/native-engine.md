@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-673`, following completed
-`native-engine-browser-672`, following completed
+browser expansion slice is `native-engine-browser-674`, following completed
+`native-engine-browser-673`, following completed `native-engine-browser-672`,
+following completed
 `native-engine-browser-671`, following
 completed `native-engine-browser-670`, following completed
 `native-engine-browser-669`, following completed
@@ -565,8 +566,21 @@ remain in the table. Fostered elements remain the stack's current node for
 their descendants. Parse-time namespace assignment prevents SVG/MathML elements
 named like table elements from activating this HTML rule. Table-special tokens
 keep the preexisting bounded behavior. The distinct script `innerHTML` fragment
-and XHR `responseType="document"` parsers remain separate parity work; full
-insertion modes and parser conformance remain open.
+and XHR `responseType="document"` parsers were not changed by slice 673.
+
+Slice 674 extends foster insertion to `NativeDocument::apply_script_inner_html`
+and the shared JavaScript `populateDetachedFragment` projection. The fragment
+root acts as the root insertion target: when the fragment context itself is a
+table-structure element and no parsed table is open below it, fostered nodes
+stay in the fragment root (and therefore inside the target). When a parsed
+table is open, fostered nodes are inserted immediately before that table in its
+actual parent. Character references are decoded before ASCII-whitespace-only
+text is classified; comments and table-special token placement are preserved;
+namespaces derive from the actual insertion parent; and fostered elements
+remain on the stack so descendants stay attached. Rust tree and same-turn JS
+projection tests cover nested-table, table-context, whitespace/comment, and
+namespace behavior. The XHR `responseType="document"` parser remains separate
+route work; full insertion modes and parser conformance remain open.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

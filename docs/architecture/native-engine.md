@@ -1,7 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-673`, following completed `native-engine-browser-672`,
+`native-engine-browser-674`, following completed `native-engine-browser-673`,
+following completed `native-engine-browser-672`,
 following completed `native-engine-browser-671`,
 following completed `native-engine-browser-670`,
 following completed `native-engine-browser-669`,
@@ -560,10 +561,25 @@ character runs and comments stay under the current table node. The parser
 assigns element namespaces as it builds the tree, so SVG/MathML table-like
 elements do not trigger HTML foster parenting. Table-special tokens retain the
 prior bounded parser behavior. The separate script `innerHTML` fragment parser
-and JavaScript XHR `responseType="document"` parser are not changed by this
-slice. Complete WHATWG insertion modes, parser-route parity, table
-normalization, foreign-content recovery, and parser conformance remain issue
-#40 gates.
+and JavaScript XHR `responseType="document"` parser were not changed by this
+slice.
+
+The completed [slice 674](../plan/tasks/native-engine-browser-674.md) carries
+the same bounded foster-parenting rule into Rust `innerHTML` commits and the
+synchronous detached-fragment projection used by page JavaScript. Fragment
+foster insertion remains inside its target: if the target is itself a
+table-structure element and no parsed table is open below that context, the
+fragment root is the insertion target; a parsed open table is inserted before
+within its actual parent. Decoded non-ASCII-whitespace text and ordinary start
+tags foster, while ASCII-whitespace-only text, comments, and table-special
+tokens keep their existing placement. Namespace checks use the actual
+insertion parent, and fostered elements stay on the open-element stack for
+descendants. Tests cover nested-table insertion, a table fragment context,
+SVG table-like elements, and same-turn JavaScript projection versus committed
+Rust DOM. This does not complete fragment parsing or cover the separate XHR
+`responseType="document"` parser. Full WHATWG insertion modes, parser-route
+parity, table normalization, foreign-content recovery, and parser conformance
+remain issue #40 gates.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser slice is `native-engine-browser-693`.
+The latest locally completed parser slice is `native-engine-browser-694`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -107,6 +107,17 @@ the foreign fragment target and test projection/commit parity. The foreign
 batch passed 6/6 and the scoped HTML batch 33/33; local package and
 documentation gates passed. Remote CI was not run. General end-tag and parser
 conformance remain open. See `tasks/native-engine-browser-693.md`.
+
+Slice 694 is complete locally: implement ordinary foreign-content end-tag
+matching, stack popping, HTML-boundary reprocessing, and root-fragment
+preservation across all four parser routes. Restrict the reprocessed HTML
+any-other-end-tag path to HTML-namespace targets and stop at special
+tree-builder elements. The locked package check passed; the foreign batch
+passed 8/8 and the HTML batch passed 34/34. Formatting, whitespace, and local
+release-truth, depth, and shortcut validators passed. The full documentation
+inventory/link check was not run because no CLI/MCP/module inventory changed
+and debug CLI binaries were not built. Remote CI was not run. General HTML
+parser conformance remains open. See `tasks/native-engine-browser-694.md`.
 
 Slice 689 is complete locally: select child element namespaces using SVG and MathML
 HTML integration-point rules across all four parser routes. Preserve the

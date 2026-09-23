@@ -28301,16 +28301,30 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         }
         return true;
       };
-      const prepareForeignEndTagBreakout = (name) => {
-        if (name !== "br" && name !== "p") return false;
+      const prepareForeignContentEndTag = (name) => {
         const current = state.stack[state.stack.length - 1];
         if (!current || current.type !== "element"
-            || current.namespaceURI === nativeHtmlNamespaceUri) return false;
-        const stackBefore = state.stack.slice();
-        while (state.stack.length > 1
-            && usesForeignCharacterRules(state.stack[state.stack.length - 1])) state.stack.pop();
-        clearMarkersForPoppedElements(stackBefore);
-        return true;
+            || current.namespaceURI === nativeHtmlNamespaceUri) return "html";
+        if (name === "br" || name === "p") {
+          const stackBefore = state.stack.slice();
+          while (state.stack.length > 1
+              && usesForeignCharacterRules(state.stack[state.stack.length - 1])) state.stack.pop();
+          clearMarkersForPoppedElements(stackBefore);
+          return "breakout";
+        }
+        let index = state.stack.length - 1;
+        while (true) {
+          if (index === 0) return "consume";
+          const candidate = state.stack[index];
+          if (String(candidate.localName || "").toLowerCase() === name) {
+            const stackBefore = state.stack.slice();
+            state.stack.length = index;
+            clearMarkersForPoppedElements(stackBefore);
+            return "consume";
+          }
+          index -= 1;
+          if (state.stack[index].namespaceURI === nativeHtmlNamespaceUri) return "html";
+        }
       };
       const insertHtmlEndRecoveryElement = (name, pushToStack) => {
         const fosterLocation = tableFosterLocation();
@@ -28435,7 +28449,11 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           const closing = nativeHtmlReadName(input, state.cursor + 2);
           if (closing) {
             const name = closing.value.toLowerCase();
-            prepareForeignEndTagBreakout(name);
+            const foreignEndTag = prepareForeignContentEndTag(name);
+            if (foreignEndTag === "consume") {
+              state.cursor = end + 1;
+              continue;
+            }
             const stackBefore = markerSensitiveEndNames.has(name) ? state.stack.slice() : null;
             const consumed = (name === "table" && consumeHtmlTableEnd())
               || consumeHtmlTableColumnGroupEnd(name)
@@ -28468,10 +28486,13 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
             }
             let found = -1;
             for (let index = state.stack.length - 1; index > 0; index -= 1) {
-              if (state.stack[index].localName === name) {
+              const candidate = state.stack[index];
+              if (candidate.namespaceURI === nativeHtmlNamespaceUri
+                  && String(candidate.localName || "").toLowerCase() === name) {
                 found = index;
                 break;
               }
+              if (isSpecialHtmlTreeElement(candidate)) break;
             }
             if (found >= 0) state.stack.length = found;
             clearMarkersForPoppedElements(stackBefore);
@@ -36083,15 +36104,30 @@ fn document_bootstrap(
       }}
       return true;
     }};
-    const prepareForeignEndTagBreakout = (name) => {{
-      if (name !== "br" && name !== "p") return false;
+    const prepareForeignContentEndTag = (name) => {{
+      if (forceHtmlContext && stack.length === 1) return "html";
       const current = stack[stack.length - 1];
       if (!current || Number(current.nodeType) !== 1
-          || current.namespaceURI === HTML_NAMESPACE) return false;
-      const stackBefore = stack.slice();
-      while (stack.length > 1 && usesForeignCharacterRules(stack[stack.length - 1])) stack.pop();
-      clearMarkersForPoppedElements(stackBefore);
-      return true;
+          || current.namespaceURI === HTML_NAMESPACE) return "html";
+      if (name === "br" || name === "p") {{
+        const stackBefore = stack.slice();
+        while (stack.length > 1 && usesForeignCharacterRules(stack[stack.length - 1])) stack.pop();
+        clearMarkersForPoppedElements(stackBefore);
+        return "breakout";
+      }}
+      let index = stack.length - 1;
+      while (true) {{
+        if (index === 0) return "consume";
+        const candidate = stack[index];
+        if (String(candidate.localName || "").toLowerCase() === name) {{
+          const stackBefore = stack.slice();
+          stack.length = index;
+          clearMarkersForPoppedElements(stackBefore);
+          return "consume";
+        }}
+        index -= 1;
+        if (stack[index].namespaceURI === HTML_NAMESPACE) return "html";
+      }}
     }};
     const insertHtmlEndRecoveryElement = (name, pushToStack) => {{
       const fosterLocation = tableFosterLocation();
@@ -36426,9 +36462,13 @@ fn document_bootstrap(
           continue;
         }}
         const name = closing[1].toLowerCase();
-        const foreignEndBreakout = prepareForeignEndTagBreakout(name);
-        if (foreignEndBreakout && stack.length === 1 && stack[0] === fragment) {{
+        const foreignEndTag = prepareForeignContentEndTag(name);
+        if (foreignEndTag === "breakout" && stack.length === 1 && stack[0] === fragment) {{
           forceHtmlContext = true;
+        }}
+        if (foreignEndTag === "consume") {{
+          cursor = end + 1;
+          continue;
         }}
         const stackBefore = markerSensitiveEndNames.has(name) ? stack.slice() : null;
         const consumed = (name === "table" && consumeHtmlTableEnd())
@@ -36461,10 +36501,13 @@ fn document_bootstrap(
           }}
         }}
         for (let index = stack.length - 1; index > 0; index -= 1) {{
-          if (stack[index].localName === name) {{
+          const candidate = stack[index];
+          if (candidate.namespaceURI === HTML_NAMESPACE
+              && String(candidate.localName || "").toLowerCase() === name) {{
             stack.length = index;
             break;
           }}
+          if (specialTreeElement(candidate)) break;
         }}
         clearMarkersForPoppedElements(stackBefore);
         cursor = end + 1;

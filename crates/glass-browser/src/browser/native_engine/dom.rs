@@ -1225,12 +1225,16 @@ impl NativeDocument {
                     }
                 }
                 HtmlToken::EndTag(name) => {
-                    prepare_foreign_content_breakout_end_tag(
+                    let foreign_end_tag = prepare_foreign_content_end_tag(
                         &document,
                         &mut stack,
                         &name,
                         &mut active_formatting,
+                        false,
                     )?;
+                    if foreign_end_tag == ForeignContentEndTagDisposition::Consumed {
+                        continue;
+                    }
                     let stack_before = is_marker_sensitive_end_tag(&name).then(|| stack.clone());
                     let consumed = (name == "table"
                         && consume_html_table_end_token(&document, &mut stack, None)?)
@@ -1315,22 +1319,7 @@ impl NativeDocument {
                             continue;
                         }
                     }
-                    if let Some(index) = stack.iter().rposition(|id| {
-                        document
-                            .node(*id)
-                            .and_then(|node| match node.kind() {
-                                NativeNodeKind::Element {
-                                    name: node_name, ..
-                                } => Some(node_name == &name),
-                                NativeNodeKind::Document
-                                | NativeNodeKind::DocumentType { .. }
-                                | NativeNodeKind::Comment(_)
-                                | NativeNodeKind::Text(_) => None,
-                            })
-                            .unwrap_or(false)
-                    }) {
-                        stack.truncate(index);
-                    }
+                    process_html_any_other_end_tag(&document, &mut stack, &name)?;
                     if let Some(before) = stack_before.as_deref() {
                         clear_markers_for_popped_elements(
                             &document,
@@ -6572,14 +6561,21 @@ impl NativeDocument {
                     }
                 }
                 HtmlToken::EndTag(name) => {
-                    let foreign_end_breakout = prepare_foreign_content_breakout_end_tag(
+                    let foreign_end_tag = prepare_foreign_content_end_tag(
                         self,
                         &mut stack,
                         &name,
                         &mut active_formatting,
+                        fragment_html_context,
                     )?;
-                    if foreign_end_breakout && stack.len() == 1 && stack.first() == Some(&id) {
+                    if foreign_end_tag == ForeignContentEndTagDisposition::Breakout
+                        && stack.len() == 1
+                        && stack.first() == Some(&id)
+                    {
                         fragment_html_context = true;
+                    }
+                    if foreign_end_tag == ForeignContentEndTagDisposition::Consumed {
+                        continue;
                     }
                     let stack_before = is_marker_sensitive_end_tag(&name).then(|| stack.clone());
                     let consumed = (name == "table"
@@ -6678,14 +6674,7 @@ impl NativeDocument {
                             continue;
                         }
                     }
-                    if let Some(index) = stack.iter().rposition(|current| {
-                        self.raw_node(*current)
-                            .and_then(NativeNode::element_name)
-                            .is_some_and(|current_name| current_name == name)
-                    }) && index > 0
-                    {
-                        stack.truncate(index);
-                    }
+                    process_html_any_other_end_tag(self, &mut stack, &name)?;
                     if let Some(before) = stack_before.as_deref() {
                         clear_markers_for_popped_elements(
                             self,
@@ -11051,44 +11040,118 @@ fn parser_uses_foreign_end_tag_rules(document: &NativeDocument, id: NativeNodeId
         .is_some_and(|namespace| namespace != HTML_NAMESPACE_URI)
 }
 
-fn prepare_foreign_content_breakout_end_tag(
+fn process_html_any_other_end_tag(
+    document: &NativeDocument,
+    stack: &mut Vec<NativeNodeId>,
+    name: &str,
+) -> Result<(), NativeEngineError> {
+    for index in (1..stack.len()).rev() {
+        let id = stack[index];
+        let Some(node) = document.raw_node(id) else {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "HTML end-tag recovery reached an unknown open element".into(),
+            });
+        };
+        if node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+            && node
+                .element_name()
+                .is_some_and(|node_name| node_name.eq_ignore_ascii_case(name))
+        {
+            stack.truncate(index);
+            return Ok(());
+        }
+        if is_special_tree_builder_element(document, id) {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForeignContentEndTagDisposition {
+    ReprocessAsHtml,
+    Breakout,
+    Consumed,
+}
+
+fn prepare_foreign_content_end_tag(
     document: &NativeDocument,
     stack: &mut Vec<NativeNodeId>,
     name: &str,
     active_formatting: &mut ActiveFormattingList,
-) -> Result<bool, NativeEngineError> {
-    if !matches!(name, "br" | "p") {
-        return Ok(false);
-    }
+    fragment_html_context: bool,
+) -> Result<ForeignContentEndTagDisposition, NativeEngineError> {
     let Some(current) = stack.last().copied() else {
         return Err(NativeEngineError::Parse {
             offset: 0,
-            reason: "foreign-content end-tag breakout lost the open-elements stack".into(),
+            reason: "foreign-content end-tag dispatch lost the open-elements stack".into(),
         });
     };
-    if !parser_uses_foreign_end_tag_rules(document, current) {
-        return Ok(false);
+    if (fragment_html_context && stack.len() == 1)
+        || !parser_uses_foreign_end_tag_rules(document, current)
+    {
+        return Ok(ForeignContentEndTagDisposition::ReprocessAsHtml);
     }
 
-    let stack_before = stack.clone();
-    while stack.len() > 1 {
-        let current = *stack.last().expect("non-empty open-elements stack");
-        let Some(node) = document.raw_node(current) else {
+    if matches!(name, "br" | "p") {
+        let stack_before = stack.clone();
+        while stack.len() > 1 {
+            let current = *stack.last().expect("non-empty open-elements stack");
+            let Some(node) = document.raw_node(current) else {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "foreign-content end-tag breakout reached an unknown node".into(),
+                });
+            };
+            if node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+                || node_is_html_integration_point(node)
+                || node_is_mathml_text_integration_point(node)
+            {
+                break;
+            }
+            stack.pop();
+        }
+        clear_markers_for_popped_elements(document, &stack_before, stack, active_formatting);
+        return Ok(ForeignContentEndTagDisposition::Breakout);
+    }
+
+    let mut index = stack.len() - 1;
+    loop {
+        // The root is the fragment-context sentinel (or the document root); it
+        // is never popped by foreign-content end-tag matching.
+        if index == 0 {
+            return Ok(ForeignContentEndTagDisposition::Consumed);
+        }
+        let node_id = stack[index];
+        let Some(node) = document.raw_node(node_id) else {
             return Err(NativeEngineError::Parse {
                 offset: 0,
-                reason: "foreign-content end-tag breakout reached an unknown node".into(),
+                reason: "foreign-content end-tag dispatch reached an unknown node".into(),
             });
         };
-        if node.namespace_uri() == Some(HTML_NAMESPACE_URI)
-            || node_is_html_integration_point(node)
-            || node_is_mathml_text_integration_point(node)
+        if node
+            .element_name()
+            .is_some_and(|node_name| node_name.eq_ignore_ascii_case(name))
         {
-            break;
+            let stack_before = stack.clone();
+            stack.truncate(index);
+            clear_markers_for_popped_elements(document, &stack_before, stack, active_formatting);
+            return Ok(ForeignContentEndTagDisposition::Consumed);
         }
-        stack.pop();
+
+        index -= 1;
+        let ancestor = stack[index];
+        let Some(ancestor_node) = document.raw_node(ancestor) else {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "foreign-content end-tag dispatch reached an unknown ancestor".into(),
+            });
+        };
+        if ancestor_node.namespace_uri() == Some(HTML_NAMESPACE_URI) {
+            return Ok(ForeignContentEndTagDisposition::ReprocessAsHtml);
+        }
     }
-    clear_markers_for_popped_elements(document, &stack_before, stack, active_formatting);
-    Ok(true)
 }
 
 fn insert_html_end_tag_recovery_element(
@@ -15655,6 +15718,182 @@ mod tests {
             .apply_script_commands(&evaluation.commands)
             .expect("Rust fragment commit must reprocess foreign end tags");
         assert_eq!(summarize_native(&projected), expected);
+    }
+
+    #[test]
+    fn foreign_content_ordinary_end_tags_follow_stack_and_html_boundaries_across_routes() {
+        let markup = concat!(
+            "<section id='zone'>",
+            "<svg id='matched-svg'><probe id='matched-probe'><g id='matched-g'>",
+            "<path id='matched-path'></PROBE><circle id='after-foreign-match'></circle></svg>",
+            "<svg id='unmatched-svg'><g id='unmatched-g'></absent>",
+            "<path id='inside-unmatched'></path></g><path id='after-unmatched'></path></svg>",
+            "<svg id='boundary-svg'><probe id='foreign-probe'>",
+            "<foreignObject id='boundary-fo'><div id='html-boundary'>",
+            "<svg id='inner-svg'><g id='inner-g'></probe>",
+            "<span id='after-html-boundary'></span></div></foreignObject></probe></svg>",
+            "<svg id='integration-svg'><foreignObject id='integration-point'></foreignObject>",
+            "<circle id='after-integration-close'></circle></svg>",
+            "</section>",
+        );
+        let expected_nodes = [
+            ("matched-probe", SVG_NAMESPACE_URI, "matched-svg"),
+            ("matched-path", SVG_NAMESPACE_URI, "matched-g"),
+            ("after-foreign-match", SVG_NAMESPACE_URI, "matched-svg"),
+            ("inside-unmatched", SVG_NAMESPACE_URI, "unmatched-g"),
+            ("after-unmatched", SVG_NAMESPACE_URI, "unmatched-svg"),
+            ("foreign-probe", SVG_NAMESPACE_URI, "boundary-svg"),
+            ("html-boundary", HTML_NAMESPACE_URI, "boundary-fo"),
+            ("inner-svg", SVG_NAMESPACE_URI, "html-boundary"),
+            ("inner-g", SVG_NAMESPACE_URI, "inner-svg"),
+            ("after-html-boundary", HTML_NAMESPACE_URI, "html-boundary"),
+            ("integration-point", SVG_NAMESPACE_URI, "integration-svg"),
+            (
+                "after-integration-close",
+                SVG_NAMESPACE_URI,
+                "integration-svg",
+            ),
+        ];
+        let expected = serde_json::Value::Array(
+            expected_nodes
+                .iter()
+                .map(|(_, namespace, parent)| serde_json::json!([namespace, parent]))
+                .collect(),
+        );
+        let summarize_native = |tree: &NativeDocument| {
+            serde_json::Value::Array(
+                expected_nodes
+                    .iter()
+                    .map(|(element_id, _, _)| {
+                        let element = tree.find_element_by_id(element_id).unwrap_or_else(|| {
+                            panic!("foreign end-tag fixture element {element_id} must exist")
+                        });
+                        let node = tree.node(element).expect("fixture element must resolve");
+                        let parent_id = node
+                            .parent()
+                            .and_then(|parent| tree.node(parent))
+                            .and_then(|parent| parent.attribute("id"))
+                            .expect("fixture element parent must have an id");
+                        serde_json::json!([node.namespace_uri().unwrap(), parent_id])
+                    })
+                    .collect(),
+            )
+        };
+
+        let direct = NativeDocument::parse(markup, &NativeEngineLimits::default())
+            .expect("document parser must dispatch ordinary foreign end tags");
+        assert_eq!(summarize_native(&direct), expected);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("foreign-end-dispatch")
+            .expect("native JavaScript runtime must construct");
+        let mut projected =
+            NativeDocument::parse("<main id='host'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+            const markup = __HTML_MARKUP__;
+            const ids = __ELEMENT_IDS__;
+            const host = document.querySelector("#host");
+            host.innerHTML = markup;
+            const response = globalThis.__glassParseHtmlDocument(
+                markup,
+                "https://example.test/foreign-end-dispatch.html",
+                "text/html",
+            );
+            const summarize = (tree) => ids.map((id) => {
+                const element = tree.querySelector(`#${id}`);
+                return [element.namespaceURI, element.parentElement.getAttribute("id")];
+            });
+            return [summarize(host), summarize(response)];
+        })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(markup).unwrap())
+            .replace(
+                "__ELEMENT_IDS__",
+                &serde_json::to_string(
+                    &expected_nodes
+                        .iter()
+                        .map(|(element_id, _, _)| element_id)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            );
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &projected,
+                "fixture://foreign-end-dispatch.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("same-turn and XHR routes must share foreign end-tag dispatch");
+        assert_eq!(evaluation.value, serde_json::json!([expected, expected]));
+        projected
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must share foreign end-tag dispatch");
+        assert_eq!(summarize_native(&projected), expected);
+    }
+
+    #[test]
+    fn foreign_fragment_ordinary_end_tags_preserve_target_and_namespace() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("foreign-fragment-end-tags")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<main><svg id='context'></svg></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("foreign fragment host document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const target = document.querySelector("#context");
+                    target.innerHTML = "</svg><g id='fragment-child'><path id='fragment-grandchild'></path></g></absent>";
+                    const child = target.querySelector("#fragment-child");
+                    const grandchild = target.querySelector("#fragment-grandchild");
+                    return [
+                        target.namespaceURI,
+                        child.namespaceURI,
+                        child.parentElement === target,
+                        grandchild.namespaceURI,
+                        grandchild.parentElement === child,
+                    ];
+                })()"##,
+                &document,
+                "fixture://foreign-fragment-end-tags.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("foreign fragment root end tags must not pop or recontextualize the target");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                SVG_NAMESPACE_URI,
+                SVG_NAMESPACE_URI,
+                true,
+                SVG_NAMESPACE_URI,
+                true
+            ])
+        );
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must preserve the foreign context element");
+        let target = document.find_element_by_id("context").unwrap();
+        let child = document.find_element_by_id("fragment-child").unwrap();
+        let grandchild = document.find_element_by_id("fragment-grandchild").unwrap();
+        assert_eq!(
+            document.node(child).unwrap().namespace_uri(),
+            Some(SVG_NAMESPACE_URI)
+        );
+        assert_eq!(
+            document.node(child).and_then(NativeNode::parent),
+            Some(target)
+        );
+        assert_eq!(
+            document.node(grandchild).unwrap().namespace_uri(),
+            Some(SVG_NAMESPACE_URI)
+        );
+        assert_eq!(
+            document.node(grandchild).and_then(NativeNode::parent),
+            Some(child)
+        );
     }
 
     #[test]

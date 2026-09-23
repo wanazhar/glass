@@ -3,8 +3,8 @@
 ## Issue #40: reconcile native-engine slice evidence
 
 The architecture and analysis status chain reports completed browser slices
-650–680, but `docs/plan/tasks/` has records through slice 649 and then for
-slices 672–680; detailed records 650–671 remain missing. The issue #40 body
+650–682, but `docs/plan/tasks/` has records through slice 649 and then for
+slices 672–682; detailed records 650–671 remain missing. The issue #40 body
 was restored after an accidental empty-body edit and reverified with all epic
 gates intact. Keep it as the remote status mirror and refresh it after each
 local slice checkpoint; the local branch remains unpushed. Remote CI, release,
@@ -15,7 +15,7 @@ this record explicit about local versus remote evidence.
 
 ## Native HTML parser-route parity
 
-Slices 673–681 align bounded table tree-construction behavior across
+Slices 673–682 align bounded table tree-construction behavior across
 `NativeDocument::parse`, Rust `NativeDocument::apply_script_inner_html`, the
 shared JavaScript `populateDetachedFragment` same-turn projection, and the
 independent `nativeHtmlParseDocument` route for XHR
@@ -25,23 +25,25 @@ construction; slice 678 handles nested table starts and fragment context;
 slice 679 applies HTML table scope to `</table>` and excludes the fragment
 context from the open-element stack; slice 680 scopes row-group and row end
 tags to their matching HTML elements without crossing nested-table boundaries;
-slice 681 extends scoped end-tag closure to `td` and `th` cells.
+slice 681 extends scoped end-tag closure to `td` and `th` cells; slice 682
+recovers structural starts inside open cells while preserving the active row,
+row group, table, namespace, and fragment boundaries.
 Fixtures check parentage, authored order, explicit-section preservation,
 whitespace/comments, resource bounds, and namespace behavior across document,
 fragment, same-turn projection, and XHR routes. Continue expanding the corpus
 for other tree-construction rules; do not describe these slices as general
 HTML parser parity.
 
-Slices 678–681 complete bounded WHATWG in-table recovery rules across
+Slices 678–682 complete additional bounded WHATWG in-table recovery rules across
 document parsing, Rust fragment commit, same-turn JavaScript projection, and
 XHR HTML parsing. Start-tag recovery preserves cell/caption and
 template/foreign-content boundaries; end-tag scope closes the nearest open
 HTML table and ignores out-of-scope tokens. Fragment context alone does not
 make a table open. Slices 680–681 add scope-aware closing for row-group, row,
-and cell tags, including foreign-namespace, nested-table, template, and
-fragment boundaries. The table-focused batch through slice 681 passed 44/44,
-and its cross-route cell-scope fixture passed 1/1. Other insertion modes and
-general parser conformance remain open.
+and cell tags; slice 682 adds structural starts inside cells, including
+foreign-namespace, nested-table, template, and fragment boundaries. The
+focused route fixture passed 1/1 and the table-focused batch passed 45/45.
+Other insertion modes and general parser conformance remain open.
 
 ## Input: popup-opening mouse release completion
 

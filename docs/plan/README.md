@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-676`, following completed `native-engine-browser-675`,
+`native-engine-browser-677`, following completed `native-engine-browser-676`,
+following completed `native-engine-browser-675`,
 following completed `native-engine-browser-674`,
 following completed `native-engine-browser-673`,
 following completed `native-engine-browser-672`,
@@ -109,6 +110,13 @@ their namespace and do not synthesize HTML containers, `foreignObject`
 descendants resume HTML insertion behavior, and generated nodes obey the
 document node/depth limits. This is a focused tree-construction increment, not
 general HTML parser conformance.
+
+The completed [native-engine-browser-677](tasks/native-engine-browser-677.md)
+slice synthesizes `colgroup` for direct HTML table columns across document,
+fragment, same-turn JavaScript projection, and XHR HTML parsing. Explicit
+groups remain singular; SVG/MathML nodes retain their namespace, while
+`foreignObject` descendants use HTML behavior. Remaining table insertion
+modes and general parser conformance are still open.
 
 `native-engine-browser-633`, following completed
 `native-engine-browser-632`, following completed

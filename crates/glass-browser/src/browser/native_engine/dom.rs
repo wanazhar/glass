@@ -6120,6 +6120,7 @@ impl NativeDocument {
             return Ok(());
         }
         let implied_names: &[&str] = match (current.element_name(), incoming_name) {
+            (Some("table"), "col") => &["colgroup"],
             (Some("table"), "tr") => &["tbody"],
             (Some("table"), "td" | "th") => &["tbody", "tr"],
             (Some("tbody" | "thead" | "tfoot"), "td" | "th") => &["tr"],
@@ -10829,6 +10830,61 @@ mod tests {
     }
 
     #[test]
+    fn javascript_inner_html_projects_implied_colgroup_before_commit() {
+        let runtime =
+            NativeJavaScriptRuntime::new_with_context_id("implied-colgroup-fragment-test")
+                .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<main id='root'></main><table id='target'></table>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const root = document.querySelector("#root");
+                    root.innerHTML = "<table id='columns'><col id='first'><col id='second'></table><table id='explicit'><colgroup id='group'><col id='third'></colgroup></table>";
+                    const target = document.querySelector("#target");
+                    target.innerHTML = "<col id='target-column'>";
+                    const columns = root.querySelector("#columns");
+                    const group = columns.firstElementChild;
+                    const explicit = root.querySelector("#explicit");
+                    return [
+                        group.localName === "colgroup",
+                        group.children.length === 2,
+                        explicit.children.length === 1
+                            && explicit.firstElementChild === root.querySelector("#group"),
+                        target.firstElementChild.localName === "colgroup",
+                        target.firstElementChild.firstElementChild === target.querySelector("#target-column"),
+                    ];
+                })()"##,
+                &document,
+                "fixture://implied-colgroup-fragment.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("implied column group must project in the same turn");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true, true])
+        );
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("the projected colgroup tree must commit through the native parser");
+        let root = document.find_element_by_id("root").unwrap();
+        assert_eq!(
+            document.element_inner_html(root, 2048),
+            "<table id=\"columns\"><colgroup><col id=\"first\"><col id=\"second\"></colgroup></table><table id=\"explicit\"><colgroup id=\"group\"><col id=\"third\"></colgroup></table>"
+        );
+        let target = document.find_element_by_id("target").unwrap();
+        assert_eq!(
+            document.element_inner_html(target, 1024),
+            "<colgroup><col id=\"target-column\"></colgroup>"
+        );
+    }
+
+    #[test]
     fn xhr_html_response_document_fosters_the_shared_table_fixture() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("xhr-html-foster-test")
             .expect("native JavaScript runtime must construct");
@@ -10881,7 +10937,7 @@ mod tests {
     }
 
     #[test]
-    fn xhr_html_response_document_implies_table_sections_and_rows() {
+    fn xhr_html_response_document_implies_table_sections_rows_and_colgroups() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("xhr-implied-table-test")
             .expect("native JavaScript runtime must construct");
         let document =
@@ -10890,7 +10946,7 @@ mod tests {
             .evaluate(
                 r##"(() => {
                     const response = globalThis.__glassParseHtmlDocument(
-                        "<main id='root'><table id='rows'><tr id='row'><td id='cell'>row</td></tr></table><table id='cells'><td id='direct-cell'>direct</td></table><table id='explicit'><tbody id='body'><tr id='explicit-row'><td>explicit</td></tr></tbody></table><svg><table id='svg-table'><tr id='svg-row'><td>svg</td></tr></table><foreignObject><table id='html-table'><tr id='html-row'><td>html</td></tr></table></foreignObject></svg></main>",
+                        "<main id='root'><table id='rows'><tr id='row'><td id='cell'>row</td></tr></table><table id='cells'><td id='direct-cell'>direct</td></table><table id='explicit'><tbody id='body'><tr id='explicit-row'><td>explicit</td></tr></tbody></table><table id='columns'><col id='column'></table><table id='explicit-columns'><colgroup id='explicit-group'><col id='explicit-column'></colgroup></table><svg><table id='svg-table'><tr id='svg-row'><td>svg</td></tr></table><table id='svg-columns'><col id='svg-column'></table><foreignObject><table id='html-table'><tr id='html-row'><td>html</td></tr></table><table id='html-columns'><col id='html-column'></table></foreignObject></svg><math><table id='math-columns'><col id='math-column'></table></math></main>",
                         "https://example.test/response.html",
                         "text/html",
                     );
@@ -10903,8 +10959,18 @@ mod tests {
                     const explicit = response.getElementById("explicit");
                     const svgTable = response.getElementById("svg-table");
                     const svgRow = response.getElementById("svg-row");
+                    const svgColumns = response.getElementById("svg-columns");
+                    const svgColumn = response.getElementById("svg-column");
                     const htmlTable = response.getElementById("html-table");
                     const htmlRow = response.getElementById("html-row");
+                    const columns = response.getElementById("columns");
+                    const column = response.getElementById("column");
+                    const explicitColumns = response.getElementById("explicit-columns");
+                    const explicitGroup = response.getElementById("explicit-group");
+                    const htmlColumns = response.getElementById("html-columns");
+                    const htmlColumn = response.getElementById("html-column");
+                    const mathColumns = response.getElementById("math-columns");
+                    const mathColumn = response.getElementById("math-column");
                     return [
                         body.localName === "tbody" && row.parentElement === body,
                         row.children[0] === response.getElementById("cell"),
@@ -10916,6 +10982,16 @@ mod tests {
                             && svgRow.namespaceURI === "http://www.w3.org/2000/svg",
                         htmlTable.children[0].localName === "tbody"
                             && htmlRow.parentElement === htmlTable.children[0],
+                        columns.children[0].localName === "colgroup"
+                            && column.parentElement === columns.children[0],
+                        explicitColumns.children.length === 1
+                            && explicitColumns.children[0] === explicitGroup,
+                        svgColumns.children[0] === svgColumn
+                            && svgColumn.namespaceURI === "http://www.w3.org/2000/svg",
+                        htmlColumns.children[0].localName === "colgroup"
+                            && htmlColumn.parentElement === htmlColumns.children[0],
+                        mathColumns.children[0] === mathColumn
+                            && mathColumn.namespaceURI === "http://www.w3.org/1998/Math/MathML",
                     ];
                 })()"##,
                 &document,
@@ -10927,7 +11003,9 @@ mod tests {
 
         assert_eq!(
             evaluation.value,
-            serde_json::json!([true, true, true, true, true, true])
+            serde_json::json!([
+                true, true, true, true, true, true, true, true, true, true, true
+            ])
         );
     }
 
@@ -11232,6 +11310,67 @@ mod tests {
         assert_eq!(
             document.node(explicit_body).unwrap().children(),
             &[explicit_row]
+        );
+    }
+
+    #[test]
+    fn html_parser_implies_colgroup_for_direct_columns_only_in_html() {
+        let document = NativeDocument::parse(
+            "<table id='columns'><col id='first'><col id='second'></table><table id='explicit'><colgroup id='explicit-group'><col id='explicit-column'></colgroup></table><svg><table id='svg-table'><col id='svg-column'></table><foreignObject><table id='html-table'><col id='html-column'></table></foreignObject></svg><math><table id='math-table'><col id='math-column'></table></math>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        let columns = document.find_element_by_id("columns").unwrap();
+        let first = document.find_element_by_id("first").unwrap();
+        let second = document.find_element_by_id("second").unwrap();
+        let implied_group = document.node(columns).unwrap().children()[0];
+        assert_eq!(
+            document
+                .node(implied_group)
+                .and_then(NativeNode::element_name),
+            Some("colgroup")
+        );
+        assert_eq!(
+            document.node(implied_group).unwrap().children(),
+            &[first, second]
+        );
+
+        let explicit = document.find_element_by_id("explicit").unwrap();
+        let explicit_group = document.find_element_by_id("explicit-group").unwrap();
+        let explicit_column = document.find_element_by_id("explicit-column").unwrap();
+        assert_eq!(
+            document.node(explicit).unwrap().children(),
+            &[explicit_group]
+        );
+        assert_eq!(
+            document.node(explicit_group).unwrap().children(),
+            &[explicit_column]
+        );
+
+        for (table_id, column_id, namespace) in [
+            ("svg-table", "svg-column", SVG_NAMESPACE_URI),
+            ("math-table", "math-column", MATHML_NAMESPACE_URI),
+        ] {
+            let table = document.find_element_by_id(table_id).unwrap();
+            let column = document.find_element_by_id(column_id).unwrap();
+            assert_eq!(document.node(table).unwrap().children(), &[column]);
+            assert_eq!(
+                document.node(column).and_then(NativeNode::namespace_uri),
+                Some(namespace)
+            );
+        }
+
+        let html_table = document.find_element_by_id("html-table").unwrap();
+        let html_column = document.find_element_by_id("html-column").unwrap();
+        let html_group = document.node(html_table).unwrap().children()[0];
+        assert_eq!(
+            document.node(html_group).and_then(NativeNode::element_name),
+            Some("colgroup")
+        );
+        assert_eq!(
+            document.node(html_group).unwrap().children(),
+            &[html_column]
         );
     }
 

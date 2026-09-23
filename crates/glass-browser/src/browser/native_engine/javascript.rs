@@ -27782,7 +27782,9 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         const current = state.stack[state.stack.length - 1];
         if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return;
         const currentName = String(current.localName || "").toLowerCase();
-        const impliedNames = currentName === "table" && incomingName === "tr"
+        const impliedNames = currentName === "table" && incomingName === "col"
+          ? ["colgroup"]
+          : currentName === "table" && incomingName === "tr"
           ? ["tbody"]
           : currentName === "table" && (incomingName === "td" || incomingName === "th")
             ? ["tbody", "tr"]
@@ -35175,7 +35177,9 @@ fn document_bootstrap(
       const current = stack[stack.length - 1];
       if (!current || current.namespaceURI !== HTML_NAMESPACE) return;
       const currentName = String(current.localName || "").toLowerCase();
-      const impliedNames = currentName === "table" && incomingName === "tr"
+      const impliedNames = currentName === "table" && incomingName === "col"
+        ? ["colgroup"]
+        : currentName === "table" && incomingName === "tr"
         ? ["tbody"]
         : currentName === "table" && (incomingName === "td" || incomingName === "th")
           ? ["tbody", "tr"]

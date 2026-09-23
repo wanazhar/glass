@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-676`, following completed
-`native-engine-browser-675`, following completed `native-engine-browser-674`,
+browser expansion slice is `native-engine-browser-677`, following completed
+`native-engine-browser-676`, following completed `native-engine-browser-675`,
+following completed `native-engine-browser-674`,
 following completed `native-engine-browser-673`,
 following completed `native-engine-browser-672`,
 following completed
@@ -607,6 +608,14 @@ construction so SVG table-like elements are not rewritten, while
 `foreignObject` children resume HTML behavior. Tests cover direct and explicit
 sections, fragment-context insertion, XHR materialization, namespace
 transitions, and node/depth limits. Complete table insertion modes and general
+HTML parser conformance remain open issue #40 requirements.
+
+Slice 677 synthesizes an implicit `colgroup` for a `col` directly under an
+HTML `table` in document parsing, fragment commit/same-turn projection, and
+XHR `responseType="document"` parsing. Explicit groups are not duplicated;
+SVG/MathML table-like elements remain foreign, while `foreignObject` children
+resume HTML behavior. Direct/explicit column parentage and XHR materialization
+are covered by the focused fixtures. Other table insertion modes and general
 HTML parser conformance remain open issue #40 requirements.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and

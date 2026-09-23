@@ -27957,7 +27957,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
               state.cursor = end + 1;
               continue;
             }
-            if (["tbody", "tfoot", "thead", "tr"].includes(name)
+            if (["tbody", "tfoot", "thead", "tr", "td", "th"].includes(name)
               && consumeHtmlTableStructureEnd(name)) {
               state.cursor = end + 1;
               continue;
@@ -35412,7 +35412,7 @@ fn document_bootstrap(
           cursor = end + 1;
           continue;
         }}
-        if (["tbody", "tfoot", "thead", "tr"].includes(name)
+        if (["tbody", "tfoot", "thead", "tr", "td", "th"].includes(name)
           && consumeHtmlTableStructureEnd(name)) {{
           cursor = end + 1;
           continue;

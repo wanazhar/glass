@@ -1,7 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is active at completed
-`native-engine-browser-680`, following completed `native-engine-browser-679`,
+`native-engine-browser-681`, following completed `native-engine-browser-680`,
+following completed `native-engine-browser-679`,
 following completed `native-engine-browser-678`,
 following completed `native-engine-browser-677`,
 following completed `native-engine-browser-676`,
@@ -475,6 +476,19 @@ and the nested-table/template-boundary fixture passed again 1/1 after its final
 extension. This does not add full insertion-mode or active-formatting-list
 processing; the broader table and HTML parser conformance gates remain open. See
 [`slice 680`](../plan/tasks/native-engine-browser-680.md) for exact evidence.
+
+Slice 681 applies table-scope end-tag handling to HTML `td` and `th` tokens.
+Only the matching open HTML cell can satisfy the token; matching descendants
+are closed with it, while an unmatched cell token or a match beyond an HTML
+`table`, `template`, or `html` boundary is ignored. Fragment context elements
+are not counted as open, same-named foreign elements do not satisfy HTML
+scope, and a foreign current node stays on the existing route. Document,
+Rust fragment commit, same-turn JavaScript fragment projection, and XHR HTML
+parsing share this bounded stack behavior. The complete in-cell insertion mode
+and active-formatting-list maintenance remain separate parser requirements;
+the focused route test passed 1/1 and the table regression batch passed 44/44.
+See [`slice 681`](../plan/tasks/native-engine-browser-681.md) for exact local
+evidence; remote CI and browser conformance are not claimed.
 
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
 property is exposed as a canonical percentage, face matching considers the

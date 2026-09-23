@@ -27,8 +27,9 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed `native-engine-browser-684`
-after completed `native-engine-browser-683`, following completed `native-engine-browser-682`,
+the browser-complete expansion has completed `native-engine-browser-685`,
+following completed `native-engine-browser-684`, following completed
+`native-engine-browser-683`, following completed `native-engine-browser-682`,
 following completed `native-engine-browser-681`, following completed `native-engine-browser-680`,
 following completed `native-engine-browser-679`,
 following completed `native-engine-browser-678`,
@@ -76,6 +77,17 @@ following completed `native-engine-browser-660`, following completed
 `native-engine-browser-636`, following completed
 `native-engine-browser-635`, following completed
 `native-engine-browser-634`, following completed
+
+The completed [`native-engine-browser-685`](tasks/native-engine-browser-685.md)
+slice implements end-tag behavior for direct table, caption, and column-group
+contexts across document parsing, Rust fragment commit, same-turn projection,
+and XHR document parsing. It complements the existing cell and row/row-group
+handlers and preserves each mode's distinct close/reprocess rules, actual table
+scope, nested table/template/HTML boundaries, and fragment contexts. This
+bounded parser increment does not claim general HTML conformance. Its focused
+four-route regression passed 1/1 and the table-focused suite passed 46/46 after
+the locked package check; docs validators covered 1,313 Markdown files with no
+current-claim failures.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

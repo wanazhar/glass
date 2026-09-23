@@ -27800,6 +27800,35 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         // In an HTML parsing context, an out-of-scope table end tag is ignored.
         return true;
       };
+      const tableModeIgnoredEndTags = new Set([
+        "body", "caption", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr",
+      ]);
+      const consumeHtmlTableColumnGroupEnd = (targetName) => {
+        if (!tableModeIgnoredEndTags.has(targetName)) return false;
+        const current = state.stack[state.stack.length - 1];
+        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
+        let columnGroupIndex = -1;
+        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
+          const candidate = state.stack[index];
+          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
+          const candidateName = String(candidate.localName || "").toLowerCase();
+          if (["td", "th", "tr", "tbody", "tfoot", "thead", "caption"].includes(candidateName)) return false;
+          if (candidateName === "colgroup" && columnGroupIndex < 0) columnGroupIndex = index;
+          else if (candidateName === "table") {
+            if (columnGroupIndex < 0) return false;
+            if (targetName === "col") return true;
+            if (targetName === "colgroup") {
+              if (columnGroupIndex === state.stack.length - 1) state.stack.length = columnGroupIndex;
+              return true;
+            }
+            // Other column-group end tags pop the current group and reprocess
+            // in table mode, where these tokens are ignored.
+            if (columnGroupIndex === state.stack.length - 1) state.stack.length = columnGroupIndex;
+            return true;
+          } else if (candidateName === "html" || candidateName === "template") return false;
+        }
+        return false;
+      };
       const consumeHtmlTableStructureEnd = (targetName) => {
         const current = state.stack[state.stack.length - 1];
         if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
@@ -27844,6 +27873,36 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           if (["tr", "tbody", "tfoot", "thead"].includes(candidateName)) rowContextInScope = true;
           else if (candidateName === "table") return rowContextInScope;
           else if (candidateName === "html" || candidateName === "template") return false;
+        }
+        return false;
+      };
+      const consumeHtmlTableCaptionIgnoredEnd = (targetName) => {
+        if (!["body", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr"].includes(targetName)) return false;
+        const current = state.stack[state.stack.length - 1];
+        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
+        let captionInScope = false;
+        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
+          const candidate = state.stack[index];
+          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
+          const candidateName = String(candidate.localName || "").toLowerCase();
+          if (["td", "th", "tr", "tbody", "tfoot", "thead", "colgroup"].includes(candidateName)) return false;
+          if (candidateName === "caption") captionInScope = true;
+          else if (candidateName === "table") return captionInScope;
+          else if (candidateName === "html" || candidateName === "template") return false;
+        }
+        return false;
+      };
+      const consumeHtmlTableModeIgnoredEnd = (targetName) => {
+        if (!tableModeIgnoredEndTags.has(targetName)) return false;
+        const current = state.stack[state.stack.length - 1];
+        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
+        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
+          const candidate = state.stack[index];
+          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
+          const candidateName = String(candidate.localName || "").toLowerCase();
+          if (["td", "th", "tr", "tbody", "tfoot", "thead", "caption", "colgroup"].includes(candidateName)) return false;
+          if (candidateName === "table") return true;
+          if (candidateName === "html" || candidateName === "template") return false;
         }
         return false;
       };
@@ -28018,6 +28077,10 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
               state.cursor = end + 1;
               continue;
             }
+            if (consumeHtmlTableColumnGroupEnd(name)) {
+              state.cursor = end + 1;
+              continue;
+            }
             if (["tbody", "tfoot", "thead", "tr", "td", "th"].includes(name)
               && consumeHtmlTableStructureEnd(name)) {
               state.cursor = end + 1;
@@ -28028,6 +28091,14 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
               continue;
             }
             if (consumeHtmlTableRowIgnoredEnd(name)) {
+              state.cursor = end + 1;
+              continue;
+            }
+            if (consumeHtmlTableCaptionIgnoredEnd(name)) {
+              state.cursor = end + 1;
+              continue;
+            }
+            if (consumeHtmlTableModeIgnoredEnd(name)) {
               state.cursor = end + 1;
               continue;
             }
@@ -35400,6 +35471,36 @@ fn document_bootstrap(
       // The fragment context itself cannot satisfy table scope.
       return true;
     }};
+    const tableModeIgnoredEndTags = new Set([
+      "body", "caption", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr",
+    ]);
+    const consumeHtmlTableColumnGroupEnd = (targetName) => {{
+      if (!tableModeIgnoredEndTags.has(targetName)) return false;
+      const current = stack[stack.length - 1];
+      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
+      // stack[0] is fragment context and cannot satisfy column-group/table scope.
+      let columnGroupIndex = -1;
+      for (let index = stack.length - 1; index > 0; index -= 1) {{
+        const candidate = stack[index];
+        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
+        const candidateName = String(candidate.localName || "").toLowerCase();
+        if (["td", "th", "tr", "tbody", "tfoot", "thead", "caption"].includes(candidateName)) return false;
+        if (candidateName === "colgroup" && columnGroupIndex < 0) columnGroupIndex = index;
+        else if (candidateName === "table") {{
+          if (columnGroupIndex < 0) return false;
+          if (targetName === "col") return true;
+          if (targetName === "colgroup") {{
+            if (columnGroupIndex === stack.length - 1) stack.length = columnGroupIndex;
+            return true;
+          }}
+          // Other column-group end tags pop the current group and reprocess
+          // in table mode, where these tokens are ignored.
+          if (columnGroupIndex === stack.length - 1) stack.length = columnGroupIndex;
+          return true;
+        }} else if (candidateName === "html" || candidateName === "template") return false;
+      }}
+      return false;
+    }};
     const consumeHtmlTableStructureEnd = (targetName) => {{
       const current = stack[stack.length - 1];
       if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
@@ -35447,6 +35548,38 @@ fn document_bootstrap(
         if (["tr", "tbody", "tfoot", "thead"].includes(candidateName)) rowContextInScope = true;
         else if (candidateName === "table") return rowContextInScope;
         else if (candidateName === "html" || candidateName === "template") return false;
+      }}
+      return false;
+    }};
+    const consumeHtmlTableCaptionIgnoredEnd = (targetName) => {{
+      if (!["body", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr"].includes(targetName)) return false;
+      const current = stack[stack.length - 1];
+      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
+      // stack[0] is fragment context and cannot satisfy caption/table scope.
+      let captionInScope = false;
+      for (let index = stack.length - 1; index > 0; index -= 1) {{
+        const candidate = stack[index];
+        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
+        const candidateName = String(candidate.localName || "").toLowerCase();
+        if (["td", "th", "tr", "tbody", "tfoot", "thead", "colgroup"].includes(candidateName)) return false;
+        if (candidateName === "caption") captionInScope = true;
+        else if (candidateName === "table") return captionInScope;
+        else if (candidateName === "html" || candidateName === "template") return false;
+      }}
+      return false;
+    }};
+    const consumeHtmlTableModeIgnoredEnd = (targetName) => {{
+      if (!tableModeIgnoredEndTags.has(targetName)) return false;
+      const current = stack[stack.length - 1];
+      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
+      // stack[0] is fragment context and cannot satisfy table scope.
+      for (let index = stack.length - 1; index > 0; index -= 1) {{
+        const candidate = stack[index];
+        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
+        const candidateName = String(candidate.localName || "").toLowerCase();
+        if (["td", "th", "tr", "tbody", "tfoot", "thead", "caption", "colgroup"].includes(candidateName)) return false;
+        if (candidateName === "table") return true;
+        if (candidateName === "html" || candidateName === "template") return false;
       }}
       return false;
     }};
@@ -35546,6 +35679,10 @@ fn document_bootstrap(
           cursor = end + 1;
           continue;
         }}
+        if (consumeHtmlTableColumnGroupEnd(name)) {{
+          cursor = end + 1;
+          continue;
+        }}
         if (["tbody", "tfoot", "thead", "tr", "td", "th"].includes(name)
           && consumeHtmlTableStructureEnd(name)) {{
           cursor = end + 1;
@@ -35556,6 +35693,14 @@ fn document_bootstrap(
           continue;
         }}
         if (consumeHtmlTableRowIgnoredEnd(name)) {{
+          cursor = end + 1;
+          continue;
+        }}
+        if (consumeHtmlTableCaptionIgnoredEnd(name)) {{
+          cursor = end + 1;
+          continue;
+        }}
+        if (consumeHtmlTableModeIgnoredEnd(name)) {{
           cursor = end + 1;
           continue;
         }}

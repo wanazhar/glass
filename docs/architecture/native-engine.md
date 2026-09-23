@@ -1,7 +1,8 @@
 # Native browser engine
 
-Status: Browser-complete expansion remains active after completed
-`native-engine-browser-684`, following completed `native-engine-browser-683`,
+Status: Browser-complete expansion has completed
+`native-engine-browser-685`, following completed `native-engine-browser-684`,
+following completed `native-engine-browser-683`,
 following completed `native-engine-browser-682`,
 following completed `native-engine-browser-681`,
 following completed `native-engine-browser-680`,
@@ -531,6 +532,22 @@ table-focused batch passed 45/45 after the locked package check. See
 [in-table-body](https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-intablebody)
 and [in-row](https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inrow)
 rules; complete insertion-mode conformance remains open.
+
+Slice 685 implements the WHATWG end-tag behavior for direct table, caption,
+and column-group contexts across document parsing, Rust fragment commit,
+same-turn JavaScript projection, and XHR HTML parsing. Direct table mode
+ignores `body`, `caption`, `col`, `colgroup`, `html`, `tbody`, `td`, `tfoot`,
+`th`, `thead`, and `tr`; caption mode preserves its active `</caption>` close
+while ignoring its specified unrelated end tags; column-group mode ignores
+`</col>`, closes `</colgroup>` only at the current group, and pops/reprocesses
+other table-mode end tags. Existing cell, row/row-group, and table-structure
+handlers retain their matching contexts. Table scope must not cross nested
+table, template, HTML, or fragment-context boundaries. The focused four-route
+fixture passed 1/1, the table-focused batch passed 46/46, and the locked
+package check passed. Documentation validators covered 1,313 Markdown files
+with zero current-claim failures. See
+[`slice 685`](../plan/tasks/native-engine-browser-685.md); complete parser
+conformance remains open.
 
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
 property is exposed as a canonical percentage, face matching considers the

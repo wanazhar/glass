@@ -28480,7 +28480,8 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         const selfClosing = /\/\s*$/.test(rawTag);
         state.cursor = end + 1;
         if (selfClosing || nativeHtmlVoidElements.has(name)) continue;
-        if (nativeHtmlRawTextElements.has(name) || nativeHtmlRcdataElements.has(name)) {
+        if (element.namespaceURI === nativeHtmlNamespaceUri
+            && (nativeHtmlRawTextElements.has(name) || nativeHtmlRcdataElements.has(name))) {
           const special = nativeHtmlSpecialEnd(input, state.cursor, name);
           const textEnd = special ? special.start : input.length;
           if (textEnd > state.cursor) append(element, {
@@ -36407,7 +36408,8 @@ fn document_bootstrap(
       insertParsedNode(parent, element, fosterLocation && fosterLocation.before);
       cursor = end + 1;
       if (selfClosing || voidElements.has(element.localName)) continue;
-      if (rawTextElements.has(element.localName) || rcdataElements.has(element.localName)) {{
+      if (element.namespaceURI === HTML_NAMESPACE
+          && (rawTextElements.has(element.localName) || rcdataElements.has(element.localName))) {{
         const special = findSpecialEnd(cursor, element.localName);
         const textEnd = special ? special.start : source.length;
         if (textEnd > cursor) element.appendChild(createText(

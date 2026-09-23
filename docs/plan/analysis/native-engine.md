@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-689`, following locally
-completed `native-engine-browser-688`; issue #40 remains open. It follows completed
+completed browser expansion slice is `native-engine-browser-690`, following
+locally completed `native-engine-browser-689` and `native-engine-browser-688`;
+issue #40 remains open. It follows completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`, following completed
 `native-engine-browser-685`, `native-engine-browser-684`, and
@@ -737,6 +738,14 @@ four-route namespace and parentage parity is the acceptance test. The locked
 package check, focused route test, 26-test HTML batch, formatting, whitespace,
 and maintainer documentation gates passed locally; remote CI was not run.
 See `docs/plan/tasks/native-engine-browser-689.md`.
+
+Slice 690 fixes namespace-blind RAWTEXT/RCDATA selection. HTML script/style
+remain RAWTEXT and HTML title/textarea remain RCDATA; SVG/MathML elements with
+those names parse child markup under foreign-content/integration-point rules.
+The exact four-route namespace/parentage test passed 1/1 and the HTML parser
+batch passed 27/27. The locked package check, formatting, whitespace, and all
+maintainer documentation gates passed locally. Remote CI and general parser
+conformance remain open. See `docs/plan/tasks/native-engine-browser-690.md`.
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

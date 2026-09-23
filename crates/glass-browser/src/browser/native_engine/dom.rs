@@ -1336,7 +1336,43 @@ impl NativeDocument {
                             offset: 0,
                             reason: "tree builder lost its document root".into(),
                         })?;
-                        document.add_node(parent, NativeNodeKind::Text(value), limits.max_nodes)?;
+                        if document
+                            .raw_node(parent)
+                            .is_some_and(|node| node.namespace_uri() != Some(HTML_NAMESPACE_URI))
+                        {
+                            document.apply_script_inner_html(
+                                parent.index,
+                                &value,
+                                &BTreeMap::new(),
+                            )?;
+                        } else {
+                            document.add_node(
+                                parent,
+                                NativeNodeKind::Text(value),
+                                limits.max_nodes,
+                            )?;
+                        }
+                    }
+                }
+                HtmlToken::RcData(value) => {
+                    let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "tree builder lost its RCDATA parent".into(),
+                    })?;
+                    if document
+                        .raw_node(parent)
+                        .is_some_and(|node| node.namespace_uri() != Some(HTML_NAMESPACE_URI))
+                    {
+                        document.apply_script_inner_html(parent.index, &value, &BTreeMap::new())?;
+                    } else {
+                        let decoded = decode_html_character_data(&value, false);
+                        if !decoded.is_empty() {
+                            document.add_node(
+                                parent,
+                                NativeNodeKind::Text(decoded),
+                                limits.max_nodes,
+                            )?;
+                        }
                     }
                 }
                 HtmlToken::Comment(value) => {
@@ -6575,7 +6611,31 @@ impl NativeDocument {
                             offset: 0,
                             reason: "fragment parser lost its raw-text parent".into(),
                         })?;
-                        self.add_node(parent, NativeNodeKind::Text(value), self.max_nodes)?;
+                        if self
+                            .raw_node(parent)
+                            .is_some_and(|node| node.namespace_uri() != Some(HTML_NAMESPACE_URI))
+                        {
+                            self.apply_script_inner_html(parent.index, &value, script_nodes)?;
+                        } else {
+                            self.add_node(parent, NativeNodeKind::Text(value), self.max_nodes)?;
+                        }
+                    }
+                }
+                HtmlToken::RcData(value) => {
+                    let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "fragment parser lost its RCDATA parent".into(),
+                    })?;
+                    if self
+                        .raw_node(parent)
+                        .is_some_and(|node| node.namespace_uri() != Some(HTML_NAMESPACE_URI))
+                    {
+                        self.apply_script_inner_html(parent.index, &value, script_nodes)?;
+                    } else {
+                        let decoded = decode_html_character_data(&value, false);
+                        if !decoded.is_empty() {
+                            self.add_node(parent, NativeNodeKind::Text(decoded), self.max_nodes)?;
+                        }
                     }
                 }
                 HtmlToken::Comment(value) => {
@@ -9555,6 +9615,7 @@ enum HtmlToken {
     },
     Text(String),
     RawText(String),
+    RcData(String),
 }
 
 fn tokenize(source: &str, max_tokens: usize) -> Result<Vec<HtmlToken>, NativeEngineError> {
@@ -9759,7 +9820,7 @@ fn tokenize_preprocessed_html(
                     push_token(
                         &mut tokens,
                         if decode_entities {
-                            HtmlToken::Text(replace_html_nulls(&value, "\u{FFFD}").into_owned())
+                            HtmlToken::RcData(replace_html_nulls(&value, "\u{FFFD}").into_owned())
                         } else {
                             HtmlToken::RawText(replace_html_nulls(&value, "\u{FFFD}").into_owned())
                         },
@@ -9771,7 +9832,7 @@ fn tokenize_preprocessed_html(
                 push_token(
                     &mut tokens,
                     if decode_entities {
-                        HtmlToken::Text(replace_html_nulls(&value, "\u{FFFD}").into_owned())
+                        HtmlToken::RcData(replace_html_nulls(&value, "\u{FFFD}").into_owned())
                     } else {
                         HtmlToken::RawText(replace_html_nulls(&value, "\u{FFFD}").into_owned())
                     },
@@ -9797,7 +9858,8 @@ fn push_token(
             tokens.len().saturating_add(1),
         ));
     }
-    if matches!(&token, HtmlToken::Text(value) | HtmlToken::RawText(value) if value.is_empty()) {
+    if matches!(&token, HtmlToken::Text(value) | HtmlToken::RawText(value) | HtmlToken::RcData(value) if value.is_empty())
+    {
         return Ok(());
     }
     tokens.push(token);
@@ -14658,6 +14720,109 @@ mod tests {
         document
             .apply_script_commands(&evaluation.commands)
             .expect("Rust fragment commit must select integration-point namespaces");
+        assert_eq!(summarize_native(&document), expected);
+    }
+
+    #[test]
+    fn html_special_text_modes_respect_element_namespace_across_parser_routes() {
+        let markup = concat!(
+            "<section id='zone'><svg id='svg-root'>",
+            "<title id='svg-title'><span id='svg-title-span'>title</span></title>",
+            "<style id='svg-style'><g id='svg-style-g'>style</g></style>",
+            "<script id='svg-script'><g id='svg-script-g'>script</g></script>",
+            "</svg><math id='math-root'>",
+            "<textarea id='math-textarea'><mi id='math-textarea-mi'>mi</mi></textarea>",
+            "<title id='math-title'><mrow id='math-title-row'>row</mrow></title>",
+            "</math></section>",
+        );
+        let expected_nodes = [
+            ("svg-root", SVG_NAMESPACE_URI, "zone"),
+            ("svg-title", SVG_NAMESPACE_URI, "svg-root"),
+            ("svg-title-span", HTML_NAMESPACE_URI, "svg-title"),
+            ("svg-style", SVG_NAMESPACE_URI, "svg-root"),
+            ("svg-style-g", SVG_NAMESPACE_URI, "svg-style"),
+            ("svg-script", SVG_NAMESPACE_URI, "svg-root"),
+            ("svg-script-g", SVG_NAMESPACE_URI, "svg-script"),
+            ("math-root", MATHML_NAMESPACE_URI, "zone"),
+            ("math-textarea", MATHML_NAMESPACE_URI, "math-root"),
+            ("math-textarea-mi", MATHML_NAMESPACE_URI, "math-textarea"),
+            ("math-title", MATHML_NAMESPACE_URI, "math-root"),
+            ("math-title-row", MATHML_NAMESPACE_URI, "math-title"),
+        ];
+        let expected = expected_nodes
+            .iter()
+            .map(|(_, namespace, parent)| serde_json::json!([namespace, parent]))
+            .collect::<Vec<_>>();
+        let summarize_native = |tree: &NativeDocument| {
+            expected_nodes
+                .iter()
+                .map(|(element_id, _, _)| {
+                    let element = tree.find_element_by_id(element_id).unwrap_or_else(|| {
+                        panic!("special-text fixture element {element_id} must exist")
+                    });
+                    let node = tree
+                        .node(element)
+                        .expect("special-text fixture element must resolve");
+                    let parent_id = node
+                        .parent()
+                        .and_then(|parent| tree.node(parent))
+                        .and_then(|parent| parent.attribute("id"))
+                        .expect("special-text fixture parent must have an id");
+                    serde_json::json!([node.namespace_uri().unwrap(), parent_id])
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let direct = NativeDocument::parse(markup, &NativeEngineLimits::default())
+            .expect("document parser must keep special text modes namespace-aware");
+        assert_eq!(summarize_native(&direct), expected);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("html-special-text-context")
+            .expect("native JavaScript runtime must construct");
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+            const markup = __HTML_MARKUP__;
+            const root = document.querySelector("#root");
+            root.innerHTML = markup;
+            const response = globalThis.__glassParseHtmlDocument(
+                markup,
+                "https://example.test/html-special-text-context.html",
+                "text/html",
+            );
+            const ids = __ELEMENT_IDS__;
+            const summarize = (tree) => ids.map((id) => {
+                const element = tree.querySelector(`#${id}`);
+                return [element.namespaceURI, element.parentElement.getAttribute("id")];
+            });
+            return [summarize(root), summarize(response)];
+        })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(markup).unwrap())
+            .replace(
+                "__ELEMENT_IDS__",
+                &serde_json::to_string(
+                    &expected_nodes
+                        .iter()
+                        .map(|(element_id, _, _)| element_id)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            );
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://html-special-text-context.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("fragment projection and XHR document must respect foreign text modes");
+        assert_eq!(evaluation.value, serde_json::json!([expected, expected]));
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must respect foreign text modes");
         assert_eq!(summarize_native(&document), expected);
     }
 

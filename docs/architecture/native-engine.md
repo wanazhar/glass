@@ -1,7 +1,8 @@
 # Native browser engine
 
-Status: Browser-complete expansion is active at completed
-`native-engine-browser-681`, following completed `native-engine-browser-680`,
+Status: Browser-complete expansion remains active after completed
+`native-engine-browser-682`, following completed `native-engine-browser-681`,
+following completed `native-engine-browser-680`,
 following completed `native-engine-browser-679`,
 following completed `native-engine-browser-678`,
 following completed `native-engine-browser-677`,
@@ -489,6 +490,19 @@ and active-formatting-list maintenance remain separate parser requirements;
 the focused route test passed 1/1 and the table regression batch passed 44/44.
 See [`slice 681`](../plan/tasks/native-engine-browser-681.md) for exact local
 evidence; remote CI and browser conformance are not claimed.
+
+Slice 682 completes the structural-start half of HTML in-cell recovery.
+When `caption`, `col`, `colgroup`, a row-group tag, `td`, `th`, or `tr` starts
+inside an open HTML cell, that cell and descendants close before the token is
+processed at the exposed table context. Cell starts stay in the row, row
+starts stay in the row group, and table-level starts unwind the active row and
+group. Scope stops at nested `table`, `template`, and `html` boundaries; the
+fragment root and foreign-name elements cannot satisfy the cell target. The
+document parser, Rust fragment commit, same-turn projection, and XHR document
+parser agree on exact parentage. The focused cross-route fixture passed 1/1,
+the table-focused batch passed 45/45, and the locked package check passed. See
+[`slice 682`](../plan/tasks/native-engine-browser-682.md); complete table
+insertion modes and active-formatting-list handling remain open.
 
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
 property is exposed as a canonical percentage, face matching considers the

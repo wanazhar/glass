@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-681`, following completed `native-engine-browser-680`,
+`native-engine-browser-682`, following completed `native-engine-browser-681`,
+following completed `native-engine-browser-680`,
 following completed `native-engine-browser-679`,
 following completed `native-engine-browser-678`,
 following completed `native-engine-browser-677`,
@@ -75,6 +76,12 @@ following completed `native-engine-browser-660`, following completed
 `native-engine-browser-636`, following completed
 `native-engine-browser-635`, following completed
 `native-engine-browser-634`, following completed
+
+The completed [`native-engine-browser-682`](tasks/native-engine-browser-682.md)
+slice adds scope-aware recovery for structural start tags inside open table
+cells. Its focused cross-route fixture passed 1/1 and the table-focused batch
+passed 45/45 after the locked package check; full table insertion modes and
+active-formatting-list behavior remain open.
 
 The completed [native-engine-browser-673](tasks/native-engine-browser-673.md)
 slice adds bounded HTML table foster parenting and preserves whitespace,
@@ -151,6 +158,14 @@ matching open HTML cell within `table`/`template`/`html` scope can be closed;
 fragment roots and foreign-name matches cannot satisfy the target. The focused
 route test passed 1/1 and the table regression batch passed 44/44. Full in-cell
 insertion-mode and active-formatting behavior remain open.
+
+The completed [native-engine-browser-682](tasks/native-engine-browser-682.md)
+slice closes an open HTML cell before processing a structural table start tag.
+It preserves sibling-cell and row placement while unwinding to the containing
+table for row-group, caption, and column starts. Nested table/template scope,
+foreign namespaces, fragment roots, and out-of-scope cells remain explicit
+boundaries. Its four-route parentage fixture and table regression results are
+recorded in the task file; general parser conformance remains open.
 
 `native-engine-browser-633`, following completed
 `native-engine-browser-632`, following completed

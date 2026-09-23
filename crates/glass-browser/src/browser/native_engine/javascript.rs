@@ -27764,6 +27764,12 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         "caption", "col", "colgroup", "tbody", "tfoot", "thead", "tr", "td", "th",
         "table", "style", "script", "template", "form",
       ]);
+      const tableCellStructuralStartTags = new Set([
+        "caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr",
+      ]);
+      const tableLevelCellStructuralStartTags = new Set([
+        "caption", "col", "colgroup", "tbody", "tfoot", "thead",
+      ]);
       const tableFosterLocation = () => {
         const current = state.stack[state.stack.length - 1];
         if (!current || current.namespaceURI !== nativeHtmlNamespaceUri
@@ -27809,6 +27815,30 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         }
         // In an HTML parsing context, an out-of-scope table-structure end tag is ignored.
         return true;
+      };
+      const prepareHtmlTableCellStructuralStart = (incomingName) => {
+        if (!tableCellStructuralStartTags.has(incomingName)) return;
+        const current = state.stack[state.stack.length - 1];
+        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return;
+        let cellIndex = -1;
+        let tableIndex = -1;
+        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
+          const candidate = state.stack[index];
+          const candidateName = String(candidate.localName || "").toLowerCase();
+          if (candidate.namespaceURI === nativeSvgNamespaceUri && candidateName === "foreignobject") break;
+          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
+          if (candidateName === "table") {
+            if (cellIndex >= 0) tableIndex = index;
+            break;
+          }
+          if (candidateName === "html" || candidateName === "template") break;
+          if (cellIndex < 0 && (candidateName === "td" || candidateName === "th")) cellIndex = index;
+        }
+        if (cellIndex < 0 || tableIndex < 0) return;
+        state.stack.length = cellIndex;
+        if (tableLevelCellStructuralStartTags.has(incomingName)) {
+          state.stack.length = tableIndex + 1;
+        }
       };
       const prepareHtmlTableStart = () => {
         const current = state.stack[state.stack.length - 1];
@@ -27991,6 +28021,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           state.cursor = end + 1;
           continue;
         }
+        prepareHtmlTableCellStructuralStart(name);
         while (state.stack.length > 1
             && nativeHtmlShouldAutoClose(state.stack[state.stack.length - 1].localName, name)) state.stack.pop();
         insertImpliedTableElements(name);
@@ -35203,6 +35234,12 @@ fn document_bootstrap(
       "caption", "col", "colgroup", "tbody", "tfoot", "thead", "tr", "td", "th",
       "table", "style", "script", "template", "form",
     ]);
+    const tableCellStructuralStartTags = new Set([
+      "caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr",
+    ]);
+    const tableLevelCellStructuralStartTags = new Set([
+      "caption", "col", "colgroup", "tbody", "tfoot", "thead",
+    ]);
     const tableFosterLocation = () => {{
       const current = stack[stack.length - 1];
       if (!current || current.namespaceURI !== HTML_NAMESPACE
@@ -35244,6 +35281,31 @@ fn document_bootstrap(
       || (current === "tbody" && ["tbody", "tfoot"].includes(next))
       || (current === "tfoot" && next === "tbody")
       || (current === "colgroup" && ["colgroup", "tbody", "thead", "tfoot"].includes(next));
+    const prepareHtmlTableCellStructuralStart = (incomingName) => {{
+      if (!tableCellStructuralStartTags.has(incomingName)) return;
+      const current = stack[stack.length - 1];
+      if (!current || current.namespaceURI !== HTML_NAMESPACE) return;
+      let cellIndex = -1;
+      let tableIndex = -1;
+      for (let index = stack.length - 1; index >= 0; index -= 1) {{
+        const candidate = stack[index];
+        const candidateName = String(candidate.localName || "").toLowerCase();
+        if (candidate === stack[0]) break;
+        if (candidate.namespaceURI === SVG_NAMESPACE && candidateName === "foreignobject") break;
+        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
+        if (candidateName === "table") {{
+          if (cellIndex >= 0) tableIndex = index;
+          break;
+        }}
+        if (candidateName === "html" || candidateName === "template") break;
+        if (cellIndex < 0 && (candidateName === "td" || candidateName === "th")) cellIndex = index;
+      }}
+      if (cellIndex < 0 || tableIndex < 0) return;
+      stack.length = cellIndex;
+      if (tableLevelCellStructuralStartTags.has(incomingName)) {{
+        stack.length = tableIndex + 1;
+      }}
+    }};
     const prepareHtmlTableStart = () => {{
       const current = stack[stack.length - 1];
       if (!current || current.namespaceURI !== HTML_NAMESPACE) return true;
@@ -35442,6 +35504,7 @@ fn document_bootstrap(
         cursor = end + 1;
         continue;
       }}
+      prepareHtmlTableCellStructuralStart(normalizedName);
       while (stack.length > 1
           && shouldAutoClose(stack[stack.length - 1].localName, normalizedName)) {{
         stack.pop();

@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-681`, following completed
-`native-engine-browser-680`, following completed
+browser expansion slice is `native-engine-browser-682`. It follows completed
+`native-engine-browser-681`, following completed `native-engine-browser-680`,
+following completed
 `native-engine-browser-679`, following completed `native-engine-browser-678`,
 following completed
 `native-engine-browser-677`, following completed `native-engine-browser-676`,
@@ -650,6 +651,25 @@ document parsing share the behavior. The table-focused regression batch
 passed 43/43; the final nested-table/template-boundary fixture passed again
 1/1 after the locked package check. The slice does not implement the full
 insertion-mode or active-formatting algorithms.
+
+Slice 681 applies scoped end-tag closure to HTML `td` and `th` tokens. Only a
+matching open HTML cell before the `table`, `template`, or `html` scope
+boundary can satisfy the token; fragment roots and foreign-name elements do
+not. Document parsing, Rust fragment commit, same-turn projection, and XHR
+document parsing share the behavior. The focused route fixture passed 1/1 and
+the table regression batch passed 44/44; complete in-cell insertion-mode and
+active-formatting-list behavior remain open.
+
+Slice 682 applies the structural-start half of in-cell recovery to `caption`,
+`col`, `colgroup`, `tbody`, `td`, `tfoot`, `th`, `thead`, and `tr`. It closes
+the matching HTML cell and descendants, retains the row for sibling cell
+starts, closes the row for a new `tr`, and unwinds to the table for caption,
+column, and row-group starts. Nested table/template/html scope, fragment roots,
+foreign current nodes and `foreignObject`, and out-of-scope cells are covered
+across document parsing, Rust fragment commit, same-turn projection, and XHR
+documents. The focused cross-route fixture passed 1/1, the table batch passed
+45/45, and the locked package check passed. Other table insertion modes and
+active-formatting-list maintenance remain issue #40 requirements.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

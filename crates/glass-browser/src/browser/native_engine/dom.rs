@@ -1079,6 +1079,9 @@ impl NativeDocument {
                     {
                         continue;
                     }
+                    prepare_html_table_cell_structural_start_token(
+                        &document, &mut stack, None, &name,
+                    )?;
                     while stack.len() > 1
                         && stack.last().is_some_and(|id| {
                             document
@@ -6223,6 +6226,12 @@ impl NativeDocument {
                     {
                         continue;
                     }
+                    prepare_html_table_cell_structural_start_token(
+                        self,
+                        &mut stack,
+                        Some(id),
+                        &name,
+                    )?;
                     while stack.len() > 1
                         && stack.last().is_some_and(|current| {
                             self.raw_node(*current)
@@ -10080,6 +10089,80 @@ fn should_auto_close(current: &str, next: &str) -> bool {
         || (current == "colgroup" && matches!(next, "colgroup" | "tbody" | "thead" | "tfoot"))
 }
 
+fn prepare_html_table_cell_structural_start_token(
+    document: &NativeDocument,
+    stack: &mut Vec<NativeNodeId>,
+    fragment_root: Option<NativeNodeId>,
+    incoming_name: &str,
+) -> Result<(), NativeEngineError> {
+    if !matches!(
+        incoming_name,
+        "caption" | "col" | "colgroup" | "tbody" | "td" | "tfoot" | "th" | "thead" | "tr"
+    ) {
+        return Ok(());
+    }
+    let current_id = stack
+        .last()
+        .copied()
+        .ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder lost its current node while processing an in-cell start".into(),
+        })?;
+    let current = document
+        .node(current_id)
+        .ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder lost its current node while processing an in-cell start".into(),
+        })?;
+    if current.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+        return Ok(());
+    }
+
+    let mut cell_index = None;
+    let mut table_index = None;
+    for index in (0..stack.len()).rev() {
+        let id = stack[index];
+        if Some(id) == fragment_root {
+            break;
+        }
+        let node = document.node(id).ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder in-cell scope references an unknown node".into(),
+        })?;
+        if node.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+            if node.namespace_uri() == Some(SVG_NAMESPACE_URI)
+                && node.element_name() == Some("foreignobject")
+            {
+                break;
+            }
+            continue;
+        }
+        match node.element_name() {
+            Some("table") => {
+                if cell_index.is_some() {
+                    table_index = Some(index);
+                }
+                break;
+            }
+            Some("html" | "template") => break,
+            Some("td" | "th") if cell_index.is_none() => cell_index = Some(index),
+            _ => {}
+        }
+    }
+
+    let (Some(cell_index), Some(table_index)) = (cell_index, table_index) else {
+        return Ok(());
+    };
+    stack.truncate(cell_index);
+    if matches!(
+        incoming_name,
+        "caption" | "col" | "colgroup" | "tbody" | "tfoot" | "thead"
+    ) {
+        stack.truncate(table_index + 1);
+    }
+    Ok(())
+}
+
 fn is_table_special_start_tag(name: &str, attributes: &BTreeMap<String, String>) -> bool {
     matches!(
         name,
@@ -11644,6 +11727,205 @@ mod tests {
         let th_context = document.find_element_by_id("th-context").unwrap();
         let th_child = document.find_element_by_id("fragment-th-child").unwrap();
         assert_eq!(document.node(th_child).unwrap().parent(), Some(th_context));
+    }
+
+    #[test]
+    fn javascript_xhr_and_fragments_share_table_cell_structural_start_recovery() {
+        const MARKUP: &str = concat!(
+            "<main id='host'>",
+            "<table id='cells-table'><tbody id='cells-body'><tr id='cells-row'>",
+            "<td id='first-td'><div id='td-wrapper'><td id='next-td'>next</td></div>",
+            "<th id='first-th'><div id='th-wrapper'><th id='next-th'>next</th></div>",
+            "</tr></tbody></table>",
+            "<table id='rows-table'><tbody id='rows-body'><tr id='first-row'>",
+            "<td><div id='row-wrapper'><tr id='next-row'><td>next</td></tr></div>",
+            "</tr></tbody></table>",
+            "<table id='tbody-table'><tbody id='old-tbody'><tr><td><div>",
+            "<tbody id='new-tbody'><tr><td>new</td></tr></tbody>",
+            "</div></td></tr></tbody></table>",
+            "<table id='thead-table'><tbody id='old-thead-group'><tr><td><div>",
+            "<thead id='new-thead'><tr><th>new</th></tr></thead>",
+            "</div></td></tr></tbody></table>",
+            "<table id='tfoot-table'><tbody id='old-tfoot-group'><tr><td><div>",
+            "<tfoot id='new-tfoot'><tr><td>new</td></tr></tfoot>",
+            "</div></td></tr></tbody></table>",
+            "<table id='caption-table'><tbody><tr><td><div>",
+            "<caption id='recovered-caption'>caption</caption>",
+            "</div></td></tr></tbody></table>",
+            "<table id='colgroup-table'><tbody><tr><td><div>",
+            "<colgroup id='recovered-colgroup'><col></colgroup>",
+            "</div></td></tr></tbody></table>",
+            "<table id='col-table'><tbody><tr><td><div>",
+            "<col id='recovered-col'>",
+            "</div></td></tr></tbody></table>",
+            "<table id='nested-outer-table'><tbody><tr><td id='nested-outer-cell'>",
+            "<table id='nested-inner-table'><tbody id='nested-inner-body'><tr><td>inner</td>",
+            "<div><tr id='nested-next-row'></tr></div></tr></tbody></table>",
+            "<span id='after-inner-table'>outer</span></td></tr></tbody></table>",
+            "<table id='template-table'><tbody><tr><td id='template-cell'>",
+            "<template id='template-boundary'><div id='template-wrapper'>",
+            "<tr id='template-row'></tr></div></template>",
+            "<span id='after-template-boundary'>outer</span></td></tr></tbody></table>",
+            "<table id='foreign-table'><tbody><tr><td id='foreign-cell'>",
+            "<svg><g id='foreign-group'><tr id='foreign-row'></tr></g>",
+            "<foreignObject><div id='foreign-object-wrapper'>",
+            "<tfoot id='foreign-object-section'></tfoot>",
+            "</div></foreignObject></svg><span id='after-foreign'>outer</span>",
+            "</td></tr></tbody></table>",
+            "<div id='unscoped-host'><td id='unscoped-cell'><div id='unscoped-wrapper'>",
+            "<tr id='unscoped-row'></tr></div></td></div>",
+            "</main>"
+        );
+        let assert_parent = |tree: &NativeDocument, child_name: &str, parent_name: &str| {
+            let child = tree
+                .find_element_by_id(child_name)
+                .unwrap_or_else(|| panic!("missing {child_name}"));
+            let parent = tree
+                .find_element_by_id(parent_name)
+                .unwrap_or_else(|| panic!("missing {parent_name}"));
+            assert_eq!(
+                tree.node(child).and_then(NativeNode::parent),
+                Some(parent),
+                "unexpected parent for {child_name}"
+            );
+        };
+        let assert_structure = |tree: &NativeDocument| {
+            for (child, parent) in [
+                ("first-td", "cells-row"),
+                ("next-td", "cells-row"),
+                ("first-th", "cells-row"),
+                ("next-th", "cells-row"),
+                ("first-row", "rows-body"),
+                ("next-row", "rows-body"),
+                ("old-tbody", "tbody-table"),
+                ("new-tbody", "tbody-table"),
+                ("old-thead-group", "thead-table"),
+                ("new-thead", "thead-table"),
+                ("old-tfoot-group", "tfoot-table"),
+                ("new-tfoot", "tfoot-table"),
+                ("recovered-caption", "caption-table"),
+                ("recovered-colgroup", "colgroup-table"),
+                ("nested-inner-table", "nested-outer-cell"),
+                ("after-inner-table", "nested-outer-cell"),
+                ("template-row", "template-wrapper"),
+                ("after-template-boundary", "template-cell"),
+                ("foreign-row", "foreign-group"),
+                ("foreign-object-section", "foreign-object-wrapper"),
+                ("after-foreign", "foreign-cell"),
+                ("unscoped-row", "unscoped-wrapper"),
+            ] {
+                assert_parent(tree, child, parent);
+            }
+            let col_table = tree.find_element_by_id("col-table").unwrap();
+            let recovered_col = tree.find_element_by_id("recovered-col").unwrap();
+            let colgroup = tree
+                .node(recovered_col)
+                .and_then(NativeNode::parent)
+                .unwrap();
+            assert_eq!(
+                tree.node(colgroup).and_then(NativeNode::element_name),
+                Some("colgroup")
+            );
+            assert_eq!(
+                tree.node(colgroup).and_then(NativeNode::parent),
+                Some(col_table)
+            );
+            let foreign_row = tree.find_element_by_id("foreign-row").unwrap();
+            assert_eq!(
+                tree.node(foreign_row).and_then(NativeNode::namespace_uri),
+                Some(SVG_NAMESPACE_URI)
+            );
+        };
+
+        let direct_document = NativeDocument::parse(MARKUP, &NativeEngineLimits::default())
+            .expect("document parsing must recover structural starts in HTML cells");
+        assert_structure(&direct_document);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("table-cell-start-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<main id='root'></main><table><tbody><tr><td id='fragment-context'></td></tr></tbody></table>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let script = r##"(() => {
+                    const markup = __HTML_MARKUP__;
+                    const root = document.querySelector("#root");
+                    root.innerHTML = markup;
+                    const fragmentContext = document.querySelector("#fragment-context");
+                    fragmentContext.innerHTML = "<div id='fragment-wrapper'><td id='fragment-cell'>fragment</td></div>";
+                    const response = globalThis.__glassParseHtmlDocument(
+                        markup,
+                        "https://example.test/table-cell-start.html",
+                        "text/html",
+                    );
+                    const structureFailures = (tree) => {
+                        const parentIs = (child, parent) => tree.querySelector(`#${child}`)?.parentElement?.getAttribute("id") === parent;
+                        const column = tree.querySelector("#recovered-col");
+                        const implicitColgroup = column?.parentElement;
+                        const foreignRow = tree.querySelector("#foreign-row");
+                        return [
+                            ["first-td", parentIs("first-td", "cells-row")],
+                            ["next-td", parentIs("next-td", "cells-row")],
+                            ["first-th", parentIs("first-th", "cells-row")],
+                            ["next-th", parentIs("next-th", "cells-row")],
+                            ["first-row", parentIs("first-row", "rows-body")],
+                            ["next-row", parentIs("next-row", "rows-body")],
+                            ["old-tbody", parentIs("old-tbody", "tbody-table")],
+                            ["new-tbody", parentIs("new-tbody", "tbody-table")],
+                            ["old-thead-group", parentIs("old-thead-group", "thead-table")],
+                            ["new-thead", parentIs("new-thead", "thead-table")],
+                            ["old-tfoot-group", parentIs("old-tfoot-group", "tfoot-table")],
+                            ["new-tfoot", parentIs("new-tfoot", "tfoot-table")],
+                            ["recovered-caption", parentIs("recovered-caption", "caption-table")],
+                            ["recovered-colgroup", parentIs("recovered-colgroup", "colgroup-table")],
+                            ["recovered-col", column?.parentElement === implicitColgroup],
+                            ["implicit-colgroup", implicitColgroup?.localName === "colgroup"],
+                            ["implicit-colgroup parent", implicitColgroup?.parentElement?.getAttribute("id") === "col-table"],
+                            ["nested-inner-table", parentIs("nested-inner-table", "nested-outer-cell")],
+                            ["after-inner-table", parentIs("after-inner-table", "nested-outer-cell")],
+                            ["template-row", parentIs("template-row", "template-wrapper")],
+                            ["after-template-boundary", parentIs("after-template-boundary", "template-cell")],
+                            ["foreign-row", parentIs("foreign-row", "foreign-group")],
+                            ["foreign-row namespace", foreignRow?.namespaceURI === "http://www.w3.org/2000/svg"],
+                            ["foreign-object-section", parentIs("foreign-object-section", "foreign-object-wrapper")],
+                            ["after-foreign", parentIs("after-foreign", "foreign-cell")],
+                            ["unscoped-row", parentIs("unscoped-row", "unscoped-wrapper")],
+                        ].filter(([, matches]) => !matches).map(([name]) => name);
+                    };
+                    return [
+                        structureFailures(root),
+                        structureFailures(response),
+                        fragmentContext.querySelector("#fragment-cell").parentElement.getAttribute("id") === "fragment-wrapper",
+                    ];
+                })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(MARKUP).unwrap());
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://table-cell-start.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("same-turn and XHR parsing must recover structural starts");
+
+        assert_eq!(evaluation.value, serde_json::json!([[], [], true]));
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("fragment commits must use the same structural-start recovery");
+        assert_structure(&document);
+        let fragment_context = document.find_element_by_id("fragment-context").unwrap();
+        let fragment_wrapper = document.find_element_by_id("fragment-wrapper").unwrap();
+        let fragment_cell = document.find_element_by_id("fragment-cell").unwrap();
+        assert_eq!(
+            document.node(fragment_cell).and_then(NativeNode::parent),
+            Some(fragment_wrapper)
+        );
+        assert_eq!(
+            document.node(fragment_wrapper).and_then(NativeNode::parent),
+            Some(fragment_context)
+        );
     }
 
     #[test]

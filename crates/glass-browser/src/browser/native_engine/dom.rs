@@ -1156,6 +1156,9 @@ impl NativeDocument {
                     )? {
                         continue;
                     }
+                    if consume_html_table_cell_ignored_end_token(&document, &stack, None, &name)? {
+                        continue;
+                    }
                     if let Some(index) = stack.iter().rposition(|id| {
                         document
                             .node(*id)
@@ -6294,6 +6297,9 @@ impl NativeDocument {
                     )? {
                         continue;
                     }
+                    if consume_html_table_cell_ignored_end_token(self, &stack, Some(id), &name)? {
+                        continue;
+                    }
                     if let Some(index) = stack.iter().rposition(|current| {
                         self.raw_node(*current)
                             .and_then(NativeNode::element_name)
@@ -10417,6 +10423,53 @@ fn consume_html_table_structure_end_token(
     Ok(true)
 }
 
+fn consume_html_table_cell_ignored_end_token(
+    document: &NativeDocument,
+    stack: &[NativeNodeId],
+    fragment_root: Option<NativeNodeId>,
+    target_name: &str,
+) -> Result<bool, NativeEngineError> {
+    if !matches!(
+        target_name,
+        "body" | "caption" | "col" | "colgroup" | "html"
+    ) {
+        return Ok(false);
+    }
+    let Some(current_id) = stack.last().copied() else {
+        return Ok(false);
+    };
+    let current = document
+        .node(current_id)
+        .ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder lost its current node while processing an in-cell end tag".into(),
+        })?;
+    if current.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+        return Ok(false);
+    }
+
+    let mut cell_in_scope = false;
+    for id in stack.iter().rev().copied() {
+        if Some(id) == fragment_root {
+            return Ok(false);
+        }
+        let node = document.node(id).ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "tree builder in-cell scope references an unknown node".into(),
+        })?;
+        if node.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+            continue;
+        }
+        match node.element_name() {
+            Some("td" | "th") => cell_in_scope = true,
+            Some("table") => return Ok(cell_in_scope),
+            Some("html" | "template") => return Ok(false),
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
 fn decode_entities(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut cursor = 0;
@@ -11926,6 +11979,99 @@ mod tests {
             document.node(fragment_wrapper).and_then(NativeNode::parent),
             Some(fragment_context)
         );
+    }
+
+    #[test]
+    fn javascript_xhr_and_fragments_ignore_in_cell_end_tags() {
+        let targets = ["body", "caption", "col", "colgroup", "html"];
+        let mut markup = String::new();
+        for target in targets {
+            let (prefix, suffix) = match target {
+                "body" => (
+                    format!("<html id='ancestor-html-{target}'><body id='ancestor-body-{target}'>"),
+                    "</body></html>".to_owned(),
+                ),
+                "html" => (
+                    format!("<html id='ancestor-html-{target}'><body id='ancestor-body-{target}'>"),
+                    "</body></html>".to_owned(),
+                ),
+                "caption" | "colgroup" => (
+                    format!("<{target} id='ancestor-{target}'>"),
+                    format!("</{target}>"),
+                ),
+                "col" => (String::new(), String::new()),
+                _ => unreachable!("target list is exhaustive"),
+            };
+            markup.push_str(&prefix);
+            markup.push_str(&format!(
+                "<table id='table-{target}'><tbody><tr><td id='cell-{target}'><div></div></{target}><span id='after-{target}'></span></td></tr></tbody></table>{suffix}"
+            ));
+        }
+
+        let assert_parentage = |tree: &NativeDocument| {
+            for target in targets {
+                let marker = tree
+                    .find_element_by_id(&format!("after-{target}"))
+                    .unwrap_or_else(|| panic!("missing marker after </{target}>"));
+                let cell = tree
+                    .find_element_by_id(&format!("cell-{target}"))
+                    .unwrap_or_else(|| panic!("missing cell for </{target}>"));
+                assert_eq!(
+                    tree.node(marker).and_then(NativeNode::parent),
+                    Some(cell),
+                    "</{target}> must not pop the active HTML cell"
+                );
+            }
+        };
+
+        let direct_document = NativeDocument::parse(&markup, &NativeEngineLimits::default())
+            .expect("document parser must ignore in-cell end tags");
+        assert_parentage(&direct_document);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("table-cell-end-ignore-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+                    const markup = __HTML_MARKUP__;
+                    const targets = ["body", "caption", "col", "colgroup", "html"];
+                    const root = document.querySelector("#root");
+                    root.innerHTML = markup;
+                    const response = globalThis.__glassParseHtmlDocument(
+                        markup,
+                        "https://example.test/table-cell-end-ignore.html",
+                        "text/html",
+                    );
+                    const parentageMatches = (tree) => targets.map((target) => {
+                        const marker = tree.querySelector(`#after-${target}`);
+                        const cell = tree.querySelector(`#cell-${target}`);
+                        return marker?.parentElement === cell;
+                    });
+                    return [parentageMatches(root), parentageMatches(response)];
+                })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(&markup).unwrap());
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://table-cell-end-ignore.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("same-turn and XHR parsers must ignore in-cell end tags");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                [true, true, true, true, true],
+                [true, true, true, true, true]
+            ])
+        );
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must ignore in-cell end tags");
+        assert_parentage(&document);
     }
 
     #[test]

@@ -27,8 +27,8 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed
-`native-engine-browser-682`, following completed `native-engine-browser-681`,
+the browser-complete expansion has completed `native-engine-browser-683`
+after completed `native-engine-browser-682`, following completed `native-engine-browser-681`,
 following completed `native-engine-browser-680`,
 following completed `native-engine-browser-679`,
 following completed `native-engine-browser-678`,
@@ -76,6 +76,14 @@ following completed `native-engine-browser-660`, following completed
 `native-engine-browser-636`, following completed
 `native-engine-browser-635`, following completed
 `native-engine-browser-634`, following completed
+
+The completed [`native-engine-browser-683`](tasks/native-engine-browser-683.md)
+slice ignores `</body>`, `</caption>`, `</col>`, `</colgroup>`, and `</html>`
+inside a scoped HTML cell before generic end-tag matching can close an
+ancestor. The four parser routes agree; fragment roots and nested table/
+template boundaries remain explicit. Its focused route fixture passed 1/1,
+the table-focused batch passed 45/45, and the locked package check passed.
+This remains one bounded in-cell rule, not complete HTML parser conformance.
 
 The completed [`native-engine-browser-682`](tasks/native-engine-browser-682.md)
 slice adds scope-aware recovery for structural start tags inside open table

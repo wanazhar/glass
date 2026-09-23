@@ -1,7 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-682`. It follows completed
+browser expansion slice is `native-engine-browser-683`, after completed
+`native-engine-browser-682`. It follows completed
 `native-engine-browser-681`, following completed `native-engine-browser-680`,
 following completed
 `native-engine-browser-679`, following completed `native-engine-browser-678`,
@@ -670,6 +671,18 @@ across document parsing, Rust fragment commit, same-turn projection, and XHR
 documents. The focused cross-route fixture passed 1/1, the table batch passed
 45/45, and the locked package check passed. Other table insertion modes and
 active-formatting-list maintenance remain issue #40 requirements.
+
+Slice 683 applies the in-cell ignored-end-tag rule to `body`, `caption`, `col`,
+`colgroup`, and `html`. An actual HTML `td`/`th` must have its containing HTML
+`table` in the open-element stack before the token is consumed; the token is
+then ignored before generic name matching. Document parsing, Rust fragment
+commit, same-turn projection, and XHR HTML parsing share this behavior, while
+fragment roots and nested tables/templates cannot satisfy the scope probe;
+foreign nodes do not satisfy HTML scope, and a foreign current node retains its
+existing route. The focused four-route fixture passed 1/1, the table batch
+passed 45/45, and the locked package check passed. See
+`docs/plan/tasks/native-engine-browser-683.md`; complete in-cell/parser
+conformance remains open.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

@@ -1,7 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion has completed
-`native-engine-browser-685`, following completed `native-engine-browser-684`,
+`native-engine-browser-686`, following completed `native-engine-browser-685`, following completed
+`native-engine-browser-684`,
 following completed `native-engine-browser-683`,
 following completed `native-engine-browser-682`,
 following completed `native-engine-browser-681`,
@@ -548,6 +549,16 @@ package check passed. Documentation validators covered 1,313 Markdown files
 with zero current-claim failures. See
 [`slice 685`](../plan/tasks/native-engine-browser-685.md); complete parser
 conformance remains open.
+
+Slice 686 implements the HTML active-formatting list and adoption-agency
+algorithm across document parsing, Rust fragment commit, same-turn JavaScript
+projection, and XHR HTML parsing. The contract includes formatting-element
+reconstruction, marker boundaries, the three-equivalent-element Noah's Ark
+limit, misnested formatting repair with bounded stack/list updates, and actual
+node cloning/reparenting under the existing node/depth limits. The focused
+active-formatting tests passed 2/2 and the table regression batch passed 46/46.
+Other insertion modes, tokenizer behavior, and broader Core Web Profile
+conformance remain open.
 
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
 property is exposed as a canonical percentage, face matching considers the

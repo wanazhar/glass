@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest completed
-browser expansion slice is `native-engine-browser-685`, following completed
-`native-engine-browser-684` and `native-engine-browser-683`. It follows
+browser expansion slice is `native-engine-browser-686`, following completed
+`native-engine-browser-685`, `native-engine-browser-684`, and
+`native-engine-browser-683`. It follows
 completed `native-engine-browser-682`. It follows
 `native-engine-browser-681`, following completed `native-engine-browser-680`,
 following completed
@@ -709,6 +710,20 @@ batch passed 46/46, the locked package check passed, and documentation
 validators covered 1,313 Markdown files with zero current-claim failures. See
 `docs/plan/tasks/native-engine-browser-685.md`; general parser conformance
 remains open.
+
+Slice 686 closes the currently identified active-formatting-list gap as one
+cross-route tree-construction unit. The Rust document and `innerHTML` builders
+and both independent JavaScript HTML builders maintain ordered active
+formatting entries and markers; reconstruct detached entries before relevant
+in-body tokens; enforce the three-identical-entry Noah's Ark rule; and run the
+bounded HTML adoption-agency algorithm for formatting end tags and nested
+anchors. The algorithm updates both open-element and formatting lists, clones
+original HTML attributes, moves real nodes at the adjusted insertion location,
+respects HTML scope/namespace/fragment boundaries, and preserves node and
+depth limits. The active-formatting tests pass 2/2, including exact parentage
+and sibling order across all four routes, marker isolation, attributes, and the
+Noah's Ark cap; the table regression batch passes 46/46. The remaining HTML
+insertion modes and general parser conformance remain open.
 
 Slice 671 parses balanced nested JavaScript pseudo-class arguments and
 preserves nested `:is()`, `:where()`, `:not()`, and `:has()` semantics.

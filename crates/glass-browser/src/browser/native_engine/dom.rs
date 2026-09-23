@@ -1065,6 +1065,7 @@ impl NativeDocument {
             inline_style_attribute_reports: BTreeMap::new(),
         };
         let mut stack = vec![root];
+        let mut active_formatting = ActiveFormattingList::new();
         let mut document_type_seen = false;
 
         for token in tokens {
@@ -1074,14 +1075,27 @@ impl NativeDocument {
                     attributes,
                     self_closing,
                 } => {
-                    if name == "table"
-                        && !prepare_html_table_start_token(&document, &mut stack, None)?
-                    {
-                        continue;
+                    if name == "table" {
+                        let stack_before = stack.clone();
+                        let process_table =
+                            prepare_html_table_start_token(&document, &mut stack, None)?;
+                        clear_markers_for_popped_elements(
+                            &document,
+                            &stack_before,
+                            &stack,
+                            &mut active_formatting,
+                        );
+                        if !process_table {
+                            continue;
+                        }
                     }
+                    let stack_len_before_cell_recovery = stack.len();
                     prepare_html_table_cell_structural_start_token(
                         &document, &mut stack, None, &name,
                     )?;
+                    if stack.len() < stack_len_before_cell_recovery {
+                        clear_active_formatting_to_marker(&mut active_formatting);
+                    }
                     while stack.len() > 1
                         && stack.last().is_some_and(|id| {
                             document
@@ -1099,6 +1113,41 @@ impl NativeDocument {
                         stack.pop();
                     }
                     document.insert_implied_html_table_elements(&mut stack, &name)?;
+                    if !is_table_special_start_tag(&name, &attributes) {
+                        reconstruct_active_formatting_elements(
+                            &mut document,
+                            &mut stack,
+                            &mut active_formatting,
+                            None,
+                        )?;
+                        let nested_formatting_start =
+                            (name == "a" && active_formatting_entry_index(&document, &active_formatting, "a").is_some())
+                                || (name == "nobr"
+                                    && active_formatting_entry_index(
+                                        &document,
+                                        &active_formatting,
+                                        "nobr",
+                                    )
+                                    .is_some_and(|index| {
+                                        matches!(active_formatting[index], ActiveFormattingEntry::Element(id)
+                                            if html_element_is_in_scope(&document, &stack, id, None))
+                                    }));
+                        if nested_formatting_start {
+                            adopt_active_formatting_element(
+                                &mut document,
+                                &mut stack,
+                                &mut active_formatting,
+                                None,
+                                &name,
+                            )?;
+                            reconstruct_active_formatting_elements(
+                                &mut document,
+                                &mut stack,
+                                &mut active_formatting,
+                                None,
+                            )?;
+                        }
+                    }
                     let foster_location = if is_table_special_start_tag(&name, &attributes) {
                         None
                     } else {
@@ -1141,38 +1190,71 @@ impl NativeDocument {
                     document.assign_parsed_namespace_to_node(id, parent)?;
                     if !self_closing && !is_void_element(&name) {
                         stack.push(id);
+                        if document
+                            .raw_node(id)
+                            .is_some_and(|node| node.namespace_uri() == Some(HTML_NAMESPACE_URI))
+                        {
+                            if is_active_formatting_marker_element(&name) {
+                                active_formatting.push(ActiveFormattingEntry::Marker);
+                            } else if is_html_formatting_element(&name) {
+                                push_active_formatting_element(
+                                    &document,
+                                    &mut active_formatting,
+                                    id,
+                                )?;
+                            }
+                        }
                     }
                 }
                 HtmlToken::EndTag(name) => {
-                    if name == "table" && consume_html_table_end_token(&document, &mut stack, None)?
-                    {
+                    let stack_before = is_marker_sensitive_end_tag(&name).then(|| stack.clone());
+                    let consumed = (name == "table"
+                        && consume_html_table_end_token(&document, &mut stack, None)?)
+                        || consume_html_table_column_group_end_token(
+                            &document, &mut stack, None, &name,
+                        )?
+                        || (matches!(
+                            name.as_str(),
+                            "tbody" | "tfoot" | "thead" | "tr" | "td" | "th"
+                        ) && consume_html_table_structure_end_token(
+                            &document, &mut stack, None, &name,
+                        )?)
+                        || consume_html_table_cell_ignored_end_token(
+                            &document, &stack, None, &name,
+                        )?
+                        || consume_html_table_row_ignored_end_token(
+                            &document, &stack, None, &name,
+                        )?
+                        || consume_html_table_caption_ignored_end_token(
+                            &document, &stack, None, &name,
+                        )?
+                        || consume_html_table_mode_ignored_end_token(
+                            &document, &stack, None, &name,
+                        )?;
+                    if consumed {
+                        if let Some(before) = stack_before.as_deref() {
+                            clear_markers_for_popped_elements(
+                                &document,
+                                before,
+                                &stack,
+                                &mut active_formatting,
+                            );
+                        }
                         continue;
                     }
-                    if consume_html_table_column_group_end_token(
-                        &document, &mut stack, None, &name,
-                    )? {
-                        continue;
-                    }
-                    if matches!(
-                        name.as_str(),
-                        "tbody" | "tfoot" | "thead" | "tr" | "td" | "th"
-                    ) && consume_html_table_structure_end_token(
-                        &document, &mut stack, None, &name,
-                    )? {
-                        continue;
-                    }
-                    if consume_html_table_cell_ignored_end_token(&document, &stack, None, &name)? {
-                        continue;
-                    }
-                    if consume_html_table_row_ignored_end_token(&document, &stack, None, &name)? {
-                        continue;
-                    }
-                    if consume_html_table_caption_ignored_end_token(&document, &stack, None, &name)?
-                    {
-                        continue;
-                    }
-                    if consume_html_table_mode_ignored_end_token(&document, &stack, None, &name)? {
-                        continue;
+                    if is_html_formatting_element(&name) {
+                        if adopt_active_formatting_element(
+                            &mut document,
+                            &mut stack,
+                            &mut active_formatting,
+                            None,
+                            &name,
+                        )? {
+                            continue;
+                        }
+                        if consume_formatting_fallback_end_tag(&document, &mut stack, None, &name) {
+                            continue;
+                        }
                     }
                     if let Some(index) = stack.iter().rposition(|id| {
                         document
@@ -1190,9 +1272,23 @@ impl NativeDocument {
                     }) {
                         stack.truncate(index);
                     }
+                    if let Some(before) = stack_before.as_deref() {
+                        clear_markers_for_popped_elements(
+                            &document,
+                            before,
+                            &stack,
+                            &mut active_formatting,
+                        );
+                    }
                 }
                 HtmlToken::Text(value) => {
                     if !value.is_empty() {
+                        reconstruct_active_formatting_elements(
+                            &mut document,
+                            &mut stack,
+                            &mut active_formatting,
+                            None,
+                        )?;
                         let decoded = decode_entities(&value);
                         let foster_location = if decoded
                             .as_bytes()
@@ -6232,6 +6328,7 @@ impl NativeDocument {
         }
 
         let mut stack = vec![id];
+        let mut active_formatting = ActiveFormattingList::new();
         for token in tokens {
             match token {
                 HtmlToken::StartTag {
@@ -6239,17 +6336,30 @@ impl NativeDocument {
                     attributes,
                     self_closing,
                 } => {
-                    if name == "table"
-                        && !prepare_html_table_start_token(self, &mut stack, Some(id))?
-                    {
-                        continue;
+                    if name == "table" {
+                        let stack_before = stack.clone();
+                        let process_table =
+                            prepare_html_table_start_token(self, &mut stack, Some(id))?;
+                        clear_markers_for_popped_elements(
+                            self,
+                            &stack_before,
+                            &stack,
+                            &mut active_formatting,
+                        );
+                        if !process_table {
+                            continue;
+                        }
                     }
+                    let stack_len_before_cell_recovery = stack.len();
                     prepare_html_table_cell_structural_start_token(
                         self,
                         &mut stack,
                         Some(id),
                         &name,
                     )?;
+                    if stack.len() < stack_len_before_cell_recovery {
+                        clear_active_formatting_to_marker(&mut active_formatting);
+                    }
                     while stack.len() > 1
                         && stack.last().is_some_and(|current| {
                             self.raw_node(*current)
@@ -6260,6 +6370,41 @@ impl NativeDocument {
                         stack.pop();
                     }
                     self.insert_implied_html_table_elements(&mut stack, &name)?;
+                    if !is_table_special_start_tag(&name, &attributes) {
+                        reconstruct_active_formatting_elements(
+                            self,
+                            &mut stack,
+                            &mut active_formatting,
+                            Some(id),
+                        )?;
+                        let nested_formatting_start =
+                            (name == "a" && active_formatting_entry_index(self, &active_formatting, "a").is_some())
+                                || (name == "nobr"
+                                    && active_formatting_entry_index(
+                                        self,
+                                        &active_formatting,
+                                        "nobr",
+                                    )
+                                    .is_some_and(|index| {
+                                        matches!(active_formatting[index], ActiveFormattingEntry::Element(active_id)
+                                            if html_element_is_in_scope(self, &stack, active_id, Some(id)))
+                                    }));
+                        if nested_formatting_start {
+                            adopt_active_formatting_element(
+                                self,
+                                &mut stack,
+                                &mut active_formatting,
+                                Some(id),
+                                &name,
+                            )?;
+                            reconstruct_active_formatting_elements(
+                                self,
+                                &mut stack,
+                                &mut active_formatting,
+                                Some(id),
+                            )?;
+                        }
+                    }
                     let foster_location = if is_table_special_start_tag(&name, &attributes) {
                         None
                     } else {
@@ -6294,40 +6439,84 @@ impl NativeDocument {
                     self.assign_parsed_namespace_to_node(child, parent)?;
                     if !self_closing && !is_void_element(&name) {
                         stack.push(child);
+                        if self
+                            .raw_node(child)
+                            .is_some_and(|node| node.namespace_uri() == Some(HTML_NAMESPACE_URI))
+                        {
+                            if is_active_formatting_marker_element(&name) {
+                                active_formatting.push(ActiveFormattingEntry::Marker);
+                            } else if is_html_formatting_element(&name) {
+                                push_active_formatting_element(
+                                    self,
+                                    &mut active_formatting,
+                                    child,
+                                )?;
+                            }
+                        }
                     }
                 }
                 HtmlToken::EndTag(name) => {
-                    if name == "table" && consume_html_table_end_token(self, &mut stack, Some(id))?
-                    {
+                    let stack_before = is_marker_sensitive_end_tag(&name).then(|| stack.clone());
+                    let consumed = (name == "table"
+                        && consume_html_table_end_token(self, &mut stack, Some(id))?)
+                        || consume_html_table_column_group_end_token(
+                            self,
+                            &mut stack,
+                            Some(id),
+                            &name,
+                        )?
+                        || (matches!(
+                            name.as_str(),
+                            "tbody" | "tfoot" | "thead" | "tr" | "td" | "th"
+                        ) && consume_html_table_structure_end_token(
+                            self,
+                            &mut stack,
+                            Some(id),
+                            &name,
+                        )?)
+                        || consume_html_table_cell_ignored_end_token(
+                            self,
+                            &stack,
+                            Some(id),
+                            &name,
+                        )?
+                        || consume_html_table_row_ignored_end_token(self, &stack, Some(id), &name)?
+                        || consume_html_table_caption_ignored_end_token(
+                            self,
+                            &stack,
+                            Some(id),
+                            &name,
+                        )?
+                        || consume_html_table_mode_ignored_end_token(
+                            self,
+                            &stack,
+                            Some(id),
+                            &name,
+                        )?;
+                    if consumed {
+                        if let Some(before) = stack_before.as_deref() {
+                            clear_markers_for_popped_elements(
+                                self,
+                                before,
+                                &stack,
+                                &mut active_formatting,
+                            );
+                        }
                         continue;
                     }
-                    if consume_html_table_column_group_end_token(self, &mut stack, Some(id), &name)?
-                    {
-                        continue;
-                    }
-                    if matches!(
-                        name.as_str(),
-                        "tbody" | "tfoot" | "thead" | "tr" | "td" | "th"
-                    ) && consume_html_table_structure_end_token(
-                        self,
-                        &mut stack,
-                        Some(id),
-                        &name,
-                    )? {
-                        continue;
-                    }
-                    if consume_html_table_cell_ignored_end_token(self, &stack, Some(id), &name)? {
-                        continue;
-                    }
-                    if consume_html_table_row_ignored_end_token(self, &stack, Some(id), &name)? {
-                        continue;
-                    }
-                    if consume_html_table_caption_ignored_end_token(self, &stack, Some(id), &name)?
-                    {
-                        continue;
-                    }
-                    if consume_html_table_mode_ignored_end_token(self, &stack, Some(id), &name)? {
-                        continue;
+                    if is_html_formatting_element(&name) {
+                        if adopt_active_formatting_element(
+                            self,
+                            &mut stack,
+                            &mut active_formatting,
+                            Some(id),
+                            &name,
+                        )? {
+                            continue;
+                        }
+                        if consume_formatting_fallback_end_tag(self, &mut stack, Some(id), &name) {
+                            continue;
+                        }
                     }
                     if let Some(index) = stack.iter().rposition(|current| {
                         self.raw_node(*current)
@@ -6337,9 +6526,23 @@ impl NativeDocument {
                     {
                         stack.truncate(index);
                     }
+                    if let Some(before) = stack_before.as_deref() {
+                        clear_markers_for_popped_elements(
+                            self,
+                            before,
+                            &stack,
+                            &mut active_formatting,
+                        );
+                    }
                 }
                 HtmlToken::Text(value) => {
                     if !value.is_empty() {
+                        reconstruct_active_formatting_elements(
+                            self,
+                            &mut stack,
+                            &mut active_formatting,
+                            Some(id),
+                        )?;
                         let decoded = decode_entities(&value);
                         let foster_location = if decoded
                             .as_bytes()
@@ -10221,6 +10424,816 @@ fn is_table_special_start_tag(name: &str, attributes: &BTreeMap<String, String>)
             .is_some_and(|value| value.eq_ignore_ascii_case("hidden")))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveFormattingEntry {
+    Marker,
+    Element(NativeNodeId),
+}
+
+type ActiveFormattingList = Vec<ActiveFormattingEntry>;
+
+fn is_html_formatting_element(name: &str) -> bool {
+    matches!(
+        name,
+        "a" | "b"
+            | "big"
+            | "code"
+            | "em"
+            | "font"
+            | "i"
+            | "nobr"
+            | "s"
+            | "small"
+            | "strike"
+            | "strong"
+            | "tt"
+            | "u"
+    )
+}
+
+fn is_active_formatting_marker_element(name: &str) -> bool {
+    matches!(
+        name,
+        "applet" | "caption" | "marquee" | "object" | "template" | "td" | "th"
+    )
+}
+
+fn is_marker_sensitive_end_tag(name: &str) -> bool {
+    matches!(
+        name,
+        "applet"
+            | "caption"
+            | "marquee"
+            | "object"
+            | "table"
+            | "tbody"
+            | "td"
+            | "template"
+            | "tfoot"
+            | "th"
+            | "thead"
+            | "tr"
+    )
+}
+
+fn clear_active_formatting_to_marker(active: &mut ActiveFormattingList) {
+    while let Some(entry) = active.pop() {
+        if entry == ActiveFormattingEntry::Marker {
+            break;
+        }
+    }
+}
+
+fn clear_markers_for_popped_elements(
+    document: &NativeDocument,
+    stack_before: &[NativeNodeId],
+    stack_after: &[NativeNodeId],
+    active: &mut ActiveFormattingList,
+) {
+    for id in stack_before
+        .get(stack_after.len()..)
+        .unwrap_or_default()
+        .iter()
+        .rev()
+    {
+        if document
+            .raw_node(*id)
+            .and_then(NativeNode::element_name)
+            .is_some_and(is_active_formatting_marker_element)
+        {
+            clear_active_formatting_to_marker(active);
+        }
+    }
+}
+
+fn active_formatting_entry_index(
+    document: &NativeDocument,
+    active: &ActiveFormattingList,
+    name: &str,
+) -> Option<usize> {
+    let start = active
+        .iter()
+        .rposition(|entry| *entry == ActiveFormattingEntry::Marker)
+        .map_or(0, |index| index + 1);
+    active[start..]
+        .iter()
+        .rposition(|entry| match entry {
+            ActiveFormattingEntry::Marker => false,
+            ActiveFormattingEntry::Element(id) => document.raw_node(*id).is_some_and(|node| {
+                node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+                    && node.element_name() == Some(name)
+            }),
+        })
+        .map(|index| start + index)
+}
+
+fn push_active_formatting_element(
+    document: &NativeDocument,
+    active: &mut ActiveFormattingList,
+    id: NativeNodeId,
+) -> Result<(), NativeEngineError> {
+    let node = document
+        .raw_node(id)
+        .ok_or(NativeEngineError::DetachedTarget)?;
+    if node.namespace_uri() != Some(HTML_NAMESPACE_URI) {
+        return Ok(());
+    }
+    let Some(name) = node.element_name() else {
+        return Err(NativeEngineError::Parse {
+            offset: 0,
+            reason: "active formatting entry is not an element".into(),
+        });
+    };
+    let attributes = node.attributes().ok_or_else(|| NativeEngineError::Parse {
+        offset: 0,
+        reason: "active formatting element has no attributes".into(),
+    })?;
+    let marker_start = active
+        .iter()
+        .rposition(|entry| *entry == ActiveFormattingEntry::Marker)
+        .map_or(0, |index| index + 1);
+    let equivalent_entries = active[marker_start..]
+        .iter()
+        .enumerate()
+        .filter_map(|(relative_index, entry)| {
+            let ActiveFormattingEntry::Element(existing_id) = entry else {
+                return None;
+            };
+            document.raw_node(*existing_id).and_then(|existing| {
+                (existing.namespace_uri() == Some(HTML_NAMESPACE_URI)
+                    && existing.element_name() == Some(name)
+                    && existing.attributes() == Some(attributes))
+                .then_some(marker_start + relative_index)
+            })
+        })
+        .collect::<Vec<_>>();
+    if equivalent_entries.len() >= 3 {
+        active.remove(equivalent_entries[0]);
+    }
+    active.push(ActiveFormattingEntry::Element(id));
+    Ok(())
+}
+
+fn is_html_special_element(name: &str) -> bool {
+    matches!(
+        name,
+        "address"
+            | "applet"
+            | "area"
+            | "article"
+            | "aside"
+            | "base"
+            | "basefont"
+            | "bgsound"
+            | "blockquote"
+            | "body"
+            | "br"
+            | "button"
+            | "caption"
+            | "center"
+            | "col"
+            | "colgroup"
+            | "dd"
+            | "details"
+            | "dir"
+            | "div"
+            | "dl"
+            | "dt"
+            | "embed"
+            | "fieldset"
+            | "figcaption"
+            | "figure"
+            | "footer"
+            | "form"
+            | "frame"
+            | "frameset"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "head"
+            | "header"
+            | "hgroup"
+            | "hr"
+            | "html"
+            | "iframe"
+            | "img"
+            | "input"
+            | "keygen"
+            | "li"
+            | "link"
+            | "listing"
+            | "main"
+            | "marquee"
+            | "menu"
+            | "meta"
+            | "nav"
+            | "noembed"
+            | "noframes"
+            | "noscript"
+            | "object"
+            | "ol"
+            | "p"
+            | "param"
+            | "plaintext"
+            | "pre"
+            | "script"
+            | "search"
+            | "section"
+            | "select"
+            | "source"
+            | "style"
+            | "summary"
+            | "table"
+            | "tbody"
+            | "td"
+            | "template"
+            | "textarea"
+            | "tfoot"
+            | "th"
+            | "thead"
+            | "title"
+            | "tr"
+            | "track"
+            | "ul"
+            | "wbr"
+            | "xmp"
+    )
+}
+
+fn is_special_tree_builder_element(document: &NativeDocument, id: NativeNodeId) -> bool {
+    document
+        .raw_node(id)
+        .is_some_and(|node| match node.namespace_uri() {
+            Some(HTML_NAMESPACE_URI) => node.element_name().is_some_and(is_html_special_element),
+            Some(MATHML_NAMESPACE_URI) => node.element_name().is_some_and(|name| {
+                matches!(name, "mi" | "mo" | "mn" | "ms" | "mtext" | "annotation-xml")
+            }),
+            Some(SVG_NAMESPACE_URI) => node
+                .element_name()
+                .is_some_and(|name| matches!(name, "foreignobject" | "desc" | "title")),
+            _ => false,
+        })
+}
+
+fn is_html_scope_boundary(document: &NativeDocument, id: NativeNodeId) -> bool {
+    let Some(node) = document.raw_node(id) else {
+        return true;
+    };
+    match node.namespace_uri() {
+        Some(HTML_NAMESPACE_URI) => node.element_name().is_some_and(|name| {
+            matches!(
+                name,
+                "applet"
+                    | "caption"
+                    | "html"
+                    | "table"
+                    | "td"
+                    | "th"
+                    | "marquee"
+                    | "object"
+                    | "select"
+                    | "template"
+            )
+        }),
+        Some(MATHML_NAMESPACE_URI) => node.element_name().is_some_and(|name| {
+            matches!(name, "mi" | "mo" | "mn" | "ms" | "mtext" | "annotation-xml")
+        }),
+        Some(SVG_NAMESPACE_URI) => node
+            .element_name()
+            .is_some_and(|name| matches!(name, "foreignobject" | "desc" | "title")),
+        _ => false,
+    }
+}
+
+fn html_element_is_in_scope(
+    document: &NativeDocument,
+    stack: &[NativeNodeId],
+    target: NativeNodeId,
+    fragment_root: Option<NativeNodeId>,
+) -> bool {
+    for id in stack.iter().rev().copied() {
+        if Some(id) == fragment_root {
+            return false;
+        }
+        if id == target {
+            return true;
+        }
+        if is_html_scope_boundary(document, id) {
+            return false;
+        }
+    }
+    false
+}
+
+fn parser_subtree_element_depth(document: &NativeDocument, root: NativeNodeId) -> usize {
+    let mut maximum = 0;
+    let mut pending = vec![(root, 0usize)];
+    while let Some((id, parent_depth)) = pending.pop() {
+        let Some(node) = document.raw_node(id) else {
+            continue;
+        };
+        let depth = parent_depth + usize::from(node.element_name().is_some());
+        maximum = maximum.max(depth);
+        pending.extend(node.children().iter().copied().map(|child| (child, depth)));
+    }
+    maximum
+}
+
+fn move_parser_node(
+    document: &mut NativeDocument,
+    parent: NativeNodeId,
+    child: NativeNodeId,
+    before: Option<NativeNodeId>,
+    reason: &str,
+) -> Result<(), NativeEngineError> {
+    if document.raw_node(parent).is_none() || document.raw_node(child).is_none() {
+        return Err(NativeEngineError::Parse {
+            offset: 0,
+            reason: "HTML tree builder move references an unknown node".into(),
+        });
+    }
+    if before.is_some_and(|before| {
+        document.raw_node(before).and_then(NativeNode::parent) != Some(parent)
+    }) {
+        return Err(NativeEngineError::Parse {
+            offset: 0,
+            reason: "HTML tree builder insertion reference is not a child of its parent".into(),
+        });
+    }
+    if before == Some(child) {
+        return Ok(());
+    }
+    let mut ancestor = Some(parent);
+    while let Some(id) = ancestor {
+        if id == child {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: format!(
+                    "HTML tree builder {reason}: move of {} ({child:?}) beneath {} ({parent:?}) would create a DOM cycle",
+                    document
+                        .raw_node(child)
+                        .and_then(NativeNode::element_name)
+                        .unwrap_or("non-element"),
+                    document
+                        .raw_node(parent)
+                        .and_then(NativeNode::element_name)
+                        .unwrap_or("non-element"),
+                ),
+            });
+        }
+        ancestor = document.raw_node(id).and_then(NativeNode::parent);
+    }
+    let new_depth = document
+        .element_depth(parent)
+        .saturating_add(parser_subtree_element_depth(document, child));
+    if new_depth > document.max_dom_depth {
+        return Err(NativeEngineError::limit(
+            "DOM depth",
+            document.max_dom_depth,
+            new_depth,
+        ));
+    }
+    let old_parent = document.raw_node(child).and_then(NativeNode::parent);
+    if let Some(old_parent) = old_parent {
+        let old_parent_node = document
+            .raw_node_mut(old_parent)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        old_parent_node
+            .children
+            .retain(|candidate| *candidate != child);
+    }
+    let parent_node = document
+        .raw_node_mut(parent)
+        .ok_or(NativeEngineError::DetachedTarget)?;
+    let insertion_index = before.and_then(|before| {
+        parent_node
+            .children
+            .iter()
+            .position(|candidate| *candidate == before)
+    });
+    if before.is_some() && insertion_index.is_none() {
+        return Err(NativeEngineError::Parse {
+            offset: 0,
+            reason: "HTML tree builder lost its insertion reference".into(),
+        });
+    }
+    match insertion_index {
+        Some(index) => parent_node.children.insert(index, child),
+        None => parent_node.children.push(child),
+    }
+    document
+        .raw_node_mut(child)
+        .ok_or(NativeEngineError::DetachedTarget)?
+        .parent = Some(parent);
+    Ok(())
+}
+
+fn insert_parser_formatting_clone(
+    document: &mut NativeDocument,
+    stack: &[NativeNodeId],
+    fallback_parent: NativeNodeId,
+    fragment_root: Option<NativeNodeId>,
+    name: &str,
+    attributes: BTreeMap<String, String>,
+) -> Result<NativeNodeId, NativeEngineError> {
+    let foster_location = html_table_foster_location(document, stack, fragment_root)?;
+    let parent = foster_location
+        .map(|(parent, _)| parent)
+        .unwrap_or(fallback_parent);
+    let depth = document.element_depth(parent);
+    if depth >= document.max_dom_depth {
+        return Err(NativeEngineError::limit(
+            "DOM depth",
+            document.max_dom_depth,
+            depth.saturating_add(1),
+        ));
+    }
+    let kind = NativeNodeKind::Element {
+        name: name.to_owned(),
+        attributes,
+    };
+    let id = match foster_location {
+        Some((parent, Some(before))) => {
+            document.add_node_before(parent, before, kind, document.max_nodes)?
+        }
+        Some((parent, None)) => document.add_node(parent, kind, document.max_nodes)?,
+        None => document.add_node(parent, kind, document.max_nodes)?,
+    };
+    document
+        .raw_node_mut(id)
+        .ok_or(NativeEngineError::DetachedTarget)?
+        .state
+        .namespace_uri = Some(HTML_NAMESPACE_URI.to_owned());
+    Ok(id)
+}
+
+fn reconstruct_active_formatting_elements(
+    document: &mut NativeDocument,
+    stack: &mut Vec<NativeNodeId>,
+    active: &mut ActiveFormattingList,
+    fragment_root: Option<NativeNodeId>,
+) -> Result<(), NativeEngineError> {
+    if stack
+        .last()
+        .and_then(|id| document.raw_node(*id))
+        .is_some_and(|node| {
+            node.namespace_uri().is_some_and(|namespace| {
+                namespace != HTML_NAMESPACE_URI
+                    && !(namespace == SVG_NAMESPACE_URI
+                        && matches!(
+                            node.element_name(),
+                            Some("foreignobject" | "desc" | "title")
+                        ))
+                    && !(namespace == MATHML_NAMESPACE_URI
+                        && (matches!(
+                            node.element_name(),
+                            Some("mi" | "mo" | "mn" | "ms" | "mtext")
+                        ) || (node.element_name() == Some("annotation-xml")
+                            && node.attribute("encoding").is_some_and(|value| {
+                                value.eq_ignore_ascii_case("text/html")
+                                    || value.eq_ignore_ascii_case("application/xhtml+xml")
+                            }))))
+            })
+        })
+    {
+        return Ok(());
+    }
+    let Some(last_index) = active.len().checked_sub(1) else {
+        return Ok(());
+    };
+    let ActiveFormattingEntry::Element(last_id) = active[last_index] else {
+        return Ok(());
+    };
+    if stack.contains(&last_id) {
+        return Ok(());
+    }
+    let mut first_index = last_index;
+    while first_index > 0 {
+        match active[first_index - 1] {
+            ActiveFormattingEntry::Marker => break,
+            ActiveFormattingEntry::Element(id) if stack.contains(&id) => break,
+            ActiveFormattingEntry::Element(_) => first_index -= 1,
+        }
+    }
+    for index in first_index..active.len() {
+        let ActiveFormattingEntry::Element(old_id) = active[index] else {
+            continue;
+        };
+        let (name, attributes) = match document.raw_node(old_id).map(NativeNode::kind) {
+            Some(NativeNodeKind::Element { name, attributes }) => {
+                (name.clone(), attributes.clone())
+            }
+            _ => {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "active formatting list references a non-element".into(),
+                });
+            }
+        };
+        let parent = stack
+            .last()
+            .copied()
+            .ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "active formatting reconstruction lost the open-elements stack".into(),
+            })?;
+        let new_id = insert_parser_formatting_clone(
+            document,
+            stack,
+            parent,
+            fragment_root,
+            &name,
+            attributes,
+        )?;
+        stack.push(new_id);
+        active[index] = ActiveFormattingEntry::Element(new_id);
+    }
+    Ok(())
+}
+
+fn adopt_active_formatting_element(
+    document: &mut NativeDocument,
+    stack: &mut Vec<NativeNodeId>,
+    active: &mut ActiveFormattingList,
+    fragment_root: Option<NativeNodeId>,
+    subject: &str,
+) -> Result<bool, NativeEngineError> {
+    if stack
+        .last()
+        .and_then(|id| document.raw_node(*id))
+        .is_some_and(|node| {
+            node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+                && node.element_name() == Some(subject)
+                && active_formatting_entry_index(document, active, subject).is_none()
+        })
+    {
+        stack.pop();
+        return Ok(true);
+    }
+
+    for _ in 0..8 {
+        let Some(formatting_entry_index) = active_formatting_entry_index(document, active, subject)
+        else {
+            return Ok(false);
+        };
+        let ActiveFormattingEntry::Element(formatting_id) = active[formatting_entry_index] else {
+            unreachable!("formatting lookup never selects a marker")
+        };
+        let Some(formatting_stack_index) = stack.iter().position(|id| *id == formatting_id) else {
+            active.remove(formatting_entry_index);
+            return Ok(true);
+        };
+        if !html_element_is_in_scope(document, stack, formatting_id, fragment_root) {
+            return Ok(true);
+        }
+        let Some(furthest_stack_index) = (formatting_stack_index + 1..stack.len())
+            .rev()
+            .find(|index| is_special_tree_builder_element(document, stack[*index]))
+        else {
+            stack.truncate(formatting_stack_index);
+            active.remove(formatting_entry_index);
+            return Ok(true);
+        };
+        let furthest_block = stack[furthest_stack_index];
+        let common_ancestor =
+            *stack
+                .get(formatting_stack_index.checked_sub(1).ok_or_else(|| {
+                    NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "adoption agency formatting element has no common ancestor".into(),
+                    }
+                })?)
+                .ok_or_else(|| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "adoption agency formatting element has no common ancestor".into(),
+                })?;
+        let mut bookmark = formatting_entry_index;
+        let mut node_id = furthest_block;
+        let mut removed_node_parent = None;
+        let mut last_node = furthest_block;
+        let mut inner_loop_counter = 0usize;
+
+        loop {
+            inner_loop_counter += 1;
+            let candidate_index =
+                if let Some(node_stack_index) = stack.iter().position(|id| *id == node_id) {
+                    let Some(index) = node_stack_index.checked_sub(1) else {
+                        return Err(NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "adoption agency reached the parser root".into(),
+                        });
+                    };
+                    index
+                } else if let Some(parent_of_removed_node) = removed_node_parent.take() {
+                    stack
+                        .iter()
+                        .position(|id| *id == parent_of_removed_node)
+                        .ok_or_else(|| NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "adoption agency lost the parent of a removed node".into(),
+                        })?
+                } else {
+                    return Err(NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "adoption agency lost a node from the open-elements stack".into(),
+                    });
+                };
+            let candidate = stack[candidate_index];
+            if candidate == formatting_id {
+                break;
+            }
+            if inner_loop_counter > 3 {
+                if let Some(index) = active
+                    .iter()
+                    .position(|entry| *entry == ActiveFormattingEntry::Element(candidate))
+                {
+                    active.remove(index);
+                    if index < bookmark {
+                        bookmark -= 1;
+                    }
+                }
+            }
+            let Some(active_index) = active
+                .iter()
+                .position(|entry| *entry == ActiveFormattingEntry::Element(candidate))
+            else {
+                removed_node_parent = candidate_index.checked_sub(1).map(|index| stack[index]);
+                node_id = candidate;
+                stack.remove(candidate_index);
+                continue;
+            };
+            let (name, attributes) = match document.raw_node(candidate).map(NativeNode::kind) {
+                Some(NativeNodeKind::Element { name, attributes }) => {
+                    (name.clone(), attributes.clone())
+                }
+                _ => {
+                    return Err(NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "adoption agency active entry is not an element".into(),
+                    });
+                }
+            };
+            let clone_id = insert_parser_formatting_clone(
+                document,
+                stack,
+                common_ancestor,
+                fragment_root,
+                &name,
+                attributes,
+            )?;
+            active[active_index] = ActiveFormattingEntry::Element(clone_id);
+            let stack_index = stack
+                .iter()
+                .position(|id| *id == candidate)
+                .ok_or_else(|| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "adoption agency lost a formatting node".into(),
+                })?;
+            stack[stack_index] = clone_id;
+            if last_node == furthest_block {
+                bookmark = active_index + 1;
+            }
+            move_parser_node(document, clone_id, last_node, None, "adoption inner loop")?;
+            last_node = clone_id;
+            node_id = clone_id;
+            removed_node_parent = None;
+        }
+
+        let insertion = html_table_foster_location(document, stack, fragment_root)?;
+        let (target, before) = insertion.unwrap_or((common_ancestor, None));
+        move_parser_node(
+            document,
+            target,
+            last_node,
+            before,
+            "adoption appropriate insertion location",
+        )?;
+
+        let furthest_children = document
+            .raw_node(furthest_block)
+            .ok_or(NativeEngineError::DetachedTarget)?
+            .children
+            .clone();
+        let (formatting_name, formatting_attributes) =
+            match document.raw_node(formatting_id).map(NativeNode::kind) {
+                Some(NativeNodeKind::Element { name, attributes }) => {
+                    (name.clone(), attributes.clone())
+                }
+                _ => {
+                    return Err(NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "adoption agency formatting node is not an element".into(),
+                    });
+                }
+            };
+        let replacement = document.add_node(
+            furthest_block,
+            NativeNodeKind::Element {
+                name: formatting_name,
+                attributes: formatting_attributes,
+            },
+            document.max_nodes,
+        )?;
+        document
+            .raw_node_mut(replacement)
+            .ok_or(NativeEngineError::DetachedTarget)?
+            .state
+            .namespace_uri = Some(HTML_NAMESPACE_URI.to_owned());
+        for child in furthest_children {
+            move_parser_node(
+                document,
+                replacement,
+                child,
+                None,
+                "furthest-block child reparenting",
+            )?;
+        }
+
+        if let Some(index) = active
+            .iter()
+            .position(|entry| *entry == ActiveFormattingEntry::Element(formatting_id))
+        {
+            let insertion_index = bookmark.saturating_sub(usize::from(index < bookmark));
+            active.remove(index);
+            active.insert(
+                insertion_index.min(active.len()),
+                ActiveFormattingEntry::Element(replacement),
+            );
+        }
+        let formatting_stack_index = stack
+            .iter()
+            .position(|id| *id == formatting_id)
+            .ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "adoption agency formatting node left the open-elements stack".into(),
+            })?;
+        stack.remove(formatting_stack_index);
+        let furthest_stack_index = stack
+            .iter()
+            .position(|id| *id == furthest_block)
+            .ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "adoption agency furthest block left the open-elements stack".into(),
+            })?;
+        stack.insert(furthest_stack_index + 1, replacement);
+    }
+    Ok(true)
+}
+
+fn consume_formatting_fallback_end_tag(
+    document: &NativeDocument,
+    stack: &mut Vec<NativeNodeId>,
+    fragment_root: Option<NativeNodeId>,
+    subject: &str,
+) -> bool {
+    if stack
+        .last()
+        .and_then(|id| document.raw_node(*id))
+        .is_some_and(|node| {
+            node.namespace_uri().is_some_and(|namespace| {
+                namespace != HTML_NAMESPACE_URI
+                    && !(namespace == SVG_NAMESPACE_URI
+                        && matches!(
+                            node.element_name(),
+                            Some("foreignobject" | "desc" | "title")
+                        ))
+                    && !(namespace == MATHML_NAMESPACE_URI
+                        && (matches!(
+                            node.element_name(),
+                            Some("mi" | "mo" | "mn" | "ms" | "mtext")
+                        ) || (node.element_name() == Some("annotation-xml")
+                            && node.attribute("encoding").is_some_and(|value| {
+                                value.eq_ignore_ascii_case("text/html")
+                                    || value.eq_ignore_ascii_case("application/xhtml+xml")
+                            }))))
+            })
+        })
+    {
+        return false;
+    }
+    for index in (0..stack.len()).rev() {
+        let id = stack[index];
+        if Some(id) == fragment_root {
+            return true;
+        }
+        let Some(node) = document.raw_node(id) else {
+            return true;
+        };
+        if node.namespace_uri() == Some(HTML_NAMESPACE_URI) && node.element_name() == Some(subject)
+        {
+            stack.truncate(index);
+            return true;
+        }
+        if is_special_tree_builder_element(document, id) {
+            return true;
+        }
+    }
+    true
+}
+
 fn html_table_foster_location(
     document: &NativeDocument,
     stack: &[NativeNodeId],
@@ -12599,6 +13612,239 @@ mod tests {
             .apply_script_commands(&evaluation.commands)
             .expect("Rust fragment commit must follow table end-tag modes");
         assert_parentage(&document);
+    }
+
+    #[test]
+    fn javascript_xhr_and_fragments_follow_active_formatting_adoption() {
+        let markup = concat!(
+            "<section id='adopt-zone'>",
+            "<b data-kind='misnested'>one<p id='adopt-block'>two<span id='adopt-inside'>three</b>four</span>five</p>",
+            "<span id='adopt-reopened'>six</span>",
+            "</section>",
+            "<section id='simple-zone'><p id='simple-p'>one<b id='simple-bold'>two</b>three</p></section>",
+            "<section id='marker-zone'><b data-kind='outer'>before<table><tbody><tr><td id='marker-cell'>inside</b><span id='marker-after'>after</span></td></tr></tbody></table></b></section>",
+            "<section id='row-marker-zone'><div><b id='row-marker-format'>before<table><tbody><tr><td>cell</tr></tbody></table></div><span id='row-marker-after'>after</span></b></section>",
+            "<section id='anchor-zone'><a id='anchor-one'>one<a id='anchor-two'>two</a>three</a><span id='anchor-after'>after</span></section>",
+        );
+
+        let assert_native_tree = |tree: &NativeDocument| {
+            let parent_id = |child_id: &str| {
+                let child = tree
+                    .find_element_by_id(child_id)
+                    .unwrap_or_else(|| panic!("missing active-formatting fixture node {child_id}"));
+                tree.node(child)
+                    .and_then(NativeNode::parent)
+                    .unwrap_or_else(|| panic!("fixture node {child_id} has no parent"))
+            };
+            let parent_name = |child_id: &str| {
+                tree.node(parent_id(child_id))
+                    .and_then(NativeNode::element_name)
+                    .unwrap_or_else(|| panic!("fixture parent for {child_id} is not an element"))
+            };
+            assert_eq!(parent_name("adopt-block"), "section");
+            assert_eq!(parent_name("adopt-inside"), "b");
+            assert_eq!(parent_name("adopt-reopened"), "section");
+            assert_eq!(parent_name("simple-bold"), "p");
+            assert_eq!(parent_name("marker-after"), "td");
+            assert_eq!(parent_name("row-marker-after"), "b");
+            assert_eq!(
+                tree.node(parent_id("row-marker-after"))
+                    .and_then(|node| node.attribute("id")),
+                Some("row-marker-format")
+            );
+            assert_eq!(parent_name("anchor-one"), "section");
+            assert_eq!(parent_name("anchor-two"), "section");
+            assert_eq!(parent_name("anchor-after"), "section");
+
+            assert_eq!(
+                tree.node(parent_id("adopt-inside"))
+                    .and_then(|node| node.attribute("data-kind")),
+                Some("misnested")
+            );
+            assert_eq!(parent_id("anchor-one"), parent_id("anchor-two"));
+            let adopt_zone = tree.find_element_by_id("adopt-zone").unwrap();
+            let first_three = tree
+                .node(adopt_zone)
+                .unwrap()
+                .children()
+                .iter()
+                .take(3)
+                .map(|id| {
+                    tree.node(*id)
+                        .and_then(NativeNode::element_name)
+                        .expect("adoption-zone child is an element")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(first_three, ["b", "p", "span"]);
+        };
+
+        let direct = NativeDocument::parse(markup, &NativeEngineLimits::default())
+            .expect("document parser must repair active formatting elements");
+        assert_native_tree(&direct);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("active-formatting-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+                    const markup = __HTML_MARKUP__;
+                    const root = document.querySelector("#root");
+                    root.innerHTML = markup;
+                    const response = globalThis.__glassParseHtmlDocument(
+                        markup,
+                        "https://example.test/active-formatting.html",
+                        "text/html",
+                    );
+                    const fixtureIds = [
+                        "adopt-zone", "adopt-block", "adopt-inside", "adopt-reopened",
+                        "simple-bold", "marker-after", "row-marker-after", "anchor-one",
+                        "anchor-two", "anchor-after",
+                    ];
+                    const summarize = (tree) => {
+                        const byId = new Map(fixtureIds.map((id) => [id, tree.querySelector(`#${id}`)]));
+                        const parentage = fixtureIds.slice(1).map((id) => {
+                            const parent = byId.get(id)?.parentElement || null;
+                            return [
+                                id,
+                                parent?.localName || null,
+                                parent?.getAttribute("id") || null,
+                                parent?.getAttribute("data-kind") || null,
+                            ];
+                        });
+                        const zoneChildren = Array.from(byId.get("adopt-zone")?.children || [])
+                            .slice(0, 3).map((element) => element.localName);
+                        return [parentage, zoneChildren.join(",")];
+                    };
+                    return [summarize(root), summarize(response)];
+                })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(markup).unwrap());
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://active-formatting.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("same-turn and XHR parsers must repair active formatting elements");
+        let expected = serde_json::json!([
+            [
+                [
+                    ["adopt-block", "section", "adopt-zone", null],
+                    ["adopt-inside", "b", null, "misnested"],
+                    ["adopt-reopened", "section", "adopt-zone", null],
+                    ["simple-bold", "p", "simple-p", null],
+                    ["marker-after", "td", "marker-cell", null],
+                    ["row-marker-after", "b", "row-marker-format", null],
+                    ["anchor-one", "section", "anchor-zone", null],
+                    ["anchor-two", "section", "anchor-zone", null],
+                    ["anchor-after", "section", "anchor-zone", null],
+                ],
+                "b,p,span"
+            ],
+            [
+                [
+                    ["adopt-block", "section", "adopt-zone", null],
+                    ["adopt-inside", "b", null, "misnested"],
+                    ["adopt-reopened", "section", "adopt-zone", null],
+                    ["simple-bold", "p", "simple-p", null],
+                    ["marker-after", "td", "marker-cell", null],
+                    ["row-marker-after", "b", "row-marker-format", null],
+                    ["anchor-one", "section", "anchor-zone", null],
+                    ["anchor-two", "section", "anchor-zone", null],
+                    ["anchor-after", "section", "anchor-zone", null],
+                ],
+                "b,p,span"
+            ]
+        ]);
+        assert_eq!(evaluation.value, expected);
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must repair active formatting elements");
+        assert_native_tree(&document);
+        let root = document.find_element_by_id("root").unwrap();
+        let committed = NativeDocument::parse(markup, &NativeEngineLimits::default())
+            .expect("matching tree must be available for commit comparison");
+        let committed_ids = [
+            "adopt-block",
+            "adopt-inside",
+            "adopt-reopened",
+            "simple-bold",
+            "marker-after",
+            "row-marker-after",
+            "anchor-one",
+            "anchor-two",
+            "anchor-after",
+        ];
+        for child_id in committed_ids {
+            let committed_child = committed.find_element_by_id(child_id).unwrap();
+            let child_name = committed
+                .node(committed_child)
+                .unwrap()
+                .element_name()
+                .unwrap();
+            let actual_child = document
+                .find_element_by_id(child_id)
+                .unwrap_or_else(|| panic!("fragment commit lost {child_id}"));
+            let actual_parent = document
+                .node(actual_child)
+                .and_then(NativeNode::parent)
+                .unwrap();
+            let expected_parent_name = committed
+                .node(
+                    committed
+                        .node(committed_child)
+                        .and_then(NativeNode::parent)
+                        .unwrap(),
+                )
+                .and_then(NativeNode::element_name)
+                .unwrap();
+            assert_eq!(
+                document
+                    .node(actual_parent)
+                    .and_then(NativeNode::element_name),
+                Some(expected_parent_name),
+                "fragment parent mismatch for {child_name}#{child_id}"
+            );
+        }
+        assert!(document.node(root).is_some());
+    }
+
+    #[test]
+    fn active_formatting_noahs_ark_caps_equivalent_entries_at_three() {
+        let mut document = NativeDocument::parse("<main></main>", &NativeEngineLimits::default())
+            .expect("active-formatting host document must parse");
+        let parent = document.find_element(document.root, "main").unwrap();
+        let mut attributes = BTreeMap::new();
+        attributes.insert("class".to_owned(), "same".to_owned());
+        let mut active = ActiveFormattingList::new();
+        let mut ids = Vec::new();
+        for _ in 0..4 {
+            let id = document
+                .add_node(
+                    parent,
+                    NativeNodeKind::Element {
+                        name: "b".to_owned(),
+                        attributes: attributes.clone(),
+                    },
+                    document.max_nodes,
+                )
+                .unwrap();
+            document.raw_node_mut(id).unwrap().state.namespace_uri =
+                Some(HTML_NAMESPACE_URI.to_owned());
+            push_active_formatting_element(&document, &mut active, id).unwrap();
+            ids.push(id);
+        }
+        assert_eq!(
+            active,
+            vec![
+                ActiveFormattingEntry::Element(ids[1]),
+                ActiveFormattingEntry::Element(ids[2]),
+                ActiveFormattingEntry::Element(ids[3]),
+            ]
+        );
     }
 
     #[test]

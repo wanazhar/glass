@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
 the browser-complete expansion has completed
-`native-engine-browser-680`, following completed `native-engine-browser-679`,
+`native-engine-browser-681`, following completed `native-engine-browser-680`,
+following completed `native-engine-browser-679`,
 following completed `native-engine-browser-678`,
 following completed `native-engine-browser-677`,
 following completed `native-engine-browser-676`,
@@ -142,6 +143,14 @@ parsing. It preserves nested-table and template boundaries, ignores
 same-named foreign elements, and excludes fragment roots from scope. The
 table-focused batch passed 43/43; the final nested-table/template-boundary
 fixture passed again 1/1.
+
+The completed [native-engine-browser-681](tasks/native-engine-browser-681.md)
+slice adds scoped closure for `</td>` and `</th>` across document parsing,
+fragment commit and same-turn projection, and XHR HTML parsing. Only a
+matching open HTML cell within `table`/`template`/`html` scope can be closed;
+fragment roots and foreign-name matches cannot satisfy the target. The focused
+route test passed 1/1 and the table regression batch passed 44/44. Full in-cell
+insertion-mode and active-formatting behavior remain open.
 
 `native-engine-browser-633`, following completed
 `native-engine-browser-632`, following completed

@@ -15,7 +15,7 @@ this record explicit about local versus remote evidence.
 
 ## Native HTML parser-route parity
 
-Slices 673–680 align bounded table tree-construction behavior across
+Slices 673–681 align bounded table tree-construction behavior across
 `NativeDocument::parse`, Rust `NativeDocument::apply_script_inner_html`, the
 shared JavaScript `populateDetachedFragment` same-turn projection, and the
 independent `nativeHtmlParseDocument` route for XHR
@@ -24,23 +24,24 @@ adds implicit `tbody`/`tr`, and slice 677 adds implicit `colgroup`
 construction; slice 678 handles nested table starts and fragment context;
 slice 679 applies HTML table scope to `</table>` and excludes the fragment
 context from the open-element stack; slice 680 scopes row-group and row end
-tags to their matching HTML elements without crossing nested-table boundaries.
+tags to their matching HTML elements without crossing nested-table boundaries;
+slice 681 extends scoped end-tag closure to `td` and `th` cells.
 Fixtures check parentage, authored order, explicit-section preservation,
 whitespace/comments, resource bounds, and namespace behavior across document,
 fragment, same-turn projection, and XHR routes. Continue expanding the corpus
 for other tree-construction rules; do not describe these slices as general
 HTML parser parity.
 
-Slices 678–680 complete bounded WHATWG in-table recovery rules across
+Slices 678–681 complete bounded WHATWG in-table recovery rules across
 document parsing, Rust fragment commit, same-turn JavaScript projection, and
 XHR HTML parsing. Start-tag recovery preserves cell/caption and
 template/foreign-content boundaries; end-tag scope closes the nearest open
 HTML table and ignores out-of-scope tokens. Fragment context alone does not
-make a table open. Slice 680 adds scope-aware closing for row-group and row
-tags, including foreign-namespace, nested-table, template, and fragment
-boundaries. The table-focused batch passed 43/43 and the final nested/template
-fixture passed 1/1. Other insertion modes and general parser
-conformance remain open.
+make a table open. Slices 680–681 add scope-aware closing for row-group, row,
+and cell tags, including foreign-namespace, nested-table, template, and
+fragment boundaries. The table-focused batch through slice 681 passed 44/44,
+and its cross-route cell-scope fixture passed 1/1. Other insertion modes and
+general parser conformance remain open.
 
 ## Input: popup-opening mouse release completion
 

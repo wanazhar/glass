@@ -1145,11 +1145,12 @@ impl NativeDocument {
                     {
                         continue;
                     }
-                    if matches!(name.as_str(), "tbody" | "tfoot" | "thead" | "tr")
-                        && consume_html_table_structure_end_token(
-                            &document, &mut stack, None, &name,
-                        )?
-                    {
+                    if matches!(
+                        name.as_str(),
+                        "tbody" | "tfoot" | "thead" | "tr" | "td" | "th"
+                    ) && consume_html_table_structure_end_token(
+                        &document, &mut stack, None, &name,
+                    )? {
                         continue;
                     }
                     if let Some(index) = stack.iter().rposition(|id| {
@@ -6273,14 +6274,15 @@ impl NativeDocument {
                     {
                         continue;
                     }
-                    if matches!(name.as_str(), "tbody" | "tfoot" | "thead" | "tr")
-                        && consume_html_table_structure_end_token(
-                            self,
-                            &mut stack,
-                            Some(id),
-                            &name,
-                        )?
-                    {
+                    if matches!(
+                        name.as_str(),
+                        "tbody" | "tfoot" | "thead" | "tr" | "td" | "th"
+                    ) && consume_html_table_structure_end_token(
+                        self,
+                        &mut stack,
+                        Some(id),
+                        &name,
+                    )? {
                         continue;
                     }
                     if let Some(index) = stack.iter().rposition(|current| {
@@ -11510,6 +11512,138 @@ mod tests {
             document.node(second_row).unwrap().parent(),
             Some(fragment_context)
         );
+    }
+
+    #[test]
+    fn javascript_xhr_and_fragments_share_table_cell_end_tag_scope() {
+        const MARKUP: &str = concat!(
+            "<table id='cells'><tbody><tr id='cells-row'><td id='data-cell'><span id='data-child'>d</span></td><th id='header-cell'><span id='header-child'>h</span></th></tr></tbody></table>",
+            "<table id='outer-table'><tbody><tr><td id='outer-cell'><table id='inner-table'><tbody><tr id='inner-row'></tr></tbody></td><span id='after-inner'>after</span></table></td></tr></tbody></table>",
+            "<table id='template-table'><tbody><tr><td id='template-cell'><template id='template'><div id='template-before'>before</div></td><span id='template-after'>inside</span></template><span id='after-template'>after</span></td></tr></tbody></table>",
+            "<table id='foreign-table'><tbody><tr><td id='foreign-outer'><svg id='svg'><th id='foreign-th'><foreignObject><div id='foreign-wrapper'><span id='foreign-before'>before</span></th><span id='foreign-after'>after</span></div></foreignObject></th></svg><span id='after-svg'>tail</span></td></tr></tbody></table>"
+        );
+        let assert_cell_tree = |tree: &NativeDocument| {
+            let row = tree.find_element_by_id("cells-row").unwrap();
+            for cell_id in ["data-cell", "header-cell"] {
+                let cell = tree.find_element_by_id(cell_id).unwrap();
+                assert_eq!(tree.node(cell).unwrap().parent(), Some(row));
+            }
+            let data_cell = tree.find_element_by_id("data-cell").unwrap();
+            let data_child = tree.find_element_by_id("data-child").unwrap();
+            assert_eq!(tree.node(data_child).unwrap().parent(), Some(data_cell));
+            let header_cell = tree.find_element_by_id("header-cell").unwrap();
+            let header_child = tree.find_element_by_id("header-child").unwrap();
+            assert_eq!(tree.node(header_child).unwrap().parent(), Some(header_cell));
+
+            let outer_cell = tree.find_element_by_id("outer-cell").unwrap();
+            let after_inner = tree.find_element_by_id("after-inner").unwrap();
+            assert_eq!(tree.node(after_inner).unwrap().parent(), Some(outer_cell));
+
+            let template_cell = tree.find_element_by_id("template-cell").unwrap();
+            let template = tree.find_element_by_id("template").unwrap();
+            let template_after = tree.find_element_by_id("template-after").unwrap();
+            let after_template = tree.find_element_by_id("after-template").unwrap();
+            assert_eq!(tree.node(template).unwrap().parent(), Some(template_cell));
+            assert_eq!(tree.node(template_after).unwrap().parent(), Some(template));
+            assert_eq!(
+                tree.node(after_template).unwrap().parent(),
+                Some(template_cell)
+            );
+
+            let foreign_wrapper = tree.find_element_by_id("foreign-wrapper").unwrap();
+            let foreign_after = tree.find_element_by_id("foreign-after").unwrap();
+            assert_eq!(
+                tree.node(foreign_after).unwrap().parent(),
+                Some(foreign_wrapper)
+            );
+            let foreign_th = tree.find_element_by_id("foreign-th").unwrap();
+            assert_eq!(
+                tree.node(foreign_th).and_then(NativeNode::namespace_uri),
+                Some(SVG_NAMESPACE_URI)
+            );
+            let foreign_outer = tree.find_element_by_id("foreign-outer").unwrap();
+            let after_svg = tree.find_element_by_id("after-svg").unwrap();
+            assert_eq!(tree.node(after_svg).unwrap().parent(), Some(foreign_outer));
+        };
+
+        let direct_document = NativeDocument::parse(MARKUP, &NativeEngineLimits::default())
+            .expect("HTML table cell end tags must honor table scope");
+        assert_cell_tree(&direct_document);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("table-cell-end-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<main id='root'></main><table><tbody><tr><td id='td-context'></td><th id='th-context'></th></tr></tbody></table>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let script = r##"(() => {
+                    const markup = __HTML_MARKUP__;
+                    const root = document.querySelector("#root");
+                    root.innerHTML = markup;
+                    const tdContext = document.querySelector("#td-context");
+                    const thContext = document.querySelector("#th-context");
+                    tdContext.innerHTML = "</td><span id='fragment-td-child'>td</span>";
+                    thContext.innerHTML = "</th><span id='fragment-th-child'>th</span>";
+                    const response = globalThis.__glassParseHtmlDocument(
+                        markup,
+                        "https://example.test/table-cell-end.html",
+                        "text/html",
+                    );
+                    const cellTreeIsScoped = (container) => {
+                        const row = container.querySelector("#cells-row");
+                        const dataCell = container.querySelector("#data-cell");
+                        const headerCell = container.querySelector("#header-cell");
+                        const outerCell = container.querySelector("#outer-cell");
+                        const templateCell = container.querySelector("#template-cell");
+                        const template = container.querySelector("#template");
+                        const foreignWrapper = container.querySelector("#foreign-wrapper");
+                        const foreignOuter = container.querySelector("#foreign-outer");
+                        return dataCell.parentElement === row
+                            && headerCell.parentElement === row
+                            && container.querySelector("#data-child").parentElement === dataCell
+                            && container.querySelector("#header-child").parentElement === headerCell
+                            && container.querySelector("#after-inner").parentElement === outerCell
+                            && template.parentElement === templateCell
+                            && container.querySelector("#template-after").parentElement === template
+                            && container.querySelector("#after-template").parentElement === templateCell
+                            && container.querySelector("#foreign-after").parentElement === foreignWrapper
+                            && container.querySelector("#foreign-th").namespaceURI === "http://www.w3.org/2000/svg"
+                            && container.querySelector("#after-svg").parentElement === foreignOuter;
+                    };
+                    return [
+                        cellTreeIsScoped(root),
+                        cellTreeIsScoped(response),
+                        tdContext.firstElementChild.id === "fragment-td-child",
+                        thContext.firstElementChild.id === "fragment-th-child",
+                    ];
+                })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(MARKUP).unwrap());
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://table-cell-end.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("HTML table cell end tags must honor scope");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true])
+        );
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("same-turn table cell fragments must commit through the native parser");
+        assert_cell_tree(&document);
+
+        let td_context = document.find_element_by_id("td-context").unwrap();
+        let td_child = document.find_element_by_id("fragment-td-child").unwrap();
+        assert_eq!(document.node(td_child).unwrap().parent(), Some(td_context));
+        let th_context = document.find_element_by_id("th-context").unwrap();
+        let th_child = document.find_element_by_id("fragment-th-child").unwrap();
+        assert_eq!(document.node(th_child).unwrap().parent(), Some(th_context));
     }
 
     #[test]

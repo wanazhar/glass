@@ -2,28 +2,29 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The architecture and analysis summaries report completed browser slices
-650–671, but `docs/plan/tasks/` has detailed records only through slice 649 and
-then for slices 672–674; records 650–671 remain missing. The remote issue body
-still reports slice 531. An issue comment records local slice 672, while slices
-673–674 are verified locally. Audit authoritative commits and recover verifiable
-scope/test evidence for the missing task records; do not infer passing checks
-from summary prose. Then reconcile the stale issue body and clearly separate
-local results from remote CI and promotion evidence.
+The architecture and analysis status chain reports completed browser slices
+650–677, but `docs/plan/tasks/` has records through slice 649 and then for
+slices 672–677; detailed records 650–671 remain missing. On 2026-09-23, the
+remote issue body was synchronized through local native slice 677 at checkpoint
+`74e1ad74` and records the branch as 1,523 commits ahead and unpushed. Remote
+CI, release, registry, and cross-platform promotion evidence are not claimed.
+Recover verifiable scope and test evidence for slices 650–671 from authoritative
+commits; do not infer passing checks from summary prose. Keep the issue body and
+this record explicit about local versus remote evidence.
 
 ## Native HTML parser-route parity
 
-Slices 673–676 align bounded table tree-construction behavior across
+Slices 673–677 align bounded table tree-construction behavior across
 `NativeDocument::parse`, Rust `NativeDocument::apply_script_inner_html`, the
 shared JavaScript `populateDetachedFragment` same-turn projection, and the
 independent `nativeHtmlParseDocument` route for XHR
 `responseType="document"`. Slices 673–675 cover foster insertion; slice 676
-adds implicit `tbody`/`tr` construction, limit enforcement, and SVG versus
-`foreignObject` namespace behavior. The fixtures check parentage, authored
-order, explicit-section preservation, whitespace/comments, and fragment-root
-behavior, including XHR document materialization. Continue expanding the
-corpus for other tree-construction rules; do not describe these slices as
-general HTML parser parity.
+adds implicit `tbody`/`tr`, and slice 677 adds implicit `colgroup`
+construction. The fixtures check parentage, authored order, explicit-section
+preservation, whitespace/comments, resource bounds, and SVG/MathML versus
+`foreignObject` namespace behavior, including XHR document materialization.
+Continue expanding the corpus for other tree-construction rules; do not
+describe these slices as general HTML parser parity.
 
 ## Input: popup-opening mouse release completion
 

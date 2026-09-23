@@ -1,8 +1,8 @@
 # Native browser engine
 
 Status: Browser-complete expansion is locally complete through
-`native-engine-browser-690`, following locally completed
-`native-engine-browser-689` and `native-engine-browser-688`; issue #40 remains open. It follows completed
+`native-engine-browser-691`, following locally completed
+`native-engine-browser-690` and `native-engine-browser-689`; issue #40 remains open. It follows completed
 `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
@@ -591,6 +591,19 @@ HTML parser batch passed 27/27. The locked package check, formatting, whitespace
 and maintainer documentation gates passed locally; remote CI was not run. This
 does not complete HTML foreign-content dispatch. See
 [`slice 690`](../plan/tasks/native-engine-browser-690.md).
+
+Slice 691 makes HTML void-element behavior namespace-aware across document,
+fragment, same-turn, and XHR parsing, and across HTML serialization. Same-named
+SVG/MathML elements remain open-stack elements unless their start tag is
+self-closing; HTML void elements retain their existing behavior. Fragment
+`innerHTML` parsing is not suppressed solely because its target's local name is
+void in HTML. This remains a focused parser-contract increment, not complete
+foreign-content conformance. See
+[`slice 691`](../plan/tasks/native-engine-browser-691.md).
+Its exact four-route namespace/parentage and serialization regression passed
+1/1, the focused HTML batch passed 28/28, and the locked package check,
+formatting, whitespace, and maintainer documentation gates passed locally.
+Remote CI was not run.
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

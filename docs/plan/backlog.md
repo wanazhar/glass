@@ -2,13 +2,12 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The architecture and analysis status chain reports completed browser slices
-650–685, but `docs/plan/tasks/` has records through slice 649 and then for
-slices 672–685; detailed records 650–671 remain missing. The issue #40 body
-was restored after an accidental empty-body edit and reverified with all epic
-gates intact. Keep it as the remote status mirror and refresh it after each
-local slice checkpoint; the local branch remains unpushed. Remote CI, release,
-registry, and cross-platform promotion evidence are not claimed.
+The current architecture, analysis, and task record chain is locally complete
+through `native-engine-browser-691`; detailed records 650–671 remain missing.
+Keep issue #40 as the remote status mirror and refresh its current-checkout
+summary after each local slice checkpoint; the local branch remains unpushed.
+Remote CI, release, registry, and cross-platform promotion evidence are not
+claimed.
 Recover verifiable scope and test evidence for slices 650–671 from authoritative
 commits; do not infer passing checks from summary prose. Keep the issue body and
 this record explicit about local versus remote evidence.
@@ -80,6 +79,13 @@ HTML-namespace elements, and parse nested markup inside same-named SVG/MathML
 elements using the foreign/integration context across all four parser routes.
 The exact route test passed 1/1 and the HTML parser batch passed 27/27; complete
 parser conformance remains open. See `tasks/native-engine-browser-690.md`.
+
+Slice 691 is complete locally: apply HTML void-element stack and serialization
+rules only to HTML-namespace elements across all four parser routes. Same-named
+foreign SVG/MathML elements retain descendants unless explicitly self-closing;
+fragment `innerHTML` still parses when its target has an HTML void-element
+name. The exact four-route test passed 1/1 and the HTML batch passed 28/28;
+remote CI was not run. See `tasks/native-engine-browser-691.md`.
 
 Slice 689 is complete locally: select child element namespaces using SVG and MathML
 HTML integration-point rules across all four parser routes. Preserve the

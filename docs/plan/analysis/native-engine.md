@@ -1,8 +1,8 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-690`, following
-locally completed `native-engine-browser-689` and `native-engine-browser-688`;
+completed browser expansion slice is `native-engine-browser-691`, following
+locally completed `native-engine-browser-690` and `native-engine-browser-689`;
 issue #40 remains open. It follows completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`, following completed
@@ -746,6 +746,18 @@ The exact four-route namespace/parentage test passed 1/1 and the HTML parser
 batch passed 27/27. The locked package check, formatting, whitespace, and all
 maintainer documentation gates passed locally. Remote CI and general parser
 conformance remain open. See `docs/plan/tasks/native-engine-browser-690.md`.
+
+Slice 691 corrects name-only HTML void handling. The parser may pop an element
+for an HTML void name only when the created element is in the HTML namespace;
+foreign SVG/MathML elements with those names remain on the open-element stack
+unless the source explicitly marks them self-closing. Apply the same namespace
+rule to Rust and JavaScript fragment commits and to serialization. An
+`innerHTML` target's local name does not bypass fragment parsing. Exact
+namespace, parentage, and foreign-element serialization are checked across the
+four routes. The exact test passed 1/1, the HTML batch passed 28/28, and local
+package/documentation gates passed; remote CI was not run. This does not claim
+complete foreign-content handling. See
+`docs/plan/tasks/native-engine-browser-691.md`.
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

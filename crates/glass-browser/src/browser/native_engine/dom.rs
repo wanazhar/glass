@@ -1189,7 +1189,11 @@ impl NativeDocument {
                         None => document.add_node(parent, kind, limits.max_nodes)?,
                     };
                     document.assign_parsed_namespace_to_node(id, parent)?;
-                    if !self_closing && !is_void_element(&name) {
+                    let html_void_element = document
+                        .raw_node(id)
+                        .is_some_and(|node| node.namespace_uri() == Some(HTML_NAMESPACE_URI))
+                        && is_void_element(&name);
+                    if !self_closing && !html_void_element {
                         stack.push(id);
                         if document
                             .raw_node(id)
@@ -6346,10 +6350,6 @@ impl NativeDocument {
         for child in old_children {
             self.detach_subtree(child)?;
         }
-        if is_void_element(&target_name) {
-            return Ok(());
-        }
-
         let mut stack = vec![id];
         let mut active_formatting = ActiveFormattingList::new();
         for token in tokens {
@@ -6460,7 +6460,11 @@ impl NativeDocument {
                         None => self.add_node(parent, kind, self.max_nodes)?,
                     };
                     self.assign_parsed_namespace_to_node(child, parent)?;
-                    if !self_closing && !is_void_element(&name) {
+                    let html_void_element = self
+                        .raw_node(child)
+                        .is_some_and(|node| node.namespace_uri() == Some(HTML_NAMESPACE_URI))
+                        && is_void_element(&name);
+                    if !self_closing && !html_void_element {
                         stack.push(child);
                         if self
                             .raw_node(child)
@@ -6780,7 +6784,9 @@ impl NativeDocument {
                     append_bounded_markup(output, "\"", max_bytes, truncated);
                 }
                 append_bounded_markup(output, ">", max_bytes, truncated);
-                if *truncated || is_void_element(name) {
+                if *truncated
+                    || (node.namespace_uri() == Some(HTML_NAMESPACE_URI) && is_void_element(name))
+                {
                     return;
                 }
                 let children = node.children().to_vec();
@@ -14824,6 +14830,187 @@ mod tests {
             .apply_script_commands(&evaluation.commands)
             .expect("Rust fragment commit must respect foreign text modes");
         assert_eq!(summarize_native(&document), expected);
+    }
+
+    #[test]
+    fn html_void_elements_respect_namespace_across_parser_routes() {
+        let markup = concat!(
+            "<section id='zone'><svg id='svg-root'>",
+            "<area id='svg-area'><g id='svg-area-child'>svg child</g></area>",
+            "<area id='svg-self-closing'/><g id='svg-after-self-closing'></g>",
+            "</svg><math id='math-root'>",
+            "<area id='math-area'><mi id='math-area-child'>math child</mi></area>",
+            "<area id='math-self-closing'/><mo id='math-after-self-closing'></mo>",
+            "</math><area id='html-area'><span id='html-after-area'>html sibling</span>",
+            "</section>",
+        );
+        let expected_nodes = [
+            ("svg-root", SVG_NAMESPACE_URI, "zone"),
+            ("svg-area", SVG_NAMESPACE_URI, "svg-root"),
+            ("svg-area-child", SVG_NAMESPACE_URI, "svg-area"),
+            ("svg-self-closing", SVG_NAMESPACE_URI, "svg-root"),
+            ("svg-after-self-closing", SVG_NAMESPACE_URI, "svg-root"),
+            ("math-root", MATHML_NAMESPACE_URI, "zone"),
+            ("math-area", MATHML_NAMESPACE_URI, "math-root"),
+            ("math-area-child", MATHML_NAMESPACE_URI, "math-area"),
+            ("math-self-closing", MATHML_NAMESPACE_URI, "math-root"),
+            ("math-after-self-closing", MATHML_NAMESPACE_URI, "math-root"),
+            ("html-area", HTML_NAMESPACE_URI, "zone"),
+            ("html-after-area", HTML_NAMESPACE_URI, "zone"),
+        ];
+        let expected = expected_nodes
+            .iter()
+            .map(|(_, namespace, parent)| serde_json::json!([namespace, parent]))
+            .collect::<Vec<_>>();
+        let summarize_native = |tree: &NativeDocument| {
+            expected_nodes
+                .iter()
+                .map(|(element_id, _, _)| {
+                    let element = tree.find_element_by_id(element_id).unwrap_or_else(|| {
+                        panic!("void-element fixture element {element_id} must exist")
+                    });
+                    let node = tree
+                        .node(element)
+                        .expect("void-element fixture element must resolve");
+                    let parent_id = node
+                        .parent()
+                        .and_then(|parent| tree.node(parent))
+                        .and_then(|parent| parent.attribute("id"))
+                        .expect("void-element fixture parent must have an id");
+                    serde_json::json!([node.namespace_uri().unwrap(), parent_id])
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let direct = NativeDocument::parse(markup, &NativeEngineLimits::default())
+            .expect("document parser must apply void behavior by namespace");
+        assert_eq!(summarize_native(&direct), expected);
+        let serialized_zone =
+            direct.element_inner_html(direct.find_element_by_id("zone").unwrap(), 4096);
+        assert!(
+            serialized_zone
+                .contains("<area id=\"svg-area\"><g id=\"svg-area-child\">svg child</g></area>")
+        );
+        assert!(serialized_zone.contains("<area id=\"svg-self-closing\"></area>"));
+        assert!(
+            serialized_zone.contains(
+                "<area id=\"html-area\"><span id=\"html-after-area\">html sibling</span>"
+            )
+        );
+        let svg_area = direct.find_element_by_id("svg-area").unwrap();
+        assert_eq!(
+            direct.element_inner_html(svg_area, 1024),
+            "<g id=\"svg-area-child\">svg child</g>"
+        );
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("html-void-elements-context")
+            .expect("native JavaScript runtime must construct");
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+            const markup = __HTML_MARKUP__;
+            const root = document.querySelector("#root");
+            root.innerHTML = markup;
+            const response = globalThis.__glassParseHtmlDocument(
+                markup,
+                "https://example.test/html-void-elements.html",
+                "text/html",
+            );
+            const ids = __ELEMENT_IDS__;
+            const summarize = (tree) => ids.map((id) => {
+                const element = tree.querySelector(`#${id}`);
+                return [element.namespaceURI, element.parentElement.getAttribute("id")];
+            });
+            const foreignArea = response.querySelector("#svg-area");
+            const htmlArea = response.querySelector("#html-area");
+            return [
+                summarize(root),
+                summarize(response),
+                globalThis.__glassSerializeXmlNode(foreignArea),
+                globalThis.__glassSerializeXmlNode(htmlArea),
+            ];
+        })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(markup).unwrap())
+            .replace(
+                "__ELEMENT_IDS__",
+                &serde_json::to_string(
+                    &expected_nodes
+                        .iter()
+                        .map(|(element_id, _, _)| element_id)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            );
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://html-void-elements.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("fragment projection and XHR parser must respect foreign void names");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                expected,
+                expected,
+                "<area id=\"svg-area\"><g id=\"svg-area-child\">svg child</g></area>",
+                "<area id=\"html-area\">"
+            ])
+        );
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must respect foreign void names");
+        assert_eq!(summarize_native(&document), expected);
+        let svg_area = document.find_element_by_id("svg-area").unwrap();
+        assert_eq!(
+            document.element_inner_html(svg_area, 1024),
+            "<g id=\"svg-area-child\">svg child</g>"
+        );
+
+        let void_target = runtime
+            .evaluate(
+                r##"(() => {
+                    const target = document.querySelector("#html-area");
+                    target.innerHTML = "<span id='void-target-child'>child</span>";
+                    const child = target.querySelector("#void-target-child");
+                    return [
+                        target.namespaceURI,
+                        child.namespaceURI,
+                        child.parentElement.getAttribute("id"),
+                        target.innerHTML,
+                    ];
+                })()"##,
+                &document,
+                "fixture://html-void-elements.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("innerHTML on an HTML void-named target must parse its fragment");
+        assert_eq!(
+            void_target.value,
+            serde_json::json!([
+                HTML_NAMESPACE_URI,
+                HTML_NAMESPACE_URI,
+                "html-area",
+                "<span id=\"void-target-child\">child</span>"
+            ])
+        );
+        document
+            .apply_script_commands(&void_target.commands)
+            .expect("Rust must commit fragment children for an HTML void-named target");
+        let target = document.find_element_by_id("html-area").unwrap();
+        let child = document.find_element_by_id("void-target-child").unwrap();
+        assert_eq!(
+            document.node(child).and_then(NativeNode::parent),
+            Some(target)
+        );
+        assert_eq!(
+            document.element_inner_html(target, 1024),
+            "<span id=\"void-target-child\">child</span>"
+        );
     }
 
     #[test]

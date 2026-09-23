@@ -27778,6 +27778,22 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         }
         return { parent: state.stack[0], before: null };
       };
+      const consumeHtmlTableEnd = () => {
+        const current = state.stack[state.stack.length - 1];
+        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
+        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
+          const candidate = state.stack[index];
+          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
+          const candidateName = String(candidate.localName || "").toLowerCase();
+          if (candidateName === "table") {
+            state.stack.length = index;
+            return true;
+          }
+          if (candidateName === "html" || candidateName === "template") return true;
+        }
+        // In an HTML parsing context, an out-of-scope table end tag is ignored.
+        return true;
+      };
       const prepareHtmlTableStart = () => {
         const current = state.stack[state.stack.length - 1];
         if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return true;
@@ -27921,6 +27937,10 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           const closing = nativeHtmlReadName(input, state.cursor + 2);
           if (closing) {
             const name = closing.value.toLowerCase();
+            if (name === "table" && consumeHtmlTableEnd()) {
+              state.cursor = end + 1;
+              continue;
+            }
             let found = -1;
             for (let index = state.stack.length - 1; index > 0; index -= 1) {
               if (state.stack[index].localName === name) {
@@ -35241,6 +35261,23 @@ fn document_bootstrap(
         return !contextEstablishesTableMode || enteredCellOrCaption;
       }}
     }};
+    const consumeHtmlTableEnd = () => {{
+      const current = stack[stack.length - 1];
+      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
+      // stack[0] is the fragment context, not an open element in this parser.
+      for (let index = stack.length - 1; index > 0; index -= 1) {{
+        const candidate = stack[index];
+        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
+        const candidateName = String(candidate.localName || "").toLowerCase();
+        if (candidateName === "table") {{
+          stack.length = index;
+          return true;
+        }}
+        if (candidateName === "html" || candidateName === "template") return true;
+      }}
+      // The fragment context itself cannot satisfy table scope.
+      return true;
+    }};
     const insertImpliedTableElements = (incomingName) => {{
       const current = stack[stack.length - 1];
       if (!current || current.namespaceURI !== HTML_NAMESPACE) return;
@@ -35333,6 +35370,10 @@ fn document_bootstrap(
           continue;
         }}
         const name = closing[1].toLowerCase();
+        if (name === "table" && consumeHtmlTableEnd()) {{
+          cursor = end + 1;
+          continue;
+        }}
         for (let index = stack.length - 1; index > 0; index -= 1) {{
           if (stack[index].localName === name) {{
             stack.length = index;

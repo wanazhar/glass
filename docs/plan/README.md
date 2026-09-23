@@ -27,7 +27,8 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` is complete locally;
-the browser-complete expansion has completed `native-engine-browser-686`,
+the browser-complete expansion has completed locally
+`native-engine-browser-687`, following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed `native-engine-browser-684`,
 following completed
 `native-engine-browser-683`, following completed `native-engine-browser-682`,
@@ -98,6 +99,16 @@ Exact-tree tests pass across document parsing, Rust `innerHTML`, same-turn
 JavaScript fragments, and XHR HTML documents; the focused active-formatting
 batch passed 2/2 and the table regression batch passed 46/46. Other insertion
 modes, tokenizer behavior, and general HTML parser conformance remain open.
+
+[`native-engine-browser-687`](tasks/native-engine-browser-687.md) normalizes
+CRLF and lone-CR newlines before tokenization across document,
+committed-fragment, same-turn-fragment, and XHR HTML parsing. Text, attributes,
+comments, script raw text, and RCDATA match across routes; Rust errors retain
+submitted-source offsets and existing size accounting is unchanged. The
+package check, 24-test HTML regression batch, formatting, whitespace, and all
+maintainer documentation gates passed locally. Context-specific U+0000
+handling and general tokenizer/parser conformance remain open; there is no
+remote CI evidence for this local checkpoint.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

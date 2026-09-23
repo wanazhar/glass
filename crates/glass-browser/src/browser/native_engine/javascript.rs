@@ -27743,9 +27743,10 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
   };
   const nativeHtmlParseDocument = (source, url, contentType) => {
     try {
-      const input = String(source);
-      nativeHtmlValidateCharacters(input);
-      if (nativeXmlByteLength(input) > nativeXmlMaxBytes) throw new Error("native HTML response exceeds its limit");
+      const rawInput = String(source);
+      nativeHtmlValidateCharacters(rawInput);
+      if (nativeXmlByteLength(rawInput) > nativeXmlMaxBytes) throw new Error("native HTML response exceeds its limit");
+      const input = rawInput.includes("\r") ? rawInput.replace(/\r\n?/g, "\n") : rawInput;
       const state = { input, cursor: 0, nodes: 1 };
       const document = { type: "document", html: true, children: [] };
       const append = (parent, node, before = null) => {
@@ -35628,7 +35629,8 @@ fn document_bootstrap(
     .replace(/&amp;/gi, "&");
   const populateDetachedFragment = (fragment, markup, createElement, createText, createComment) => {{
     const stack = [fragment];
-    const source = String(markup);
+    const rawSource = String(markup);
+    const source = rawSource.includes("\r") ? rawSource.replace(/\r\n?/g, "\n") : rawSource;
     const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
     const rawTextElements = new Set(["script", "style"]);
     const rcdataElements = new Set(["textarea", "title"]);

@@ -1,7 +1,8 @@
 # Native browser engine
 
-Status: Browser-complete expansion has completed
-`native-engine-browser-686`, following completed `native-engine-browser-685`, following completed
+Status: Browser-complete expansion has completed locally
+`native-engine-browser-687`, following completed `native-engine-browser-686`,
+following completed `native-engine-browser-685`, following completed
 `native-engine-browser-684`,
 following completed `native-engine-browser-683`,
 following completed `native-engine-browser-682`,
@@ -549,6 +550,19 @@ package check passed. Documentation validators covered 1,313 Markdown files
 with zero current-claim failures. See
 [`slice 685`](../plan/tasks/native-engine-browser-685.md); complete parser
 conformance remains open.
+
+Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
+become LF across direct documents, Rust fragment commits, same-turn JavaScript
+fragment projections, and XHR HTML documents. Text, attributes, comments,
+script raw text, and RCDATA share the normalized input; Rust parser errors
+retain offsets into the submitted source and existing size accounting remains
+based on submitted bytes. U+0000 is deliberately not globally replaced because
+HTML handles it according to tokenizer state and tree-construction context.
+The locked package check, 24-test HTML regression batch, formatting,
+whitespace, and maintainer documentation gates passed locally; remote CI is
+unverified. See
+[`slice 687`](../plan/tasks/native-engine-browser-687.md); general tokenizer
+and parser conformance remain open.
 
 Slice 686 implements the HTML active-formatting list and adoption-agency
 algorithm across document parsing, Rust fragment commit, same-turn JavaScript

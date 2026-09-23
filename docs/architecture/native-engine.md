@@ -427,6 +427,15 @@ resume HTML table construction. The test matrix covers explicit sections,
 fragment contexts, XHR materialization, and limits. This is one bounded
 insertion-mode rule, not complete HTML parser conformance.
 
+The completed [slice 677](../plan/tasks/native-engine-browser-677.md) adds
+the implied column group across document parsing, `innerHTML` commit and
+same-turn projection, and XHR HTML documents. A `col` directly under an HTML
+`table` receives an implicit `colgroup`; explicit groups remain singular, SVG
+and MathML table-like elements retain their own namespace, and
+`foreignObject` descendants resume HTML behavior. The parser-route witnesses
+cover authored column order and materialized XHR trees. This closes only this
+column-group rule, not the remaining table insertion modes.
+
 Slice 506 applies `font-stretch` to the rendering path. The inherited computed
 property is exposed as a canonical percentage, face matching considers the
 closest bounded descriptor range after weight/style, and tied unicode-ranged

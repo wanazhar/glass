@@ -621,6 +621,19 @@ Foreign end-tag breakout, foreign attribute adjustment, and general parser
 conformance remain open. See
 [`slice 692`](../plan/tasks/native-engine-browser-692.md).
 
+Slice 693 is complete locally: implement WHATWG foreign-content breakout for
+`</br>` and `</p>` across document, Rust fragment commit, same-turn JavaScript
+projection, and XHR HTML parsing. End-tag foreign dispatch includes foreign
+integration-point nodes; unwind only to HTML, MathML-text-integration, or
+HTML-integration boundaries. Reprocess through the active HTML insertion mode,
+including table-mode consumers before the in-body `br` conversion or
+button-scope paragraph close/insertion. Preserve a foreign fragment target and
+switch its synthetic context to HTML after breakout. The foreign batch passed
+6/6 and the scoped HTML/table batch passed 33/33; local package and maintainer
+documentation gates passed. Remote CI was not run. Other foreign end tags and
+general parser conformance remain open. See
+[`slice 693`](../plan/tasks/native-engine-browser-693.md).
+
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript
 fragment projections, and XHR HTML documents. Text, attributes, comments,

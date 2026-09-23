@@ -1225,6 +1225,12 @@ impl NativeDocument {
                     }
                 }
                 HtmlToken::EndTag(name) => {
+                    prepare_foreign_content_breakout_end_tag(
+                        &document,
+                        &mut stack,
+                        &name,
+                        &mut active_formatting,
+                    )?;
                     let stack_before = is_marker_sensitive_end_tag(&name).then(|| stack.clone());
                     let consumed = (name == "table"
                         && consume_html_table_end_token(&document, &mut stack, None)?)
@@ -1259,6 +1265,41 @@ impl NativeDocument {
                             );
                         }
                         continue;
+                    }
+                    if name == "br" {
+                        reconstruct_active_formatting_elements(
+                            &mut document,
+                            &mut stack,
+                            &mut active_formatting,
+                            None,
+                            false,
+                        )?;
+                        insert_html_end_tag_recovery_element(
+                            &mut document,
+                            &mut stack,
+                            None,
+                            false,
+                            "br",
+                            false,
+                        )?;
+                        continue;
+                    }
+                    if name == "p" && !html_paragraph_is_in_button_scope(&document, &stack, None) {
+                        reconstruct_active_formatting_elements(
+                            &mut document,
+                            &mut stack,
+                            &mut active_formatting,
+                            None,
+                            false,
+                        )?;
+                        insert_html_end_tag_recovery_element(
+                            &mut document,
+                            &mut stack,
+                            None,
+                            false,
+                            "p",
+                            true,
+                        )?;
                     }
                     if is_html_formatting_element(&name) {
                         if adopt_active_formatting_element(
@@ -6531,6 +6572,15 @@ impl NativeDocument {
                     }
                 }
                 HtmlToken::EndTag(name) => {
+                    let foreign_end_breakout = prepare_foreign_content_breakout_end_tag(
+                        self,
+                        &mut stack,
+                        &name,
+                        &mut active_formatting,
+                    )?;
+                    if foreign_end_breakout && stack.len() == 1 && stack.first() == Some(&id) {
+                        fragment_html_context = true;
+                    }
                     let stack_before = is_marker_sensitive_end_tag(&name).then(|| stack.clone());
                     let consumed = (name == "table"
                         && consume_html_table_end_token(self, &mut stack, Some(id))?)
@@ -6578,6 +6628,41 @@ impl NativeDocument {
                             );
                         }
                         continue;
+                    }
+                    if name == "br" {
+                        reconstruct_active_formatting_elements(
+                            self,
+                            &mut stack,
+                            &mut active_formatting,
+                            Some(id),
+                            fragment_html_context,
+                        )?;
+                        insert_html_end_tag_recovery_element(
+                            self,
+                            &mut stack,
+                            Some(id),
+                            fragment_html_context,
+                            "br",
+                            false,
+                        )?;
+                        continue;
+                    }
+                    if name == "p" && !html_paragraph_is_in_button_scope(self, &stack, Some(id)) {
+                        reconstruct_active_formatting_elements(
+                            self,
+                            &mut stack,
+                            &mut active_formatting,
+                            Some(id),
+                            fragment_html_context,
+                        )?;
+                        insert_html_end_tag_recovery_element(
+                            self,
+                            &mut stack,
+                            Some(id),
+                            fragment_html_context,
+                            "p",
+                            true,
+                        )?;
                     }
                     if is_html_formatting_element(&name) {
                         if adopt_active_formatting_element(
@@ -10959,6 +11044,99 @@ fn prepare_foreign_content_breakout_start_tag(
     Ok(true)
 }
 
+fn parser_uses_foreign_end_tag_rules(document: &NativeDocument, id: NativeNodeId) -> bool {
+    document
+        .raw_node(id)
+        .and_then(NativeNode::namespace_uri)
+        .is_some_and(|namespace| namespace != HTML_NAMESPACE_URI)
+}
+
+fn prepare_foreign_content_breakout_end_tag(
+    document: &NativeDocument,
+    stack: &mut Vec<NativeNodeId>,
+    name: &str,
+    active_formatting: &mut ActiveFormattingList,
+) -> Result<bool, NativeEngineError> {
+    if !matches!(name, "br" | "p") {
+        return Ok(false);
+    }
+    let Some(current) = stack.last().copied() else {
+        return Err(NativeEngineError::Parse {
+            offset: 0,
+            reason: "foreign-content end-tag breakout lost the open-elements stack".into(),
+        });
+    };
+    if !parser_uses_foreign_end_tag_rules(document, current) {
+        return Ok(false);
+    }
+
+    let stack_before = stack.clone();
+    while stack.len() > 1 {
+        let current = *stack.last().expect("non-empty open-elements stack");
+        let Some(node) = document.raw_node(current) else {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "foreign-content end-tag breakout reached an unknown node".into(),
+            });
+        };
+        if node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+            || node_is_html_integration_point(node)
+            || node_is_mathml_text_integration_point(node)
+        {
+            break;
+        }
+        stack.pop();
+    }
+    clear_markers_for_popped_elements(document, &stack_before, stack, active_formatting);
+    Ok(true)
+}
+
+fn insert_html_end_tag_recovery_element(
+    document: &mut NativeDocument,
+    stack: &mut Vec<NativeNodeId>,
+    fragment_root: Option<NativeNodeId>,
+    force_html_context: bool,
+    name: &str,
+    push_to_stack: bool,
+) -> Result<(), NativeEngineError> {
+    let foster_location = html_table_foster_location(document, stack, fragment_root)?;
+    let parent = foster_location
+        .map(|(parent, _)| parent)
+        .or_else(|| stack.last().copied())
+        .ok_or_else(|| NativeEngineError::Parse {
+            offset: 0,
+            reason: "end-tag recovery lost its HTML insertion parent".into(),
+        })?;
+    let current_depth = document.element_depth(parent);
+    if current_depth >= document.max_dom_depth {
+        return Err(NativeEngineError::limit(
+            "DOM depth",
+            document.max_dom_depth,
+            current_depth.saturating_add(1),
+        ));
+    }
+    let kind = NativeNodeKind::Element {
+        name: name.to_owned(),
+        attributes: BTreeMap::new(),
+    };
+    let id = match foster_location {
+        Some((parent, Some(before))) => {
+            document.add_node_before(parent, before, kind, document.max_nodes)?
+        }
+        Some((parent, None)) => document.add_node(parent, kind, document.max_nodes)?,
+        None => document.add_node(parent, kind, document.max_nodes)?,
+    };
+    document.assign_parsed_namespace_to_node_with_html_context(
+        id,
+        parent,
+        force_html_context && fragment_root == Some(parent),
+    )?;
+    if push_to_stack {
+        stack.push(id);
+    }
+    Ok(())
+}
+
 fn node_is_html_integration_point(node: &NativeNode) -> bool {
     match (node.namespace_uri(), node.element_name()) {
         (Some(SVG_NAMESPACE_URI), Some("foreignobject" | "desc" | "title")) => true,
@@ -11052,6 +11230,31 @@ fn html_element_is_in_scope(
             return true;
         }
         if is_html_scope_boundary(document, id) {
+            return false;
+        }
+    }
+    false
+}
+
+fn html_paragraph_is_in_button_scope(
+    document: &NativeDocument,
+    stack: &[NativeNodeId],
+    fragment_root: Option<NativeNodeId>,
+) -> bool {
+    for id in stack.iter().rev().copied() {
+        if Some(id) == fragment_root {
+            return false;
+        }
+        let Some(node) = document.raw_node(id) else {
+            return false;
+        };
+        if node.namespace_uri() == Some(HTML_NAMESPACE_URI) && node.element_name() == Some("p") {
+            return true;
+        }
+        if is_html_scope_boundary(document, id)
+            || (node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+                && node.element_name() == Some("button"))
+        {
             return false;
         }
     }
@@ -11805,13 +12008,27 @@ fn consume_html_table_column_group_end_token(
     fragment_root: Option<NativeNodeId>,
     target_name: &str,
 ) -> Result<bool, NativeEngineError> {
+    if matches!(target_name, "br" | "p")
+        && stack.len() == 1
+        && fragment_root == stack.first().copied()
+        && fragment_root
+            .and_then(|root| document.node(root))
+            .is_some_and(|node| {
+                node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+                    && node.element_name() == Some("colgroup")
+            })
+    {
+        return Ok(true);
+    }
     if !matches!(
         target_name,
         "body"
+            | "br"
             | "caption"
             | "col"
             | "colgroup"
             | "html"
+            | "p"
             | "tbody"
             | "td"
             | "tfoot"
@@ -11859,6 +12076,7 @@ fn consume_html_table_column_group_end_token(
                     return Ok(false);
                 };
                 match target_name {
+                    "br" | "p" => return Ok(true),
                     "col" => return Ok(true),
                     "colgroup" => {
                         if index + 1 == stack.len() {
@@ -15236,6 +15454,301 @@ mod tests {
         assert_eq!(
             document.node(child).and_then(NativeNode::parent),
             Some(element)
+        );
+    }
+
+    #[test]
+    fn foreign_content_breakout_end_tags_reprocess_as_html_across_parser_routes() {
+        let markup = concat!(
+            "<section id='zone'>",
+            "<p id='open-p'>before<svg id='open-p-svg'><g id='open-p-g'></p>",
+            "<span id='after-open-p'></span></g></svg>",
+            "<svg id='missing-p-svg'><g id='missing-p-g'></p>",
+            "<span id='after-missing-p'></span></g></svg>",
+            "<svg id='br-svg'><g id='br-g'></br><span id='after-br'></span></g></svg>",
+            "<math id='math-br'><mrow id='math-br-row'></br>",
+            "<span id='after-math-br'></span></mrow></math>",
+            "<svg id='fo-svg'><foreignObject id='foreign-object'></p>",
+            "<span id='after-foreign-object-p'></span></foreignObject></svg>",
+            "<math id='mi-math'><mi id='math-mi'></p>",
+            "<span id='after-math-mi-p'></span></mi></math>",
+            "<math id='annotation-math'><annotation-xml id='annotation-html' ",
+            "encoding='APPLICATION/XHTML+XML'></p>",
+            "<span id='after-annotation-p'></span></annotation-xml></math>",
+            "<p id='outer-button-p'><button id='button-scope'>",
+            "<svg id='button-svg'><g id='button-g'></p>",
+            "<span id='after-button-scope-p'></span></g></svg>",
+            "</button><span id='after-button'></span></p>",
+            "<div id='html-recovery'></br><span id='html-after-br'></span>",
+            "</p><span id='html-after-p'></span></div>",
+            "<table id='end-mode-table'><colgroup id='end-mode-colgroup'></p></br>",
+            "<col id='end-mode-col'></colgroup><tbody id='end-mode-body'>",
+            "<tr id='end-mode-row'>",
+            "<td id='end-mode-cell'>cell</td></tr></tbody></table>",
+            "<svg id='ordinary-svg'><g id='ordinary-g'><path id='ordinary-before'></path></g>",
+            "<path id='ordinary-after'></path></svg>",
+            "</section>",
+        );
+        let expected_nodes = [
+            ("open-p-svg", SVG_NAMESPACE_URI, "open-p"),
+            ("open-p-g", SVG_NAMESPACE_URI, "open-p-svg"),
+            ("after-open-p", HTML_NAMESPACE_URI, "zone"),
+            ("missing-p-svg", SVG_NAMESPACE_URI, "zone"),
+            ("missing-p-g", SVG_NAMESPACE_URI, "missing-p-svg"),
+            ("after-missing-p", HTML_NAMESPACE_URI, "zone"),
+            ("br-svg", SVG_NAMESPACE_URI, "zone"),
+            ("br-g", SVG_NAMESPACE_URI, "br-svg"),
+            ("after-br", HTML_NAMESPACE_URI, "zone"),
+            ("math-br", MATHML_NAMESPACE_URI, "zone"),
+            ("math-br-row", MATHML_NAMESPACE_URI, "math-br"),
+            ("after-math-br", HTML_NAMESPACE_URI, "zone"),
+            ("fo-svg", SVG_NAMESPACE_URI, "zone"),
+            ("foreign-object", SVG_NAMESPACE_URI, "fo-svg"),
+            (
+                "after-foreign-object-p",
+                HTML_NAMESPACE_URI,
+                "foreign-object",
+            ),
+            ("mi-math", MATHML_NAMESPACE_URI, "zone"),
+            ("math-mi", MATHML_NAMESPACE_URI, "mi-math"),
+            ("after-math-mi-p", HTML_NAMESPACE_URI, "math-mi"),
+            ("annotation-math", MATHML_NAMESPACE_URI, "zone"),
+            ("annotation-html", MATHML_NAMESPACE_URI, "annotation-math"),
+            ("after-annotation-p", HTML_NAMESPACE_URI, "annotation-html"),
+            ("outer-button-p", HTML_NAMESPACE_URI, "zone"),
+            ("button-svg", SVG_NAMESPACE_URI, "button-scope"),
+            ("button-g", SVG_NAMESPACE_URI, "button-svg"),
+            ("after-button-scope-p", HTML_NAMESPACE_URI, "button-scope"),
+            ("after-button", HTML_NAMESPACE_URI, "outer-button-p"),
+            ("html-after-br", HTML_NAMESPACE_URI, "html-recovery"),
+            ("html-after-p", HTML_NAMESPACE_URI, "html-recovery"),
+            ("end-mode-table", HTML_NAMESPACE_URI, "zone"),
+            ("end-mode-colgroup", HTML_NAMESPACE_URI, "end-mode-table"),
+            ("end-mode-col", HTML_NAMESPACE_URI, "end-mode-colgroup"),
+            ("end-mode-body", HTML_NAMESPACE_URI, "end-mode-table"),
+            ("end-mode-row", HTML_NAMESPACE_URI, "end-mode-body"),
+            ("end-mode-cell", HTML_NAMESPACE_URI, "end-mode-row"),
+            ("ordinary-svg", SVG_NAMESPACE_URI, "zone"),
+            ("ordinary-g", SVG_NAMESPACE_URI, "ordinary-svg"),
+            ("ordinary-before", SVG_NAMESPACE_URI, "ordinary-g"),
+            ("ordinary-after", SVG_NAMESPACE_URI, "ordinary-svg"),
+        ];
+        let expected_recovery_nodes = || {
+            let mut nodes = vec![
+                serde_json::json!(["br", HTML_NAMESPACE_URI, "zone", ""]),
+                serde_json::json!(["br", HTML_NAMESPACE_URI, "zone", ""]),
+                serde_json::json!(["p", HTML_NAMESPACE_URI, "zone", "open-p"]),
+                serde_json::json!(["p", HTML_NAMESPACE_URI, "zone", ""]),
+                serde_json::json!(["p", HTML_NAMESPACE_URI, "foreign-object", ""]),
+                serde_json::json!(["p", HTML_NAMESPACE_URI, "math-mi", ""]),
+                serde_json::json!(["p", HTML_NAMESPACE_URI, "annotation-html", ""]),
+                serde_json::json!(["p", HTML_NAMESPACE_URI, "zone", "outer-button-p"]),
+                serde_json::json!(["p", HTML_NAMESPACE_URI, "button-scope", ""]),
+                serde_json::json!(["br", HTML_NAMESPACE_URI, "html-recovery", ""]),
+                serde_json::json!(["p", HTML_NAMESPACE_URI, "html-recovery", ""]),
+            ];
+            nodes.sort_by_key(|value| value.to_string());
+            nodes
+        };
+        let expected_summary = expected_nodes
+            .iter()
+            .map(|(_, namespace, parent)| serde_json::json!([namespace, parent]))
+            .collect::<Vec<_>>();
+        let summarize_native = |tree: &NativeDocument| {
+            let nodes = expected_nodes
+                .iter()
+                .map(|(element_id, _, _)| {
+                    let element = tree.find_element_by_id(element_id).unwrap_or_else(|| {
+                        panic!("foreign-end-breakout fixture element {element_id} must exist")
+                    });
+                    let node = tree.node(element).expect("fixture element must resolve");
+                    let parent_id = node
+                        .parent()
+                        .and_then(|parent| tree.node(parent))
+                        .and_then(|parent| parent.attribute("id"))
+                        .expect("fixture element parent must have an id");
+                    serde_json::json!([node.namespace_uri().unwrap(), parent_id])
+                })
+                .collect::<Vec<_>>();
+            let root = tree.find_element_by_id("zone").unwrap();
+            let mut pending = vec![root];
+            let mut recovery = Vec::new();
+            while let Some(id) = pending.pop() {
+                let node = tree.node(id).expect("recovery traversal node must resolve");
+                if matches!(node.element_name(), Some("br" | "p")) {
+                    let parent_id = node
+                        .parent()
+                        .and_then(|parent| tree.node(parent))
+                        .and_then(|parent| parent.attribute("id"))
+                        .unwrap_or("");
+                    recovery.push(serde_json::json!([
+                        node.element_name().unwrap(),
+                        node.namespace_uri().unwrap(),
+                        parent_id,
+                        node.attribute("id").unwrap_or(""),
+                    ]));
+                }
+                pending.extend(node.children().iter().copied());
+            }
+            recovery.sort_by_key(|value| value.to_string());
+            serde_json::json!([nodes, recovery])
+        };
+        let expected = serde_json::json!([expected_summary, expected_recovery_nodes()]);
+
+        let direct = NativeDocument::parse(markup, &NativeEngineLimits::default())
+            .expect("document parser must reprocess foreign end-tag breakouts");
+        assert_eq!(summarize_native(&direct), expected);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("foreign-end-breakout")
+            .expect("native JavaScript runtime must construct");
+        let mut projected =
+            NativeDocument::parse("<main id='host'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+            const markup = __HTML_MARKUP__;
+            const ids = __ELEMENT_IDS__;
+            const host = document.querySelector("#host");
+            host.innerHTML = markup;
+            const response = globalThis.__glassParseHtmlDocument(
+                markup,
+                "https://example.test/foreign-end-breakout.html",
+                "text/html",
+            );
+            const summarize = (tree) => {
+                const nodes = ids.map((id) => {
+                    const element = tree.querySelector(`#${id}`);
+                    return [element.namespaceURI, element.parentElement.getAttribute("id")];
+                });
+                const recovery = ["br", "p"].flatMap((name) =>
+                    Array.from(tree.querySelectorAll(name)).map((element) => [
+                        element.localName,
+                        element.namespaceURI,
+                        element.parentElement.getAttribute("id") || "",
+                        element.getAttribute("id") || "",
+                    ])).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+                return [nodes, recovery];
+            };
+            return [summarize(host), summarize(response)];
+        })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(markup).unwrap())
+            .replace(
+                "__ELEMENT_IDS__",
+                &serde_json::to_string(
+                    &expected_nodes
+                        .iter()
+                        .map(|(element_id, _, _)| element_id)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            );
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &projected,
+                "fixture://foreign-end-breakout.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("same-turn and XHR parsers must reprocess foreign end tags");
+        assert_eq!(evaluation.value, serde_json::json!([expected, expected]));
+        projected
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must reprocess foreign end tags");
+        assert_eq!(summarize_native(&projected), expected);
+    }
+
+    #[test]
+    fn foreign_fragment_end_tag_breakout_preserves_target_and_html_rules() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("foreign-fragment-end-breakout")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<main><svg id='context'></svg><table><colgroup id='html-context'></colgroup></table></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("foreign fragment host document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const target = document.querySelector("#context");
+                    target.innerHTML = "</br><span id='after-br'></span></p><span id='after-p'></span>";
+                    const br = target.querySelector("br");
+                    const afterBr = target.querySelector("#after-br");
+                    const paragraph = target.querySelector("p");
+                    const afterP = target.querySelector("#after-p");
+                    return [
+                        [br.namespaceURI, br.parentElement.getAttribute("id")],
+                        [afterBr.namespaceURI, afterBr.parentElement.getAttribute("id")],
+                        [paragraph.namespaceURI, paragraph.parentElement.getAttribute("id")],
+                        [afterP.namespaceURI, afterP.parentElement.getAttribute("id")],
+                    ];
+                })()"##,
+                &document,
+                "fixture://foreign-fragment-end-breakout.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("foreign fragment end tags must use HTML insertion rules");
+        let expected = serde_json::json!([
+            [HTML_NAMESPACE_URI, "context"],
+            [HTML_NAMESPACE_URI, "context"],
+            [HTML_NAMESPACE_URI, "context"],
+            [HTML_NAMESPACE_URI, "context"],
+        ]);
+        assert_eq!(evaluation.value, expected);
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must preserve foreign target and HTML children");
+        let target = document.find_element_by_id("context").unwrap();
+        for id in ["after-br", "after-p"] {
+            let child = document.find_element_by_id(id).unwrap();
+            assert_eq!(
+                document.node(child).unwrap().namespace_uri(),
+                Some(HTML_NAMESPACE_URI)
+            );
+            assert_eq!(
+                document.node(child).and_then(NativeNode::parent),
+                Some(target)
+            );
+        }
+        let br = document.element_inner_html(target, 4096);
+        assert!(br.contains("<br>"));
+        assert!(br.contains("<p></p>"));
+
+        let column_group_evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const context = document.querySelector("#html-context");
+                    context.innerHTML = "</p></br><col id='column'>";
+                    const column = context.querySelector("#column");
+                    return [
+                        context.querySelectorAll("p").length,
+                        context.querySelectorAll("br").length,
+                        column.namespaceURI,
+                        column.parentElement === context,
+                    ];
+                })()"##,
+                &document,
+                "fixture://column-group-end-tags.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("column-group fragment must retain its HTML insertion mode");
+        assert_eq!(
+            column_group_evaluation.value,
+            serde_json::json!([0, 0, HTML_NAMESPACE_URI, true])
+        );
+        document
+            .apply_script_commands(&column_group_evaluation.commands)
+            .expect("column-group fragment commit must preserve ignored end tags");
+        let context = document.find_element_by_id("html-context").unwrap();
+        let column = document.find_element_by_id("column").unwrap();
+        assert_eq!(
+            document.node(column).unwrap().namespace_uri(),
+            Some(HTML_NAMESPACE_URI)
+        );
+        assert_eq!(
+            document.node(column).and_then(NativeNode::parent),
+            Some(context)
         );
     }
 

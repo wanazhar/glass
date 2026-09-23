@@ -27820,7 +27820,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         "body", "caption", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr",
       ]);
       const consumeHtmlTableColumnGroupEnd = (targetName) => {
-        if (!tableModeIgnoredEndTags.has(targetName)) return false;
+        if (!tableModeIgnoredEndTags.has(targetName) && targetName !== "br" && targetName !== "p") return false;
         const current = state.stack[state.stack.length - 1];
         if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
         let columnGroupIndex = -1;
@@ -27832,6 +27832,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           if (candidateName === "colgroup" && columnGroupIndex < 0) columnGroupIndex = index;
           else if (candidateName === "table") {
             if (columnGroupIndex < 0) return false;
+            if (targetName === "br" || targetName === "p") return true;
             if (targetName === "col") return true;
             if (targetName === "colgroup") {
               if (columnGroupIndex === state.stack.length - 1) state.stack.length = columnGroupIndex;
@@ -28075,6 +28076,17 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         }
         return false;
       };
+      const paragraphInButtonScope = () => {
+        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
+          const candidate = state.stack[index];
+          if (candidate && candidate.namespaceURI === nativeHtmlNamespaceUri
+              && candidate.localName === "p") return true;
+          if (isScopeBoundary(candidate)
+              || (candidate && candidate.namespaceURI === nativeHtmlNamespaceUri
+                && candidate.localName === "button")) return false;
+        }
+        return false;
+      };
       const isSpecialHtmlTreeElement = (element) => {
         const name = String(element && element.localName || "").toLowerCase();
         if (element && element.namespaceURI === nativeHtmlNamespaceUri) {
@@ -28289,6 +28301,25 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         }
         return true;
       };
+      const prepareForeignEndTagBreakout = (name) => {
+        if (name !== "br" && name !== "p") return false;
+        const current = state.stack[state.stack.length - 1];
+        if (!current || current.type !== "element"
+            || current.namespaceURI === nativeHtmlNamespaceUri) return false;
+        const stackBefore = state.stack.slice();
+        while (state.stack.length > 1
+            && usesForeignCharacterRules(state.stack[state.stack.length - 1])) state.stack.pop();
+        clearMarkersForPoppedElements(stackBefore);
+        return true;
+      };
+      const insertHtmlEndRecoveryElement = (name, pushToStack) => {
+        const fosterLocation = tableFosterLocation();
+        const parent = fosterLocation ? fosterLocation.parent : state.stack[state.stack.length - 1];
+        const element = nativeHtmlRawElement(name, parent);
+        element.parent = parent;
+        append(parent, element, fosterLocation && fosterLocation.before);
+        if (pushToStack) state.stack.push(element);
+      };
       const foreignContentBreakoutStartTags = new Set([
         "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt",
         "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head", "hr", "i", "img",
@@ -28404,6 +28435,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           const closing = nativeHtmlReadName(input, state.cursor + 2);
           if (closing) {
             const name = closing.value.toLowerCase();
+            prepareForeignEndTagBreakout(name);
             const stackBefore = markerSensitiveEndNames.has(name) ? state.stack.slice() : null;
             const consumed = (name === "table" && consumeHtmlTableEnd())
               || consumeHtmlTableColumnGroupEnd(name)
@@ -28417,6 +28449,16 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
               clearMarkersForPoppedElements(stackBefore);
               state.cursor = end + 1;
               continue;
+            }
+            if (name === "br") {
+              reconstructActiveFormatting();
+              insertHtmlEndRecoveryElement("br", false);
+              state.cursor = end + 1;
+              continue;
+            }
+            if (name === "p" && !paragraphInButtonScope()) {
+              reconstructActiveFormatting();
+              insertHtmlEndRecoveryElement("p", true);
             }
             if (htmlFormattingNames.has(name)) {
               if (adoptActiveFormatting(name) || consumeFormattingFallbackEnd(name)) {
@@ -35826,6 +35868,19 @@ fn document_bootstrap(
       }}
       return false;
     }};
+    const paragraphInButtonScope = () => {{
+      for (let index = stack.length - 1; index >= 0; index -= 1) {{
+        const candidate = stack[index];
+        if (candidate === stack[0]) return false;
+        if (candidate && Number(candidate.nodeType) === 1
+            && candidate.namespaceURI === HTML_NAMESPACE
+            && candidate.localName === "p") return true;
+        if (isScopeBoundary(candidate)
+            || (candidate && candidate.namespaceURI === HTML_NAMESPACE
+              && candidate.localName === "button")) return false;
+      }}
+      return false;
+    }};
     const specialTreeElement = (element) => {{
       const name = String(element && element.localName || "").toLowerCase();
       if (element && element.namespaceURI === HTML_NAMESPACE) {{
@@ -36028,6 +36083,26 @@ fn document_bootstrap(
       }}
       return true;
     }};
+    const prepareForeignEndTagBreakout = (name) => {{
+      if (name !== "br" && name !== "p") return false;
+      const current = stack[stack.length - 1];
+      if (!current || Number(current.nodeType) !== 1
+          || current.namespaceURI === HTML_NAMESPACE) return false;
+      const stackBefore = stack.slice();
+      while (stack.length > 1 && usesForeignCharacterRules(stack[stack.length - 1])) stack.pop();
+      clearMarkersForPoppedElements(stackBefore);
+      return true;
+    }};
+    const insertHtmlEndRecoveryElement = (name, pushToStack) => {{
+      const fosterLocation = tableFosterLocation();
+      const parent = fosterLocation ? fosterLocation.parent : stack[stack.length - 1];
+      const element = createElement(
+        name,
+        namespaceForChildElement(parent, name, forceHtmlContext && parent === fragment),
+      );
+      insertParsedNode(parent, element, fosterLocation && fosterLocation.before);
+      if (pushToStack) stack.push(element);
+    }};
     const appendParsedText = (value) => {{
       const current = stack[stack.length - 1];
       const replacement = !(forceHtmlContext && current === fragment)
@@ -36142,7 +36217,13 @@ fn document_bootstrap(
       "body", "caption", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr",
     ]);
     const consumeHtmlTableColumnGroupEnd = (targetName) => {{
-      if (!tableModeIgnoredEndTags.has(targetName)) return false;
+      if (targetName === "br" || targetName === "p") {{
+        const context = stack[0];
+        if (stack.length === 1 && context === fragment
+            && context.namespaceURI === HTML_NAMESPACE
+            && String(context.localName || "").toLowerCase() === "colgroup") return true;
+      }}
+      if (!tableModeIgnoredEndTags.has(targetName) && targetName !== "br" && targetName !== "p") return false;
       const current = stack[stack.length - 1];
       if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
       // stack[0] is fragment context and cannot satisfy column-group/table scope.
@@ -36155,6 +36236,7 @@ fn document_bootstrap(
         if (candidateName === "colgroup" && columnGroupIndex < 0) columnGroupIndex = index;
         else if (candidateName === "table") {{
           if (columnGroupIndex < 0) return false;
+          if (targetName === "br" || targetName === "p") return true;
           if (targetName === "col") return true;
           if (targetName === "colgroup") {{
             if (columnGroupIndex === stack.length - 1) stack.length = columnGroupIndex;
@@ -36344,6 +36426,10 @@ fn document_bootstrap(
           continue;
         }}
         const name = closing[1].toLowerCase();
+        const foreignEndBreakout = prepareForeignEndTagBreakout(name);
+        if (foreignEndBreakout && stack.length === 1 && stack[0] === fragment) {{
+          forceHtmlContext = true;
+        }}
         const stackBefore = markerSensitiveEndNames.has(name) ? stack.slice() : null;
         const consumed = (name === "table" && consumeHtmlTableEnd())
           || consumeHtmlTableColumnGroupEnd(name)
@@ -36357,6 +36443,16 @@ fn document_bootstrap(
           clearMarkersForPoppedElements(stackBefore);
           cursor = end + 1;
           continue;
+        }}
+        if (name === "br") {{
+          reconstructActiveFormatting(forceHtmlContext && stack[stack.length - 1] === fragment);
+          insertHtmlEndRecoveryElement("br", false);
+          cursor = end + 1;
+          continue;
+        }}
+        if (name === "p" && !paragraphInButtonScope()) {{
+          reconstructActiveFormatting(forceHtmlContext && stack[stack.length - 1] === fragment);
+          insertHtmlEndRecoveryElement("p", true);
         }}
         if (htmlFormattingNames.has(name)) {{
           if (adoptActiveFormatting(name) || consumeFormattingFallbackEnd(name)) {{

@@ -4,11 +4,12 @@
 
 The architecture, analysis, and plan summaries report completed browser slices
 650–671, but `docs/plan/tasks/` currently contains detailed browser task files
-only through slice 649. The remote issue body also reports slice 531. Audit the
+only through slice 649. The remote issue body still reports slice 531; a dated
+issue comment now records local slice 672 and its evidence. Audit the
 authoritative commits and recover verifiable scope/test evidence for the
 missing task records; do not infer passing checks from summary prose. Then
-synchronize the issue with the local checkpoint and clearly separate local
-results from remote CI and promotion evidence.
+reconcile the stale issue body and clearly separate local results from remote
+CI and promotion evidence.
 
 ## Input: popup-opening mouse release completion
 

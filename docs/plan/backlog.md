@@ -94,6 +94,17 @@ depth, shortcut, formatting, and whitespace checks passed. Local links passed;
 the full CLI inventory check lacked `target/debug/glass`. Remote CI was not run.
 See `tasks/native-engine-browser-724.md`.
 
+### Slice 725 complete: rooted-file runtime CSP meta insertion
+
+The rooted-file mutation path applies its pending-policy ledger after the DOM
+batch, but the synchronous classic-inline-script evaluator runs before Rust
+receives those commands. Slice 725 connects its runtime CSP callback to newly
+connected head meta elements, then synchronizes the captured append-only policy
+into the resource loader before later resources are checked. The same-turn
+inline/external-script, edit/removal, and body-meta tests pass, as do the
+rooted-file parser/style and HTTP(S) meta regressions. See
+`tasks/native-engine-browser-725.md`.
+
 ### Follow-up observed during slice 722
 
 `native_content_process_delivers_report_only_csp_report_uri_network_reports`

@@ -27,10 +27,11 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-724`; issue #40
-remains open. Slice 724 enforces rooted-file inline style CSP, including
-runtime mutations. Slice 723 extends rooted-file CSP to external stylesheets
-and CSS imports. Slices 709–710 preserve request-URL module identity, including
+expansion is complete locally through `native-engine-browser-725`; issue #40
+remains open. Slice 725 enforces runtime CSP meta policies before same-turn
+inline script execution and later external resource processing. Slice 724
+enforces rooted-file inline style CSP, including runtime mutations. Slice 723
+extends rooted-file CSP to external stylesheets and CSS imports. Slices 709–710 preserve request-URL module identity, including
 query and fragment, separately from the final response URL used as the
 descendant base across page, dedicated/shared worker, and service-worker module
 graphs. Slices 704–705 connect bounded
@@ -113,9 +114,20 @@ rooted-file behavior, 16/16 CSP unit tests, formatting, whitespace, and
 maintainer documentation gates passed locally. The broader CSP integration
 batch passed 18/19; a report-only network report-URI test also timed out on
 standalone replay and remains a separate issue. Remote CI was not run. Other
-file resource classes, report-only file policy, dynamic meta insertion, and
-complete CSP conformance remain open. See
-[task 722](tasks/native-engine-browser-722.md).
+file resource classes, report-only file policy, and complete CSP conformance
+remain open. See [task 722](tasks/native-engine-browser-722.md) for the parser
+policy baseline; runtime meta insertion was subsequently implemented in slice
+725.
+Slice 725 captures connected head policies in the synchronous JavaScript
+runtime before later inline scripts can execute, then applies the append-only
+Document ledger to the resource loader before later resources are processed.
+Same-evaluation removal and content edits cannot relax a captured policy.
+Focused rooted-file and HTTP(S) CSP regressions passed. Release-documentation
+truth (1,353 Markdown files, zero current-claim failures), documentation depth
+(93 guides/19 contracts), shortcut inventory (15 keys/63 markers), formatting,
+and whitespace checks passed. Full link/CLI inventory was not run because
+`target/debug/glass` is absent. Remote CI was not run. See
+[task 725](tasks/native-engine-browser-725.md).
 Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type

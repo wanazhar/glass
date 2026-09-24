@@ -1713,6 +1713,16 @@ impl NativeDocument {
         );
     }
 
+    pub(crate) fn processed_content_security_policy_meta_nodes(&self) -> Vec<u32> {
+        let mut processed = self.processed_csp_meta_nodes.clone();
+        for (script_index, node_id) in &self.script_node_ids {
+            if self.processed_csp_meta_nodes.contains(&node_id.index()) {
+                processed.insert(*script_index);
+            }
+        }
+        processed.into_iter().collect()
+    }
+
     /// Return head meta policies that have not yet been handed to the policy
     /// container. Policies captured at insertion remain pending even if the
     /// node is later detached or edited. The caller commits the node indexes

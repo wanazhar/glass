@@ -2378,6 +2378,7 @@ impl NativeEngine {
                 .javascript
                 .as_ref()
                 .expect("local JavaScript runtime initialized");
+            self.synchronize_local_inline_csp_policy(&self.document, javascript, &self.url)?;
             javascript.set_sync_xhr_loader(&self.loader);
             let result = javascript.evaluate_with_page_events(
                 &source,
@@ -4383,6 +4384,19 @@ impl NativeEngine {
         Ok(outcome)
     }
 
+    fn synchronize_local_inline_csp_policy(
+        &self,
+        document: &NativeDocument,
+        runtime: &NativeJavaScriptRuntime,
+        document_url: &str,
+    ) -> Result<(), NativeEngineError> {
+        runtime.set_inline_script_policy(self.loader.inline_script_policy(document_url)?);
+        runtime.mark_processed_inline_csp_meta_nodes(
+            document.processed_content_security_policy_meta_nodes(),
+        );
+        Ok(())
+    }
+
     fn apply_local_document_commands_with_font_face_ack(
         &mut self,
         document: &mut NativeDocument,
@@ -4417,6 +4431,16 @@ impl NativeEngine {
             Ok((events, Vec::new()))
         };
         let (events, follow_up_commands) = result?;
+        if is_file_url(&self.url) {
+            super::content_process::apply_pending_meta_content_security_policies(
+                document,
+                &mut self.loader,
+                &self.url,
+            )?;
+            if let Some(runtime) = self.javascript.as_ref() {
+                self.synchronize_local_inline_csp_policy(document, runtime, &self.url)?;
+            }
+        }
         if let Some(inline_style_state_before) = inline_style_state_before {
             refresh_rooted_file_inline_styles(
                 document,
@@ -7334,6 +7358,20 @@ impl NativeEngine {
                 self.loader.merge_fetch_task_state(updated_loader)?;
             }
             let result = result?;
+            if is_file_url(&prepared.resource.url) {
+                super::content_process::apply_pending_meta_content_security_policies(
+                    &mut prepared.document,
+                    &mut self.loader,
+                    &prepared.resource.url,
+                )?;
+                if let Some(runtime) = javascript.as_ref() {
+                    self.synchronize_local_inline_csp_policy(
+                        &prepared.document,
+                        runtime,
+                        &prepared.resource.url,
+                    )?;
+                }
+            }
             dialogs.extend(result.dialogs);
             initial_events.extend(result.events);
             initial_scroll_commands.extend(result.scroll_commands);
@@ -7480,6 +7518,20 @@ impl NativeEngine {
                 self.loader.merge_fetch_task_state(updated_loader)?;
             }
             let result = result?;
+            if is_file_url(&prepared.resource.url) {
+                super::content_process::apply_pending_meta_content_security_policies(
+                    &mut prepared.document,
+                    &mut self.loader,
+                    &prepared.resource.url,
+                )?;
+                if let Some(runtime) = javascript.as_ref() {
+                    self.synchronize_local_inline_csp_policy(
+                        &prepared.document,
+                        runtime,
+                        &prepared.resource.url,
+                    )?;
+                }
+            }
             if let Some(inline_style_state_before) = inline_style_state_before
                 && inline_style_state_before != inline_style_source_state(&prepared.document)
             {
@@ -8664,12 +8716,23 @@ fn load_local_dynamic_page_script_sources(
                 scripts.push(NativePageScript::ImportMap(import_map.clone()));
             }
             NativePageScriptSource::Inline {
-                source, node_index, ..
-            } => scripts.push(NativePageScript::Classic {
                 source,
-                base_url: document_url.to_owned(),
-                node_index: Some(node_index),
-            }),
+                node_index,
+                nonce,
+                ..
+            } => {
+                let allowed =
+                    loader.allows_inline_script(document_url, &source, nonce.as_deref())?;
+                if !allowed {
+                    resource_events.push((node_index, NativeEventKind::Error));
+                    continue;
+                }
+                scripts.push(NativePageScript::Classic {
+                    source,
+                    base_url: document_url.to_owned(),
+                    node_index: Some(node_index),
+                });
+            }
             NativePageScriptSource::ModuleInline {
                 source,
                 timing,
@@ -8874,6 +8937,17 @@ fn execute_local_dynamic_page_script_batches(
             &resource_events,
             &[],
         )?;
+        if is_file_url(document_url) {
+            super::content_process::apply_pending_meta_content_security_policies(
+                document,
+                loader,
+                document_url,
+            )?;
+            runtime.set_inline_script_policy(loader.inline_script_policy(document_url)?);
+            runtime.mark_processed_inline_csp_meta_nodes(
+                document.processed_content_security_policy_meta_nodes(),
+            );
+        }
         if let Some(inline_style_state_before) = inline_style_state_before {
             refresh_rooted_file_inline_styles(
                 document,

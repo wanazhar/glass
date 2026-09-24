@@ -970,6 +970,18 @@ stylesheet from currently authorized sources, while style-attribute changes
 invalidate computed style. Policies remain conjunctive. See [slice
 724](../plan/tasks/native-engine-browser-724.md).
 
+Slice 725 implements runtime CSP meta delivery for both synchronous script
+execution and later resource checks. When a rooted-file Document connects a
+new `meta[http-equiv="Content-Security-Policy"]` under its `head`, the
+JavaScript host view appends its captured policy before a later inline script
+can execute in the same evaluation. The Document ledger then applies that
+policy to the resource loader before subsequent external resources are
+processed. The policy is additive; later content edits and element removal
+cannot relax it. A meta outside `head` is not a policy source. The focused
+rooted-file same-turn test and existing parser, style, and HTTP(S) meta CSP
+regressions pass. See
+[`slice 725`](../plan/tasks/native-engine-browser-725.md).
+
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript
 fragment projections, and XHR HTML documents. Text, attributes, comments,

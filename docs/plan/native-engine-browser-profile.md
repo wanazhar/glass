@@ -102,8 +102,11 @@ It is never an implicit fallback for a native request.
   static dependencies, and invoked dynamic imports. This file profile binds
   `'self'` to the most-specific admitted file root; an explicit `file:` source
   cannot bypass root admission. Denied script bytes are rejected before read.
-  Other file resource classes, report-only file policies, dynamic meta
-  insertion, and full CSP conformance remain open; see
+  Other file resource classes, report-only file policies, and full CSP
+  conformance remain open. Slice 725 implements runtime meta insertion: its
+  runtime callback captures a connected head policy before a later
+  same-evaluation inline script, and the document ledger applies it to later
+  resource checks. See
   [task 722](tasks/native-engine-browser-722.md).
 - Slice 723 extends that file-document contract to initial and dynamic
   external stylesheet links and recursive local CSS imports. It applies the
@@ -121,6 +124,13 @@ It is never an implicit fallback for a native request.
   changed style blocks rebuild from authorized sources. Dynamic CSP meta
   insertion and report-only file policies remain separate; see
   [task 724](tasks/native-engine-browser-724.md).
+- For rooted-file Documents, runtime `Content-Security-Policy` meta elements
+  connected under `head` append their captured `content` policy to the active
+  policy container. Subsequent content checks use the additional conjunctive
+  policy; changing or removing the meta element cannot relax it. Meta elements
+  outside `head` are ignored. Slice 725 wires this contract into the direct
+  local-document mutation path; report-only file policies and complete CSP
+  conformance remain open. See [task 725](tasks/native-engine-browser-725.md).
 - Local implementation evidence: slices 713–717 cover runtime-valued imports
   in page classic/module scripts, dedicated classic/module Workers, and
   classic/module SharedWorkers, including nested computed imports through their

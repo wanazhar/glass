@@ -1158,6 +1158,18 @@ whitespace pass. Link coverage reports no broken repository-local links; its
 live CLI inventory could not complete because `target/debug/glass` is absent.
 Remote CI was not run. See `docs/plan/tasks/native-engine-browser-724.md`.
 
+Slice 725 closes the rooted-file runtime CSP meta gap. The local command path
+applies its pending-policy ledger after the DOM batch, but classic inline
+scripts execute synchronously before Rust receives those commands. The runtime
+CSP hook now captures a connected head policy before a later inline script in
+the same evaluation; the document ledger synchronizes it to the loader for
+subsequent resource checks. The policy remains append-only across
+edits/removal; non-head meta elements remain inert. Same-turn inline and
+external-script checks, rooted-file parser/style regressions, and the existing
+HTTP(S) meta test pass. See
+[`slice 725`](../tasks/native-engine-browser-725.md) and the [CSP Level 3 meta
+element contract](https://www.w3.org/TR/CSP/#meta-element).
+
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript
 fragments, and XHR HTML documents. The Rust route retains submitted-source

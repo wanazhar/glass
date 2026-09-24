@@ -987,6 +987,16 @@ not run. Worker import maps, computed dynamic imports, and complete module
 scheduling remain open. See
 [`slice 710`](../tasks/native-engine-browser-710.md).
 
+Slice 711 extends bounded dynamic-import discovery to fully static quoted
+string concatenations, including parentheses and comments, without admitting
+partially known runtime expressions. It also resolves rooted-file external
+module-script URLs as document-relative URLs instead of applying the bare
+module-import rule to HTML `src` values. Focused page, redirected-worker, and
+rooted-file cases pass with the scoped check and all four documentation gates;
+remote CI was not run. Runtime-valued expressions, worker import maps, and
+complete module scheduling remain open. See
+[`slice 711`](../tasks/native-engine-browser-711.md).
+
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript
 fragments, and XHR HTML documents. The Rust route retains submitted-source

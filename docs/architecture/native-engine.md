@@ -822,6 +822,18 @@ regressions passed with the scoped check and documentation gates; remote CI was
 not run. Computed dynamic imports and full module scheduling remain open. See
 the [`slice 710` task](../plan/tasks/native-engine-browser-710.md).
 
+Slice 711 admits dynamic-import arguments composed entirely of quoted string
+literals joined with `+`, including parenthesized pieces and comments, through
+the existing bounded prefetch path for page, worker, and rooted-file module
+graphs. Runtime-valued expressions are not partially prefetched. Rooted-file
+external module-script `src` values now resolve as document-relative URLs
+before the configured-root loader checks them; bare dependency specifiers
+remain governed by import maps. Focused parser, page, redirected-worker, and
+rooted-file tests pass with the scoped check and local documentation gates;
+remote CI was not run. Runtime-valued computed imports, worker maps, and full
+module scheduling remain open. See the
+[`slice 711` task](../plan/tasks/native-engine-browser-711.md).
+
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript
 fragment projections, and XHR HTML documents. Text, attributes, comments,
@@ -9383,6 +9395,11 @@ Rust inspection surface.
 ## Backend capability contract
 
 The native profile is `partial` and declares:
+
+In this inventory, dynamic-import prefetch includes quoted string-literal
+concatenations that can be resolved before evaluation. “Computed imports” and
+“computed module loading” refer to runtime-valued expressions; the prefetch
+pass does not grant them arbitrary network access.
 
 | Capability | Level | Current contract |
 |---|---|---|

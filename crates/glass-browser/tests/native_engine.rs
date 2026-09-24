@@ -1814,6 +1814,7 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
     let script_path = root.join("app.js");
     let module_path = root.join("module.js");
     let module_dependency_path = root.join("module-dependency.js");
+    let module_dynamic_dependency_path = root.join("module-dynamic-dependency.js");
     let stylesheet_dir = root.join("styles");
     fs::create_dir_all(&stylesheet_dir).unwrap();
     let stylesheet_theme_dir = stylesheet_dir.join("theme");
@@ -1830,7 +1831,12 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
     .unwrap();
     fs::write(
         &module_path,
-        "import { value } from './module-dependency.js'; globalThis.fileModuleValue = value;",
+        "import { value } from './module-dependency.js'; globalThis.fileModuleValue = value; import('./module-' + 'dynamic-dependency.js').then(({ value }) => { globalThis.fileDynamicModuleValue = value; });",
+    )
+    .unwrap();
+    fs::write(
+        &module_dynamic_dependency_path,
+        "export const value = 'module-dynamic-loaded';",
     )
     .unwrap();
     fs::write(
@@ -1867,13 +1873,14 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const image = document.getElementById('image'); return [fileScriptValue, fileModuleValue, fileScriptEvents, getComputedStyle(document.getElementById('target')).color, image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
+                "(() => { const image = document.getElementById('image'); return [fileScriptValue, fileModuleValue, fileDynamicModuleValue, fileScriptEvents, getComputedStyle(document.getElementById('target')).color, image.complete, image.naturalWidth, image.naturalHeight, image.currentSrc]; })()",
             )
             .await
             .unwrap(),
         serde_json::json!([
             "rgb(1, 2, 3)",
             "module-loaded",
+            "module-dynamic-loaded",
             ["load"],
             "rgb(1, 2, 3)",
             true,
@@ -20947,12 +20954,12 @@ async fn native_local_dispatches_large_promise_rejection_batch_as_data() {
 }
 
 #[tokio::test]
-async fn native_content_process_resolves_literal_dynamic_imports() {
+async fn native_content_process_resolves_static_expression_dynamic_imports() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for expected_path in ["/page", "/app.js", "/dep.js"] {
+        for expected_path in ["/page", "/app.js", "/dep.js", "/other.js"] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0_u8; 4096];
             let read = stream.read(&mut request).await.unwrap();
@@ -20962,11 +20969,15 @@ async fn native_content_process_resolves_literal_dynamic_imports() {
                 "/page" => ("text/html", "<script type='module' src='/app.js'></script>"),
                 "/app.js" => (
                     "application/javascript",
-                    "globalThis.dynamicValue = 'pending'; import('./dep.js').then(module => { globalThis.dynamicValue = module.value; });",
+                    "globalThis.dynamicValue = 'pending'; Promise.all([import('./' + /* static expression */ 'dep.js'), import(( './' + 'other.js' ))]).then(([first, second]) => { globalThis.dynamicValue = [first.value, second.value]; });",
                 ),
                 _ => (
                     "application/javascript",
-                    "export const value = 'dynamic-dep';",
+                    if expected_path == "/dep.js" {
+                        "export const value = 'dynamic-dep';"
+                    } else {
+                        "export const value = 'other-dynamic-dep';"
+                    },
                 ),
             };
             let response = format!(
@@ -20987,7 +20998,7 @@ async fn native_content_process_resolves_literal_dynamic_imports() {
             .evaluate_async("globalThis.dynamicValue")
             .await
             .unwrap(),
-        serde_json::json!("dynamic-dep")
+        serde_json::json!(["dynamic-dep", "other-dynamic-dep"])
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();
@@ -21030,7 +21041,7 @@ async fn native_content_process_preserves_worker_module_identities_and_response_
                         "HTTP/1.1 302 Found\r\nLocation: /workers/entry-real.js?version=two\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
                     }
                     "/workers/entry-real.js?version=two" => {
-                        let body = "import './dep.js?variant=one#first'; import './dep.js?variant=one#second'; import './dep.js?variant=two'; postMessage({ kind: 'ready', executions: globalThis.workerFragmentExecutions });";
+                        let body = "import './dep.js?variant=one#first'; import './dep.js?variant=one#second'; import('./dep.js?variant=' + 'two').then(() => postMessage({ kind: 'ready', executions: globalThis.workerFragmentExecutions }));";
                         format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                             body.len()

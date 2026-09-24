@@ -3315,6 +3315,70 @@ async fn native_local_worker_preloads_import_scripts_dependencies() {
 }
 
 #[tokio::test]
+async fn native_local_worker_import_scripts_dynamic_import_uses_source_url() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-import.test/page.html",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-import.test/workers/root.js",
+            "importScripts('/scripts/bridge.js');",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-import.test/scripts/bridge.js",
+            "const target = './computed.js?source=bridge'; import(target).then(async module => postMessage({ kind: 'loaded', value: module.value, nested: await module.loadNested() }), error => postMessage({ kind: 'error', message: String(error) }));",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-import.test/scripts/computed.js?source=bridge",
+            "export const value = 'local-computed'; export async function loadNested() { const target = './nested.js?source=computed'; return (await import(target)).value; }",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-import.test/scripts/nested.js?source=computed",
+            "export const value = 'local-nested';",
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-import.test/page.html");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.worker = new Worker('/workers/root.js'); worker.onmessage = event => workerMessages.push(event.data); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let mut messages = serde_json::Value::Null;
+    for _ in 0..5 {
+        messages = engine.evaluate_async("workerMessages").await.unwrap();
+        if messages
+            .as_array()
+            .is_some_and(|messages| !messages.is_empty())
+        {
+            break;
+        }
+    }
+    engine.close_async().await.unwrap();
+
+    assert_eq!(
+        messages,
+        serde_json::json!([{
+            "kind": "loaded",
+            "value": "local-computed",
+            "nested": "local-nested",
+        }]),
+        "fixture Worker imports must resolve from the imported classic script URL, including nested module imports"
+    );
+}
+
+#[tokio::test]
 async fn native_local_module_worker_imports_dependencies_and_handles_messages() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -21345,6 +21409,150 @@ async fn native_content_process_resolves_runtime_shared_worker_module_imports() 
             "/module-nested.js?runtime=nested",
             "/module-shared.js",
             "/page",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn native_content_process_import_scripts_dynamic_imports_use_final_script_urls() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(25), async {
+            let mut requests = Vec::new();
+            for _ in 0..10 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("classic Worker request includes a URL")
+                    .to_owned();
+                let (status, extra_headers, content_type, body) = match path.as_str() {
+                    "/page" => (
+                        "200 OK",
+                        "",
+                        "text/html",
+                        "<script>globalThis.workerMessages = []; globalThis.workerErrors = []; const watch = worker => { worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(String(event.message)); }; globalThis.dedicated = new Worker('/workers/dedicated.js'); watch(dedicated); globalThis.shared = new SharedWorker('/workers/shared.js'); shared.port.onmessage = event => workerMessages.push(event.data); shared.port.start();</script>",
+                    ),
+                    "/workers/dedicated.js" => (
+                        "200 OK",
+                        "",
+                        "application/javascript",
+                        "importScripts('/scripts/dedicated-bridge.js?redirect=1');",
+                    ),
+                    "/scripts/dedicated-bridge.js?redirect=1" => (
+                        "302 Found",
+                        "Location: /assets/dedicated/bridge.js?final=1\r\n",
+                        "application/javascript",
+                        "",
+                    ),
+                    "/assets/dedicated/bridge.js?final=1" => (
+                        "200 OK",
+                        "",
+                        "application/javascript",
+                        "const target = './computed.js?source=bridge'; import(target).then(async module => postMessage({ kind: 'dedicated', value: module.value, nested: await module.loadNested() }), error => postMessage({ kind: 'dedicated-error', message: String(error) }));",
+                    ),
+                    "/assets/dedicated/computed.js?source=bridge" => (
+                        "200 OK",
+                        "",
+                        "application/javascript",
+                        "export const value = 'dedicated-computed'; export async function loadNested() { const target = './nested.js?source=computed'; return (await import(target)).value; }",
+                    ),
+                    "/assets/dedicated/nested.js?source=computed" => (
+                        "200 OK",
+                        "",
+                        "application/javascript",
+                        "export const value = 'dedicated-nested';",
+                    ),
+                    "/workers/shared.js" => (
+                        "200 OK",
+                        "",
+                        "application/javascript",
+                        "importScripts('/assets/shared/bridge.js');",
+                    ),
+                    "/assets/shared/bridge.js" => (
+                        "200 OK",
+                        "",
+                        "application/javascript",
+                        "globalThis.onconnect = event => { const port = event.ports[0]; const target = './computed.js?source=bridge'; import(target).then(async module => port.postMessage({ kind: 'shared', value: module.value, nested: await module.loadNested() }), error => port.postMessage({ kind: 'shared-error', message: String(error) })); };",
+                    ),
+                    "/assets/shared/computed.js?source=bridge" => (
+                        "200 OK",
+                        "",
+                        "application/javascript",
+                        "export const value = 'shared-computed'; export async function loadNested() { const target = './nested.js?source=computed'; return (await import(target)).value; }",
+                    ),
+                    "/assets/shared/nested.js?source=computed" => (
+                        "200 OK",
+                        "",
+                        "application/javascript",
+                        "export const value = 'shared-nested';",
+                    ),
+                    other => panic!("unexpected importScripts dynamic-module request: {other}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push(path);
+            }
+            requests.sort();
+            requests
+        })
+        .await
+        .expect("classic Worker importScripts dynamic imports stay within their time bound")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let mut result = serde_json::Value::Null;
+    for _ in 0..8 {
+        result = engine
+            .evaluate_async(
+                "({ messages: workerMessages.slice().sort((a, b) => String(a.kind).localeCompare(String(b.kind))), errors: workerErrors })",
+            )
+            .await
+            .unwrap();
+        if result["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.len() == 2)
+        {
+            break;
+        }
+    }
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "messages": [
+                {"kind": "dedicated", "value": "dedicated-computed", "nested": "dedicated-nested"},
+                {"kind": "shared", "value": "shared-computed", "nested": "shared-nested"},
+            ],
+            "errors": [],
+        }),
+        "computed imports inside preloaded classic Worker scripts must use each final script response URL and settle through their owning Worker"
+    );
+    assert_eq!(
+        requests,
+        vec![
+            "/assets/dedicated/bridge.js?final=1",
+            "/assets/dedicated/computed.js?source=bridge",
+            "/assets/dedicated/nested.js?source=computed",
+            "/assets/shared/bridge.js",
+            "/assets/shared/computed.js?source=bridge",
+            "/assets/shared/nested.js?source=computed",
+            "/page",
+            "/scripts/dedicated-bridge.js?redirect=1",
+            "/workers/dedicated.js",
+            "/workers/shared.js",
         ]
     );
 }

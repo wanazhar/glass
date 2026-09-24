@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-714`. Issue #40
-remains open. It follows locally completed `native-engine-browser-696`,
+completed browser expansion slice is `native-engine-browser-716`. Issue #40
+remains open. It follows
+locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,
 `native-engine-browser-693`, and
@@ -1032,8 +1033,21 @@ settles imports in the persistent shared realm so connected MessagePorts
 receive successful nested imports and rejected fetches. Its process-backed
 fixture asserts the exact request set across both worker types. Computed
 imports in classic `importScripts()` dependencies, rooted-file page imports,
-import options/attributes, and complete module scheduling remain open. See
+import options/attributes, and complete module scheduling remained open at the
+715 checkpoint. See
 [`slice 715`](../tasks/native-engine-browser-715.md).
+
+Slice 716 rewrites runtime-valued `ImportCall`s in each preloaded classic
+`importScripts()` source against that script's final response URL before
+concatenation. It reserves the Worker entry referrer, registers imported
+script referrers before execution, applies the aggregate import bound, and
+leaves Service Worker classic imports unchanged. Process-backed HTTP coverage
+passes for redirected dedicated and SharedWorker dependency sources, nested
+module imports, exact request paths, and both settlement routes; a local
+fixture covers the same nested path. Rooted-file page imports, Service Worker
+classic-import settlement, import options/attributes, and full module
+scheduling remain open. See
+[`slice 716`](../tasks/native-engine-browser-716.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

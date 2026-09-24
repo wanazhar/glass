@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-712`; issue #40
+expansion is complete locally through `native-engine-browser-713`; issue #40
 remains open. Slices 709–710 preserve request-URL module identity, including
 query and fragment, separately from the final response URL used as the
 descendant base across page, dedicated/shared worker, and service-worker module
@@ -42,8 +42,12 @@ concatenation to bounded dynamic-import prefetch and corrects rooted-file
 module-script URL resolution. Slice 712 prevents member methods named `import`
 from triggering module prefetch and removes Document import maps from the
 worker backlog because the HTML Standard scopes them to Documents.
-Runtime-valued dynamic imports, broader worker/file-origin propagation, and
-complete module scheduling remain open. Slice 703 separates
+Slice 713 adds runtime-valued `ImportCall`s to page classic and module scripts
+through the asynchronous host module-fetch path, preserving active script
+response bases and Document import-map scopes, including nested computed
+imports. Worker/rooted-file computed imports, import options, broader
+worker/file-origin propagation, and complete module scheduling remain open.
+See [task 713](tasks/native-engine-browser-713.md). Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type
 essences are matched case-insensitively without parameters on script elements;
@@ -377,6 +381,17 @@ The focused page, redirected-worker, rooted-file, and parser tests and scoped
 check pass locally; remote CI and documentation gates are recorded in the task.
 Runtime-valued dynamic imports, worker import maps, and complete module
 scheduling remain open.
+
+[`native-engine-browser-712`](tasks/native-engine-browser-712.md) prevents
+member methods named `import` from triggering speculative dynamic-module
+prefetch and removes non-standard Document import maps from worker scope.
+
+[`native-engine-browser-713`](tasks/native-engine-browser-713.md) routes
+runtime-valued page imports through the asynchronous host fetch loop, resolving
+against each active classic/module script response base and Document import-map
+scope. Its process-backed regression covers both script kinds and a nested
+computed import. Worker/rooted-file computed imports, import options, and
+complete module scheduling remain open.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts
@@ -2439,8 +2454,9 @@ QuickJS module source map. Canonical roots, duplicate suppression, graph-entry
 and aggregate-byte limits, and fail-closed handling for bare, network/data/blob,
 credential-bearing, missing, oversized, and out-of-root dependencies are
 enforced before evaluation. The page and worker URL facades also preserve
-canonical `file:///` URLs. Import maps, non-literal dynamic imports, file
-fonts/workers/downloads, complete file-origin semantics, and complete Web IDL
+canonical `file:///` URLs. Import maps and runtime-valued dynamic imports from
+rooted-file modules remain open, as do file fonts/workers/downloads, complete
+file-origin semantics, and complete Web IDL
 parity remain issue #40 gates.
 
 The completed rooted-file-CSS-URL-base follow-up is

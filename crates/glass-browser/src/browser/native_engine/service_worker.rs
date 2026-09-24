@@ -2570,6 +2570,7 @@ async fn resolve_service_worker_fetch_command(
         timeout_ms,
         upload_stream_id,
         destination,
+        module_referrer,
     } = command
     else {
         return Ok(false);
@@ -2586,10 +2587,10 @@ async fn resolve_service_worker_fetch_command(
             reason: "service worker fetch command owner is invalid".into(),
         });
     }
-    if destination.is_some() {
+    if destination.is_some() || module_referrer.is_some() {
         return Err(NativeEngineError::invalid(
             "service worker fetch destination",
-            "service worker fetch destinations are not supported",
+            "service worker fetch destinations and module referrers are not supported",
         ));
     }
     let request_body = if let Some(upload_stream_id) = upload_stream_id {

@@ -56,6 +56,21 @@ It is never an implicit fallback for a native request.
 | `accessibility` | semantic and assistive surface | roles, states, properties, name/description computation, focus, actions, and incremental updates for the declared DOM/layout surface | accessibility-tree differential fixtures and action/focus tests |
 | `glass-integration` | public Glass contract | stable backend capability profile, navigation, targets, DOM/AX/evidence, actions, key input, script/evaluate, waits/events, screenshots, contexts, storage, downloads/uploads, prompts, CLI, MCP, and TUI parity | all normal operations pass in native-only mode with no hidden CDP process/socket |
 
+### Dynamic module loading contract
+
+- A runtime-valued `ImportCall` resolves when invoked; static discovery must
+  not guess the expression's value or issue speculative module requests.
+- A Document applies its import map using the active script's URL as referrer,
+  then fetches the module asynchronously through the document's security and
+  resource policies. Request URLs retain module identity; final response URLs
+  provide descendant bases.
+- Module workers use their own worker module map and URL/referrer rules. A
+  Document import map is never exposed as a worker capability.
+- Import options/attributes, nested imports, promise/microtask ordering, and
+  module evaluation errors follow the selected ECMAScript and HTML host
+  algorithms; a bounded implementation must report unsupported profile
+  behavior explicitly rather than silently returning a partial namespace.
+
 ## Explicit exclusions
 
 The following are outside `GCWP-0.1` unless a later profile revision adds them:

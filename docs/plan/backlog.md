@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-712`.
+The latest locally completed parser/script slice is `native-engine-browser-713`.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
 shared, and service-worker module graphs. See the task records for scope and
@@ -11,8 +11,12 @@ concatenations in dynamic imports and corrects rooted-file module-script URL
 resolution. Slice 712 prevents member methods named `import` from being
 misclassified as dynamic `ImportCall`s and avoids speculative module fetches.
 It also corrects the profile: HTML import maps are Document-scoped, not a
-worker-module capability. Runtime-valued computed imports and full module
-scheduling remain open.
+worker-module capability. Slice 713 adds runtime-valued computed imports for
+HTTP(S) page classic/module scripts through the asynchronous host fetch path,
+using active response bases, Document import-map scopes, and nested computed
+imports. Worker/rooted-file computed imports, import options, broader
+worker/file-origin propagation, and full module scheduling remain open; see
+`tasks/native-engine-browser-713.md`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -35,8 +39,9 @@ Slice `native-engine-browser-707` completes source-order map processing and
 resolved-specifier locks, bounded at 1,024 successful resolutions and shared
 with QuickJS. The locked check, 14 resolver/module unit tests, 11
 process-backed module tests, formatting, and four documentation gates passed
-locally; remote CI was not run. Computed dynamic imports, dynamically inserted
-map registration, worker/file-origin coverage, module fragment identity, and
+locally; remote CI was not run. Slice 713 adds runtime-valued computed imports
+for page classic/module scripts through the asynchronous host fetch path.
+Worker/rooted-file coverage, import options, worker/file-origin coverage, and
 full module scheduling remain separate Core Web Profile gates. See
 `tasks/native-engine-browser-704.md` and `tasks/native-engine-browser-705.md`.
 See `tasks/native-engine-browser-706.md` and

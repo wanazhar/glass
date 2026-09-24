@@ -271,9 +271,12 @@ pub(crate) enum NativeScriptCommand {
         upload_stream_id: Option<u32>,
         /// An internal request destination. This is never user-configurable
         /// through the public Fetch API; the page FontFace loader uses
-        /// `font` so the content owner can apply font-specific policy.
+        /// `font`, while module imports use `module` so the content owner can
+        /// apply module-graph policy and preserve the active referrer.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         destination: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        module_referrer: Option<String>,
     },
     /// Install bytes loaded by a page-realm `FontFace`. The fetch or inline
     /// source resolution happens in JavaScript first; this bounded command
@@ -3252,6 +3255,7 @@ impl NativeWorkerRegistry {
             timeout_ms,
             upload_stream_id,
             destination,
+            module_referrer,
         } = command
         else {
             return Err(NativeEngineError::invalid(
@@ -3265,10 +3269,10 @@ impl NativeWorkerRegistry {
                 "worker id does not match the owning worker",
             ));
         }
-        if destination.is_some() {
+        if destination.is_some() || module_referrer.is_some() {
             return Err(NativeEngineError::invalid(
                 "native Worker fetch destination",
-                "worker fetch destinations are not supported",
+                "worker fetch destinations and module referrers are not supported",
             ));
         }
         if request_id == 0 {
@@ -6879,6 +6883,7 @@ struct NativeWebStorageView {
 pub(crate) enum NativePageScript {
     Classic {
         source: String,
+        base_url: String,
         node_index: Option<u32>,
     },
     Module {
@@ -6924,6 +6929,7 @@ fn module_source_maps(
 struct NativeModuleResolver {
     import_map: Arc<Mutex<NativeModuleImportMap>>,
     module_base_urls: Arc<Mutex<BTreeMap<String, String>>>,
+    dynamic_module_aliases: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 impl Resolver for NativeModuleResolver {
@@ -6934,6 +6940,16 @@ impl Resolver for NativeModuleResolver {
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<String> {
+        if let Some(target) = self
+            .dynamic_module_aliases
+            .lock()
+            .map_err(|_| {
+                Error::new_resolving_message(base, name, "dynamic module aliases are unavailable")
+            })?
+            .remove(name)
+        {
+            return Ok(target);
+        }
         let base_url = self
             .module_base_urls
             .lock()
@@ -6957,6 +6973,8 @@ impl Resolver for NativeModuleResolver {
 
 struct NativeModuleLoader {
     sources: Arc<Mutex<BTreeMap<String, String>>>,
+    module_base_urls: Arc<Mutex<BTreeMap<String, String>>>,
+    dynamic_imports_enabled: Arc<Mutex<bool>>,
 }
 
 impl Loader for NativeModuleLoader {
@@ -6972,6 +6990,27 @@ impl Loader for NativeModuleLoader {
             .ok()
             .and_then(|sources| sources.get(name).cloned())
             .ok_or_else(|| Error::new_loading_message(name, "module was not prefetched"))?;
+        let dynamic_imports_enabled = *self
+            .dynamic_imports_enabled
+            .lock()
+            .map_err(|_| Error::new_loading_message(name, "module loader state is unavailable"))?;
+        let source = if dynamic_imports_enabled {
+            let module_base_url = self
+                .module_base_urls
+                .lock()
+                .map_err(|_| Error::new_loading_message(name, "module base URLs are unavailable"))?
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| name.to_owned());
+            let module_referrer = serde_json::to_string(&module_base_url).map_err(|_| {
+                Error::new_loading_message(name, "module base URL could not be encoded")
+            })?;
+            rewrite_runtime_dynamic_module_imports(&source, &module_referrer).map_err(|_| {
+                Error::new_loading_message(name, "transformed module exceeds its size limit")
+            })?
+        } else {
+            source
+        };
         Module::declare(ctx.clone(), name, source)
     }
 }
@@ -7029,6 +7068,7 @@ pub(crate) fn execute_inline_scripts(
                 timing,
                 NativePageScript::Classic {
                     source,
+                    base_url: document_url.to_owned(),
                     node_index: Some(node_index),
                 },
             )),
@@ -7066,6 +7106,7 @@ pub(crate) fn execute_inline_scripts(
                             timing,
                             NativePageScript::Classic {
                                 source: resource.body,
+                                base_url: resource.url,
                                 node_index: Some(node_index),
                             },
                         ))
@@ -7492,8 +7533,11 @@ pub(crate) fn execute_page_scripts(
         let evaluation = {
             let script_runtime = runtime.as_ref().expect("page script runtime initialized");
             match source {
-                NativePageScript::Classic { source, .. } => script_runtime.evaluate(
+                NativePageScript::Classic {
+                    source, base_url, ..
+                } => script_runtime.evaluate_classic_script(
                     source,
+                    base_url,
                     document,
                     document_url,
                     document_origin,
@@ -7910,9 +7954,16 @@ pub(crate) fn execute_dynamic_page_scripts(
             NativePageScript::ModuleDependency { .. } | NativePageScript::ImportMap(_) => None,
         };
         let evaluation = match &source {
-            NativePageScript::Classic { source, .. } => {
-                runtime.evaluate(source, document, document_url, document_origin, viewport)
-            }
+            NativePageScript::Classic {
+                source, base_url, ..
+            } => runtime.evaluate_classic_script(
+                source,
+                base_url,
+                document,
+                document_url,
+                document_origin,
+                viewport,
+            ),
             NativePageScript::Module { name, source, .. } => runtime.evaluate_module(
                 name,
                 source,
@@ -8048,9 +8099,16 @@ pub(crate) fn execute_dynamic_page_scripts(
             NativePageScript::ModuleDependency { .. } | NativePageScript::ImportMap(_) => None,
         };
         let evaluation = match &source {
-            NativePageScript::Classic { source, .. } => {
-                runtime.evaluate(source, document, document_url, document_origin, viewport)
-            }
+            NativePageScript::Classic {
+                source, base_url, ..
+            } => runtime.evaluate_classic_script(
+                source,
+                base_url,
+                document,
+                document_url,
+                document_origin,
+                viewport,
+            ),
             NativePageScript::Module { name, source, .. } => runtime.evaluate_module(
                 name,
                 source,
@@ -8207,6 +8265,7 @@ pub(crate) fn page_script_sources_to_scripts(
                 source, node_index, ..
             } => Some(NativePageScript::Classic {
                 source,
+                base_url: document_url.to_owned(),
                 node_index: Some(node_index),
             }),
             NativePageScriptSource::ModuleInline {
@@ -11344,6 +11403,9 @@ pub(crate) struct NativeJavaScriptRuntime {
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
     module_base_urls: Arc<Mutex<BTreeMap<String, String>>>,
     module_import_map: Arc<Mutex<NativeModuleImportMap>>,
+    dynamic_module_aliases: Arc<Mutex<BTreeMap<String, String>>>,
+    dynamic_imports_enabled: Arc<Mutex<bool>>,
+    dynamic_import_referrers: Arc<Mutex<BTreeSet<String>>>,
     sync_xhr_loader: Arc<Mutex<Option<NativeResourceLoader>>>,
     sync_xhr_loader_used: Arc<AtomicBool>,
     timer_pump_enabled: Arc<Mutex<bool>>,
@@ -11428,13 +11490,18 @@ impl NativeJavaScriptRuntime {
         let module_sources = Arc::new(Mutex::new(BTreeMap::new()));
         let module_base_urls = Arc::new(Mutex::new(BTreeMap::new()));
         let module_import_map = Arc::new(Mutex::new(NativeModuleImportMap::default()));
+        let dynamic_module_aliases = Arc::new(Mutex::new(BTreeMap::new()));
+        let dynamic_imports_enabled = Arc::new(Mutex::new(false));
         runtime.set_loader(
             NativeModuleResolver {
                 import_map: Arc::clone(&module_import_map),
                 module_base_urls: Arc::clone(&module_base_urls),
+                dynamic_module_aliases: Arc::clone(&dynamic_module_aliases),
             },
             NativeModuleLoader {
                 sources: Arc::clone(&module_sources),
+                module_base_urls: Arc::clone(&module_base_urls),
+                dynamic_imports_enabled: Arc::clone(&dynamic_imports_enabled),
             },
         );
         runtime.set_memory_limit(NATIVE_SCRIPT_MEMORY_BYTES);
@@ -11498,6 +11565,9 @@ impl NativeJavaScriptRuntime {
             module_sources,
             module_base_urls,
             module_import_map,
+            dynamic_module_aliases,
+            dynamic_imports_enabled,
+            dynamic_import_referrers: Arc::new(Mutex::new(BTreeSet::new())),
             sync_xhr_loader: Arc::new(Mutex::new(None)),
             sync_xhr_loader_used: Arc::new(AtomicBool::new(false)),
             timer_pump_enabled: Arc::new(Mutex::new(true)),
@@ -13345,6 +13415,151 @@ impl NativeJavaScriptRuntime {
         }
     }
 
+    pub(crate) fn module_sources_snapshot(
+        &self,
+    ) -> Result<(BTreeMap<String, String>, BTreeMap<String, String>), NativeEngineError> {
+        let sources = self
+            .module_sources
+            .lock()
+            .map(|current| current.clone())
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "read native module sources".into(),
+                reason: "native module source map is unavailable".into(),
+            })?;
+        let base_urls = self
+            .module_base_urls
+            .lock()
+            .map(|current| current.clone())
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "read native module base URLs".into(),
+                reason: "native module base URL map is unavailable".into(),
+            })?;
+        Ok((sources, base_urls))
+    }
+
+    pub(crate) fn extend_module_sources(
+        &self,
+        sources: BTreeMap<String, String>,
+        base_urls: BTreeMap<String, String>,
+    ) -> Result<(), NativeEngineError> {
+        self.module_sources
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "install native module sources".into(),
+                reason: "native module source map is unavailable".into(),
+            })?
+            .extend(sources);
+        self.module_base_urls
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "install native module base URLs".into(),
+                reason: "native module base URL map is unavailable".into(),
+            })?
+            .extend(base_urls);
+        Ok(())
+    }
+
+    fn set_dynamic_module_imports_enabled(&self, enabled: bool) -> Result<(), NativeEngineError> {
+        *self
+            .dynamic_imports_enabled
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "configure native dynamic module imports".into(),
+                reason: "native module loader configuration is unavailable".into(),
+            })? = enabled;
+        Ok(())
+    }
+
+    pub(crate) fn register_dynamic_import_referrer(
+        &self,
+        referrer: &str,
+    ) -> Result<(), NativeEngineError> {
+        validate_url_text("dynamic module referrer", referrer)?;
+        let mut referrers =
+            self.dynamic_import_referrers
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "register dynamic module referrer".into(),
+                    reason: "dynamic module referrer set is unavailable".into(),
+                })?;
+        if !referrers.contains(referrer) && referrers.len() >= MAX_NATIVE_MODULE_IMPORTS {
+            return Err(NativeEngineError::limit(
+                "dynamic module referrers",
+                MAX_NATIVE_MODULE_IMPORTS,
+                referrers.len().saturating_add(1),
+            ));
+        }
+        referrers.insert(referrer.to_owned());
+        Ok(())
+    }
+
+    pub(crate) fn is_dynamic_import_referrer_allowed(
+        &self,
+        referrer: &str,
+    ) -> Result<bool, NativeEngineError> {
+        if self
+            .dynamic_import_referrers
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "validate dynamic module referrer".into(),
+                reason: "dynamic module referrer set is unavailable".into(),
+            })?
+            .contains(referrer)
+        {
+            return Ok(true);
+        }
+        Ok(self
+            .module_base_urls
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "validate dynamic module referrer".into(),
+                reason: "native module base URL map is unavailable".into(),
+            })?
+            .values()
+            .any(|base_url| base_url == referrer))
+    }
+
+    pub(crate) fn register_dynamic_module_alias(
+        &self,
+        request_id: u32,
+        target: &str,
+    ) -> Result<String, NativeEngineError> {
+        if request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "dynamic module request id",
+                "must be positive",
+            ));
+        }
+        let alias = format!("glass-internal-dynamic-module:{request_id}");
+        let mut aliases =
+            self.dynamic_module_aliases
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "register dynamic module alias".into(),
+                    reason: "dynamic module alias map is unavailable".into(),
+                })?;
+        if aliases.len() >= MAX_NATIVE_MODULE_IMPORTS {
+            return Err(NativeEngineError::limit(
+                "pending dynamic module aliases",
+                MAX_NATIVE_MODULE_IMPORTS,
+                aliases.len().saturating_add(1),
+            ));
+        }
+        if aliases.insert(alias.clone(), target.to_owned()).is_some() {
+            return Err(NativeEngineError::invalid(
+                "dynamic module request id",
+                "must not be reused while an import is pending",
+            ));
+        }
+        Ok(alias)
+    }
+
+    pub(crate) fn discard_dynamic_module_alias(&self, alias: &str) {
+        if let Ok(mut aliases) = self.dynamic_module_aliases.lock() {
+            aliases.remove(alias);
+        }
+    }
+
     pub(crate) fn set_module_base_urls(&self, base_urls: BTreeMap<String, String>) {
         if let Ok(mut current) = self.module_base_urls.lock() {
             *current = base_urls;
@@ -13375,8 +13590,35 @@ impl NativeJavaScriptRuntime {
         origin: &NativeOrigin,
         viewport: Viewport,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        self.evaluate_with_page_events(
+        self.evaluate_classic_script(
             source,
+            document_url,
+            document,
+            document_url,
+            origin,
+            viewport,
+        )
+    }
+
+    pub(crate) fn evaluate_classic_script(
+        &self,
+        source: &str,
+        script_base_url: &str,
+        document: &NativeDocument,
+        document_url: &str,
+        origin: &NativeOrigin,
+        viewport: Viewport,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.set_dynamic_module_imports_enabled(true)?;
+        self.register_dynamic_import_referrer(script_base_url)?;
+        let referrer =
+            serde_json::to_string(script_base_url).map_err(|_| NativeEngineError::Worker {
+                operation: "prepare dynamic module referrer".into(),
+                reason: "dynamic module referrer could not be encoded".into(),
+            })?;
+        let source = rewrite_runtime_dynamic_module_imports(source, &referrer)?;
+        self.evaluate_with_page_events(
+            &source,
             document,
             document_url,
             origin,
@@ -14811,6 +15053,24 @@ impl NativeJavaScriptRuntime {
                 source.len(),
             ));
         }
+        self.set_dynamic_module_imports_enabled(true)?;
+        let module_base_url = self
+            .module_base_urls
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "read module script base URL".into(),
+                reason: "native module base URL map is unavailable".into(),
+            })?
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| document_url.to_owned());
+        self.register_dynamic_import_referrer(&module_base_url)?;
+        let module_referrer =
+            serde_json::to_string(&module_base_url).map_err(|_| NativeEngineError::Worker {
+                operation: "prepare dynamic module referrer".into(),
+                reason: "module base URL could not be encoded".into(),
+            })?;
+        let source = rewrite_runtime_dynamic_module_imports(source, &module_referrer)?;
         let storage_events = self.take_storage_events();
         let proxy_updates = self.take_window_proxy_updates();
         let window_name = self.window_name();
@@ -17799,50 +18059,11 @@ pub(crate) fn static_module_specifiers(source: &str) -> Result<Vec<String>, Nati
 /// unresolved and receive no implicit network capability.
 pub(crate) fn literal_dynamic_module_specifiers(source: &str) -> Vec<String> {
     let bytes = source.as_bytes();
-    let mut index = 0;
     let mut specifiers = Vec::new();
-    let mut previous_is_member_access = false;
-    while index < bytes.len() {
-        index = skip_javascript_space_and_comments(bytes, index);
-        if index >= bytes.len() {
-            break;
-        }
-        if matches!(bytes[index], b'\'' | b'"' | b'`') {
-            index = skip_javascript_string(bytes, index);
-            previous_is_member_access = false;
-            continue;
-        }
-        if !is_javascript_identifier_start(bytes[index]) {
-            if bytes[index] == b'.' {
-                previous_is_member_access = true;
-                index += 1;
-                continue;
-            }
-            if bytes[index] == b'?' && bytes.get(index + 1) == Some(&b'.') {
-                previous_is_member_access = true;
-                index += 2;
-                continue;
-            }
-            previous_is_member_access = false;
-            index += 1;
-            continue;
-        }
-        let start = index;
-        index += 1;
-        while index < bytes.len() && is_javascript_identifier_continue(bytes[index]) {
-            index += 1;
-        }
-        if &bytes[start..index] != b"import" || previous_is_member_access {
-            previous_is_member_access = false;
-            continue;
-        }
-        previous_is_member_access = false;
-        let argument = skip_javascript_space_and_comments(bytes, index);
-        if bytes.get(argument) != Some(&b'(') {
-            continue;
-        }
-        let specifier_start = skip_javascript_space_and_comments(bytes, argument + 1);
+    for (_, open, close) in javascript_dynamic_import_call_sites(bytes) {
+        let specifier_start = skip_javascript_space_and_comments(bytes, open + 1);
         if let Some((specifier, end)) = read_static_string_expression(bytes, specifier_start, 0)
+            && end <= close
             && matches!(
                 bytes.get(skip_javascript_space_and_comments(bytes, end)),
                 Some(b')' | b',')
@@ -17855,6 +18076,430 @@ pub(crate) fn literal_dynamic_module_specifiers(source: &str) -> Vec<String> {
         }
     }
     specifiers
+}
+
+fn rewrite_runtime_dynamic_module_imports(
+    source: &str,
+    referrer_expression: &str,
+) -> Result<String, NativeEngineError> {
+    let bytes = source.as_bytes();
+    let sites = javascript_dynamic_import_call_sites(bytes);
+    let mut output = String::with_capacity(source.len());
+    let mut copied_until = 0;
+    for (start, open, close) in sites {
+        let specifier_start = skip_javascript_space_and_comments(bytes, open + 1);
+        if specifier_start == close
+            || read_static_string_expression(bytes, specifier_start, 0).is_some_and(|(_, end)| {
+                end <= close
+                    && matches!(
+                        bytes.get(skip_javascript_space_and_comments(bytes, end)),
+                        Some(b')' | b',')
+                    )
+            })
+        {
+            continue;
+        }
+        output.push_str(&source[copied_until..start]);
+        output.push_str("globalThis.__glassDynamicImport(");
+        output.push_str(referrer_expression);
+        output.push(',');
+        copied_until = open + 1;
+    }
+    output.push_str(&source[copied_until..]);
+    if output.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "transformed JavaScript source",
+            MAX_NATIVE_SCRIPT_BYTES,
+            output.len(),
+        ));
+    }
+    Ok(output)
+}
+
+fn javascript_dynamic_import_call_sites(bytes: &[u8]) -> Vec<(usize, usize, usize)> {
+    fn collect(bytes: &[u8], start: usize, end: usize, sites: &mut Vec<(usize, usize, usize)>) {
+        let mut index = start;
+        let mut previous_is_member_access = false;
+        let mut previous_can_end_expression = false;
+        while index < end && sites.len() < MAX_NATIVE_MODULE_IMPORTS {
+            index = skip_javascript_space_and_comments(bytes, index);
+            if index >= end {
+                break;
+            }
+            match bytes[index] {
+                b'\'' | b'"' => {
+                    index = skip_javascript_string(bytes, index).min(end);
+                    previous_is_member_access = false;
+                    previous_can_end_expression = true;
+                }
+                b'`' => {
+                    index = collect_template_dynamic_imports(bytes, index, end, sites);
+                    previous_is_member_access = false;
+                    previous_can_end_expression = true;
+                }
+                b'/' if !previous_can_end_expression && bytes.get(index + 1) != Some(&b'=') => {
+                    let regex_end = skip_javascript_regex(bytes, index, end);
+                    if regex_end > index + 1 {
+                        index = regex_end;
+                        previous_is_member_access = false;
+                        previous_can_end_expression = true;
+                    } else {
+                        index += 1;
+                        previous_is_member_access = false;
+                        previous_can_end_expression = false;
+                    }
+                }
+                byte if is_javascript_identifier_start(byte) => {
+                    let token_start = index;
+                    index += 1;
+                    while index < end && is_javascript_identifier_continue(bytes[index]) {
+                        index += 1;
+                    }
+                    let token = &bytes[token_start..index];
+                    if token == b"import" && !previous_is_member_access {
+                        let open = skip_javascript_space_and_comments(bytes, index);
+                        if bytes.get(open) == Some(&b'(')
+                            && let Some(close) = matching_javascript_call_paren(bytes, open, end)
+                        {
+                            let after_call = skip_javascript_space_and_comments(bytes, close + 1);
+                            let argument_start =
+                                skip_javascript_space_and_comments(bytes, open + 1);
+                            if argument_start < close && bytes.get(after_call) != Some(&b'{') {
+                                sites.push((token_start, open, close));
+                            }
+                        }
+                    }
+                    previous_is_member_access = false;
+                    previous_can_end_expression = !matches!(
+                        token,
+                        b"await"
+                            | b"case"
+                            | b"delete"
+                            | b"do"
+                            | b"else"
+                            | b"in"
+                            | b"instanceof"
+                            | b"new"
+                            | b"of"
+                            | b"return"
+                            | b"throw"
+                            | b"typeof"
+                            | b"void"
+                            | b"yield"
+                    );
+                }
+                b'.' => {
+                    previous_is_member_access = true;
+                    previous_can_end_expression = false;
+                    index += 1;
+                }
+                b'?' if bytes.get(index + 1) == Some(&b'.') => {
+                    previous_is_member_access = true;
+                    previous_can_end_expression = false;
+                    index += 2;
+                }
+                byte if byte.is_ascii_digit() => {
+                    index += 1;
+                    while index < end
+                        && (bytes[index].is_ascii_alphanumeric()
+                            || matches!(bytes[index], b'.' | b'_'))
+                    {
+                        index += 1;
+                    }
+                    previous_is_member_access = false;
+                    previous_can_end_expression = true;
+                }
+                b')' | b']' | b'}' => {
+                    index += 1;
+                    previous_is_member_access = false;
+                    previous_can_end_expression = true;
+                }
+                b'+' if bytes.get(index + 1) == Some(&b'+') => {
+                    index += 2;
+                    previous_is_member_access = false;
+                    previous_can_end_expression = true;
+                }
+                b'-' if bytes.get(index + 1) == Some(&b'-') => {
+                    index += 2;
+                    previous_is_member_access = false;
+                    previous_can_end_expression = true;
+                }
+                _ => {
+                    previous_is_member_access = false;
+                    previous_can_end_expression = false;
+                    index += 1;
+                }
+            }
+        }
+    }
+
+    let mut sites = Vec::new();
+    collect(bytes, 0, bytes.len(), &mut sites);
+    sites.sort_unstable_by_key(|(start, _, _)| *start);
+    sites.truncate(MAX_NATIVE_MODULE_IMPORTS);
+    sites
+}
+
+fn matching_javascript_call_paren(bytes: &[u8], open: usize, end: usize) -> Option<usize> {
+    let mut index = open;
+    let mut depth = 0usize;
+    let mut previous_can_end_expression = false;
+    while index < end {
+        index = skip_javascript_space_and_comments(bytes, index);
+        if index >= end {
+            break;
+        }
+        match bytes[index] {
+            b'\'' | b'"' => {
+                index = skip_javascript_string(bytes, index).min(end);
+                previous_can_end_expression = true;
+            }
+            b'`' => {
+                index = skip_javascript_template_literal(bytes, index, end);
+                previous_can_end_expression = true;
+            }
+            b'/' if !previous_can_end_expression && bytes.get(index + 1) != Some(&b'=') => {
+                let regex_end = skip_javascript_regex(bytes, index, end);
+                if regex_end > index + 1 {
+                    index = regex_end;
+                    previous_can_end_expression = true;
+                } else {
+                    index += 1;
+                    previous_can_end_expression = false;
+                }
+            }
+            b'(' => {
+                depth = depth.saturating_add(1);
+                index += 1;
+                previous_can_end_expression = false;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+                index += 1;
+                previous_can_end_expression = true;
+            }
+            byte if is_javascript_identifier_start(byte) => {
+                let start = index;
+                index += 1;
+                while index < end && is_javascript_identifier_continue(bytes[index]) {
+                    index += 1;
+                }
+                previous_can_end_expression = !matches!(
+                    &bytes[start..index],
+                    b"await"
+                        | b"case"
+                        | b"delete"
+                        | b"do"
+                        | b"else"
+                        | b"in"
+                        | b"instanceof"
+                        | b"new"
+                        | b"of"
+                        | b"return"
+                        | b"throw"
+                        | b"typeof"
+                        | b"void"
+                        | b"yield"
+                );
+            }
+            byte if byte.is_ascii_digit() => {
+                index += 1;
+                while index < end
+                    && (bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'.' | b'_'))
+                {
+                    index += 1;
+                }
+                previous_can_end_expression = true;
+            }
+            b']' | b'}' => {
+                index += 1;
+                previous_can_end_expression = true;
+            }
+            _ => {
+                index += 1;
+                previous_can_end_expression = false;
+            }
+        }
+    }
+    None
+}
+
+fn skip_javascript_regex(bytes: &[u8], start: usize, end: usize) -> usize {
+    let mut index = start + 1;
+    let mut in_character_class = false;
+    while index < end {
+        match bytes[index] {
+            b'\\' => index = index.saturating_add(2),
+            b'[' => {
+                in_character_class = true;
+                index += 1;
+            }
+            b']' => {
+                in_character_class = false;
+                index += 1;
+            }
+            b'/' if !in_character_class => {
+                index += 1;
+                while index < end && is_javascript_identifier_continue(bytes[index]) {
+                    index += 1;
+                }
+                return index;
+            }
+            b'\n' | b'\r' => return start,
+            _ => index += 1,
+        }
+    }
+    start
+}
+
+fn skip_javascript_template_literal(bytes: &[u8], start: usize, end: usize) -> usize {
+    let mut index = start + 1;
+    while index < end {
+        match bytes[index] {
+            b'\\' => index = index.saturating_add(2),
+            b'`' => return index + 1,
+            b'$' if bytes.get(index + 1) == Some(&b'{') => {
+                let Some(close) = javascript_template_expression_end(bytes, index + 2, end) else {
+                    return end;
+                };
+                index = close + 1;
+            }
+            _ => index += 1,
+        }
+    }
+    end
+}
+
+fn collect_template_dynamic_imports(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    sites: &mut Vec<(usize, usize, usize)>,
+) -> usize {
+    let mut index = start + 1;
+    while index < end {
+        match bytes[index] {
+            b'\\' => index = index.saturating_add(2),
+            b'`' => return index + 1,
+            b'$' if bytes.get(index + 1) == Some(&b'{') => {
+                let expression_start = index + 2;
+                let Some(close) = javascript_template_expression_end(bytes, expression_start, end)
+                else {
+                    return end;
+                };
+                javascript_dynamic_import_call_sites_in_range(
+                    bytes,
+                    expression_start,
+                    close,
+                    sites,
+                );
+                index = close + 1;
+            }
+            _ => index += 1,
+        }
+    }
+    end
+}
+
+fn javascript_template_expression_end(bytes: &[u8], start: usize, end: usize) -> Option<usize> {
+    let mut index = start;
+    let mut braces = 1usize;
+    let mut previous_can_end_expression = false;
+    while index < end {
+        index = skip_javascript_space_and_comments(bytes, index);
+        if index >= end {
+            break;
+        }
+        match bytes[index] {
+            b'\'' | b'"' => {
+                index = skip_javascript_string(bytes, index).min(end);
+                previous_can_end_expression = true;
+            }
+            b'`' => {
+                index = skip_javascript_template_literal(bytes, index, end);
+                previous_can_end_expression = true;
+            }
+            b'/' if !previous_can_end_expression && bytes.get(index + 1) != Some(&b'=') => {
+                let regex_end = skip_javascript_regex(bytes, index, end);
+                if regex_end > index + 1 {
+                    index = regex_end;
+                    previous_can_end_expression = true;
+                } else {
+                    index += 1;
+                    previous_can_end_expression = false;
+                }
+            }
+            b'{' => {
+                braces = braces.saturating_add(1);
+                index += 1;
+                previous_can_end_expression = false;
+            }
+            b'}' => {
+                braces = braces.saturating_sub(1);
+                if braces == 0 {
+                    return Some(index);
+                }
+                index += 1;
+                previous_can_end_expression = true;
+            }
+            byte if is_javascript_identifier_start(byte) => {
+                let start = index;
+                index += 1;
+                while index < end && is_javascript_identifier_continue(bytes[index]) {
+                    index += 1;
+                }
+                previous_can_end_expression = !matches!(
+                    &bytes[start..index],
+                    b"await"
+                        | b"case"
+                        | b"delete"
+                        | b"do"
+                        | b"else"
+                        | b"in"
+                        | b"instanceof"
+                        | b"new"
+                        | b"of"
+                        | b"return"
+                        | b"throw"
+                        | b"typeof"
+                        | b"void"
+                        | b"yield"
+                );
+            }
+            byte if byte.is_ascii_digit() => {
+                index += 1;
+                while index < end
+                    && (bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'.' | b'_'))
+                {
+                    index += 1;
+                }
+                previous_can_end_expression = true;
+            }
+            _ => {
+                index += 1;
+                previous_can_end_expression = false;
+            }
+        }
+    }
+    None
+}
+
+fn javascript_dynamic_import_call_sites_in_range(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    sites: &mut Vec<(usize, usize, usize)>,
+) {
+    let mut local = javascript_dynamic_import_call_sites(&bytes[start..end]);
+    for (token, open, close) in &mut local {
+        *token += start;
+        *open += start;
+        *close += start;
+    }
+    sites.extend(local);
 }
 
 fn read_static_string_expression(
@@ -17894,7 +18539,7 @@ fn read_static_string_primary(bytes: &[u8], index: usize, depth: usize) -> Optio
 
 #[cfg(test)]
 mod native_static_dynamic_import_tests {
-    use super::literal_dynamic_module_specifiers;
+    use super::{literal_dynamic_module_specifiers, rewrite_runtime_dynamic_module_imports};
 
     #[test]
     fn dynamic_import_prefetch_folds_quoted_string_concatenation() {
@@ -17935,6 +18580,39 @@ mod native_static_dynamic_import_tests {
         "#;
 
         assert!(literal_dynamic_module_specifiers(source).is_empty());
+    }
+
+    #[test]
+    fn runtime_dynamic_import_rewrite_preserves_only_real_computed_import_calls() {
+        let source = r#"
+            import './static-declaration.js';
+            import('./static-call.js');
+            const text = "import(getName())";
+            const pattern = /import\\(getName\\)/;
+            module.import(getName());
+            module?.import(getOptionalName());
+            module /* member trivia */ . /* token trivia */ import(getCommentedName());
+            const computed = import(/* first arg */ getName());
+            const template = `${import(getNestedName())}`;
+            const methods = { import(value) {} };
+        "#;
+
+        let rewritten = rewrite_runtime_dynamic_module_imports(source, "import.meta.url")
+            .expect("bounded import-call rewriting must fit the script limit");
+        assert_eq!(
+            rewritten
+                .matches("globalThis.__glassDynamicImport(")
+                .count(),
+            2,
+            "only the two actual computed ImportCalls should be rewritten: {rewritten}"
+        );
+        assert!(rewritten.contains(
+            "globalThis.__glassDynamicImport(import.meta.url,/* first arg */ getName())"
+        ));
+        assert!(rewritten.contains("import('./static-call.js')"));
+        assert!(rewritten.contains("module.import(getName())"));
+        assert!(rewritten.contains("module?.import(getOptionalName())"));
+        assert!(rewritten.contains("import(value) {}"));
     }
 }
 
@@ -31577,6 +32255,45 @@ fn document_bootstrap(
   let nextFetchRequestId = Number.isSafeInteger(globalThis.__glassNextFetchRequestId)
     ? globalThis.__glassNextFetchRequestId
     : 1;
+  globalThis.__glassDynamicImport = (referrer, specifier, options) => {{
+    let normalizedReferrer;
+    let normalizedSpecifier;
+    try {{
+      if (options !== undefined) throw new TypeError("native dynamic import attributes are unsupported");
+      if (typeof referrer === "symbol" || typeof specifier === "symbol")
+        throw new TypeError("dynamic import URL values cannot be Symbols");
+      normalizedReferrer = String(referrer);
+      normalizedSpecifier = String(specifier);
+    }} catch (error) {{ return Promise.reject(error); }}
+    if (!Number.isSafeInteger(nextFetchRequestId)
+        || nextFetchRequestId < 1
+        || nextFetchRequestId > 0xFFFFFFFF) {{
+      return Promise.reject(new RangeError("dynamic import request id limit exceeded"));
+    }}
+    const requestId = nextFetchRequestId;
+    nextFetchRequestId += 1;
+    globalThis.__glassNextFetchRequestId = nextFetchRequestId;
+    return new Promise((resolve, reject) => {{
+      const pending = {{
+        resolve, reject, signal: null, abortListener: null,
+        uploadStreamId: null, dynamicModuleImport: true,
+      }};
+      fetchRequests.set(requestId, pending);
+      try {{
+        pushCommand({{
+          kind: "fetch", request_id: requestId, href: normalizedSpecifier,
+          credentials: true, method: "GET", headers: {{}}, body: null,
+          body_base64: null, content_type: null, mode: "cors",
+          redirect: "follow", cache: "default", timeout_ms: null,
+          upload_stream_id: null, destination: "module",
+          module_referrer: normalizedReferrer,
+        }});
+      }} catch (error) {{
+        fetchRequests.delete(requestId);
+        reject(error);
+      }}
+    }});
+  }};
   const formDataEntries = (form) => {{
     if (!form || form.tagName !== "FORM") {{
       throw new TypeError("FormData constructor requires a form element");
@@ -35590,6 +36307,20 @@ fn document_bootstrap(
       const uploadGroup = fetchUploadGroups.get(pending.uploadStreamId);
       cancelFetchUploadGroup(uploadGroup, "native fetch request completed");
       fetchUploadGroups.delete(pending.uploadStreamId);
+    }}
+    if (pending.dynamicModuleImport) {{
+      const moduleResult = payload && payload.dynamicModuleImport;
+      if (!moduleResult || moduleResult.error) {{
+        pending.reject(new TypeError(String(moduleResult && moduleResult.error
+          || "Failed to load dynamically imported module")));
+      }} else if (typeof moduleResult.moduleKey !== "string") {{
+        pending.reject(new TypeError("Invalid dynamic module response"));
+      }} else {{
+        try {{
+          import(moduleResult.moduleKey).then(pending.resolve, pending.reject);
+        }} catch (error) {{ pending.reject(error); }}
+      }}
+      return;
     }}
     if (payload && payload.error) {{
       pending.reject(payload.timeout === true ? nativeTimeoutError() : new Error(String(payload.error)));

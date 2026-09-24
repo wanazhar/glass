@@ -7083,7 +7083,7 @@ pub(crate) fn execute_inline_scripts(
                 integrity,
                 ..
             } if is_file_url(document_url) => {
-                let request_url = match resolve_local_file_module_specifier(document_url, &href) {
+                let request_url = match resolve_local_file_module_script_url(document_url, &href) {
                     Ok(request_url) => request_url,
                     Err(_) => {
                         resource_events.push((node_index, NativeEventKind::Error));
@@ -7092,7 +7092,7 @@ pub(crate) fn execute_inline_scripts(
                 };
                 match loader.load_local_file_script(
                     document_url,
-                    &href,
+                    &request_url,
                     MAX_NATIVE_SCRIPT_BYTES,
                     integrity.as_deref(),
                 ) {
@@ -7380,6 +7380,38 @@ fn resolve_local_file_module_specifier(
     if !is_file_url(target.as_str()) {
         return Err(NativeEngineError::UnsupportedUrl {
             reason: "file module URL must use the file scheme".into(),
+        });
+    }
+    Ok(target.to_string())
+}
+
+fn resolve_local_file_module_script_url(
+    document_url: &str,
+    src: &str,
+) -> Result<String, NativeEngineError> {
+    let base = Url::parse(without_fragment(document_url)).map_err(|_| {
+        NativeEngineError::UnsupportedUrl {
+            reason: "file module document URL is not valid URL syntax".into(),
+        }
+    })?;
+    if !is_file_url(base.as_str()) {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "rooted file module document URL must use the file scheme".into(),
+        });
+    }
+    let target = base
+        .join(src)
+        .map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "file module script URL could not be resolved against its document".into(),
+        })?;
+    if !target.username().is_empty() || target.password().is_some() {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "file module script URL must not contain credentials".into(),
+        });
+    }
+    if !is_file_url(target.as_str()) {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "rooted file module script URL must use the file scheme".into(),
         });
     }
     Ok(target.to_string())
@@ -17762,9 +17794,9 @@ pub(crate) fn static_module_specifiers(source: &str) -> Result<Vec<String>, Nati
     Ok(specifiers)
 }
 
-/// Extract literal dynamic-import specifiers. Computed expressions remain
-/// unresolved and therefore fail through the bounded module loader instead of
-/// receiving an implicit network capability.
+/// Extract dynamic-import specifiers whose entire first argument is statically
+/// composed of quoted strings and `+`. Runtime-valued expressions remain
+/// unresolved and receive no implicit network capability.
 pub(crate) fn literal_dynamic_module_specifiers(source: &str) -> Vec<String> {
     let bytes = source.as_bytes();
     let mut index = 0;
@@ -17795,7 +17827,12 @@ pub(crate) fn literal_dynamic_module_specifiers(source: &str) -> Vec<String> {
             continue;
         }
         let specifier_start = skip_javascript_space_and_comments(bytes, argument + 1);
-        if let Some((specifier, _)) = read_javascript_string(bytes, specifier_start) {
+        if let Some((specifier, end)) = read_static_string_expression(bytes, specifier_start, 0)
+            && matches!(
+                bytes.get(skip_javascript_space_and_comments(bytes, end)),
+                Some(b')' | b',')
+            )
+        {
             specifiers.push(specifier);
             if specifiers.len() >= MAX_NATIVE_MODULE_IMPORTS {
                 break;
@@ -17803,6 +17840,72 @@ pub(crate) fn literal_dynamic_module_specifiers(source: &str) -> Vec<String> {
         }
     }
     specifiers
+}
+
+fn read_static_string_expression(
+    bytes: &[u8],
+    index: usize,
+    depth: usize,
+) -> Option<(String, usize)> {
+    const MAX_DEPTH: usize = 64;
+    if depth > MAX_DEPTH {
+        return None;
+    }
+
+    let (mut value, mut index) = read_static_string_primary(bytes, index, depth)?;
+    loop {
+        let operator = skip_javascript_space_and_comments(bytes, index);
+        if bytes.get(operator) != Some(&b'+') {
+            return Some((value, index));
+        }
+        let (part, end) = read_static_string_primary(bytes, operator + 1, depth)?;
+        value.push_str(&part);
+        index = end;
+    }
+}
+
+fn read_static_string_primary(bytes: &[u8], index: usize, depth: usize) -> Option<(String, usize)> {
+    let index = skip_javascript_space_and_comments(bytes, index);
+    match bytes.get(index).copied()? {
+        b'\'' | b'"' => read_javascript_string(bytes, index),
+        b'(' => {
+            let (value, end) = read_static_string_expression(bytes, index + 1, depth + 1)?;
+            let close = skip_javascript_space_and_comments(bytes, end);
+            (bytes.get(close) == Some(&b')')).then_some((value, close + 1))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod native_static_dynamic_import_tests {
+    use super::literal_dynamic_module_specifiers;
+
+    #[test]
+    fn dynamic_import_prefetch_folds_quoted_string_concatenation() {
+        let source = r#"
+            import("./" + /* retained parser trivia */ 'first.js');
+            import(("./second/" + ('entry.js')));
+            import('./' + runtimeName);
+            import('./options.json', { with: { type: 'json' } });
+        "#;
+
+        assert_eq!(
+            literal_dynamic_module_specifiers(source),
+            ["./first.js", "./second/entry.js", "./options.json"]
+        );
+    }
+
+    #[test]
+    fn dynamic_import_prefetch_does_not_accept_partial_expressions() {
+        let source = r#"
+            import('./' + runtimeName);
+            import('./' + getName());
+            import('./' * 'not-a-module');
+        "#;
+
+        assert!(literal_dynamic_module_specifiers(source).is_empty());
+    }
 }
 
 /// Extract statically declared `importScripts()` string arguments. The host

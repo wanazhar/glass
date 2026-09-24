@@ -31,7 +31,7 @@ use glass_browser::{
     EvidenceSource, ExtractionRequest, GlassTask, TaskAmbiguityPolicy, TaskKind, TaskLimits,
     TaskRevisionPolicy, TaskRiskClass, TaskScope, WebIrAction, WebIrEntityKind,
 };
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha384};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -20072,6 +20072,105 @@ async fn native_content_process_resolves_module_graphs_through_inline_import_map
     assert_eq!(requests, expected_requests);
     assert_eq!(dynamic_mapped, serde_json::json!("dynamic"));
     assert_eq!(dynamic_scoped, serde_json::json!("nested"));
+}
+
+#[tokio::test]
+async fn native_content_process_enforces_import_map_integrity_before_module_execution() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let document_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let document_address = document_listener.local_addr().unwrap();
+    let document_origin = format!("http://{document_address}");
+    let module_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let module_address = module_listener.local_addr().unwrap();
+
+    let good_source = "export const value = 'verified';";
+    let good_digest =
+        base64::engine::general_purpose::STANDARD.encode(Sha384::digest(good_source.as_bytes()));
+    let bad_digest = base64::engine::general_purpose::STANDARD.encode([0_u8; 32]);
+    let module_document_origin = document_origin.clone();
+    let module_server = tokio::spawn(async move {
+        let mut paths = Vec::new();
+        for _ in 0..4 {
+            let (mut stream, _) = module_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("module request includes a path")
+                .to_owned();
+            assert!(request.lines().any(|line| {
+                line.eq_ignore_ascii_case(&format!("origin: {module_document_origin}"))
+            }));
+            assert!(!request.lines().any(|line| {
+                line.split_once(':')
+                    .is_some_and(|(name, _)| name.eq_ignore_ascii_case("cookie"))
+            }));
+            let body = match path.as_str() {
+                "/good-entry.mjs" => {
+                    "import { value } from './good.js'; globalThis.integrityGood = value;"
+                }
+                "/bad-entry.mjs" => {
+                    "import { value } from './bad.js'; globalThis.integrityBad = value;"
+                }
+                "/good.js" => good_source,
+                "/bad.js" => "export const value = 'tampered';",
+                _ => panic!("unexpected module request {path}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nAccess-Control-Allow-Origin: {module_document_origin}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            paths.push(path);
+        }
+        paths
+    });
+
+    let import_map = format!(
+        r#"{{"integrity":{{"http://{module_address}/good.js":"sha384-{good_digest}","http://{module_address}/bad.js":"sha256-{bad_digest}"}}}}"#
+    );
+    let html = format!(
+        "<script type='importmap'>{import_map}</script><script type='module' src='http://{module_address}/good-entry.mjs'></script><script type='module' src='http://{module_address}/bad-entry.mjs'></script>"
+    );
+    let document_server = tokio::spawn(async move {
+        let (mut stream, _) = document_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: session=private; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}",
+            html.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{document_address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.integrityGood")
+            .await
+            .unwrap(),
+        serde_json::json!("verified")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("Boolean(globalThis.integrityBad)")
+            .await
+            .unwrap(),
+        serde_json::json!(false)
+    );
+    engine.close_async().await.unwrap();
+
+    let mut paths = module_server.await.unwrap();
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec!["/bad-entry.mjs", "/bad.js", "/good-entry.mjs", "/good.js",]
+    );
+    document_server.await.unwrap();
 }
 
 #[tokio::test]

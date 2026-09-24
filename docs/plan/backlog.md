@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-705`.
+The latest locally completed parser/script slice is `native-engine-browser-706`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -14,14 +14,19 @@ claimed.
 
 Slices `native-engine-browser-704` and `native-engine-browser-705` connect
 bounded inline import-map `imports` and `scopes` to page module graph prefetch
-and QuickJS resolution. Exact and prefix mappings, most-specific nested scope
-selection, less-specific/global fallback, and nested literal-dynamic imports
-pass local resolver and process-backed tests. Integrity, external/dynamic map
-registration, worker/file-origin coverage, resolved-specifier locking, and
-full module scheduling remain separate Core Web Profile gates. The locked
-target check and four documentation gates passed locally; remote CI was not
-run. See
+and QuickJS resolution. Slice `native-engine-browser-706` adds URL-keyed
+integrity metadata enforcement for descendant module responses and default
+CORS for external module roots and descendants. Parser normalization preserves
+JSON key order: later normalized collisions replace earlier entries within one
+map, while map merges preserve older entries. Exact and prefix mappings,
+most-specific nested scope selection, less-specific/global fallback, nested
+literal-dynamic imports, and the two-origin SRI/CORS integration pass locally.
+Dynamic map registration, worker/file-origin coverage, resolved-specifier
+locking, module fragment identity, and full module scheduling remain separate
+Core Web Profile gates. The locked target check and four documentation gates
+passed locally; remote CI was not run. See
 `tasks/native-engine-browser-704.md` and `tasks/native-engine-browser-705.md`.
+See `tasks/native-engine-browser-706.md` for the latest verification record.
 Recover verifiable scope and test evidence for slices 650–671 from authoritative
 commits; do not infer passing checks from summary prose. Keep the issue body and
 this record explicit about local versus remote evidence.

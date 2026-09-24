@@ -6774,24 +6774,6 @@ impl NativeResourceLoader {
         }))
     }
 
-    pub(crate) async fn load_script_async(
-        &mut self,
-        document_url: &str,
-        href: &str,
-        max_source_bytes: usize,
-    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
-        self.load_script_async_with_metadata(
-            document_url,
-            href,
-            max_source_bytes,
-            true,
-            None,
-            None,
-            None,
-        )
-        .await
-    }
-
     pub(crate) async fn load_script_async_with_metadata(
         &mut self,
         document_url: &str,

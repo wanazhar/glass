@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-705`. Issue #40
+completed browser expansion slice is `native-engine-browser-706`. Issue #40
 remains open. It follows locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,
@@ -925,10 +925,27 @@ resolution select the same URL, including nested static and literal-dynamic
 imports. The locked target check and focused tests passed (8 resolver/parser
 tests and 1 process-backed integration test). All four local documentation
 gates passed across 1,333 Markdown files, 93 guides/19 contracts, 15 shortcut
-keys/63 markers, 346 MCP tools, 17 examples, and 22 public modules. Import-map
-integrity, external/dynamic registration, workers, resolved-specifier locking,
-and full parser/module timing remain separate gates. Remote CI was not run. See
+keys/63 markers, 346 MCP tools, 17 examples, and 22 public modules.
+External/dynamic registration, workers, resolved-specifier locking, module
+fragment identity, and full parser/module timing remain separate gates. Remote
+CI was not run. See
 [`slice 705`](../tasks/native-engine-browser-705.md).
+
+Slice 706 enforces bounded URL-keyed import-map integrity metadata on
+descendant module response bytes before evaluation and defaults external
+module roots and descendants to CORS with same-origin credentials. Its
+two-origin fixture verifies Origin headers, absence of cross-origin cookies,
+a successful SHA-384 response, and a mismatched digest that blocks execution.
+The parser preserves JSON object order through normalization: within one map,
+later entries replace earlier entries when their keys normalize to the same
+specifier, scope URL, or integrity URL; merging a later map preserves earlier
+entries. The locked target check, 11 focused parser/resolver tests, 2
+process-backed tests, and four local documentation gates passed across 1,334
+Markdown files, 93 guides/19 contracts, 15 shortcut keys/63 markers, 346 MCP
+tools, 17 examples, and 22 public modules. Dynamic registration, workers,
+resolved specifier locking, module fragment identity, and full module timing
+remain open. Remote CI was not run. See
+[`slice 706`](../tasks/native-engine-browser-706.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript
@@ -5460,8 +5477,10 @@ The completed bounded literal-dynamic-import follow-up is
 pending-job drain, preserving module namespace/export resolution and promise
 callback effects. At that point, computed specifiers and bare packages/import
 maps remained open; slices 704–705 later add bounded inline maps. Computed
-specifiers, import-map integrity/dynamic registration/worker support, parser
-timing, non-HTTP(S) modules, and full Web IDL identity remain open.
+specifiers, dynamic registration/worker support, resolved-specifier locking,
+module fragment identity, parser timing, non-HTTP(S) modules, and full Web IDL
+identity remain open; bounded import-map integrity is implemented in slice
+706.
 
 The completed bounded task-turn follow-up is
 [native-engine-browser-032](../tasks/native-engine-browser-032.md). The local

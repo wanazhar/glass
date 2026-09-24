@@ -1,29 +1,182 @@
+use serde::de::{MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use std::collections::BTreeMap;
+use std::fmt;
 use url::Url;
 
 const MAX_IMPORT_MAP_ENTRIES: usize = 128;
 const MAX_IMPORT_MAP_SCOPES: usize = 32;
+const MAX_IMPORT_MAP_INTEGRITY_BYTES: usize = 4 * 1024;
 
 type NativeModuleSpecifierMap = BTreeMap<String, String>;
+type NativeModuleIntegrityMap = BTreeMap<String, String>;
+
+#[derive(Debug)]
+struct OrderedJsonObject<T>(Vec<(String, T)>);
+
+impl<T> OrderedJsonObject<T> {
+    fn get(&self, key: &str) -> Option<&T> {
+        self.0
+            .iter()
+            .rev()
+            .find(|(candidate, _)| candidate == key)
+            .map(|(_, value)| value)
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl<'de, T> Deserialize<'de> for OrderedJsonObject<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct OrderedObjectVisitor<T>(std::marker::PhantomData<T>);
+
+        impl<'de, T> Visitor<'de> for OrderedObjectVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
+            type Value = OrderedJsonObject<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut entries = Vec::new();
+                while let Some(entry) = map.next_entry::<String, T>()? {
+                    entries.push(entry);
+                }
+                Ok(OrderedJsonObject(entries))
+            }
+        }
+
+        deserializer.deserialize_map(OrderedObjectVisitor(std::marker::PhantomData))
+    }
+}
+
+#[derive(Debug)]
+enum OrderedJsonValue {
+    Null,
+    Bool,
+    Number,
+    String(String),
+    Array,
+    Object(OrderedJsonObject<Self>),
+}
+
+impl OrderedJsonValue {
+    fn as_object(&self) -> Option<&OrderedJsonObject<Self>> {
+        match self {
+            Self::Object(object) => Some(object),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OrderedJsonValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct OrderedValueVisitor;
+
+        impl<'de> Visitor<'de> for OrderedValueVisitor {
+            type Value = OrderedJsonValue;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON value")
+            }
+
+            fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
+                Ok(OrderedJsonValue::Bool)
+            }
+
+            fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
+                Ok(OrderedJsonValue::Number)
+            }
+
+            fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
+                Ok(OrderedJsonValue::Number)
+            }
+
+            fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
+                Ok(OrderedJsonValue::Number)
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(OrderedJsonValue::String(value.to_owned()))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+                Ok(OrderedJsonValue::String(value))
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(OrderedJsonValue::Null)
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(OrderedJsonValue::Null)
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                while sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    // Consume invalid member shapes without allocating a nested tree.
+                }
+                Ok(OrderedJsonValue::Array)
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut entries = Vec::new();
+                while let Some(entry) = map.next_entry::<String, OrderedJsonValue>()? {
+                    entries.push(entry);
+                }
+                Ok(OrderedJsonValue::Object(OrderedJsonObject(entries)))
+            }
+        }
+
+        deserializer.deserialize_any(OrderedValueVisitor)
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct NativeModuleImportMap {
     imports: NativeModuleSpecifierMap,
     scopes: BTreeMap<String, NativeModuleSpecifierMap>,
+    integrity: NativeModuleIntegrityMap,
 }
 
 impl NativeModuleImportMap {
     pub(crate) fn parse(source: &str, base_url: &str) -> Result<Self, &'static str> {
         let base = Url::parse(base_url).map_err(|_| "import map base URL is invalid")?;
-        let value: serde_json::Value =
+        let value: OrderedJsonValue =
             serde_json::from_str(source).map_err(|_| "import map is not valid JSON")?;
         let object = value
             .as_object()
             .ok_or("import map must be a JSON object")?;
-        if object.keys().any(|key| key != "imports" && key != "scopes") {
-            return Err("this import-map slice supports only imports and scopes");
-        }
-
         let mut entry_count = 0;
         let imports = object
             .get("imports")
@@ -39,7 +192,7 @@ impl NativeModuleImportMap {
             if scope_entries.len() > MAX_IMPORT_MAP_SCOPES {
                 return Err("import map exceeds its scope limit");
             }
-            for (scope, value) in scope_entries {
+            for (scope, value) in &scope_entries.0 {
                 let normalized_scope = resolve_url(&base, scope)?;
                 if !normalized_scope.username().is_empty() || normalized_scope.password().is_some()
                 {
@@ -47,13 +200,21 @@ impl NativeModuleImportMap {
                 }
                 let normalized_scope = normalized_scope.to_string();
                 let specifiers = parse_specifier_map(value, &base, &mut entry_count)?;
-                if scopes.insert(normalized_scope, specifiers).is_some() {
-                    return Err("import map contains duplicate normalized scopes");
-                }
+                scopes.insert(normalized_scope, specifiers);
             }
         }
 
-        Ok(Self { imports, scopes })
+        let integrity = object
+            .get("integrity")
+            .map(|value| parse_integrity_map(value, &base, &mut entry_count))
+            .transpose()?
+            .unwrap_or_default();
+
+        Ok(Self {
+            imports,
+            scopes,
+            integrity,
+        })
     }
 
     pub(crate) fn merge(&mut self, newer: Self) -> Result<(), &'static str> {
@@ -73,8 +234,13 @@ impl NativeModuleImportMap {
                 .expect("scope was retained or inserted");
             merge_specifier_map(existing, newer_specifiers, &mut entry_count)?;
         }
+        merge_integrity_map(&mut merged.integrity, newer.integrity, &mut entry_count)?;
         *self = merged;
         Ok(())
+    }
+
+    pub(crate) fn integrity_for_url(&self, url: &str) -> Option<&str> {
+        self.integrity.get(url).map(String::as_str)
     }
 
     pub(crate) fn resolve(&self, referrer: &str, specifier: &str) -> Result<String, &'static str> {
@@ -116,12 +282,49 @@ impl NativeModuleImportMap {
     }
 
     fn entry_count(&self) -> usize {
-        self.imports.len() + self.scopes.values().map(BTreeMap::len).sum::<usize>()
+        self.imports.len()
+            + self.scopes.values().map(BTreeMap::len).sum::<usize>()
+            + self.integrity.len()
     }
 }
 
+fn parse_integrity_map(
+    value: &OrderedJsonValue,
+    base: &Url,
+    entry_count: &mut usize,
+) -> Result<NativeModuleIntegrityMap, &'static str> {
+    let entries = value
+        .as_object()
+        .ok_or("import map integrity member must be a JSON object")?;
+    *entry_count = entry_count.saturating_add(entries.len());
+    if *entry_count > MAX_IMPORT_MAP_ENTRIES {
+        return Err("import map exceeds its combined entry limit");
+    }
+
+    let mut normalized = BTreeMap::new();
+    for (key, value) in &entries.0 {
+        if !is_url_like(key) {
+            continue;
+        }
+        let Ok(url) = resolve_url(base, key) else {
+            continue;
+        };
+        if !url.username().is_empty() || url.password().is_some() {
+            continue;
+        }
+        let Some(metadata) = value.as_str() else {
+            continue;
+        };
+        if metadata.len() > MAX_IMPORT_MAP_INTEGRITY_BYTES {
+            return Err("import-map integrity metadata exceeds its byte limit");
+        }
+        normalized.insert(url.to_string(), metadata.to_owned());
+    }
+    Ok(normalized)
+}
+
 fn parse_specifier_map(
-    value: &serde_json::Value,
+    value: &OrderedJsonValue,
     base: &Url,
     entry_count: &mut usize,
 ) -> Result<NativeModuleSpecifierMap, &'static str> {
@@ -134,7 +337,7 @@ fn parse_specifier_map(
     }
 
     let mut normalized = BTreeMap::new();
-    for (specifier, address) in imports {
+    for (specifier, address) in &imports.0 {
         if specifier.is_empty() {
             return Err("import map specifier keys must not be empty");
         }
@@ -146,12 +349,7 @@ fn parse_specifier_map(
         if specifier.ends_with('/') && !normalized_address.ends_with('/') {
             return Err("a prefix import-map address must end with a slash");
         }
-        if normalized
-            .insert(normalized_specifier, normalized_address)
-            .is_some()
-        {
-            return Err("import map contains duplicate normalized specifiers");
-        }
+        normalized.insert(normalized_specifier, normalized_address);
     }
     Ok(normalized)
 }
@@ -169,6 +367,24 @@ fn merge_specifier_map(
             return Err("merged import maps exceed their combined entry limit");
         }
         current.insert(specifier, address);
+        *entry_count += 1;
+    }
+    Ok(())
+}
+
+fn merge_integrity_map(
+    current: &mut NativeModuleIntegrityMap,
+    newer: NativeModuleIntegrityMap,
+    entry_count: &mut usize,
+) -> Result<(), &'static str> {
+    for (url, metadata) in newer {
+        if current.contains_key(&url) {
+            continue;
+        }
+        if *entry_count >= MAX_IMPORT_MAP_ENTRIES {
+            return Err("merged import maps exceed their combined entry limit");
+        }
+        current.insert(url, metadata);
         *entry_count += 1;
     }
     Ok(())
@@ -242,7 +458,7 @@ fn resolve_url(base: &Url, value: &str) -> Result<Url, &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::NativeModuleImportMap;
+    use super::{MAX_IMPORT_MAP_ENTRIES, MAX_IMPORT_MAP_INTEGRITY_BYTES, NativeModuleImportMap};
 
     const BASE: &str = "https://example.test/app/index.html";
 
@@ -388,15 +604,106 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unmapped_bare_specifiers_and_unsupported_map_members() {
+    fn ignores_unknown_top_level_members_and_non_url_integrity_entries() {
+        let map = NativeModuleImportMap::parse(
+            r#"{"imports":{"pkg":"/pkg.js"},"integrity":{"bare-relative":"sha256-ignored","./typed.js":7},"futureExtension":{}}"#,
+            BASE,
+        )
+        .expect("unknown extension keys and invalid integrity entries are ignored");
+
+        assert_eq!(
+            map.resolve("https://example.test/app/main.js", "pkg")
+                .unwrap(),
+            "https://example.test/pkg.js"
+        );
+        assert_eq!(
+            map.integrity_for_url("https://example.test/app/typed.js"),
+            None
+        );
+        assert!(NativeModuleImportMap::parse(r#"{"integrity":[]}"#, BASE).is_err());
         assert_eq!(
             NativeModuleImportMap::default()
                 .resolve("https://example.test/app/main.js", "unmapped")
                 .unwrap_err(),
             "bare module specifiers require an import map"
         );
-        assert!(NativeModuleImportMap::parse(r#"{"integrity":{}}"#, BASE).is_err());
-        assert!(NativeModuleImportMap::parse(r#"{"unknown":{}}"#, BASE).is_err());
+    }
+
+    #[test]
+    fn normalizes_and_merges_integrity_entries_first_wins() {
+        let mut map =
+            NativeModuleImportMap::parse(r#"{"integrity":{"./pkg.js":"sha384-first"}}"#, BASE)
+                .expect("valid integrity map");
+        map.merge(
+            NativeModuleImportMap::parse(
+                r#"{"integrity":{"https://example.test/app/pkg.js":"sha384-second","/other.js":"sha256-other"}}"#,
+                BASE,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            map.integrity_for_url("https://example.test/app/pkg.js"),
+            Some("sha384-first")
+        );
+        assert_eq!(
+            map.integrity_for_url("https://example.test/other.js"),
+            Some("sha256-other")
+        );
+    }
+
+    #[test]
+    fn normalized_import_map_key_collisions_follow_json_source_order() {
+        let map = NativeModuleImportMap::parse(
+            r#"{"imports":{"https://example.test/app/module.js":"/first.js","./module.js":"/second.js"},"scopes":{"https://example.test/app/":{"pkg":"/first-scoped.js"},"./":{"pkg":"/second-scoped.js"}},"integrity":{"https://example.test/app/module.js":"sha256-first","./module.js":"sha384-second"}}"#,
+            BASE,
+        )
+        .expect("normalized duplicate keys retain the last source entry");
+
+        assert_eq!(
+            map.resolve("https://example.test/app/main.js", "./module.js")
+                .unwrap(),
+            "https://example.test/second.js"
+        );
+        assert_eq!(
+            map.resolve("https://example.test/app/main.js", "pkg")
+                .unwrap(),
+            "https://example.test/second-scoped.js"
+        );
+        assert_eq!(
+            map.integrity_for_url("https://example.test/app/module.js"),
+            Some("sha384-second")
+        );
+    }
+
+    #[test]
+    fn integrity_entries_obey_metadata_and_combined_map_bounds_atomically() {
+        let oversized_metadata = "x".repeat(MAX_IMPORT_MAP_INTEGRITY_BYTES + 1);
+        let oversized = format!("{{\"integrity\":{{\"/module.js\":\"{oversized_metadata}\"}}}}");
+        assert!(NativeModuleImportMap::parse(&oversized, BASE).is_err());
+
+        let entries = (0..129)
+            .map(|index| format!("\"/module{index}.js\":\"sha256-hash\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(
+            NativeModuleImportMap::parse(&format!("{{\"integrity\":{{{entries}}}}}"), BASE)
+                .is_err()
+        );
+
+        let imports = (0..MAX_IMPORT_MAP_ENTRIES - 1)
+            .map(|index| format!("\"pkg{index}\":\"/pkg{index}.js\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let initial =
+            format!("{{\"imports\":{{{imports}}},\"integrity\":{{\"/one.js\":\"sha256-one\"}}}}");
+        let mut map = NativeModuleImportMap::parse(&initial, BASE).unwrap();
+        let original = map.clone();
+        let newer = NativeModuleImportMap::parse(r#"{"integrity":{"/two.js":"sha256-two"}}"#, BASE)
+            .unwrap();
+        assert!(map.merge(newer).is_err());
+        assert_eq!(map, original);
     }
 
     #[test]

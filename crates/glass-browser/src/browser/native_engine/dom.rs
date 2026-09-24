@@ -1386,6 +1386,15 @@ impl NativeDocument {
                         }
                     }
                 }
+                HtmlToken::FragmentRawText(value) => {
+                    if !value.is_empty() {
+                        let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "tree builder lost its fragment raw-text parent".into(),
+                        })?;
+                        document.add_node(parent, NativeNodeKind::Text(value), limits.max_nodes)?;
+                    }
+                }
                 HtmlToken::RawText(value) => {
                     if !value.is_empty() {
                         let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
@@ -6767,6 +6776,15 @@ impl NativeDocument {
                         }
                     }
                 }
+                HtmlToken::FragmentRawText(value) => {
+                    if !value.is_empty() {
+                        let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "fragment parser lost its context raw-text parent".into(),
+                        })?;
+                        self.add_node(parent, NativeNodeKind::Text(value), self.max_nodes)?;
+                    }
+                }
                 HtmlToken::RawText(value) => {
                     if !value.is_empty() {
                         let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
@@ -6854,13 +6872,20 @@ impl NativeDocument {
     fn element_inner_html(&self, id: NativeNodeId, max_bytes: usize) -> String {
         let mut output = String::new();
         let mut truncated = false;
-        let children = self
-            .node(id)
-            .map(NativeNode::children)
-            .unwrap_or_default()
-            .to_vec();
+        let Some(element) = self.node(id) else {
+            return output;
+        };
+        let raw_text_context = element.namespace_uri() == Some(HTML_NAMESPACE_URI)
+            && element.element_name().is_some_and(is_html_raw_text_element);
+        let children = element.children().to_vec();
         for child in children {
-            self.append_serialized_node(child, max_bytes, &mut output, &mut truncated, false);
+            self.append_serialized_node(
+                child,
+                max_bytes,
+                &mut output,
+                &mut truncated,
+                raw_text_context,
+            );
             if truncated {
                 break;
             }
@@ -6953,7 +6978,8 @@ impl NativeDocument {
                     return;
                 }
                 let children = node.children().to_vec();
-                let child_raw_text = matches!(name.as_str(), "script" | "style");
+                let child_raw_text = node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+                    && is_html_raw_text_element(name);
                 for child in children {
                     self.append_serialized_node(
                         child,
@@ -9784,6 +9810,7 @@ enum HtmlToken {
     },
     Text(String),
     RawText(String),
+    FragmentRawText(String),
     RcData(String),
 }
 
@@ -9805,13 +9832,16 @@ fn tokenize_inner_html(
     max_tokens: usize,
     context_name: &str,
 ) -> Result<Vec<HtmlToken>, NativeEngineError> {
-    if !matches!(context_name, "title" | "textarea") {
+    if !matches!(
+        context_name,
+        "title" | "textarea" | "style" | "xmp" | "iframe" | "noembed" | "noframes" | "noscript"
+    ) {
         return tokenize(source, max_tokens);
     }
 
-    // The HTML fragment algorithm starts title/textarea contexts in RCDATA.
-    // Use the existing tokenizer's appropriate-end-tag handling without
-    // inserting a synthetic context element into the committed fragment.
+    // The HTML fragment algorithm initializes special-text state from its
+    // context element. Reuse the tokenizer's appropriate-end-tag handling
+    // without inserting a synthetic context element into the committed tree.
     let prefix = format!("<{context_name}>");
     let wrapped_source = format!("{prefix}{source}");
     let tokenizer_limit = max_tokens.saturating_add(1);
@@ -9836,15 +9866,20 @@ fn tokenize_inner_html(
     ) {
         return Err(NativeEngineError::Parse {
             offset: 0,
-            reason: "fragment RCDATA context did not produce its synthetic start tag".into(),
+            reason: "special-text fragment context did not produce its synthetic start tag".into(),
         });
     }
     tokens.remove(0);
 
-    // Only the first RCDATA token comes from the fragment context. Convert it
-    // to ordinary text so a foreign SVG title receives the same literal text
-    // projection as an HTML title or textarea.
-    if matches!(tokens.first(), Some(HtmlToken::RcData(_))) {
+    // The first special-text token comes from the fragment context. Mark
+    // RAWTEXT separately so tree construction preserves literal references;
+    // RCDATA remains ordinary text so its references are decoded on insert.
+    if matches!(tokens.first(), Some(HtmlToken::RawText(_))) {
+        let token = std::mem::replace(&mut tokens[0], HtmlToken::Text(String::new()));
+        if let HtmlToken::RawText(value) = token {
+            tokens[0] = HtmlToken::FragmentRawText(value);
+        }
+    } else if matches!(tokens.first(), Some(HtmlToken::RcData(_))) {
         let token = std::mem::replace(&mut tokens[0], HtmlToken::Text(String::new()));
         if let HtmlToken::RcData(value) = token {
             tokens[0] = HtmlToken::Text(value);
@@ -10033,7 +10068,7 @@ fn tokenize_preprocessed_html(
                 },
                 max_tokens,
             )?;
-            if matches!(name.as_str(), "iframe" | "frame") && !self_closing {
+            if name == "frame" && !self_closing {
                 let text_start = end + 1;
                 if let Some(text_end) = find_raw_text_end(source, text_start, &name) {
                     next_position = text_end;
@@ -10269,11 +10304,21 @@ fn encode_data_url_payload(value: &str) -> String {
 }
 
 fn special_text_mode(name: &str) -> Option<bool> {
-    match name {
-        "script" | "style" => Some(false),
-        "title" | "textarea" => Some(true),
-        _ => None,
+    if is_html_raw_text_element(name) {
+        Some(false)
+    } else {
+        match name {
+            "title" | "textarea" => Some(true),
+            _ => None,
+        }
     }
+}
+
+fn is_html_raw_text_element(name: &str) -> bool {
+    matches!(
+        name,
+        "script" | "style" | "xmp" | "iframe" | "noembed" | "noframes" | "noscript"
+    )
 }
 
 fn find_raw_text_end(source: &str, start: usize, name: &str) -> Option<usize> {
@@ -15371,9 +15416,12 @@ mod tests {
             "<title id='svg-title'><span id='svg-title-span'>title</span></title>",
             "<style id='svg-style'><g id='svg-style-g'>style</g></style>",
             "<script id='svg-script'><g id='svg-script-g'>script</g></script>",
+            "<xmp id='svg-xmp'><g id='svg-xmp-g'>xmp</g></xmp>",
+            "<iframe id='svg-iframe'><g id='svg-iframe-g'>iframe</g></iframe>",
             "</svg><math id='math-root'>",
             "<textarea id='math-textarea'><mi id='math-textarea-mi'>mi</mi></textarea>",
             "<title id='math-title'><mrow id='math-title-row'>row</mrow></title>",
+            "<noembed id='math-noembed'><mi id='math-noembed-mi'>noembed</mi></noembed>",
             "</math></section>",
         );
         let expected_nodes = [
@@ -15384,11 +15432,17 @@ mod tests {
             ("svg-style-g", SVG_NAMESPACE_URI, "svg-style"),
             ("svg-script", SVG_NAMESPACE_URI, "svg-root"),
             ("svg-script-g", SVG_NAMESPACE_URI, "svg-script"),
+            ("svg-xmp", SVG_NAMESPACE_URI, "svg-root"),
+            ("svg-xmp-g", SVG_NAMESPACE_URI, "svg-xmp"),
+            ("svg-iframe", SVG_NAMESPACE_URI, "svg-root"),
+            ("svg-iframe-g", SVG_NAMESPACE_URI, "svg-iframe"),
             ("math-root", MATHML_NAMESPACE_URI, "zone"),
             ("math-textarea", MATHML_NAMESPACE_URI, "math-root"),
             ("math-textarea-mi", MATHML_NAMESPACE_URI, "math-textarea"),
             ("math-title", MATHML_NAMESPACE_URI, "math-root"),
             ("math-title-row", MATHML_NAMESPACE_URI, "math-title"),
+            ("math-noembed", MATHML_NAMESPACE_URI, "math-root"),
+            ("math-noembed-mi", MATHML_NAMESPACE_URI, "math-noembed"),
         ];
         let expected = expected_nodes
             .iter()
@@ -15564,6 +15618,230 @@ mod tests {
         assert!(document.find_element_by_id("svg-literal").is_none());
         assert!(document.find_element_by_id("html-literal").is_none());
         assert!(document.find_element_by_id("textarea-literal").is_none());
+    }
+
+    #[test]
+    fn html_rawtext_elements_remain_literal_across_document_routes() {
+        let raw_text_elements = ["style", "xmp", "iframe", "noembed", "noframes", "noscript"];
+        let raw_text = |name: &str| format!("<b id='fake-{name}'>A &amp; {} Z</b>", '\u{FFFD}');
+        let markup = raw_text_elements
+            .iter()
+            .map(|name| format!("<{name} id='{name}'>{}</{name}>", raw_text(name)))
+            .collect::<String>();
+        let expected = raw_text_elements
+            .iter()
+            .map(|name| {
+                let text = raw_text(name);
+                serde_json::json!([text.clone(), text, true])
+            })
+            .collect::<Vec<_>>();
+
+        let direct = NativeDocument::parse(&markup, &NativeEngineLimits::default())
+            .expect("HTML raw-text elements must parse as literal text");
+        for name in raw_text_elements {
+            let element_id = direct
+                .find_element_by_id(name)
+                .expect("raw-text element must remain in the document");
+            let element = direct.node(element_id).unwrap();
+            assert_eq!(
+                element.children().len(),
+                1,
+                "{name} must have one text child"
+            );
+            assert_eq!(
+                direct.node(element.children()[0]).unwrap().kind(),
+                &NativeNodeKind::Text(raw_text(name))
+            );
+            assert!(direct.find_element_by_id(&format!("fake-{name}")).is_none());
+            assert_eq!(
+                direct.element_inner_html(element_id, 1 << 20),
+                raw_text(name)
+            );
+        }
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("rawtext-document-routes")
+            .expect("native JavaScript runtime must construct");
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+            const names = __NAMES__;
+            const markup = __MARKUP__;
+            const root = document.querySelector("#root");
+            root.innerHTML = markup;
+            const response = globalThis.__glassParseHtmlDocument(
+                markup,
+                "https://example.test/rawtext-document-routes.html",
+                "text/html",
+            );
+            const summarize = (tree) => names.map((name) => {
+                const element = tree.querySelector(`#${name}`);
+                return [
+                    element.textContent,
+                    element.innerHTML,
+                    tree.querySelector(`#fake-${name}`) === null,
+                ];
+            });
+            return [summarize(root), summarize(response)];
+        })()"##
+            .replace(
+                "__NAMES__",
+                &serde_json::to_string(&raw_text_elements).unwrap(),
+            )
+            .replace("__MARKUP__", &serde_json::to_string(&markup).unwrap());
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://rawtext-document-routes.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("fragment projection and XHR document must preserve RAWTEXT");
+        assert_eq!(evaluation.value, serde_json::json!([expected, expected]));
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must preserve RAWTEXT");
+        let root_id = document.find_element_by_id("root").unwrap();
+        let root = document.node(root_id).unwrap();
+        for name in raw_text_elements {
+            let element_id = document.find_element_by_id(name).unwrap();
+            let element = document.node(element_id).unwrap();
+            assert_eq!(
+                element.children().len(),
+                1,
+                "{name} must have one text child"
+            );
+            assert_eq!(
+                document.node(element.children()[0]).unwrap().kind(),
+                &NativeNodeKind::Text(raw_text(name))
+            );
+            assert_eq!(
+                document.element_inner_html(element_id, 1 << 20),
+                raw_text(name)
+            );
+            assert!(
+                document
+                    .find_element_by_id(&format!("fake-{name}"))
+                    .is_none()
+            );
+            assert_eq!(element.parent(), Some(root_id));
+        }
+        assert_eq!(root.children().len(), raw_text_elements.len());
+    }
+
+    #[test]
+    fn html_rawtext_fragment_contexts_match_same_turn_and_committed_trees() {
+        let raw_text_elements = ["style", "xmp", "iframe", "noembed", "noframes", "noscript"];
+        let contexts = raw_text_elements
+            .iter()
+            .map(|name| format!("<{name} id='{name}'></{name}>"))
+            .collect::<String>();
+        let mut document = NativeDocument::parse(
+            &format!("<main id='root'>{contexts}</main>"),
+            &NativeEngineLimits::default(),
+        )
+        .expect("raw-text context document must parse");
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("rawtext-fragment-context")
+            .expect("native JavaScript runtime must construct");
+        let script = r##"(() => {
+            const names = __NAMES__;
+            const results = names.map((name) => {
+                const target = document.querySelector(`#${name}`);
+                target.innerHTML = "<b id='fake-" + name + "'>A &amp; \u0000 Z</b></" + name + "/>"
+                    + "<span id='after-" + name + "'>tail</span>";
+                const after = target.querySelector(`#after-${name}`);
+                return [
+                    target.textContent,
+                    target.querySelector(`#fake-${name}`) === null,
+                    after.namespaceURI,
+                    after.parentElement === target,
+                    target.innerHTML,
+                ];
+            });
+            const xmp = document.querySelector("#xmp");
+            xmp.innerHTML = "EOF &amp; <b id='eof-fake'>tail</b>";
+            return [results, [xmp.textContent, xmp.innerHTML, xmp.querySelector("#eof-fake") === null]];
+        })()"##
+            .replace(
+                "__NAMES__",
+                &serde_json::to_string(&raw_text_elements).unwrap(),
+            );
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://rawtext-fragment-context.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("RAWTEXT fragment contexts must project immediately");
+
+        let expected_context_results = raw_text_elements
+            .iter()
+            .map(|name| {
+                let text = format!("<b id='fake-{name}'>A &amp; {} Z</b>", '\u{FFFD}');
+                serde_json::json!([
+                    format!("{text}tail"),
+                    true,
+                    HTML_NAMESPACE_URI,
+                    true,
+                    format!("{text}<span id=\"after-{name}\">tail</span>"),
+                ])
+            })
+            .collect::<Vec<_>>();
+        let unterminated = "EOF &amp; <b id='eof-fake'>tail</b>";
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([expected_context_results, [unterminated, unterminated, true],])
+        );
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must match RAWTEXT projection");
+        for name in raw_text_elements {
+            let element_id = document.find_element_by_id(name).unwrap();
+            let element = document.node(element_id).unwrap();
+            if name == "xmp" {
+                assert_eq!(element.children().len(), 1);
+                assert_eq!(
+                    document.node(element.children()[0]).unwrap().kind(),
+                    &NativeNodeKind::Text(unterminated.to_owned())
+                );
+                assert_eq!(
+                    document.element_inner_html(element_id, 1 << 20),
+                    unterminated
+                );
+                continue;
+            }
+            let literal = format!("<b id='fake-{name}'>A &amp; {} Z</b>", '\u{FFFD}');
+            assert_eq!(
+                element.children().len(),
+                2,
+                "{name} suffix must parse normally"
+            );
+            assert_eq!(
+                document.node(element.children()[0]).unwrap().kind(),
+                &NativeNodeKind::Text(literal.clone())
+            );
+            let suffix_id = document
+                .find_element_by_id(&format!("after-{name}"))
+                .unwrap();
+            let suffix = document.node(suffix_id).unwrap();
+            assert_eq!(suffix.parent(), Some(element_id));
+            assert_eq!(suffix.namespace_uri(), Some(HTML_NAMESPACE_URI));
+            assert_eq!(
+                document.element_inner_html(element_id, 1 << 20),
+                format!("{literal}<span id=\"after-{name}\">tail</span>")
+            );
+            assert!(
+                document
+                    .find_element_by_id(&format!("fake-{name}"))
+                    .is_none()
+            );
+        }
+        assert!(document.find_element_by_id("eof-fake").is_none());
     }
 
     #[test]

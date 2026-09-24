@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-696`. Issue #40
-remains open. It follows locally completed `native-engine-browser-695`,
+completed browser expansion slice is `native-engine-browser-697`. Issue #40
+remains open. It follows locally completed `native-engine-browser-696`,
+`native-engine-browser-695`,
 `native-engine-browser-694`,
 `native-engine-browser-693`, and
 `native-engine-browser-692` and
@@ -841,6 +842,19 @@ references and replaces nulls; source after the close resumes normal fragment
 tree construction. The Rust commit path and same-turn JavaScript/frame
 projection must agree. Full-document and XHR parsing remain unchanged. See
 [`slice 696`](../tasks/native-engine-browser-696.md).
+
+Slice 697 completes fragment-context RAWTEXT initialization for `style`,
+`xmp`, `iframe`, `noembed`, `noframes`, and scripting-enabled `noscript`.
+Markup and character references remain literal through the first appropriate
+end tag, nulls become U+FFFD, that end tag is consumed without popping the
+fragment context, and ordinary fragment construction resumes for the suffix.
+Document parsing, Rust fragment commit, same-turn JavaScript/frame projection,
+XHR HTML parsing, and HTML serialization agree. Foreign SVG/MathML
+reprocessing and RCDATA behavior are preserved. The locked package check,
+focused RAWTEXT tests (2/2), foreign namespace route test (1/1), formatting,
+and local documentation gates passed; remote CI was not run. Script-data and
+`plaintext` initialization remain separate. See
+[`slice 697`](../tasks/native-engine-browser-697.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

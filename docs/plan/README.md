@@ -27,8 +27,8 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-696`; issue #40
-remains open. Slice 696 follows the completed `native-engine-browser-695`
+expansion is complete locally through `native-engine-browser-697`; issue #40
+remains open. Slice 697 follows the completed `native-engine-browser-696`
 checkpoint.
 The earlier expansion chain includes completed
 `native-engine-browser-687`, following completed
@@ -205,6 +205,15 @@ full-document SVG integration-point parsing remains unchanged. The HTML batch
 passed 35/35 and the foreign batch 9/9 after the locked package check. Local
 documentation, formatting, and whitespace gates passed; remote CI was not
 run.
+
+[`native-engine-browser-697`](tasks/native-engine-browser-697.md) is complete
+locally. It initializes fragment parsing in RAWTEXT for `style`, `xmp`,
+`iframe`, `noembed`, `noframes`, and scripting-enabled `noscript`; content is
+literal through the appropriate context end tag, then ordinary fragment
+parsing resumes. Document/XHR tokenization and serialization use the same mode
+set. The focused RAWTEXT tests passed 2/2 and the foreign namespace route test
+passed 1/1 after the locked package check. Remote CI was not run; script-data,
+`plaintext`, and general parser conformance remain open.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

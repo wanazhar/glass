@@ -1759,6 +1759,50 @@ async fn native_file_media_rejects_paths_outside_configured_root() {
 }
 
 #[tokio::test]
+async fn native_file_module_graph_keeps_fragment_distinct_identities() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-module-fragments-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("index.html"),
+        "<script type='module' src='./entry.js#root'></script>",
+    )
+    .unwrap();
+    fs::write(
+        root.join("entry.js"),
+        "import './dep.js#first'; import './dep.js#second'; globalThis.fileFragmentModuleReady = true;",
+    )
+    .unwrap();
+    fs::write(
+        root.join("dep.js"),
+        "globalThis.fileFragmentModuleExecutions = (globalThis.fileFragmentModuleExecutions || 0) + 1; export const execution = globalThis.fileFragmentModuleExecutions;",
+    )
+    .unwrap();
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(native_test_file_url(&root.join("index.html")))
+            .with_allowed_file_root(root.clone()),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[globalThis.fileFragmentModuleExecutions, globalThis.fileFragmentModuleReady]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([2, true])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-subresources-{}",
@@ -19968,6 +20012,84 @@ async fn native_content_process_prefetches_static_module_graphs() {
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_keeps_fragment_module_identities_and_response_bases() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let expected_paths = [
+            "/page",
+            "/entry.js",
+            "/modules/entry-real.js",
+            "/modules/dep.js",
+            "/modules/dep.js",
+        ];
+        let mut requests = Vec::new();
+        for expected_path in expected_paths {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("HTTP request includes a path")
+                .to_owned();
+            assert_eq!(path, expected_path);
+            let response = match path.as_str() {
+                "/entry.js" => {
+                    "HTTP/1.1 302 Found\r\nLocation: /modules/entry-real.js\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
+                }
+                "/page" => {
+                    let body = "<script>globalThis.fragmentModuleErrors = []; addEventListener('error', event => fragmentModuleErrors.push(String(event.message)), true);</script><script type='module' src='/entry.js#root'></script>";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "/modules/entry-real.js" => {
+                    let body = "import './dep.js#first'; import './dep.js#second'; globalThis.fragmentModuleReady = true;";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "/modules/dep.js" => {
+                    let body = "globalThis.fragmentModuleExecutions = (globalThis.fragmentModuleExecutions || 0) + 1; export const execution = globalThis.fragmentModuleExecutions;";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                other => panic!("unexpected fragment-module request: {other}"),
+            };
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push(path);
+        }
+        requests
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let result = engine
+        .evaluate_async(
+            "[globalThis.fragmentModuleExecutions, globalThis.fragmentModuleReady, globalThis.fragmentModuleErrors]",
+        )
+        .await
+        .unwrap();
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(
+        result,
+        serde_json::json!([2, true, []]),
+        "request URLs with distinct fragments must instantiate separately, while imports resolve from the redirected response URL"
+    );
+    assert_eq!(requests.len(), 5);
 }
 
 #[tokio::test]

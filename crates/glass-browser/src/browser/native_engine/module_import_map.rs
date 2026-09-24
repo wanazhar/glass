@@ -319,8 +319,6 @@ impl NativeModuleImportMap {
         if !target.username().is_empty() || target.password().is_some() {
             return Err("module URL must not contain credentials");
         }
-        let mut target = target;
-        target.set_fragment(None);
         Ok(target.to_string())
     }
 
@@ -342,8 +340,7 @@ fn normalize_resolution_input(
     referrer: &str,
     specifier: &str,
 ) -> Result<(Url, String), &'static str> {
-    let mut referrer_url = Url::parse(referrer).map_err(|_| "module referrer URL is invalid")?;
-    referrer_url.set_fragment(None);
+    let referrer_url = Url::parse(referrer).map_err(|_| "module referrer URL is invalid")?;
     let normalized_specifier = if is_url_like(specifier) {
         resolve_url(&referrer_url, specifier)?.to_string()
     } else {
@@ -492,11 +489,10 @@ fn resolve_imports(
         return Ok(None);
     };
     let joined = format!("{address}{suffix}");
-    let mut target = Url::parse(&joined).map_err(|_| "mapped module URL is invalid")?;
+    let target = Url::parse(&joined).map_err(|_| "mapped module URL is invalid")?;
     if !target.username().is_empty() || target.password().is_some() {
         return Err("module URL must not contain credentials");
     }
-    target.set_fragment(None);
     Ok(Some(target))
 }
 
@@ -767,6 +763,33 @@ mod tests {
             map.resolve(referrer, "later").unwrap(),
             "https://example.test/later.js"
         );
+    }
+
+    #[test]
+    fn preserves_fragments_in_mapped_targets_and_resolution_referrers() {
+        let map = NativeModuleImportMap::parse(
+            r#"{"imports":{"fragmented":"/modules/dep.js?variant=one#mapped"}}"#,
+            BASE,
+        )
+        .expect("valid fragment-bearing import map");
+        assert_eq!(
+            map.resolve("https://example.test/app/main.js", "fragmented")
+                .unwrap(),
+            "https://example.test/modules/dep.js?variant=one#mapped"
+        );
+
+        let mut map = NativeModuleImportMap::default();
+        assert_eq!(
+            map.resolve_and_record("https://example.test/app/main.js#first", "./dep.js#first")
+                .unwrap(),
+            "https://example.test/app/dep.js#first"
+        );
+        assert_eq!(
+            map.resolve_and_record("https://example.test/app/main.js#second", "./dep.js#second")
+                .unwrap(),
+            "https://example.test/app/dep.js#second"
+        );
+        assert_eq!(map.resolved.len(), 2);
     }
 
     #[test]

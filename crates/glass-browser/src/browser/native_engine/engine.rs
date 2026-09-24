@@ -42,9 +42,9 @@ use super::javascript::{
     host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
     load_local_file_module_graph_with_import_map, load_service_worker_client_leases,
     load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
-    register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
-    unregister_service_worker_client_lease, unregister_storage_reader,
-    validate_frame_script_command, validate_message_port_transfers,
+    register_storage_reader, resolve_module_request_url, save_web_storage_profile,
+    storage_event_cursor, storage_key, unregister_service_worker_client_lease,
+    unregister_storage_reader, validate_frame_script_command, validate_message_port_transfers,
     validate_native_message_payload, validate_native_object_url_transfers,
     validate_page_message_port_command, validate_service_worker_client_states,
 };
@@ -8302,6 +8302,7 @@ fn load_local_dynamic_page_script_sources(
                     loader,
                     document_url,
                     name,
+                    document_url.to_owned(),
                     source,
                     timing,
                     node_index,
@@ -8364,6 +8365,13 @@ fn load_local_dynamic_page_script_sources(
                 integrity,
                 ..
             } => {
+                let request_url = match resolve_module_request_url(document_url, &href) {
+                    Ok(request_url) => request_url,
+                    Err(_) => {
+                        resource_events.push((node_index, NativeEventKind::Error));
+                        continue;
+                    }
+                };
                 let is_blob = href
                     .get(..5)
                     .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"));
@@ -8394,12 +8402,15 @@ fn load_local_dynamic_page_script_sources(
                 };
                 match resource {
                     Ok(Some(resource)) => {
+                        let response_url = resource.url;
+                        let source = resource.body;
                         let graph = if is_file {
                             load_local_file_module_graph_with_import_map(
                                 loader,
                                 document_url,
-                                resource.url,
-                                resource.body,
+                                request_url,
+                                response_url,
+                                source,
                                 timing,
                                 node_index,
                                 &mut import_map,
@@ -8408,8 +8419,9 @@ fn load_local_dynamic_page_script_sources(
                             Ok(vec![(
                                 timing,
                                 NativePageScript::Module {
-                                    name: resource.url,
-                                    source: resource.body,
+                                    name: request_url,
+                                    source,
+                                    base_url: response_url,
                                     node_index: Some(node_index),
                                 },
                             )])

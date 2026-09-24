@@ -2,7 +2,10 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-708`.
+The latest locally completed parser/script slice is `native-engine-browser-709`.
+Slice 709 preserves request-URL module identity (including query and fragment)
+separately from response-URL base resolution. See
+`tasks/native-engine-browser-709.md` for scope and local evidence.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -41,6 +44,14 @@ remote CI was not run. Computed dynamic imports, worker maps
 and broader worker/file-origin
 propagation, module fragment identity, and complete module scheduling remain
 separate gates.
+Slice `native-engine-browser-709` completes the main-page module-identity/base
+split for HTTP and rooted-file graphs. Request URLs, including queries and
+fragments, are module-source and deduplication keys; the final response URL is
+used to resolve descendants after redirects. Import-map targets and referrer
+records preserve fragments. The scoped check, 23 library/19 integration
+fragment tests, and 17 library/4 integration import-map tests passed locally.
+Worker module identity, computed dynamic imports, complete scheduling, and
+remote CI remain open.
 Recover verifiable scope and test evidence for slices 650–671 from authoritative
 commits; do not infer passing checks from summary prose. Keep the issue body and
 this record explicit about local versus remote evidence.

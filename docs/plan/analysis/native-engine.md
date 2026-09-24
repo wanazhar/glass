@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-708`. Issue #40
+completed browser expansion slice is `native-engine-browser-709`. Issue #40
 remains open. It follows locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,
@@ -965,6 +965,17 @@ with zero stale-current failures. Remote CI was not run. Computed dynamic
 imports, worker maps, broader worker/file-origin propagation, fragment identity,
 and complete module timing remain separate gates. See
 [`slice 708`](../tasks/native-engine-browser-708.md).
+
+Slice 709 preserves each main-page module request URL, including query and
+fragment, as the module-record key while mapping that identity to the final
+response URL used as its descendant base. Import-map targets and resolution
+referrers retain fragments; only resource I/O omits them. Redirected HTTP and
+rooted-file fixtures prove fragment variants instantiate separately and
+descendants resolve from the response base. Focused validation passed 23
+library/19 integration fragment tests and 17 library/4 integration import-map
+tests after the scoped package check. Worker module identity, computed dynamic
+imports, and complete scheduling remain open; remote CI was not run. See
+[`slice 709`](../tasks/native-engine-browser-709.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

@@ -707,8 +707,10 @@ conformance remain open; remote CI was not run. See
 Slice 700 is complete locally: dynamically created classic inline scripts run
 once when connected by `appendChild` or `insertBefore`, and removal/reinsertion
 does not execute them again. Parser-only active-formatting bookkeeping was
-removed from this runtime path. Dynamic external/module loading and general
-script conformance remain open; remote CI was not run. See
+removed from this runtime path. The bounded process-backed dynamic
+external/module path remains as implemented in slices 279–281; full
+parser/task timing, async/defer semantics, and general script conformance
+remain open. Remote CI was not run. See
 [`slice 700`](../plan/tasks/native-engine-browser-700.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR

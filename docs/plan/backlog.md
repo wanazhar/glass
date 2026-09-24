@@ -172,8 +172,9 @@ execute once when connected through `appendChild` or `insertBefore`; detached
 preparation and reinsertion of an already-started script do not cause execution
 or errors. Parser-only active-formatting state was removed from the runtime
 mutation path. The focused regression passed 1/1 after the locked package
-check. Dynamic external/module loading and general script conformance remain
-separate; remote CI was not run. See
+check. Bounded process-backed dynamic external/module loading remains as
+implemented in slices 279–281; full parser/task timing, async/defer semantics,
+and general script conformance remain separate. Remote CI was not run. See
 `tasks/native-engine-browser-700.md`.
 
 Slice 689 is complete locally: select child element namespaces using SVG and MathML

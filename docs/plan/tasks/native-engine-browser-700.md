@@ -20,8 +20,9 @@ existing execute-once and content-policy behavior.
 - A script insertion must not enter HTML parser active-formatting bookkeeping;
   that state belongs to fragment parsing, not DOM mutation.
 - Keep existing CSP checks, `error` dispatch, and the start-script command.
-- Do not claim dynamic external-script, module-script, async/defer, or general
-  script-execution conformance from this bounded fix.
+- This slice does not change or recertify the bounded process-backed dynamic
+  external/module path implemented in slices 279–281. Do not infer full
+  parser/task timing, async/defer, or general script-execution conformance.
 - Keep issue #40 open until its full browser profile and native-only gates pass.
 
 ## Context
@@ -30,6 +31,10 @@ existing execute-once and content-policy behavior.
 - `docs/architecture/native-engine.md`
 - `docs/plan/analysis/native-engine.md`
 - [`native-engine-browser-699`](native-engine-browser-699.md)
+- [`native-engine-browser-279`](native-engine-browser-279.md),
+  [`native-engine-browser-280`](native-engine-browser-280.md), and
+  [`native-engine-browser-281`](native-engine-browser-281.md) for the existing
+  bounded process-backed dynamic external/module/network path.
 
 ## Path
 
@@ -67,6 +72,8 @@ Implementation and focused checks passed locally:
 The misplaced parser-only active-formatting block is removed from the
 connected DOM insertion path. The regression verifies detached preparation,
 `appendChild`, `insertBefore`, one-time inline classic execution, removal and
-reinsertion, start-script markers, and Rust command commit. Dynamic external
-and module-script loading, general script conformance, remote CI, and issue
-#40 completion are not claimed.
+reinsertion, start-script markers, and Rust command commit. The existing
+bounded process-backed dynamic external/module path remains as documented in
+slices 279–281 and is not expanded by this fix. Full parser/task timing,
+async/defer semantics, general script conformance, remote CI, and issue #40
+completion are not claimed.

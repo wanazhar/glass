@@ -884,8 +884,10 @@ once and returns normally. Detached preparation does not execute, and
 removal/reinsertion does not rerun an already-started script. The parser-only
 active-formatting block was removed from the DOM mutation path. The locked
 package check and focused regression passed 1/1; remote CI was not run.
-Dynamic external/module loading and general script conformance remain open.
-See [`slice 700`](../tasks/native-engine-browser-700.md).
+The bounded process-backed dynamic external/module path remains as implemented
+in slices 279–281. Full parser/task timing, async/defer semantics, and general
+script conformance remain open. See
+[`slice 700`](../tasks/native-engine-browser-700.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

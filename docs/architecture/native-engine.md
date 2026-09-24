@@ -1,9 +1,9 @@
 # Native browser engine
 
 Status: Browser-complete expansion is locally complete through
-`native-engine-browser-691`, following locally completed
-`native-engine-browser-690` and `native-engine-browser-689`; issue #40 remains open. It follows completed
-`native-engine-browser-687`,
+`native-engine-browser-695`, following locally completed
+`native-engine-browser-694`; issue #40 remains open. Earlier completed slices
+include `native-engine-browser-693` through `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
 `native-engine-browser-684`,
@@ -617,8 +617,8 @@ foreign-namespace elements. The four-route breakout and integration-point
 fixtures passed; the `foreign_` tests passed 4/4 and the scoped `html_` batch
 passed 31/31 after the locked package check. Formatting, whitespace, and all
 maintainer documentation validators passed locally. Remote CI was not run.
-Foreign end-tag breakout, foreign attribute adjustment, and general parser
-conformance remain open. See
+Foreign end-tag breakout and general parser conformance remain open; foreign
+attribute adjustment completed locally in slice 695. See
 [`slice 692`](../plan/tasks/native-engine-browser-692.md).
 
 Slice 693 is complete locally: implement WHATWG foreign-content breakout for
@@ -647,6 +647,18 @@ passed locally. Full documentation inventory/link coverage was not run because
 this slice changed no CLI/MCP/module inventory and the debug CLI binaries were
 not built. Remote CI was not run. General parser conformance remains open. See
 [`slice 694`](../plan/tasks/native-engine-browser-694.md).
+
+The parser's foreign-attribute contract follows the WHATWG HTML tree builder:
+SVG and MathML attribute names receive their specified case adjustments, and
+`xlink:*`, `xml:*`, `xmlns`, and `xmlns:xlink` retain their specified qualified
+name, prefix, local name, and namespace URI. These adjustments apply only when
+the token is inserted through foreign-content rules; colon-containing
+attributes on HTML elements remain unnamespaced. All four HTML parser routes
+must expose the same attribute identity through DOM APIs and serialization.
+Slice 695 completes this increment locally: the locked package check passed,
+the foreign batch passed 9/9, and the scoped HTML batch passed 34/34.
+Documentation and formatting gates passed locally; remote CI was not run. The
+broader parser remains incomplete.
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

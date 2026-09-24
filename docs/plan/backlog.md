@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-702`.
+The latest locally completed parser/script slice is `native-engine-browser-703`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -177,19 +177,24 @@ implemented in slices 279–281; full parser/task timing, async/defer semantics,
 and general script conformance remain separate. Remote CI was not run. See
 `tasks/native-engine-browser-700.md`.
 
-Slice 701 is complete locally: connected dynamic inline classic scripts use
-the existing five-type JavaScript MIME essence policy, matching case
-insensitively and ignoring parameters. Unsupported data MIME types remain
-inert. The locked package check and focused regression passed; remote CI was
-not run. Full script/task scheduling and general conformance remain open. See
-`tasks/native-engine-browser-701.md`.
+Slice 701 initially added five JavaScript MIME types to connected dynamic
+inline classic-script handling but also incorrectly ignored `type` parameters.
+Slice 703 corrects that behavior and expands to all 16 exact essences. See
+`tasks/native-engine-browser-701.md` and the correction in
+`tasks/native-engine-browser-703.md`.
 
-Slice 702 is complete locally: initial-document inline/external classic-script
-classification uses the same five-type JavaScript MIME essence matcher as
-external response validation and dynamic inline insertion. The paired focused
-MIME-policy tests passed 2/2 after the locked package check; remote CI was not
-run. Full registry and scheduling conformance remain open. See
-`tasks/native-engine-browser-702.md`.
+Slice 702 briefly reused response Content-Type parameter handling for script
+`type` attributes, incorrectly accepting parameterized values. Slice 703
+separates those policies and expands the accepted essence list. See
+`tasks/native-engine-browser-702.md` and the correction in
+`tasks/native-engine-browser-703.md`.
+
+Slice 703 is complete locally: initial and dynamically inserted classic
+scripts recognize all 16 JavaScript MIME type essences case-insensitively,
+with no parameters or surrounding whitespace for the script `type` attribute.
+External response Content-Type parameters remain ignored. The focused
+MIME-policy batch passed 4/4 after the locked package check; remote CI was not
+run. See `tasks/native-engine-browser-703.md`.
 
 Slice 689 is complete locally: select child element namespaces using SVG and MathML
 HTML integration-point rules across all four parser routes. Preserve the

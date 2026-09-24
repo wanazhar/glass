@@ -8156,21 +8156,40 @@ fn script_content_type_allowed(
     Ok(javascript_mime_essence_allowed(value))
 }
 
+pub(crate) const JAVASCRIPT_MIME_TYPE_ESSENCES: &[&str] = &[
+    "application/ecmascript",
+    "application/javascript",
+    "application/x-ecmascript",
+    "application/x-javascript",
+    "text/ecmascript",
+    "text/javascript",
+    "text/javascript1.0",
+    "text/javascript1.1",
+    "text/javascript1.2",
+    "text/javascript1.3",
+    "text/javascript1.4",
+    "text/javascript1.5",
+    "text/jscript",
+    "text/livescript",
+    "text/x-ecmascript",
+    "text/x-javascript",
+];
+
+/// External response Content-Type parameters are ignored when matching a
+/// JavaScript MIME type, unlike the `script[type]` attribute.
 pub(crate) fn javascript_mime_essence_allowed(value: &str) -> bool {
-    matches!(
-        value
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "text/javascript"
-            | "application/javascript"
-            | "application/ecmascript"
-            | "text/ecmascript"
-            | "application/x-javascript"
-    )
+    let essence = value.split(';').next().unwrap_or_default().trim();
+    JAVASCRIPT_MIME_TYPE_ESSENCES
+        .iter()
+        .any(|candidate| essence.eq_ignore_ascii_case(candidate))
+}
+
+/// The script element type attribute matches only the essence string itself:
+/// MIME parameters or surrounding whitespace prevent an essence match.
+pub(crate) fn javascript_mime_type_essence_match(value: &str) -> bool {
+    JAVASCRIPT_MIME_TYPE_ESSENCES
+        .iter()
+        .any(|candidate| value.eq_ignore_ascii_case(candidate))
 }
 
 pub(crate) fn referrer_for_navigation(
@@ -9179,16 +9198,18 @@ mod tests {
         NativeIndexedDbState, NativeWebStorageState, save_web_storage_profile,
     };
     use super::{
-        MAX_NATIVE_CACHE_ENTRIES, MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, MAX_NATIVE_MEDIA_BYTES,
-        NativeCookieProfileEntry, NativeCorsMode, NativeEngineConfig, NativeEngineError,
-        NativeFetchMethod, NativeInlineCspKind, NativeNavigationMethod, NativeNavigationPolicyKind,
+        JAVASCRIPT_MIME_TYPE_ESSENCES, MAX_NATIVE_CACHE_ENTRIES,
+        MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, MAX_NATIVE_MEDIA_BYTES, NativeCookieProfileEntry,
+        NativeCorsMode, NativeEngineConfig, NativeEngineError, NativeFetchMethod,
+        NativeInlineCspKind, NativeNavigationMethod, NativeNavigationPolicyKind,
         NativeNetworkState, NativeObjectUrlResource, NativeRequestBody, NativeResource,
         NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
         cache_control_requires_revalidation, content_security_policy, cors_origin_header,
         cors_preflight_response_allowed, cors_response_allowed,
         csp_report_deliveries_for_declaration, csp_sources_allow, csp_sources_allow_for_redirect,
         data_font_bytes, data_media_metadata, decode_html_body, document_cache_fresh_until,
-        document_cache_storage_allowed, media_metadata_from_bytes, mixed_content_allowed,
+        document_cache_storage_allowed, javascript_mime_essence_allowed,
+        javascript_mime_type_essence_match, media_metadata_from_bytes, mixed_content_allowed,
         referrer_for_navigation, resolve_subresource_url, subresource_integrity_matches,
         supported_media_type_text,
     };
@@ -9204,6 +9225,27 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use url::Url;
+
+    #[test]
+    fn javascript_mime_type_attributes_and_response_headers_treat_parameters_differently() {
+        assert_eq!(JAVASCRIPT_MIME_TYPE_ESSENCES.len(), 16);
+        for essence in JAVASCRIPT_MIME_TYPE_ESSENCES {
+            assert!(javascript_mime_type_essence_match(essence), "{essence}");
+            assert!(javascript_mime_essence_allowed(essence), "{essence}");
+
+            let parameterized = format!("{essence}; charset=utf-8");
+            assert!(
+                javascript_mime_essence_allowed(&parameterized),
+                "external Content-Type should ignore parameters for {essence}"
+            );
+            assert!(
+                !javascript_mime_type_essence_match(&parameterized),
+                "script type attributes must not accept parameters for {essence}"
+            );
+        }
+        assert!(!javascript_mime_essence_allowed("application/json"));
+        assert!(!javascript_mime_type_essence_match("application/json"));
+    }
 
     #[test]
     fn fetch_method_accepts_bounded_custom_http_tokens_without_widening_navigation() {

@@ -14,8 +14,9 @@ scripts with the existing external-script response policy.
 
 - Accept an empty type and the five JavaScript MIME essences already allowed
   by the external-script response validator.
-- Match MIME essence case-insensitively and ignore parameters, consistent with
-  the existing loader policy.
+- The initial implementation matched case-insensitively but incorrectly
+  ignored parameters on the script `type` attribute. Slice 703 corrects that
+  behavior and expands support to the full 16-entry standard list.
 - Keep non-script data types such as `application/json` inert and do not emit a
   start-script command for them.
 - Preserve the connected-only execution path, CSP checks, error dispatch, and
@@ -69,3 +70,13 @@ Implementation and focused test passed locally:
   was built solely for this gate.
 - Remote CI, general script scheduling, and issue #40 completion are not
   claimed.
+
+## Follow-up correction
+
+The original 701 checkpoint applied the response-header parameter rule to the
+script `type` attribute. The HTML Standard distinguishes them: parameters in
+the attribute prevent a JavaScript MIME type essence match, while parameters
+in an external response `Content-Type` are generally ignored. Slice 703
+corrects the attribute rule and expands the list from five to all 16 standard
+JavaScript MIME essences. See the [HTML Standard](https://html.spec.whatwg.org/multipage/scripting.html#scriptingLanguages) and
+[MIME Sniffing Standard](https://mimesniff.spec.whatwg.org/#javascript-mime-type).

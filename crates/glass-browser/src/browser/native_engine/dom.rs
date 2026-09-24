@@ -28,7 +28,7 @@ use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
     MAX_NATIVE_CSP_POLICIES, MAX_NATIVE_MEDIA_BYTES, NativeMediaMetadata, NativeNavigationRequest,
-    NativeRequestBody, javascript_mime_essence_allowed,
+    NativeRequestBody, javascript_mime_type_essence_match,
 };
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES, TextFragmentTerms, Viewport},
@@ -4349,7 +4349,7 @@ impl NativeDocument {
                 let module = match node.attribute("type") {
                     None | Some("") => false,
                     Some(value) if value.eq_ignore_ascii_case("module") => true,
-                    Some(value) if javascript_mime_essence_allowed(value) => false,
+                    Some(value) if javascript_mime_type_essence_match(value) => false,
                     Some(_) => return None,
                 };
                 let external = node
@@ -13134,6 +13134,7 @@ mod tests {
         NativeFrameScriptBinding, NativeJavaScriptRuntime, NativeScriptCommand,
     };
     use super::super::origin::NativeOrigin;
+    use super::super::resource_loader::JAVASCRIPT_MIME_TYPE_ESSENCES;
     use super::*;
 
     #[test]
@@ -16420,25 +16421,18 @@ mod tests {
     }
 
     #[test]
-    fn javascript_dynamic_inline_scripts_match_external_script_mime_policy() {
+    fn javascript_dynamic_inline_scripts_match_mime_type_essences() {
         let mut document =
             NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
                 .expect("dynamic script MIME document must parse");
         let runtime = NativeJavaScriptRuntime::new_with_context_id("dynamic-script-mime")
             .expect("native JavaScript runtime must construct");
-        let evaluation = runtime
-            .evaluate(
-                r##"(() => {
+        let script_types_json = serde_json::to_string(JAVASCRIPT_MIME_TYPE_ESSENCES)
+            .expect("JavaScript MIME essence list must serialize");
+        let source = r##"(() => {
                     globalThis.__dynamicScriptMimeRuns = 0;
                     const root = document.querySelector("#root");
-                    const types = [
-                        "text/javascript",
-                        "application/javascript",
-                        "application/ecmascript",
-                        "text/ecmascript",
-                        "application/x-javascript",
-                        "APPLICATION/ECMASCRIPT; charset=utf-8",
-                    ];
+                    const types = __JAVASCRIPT_MIME_TYPES__;
                     for (const [index, type] of types.entries()) {
                         const script = document.createElement("script");
                         script.id = `accepted-${index}`;
@@ -16446,28 +16440,54 @@ mod tests {
                         script.textContent = "globalThis.__dynamicScriptMimeRuns += 1";
                         root.appendChild(script);
                     }
+                    const caseVariant = document.createElement("script");
+                    caseVariant.type = "TEXT/JAVASCRIPT";
+                    caseVariant.textContent = "globalThis.__dynamicScriptMimeRuns += 1";
+                    root.appendChild(caseVariant);
+                    const parameterized = document.createElement("script");
+                    parameterized.type = "text/javascript; charset=utf-8";
+                    parameterized.textContent = "globalThis.__dynamicScriptMimeRuns += 100";
+                    root.appendChild(parameterized);
+                    const unicodeCase = document.createElement("script");
+                    unicodeCase.type = "text/javaſcript";
+                    unicodeCase.textContent = "globalThis.__dynamicScriptMimeRuns += 100";
+                    root.appendChild(unicodeCase);
+                    const leadingWhitespace = document.createElement("script");
+                    leadingWhitespace.type = " text/javascript";
+                    leadingWhitespace.textContent = "globalThis.__dynamicScriptMimeRuns += 100";
+                    root.appendChild(leadingWhitespace);
+                    const trailingWhitespace = document.createElement("script");
+                    trailingWhitespace.type = "text/javascript ";
+                    trailingWhitespace.textContent = "globalThis.__dynamicScriptMimeRuns += 100";
+                    root.appendChild(trailingWhitespace);
                     const data = document.createElement("script");
-                    data.id = "data-script";
                     data.type = "application/json";
                     data.textContent = "globalThis.__dynamicScriptMimeRuns += 100";
                     root.appendChild(data);
                     return globalThis.__dynamicScriptMimeRuns;
-                })()"##,
+                })()"##
+            .replace("__JAVASCRIPT_MIME_TYPES__", &script_types_json);
+        let evaluation = runtime
+            .evaluate(
+                &source,
                 &document,
                 "fixture://dynamic-script-mime.test/",
                 &NativeOrigin::Opaque,
                 Viewport::default(),
             )
             .expect("dynamic inline script MIME policy must evaluate");
-        assert_eq!(evaluation.value, serde_json::json!(6));
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(JAVASCRIPT_MIME_TYPE_ESSENCES.len() + 1)
+        );
         assert_eq!(
             evaluation
                 .commands
                 .iter()
                 .filter(|command| matches!(command, NativeScriptCommand::StartScript { .. }))
                 .count(),
-            6,
-            "only supported classic JavaScript MIME types start"
+            JAVASCRIPT_MIME_TYPE_ESSENCES.len() + 1,
+            "all JavaScript MIME essences and a case variant start"
         );
         document
             .apply_script_commands(&evaluation.commands)
@@ -16475,15 +16495,8 @@ mod tests {
     }
 
     #[test]
-    fn parsed_inline_scripts_use_external_javascript_mime_policy() {
-        let mime_types = [
-            "text/javascript",
-            "application/javascript",
-            "application/ecmascript",
-            "text/ecmascript",
-            "application/x-javascript",
-            "APPLICATION/ECMASCRIPT; charset=utf-8",
-        ];
+    fn parsed_inline_scripts_match_mime_type_essences_without_parameters() {
+        let mime_types = JAVASCRIPT_MIME_TYPE_ESSENCES;
         let mut markup = String::from(
             "<html><head><script>window.__parsedMime0 = true</script><script type=''>window.__parsedMime1 = true</script>",
         );
@@ -16493,13 +16506,16 @@ mod tests {
             ));
         }
         markup.push_str(
+            "<script type='TEXT/JAVASCRIPT'>window.__parsedMimeCase = true</script><script type='text/javascript; charset=utf-8'>window.__parsedMimeParameterized = true</script><script type='text/javaſcript'>window.__parsedMimeUnicode = true</script><script type=' text/javascript'>window.__parsedMimeLeadingSpace = true</script><script type='text/javascript '>window.__parsedMimeTrailingSpace = true</script>",
+        );
+        markup.push_str(
             "<script type='application/json'>window.__parsedMimeJson = true</script></head><body></body></html>",
         );
 
         let document = NativeDocument::parse(&markup, &NativeEngineLimits::default())
             .expect("script MIME document must parse");
-        let sources = document.page_script_sources(16, 4096);
-        assert_eq!(sources.len(), mime_types.len() + 2);
+        let sources = document.page_script_sources(32, 4096);
+        assert_eq!(sources.len(), mime_types.len() + 3);
         assert!(
             sources
                 .iter()
@@ -16508,12 +16524,16 @@ mod tests {
         assert!(sources.iter().any(|source| matches!(
             source,
             NativePageScriptSource::Inline { source, .. }
-                if source.contains("__parsedMime5_accepted")
+                if source.contains("__parsedMime15_accepted")
         )));
         assert!(!sources.iter().any(|source| matches!(
             source,
             NativePageScriptSource::Inline { source, .. }
-                if source.contains("__parsedMimeJson")
+                if source.contains("__parsedMimeParameterized")
+                    || source.contains("__parsedMimeUnicode")
+                    || source.contains("__parsedMimeLeadingSpace")
+                    || source.contains("__parsedMimeTrailingSpace")
+                    || source.contains("__parsedMimeJson")
         )));
     }
 

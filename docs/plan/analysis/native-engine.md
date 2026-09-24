@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-702`. Issue #40
+completed browser expansion slice is `native-engine-browser-703`. Issue #40
 remains open. It follows locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,
@@ -889,22 +889,24 @@ in slices 279–281. Full parser/task timing, async/defer semantics, and general
 script conformance remain open. See
 [`slice 700`](../tasks/native-engine-browser-700.md).
 
-Slice 701 aligns connected dynamic inline classic-script MIME recognition with
-the existing external response policy. All five accepted JavaScript MIME
-types match case-insensitively after dropping parameters; non-script data
-types remain inert. The locked package check and focused test passed 1/1.
-This does not change external/module loading or certify complete scheduling;
-remote CI was not run. See
+Slice 701 first added five JavaScript types to dynamic inline classic-script
+recognition, but incorrectly ignored parameters on the script `type`
+attribute. Slice 703 corrects that behavior and expands recognition to the
+full 16-entry standard list. The bounded external/module loader remains
+unchanged; remote CI was not run. See
 [`slice 701`](../tasks/native-engine-browser-701.md).
 
-Slice 702 shares the five-type JavaScript MIME essence matcher between
-initial-document script classification and external response validation.
-Initial inline and external classic scripts now align with the dynamic inline
-path; parameters and ASCII case differences are handled consistently, while
-`application/json` remains a data block. The locked package check passed and
-the paired MIME-policy tests passed 2/2. The full JavaScript MIME registry and
-script scheduling remain outside this bounded slice; remote CI was not run.
+Slice 702 reused the external response matcher for script `type` attributes,
+which incorrectly allowed parameters and covered only five aliases. Slice
+703 separates type-attribute essence matching from response-header parsing.
 See [`slice 702`](../tasks/native-engine-browser-702.md).
+
+Slice 703 recognizes all 16 JavaScript MIME type essences for initial and
+dynamically inserted classic scripts. Script type attributes require an exact
+case-insensitive essence match without parameters or surrounding whitespace;
+external response `Content-Type` matching ignores parameters. The package
+check passed and the focused MIME test batch passed 4/4. Remote CI was not run.
+See [`slice 703`](../tasks/native-engine-browser-703.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

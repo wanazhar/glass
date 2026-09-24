@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-717`; issue #40
+expansion is complete locally through `native-engine-browser-719`; issue #40
 remains open. Slices 709–710 preserve request-URL module identity, including
 query and fragment, separately from the final response URL used as the
 descendant base across page, dedicated/shared worker, and service-worker module
@@ -65,14 +65,24 @@ the effective Document map for mapped static and runtime imports through the
 configured-root loader. Its fixture covers later mappings, preservation of an
 earlier conflict, malformed-map isolation, nested modules, and out-of-root
 rejection. The scoped package check, focused tests, and formatting passed
-locally. Maintainer gates passed across 1,346 Markdown files with zero
+locally. At the slice 718 checkpoint, maintainer gates passed across 1,346
+Markdown files with zero
 current-claim failures, 93 guides/19 contracts, 15 shortcut keys/63 markers,
 and 346 MCP tools (101 browser-only), 17 examples, and 22 public modules.
-Remote CI was not run. Service Worker classic-import settlement, import
-options/attributes, broader file-origin propagation, and complete module
-scheduling remain open. See
-[task 717](tasks/native-engine-browser-717.md) and
-[task 718](tasks/native-engine-browser-718.md).
+At that checkpoint, remote CI was not run and Service Worker dynamic-import
+rejection, import options/attributes, broader file-origin propagation, and
+complete module scheduling remained open. Slice 719 implements the HTML
+Standard's Service Worker `TypeError` rejection for classic
+entry/`importScripts()` sources and module entry/static dependencies. It
+preserves specifier-expression evaluation,
+rejects even when a target is already in the static graph, and never fetches or
+prefetches an uncached dynamic target. Process-backed coverage checks the
+classic and module paths, static dependencies, side effects, and exact network
+request set. Focused and existing worker tests plus maintainer documentation
+gates passed locally. Remote CI was not run. See
+[task 717](tasks/native-engine-browser-717.md),
+[task 718](tasks/native-engine-browser-718.md), and
+[task 719](tasks/native-engine-browser-719.md).
 Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type

@@ -6689,6 +6689,212 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_content_process_service_worker_dynamic_imports_reject_without_fetch() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut request_paths = Vec::new();
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_receiver => break,
+                accepted = listener.accept() => {
+                    let (mut stream, _) = accepted.unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    let path = request.split_whitespace().nth(1).unwrap_or_default().to_owned();
+                    request_paths.push(path.clone());
+                    let (content_type, body) = match path.as_str() {
+                        "/classic/register" => (
+                            "text/html",
+                            "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/classic/sw.js', { scope: '/classic/' });</script><main>classic registration</main>",
+                        ),
+                        "/classic/sw.js" => (
+                            "application/javascript",
+                            r#"importScripts('/classic/dep.js');
+try {
+  Object.defineProperty(globalThis, '__glassRejectDynamicImport', {
+    value: () => Promise.resolve('overridden'), configurable: true,
+  });
+} catch {}
+globalThis.__classicResults.rootPromise = import((
+  globalThis.__classicResults.specifierEvaluations++, './root-dynamic.js'
+)).then(
+  () => { globalThis.__classicResults.root = 'fulfilled'; },
+  error => { globalThis.__classicResults.root = error.name; }
+);
+self.addEventListener('install', event => event.waitUntil(Promise.all([
+  globalThis.__classicResults.rootPromise,
+  globalThis.__classicResults.depPromise,
+]).then(() => self.skipWaiting())));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  if (new URL(event.request.url).pathname !== '/classic/probe') return;
+  event.respondWith(Promise.all([
+    globalThis.__classicResults.rootPromise,
+    globalThis.__classicResults.depPromise,
+  ]).then(() => new Response(JSON.stringify({
+    root: globalThis.__classicResults.root,
+    dependency: globalThis.__classicResults.dependency,
+    static: globalThis.__classicResults.static,
+    specifierEvaluations: globalThis.__classicResults.specifierEvaluations,
+  }), { headers: { 'Content-Type': 'application/json' } })));
+});"#,
+                        ),
+                        "/classic/dep.js" => (
+                            "application/javascript",
+                            r#"globalThis.__classicResults = { static: 'importScripts dependency', specifierEvaluations: 0 };
+globalThis.__classicResults.depPromise = import((
+  globalThis.__classicResults.specifierEvaluations++, './dependency-dynamic.js'
+)).then(
+  () => { globalThis.__classicResults.dependency = 'fulfilled'; },
+  error => { globalThis.__classicResults.dependency = error.name; }
+);"#,
+                        ),
+                        "/module/register" => (
+                            "text/html",
+                            "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/module/sw.js', { scope: '/module/', type: 'module' });</script><main>module registration</main>",
+                        ),
+                        "/module/sw.js" => (
+                            "application/javascript",
+                            r#"import { staticValue } from './dep.js';
+try {
+  Object.defineProperty(globalThis, '__glassRejectDynamicImport', {
+    value: () => Promise.resolve('overridden'), configurable: true,
+  });
+} catch {}
+globalThis.__moduleResults.rootPromise = import((
+  globalThis.__moduleResults.specifierEvaluations++, './dep.js'
+)).then(
+  () => { globalThis.__moduleResults.root = 'fulfilled'; },
+  error => { globalThis.__moduleResults.root = error.name; }
+);
+globalThis.__moduleResults.rootUncachedPromise = import((
+  globalThis.__moduleResults.specifierEvaluations++, './root-dynamic.js'
+)).then(
+  () => { globalThis.__moduleResults.rootUncached = 'fulfilled'; },
+  error => { globalThis.__moduleResults.rootUncached = error.name; }
+);
+self.addEventListener('install', event => event.waitUntil(Promise.all([
+  globalThis.__moduleResults.rootPromise,
+  globalThis.__moduleResults.rootUncachedPromise,
+  globalThis.__moduleResults.dependencyPromise,
+]).then(() => self.skipWaiting())));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  if (new URL(event.request.url).pathname !== '/module/probe') return;
+  event.respondWith(Promise.all([
+    globalThis.__moduleResults.rootPromise,
+    globalThis.__moduleResults.rootUncachedPromise,
+    globalThis.__moduleResults.dependencyPromise,
+  ]).then(() => new Response(JSON.stringify({
+    root: globalThis.__moduleResults.root,
+    rootUncached: globalThis.__moduleResults.rootUncached,
+    dependency: globalThis.__moduleResults.dependency,
+    static: staticValue,
+    specifierEvaluations: globalThis.__moduleResults.specifierEvaluations,
+  }), { headers: { 'Content-Type': 'application/json' } })));
+});"#,
+                        ),
+                        "/module/dep.js" => (
+                            "application/javascript",
+                            r#"globalThis.__moduleResults = globalThis.__moduleResults || { specifierEvaluations: 0 };
+globalThis.__moduleResults.dependencyPromise = import((
+  globalThis.__moduleResults.specifierEvaluations++, './dependency-dynamic.js'
+)).then(
+  () => { globalThis.__moduleResults.dependency = 'fulfilled'; },
+  error => { globalThis.__moduleResults.dependency = error.name; }
+);
+export const staticValue = 'module static dependency';"#,
+                        ),
+                        _ => (
+                            "application/javascript",
+                            "export const unexpectedDynamicFetch = true;",
+                        ),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            }
+        }
+        request_paths
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/classic/register")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(registration => registration.active.state)"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("activated")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/classic/probe').then(response => response.json())")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "root": "TypeError",
+            "dependency": "TypeError",
+            "static": "importScripts dependency",
+            "specifierEvaluations": 2,
+        })
+    );
+
+    engine
+        .navigate_async(format!("http://{address}/module/register"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(registration => registration.active.state)"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("activated")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/module/probe').then(response => response.json())")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "root": "TypeError",
+            "rootUncached": "TypeError",
+            "dependency": "TypeError",
+            "static": "module static dependency",
+            "specifierEvaluations": 3,
+        })
+    );
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    engine.close_async().await.unwrap();
+    let _ = shutdown_sender.send(());
+    assert_eq!(
+        server.await.unwrap(),
+        [
+            "/classic/register",
+            "/classic/sw.js",
+            "/classic/dep.js",
+            "/module/register",
+            "/module/sw.js",
+            "/module/dep.js",
+        ]
+    );
+}
+
+#[tokio::test]
 async fn native_content_process_propagates_service_worker_document_csp_to_controlled_fetch() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

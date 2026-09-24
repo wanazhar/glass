@@ -71,6 +71,13 @@ It is never an implicit fallback for a native request.
   relative module specifiers from its final response URL, not the Worker entry
   URL; the host uses the owning Worker module loader and no Document import
   map.
+- In a `ServiceWorkerGlobalScope`, dynamic `import()` rejects with a
+  `TypeError` under the HTML Standard's `HostLoadImportedModule` algorithm.
+  This applies to classic entry scripts and classic sources loaded through
+  `importScripts()`, and to module entry scripts and their static dependencies.
+  A dynamic-import target must not be fetched or speculatively prefetched;
+  static `importScripts()` dependencies and static module imports remain
+  supported.
 - A rooted-file Document resolves runtime-valued imports using the active
   script/module referrer and current Document import map, then admits only
   configured-root `file:` resources through the local module loader. Loaded
@@ -91,14 +98,21 @@ It is never an implicit fallback for a native request.
   are registered in parser order and govern mapped static and runtime imports
   through the rooted loader; the focused fixture covers later mappings,
   conflict preservation, malformed-map isolation, nested modules, and
-  out-of-root rejection. Service Worker classic-import settlement, import
-  options, and complete module scheduling remain unverified. See
+  out-of-root rejection. Slice 719 enforces Service Worker dynamic-import
+  rejection for classic entry/importScripts sources and module
+  entry/static-dependency sources. The process-backed test confirms
+  `TypeError` settlement, argument evaluation, static dependency availability,
+  no prefetching, no request for uncached dynamic targets, and no additional
+  request when a dynamic target is already in the static module graph. Import
+  options and complete module scheduling remain
+  unverified. See
   [task 713](tasks/native-engine-browser-713.md),
   [task 714](tasks/native-engine-browser-714.md),
   [task 715](tasks/native-engine-browser-715.md),
-  [task 716](tasks/native-engine-browser-716.md), and
-  [task 717](tasks/native-engine-browser-717.md), and
-  [task 718](tasks/native-engine-browser-718.md).
+  [task 716](tasks/native-engine-browser-716.md),
+  [task 717](tasks/native-engine-browser-717.md),
+  [task 718](tasks/native-engine-browser-718.md), and
+  [task 719](tasks/native-engine-browser-719.md).
 - Import options/attributes, nested imports, promise/microtask ordering, and
   module evaluation errors follow the selected ECMAScript and HTML host
   algorithms; a bounded implementation must report unsupported profile

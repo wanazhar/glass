@@ -26,9 +26,11 @@ version claims.
 
 ## Active plan: Glass native browser engine (issue #40)
 
-Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-726`; issue #40
-remains open. Slice 726 enforces rooted-file image, font, and media CSP.
+Status: the bounded foundation is complete through `native-engine-234`; local
+browser expansion slices are complete through `native-engine-browser-727`.
+Issue #40 remains open; browser completion and conformance are not claimed.
+Slice 727 enforces rooted-file frame CSP. Slice 726 enforces rooted-file image,
+font, and media CSP.
 Slice 725 enforces runtime CSP meta policies before same-turn inline script
 execution and later external resource processing. Slice 724
 enforces rooted-file inline style CSP, including runtime mutations. Slice 723

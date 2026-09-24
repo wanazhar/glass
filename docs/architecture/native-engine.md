@@ -1,8 +1,9 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-722`; issue #40 remains open. Earlier completed slices
-include `native-engine-browser-696` through `native-engine-browser-687`,
+`native-engine-browser-727`; issue #40 remains open. Earlier
+completed slices include `native-engine-browser-696` through
+`native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
 `native-engine-browser-684`,
@@ -991,6 +992,16 @@ and style checks. Loader and same-evaluation engine tests cover these routes.
 File-origin data/blob resources, other CSP resource classes, report-only file
 policy, and complete CSP conformance remain open; see
 [`slice 726`](../plan/tasks/native-engine-browser-726.md).
+
+Slice 727 extends the same pre-read/root-admission security contract to
+embedded frames in rooted-file Documents. Frame discovery consults the current
+enforced policy ledger (including runtime-inserted head policies), applies
+`frame-src` → `child-src` → `default-src`, and scopes `'self'` to the
+Document's most-specific configured root before selecting the child document
+URL. A blocked frame remains represented as `about:blank` without loading the
+requested file. The loader matrix and native-session integration regression
+pass; local documentation gates pass. Remote CI and live CLI/link inventory
+were not run. See [`slice 727`](../plan/tasks/native-engine-browser-727.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

@@ -3715,6 +3715,61 @@ impl NativeResourceLoader {
             .and_then(NativeCspPolicy::frame_source_groups))
     }
 
+    /// Check the live CSP policy container for a frame requested by a
+    /// configured-root file document. Unlike the network frame snapshot, this
+    /// reads the current policy ledger so same-turn meta insertions are seen
+    /// before the child document is initialized.
+    pub(crate) fn allows_rooted_file_frame_navigation(
+        &self,
+        document_url: &str,
+        target_url: &str,
+    ) -> Result<bool, NativeEngineError> {
+        validate_url_text("frame policy owner URL", document_url)?;
+        validate_url_text("embedded frame URL", target_url)?;
+        if without_fragment(target_url) == "about:blank" {
+            return Ok(true);
+        }
+        let Some((document_url, Some(_))) =
+            self.csp_document_owner(document_url, "frame policy owner URL")?
+        else {
+            return Ok(true);
+        };
+        let target_url = Url::parse(without_fragment(target_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "embedded frame URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&target_url)?;
+        let Some(policy) = self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+        else {
+            return Ok(true);
+        };
+
+        let resource_root = if is_file_url(target_url.as_str()) {
+            let path = match self.allowed_file_path(&target_url, "file frame") {
+                Ok(path) => path,
+                Err(NativeEngineError::UnsupportedUrl { .. }) => return Ok(false),
+                Err(error) => return Err(error),
+            };
+            let Some(root) = self.allowed_file_root_for_path(&path) else {
+                return Ok(false);
+            };
+            Some(root.to_path_buf())
+        } else {
+            None
+        };
+
+        Ok(policy.allows_rooted_file_resource(
+            NativeSubresourceKind::Frame,
+            &document_url,
+            &target_url,
+            resource_root.as_deref(),
+        ))
+    }
+
     pub(crate) fn navigation_sources_for_document(
         &self,
         document_url: &str,
@@ -11002,6 +11057,142 @@ mod tests {
             file_scheme_loader.load_local_file_image(&document_url, &unconfigured_image_url),
             Err(NativeEngineError::UnsupportedUrl { .. })
         ));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rooted_file_frame_csp_uses_fallback_conjunction_and_configured_roots() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-native-rooted-file-frame-csp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let site = root.join("site");
+        let other = root.join("other");
+        let outside = root.join("outside");
+        for directory in [&site, &other, &outside] {
+            fs::create_dir_all(directory).unwrap();
+            fs::write(directory.join("child.html"), "<title>child</title>").unwrap();
+        }
+        fs::write(site.join("index.html"), "<title>parent</title>").unwrap();
+        let document_url = Url::from_file_path(site.join("index.html"))
+            .unwrap()
+            .to_string();
+        let same_root_url = Url::from_file_path(site.join("child.html"))
+            .unwrap()
+            .to_string();
+        let other_root_url = Url::from_file_path(other.join("child.html"))
+            .unwrap()
+            .to_string();
+        let outside_root_url = Url::from_file_path(outside.join("child.html"))
+            .unwrap()
+            .to_string();
+        let config = NativeEngineConfig::default()
+            .with_allowed_file_root(&site)
+            .with_allowed_file_root(&other);
+        let mut loader = NativeResourceLoader::new(&config).unwrap();
+
+        loader
+            .apply_meta_content_security_policies(&document_url, &["frame-src 'self'".into()])
+            .unwrap();
+        assert!(
+            loader
+                .allows_rooted_file_frame_navigation(&document_url, &same_root_url)
+                .unwrap()
+        );
+        assert!(
+            !loader
+                .allows_rooted_file_frame_navigation(&document_url, &other_root_url)
+                .unwrap()
+        );
+        assert!(
+            !loader
+                .allows_rooted_file_frame_navigation(&document_url, &outside_root_url)
+                .unwrap()
+        );
+
+        loader
+            .apply_meta_content_security_policies(
+                &document_url,
+                &["child-src 'self'; default-src 'none'".into()],
+            )
+            .unwrap();
+        assert!(
+            loader
+                .allows_rooted_file_frame_navigation(&document_url, &same_root_url)
+                .unwrap()
+        );
+        assert!(
+            !loader
+                .allows_rooted_file_frame_navigation(&document_url, &other_root_url)
+                .unwrap()
+        );
+
+        loader
+            .apply_meta_content_security_policies(&document_url, &["default-src 'self'".into()])
+            .unwrap();
+        assert!(
+            loader
+                .allows_rooted_file_frame_navigation(&document_url, &same_root_url)
+                .unwrap()
+        );
+        assert!(
+            !loader
+                .allows_rooted_file_frame_navigation(&document_url, &other_root_url)
+                .unwrap()
+        );
+
+        loader
+            .apply_meta_content_security_policies(
+                &document_url,
+                &["frame-src 'none'; child-src 'self'; default-src 'self'".into()],
+            )
+            .unwrap();
+        assert!(
+            !loader
+                .allows_rooted_file_frame_navigation(&document_url, &same_root_url)
+                .unwrap()
+        );
+        assert!(
+            loader
+                .allows_rooted_file_frame_navigation(&document_url, "about:blank")
+                .unwrap()
+        );
+
+        loader
+            .apply_meta_content_security_policies(
+                &document_url,
+                &["frame-src 'self'".into(), "frame-src 'none'".into()],
+            )
+            .unwrap();
+        assert!(
+            !loader
+                .allows_rooted_file_frame_navigation(&document_url, &same_root_url)
+                .unwrap()
+        );
+
+        loader
+            .apply_meta_content_security_policies(&document_url, &["frame-src file:".into()])
+            .unwrap();
+        assert!(
+            loader
+                .allows_rooted_file_frame_navigation(&document_url, &other_root_url)
+                .unwrap()
+        );
+        assert!(
+            !loader
+                .allows_rooted_file_frame_navigation(&document_url, &outside_root_url)
+                .unwrap()
+        );
+        assert!(
+            loader
+                .allows_rooted_file_frame_navigation(&document_url, "about:blank")
+                .unwrap()
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

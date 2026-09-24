@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-722`. Issue #40
+completed browser expansion slice is `native-engine-browser-727`. Issue #40
 remains open. It follows
 locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
@@ -1184,6 +1184,18 @@ maintainer documentation gates passed. Remote CI and live CLI/link inventory
 were not run. File-origin data/blob handling, other resource classes,
 report-only file policies, and complete CSP conformance remain open. See
 [`slice 726`](../tasks/native-engine-browser-726.md).
+
+Slice 727 closes the file-frame policy gap: frame discovery previously received
+no CSP source groups for file documents. It now authorizes each embedded
+target against the active loader policy ledger before selecting the child
+document URL, applying the frame/child/default directive chain and root-aware
+`'self'` semantics to parser-sourced and runtime-added head policies. The
+loader matrix and native-session regression passed; formatting, whitespace,
+release-documentation truth (1,355 Markdown files, zero current-claim failures),
+documentation depth (93 guides/19 contracts), and shortcut inventory (15 keys/
+63 markers) also passed. Remote CI and live CLI/link inventory were not run;
+full CSP conformance remains open. See
+[`slice 727`](../tasks/native-engine-browser-727.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

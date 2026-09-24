@@ -2,7 +2,8 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-722`.
+The latest locally completed browser expansion is `native-engine-browser-727`.
+Issue #40 remains open.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
 shared, and service-worker module graphs. See the task records for scope and
@@ -118,6 +119,18 @@ static documentation gates passed. Remote CI and the live inventory/link gate
 were not run; `target/debug/glass` is absent. Other file-origin CSP classes,
 data/blob policy, report-only policy, and complete CSP conformance remain
 open. See `tasks/native-engine-browser-726.md`.
+
+### Slice 727 complete locally: rooted-file frame CSP
+
+Frame discovery currently receives no policy groups for a rooted-file
+Document, so configured-root frames can bypass `frame-src`, including
+runtime-added head policies. The live file-document policy ledger is now
+authoritative before selecting the child document URL, with the root-aware
+frame/child/default source chain. The loader matrix and native-session runtime
+policy regression passed. Static documentation gates passed; live CLI/link
+inventory and remote CI were not run. Other file-origin CSP classes,
+report-only file policies, and full CSP conformance remain open.
+See `tasks/native-engine-browser-727.md`.
 
 ### Follow-up observed during slice 722
 

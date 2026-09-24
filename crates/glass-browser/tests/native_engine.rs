@@ -24165,6 +24165,53 @@ async fn native_content_process_blocks_csp_disallowed_frame_before_request() {
 }
 
 #[tokio::test]
+async fn native_rooted_file_frame_csp_sees_runtime_meta_before_child_load() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-rooted-file-frame-policy-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let site = root.join("site");
+    fs::create_dir_all(&site).unwrap();
+    let page_path = site.join("index.html");
+    fs::write(site.join("child.html"), "<title>must not load</title>").unwrap();
+    fs::write(
+        &page_path,
+        r#"<!doctype html><head>
+          <meta http-equiv="Content-Security-Policy"
+                content="script-src 'unsafe-inline'; frame-src 'self'">
+        </head><body><script>
+          const policy = document.createElement('meta');
+          policy.setAttribute('http-equiv', 'Content-Security-Policy');
+          policy.setAttribute('content', "frame-src 'none'");
+          document.head.appendChild(policy);
+          const frame = document.createElement('iframe');
+          frame.src = 'child.html';
+          document.body.appendChild(frame);
+        </script></body>"#,
+    )
+    .unwrap();
+
+    let config = NativeEngineConfig::default()
+        .with_initial_url(native_test_file_url(&page_path))
+        .with_allowed_file_root(&site);
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+    let frames = session.native_list_frames().await.unwrap();
+    assert_eq!(frames.len(), 2);
+    let child = frames
+        .iter()
+        .find(|frame| frame.id.ends_with(":frame-1"))
+        .expect("the denied iframe should remain represented");
+    assert_eq!(child.url, "about:blank");
+    session.close().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_blocks_frame_from_head_meta_csp() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

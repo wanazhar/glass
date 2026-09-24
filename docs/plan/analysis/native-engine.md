@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-713`. Issue #40
+completed browser expansion slice is `native-engine-browser-714`. Issue #40
 remains open. It follows locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,
@@ -1010,6 +1010,16 @@ can issue nested computed imports through the same bounded graph. The
 process-backed fixture covers classic and module callers. Worker/rooted-file
 computed imports, import options, and complete module scheduling remain open.
 See [`slice 713`](../tasks/native-engine-browser-713.md).
+
+Slice 714 carries computed `ImportCall`s from dedicated classic and module
+Worker entry scripts through the existing Worker fetch path. The host verifies
+the active worker-script referrer, resolves without Document import maps,
+loads the bounded dependency graph, extends the worker module map, and settles
+the import promise in the owning realm. Process-backed coverage passed for
+both dedicated script kinds and a nested computed module. SharedWorker runtime
+imports, `importScripts()` source-base handling, rooted-file page imports,
+import options/attributes, and complete module scheduling remain open. See
+[`slice 714`](../tasks/native-engine-browser-714.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

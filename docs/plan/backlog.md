@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-713`.
+The latest locally completed parser/script slice is `native-engine-browser-714`.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
 shared, and service-worker module graphs. See the task records for scope and
@@ -17,6 +17,11 @@ using active response bases, Document import-map scopes, and nested computed
 imports. Worker/rooted-file computed imports, import options, broader
 worker/file-origin propagation, and full module scheduling remain open; see
 `tasks/native-engine-browser-713.md`.
+Slice 714 adds runtime-valued computed imports in dedicated classic and module
+Workers through the worker-owned fetch queue, including nested module imports
+and response-base resolution. SharedWorker imports, rooted-file page imports,
+import options/attributes, and full module scheduling remain open; see
+`tasks/native-engine-browser-714.md`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice

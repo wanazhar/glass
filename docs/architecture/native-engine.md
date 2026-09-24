@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-713`; issue #40 remains open. Earlier completed slices
+`native-engine-browser-714`; issue #40 remains open. Earlier completed slices
 include `native-engine-browser-696` through `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
@@ -851,6 +851,17 @@ computed imports, import options/attributes, and complete asynchronous module
 scheduling remain open. The scoped check, four parser/rewrite unit tests, and
 the process-backed inline-import-map test passed locally; remote CI was not run.
 See [`slice 713`](../plan/tasks/native-engine-browser-713.md).
+
+Slice 714 routes computed runtime `ImportCall`s from dedicated classic and
+module Worker entry scripts through the Worker-owned fetch queue. The host
+validates active script referrers, applies worker URL resolution without
+Document import maps, bounds and extends the module graph, and settles the
+original promise through QuickJS. Process-backed coverage verifies both
+dedicated Worker script kinds, nested computed imports, the exact request set,
+and preserved redirected module identity/base behavior. SharedWorker runtime
+imports, computed imports from `importScripts()` dependencies, rooted-file page
+imports, import options/attributes, and full asynchronous module scheduling
+remain open. See [`slice 714`](../plan/tasks/native-engine-browser-714.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript
@@ -9416,20 +9427,21 @@ Rust inspection surface.
 The native profile is `partial` and declares:
 
 In this inventory, dynamic-import prefetch includes quoted string-literal
-concatenations that can be resolved before evaluation. Slice 713 also supports
+concatenations that can be resolved before evaluation. Slice 713 supports
 runtime-valued `ImportCall`s in HTTP(S) page classic and module scripts through
-the bounded asynchronous host module-fetch path, using each active script's
-base and the Document import map. The exclusions below use “computed imports”
-and “computed module loading” for worker/rooted-file contexts, import options,
-and scheduling beyond that page subset. “Dynamic registration” in the
-exclusions means behaviors beyond bounded Document import-map registration.
-The prefetch pass never guesses runtime values or grants arbitrary network
-access.
+bounded asynchronous host fetching, using each active script's base and the
+Document import map. Slice 714 adds the same runtime-valued behavior for
+dedicated classic and module Worker scripts using worker URL/referrer rules.
+The exclusions below use “computed imports” and “computed module loading” for
+SharedWorker/rooted-file contexts, import options, and scheduling beyond those
+page and dedicated-worker subsets. “Dynamic registration” in the exclusions
+means behaviors beyond bounded Document import-map registration. The prefetch
+pass never guesses runtime values or grants arbitrary network access.
 
 | Capability | Level | Current contract |
 |---|---|---|
 | lifecycle | available | initialize and explicit close |
-| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/literal-dynamic-import child scripts with bounded parser-blocking/async/defer ordering, bounded task turns, and bounded GET or POST form navigation with urlencoded, multipart, and text/plain encodings plus validated submitter overrides; no computed module loading or general subresources |
+| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/literal-dynamic-import child scripts with bounded parser-blocking/async/defer ordering, runtime-valued page and dedicated-Worker imports through bounded host fetching, bounded task turns, and bounded GET or POST form navigation with urlencoded, multipart, and text/plain encodings plus validated submitter overrides; general subresources remain open |
 | contexts | available | up to 32 independent page targets with one explicitly selected active target; create, select, list, and close are native-owned |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded single- and multi-select option interaction, bounded semantic root scroll-into-view, bounded vertical root scrolling, bounded GET or POST form defaults with supported encodings and submitter overrides, plus native point targets for supported local controls; text selection, IME, inner CSS scroll-container adjustment, and nested scrolling remain open |

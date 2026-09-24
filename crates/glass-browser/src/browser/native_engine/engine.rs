@@ -8283,6 +8283,7 @@ fn load_local_dynamic_page_script_sources(
                 source, node_index, ..
             } => scripts.push(NativePageScript::Classic {
                 source,
+                base_url: document_url.to_owned(),
                 node_index: Some(node_index),
             }),
             NativePageScriptSource::ModuleInline {
@@ -8351,6 +8352,7 @@ fn load_local_dynamic_page_script_sources(
                     Ok(Some(resource)) => {
                         scripts.push(NativePageScript::Classic {
                             source: resource.body,
+                            base_url: resource.url,
                             node_index: Some(node_index),
                         });
                         resource_events.push((node_index, NativeEventKind::Load));

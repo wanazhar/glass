@@ -178,6 +178,8 @@ type NativeScriptFetch = (
     Option<u32>,
     bool,
     bool,
+    Option<String>,
+    bool,
 );
 
 pub(crate) struct NativeContentLoad {
@@ -8300,6 +8302,7 @@ async fn load_page_script_source_list(
                     timing,
                     NativePageScript::Classic {
                         source,
+                        base_url: document_url.to_owned(),
                         node_index: Some(node_index),
                     },
                 ));
@@ -8384,6 +8387,7 @@ async fn load_page_script_source_list(
                                 timing,
                                 NativePageScript::Classic {
                                     source: resource.body,
+                                    base_url: resource.url,
                                     node_index: Some(node_index),
                                 },
                             ));
@@ -11906,6 +11910,7 @@ fn fetch_commands(
                 timeout_ms,
                 upload_stream_id,
                 destination,
+                module_referrer,
                 ..
             } => Some((
                 *request_id,
@@ -11922,6 +11927,7 @@ fn fetch_commands(
                 *upload_stream_id,
                 *credentials,
                 destination.clone(),
+                module_referrer.clone(),
             )),
             _ => None,
         })
@@ -11941,6 +11947,7 @@ fn fetch_commands(
                 upload_stream_id,
                 credentials,
                 destination,
+                module_referrer,
             )| {
                 if timeout_ms.is_some_and(|value| value > MAX_NATIVE_XHR_TIMEOUT_MS) {
                     return Err(NativeEngineError::invalid(
@@ -12000,16 +12007,23 @@ fn fetch_commands(
                     }
                     None => body.map(NativeRequestBody::Text),
                 };
-                let font_destination = match destination.as_deref() {
-                    None | Some("") => false,
-                    Some("font") => true,
+                let (font_destination, module_destination) = match destination.as_deref() {
+                    None | Some("") => (false, false),
+                    Some("font") => (true, false),
+                    Some("module") => (false, true),
                     Some(_) => {
                         return Err(NativeEngineError::invalid(
                             "script fetch destination",
-                            "must be empty or font",
+                            "must be empty, font, or module",
                         ));
                     }
                 };
+                if module_destination != module_referrer.is_some() {
+                    return Err(NativeEngineError::invalid(
+                        "module fetch referrer",
+                        "must be present only for a module-destination request",
+                    ));
+                }
                 Ok((
                     request_id,
                     href,
@@ -12024,6 +12038,8 @@ fn fetch_commands(
                     upload_stream_id,
                     credentials,
                     font_destination,
+                    module_referrer,
+                    module_destination,
                 ))
             },
         )
@@ -12277,6 +12293,132 @@ async fn process_page_fetch_resolution(
     Ok(())
 }
 
+async fn load_dynamic_page_module(
+    request_id: u32,
+    document_url: &str,
+    module_referrer: &str,
+    specifier: &str,
+    runtime: &NativeJavaScriptRuntime,
+    loader: &mut NativeResourceLoader,
+) -> Result<String, NativeEngineError> {
+    if !runtime.is_dynamic_import_referrer_allowed(module_referrer)? {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "dynamic module referrer is not an active page script".into(),
+        });
+    }
+    let mut import_map = runtime.module_import_map()?;
+    let target = resolve_module_specifier(module_referrer, specifier, &mut import_map)?;
+    runtime.set_module_import_map(import_map.clone());
+    let Some(target) = target else {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "dynamic module URL is outside the supported page module schemes".into(),
+        });
+    };
+
+    let (module_sources, _) = runtime.module_sources_snapshot()?;
+    if module_sources.contains_key(&target) {
+        return runtime.register_dynamic_module_alias(request_id, &target);
+    }
+    if module_sources.len() >= MAX_NATIVE_MODULE_IMPORTS {
+        return Err(NativeEngineError::limit(
+            "page module graph entries",
+            MAX_NATIVE_MODULE_IMPORTS,
+            module_sources.len().saturating_add(1),
+        ));
+    }
+
+    let object_url = runtime.object_url_resource(&target)?;
+    let integrity = import_map.integrity_for_url(&target);
+    let resource = if let Some(object_url) = object_url.as_ref() {
+        loader
+            .load_script_async_with_metadata_and_object_url(
+                document_url,
+                &target,
+                MAX_NATIVE_SCRIPT_BYTES,
+                false,
+                None,
+                integrity,
+                Some("anonymous"),
+                Some(object_url),
+            )
+            .await?
+    } else {
+        loader
+            .load_script_async_with_metadata(
+                document_url,
+                &target,
+                MAX_NATIVE_SCRIPT_BYTES,
+                false,
+                None,
+                integrity,
+                Some("anonymous"),
+            )
+            .await?
+    }
+    .ok_or_else(|| NativeEngineError::Network {
+        operation: "dynamic module import".into(),
+        reason: "dynamic module resource could not be loaded".into(),
+    })?;
+
+    let base_url = resource.url;
+    let source = resource.body;
+    let (existing_sources, _) = runtime.module_sources_snapshot()?;
+    let mut seen = existing_sources.keys().cloned().collect::<BTreeSet<_>>();
+    if !seen.insert(target.clone()) {
+        return runtime.register_dynamic_module_alias(request_id, &target);
+    }
+    let mut total_bytes = existing_sources.values().map(String::len).sum::<usize>();
+    total_bytes = total_bytes.saturating_add(source.len());
+    let maximum_module_bytes = MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS);
+    if total_bytes > maximum_module_bytes {
+        return Err(NativeEngineError::limit(
+            "page module graph bytes",
+            maximum_module_bytes,
+            total_bytes,
+        ));
+    }
+
+    let mut graph = vec![(
+        NativePageScriptTiming::ParserBlocking,
+        NativePageScript::ModuleDependency {
+            name: target.clone(),
+            source: source.clone(),
+            base_url: base_url.clone(),
+        },
+    )];
+    load_module_dependencies(
+        document_url,
+        &target,
+        &base_url,
+        &source,
+        NativePageScriptTiming::ParserBlocking,
+        loader,
+        Some(runtime),
+        &mut import_map,
+        &mut graph,
+        &mut seen,
+        &mut total_bytes,
+    )
+    .await?;
+
+    let mut new_sources = BTreeMap::new();
+    let mut new_base_urls = BTreeMap::new();
+    for (_, script) in graph {
+        if let NativePageScript::ModuleDependency {
+            name,
+            source,
+            base_url,
+        } = script
+        {
+            new_sources.insert(name.clone(), source);
+            new_base_urls.insert(name, base_url);
+        }
+    }
+    runtime.extend_module_sources(new_sources, new_base_urls)?;
+    runtime.set_module_import_map(import_map);
+    runtime.register_dynamic_module_alias(request_id, &target)
+}
+
 async fn resolve_script_fetches(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
@@ -12452,6 +12594,8 @@ async fn resolve_script_fetches(
             upload_stream_id,
             credentials,
             font_destination,
+            module_referrer,
+            module_destination,
         )) = selected_fetch.take()
         {
             resolved_count = resolved_count.saturating_add(1);
@@ -12468,6 +12612,69 @@ async fn resolve_script_fetches(
                     reason: "content process has no resource loader".into(),
                 });
             };
+            if module_destination {
+                let loaded_module = if method.as_str() == "GET"
+                    && headers.is_empty()
+                    && body.is_none()
+                    && content_type.is_none()
+                    && cors_mode == NativeCorsMode::Cors
+                    && redirect_mode == NativeFetchRedirectMode::Follow
+                    && cache_mode == NativeFetchCacheMode::Default
+                    && timeout.is_none()
+                    && upload_stream_id.is_none()
+                    && credentials
+                {
+                    load_dynamic_page_module(
+                        request_id,
+                        &current_url,
+                        module_referrer.as_deref().unwrap_or_default(),
+                        &href,
+                        runtime,
+                        loader,
+                    )
+                    .await
+                } else {
+                    Err(NativeEngineError::invalid(
+                        "dynamic module request",
+                        "must be a credentialed bodyless CORS GET with default cache and follow redirects",
+                    ))
+                };
+                let module_alias = loaded_module.as_ref().ok().cloned();
+                let payload = match loaded_module {
+                    Ok(module_key) => json!({
+                        "dynamicModuleImport": {"moduleKey": module_key},
+                    }),
+                    Err(_) => json!({
+                        "dynamicModuleImport": {"error": "Failed to load dynamically imported module"},
+                    }),
+                };
+                let resolution = process_page_fetch_resolution(
+                    request_id,
+                    payload,
+                    runtime,
+                    service_workers,
+                    websocket_connections,
+                    fetch_stream_connections,
+                    fetch_upload_connections,
+                    event_source_connections,
+                    loader,
+                    &mut next,
+                    &mut mutation,
+                    &mut current_url,
+                    document_origin,
+                    viewport,
+                    top_level_await_pending,
+                    &mut resolved_value,
+                    &mut pump_background_events,
+                    &mut pending,
+                )
+                .await;
+                if let Some(module_alias) = module_alias {
+                    runtime.discard_dynamic_module_alias(&module_alias);
+                }
+                resolution?;
+                continue;
+            }
             if font_destination {
                 if method.as_str() != "GET"
                     || !headers.is_empty()
@@ -13645,7 +13852,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fetch_commands_accept_only_the_private_font_destination() {
+    fn fetch_commands_accept_only_the_private_font_and_module_destinations() {
         let command = |destination: Option<&str>| NativeScriptCommand::Fetch {
             request_id: 1,
             worker_id: None,
@@ -13662,6 +13869,7 @@ mod tests {
             timeout_ms: None,
             upload_stream_id: None,
             destination: destination.map(str::to_owned),
+            module_referrer: None,
         };
 
         let mut font = fetch_commands(&[command(Some("font"))]).unwrap();
@@ -13669,6 +13877,17 @@ mod tests {
         let mut ordinary = fetch_commands(&[command(None)]).unwrap();
         assert!(!ordinary.pop_front().unwrap().12);
         assert!(fetch_commands(&[command(Some("image"))]).is_err());
+        assert!(fetch_commands(&[command(Some("module"))]).is_err());
+
+        let mut module = command(Some("module"));
+        if let NativeScriptCommand::Fetch {
+            module_referrer, ..
+        } = &mut module
+        {
+            *module_referrer = Some("https://page.test/app.js".into());
+        }
+        let mut module_requests = fetch_commands(&[module]).unwrap();
+        assert!(module_requests.pop_front().unwrap().14);
     }
 
     #[test]

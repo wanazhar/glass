@@ -20167,28 +20167,35 @@ async fn native_content_process_resolves_module_graphs_through_inline_import_map
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        tokio::time::timeout(Duration::from_secs(30), async {
-            let mut requests = Vec::new();
-            for _ in 0..9 {
-                let (mut stream, _) = listener
-                    .accept()
-                    .await
-                    .expect("module-request listener remains available");
-                let request = read_http_request(&mut stream).await;
-                let path = request
-                    .split_whitespace()
-                    .nth(1)
-                    .expect("HTTP request includes a path")
-                    .to_owned();
-                requests.push(path.clone());
-                let (content_type, body) = match path.as_str() {
+        let mut requests = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while requests.len() < 12 {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let accepted = tokio::time::timeout(remaining, listener.accept()).await;
+            let (mut stream, _) = match accepted {
+                Ok(Ok(accepted)) => accepted,
+                Ok(Err(error)) => panic!("module-request listener failed: {error}"),
+                Err(_) => return (requests, true),
+            };
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("HTTP request includes a path")
+                .to_owned();
+            requests.push(path.clone());
+            let (content_type, body) = match path.as_str() {
                 "/page" => (
                     "text/html",
-                    "<script>globalThis.moduleErrors = []; globalThis.addEventListener('error', event => globalThis.moduleErrors.push([String(event.message), String(event.error), event.error ? String(event.error.message) : 'no-error']), true);</script><script type='IMPORTMAP'>{\"imports\":{\"pkg\":\"/vendor/pkg.js\",\"@lib/\":\"/modules/\"},\"scopes\":{\"/vendor/\":{\"pkg\":\"/vendor/scoped-parent.js\"},\"/vendor/nested/\":{\"pkg\":\"/vendor/scoped-nested.js\"}}}</script><script type='module' src='/app.js'></script>",
+                    "<script>globalThis.moduleErrors = []; globalThis.addEventListener('error', event => globalThis.moduleErrors.push([String(event.message), String(event.error), event.error ? String(event.error.message) : 'no-error']), true);</script><script type='IMPORTMAP'>{\"imports\":{\"pkg\":\"/vendor/pkg.js\",\"@lib/\":\"/modules/\"},\"scopes\":{\"/vendor/\":{\"pkg\":\"/vendor/scoped-parent.js\"},\"/vendor/nested/\":{\"pkg\":\"/vendor/scoped-nested.js\"}}}</script><script src='/vendor/classic.js'></script><script type='module' src='/app.js'></script>",
+                ),
+                "/vendor/classic.js" => (
+                    "application/javascript",
+                    "globalThis.dynamicClassicError = null; const classicSpecifier = 'pkg'; import(classicSpecifier).then(({ value }) => { globalThis.dynamicClassic = value; }, error => { globalThis.dynamicClassicError = String(error); });",
                 ),
                 "/app.js" => (
                     "application/javascript",
-                    "import { exact } from 'pkg'; import { prefix } from '@lib/suffix.js'; import { scoped as parent } from '/vendor/referrer.js'; import { scoped as nested } from '/vendor/nested/referrer.js'; globalThis.mappedModules = [exact, prefix, parent, nested].join('-'); import('@lib/dynamic.js').then(({ value }) => { globalThis.dynamicMapped = value; });",
+                    "import { exact } from 'pkg'; import { prefix } from '@lib/suffix.js'; import { scoped as parent } from '/vendor/referrer.js'; import { scoped as nested } from '/vendor/nested/referrer.js'; globalThis.mappedModules = [exact, prefix, parent, nested].join('-'); import('@lib/dynamic.js').then(({ value }) => { globalThis.dynamicMapped = value; }); globalThis.dynamicRuntimeError = null; const dynamicSpecifier = '@lib/' + 'dynamic-runtime.js'; import(dynamicSpecifier).then(({ value }) => { globalThis.dynamicRuntimeMapped = value; }, error => { globalThis.dynamicRuntimeError = String(error); });",
                 ),
                 "/vendor/pkg.js" => ("application/javascript", "export const exact = 'exact';"),
                 "/modules/suffix.js" => {
@@ -20211,18 +20218,23 @@ async fn native_content_process_resolves_module_graphs_through_inline_import_map
                 "/modules/dynamic.js" => {
                     ("application/javascript", "export const value = 'dynamic';")
                 }
+                "/modules/dynamic-runtime.js" => (
+                    "application/javascript",
+                    "export const value = 'runtime-computed'; globalThis.dynamicRuntimeNestedError = null; const childSpecifier = './runtime-child.js'; import(childSpecifier).then(({ value }) => { globalThis.dynamicRuntimeNested = value; }, error => { globalThis.dynamicRuntimeNestedError = String(error); });",
+                ),
+                "/modules/runtime-child.js" => (
+                    "application/javascript",
+                    "export const value = 'runtime-nested';",
+                ),
                 _ => ("application/javascript", "export const value = 'dynamic';"),
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
-            }
-            requests
-        })
-        .await
-        .expect("the process-backed import-map test stays within its time bound")
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+        (requests, false)
     });
 
     let mut engine = NativeEngine::new(
@@ -20238,8 +20250,32 @@ async fn native_content_process_resolves_module_graphs_through_inline_import_map
         .evaluate_async("globalThis.dynamicMapped")
         .await
         .unwrap();
+    let dynamic_classic = engine
+        .evaluate_async("globalThis.dynamicClassic")
+        .await
+        .unwrap();
+    let dynamic_classic_error = engine
+        .evaluate_async("globalThis.dynamicClassicError")
+        .await
+        .unwrap();
     let dynamic_scoped = engine
         .evaluate_async("globalThis.dynamicScoped")
+        .await
+        .unwrap();
+    let dynamic_runtime = engine
+        .evaluate_async("globalThis.dynamicRuntimeMapped")
+        .await
+        .unwrap();
+    let dynamic_runtime_nested = engine
+        .evaluate_async("globalThis.dynamicRuntimeNested")
+        .await
+        .unwrap();
+    let dynamic_runtime_error = engine
+        .evaluate_async("globalThis.dynamicRuntimeError")
+        .await
+        .unwrap();
+    let dynamic_runtime_nested_error = engine
+        .evaluate_async("globalThis.dynamicRuntimeNestedError")
         .await
         .unwrap();
     let module_errors = engine
@@ -20247,11 +20283,12 @@ async fn native_content_process_resolves_module_graphs_through_inline_import_map
         .await
         .unwrap();
     engine.close_async().await.unwrap();
-    let mut requests = server.await.unwrap();
+    let (mut requests, request_timeout) = server.await.unwrap();
     requests.sort();
     let mut expected_requests = vec![
         "/page",
         "/app.js",
+        "/vendor/classic.js",
         "/vendor/pkg.js",
         "/modules/suffix.js",
         "/vendor/referrer.js",
@@ -20259,17 +20296,41 @@ async fn native_content_process_resolves_module_graphs_through_inline_import_map
         "/vendor/scoped-parent.js",
         "/vendor/scoped-nested.js",
         "/modules/dynamic.js",
+        "/modules/dynamic-runtime.js",
+        "/modules/runtime-child.js",
     ];
     expected_requests.sort();
+    assert_eq!(
+        module_errors,
+        serde_json::json!([]),
+        "requests: {requests:?}"
+    );
     assert_eq!(
         mapped_modules,
         serde_json::json!("exact-prefix-parent-nested"),
         "script errors: {module_errors:?}; requests: {requests:?}"
     );
-    assert_eq!(module_errors, serde_json::json!([]));
-    assert_eq!(requests, expected_requests);
     assert_eq!(dynamic_mapped, serde_json::json!("dynamic"));
+    assert_eq!(dynamic_classic, serde_json::json!("parent"));
+    assert_eq!(dynamic_classic_error, serde_json::Value::Null);
     assert_eq!(dynamic_scoped, serde_json::json!("nested"));
+    assert_eq!(
+        dynamic_runtime,
+        serde_json::json!("runtime-computed"),
+        "dynamic import rejection: {dynamic_runtime_error:?}; requests: {requests:?}"
+    );
+    assert_eq!(
+        dynamic_runtime_nested,
+        serde_json::json!("runtime-nested"),
+        "nested import rejection: {dynamic_runtime_nested_error:?}; requests: {requests:?}"
+    );
+    assert_eq!(dynamic_runtime_error, serde_json::Value::Null);
+    assert_eq!(dynamic_runtime_nested_error, serde_json::Value::Null);
+    assert!(
+        !request_timeout,
+        "module request server timed out after receiving: {requests:?}"
+    );
+    assert_eq!(requests, expected_requests);
 }
 
 #[tokio::test]

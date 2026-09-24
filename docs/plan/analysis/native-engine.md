@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-709`. Issue #40
+completed browser expansion slice is `native-engine-browser-713`. Issue #40
 remains open. It follows locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,
@@ -1003,8 +1003,13 @@ separated by comments or whitespace. This avoids fetching a module that is
 only passed to an ordinary property method. The profile also removes worker
 import maps as a target: the HTML Standard defines import maps for Documents,
 while workers resolve their module graphs against worker URLs/referrers.
-Runtime-valued imports and complete asynchronous module scheduling remain
-open. See [`slice 712`](../tasks/native-engine-browser-712.md).
+Slice 713 routes runtime-valued `ImportCall`s from page classic and module
+scripts through the asynchronous host fetch loop. The active script's
+response/document base selects the Document import-map scope; fetched modules
+can issue nested computed imports through the same bounded graph. The
+process-backed fixture covers classic and module callers. Worker/rooted-file
+computed imports, import options, and complete module scheduling remain open.
+See [`slice 713`](../tasks/native-engine-browser-713.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript
@@ -2677,9 +2682,10 @@ existing QuickJS module source map before evaluation. Duplicate modules are
 admitted once, graph entries and aggregate bytes are bounded, and bare,
 network/data/blob, credential-bearing, missing, oversized, and out-of-root
 dependencies fail closed with the owning module error event. Page and worker
-URL facades preserve canonical `file:///` authority markers. Import maps,
-non-literal dynamic imports, file fonts/workers/downloads, complete file-origin
-semantics, and full Web IDL parity remain issue #40 gates.
+URL facades preserve canonical `file:///` authority markers. Import maps and
+runtime-valued dynamic imports from rooted-file modules remain open, as do file
+fonts/workers/downloads, complete file-origin semantics, and full Web IDL
+parity.
 
 Slice 476 closes stylesheet-relative URL resolution for rooted file CSS.
 Static and dynamic file stylesheets now canonicalize relative `url(...)`

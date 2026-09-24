@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-712`; issue #40 remains open. Earlier completed slices
+`native-engine-browser-713`; issue #40 remains open. Earlier completed slices
 include `native-engine-browser-696` through `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
@@ -839,9 +839,18 @@ member calls such as `object.import()` and `object?.import()` no longer cause
 speculative module fetches, including when comments or whitespace separate the
 member access. The HTML Standard's import maps are Document-scoped, so worker
 import maps are not a missing Core Web Profile feature; worker URL/referrer
-resolution remains required. Runtime-valued dynamic imports and complete
-asynchronous module scheduling remain open. See the
+resolution remains required. See the
 [`slice 712` task](../plan/tasks/native-engine-browser-712.md).
+
+Slice 713 routes runtime-valued `ImportCall`s in HTTP(S) page classic and
+module scripts through an asynchronous host module request. The active classic
+script or module response base selects the Document import-map scope; loaded
+modules use their tracked response base for nested computed imports. Static
+string imports retain their existing prefetch path. Worker and rooted-file
+computed imports, import options/attributes, and complete asynchronous module
+scheduling remain open. The scoped check, four parser/rewrite unit tests, and
+the process-backed inline-import-map test passed locally; remote CI was not run.
+See [`slice 713`](../plan/tasks/native-engine-browser-713.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript
@@ -2650,9 +2659,10 @@ map before evaluation. Duplicate entries are admitted once; cycles remain
 finite; bare, network/data/blob, credential-bearing, missing, oversized, and
 out-of-root dependencies fail closed with the owning module's error event.
 Dynamic file module attachments use the same graph owner, and page/worker URL
-facades preserve canonical `file:///` authority markers. Import maps,
-non-literal dynamic imports, file fonts/workers/downloads, complete file-origin
-semantics, and full Web IDL parity remain issue #40 work.
+facades preserve canonical `file:///` authority markers. Import maps and
+runtime-valued dynamic imports from rooted-file modules remain open, as do file
+fonts/workers/downloads, complete file-origin semantics, and full Web IDL
+parity.
 
 Slice `native-engine-browser-476` closes stylesheet-relative URL resolution for
 rooted file CSS. Loaded static and dynamic file stylesheets canonicalize
@@ -9406,9 +9416,15 @@ Rust inspection surface.
 The native profile is `partial` and declares:
 
 In this inventory, dynamic-import prefetch includes quoted string-literal
-concatenations that can be resolved before evaluation. “Computed imports” and
-“computed module loading” refer to runtime-valued expressions; the prefetch
-pass does not grant them arbitrary network access.
+concatenations that can be resolved before evaluation. Slice 713 also supports
+runtime-valued `ImportCall`s in HTTP(S) page classic and module scripts through
+the bounded asynchronous host module-fetch path, using each active script's
+base and the Document import map. The exclusions below use “computed imports”
+and “computed module loading” for worker/rooted-file contexts, import options,
+and scheduling beyond that page subset. “Dynamic registration” in the
+exclusions means behaviors beyond bounded Document import-map registration.
+The prefetch pass never guesses runtime values or grants arbitrary network
+access.
 
 | Capability | Level | Current contract |
 |---|---|---|

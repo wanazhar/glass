@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-711`; issue #40
+expansion is complete locally through `native-engine-browser-712`; issue #40
 remains open. Slices 709–710 preserve request-URL module identity, including
 query and fragment, separately from the final response URL used as the
 descendant base across page, dedicated/shared worker, and service-worker module
@@ -39,9 +39,11 @@ adds parser-order map processing and bounded resolved-specifier locking.
 Slice 708 adds dynamic map registration and mapped dynamic-module graph loading
 across process-backed and rooted-file paths. Slice 711 adds string-literal
 concatenation to bounded dynamic-import prefetch and corrects rooted-file
-module-script URL resolution. Runtime-valued dynamic imports, worker import
-maps, broader worker/file-origin propagation, and complete module scheduling
-remain open. Slice 703 separates
+module-script URL resolution. Slice 712 prevents member methods named `import`
+from triggering module prefetch and removes Document import maps from the
+worker backlog because the HTML Standard scopes them to Documents.
+Runtime-valued dynamic imports, broader worker/file-origin propagation, and
+complete module scheduling remain open. Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type
 essences are matched case-insensitively without parameters on script elements;

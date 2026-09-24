@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-709`; issue #40 remains open. Earlier completed slices
+`native-engine-browser-712`; issue #40 remains open. Earlier completed slices
 include `native-engine-browser-696` through `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
@@ -830,9 +830,18 @@ external module-script `src` values now resolve as document-relative URLs
 before the configured-root loader checks them; bare dependency specifiers
 remain governed by import maps. Focused parser, page, redirected-worker, and
 rooted-file tests pass with the scoped check and local documentation gates;
-remote CI was not run. Runtime-valued computed imports, worker maps, and full
-module scheduling remain open. See the
+remote CI was not run. Runtime-valued computed imports and full module
+scheduling remain open. See the
 [`slice 711` task](../plan/tasks/native-engine-browser-711.md).
+
+Slice 712 keeps static dynamic-import prefetch aligned with JavaScript syntax:
+member calls such as `object.import()` and `object?.import()` no longer cause
+speculative module fetches, including when comments or whitespace separate the
+member access. The HTML Standard's import maps are Document-scoped, so worker
+import maps are not a missing Core Web Profile feature; worker URL/referrer
+resolution remains required. Runtime-valued dynamic imports and complete
+asynchronous module scheduling remain open. See the
+[`slice 712` task](../plan/tasks/native-engine-browser-712.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

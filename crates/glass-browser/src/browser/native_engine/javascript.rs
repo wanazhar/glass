@@ -17801,6 +17801,7 @@ pub(crate) fn literal_dynamic_module_specifiers(source: &str) -> Vec<String> {
     let bytes = source.as_bytes();
     let mut index = 0;
     let mut specifiers = Vec::new();
+    let mut previous_is_member_access = false;
     while index < bytes.len() {
         index = skip_javascript_space_and_comments(bytes, index);
         if index >= bytes.len() {
@@ -17808,9 +17809,21 @@ pub(crate) fn literal_dynamic_module_specifiers(source: &str) -> Vec<String> {
         }
         if matches!(bytes[index], b'\'' | b'"' | b'`') {
             index = skip_javascript_string(bytes, index);
+            previous_is_member_access = false;
             continue;
         }
         if !is_javascript_identifier_start(bytes[index]) {
+            if bytes[index] == b'.' {
+                previous_is_member_access = true;
+                index += 1;
+                continue;
+            }
+            if bytes[index] == b'?' && bytes.get(index + 1) == Some(&b'.') {
+                previous_is_member_access = true;
+                index += 2;
+                continue;
+            }
+            previous_is_member_access = false;
             index += 1;
             continue;
         }
@@ -17819,9 +17832,11 @@ pub(crate) fn literal_dynamic_module_specifiers(source: &str) -> Vec<String> {
         while index < bytes.len() && is_javascript_identifier_continue(bytes[index]) {
             index += 1;
         }
-        if &bytes[start..index] != b"import" {
+        if &bytes[start..index] != b"import" || previous_is_member_access {
+            previous_is_member_access = false;
             continue;
         }
+        previous_is_member_access = false;
         let argument = skip_javascript_space_and_comments(bytes, index);
         if bytes.get(argument) != Some(&b'(') {
             continue;
@@ -17893,6 +17908,21 @@ mod native_static_dynamic_import_tests {
         assert_eq!(
             literal_dynamic_module_specifiers(source),
             ["./first.js", "./second/entry.js", "./options.json"]
+        );
+    }
+
+    #[test]
+    fn dynamic_import_prefetch_ignores_member_methods_named_import() {
+        let source = r#"
+            import("./actual-dynamic-import.js");
+            module.import("./member.js");
+            module?.import("./optional-member.js");
+            module /* member access trivia */ . /* import token trivia */ import("./commented-member.js");
+        "#;
+
+        assert_eq!(
+            literal_dynamic_module_specifiers(source),
+            ["./actual-dynamic-import.js"]
         );
     }
 

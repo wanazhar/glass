@@ -2,14 +2,17 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-711`.
+The latest locally completed parser/script slice is `native-engine-browser-712`.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
 shared, and service-worker module graphs. See the task records for scope and
 local evidence. Slice 711 adds safe prefetch discovery for static string
 concatenations in dynamic imports and corrects rooted-file module-script URL
-resolution; runtime-valued computed imports and full module scheduling remain
-open.
+resolution. Slice 712 prevents member methods named `import` from being
+misclassified as dynamic `ImportCall`s and avoids speculative module fetches.
+It also corrects the profile: HTML import maps are Document-scoped, not a
+worker-module capability. Runtime-valued computed imports and full module
+scheduling remain open.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -68,8 +71,10 @@ discovery path, and resolves ordinary relative external module-script URLs for
 rooted file documents separately from import-specifier resolution. The scoped
 check, parser tests, process-backed HTTP/worker tests, rooted-file test,
 formatting, and all four local documentation gates pass; remote CI was not run.
-Runtime-valued expressions, worker import maps, and complete module scheduling
-remain separate gates. See `tasks/native-engine-browser-711.md`.
+Runtime-valued expressions and complete module scheduling remain separate
+gates. Slice 712 also removes non-standard worker import maps from the open
+profile and prevents member methods named `import` from triggering prefetch;
+see `tasks/native-engine-browser-712.md`.
 Recover verifiable scope and test evidence for slices 650–671 from authoritative
 commits; do not infer passing checks from summary prose. Keep the issue body and
 this record explicit about local versus remote evidence.

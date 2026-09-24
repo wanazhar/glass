@@ -105,6 +105,12 @@ It is never an implicit fallback for a native request.
   Other file resource classes, report-only file policies, dynamic meta
   insertion, and full CSP conformance remain open; see
   [task 722](tasks/native-engine-browser-722.md).
+- Slice 723 extends that file-document contract to initial and dynamic
+  external stylesheet links and recursive local CSS imports. It applies the
+  style-source fallback, same-root `'self'`, link nonce metadata, and pre-read
+  rejection. Focused loader and process-backed tests plus the existing local
+  stylesheet regressions pass. Inline style sources and other file resource
+  classes remain separate; see [task 723](tasks/native-engine-browser-723.md).
 - Local implementation evidence: slices 713–717 cover runtime-valued imports
   in page classic/module scripts, dedicated classic/module Workers, and
   classic/module SharedWorkers, including nested computed imports through their

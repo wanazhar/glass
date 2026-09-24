@@ -1352,6 +1352,21 @@ impl NativeCspDirectives {
         )
     }
 
+    fn allows_rooted_file_style(
+        &self,
+        document_url: &Url,
+        resource_url: &Url,
+        nonce: Option<&str>,
+        same_root: bool,
+    ) -> bool {
+        let sources = self
+            .style_element_sources
+            .as_deref()
+            .or(self.style_sources.as_deref())
+            .or(self.default_sources.as_deref());
+        csp_sources_allow_for_rooted_file(sources, document_url, resource_url, nonce, same_root)
+    }
+
     fn allows_script_redirect(
         &self,
         document_url: &Url,
@@ -1608,6 +1623,22 @@ impl NativeCspPolicy {
                 nonce,
                 same_root,
             )
+        })
+    }
+
+    fn allows_rooted_file_style(
+        &self,
+        document_url: &Url,
+        resource_url: &Url,
+        nonce: Option<&str>,
+        resource_root: Option<&Path>,
+    ) -> bool {
+        let same_root = self
+            .rooted_file_self_root
+            .as_deref()
+            .is_some_and(|root| resource_root.is_some_and(|resource_root| resource_root == root));
+        self.policies.iter().all(|policy| {
+            policy.allows_rooted_file_style(document_url, resource_url, nonce, same_root)
         })
     }
 
@@ -2044,6 +2075,34 @@ fn csp_script_sources_allow_with_path(
         return !parser_inserted;
     }
     csp_sources_allow_with_path(Some(sources), document_url, resource_url, ignore_path)
+}
+
+fn csp_sources_allow_for_rooted_file(
+    sources: Option<&[String]>,
+    document_url: &Url,
+    resource_url: &Url,
+    nonce: Option<&str>,
+    same_root: bool,
+) -> bool {
+    let Some(sources) = sources else {
+        return true;
+    };
+    if nonce.is_some_and(|nonce| {
+        sources
+            .iter()
+            .any(|candidate| csp_nonce_matches(candidate, nonce))
+    }) {
+        return true;
+    }
+    sources.iter().any(|source| {
+        if source.eq_ignore_ascii_case("'none'") {
+            return false;
+        }
+        if source.eq_ignore_ascii_case("'self'") {
+            return same_root;
+        }
+        csp_source_expression_matches(source, document_url, resource_url, false)
+    })
 }
 
 fn csp_script_sources_allow_for_rooted_file(
@@ -5437,20 +5496,51 @@ impl NativeResourceLoader {
     /// Load a bounded rooted file stylesheet for a local file document.
     /// Local files do not carry an HTTP response MIME header, so the
     /// stylesheet link's resource type is represented by the caller and the
-    /// bytes are admitted as UTF-8 CSS after the root and integrity checks.
+    /// bytes are admitted as UTF-8 CSS after root, CSP, and integrity checks.
     pub(crate) fn load_local_file_stylesheet(
         &self,
         document_url: &str,
         href: &str,
         integrity: Option<&str>,
     ) -> Result<Option<String>, NativeEngineError> {
+        self.load_local_file_stylesheet_with_nonce(document_url, href, integrity, None)
+    }
+
+    pub(crate) fn load_local_file_stylesheet_with_nonce(
+        &self,
+        document_url: &str,
+        href: &str,
+        integrity: Option<&str>,
+        nonce: Option<&str>,
+    ) -> Result<Option<String>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text("stylesheet URL", href)?;
-        let Some((_, path)) =
+        let Some((target_url, path)) =
             self.local_file_subresource_path(document_url, href, "file stylesheet")?
         else {
             return Ok(None);
         };
+        if let Some((policy_owner_url, Some(_))) =
+            self.csp_document_owner(document_url, "file stylesheet CSP owner URL")?
+        {
+            let Some(resource_root) = self.allowed_file_root_for_path(&path) else {
+                return Ok(None);
+            };
+            let policy = self
+                .network
+                .document_policies
+                .get(&cache_key(&policy_owner_url))
+                .cloned()
+                .unwrap_or_default();
+            if !policy.allows_rooted_file_style(
+                &policy_owner_url,
+                &target_url,
+                nonce,
+                Some(resource_root),
+            ) {
+                return Ok(None);
+            }
+        }
         let bytes = read_bounded_file(&path, self.max_document_bytes, "file CSS subresource")?;
         if !subresource_integrity_matches(integrity, &bytes) {
             return Ok(None);
@@ -9477,20 +9567,20 @@ mod tests {
     use super::{
         JAVASCRIPT_MIME_TYPE_ESSENCES, MAX_NATIVE_CACHE_ENTRIES,
         MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, MAX_NATIVE_MEDIA_BYTES, NativeCookieProfileEntry,
-        NativeCorsMode, NativeEngineConfig, NativeEngineError, NativeFetchMethod,
-        NativeInlineCspKind, NativeModuleResourceType, NativeNavigationMethod,
-        NativeNavigationPolicyKind, NativeNetworkState, NativeObjectUrlResource, NativeRequestBody,
-        NativeResource, NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
-        cache_control_requires_revalidation, cached_resource_content_type_text_allowed,
-        content_security_policy, cors_origin_header, cors_preflight_response_allowed,
-        cors_response_allowed, csp_report_deliveries_for_declaration,
-        csp_script_sources_allow_for_rooted_file, csp_sources_allow,
-        csp_sources_allow_for_redirect, data_font_bytes, data_media_metadata, decode_html_body,
-        document_cache_fresh_until, document_cache_storage_allowed,
-        javascript_mime_essence_allowed, javascript_mime_type_essence_match,
-        media_metadata_from_bytes, mixed_content_allowed, module_content_type_text_allowed,
-        referrer_for_navigation, resolve_subresource_url, subresource_integrity_matches,
-        supported_media_type_text,
+        NativeCorsMode, NativeCspDirectives, NativeCspPolicy, NativeEngineConfig,
+        NativeEngineError, NativeFetchMethod, NativeInlineCspKind, NativeModuleResourceType,
+        NativeNavigationMethod, NativeNavigationPolicyKind, NativeNetworkState,
+        NativeObjectUrlResource, NativeRequestBody, NativeResource, NativeResourceLoader,
+        NativeSubresourceKind, cache_control_max_age, cache_control_requires_revalidation,
+        cached_resource_content_type_text_allowed, content_security_policy, cors_origin_header,
+        cors_preflight_response_allowed, cors_response_allowed,
+        csp_report_deliveries_for_declaration, csp_script_sources_allow_for_rooted_file,
+        csp_sources_allow, csp_sources_allow_for_redirect, csp_sources_allow_for_rooted_file,
+        data_font_bytes, data_media_metadata, decode_html_body, document_cache_fresh_until,
+        document_cache_storage_allowed, javascript_mime_essence_allowed,
+        javascript_mime_type_essence_match, media_metadata_from_bytes, mixed_content_allowed,
+        module_content_type_text_allowed, referrer_for_navigation, resolve_subresource_url,
+        subresource_integrity_matches, supported_media_type_text,
     };
     use base64::Engine as _;
     use reqwest::header::{
@@ -9500,6 +9590,7 @@ mod tests {
     };
     use sha2::{Digest, Sha256, Sha384, Sha512};
     use std::fs;
+    use std::path::PathBuf;
     use std::time::Instant;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -10471,6 +10562,102 @@ mod tests {
     }
 
     #[test]
+    fn rooted_file_style_csp_uses_fallback_nonce_and_root() {
+        let document_url = Url::parse("file:///trusted/site/index.html").unwrap();
+        let same_root_url = Url::parse("file:///trusted/site/style.css").unwrap();
+        let other_root_url = Url::parse("file:///trusted/other/style.css").unwrap();
+        let same_root = PathBuf::from("/trusted/site");
+        let other_root = PathBuf::from("/trusted/other");
+
+        let style_fallback = NativeCspDirectives {
+            style_sources: Some(vec!["'self'".to_owned()]),
+            default_sources: Some(vec!["'none'".to_owned()]),
+            ..NativeCspDirectives::default()
+        };
+        assert!(
+            style_fallback.allows_rooted_file_style(&document_url, &same_root_url, None, true,)
+        );
+        assert!(!style_fallback.allows_rooted_file_style(
+            &document_url,
+            &other_root_url,
+            None,
+            false,
+        ));
+
+        let element_override = NativeCspDirectives {
+            style_sources: Some(vec!["'self'".to_owned()]),
+            style_element_sources: Some(vec!["'none'".to_owned()]),
+            ..NativeCspDirectives::default()
+        };
+        assert!(!element_override.allows_rooted_file_style(
+            &document_url,
+            &same_root_url,
+            None,
+            true,
+        ));
+
+        let default_fallback = NativeCspDirectives {
+            default_sources: Some(vec!["'self'".to_owned()]),
+            ..NativeCspDirectives::default()
+        };
+        assert!(default_fallback.allows_rooted_file_style(
+            &document_url,
+            &same_root_url,
+            None,
+            true,
+        ));
+        assert!(!default_fallback.allows_rooted_file_style(
+            &document_url,
+            &other_root_url,
+            None,
+            false,
+        ));
+
+        let nonce_policy = NativeCspDirectives {
+            style_element_sources: Some(vec!["'nonce-Style123'".to_owned()]),
+            ..NativeCspDirectives::default()
+        };
+        assert!(nonce_policy.allows_rooted_file_style(
+            &document_url,
+            &other_root_url,
+            Some("Style123"),
+            false,
+        ));
+        assert!(!nonce_policy.allows_rooted_file_style(
+            &document_url,
+            &other_root_url,
+            Some("wrong"),
+            false,
+        ));
+
+        let mut conjunctive = NativeCspPolicy {
+            policies: vec![nonce_policy, style_fallback],
+            rooted_file_self_root: Some(same_root.clone()),
+            ..NativeCspPolicy::default()
+        };
+        assert!(conjunctive.allows_rooted_file_style(
+            &document_url,
+            &same_root_url,
+            Some("Style123"),
+            Some(&same_root),
+        ));
+        assert!(!conjunctive.allows_rooted_file_style(
+            &document_url,
+            &other_root_url,
+            Some("Style123"),
+            Some(&other_root),
+        ));
+        conjunctive.policies.clear();
+        assert!(csp_sources_allow_for_rooted_file(
+            Some(&["file:".to_owned()]),
+            &document_url,
+            &other_root_url,
+            None,
+            false,
+        ));
+    }
+
+    #[test]
     fn rooted_file_csp_denies_script_before_reading_bytes() {
         let root = std::env::temp_dir().join(format!(
             "glass-native-rooted-file-csp-{}",
@@ -10507,6 +10694,42 @@ mod tests {
                     None,
                     None,
                 )
+                .unwrap()
+                .is_none()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rooted_file_style_csp_denies_css_before_reading_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-native-rooted-file-style-csp-{}",
+            std::process::id()
+        ));
+        let site = root.join("site");
+        let other = root.join("other");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&site).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let document_path = site.join("index.html");
+        let denied_stylesheet_path = other.join("invalid-utf8.css");
+        fs::write(&document_path, "<!doctype html>").unwrap();
+        fs::write(&denied_stylesheet_path, [0xff]).unwrap();
+        let document_url = Url::from_file_path(&document_path).unwrap().to_string();
+        let denied_stylesheet_url = Url::from_file_path(&denied_stylesheet_path)
+            .unwrap()
+            .to_string();
+        let config = NativeEngineConfig::default()
+            .with_allowed_file_root(&site)
+            .with_allowed_file_root(&other);
+        let mut loader = NativeResourceLoader::new(&config).unwrap();
+        loader
+            .apply_meta_content_security_policies(&document_url, &["style-src 'self'".to_owned()])
+            .unwrap();
+
+        assert!(
+            loader
+                .load_local_file_stylesheet(&document_url, &denied_stylesheet_url, None)
                 .unwrap()
                 .is_none()
         );

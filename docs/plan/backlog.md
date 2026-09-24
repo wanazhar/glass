@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-714`.
+The latest locally completed parser/script slice is `native-engine-browser-715`.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
 shared, and service-worker module graphs. See the task records for scope and
@@ -14,14 +14,18 @@ It also corrects the profile: HTML import maps are Document-scoped, not a
 worker-module capability. Slice 713 adds runtime-valued computed imports for
 HTTP(S) page classic/module scripts through the asynchronous host fetch path,
 using active response bases, Document import-map scopes, and nested computed
-imports. Worker/rooted-file computed imports, import options, broader
-worker/file-origin propagation, and full module scheduling remain open; see
-`tasks/native-engine-browser-713.md`.
+imports. Slices 714–715 add runtime-valued imports for dedicated and shared
+classic/module workers. Rooted-file page imports, computed imports in classic
+`importScripts()` dependencies, import options, broader file-origin
+propagation, and full module scheduling remain open; see
+`tasks/native-engine-browser-715.md`.
 Slice 714 adds runtime-valued computed imports in dedicated classic and module
 Workers through the worker-owned fetch queue, including nested module imports
-and response-base resolution. SharedWorker imports, rooted-file page imports,
-import options/attributes, and full module scheduling remain open; see
-`tasks/native-engine-browser-714.md`.
+and response-base resolution. Slice 715 adds classic and module SharedWorkers,
+including nested graphs, rejected fetches, and settlement delivered through
+connected ports. Rooted-file page imports, computed imports in classic
+`importScripts()` dependencies, import options/attributes, and full module
+scheduling remain open; see `tasks/native-engine-browser-715.md`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -44,10 +48,12 @@ Slice `native-engine-browser-707` completes source-order map processing and
 resolved-specifier locks, bounded at 1,024 successful resolutions and shared
 with QuickJS. The locked check, 14 resolver/module unit tests, 11
 process-backed module tests, formatting, and four documentation gates passed
-locally; remote CI was not run. Slice 713 adds runtime-valued computed imports
-for page classic/module scripts through the asynchronous host fetch path.
-Worker/rooted-file coverage, import options, worker/file-origin coverage, and
-full module scheduling remain separate Core Web Profile gates. See
+locally; remote CI was not run. At the 713 checkpoint, runtime-valued computed
+imports had just been added for page classic/module scripts through the
+asynchronous host fetch path. Slices 714–715 now cover dedicated and shared
+classic/module workers. Rooted-file page and `importScripts()`-dependency
+coverage, import options, broader file-origin coverage, and full module
+scheduling remain separate Core Web Profile gates. See
 `tasks/native-engine-browser-704.md` and `tasks/native-engine-browser-705.md`.
 See `tasks/native-engine-browser-706.md` and
 `tasks/native-engine-browser-707.md` for the latest completed verification.
@@ -67,13 +73,13 @@ fragments, are module-source and deduplication keys; the final response URL is
 used to resolve descendants after redirects. Import-map targets and referrer
 records preserve fragments. The scoped check, 23 library/19 integration
 fragment tests, and 17 library/4 integration import-map tests passed locally.
-Worker module identity, computed dynamic imports, complete scheduling, and
-remote CI remain open.
+At the 709 checkpoint, worker module identity, computed dynamic imports,
+complete scheduling, and remote CI remained open.
 Slice `native-engine-browser-710` completes worker module graph identity/base
 handling. Focused process-backed redirect, fragment/query, dedicated/shared,
 service-worker, and rooted-file tests passed with the scoped check and all local
-documentation gates. Computed dynamic imports, worker import maps, and complete
-module scheduling remain open; remote CI was not run. See
+documentation gates. At the 710 checkpoint, computed dynamic imports and
+complete module scheduling remained open; remote CI was not run. See
 `tasks/native-engine-browser-710.md`.
 Slice `native-engine-browser-711` admits fully static quoted-string
 concatenations in dynamic-import arguments through the shared bounded graph
@@ -81,8 +87,8 @@ discovery path, and resolves ordinary relative external module-script URLs for
 rooted file documents separately from import-specifier resolution. The scoped
 check, parser tests, process-backed HTTP/worker tests, rooted-file test,
 formatting, and all four local documentation gates pass; remote CI was not run.
-Runtime-valued expressions and complete module scheduling remain separate
-gates. Slice 712 also removes non-standard worker import maps from the open
+At the 711 checkpoint, runtime-valued expressions and complete module
+scheduling remained separate gates. Slice 712 also removes non-standard worker import maps from the open
 profile and prevents member methods named `import` from triggering prefetch;
 see `tasks/native-engine-browser-712.md`.
 Recover verifiable scope and test evidence for slices 650–671 from authoritative

@@ -14196,11 +14196,19 @@ impl NativeJavaScriptRuntime {
         source: &str,
         import_script_counts: &BTreeMap<String, usize>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.set_dynamic_module_imports_enabled(true)?;
+        self.register_dynamic_import_referrer(worker_url)?;
+        let referrer =
+            serde_json::to_string(worker_url).map_err(|_| NativeEngineError::Worker {
+                operation: "prepare SharedWorker dynamic module referrer".into(),
+                reason: "SharedWorker dynamic module referrer could not be encoded".into(),
+            })?;
+        let source = rewrite_runtime_dynamic_module_imports(source, &referrer)?;
         self.evaluate_shared_worker_source(
             worker_id,
             worker_url,
             None,
-            source,
+            &source,
             import_script_counts,
         )
     }
@@ -14227,11 +14235,19 @@ impl NativeJavaScriptRuntime {
         let mut module_base_urls = module_base_urls.clone();
         module_base_urls.insert(module_name.to_owned(), module_base_url.to_owned());
         self.set_module_base_urls(module_base_urls);
+        self.set_dynamic_module_imports_enabled(true)?;
+        self.register_dynamic_import_referrer(module_base_url)?;
+        let referrer =
+            serde_json::to_string(module_base_url).map_err(|_| NativeEngineError::Worker {
+                operation: "prepare SharedWorker module referrer".into(),
+                reason: "SharedWorker module referrer could not be encoded".into(),
+            })?;
+        let source = rewrite_runtime_dynamic_module_imports(source, &referrer)?;
         self.evaluate_shared_worker_source(
             worker_id,
             worker_url,
             Some(module_name),
-            source,
+            &source,
             &BTreeMap::new(),
         )
     }

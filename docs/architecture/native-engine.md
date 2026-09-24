@@ -809,8 +809,8 @@ rooted-file graphs. The request URL, including query and fragment, identifies
 the module record; the final response URL is the base for resolving that
 module's descendants. Fragments are omitted only from resource I/O. Redirect,
 fragment-variant, rooted-file, and import-map tests passed with the scoped
-check; remote CI was not run. Worker module identity, computed dynamic imports,
-and complete module scheduling remain open. See the
+check; remote CI was not run. At the 709 checkpoint, worker module identity,
+computed dynamic imports, and complete module scheduling remained open. See the
 [`slice 709` task](../plan/tasks/native-engine-browser-709.md).
 
 Slice 710 applies the identity/base split to dedicated, shared, and
@@ -819,7 +819,8 @@ final response URLs remain descendant bases after redirects. It preserves
 worker `location`, fetch policy, and the existing no-import-map worker
 contract. Redirect, query/fragment, rooted-file, and service-worker module
 regressions passed with the scoped check and documentation gates; remote CI was
-not run. Computed dynamic imports and full module scheduling remain open. See
+not run. At the 710 checkpoint, computed dynamic imports and full module
+scheduling remained open. See
 the [`slice 710` task](../plan/tasks/native-engine-browser-710.md).
 
 Slice 711 admits dynamic-import arguments composed entirely of quoted string
@@ -830,8 +831,8 @@ external module-script `src` values now resolve as document-relative URLs
 before the configured-root loader checks them; bare dependency specifiers
 remain governed by import maps. Focused parser, page, redirected-worker, and
 rooted-file tests pass with the scoped check and local documentation gates;
-remote CI was not run. Runtime-valued computed imports and full module
-scheduling remain open. See the
+remote CI was not run. At the 711 checkpoint, runtime-valued computed imports
+and full module scheduling remained open. See the
 [`slice 711` task](../plan/tasks/native-engine-browser-711.md).
 
 Slice 712 keeps static dynamic-import prefetch aligned with JavaScript syntax:
@@ -846,9 +847,10 @@ Slice 713 routes runtime-valued `ImportCall`s in HTTP(S) page classic and
 module scripts through an asynchronous host module request. The active classic
 script or module response base selects the Document import-map scope; loaded
 modules use their tracked response base for nested computed imports. Static
-string imports retain their existing prefetch path. Worker and rooted-file
-computed imports, import options/attributes, and complete asynchronous module
-scheduling remain open. The scoped check, four parser/rewrite unit tests, and
+string imports retain their existing prefetch path. At the 713 checkpoint,
+Worker and rooted-file computed imports, import options/attributes, and
+complete asynchronous module scheduling remained open; slices 714–715 later
+cover dedicated and shared Workers. The scoped check, four parser/rewrite unit tests, and
 the process-backed inline-import-map test passed locally; remote CI was not run.
 See [`slice 713`](../plan/tasks/native-engine-browser-713.md).
 
@@ -858,10 +860,11 @@ validates active script referrers, applies worker URL resolution without
 Document import maps, bounds and extends the module graph, and settles the
 original promise through QuickJS. Process-backed coverage verifies both
 dedicated Worker script kinds, nested computed imports, the exact request set,
-and preserved redirected module identity/base behavior. SharedWorker runtime
-imports, computed imports from `importScripts()` dependencies, rooted-file page
-imports, import options/attributes, and full asynchronous module scheduling
-remain open. See [`slice 714`](../plan/tasks/native-engine-browser-714.md).
+and preserved redirected module identity/base behavior. At the 714 checkpoint,
+SharedWorker runtime imports were still open. Computed imports from
+`importScripts()` dependencies, rooted-file page imports, import
+options/attributes, and full asynchronous module scheduling remain open. See
+[`slice 714`](../plan/tasks/native-engine-browser-714.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript
@@ -9432,16 +9435,21 @@ runtime-valued `ImportCall`s in HTTP(S) page classic and module scripts through
 bounded asynchronous host fetching, using each active script's base and the
 Document import map. Slice 714 adds the same runtime-valued behavior for
 dedicated classic and module Worker scripts using worker URL/referrer rules.
-The exclusions below use “computed imports” and “computed module loading” for
-SharedWorker/rooted-file contexts, import options, and scheduling beyond those
-page and dedicated-worker subsets. “Dynamic registration” in the exclusions
+Slice 715 extends runtime-valued imports to classic and module SharedWorker
+entry scripts. The host validates active response bases, reuses worker URL and
+referrer resolution without Document import maps, admits nested modules through
+the bounded worker loader, and settles success or rejection in the shared realm
+so connected ports receive the result. The remaining “computed imports” and
+“computed module loading” exclusions are rooted-file page contexts, classic
+`importScripts()` dependencies, import options, and scheduling beyond the
+bounded page/worker host turns. “Dynamic registration” in the exclusions
 means behaviors beyond bounded Document import-map registration. The prefetch
 pass never guesses runtime values or grants arbitrary network access.
 
 | Capability | Level | Current contract |
 |---|---|---|
 | lifecycle | available | initialize and explicit close |
-| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/literal-dynamic-import child scripts with bounded parser-blocking/async/defer ordering, runtime-valued page and dedicated-Worker imports through bounded host fetching, bounded task turns, and bounded GET or POST form navigation with urlencoded, multipart, and text/plain encodings plus validated submitter overrides; general subresources remain open |
+| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/literal-dynamic-import child scripts with bounded parser-blocking/async/defer ordering, runtime-valued page, dedicated-Worker, and SharedWorker imports through bounded host fetching, bounded task turns, and bounded GET or POST form navigation with urlencoded, multipart, and text/plain encodings plus validated submitter overrides; general subresources remain open |
 | contexts | available | up to 32 independent page targets with one explicitly selected active target; create, select, list, and close are native-owned |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded single- and multi-select option interaction, bounded semantic root scroll-into-view, bounded vertical root scrolling, bounded GET or POST form defaults with supported encodings and submitter overrides, plus native point targets for supported local controls; text selection, IME, inner CSS scroll-container adjustment, and nested scrolling remain open |

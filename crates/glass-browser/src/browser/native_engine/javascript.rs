@@ -31,11 +31,11 @@ use super::interaction::{
 use super::layout::NativePoint;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
-    MAX_NATIVE_CSP_VIOLATIONS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
-    NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
-    NativeFetchResponseStream, NativeInlineScriptPolicy, NativeNavigationMethod,
-    NativeObjectUrlResource, NativeObjectUrlTransfer, NativeRequestBody, NativeResourceLoader,
-    NativeScriptResource,
+    JAVASCRIPT_MIME_TYPE_ESSENCES, MAX_NATIVE_CSP_VIOLATIONS, NativeCorsMode, NativeCspViolation,
+    NativeFetchCacheMode, NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest,
+    NativeFetchResponse, NativeFetchResponseStream, NativeInlineScriptPolicy,
+    NativeNavigationMethod, NativeObjectUrlResource, NativeObjectUrlTransfer, NativeRequestBody,
+    NativeResourceLoader, NativeScriptResource,
 };
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes192, Aes256};
@@ -29655,6 +29655,11 @@ fn document_bootstrap(
 ) -> Result<String, NativeEngineError> {
     let native_file_bytes = MAX_NATIVE_FILE_BYTES;
     let native_form_body_bytes = MAX_NATIVE_FORM_BODY_BYTES;
+    let javascript_mime_type_essences = JAVASCRIPT_MIME_TYPE_ESSENCES
+        .iter()
+        .map(|essence| format!("\"{essence}\""))
+        .collect::<Vec<_>>()
+        .join(",");
     let mut random_bytes = vec![0_u8; MAX_NATIVE_PAGE_CRYPTO_POOL_BYTES];
     getrandom::fill(&mut random_bytes).map_err(|_| NativeEngineError::Worker {
         operation: "seed native page crypto".into(),
@@ -38863,17 +38868,17 @@ fn document_bootstrap(
     }}
     return false;
   }};
+  const classicJavascriptMimeTypes = new Set([{javascript_mime_type_essences}]);
+  const asciiLowercase = (value) => String(value).replace(/[A-Z]/g, (character) =>
+    String.fromCharCode(character.charCodeAt(0) + 32));
   const executeInsertedScripts = (node) => {{
     if (suppressHostCommands > 0 || !node) return;
     if (Number(node.nodeType) === 1 && String(node.localName || "").toLowerCase() === "script"
         && node.__glassDynamicScriptStarted === false) {{
       node.__glassDynamicScriptStarted = true;
-      const type = String(node.getAttribute("type") || "")
-        .split(";", 1)[0].trim().toLowerCase();
+      const type = asciiLowercase(node.getAttribute("type") || "");
       const source = String(node.textContent || "");
-      const classic = type === "" || type === "text/javascript"
-        || type === "application/javascript" || type === "application/ecmascript"
-        || type === "text/ecmascript" || type === "application/x-javascript";
+      const classic = type === "" || classicJavascriptMimeTypes.has(type);
       if (!node.getAttribute("src") && classic && source) {{
         pushCommand({{ kind: "startScript", node_index: node.nodeIndex }});
         if (typeof globalThis.__glassReportOnlyInlineScript === "function") {{

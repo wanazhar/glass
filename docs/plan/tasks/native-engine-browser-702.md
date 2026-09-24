@@ -7,20 +7,20 @@ depends-on: [native-engine-browser-701]
 
 # Objective
 
-Use one JavaScript MIME essence policy for initial-document script discovery
-and external script response validation, matching the already-aligned dynamic
-inline path.
+Initially reuse the external response MIME matcher for initial-document
+script discovery. This was an interim implementation later corrected in slice
+703 because response-header and script-attribute parameter rules differ.
 
 ## Contract
 
-- Recognize the same five JavaScript MIME essences for initial classic script
-  classification as the external response validator.
-- Ignore ASCII case and MIME parameters consistently.
+- The initial implementation recognized five MIME essences and incorrectly
+  ignored script `type` parameters by reusing the external response helper.
+- Slice 703 replaces this with strict script-attribute essence matching and
+  expands the set to all 16 standard JavaScript MIME essences.
 - Preserve absent/empty-type classic handling and module classification.
 - Keep data blocks such as `application/json` out of the executable script
   source list.
-- Do not claim the full historical JavaScript MIME type registry or complete
-  parser/scheduling semantics from this bounded alignment.
+- Do not claim complete parser/scheduling semantics from this bounded work.
 - Keep issue #40 open until the full browser profile and native-only gates
   pass.
 
@@ -66,3 +66,13 @@ Implementation and focused tests passed locally:
   was built solely for this gate.
 - Remote CI, complete script-type conformance, and issue #40 completion are
   not claimed.
+
+## Follow-up correction
+
+The 702 checkpoint accidentally treated `script[type]` parameters as response
+`Content-Type` parameters. Slice 703 uses separate matchers: exact
+case-insensitive essence matching for the attribute, and parameter-insensitive
+matching for external response headers. It also expands the supported list
+from five to all 16 standard JavaScript MIME essences. See the
+[HTML Standard](https://html.spec.whatwg.org/multipage/scripting.html#scriptingLanguages)
+and [MIME Sniffing Standard](https://mimesniff.spec.whatwg.org/#javascript-mime-type).

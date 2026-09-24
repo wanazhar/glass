@@ -27,12 +27,13 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-702`; issue #40
-remains open. Slice 702 follows the completed `native-engine-browser-701`
-checkpoint. Initial-document and dynamic inline classic scripts now share the
-same five JavaScript MIME types as external response validation, ignoring
-case and parameters; unsupported data types do not execute. Slice 700 fixed
-connected insertion and execute-once behavior.
+expansion is complete locally through `native-engine-browser-703`; issue #40
+remains open. Slice 703 separates exact script `type` MIME essence matching
+from external response `Content-Type` handling. All 16 JavaScript MIME type
+essences are matched case-insensitively without parameters on script elements;
+response headers ignore parameters. Slices 701–702 were interim, overly
+permissive implementations corrected by 703. Slice 700 fixed connected
+insertion and execute-once behavior.
 
 Script fragment contexts recognize appropriate end tags across Script Data,
 escaped, and double-escaped states across the covered parser routes.
@@ -249,18 +250,25 @@ as implemented in slices 279–281; full parser/task timing, async/defer
 semantics, general script conformance, and remote CI remain open.
 
 [`native-engine-browser-701`](tasks/native-engine-browser-701.md) is complete
-locally. Dynamically inserted inline classic scripts accept the five
-JavaScript MIME types recognized by the existing external-script response
-policy, with case-insensitive MIME essence matching and parameters ignored.
-`application/json` remains inert. Full script/task scheduling and general
-conformance remain open; remote CI was not run.
+locally as an interim increment: it added five JavaScript types to dynamic
+inline recognition but also ignored parameters on the `type` attribute. That
+over-acceptance was corrected in slice 703, which recognizes all 16 exact
+essences and rejects parameterized `type` values. `application/json` remains
+inert. Remote CI was not run.
 
-[`native-engine-browser-702`](tasks/native-engine-browser-702.md) is complete
-locally. Initial-document inline/external classic-script classification now
-uses the same shared five-type JavaScript MIME essence helper as external
-response validation and dynamic inline insertion. Parameterized and
-case-varied essences are accepted; `application/json` stays inert. Complete
-script type/scheduling conformance remains open; remote CI was not run.
+[`native-engine-browser-702`](tasks/native-engine-browser-702.md) was an
+interim increment that applied external response parameter handling to script
+`type` attributes. Slice 703 corrects it: script elements require a strict
+case-insensitive essence match, while response `Content-Type` matching ignores
+parameters. See the corrected current contract in
+[`native-engine-browser-703`](tasks/native-engine-browser-703.md).
+
+[`native-engine-browser-703`](tasks/native-engine-browser-703.md) is complete
+locally. Parser-discovered and dynamically inserted classic scripts recognize
+all 16 JavaScript MIME type essences. Script `type` attributes reject
+parameters and surrounding whitespace; external response headers ignore
+parameters. The remaining script scheduling and general browser conformance
+gates remain open; remote CI was not run.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

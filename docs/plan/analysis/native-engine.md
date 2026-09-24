@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-706`. Issue #40
+completed browser expansion slice is `native-engine-browser-707`. Issue #40
 remains open. It follows locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,
@@ -946,6 +946,15 @@ tools, 17 examples, and 22 public modules. Dynamic registration, workers,
 resolved specifier locking, module fragment identity, and full module timing
 remain open. Remote CI was not run. See
 [`slice 706`](../tasks/native-engine-browser-706.md).
+
+Slice 707 completes bounded resolved-module-set behavior across multiple
+parser-discovered import maps. Prefetch interleaves map registration and module
+roots by document order, records successful resolutions, filters later exact
+or prefix rules that would alter those results, and installs the same bounded
+records for QuickJS. The focused batch passed 14 resolver/module unit tests and
+11 process-backed module tests; formatting and all local documentation gates
+passed. Remote CI was not run. Computed dynamic imports, dynamically inserted
+map registration, and worker propagation remain outside this slice.
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

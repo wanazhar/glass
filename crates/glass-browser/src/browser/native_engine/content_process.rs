@@ -8244,37 +8244,11 @@ async fn load_page_script_source_list(
         .map(NativeJavaScriptRuntime::module_import_map)
         .transpose()?
         .unwrap_or_default();
-    let base_import_map = import_map.clone();
-    let mut import_map_snapshots = Vec::new();
-    for map_source in page_import_maps {
-        let Some(source) = map_source.source else {
-            resource_events.push((map_source.node_index, NativeEventKind::Error));
-            continue;
-        };
-        if !loader.allows_inline_script(document_url, &source, map_source.nonce.as_deref())? {
-            resource_events.push((map_source.node_index, NativeEventKind::Error));
-            continue;
-        }
-        let parsed = match NativeModuleImportMap::parse(&source, document_url) {
-            Ok(parsed) => parsed,
-            Err(_) => {
-                resource_events.push((map_source.node_index, NativeEventKind::Error));
-                continue;
-            }
-        };
-        let mut merged = import_map.clone();
-        if merged.merge(parsed).is_err() {
-            resource_events.push((map_source.node_index, NativeEventKind::Error));
-            continue;
-        }
-        import_map = merged;
-        import_map_snapshots.push((map_source.node_index, import_map.clone()));
-    }
     sources.push((
         NativePageScriptTiming::ParserBlocking,
-        NativePageScript::ImportMap(base_import_map),
+        NativePageScript::ImportMap(import_map.clone()),
     ));
-    let mut next_import_map = 0usize;
+    let mut page_import_maps = page_import_maps.into_iter().peekable();
     for (index, script) in page_sources.into_iter().enumerate() {
         let node_index = match &script {
             NativePageScriptSource::Inline { node_index, .. }
@@ -8282,15 +8256,21 @@ async fn load_page_script_source_list(
             | NativePageScriptSource::ModuleInline { node_index, .. }
             | NativePageScriptSource::ModuleExternal { node_index, .. } => *node_index,
         };
-        while import_map_snapshots
-            .get(next_import_map)
-            .is_some_and(|(map_node_index, _)| *map_node_index < node_index)
+        while page_import_maps
+            .peek()
+            .is_some_and(|map_source| map_source.node_index < node_index)
         {
-            sources.push((
-                NativePageScriptTiming::ParserBlocking,
-                NativePageScript::ImportMap(import_map_snapshots[next_import_map].1.clone()),
-            ));
-            next_import_map += 1;
+            let map_source = page_import_maps
+                .next()
+                .expect("peeked import-map source remains available");
+            register_page_import_map_source(
+                map_source,
+                &mut import_map,
+                loader,
+                document_url,
+                &mut sources,
+                &mut resource_events,
+            )?;
         }
         match script {
             NativePageScriptSource::Inline {
@@ -8343,7 +8323,7 @@ async fn load_page_script_source_list(
                     timing,
                     loader,
                     runtime,
-                    &import_map,
+                    &mut import_map,
                     &mut sources,
                     &mut seen,
                     &mut total_bytes,
@@ -8352,6 +8332,10 @@ async fn load_page_script_source_list(
                 if dependency_result.is_err() {
                     sources.truncate(script_start);
                 }
+                sources.push((
+                    NativePageScriptTiming::ParserBlocking,
+                    NativePageScript::ImportMap(import_map.clone()),
+                ));
             }
             NativePageScriptSource::External {
                 href,
@@ -8445,7 +8429,7 @@ async fn load_page_script_source_list(
                                 timing,
                                 loader,
                                 runtime,
-                                &import_map,
+                                &mut import_map,
                                 &mut sources,
                                 &mut seen,
                                 &mut total_bytes,
@@ -8457,6 +8441,10 @@ async fn load_page_script_source_list(
                                 sources.truncate(script_start);
                                 resource_events.push((node_index, NativeEventKind::Error));
                             }
+                            sources.push((
+                                NativePageScriptTiming::ParserBlocking,
+                                NativePageScript::ImportMap(import_map.clone()),
+                            ));
                         }
                         None => resource_events.push((node_index, NativeEventKind::Error)),
                     },
@@ -8465,14 +8453,54 @@ async fn load_page_script_source_list(
             }
         }
     }
-    while let Some((_, snapshot)) = import_map_snapshots.get(next_import_map) {
-        sources.push((
-            NativePageScriptTiming::ParserBlocking,
-            NativePageScript::ImportMap(snapshot.clone()),
-        ));
-        next_import_map += 1;
+    for map_source in page_import_maps {
+        register_page_import_map_source(
+            map_source,
+            &mut import_map,
+            loader,
+            document_url,
+            &mut sources,
+            &mut resource_events,
+        )?;
     }
     Ok((order_page_scripts(sources), resource_events))
+}
+
+fn register_page_import_map_source(
+    map_source: NativePageImportMapSource,
+    import_map: &mut NativeModuleImportMap,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    sources: &mut Vec<(NativePageScriptTiming, NativePageScript)>,
+    resource_events: &mut Vec<(u32, NativeEventKind)>,
+) -> Result<(), NativeEngineError> {
+    let node_index = map_source.node_index;
+    let Some(source) = map_source.source else {
+        resource_events.push((node_index, NativeEventKind::Error));
+        return Ok(());
+    };
+    if !loader.allows_inline_script(document_url, &source, map_source.nonce.as_deref())? {
+        resource_events.push((node_index, NativeEventKind::Error));
+        return Ok(());
+    }
+    let parsed = match NativeModuleImportMap::parse(&source, document_url) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            resource_events.push((node_index, NativeEventKind::Error));
+            return Ok(());
+        }
+    };
+    let mut merged = import_map.clone();
+    if merged.merge(parsed).is_err() {
+        resource_events.push((node_index, NativeEventKind::Error));
+        return Ok(());
+    }
+    *import_map = merged;
+    sources.push((
+        NativePageScriptTiming::ParserBlocking,
+        NativePageScript::ImportMap(import_map.clone()),
+    ));
+    Ok(())
 }
 
 /// Load and execute dynamic external/module sources discovered by a dynamic
@@ -8566,7 +8594,7 @@ async fn load_module_dependencies(
     timing: NativePageScriptTiming,
     loader: &mut NativeResourceLoader,
     runtime: Option<&NativeJavaScriptRuntime>,
-    import_map: &NativeModuleImportMap,
+    import_map: &mut NativeModuleImportMap,
     scripts: &mut Vec<(NativePageScriptTiming, NativePageScript)>,
     seen: &mut BTreeSet<String>,
     total_bytes: &mut usize,
@@ -8679,10 +8707,10 @@ fn form_action_allows(
 fn resolve_module_specifier(
     module_url: &str,
     specifier: &str,
-    import_map: &NativeModuleImportMap,
+    import_map: &mut NativeModuleImportMap,
 ) -> Result<Option<String>, NativeEngineError> {
     let target = import_map
-        .resolve(without_fragment(module_url), specifier)
+        .resolve_and_record(without_fragment(module_url), specifier)
         .map_err(|reason| NativeEngineError::UnsupportedUrl {
             reason: reason.into(),
         })?;

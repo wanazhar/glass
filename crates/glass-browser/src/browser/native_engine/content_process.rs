@@ -8408,6 +8408,7 @@ async fn load_page_script_source_list(
                     .map(|runtime| runtime.object_url_resource(&href))
                     .transpose()?
                     .flatten();
+                let crossorigin = crossorigin.as_deref().or(Some("anonymous"));
                 match loader
                     .load_script_async_with_metadata_and_object_url(
                         document_url,
@@ -8594,6 +8595,7 @@ async fn load_module_dependencies(
                 .map(|runtime| runtime.object_url_resource(&target))
                 .transpose()?
                 .flatten();
+            let integrity = import_map.integrity_for_url(&target);
             let resource = if let Some(object_url) = object_url.as_ref() {
                 loader
                     .load_script_async_with_metadata_and_object_url(
@@ -8602,14 +8604,22 @@ async fn load_module_dependencies(
                         MAX_NATIVE_SCRIPT_BYTES,
                         true,
                         None,
-                        None,
-                        None,
+                        integrity,
+                        Some("anonymous"),
                         Some(object_url),
                     )
                     .await?
             } else {
                 loader
-                    .load_script_async(owner_url, &target, MAX_NATIVE_SCRIPT_BYTES)
+                    .load_script_async_with_metadata(
+                        owner_url,
+                        &target,
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        true,
+                        None,
+                        integrity,
+                        Some("anonymous"),
+                    )
                     .await?
             };
             let Some(resource) = resource else {

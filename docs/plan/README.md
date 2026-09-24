@@ -27,11 +27,12 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-705`; issue #40
-remains open. Slice 704 connects bounded inline `imports` maps to module
-prefetch and QuickJS resolution; scope maps are added in slice 705. Integrity
-metadata, dynamic map registration, and full module timing remain open. Slice
-703 separates
+expansion is complete locally through `native-engine-browser-706`; issue #40
+remains open. Slices 704–705 connect bounded inline `imports` and referrer
+`scopes` maps to module prefetch and QuickJS resolution. Slice 706 adds
+URL-keyed import-map integrity enforcement and module CORS defaults. Dynamic
+map registration, resolved-specifier locking, worker/file-origin propagation,
+module fragment identity, and full module timing remain open. Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type
 essences are matched case-insensitively without parameters on script elements;
@@ -283,9 +284,10 @@ resolver/parser tests and one process-backed browser integration test passed
 after the locked target check. Documentation checks passed. The link/inventory
 gate also passed for 1,332 Markdown files, 346 full-product MCP tools, 17
 examples, and 22 public modules. Remote CI was not run; slice 705 adds bounded
-`scopes`. Issue #40 remains open for integrity, dynamic map registration,
-worker/file-origin coverage, module timing, and the broader native replacement
-gates.
+`scopes`, and slice 706 adds integrity enforcement. Issue #40 remains open for
+dynamic map registration, worker/file-origin coverage, resolved-specifier
+locking, module fragment identity, module timing, and the broader native
+replacement gates.
 
 [`native-engine-browser-705`](tasks/native-engine-browser-705.md) is complete
 locally. Bounded referrer-scoped maps use most-specific matching scope,
@@ -295,8 +297,24 @@ including nested static and literal-dynamic imports. The locked target check
 and focused tests passed (8 resolver/parser tests, 1 process-backed test).
 All four local documentation gates passed across 1,333 Markdown files, 93
 guides/19 contracts, 15 shortcut keys/63 markers, 346 MCP tools, 17 examples,
-and 22 public modules. Integrity metadata, dynamic registration, worker maps,
-and complete module timing remain open; remote CI was not run.
+and 22 public modules. Dynamic registration, worker maps, resolved-specifier
+locking, module fragment identity, and complete module timing remain open;
+remote CI was not run.
+
+[`native-engine-browser-706`](tasks/native-engine-browser-706.md) is complete
+locally. Bounded URL-keyed SHA-256/384/512 integrity metadata is enforced on
+descendant module response bytes before evaluation. Import-map JSON order is
+preserved while normalizing keys: later canonically equivalent entries within
+one map replace earlier entries, while merging later maps keeps existing
+entries. External module roots and descendants use CORS with same-origin
+credentials by default; the two-origin test verifies Origin headers, no
+cross-origin cookies, a matching hash, and a blocked mismatch. The locked
+target check, 11 focused parser/resolver tests, and 2 process-backed import-map
+tests passed, as did all four local docs gates across 1,334 Markdown files, 93
+guides/19 contracts, 15 shortcut keys/63 markers, 346 MCP tools, 17 examples,
+and 22 public modules. Remote CI was not run. Dynamic map registration, worker
+propagation, resolved-specifier locking, module fragment identity, and
+complete parser/module scheduling remain open.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts
@@ -4718,9 +4736,10 @@ The completed bounded literal-dynamic-import batch is
 QuickJS job drain, preserving module namespace resolution and promise callback
 effects. At that point, computed specifiers and bare packages/import maps were
 open; slices 704–705 later add bounded inline maps. Computed specifiers,
-import-map integrity/dynamic registration/worker support, parser timing,
-POST/submission lifecycle/default-action ordering, target contexts, timers,
-Fetch/XHR, and the remaining resource classes remain open.
+dynamic registration/worker support, parser timing, POST/submission
+lifecycle/default-action ordering, target contexts, timers, Fetch/XHR, and the
+remaining resource classes remain open. Bounded import-map integrity is
+implemented in slice 706.
 
 The completed bounded task-turn batch is
 [native-engine-browser-032](tasks/native-engine-browser-032.md). Native page

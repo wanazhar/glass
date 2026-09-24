@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-716`.
+The latest locally completed parser/script slice is `native-engine-browser-717`.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
 shared, and service-worker module graphs. See the task records for scope and
@@ -18,10 +18,15 @@ imports. Slices 714–715 add runtime-valued imports for dedicated and shared
 classic/module workers. Slice 716 rewrites computed imports in statically
 preloaded classic `importScripts()` sources against each source's final
 response URL, before graph concatenation. Redirected dedicated imports, nested
-module imports, SharedWorker port settlement, and local fixtures pass. Rooted-file
-page imports, Service Worker classic-import settlement, import options,
-broader file-origin propagation, and full module scheduling remain open; see
-`tasks/native-engine-browser-716.md`.
+module imports, SharedWorker port settlement, and local fixtures pass. Slice
+717 settles runtime-valued imports from initial rooted-file classic/module
+scripts and dynamically attached classic/module scripts, honors the installed
+Document import map, retains existing module identities within graph bounds,
+and rejects out-of-root requests through the import promise. Its focused tests
+cover nested imports, duplicate module identity, and the file-root boundary.
+The initial parser-sourced file import-map path, Service Worker classic-import
+settlement, import options, broader file-origin propagation, and full module
+scheduling remain open; see `tasks/native-engine-browser-717.md`.
 At the 715 checkpoint, computed imports in classic `importScripts()`
 dependencies remained open. Slice 714 adds runtime-valued computed imports in
 dedicated classic and module Workers through the worker-owned fetch queue,

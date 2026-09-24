@@ -7504,23 +7504,90 @@ pub(crate) fn load_local_file_module_graph_with_import_map(
     node_index: u32,
     import_map: &mut NativeModuleImportMap,
 ) -> Result<Vec<(NativePageScriptTiming, NativePageScript)>, NativeEngineError> {
+    load_local_file_module_graph_with_import_map_and_existing(
+        loader,
+        document_url,
+        root_name,
+        root_base_url,
+        root_source,
+        timing,
+        Some(node_index),
+        &BTreeSet::new(),
+        0,
+        import_map,
+    )
+}
+
+pub(crate) fn load_local_file_dynamic_module_graph_with_import_map(
+    loader: &NativeResourceLoader,
+    document_url: &str,
+    root_name: String,
+    root_base_url: String,
+    root_source: String,
+    import_map: &mut NativeModuleImportMap,
+    existing_module_names: &BTreeSet<String>,
+    existing_module_bytes: usize,
+) -> Result<Vec<(NativePageScriptTiming, NativePageScript)>, NativeEngineError> {
+    load_local_file_module_graph_with_import_map_and_existing(
+        loader,
+        document_url,
+        root_name,
+        root_base_url,
+        root_source,
+        NativePageScriptTiming::ParserBlocking,
+        None,
+        existing_module_names,
+        existing_module_bytes,
+        import_map,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_local_file_module_graph_with_import_map_and_existing(
+    loader: &NativeResourceLoader,
+    document_url: &str,
+    root_name: String,
+    root_base_url: String,
+    root_source: String,
+    timing: NativePageScriptTiming,
+    node_index: Option<u32>,
+    existing_module_names: &BTreeSet<String>,
+    existing_module_bytes: usize,
+    import_map: &mut NativeModuleImportMap,
+) -> Result<Vec<(NativePageScriptTiming, NativePageScript)>, NativeEngineError> {
     let mut sources = vec![(
         timing,
         NativePageScript::Module {
             name: root_name.clone(),
             source: root_source.clone(),
             base_url: root_base_url.clone(),
-            node_index: Some(node_index),
+            node_index,
         },
     )];
     if !is_file_url(document_url) {
         return Ok(sources);
     }
 
-    let mut seen = BTreeSet::from([root_name.clone()]);
+    let mut seen = existing_module_names.clone();
+    seen.insert(root_name.clone());
+    if seen.len() > MAX_NATIVE_MODULE_IMPORTS {
+        return Err(NativeEngineError::limit(
+            "native file module graph entries",
+            MAX_NATIVE_MODULE_IMPORTS,
+            seen.len(),
+        ));
+    }
     let mut pending = vec![(root_name, root_base_url, root_source.clone())];
     let mut import_edges = 0usize;
-    let mut total_bytes = root_source.len();
+    let mut total_bytes = existing_module_bytes.saturating_add(root_source.len());
+    let maximum_module_bytes = MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS);
+    if total_bytes > maximum_module_bytes {
+        return Err(NativeEngineError::limit(
+            "native file module graph bytes",
+            maximum_module_bytes,
+            total_bytes,
+        ));
+    }
     while let Some((_, module_base_url, module_source)) = pending.pop() {
         let mut specifiers = static_module_specifiers(&module_source)?;
         specifiers.extend(literal_dynamic_module_specifiers(&module_source));
@@ -7563,10 +7630,10 @@ pub(crate) fn load_local_file_module_graph_with_import_map(
                     ),
                 })?;
             total_bytes = total_bytes.saturating_add(resource.body.len());
-            if total_bytes > MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS) {
+            if total_bytes > maximum_module_bytes {
                 return Err(NativeEngineError::limit(
                     "native file module graph bytes",
-                    MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS),
+                    maximum_module_bytes,
                     total_bytes,
                 ));
             }
@@ -8112,7 +8179,33 @@ pub(crate) fn execute_dynamic_page_scripts(
     resource_events: &[(u32, NativeEventKind)],
     csp_violations: &[NativeCspViolation],
 ) -> Result<NativePageScriptResult, NativeEngineError> {
-    let (module_sources, module_base_urls) = module_source_maps(&sources);
+    let (new_module_sources, new_module_base_urls) = module_source_maps(&sources);
+    let (mut module_sources, mut module_base_urls) = runtime.module_sources_snapshot()?;
+    for (name, source) in new_module_sources {
+        module_sources.entry(name).or_insert(source);
+    }
+    for (name, base_url) in new_module_base_urls {
+        module_base_urls.entry(name).or_insert(base_url);
+    }
+    if module_sources.len() > MAX_NATIVE_MODULE_IMPORTS {
+        return Err(NativeEngineError::limit(
+            "native page module graph entries",
+            MAX_NATIVE_MODULE_IMPORTS,
+            module_sources.len(),
+        ));
+    }
+    let module_bytes = module_sources
+        .values()
+        .map(String::len)
+        .fold(0usize, usize::saturating_add);
+    let maximum_module_bytes = MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS);
+    if module_bytes > maximum_module_bytes {
+        return Err(NativeEngineError::limit(
+            "native page module graph bytes",
+            maximum_module_bytes,
+            module_bytes,
+        ));
+    }
     runtime.set_module_sources(module_sources);
     runtime.set_module_base_urls(module_base_urls);
 

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-716`. Issue #40
+completed browser expansion slice is `native-engine-browser-717`. Issue #40
 remains open. It follows
 locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
@@ -1048,6 +1048,18 @@ fixture covers the same nested path. Rooted-file page imports, Service Worker
 classic-import settlement, import options/attributes, and full module
 scheduling remain open. See
 [`slice 716`](../tasks/native-engine-browser-716.md).
+
+Slice 717 resolves runtime-valued imports from initial rooted-file classic and
+module scripts plus dynamically attached classic/module scripts. The native
+page owner applies the installed Document import map, admits only configured-
+root file targets, retains existing module records under the shared graph
+entry/byte bounds, and settles successful or rejected requests through the
+original QuickJS import promise. Focused fixtures cover nested imports,
+duplicate module identity, mapped dynamic imports, and out-of-root rejection;
+rooted-file parser-sourced import-map initialization, Service Worker
+classic-import settlement, import options/attributes, and complete module
+scheduling remain separate gates. See
+[`slice 717`](../tasks/native-engine-browser-717.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

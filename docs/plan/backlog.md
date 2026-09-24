@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser slice is `native-engine-browser-695`.
+The latest locally completed parser slice is `native-engine-browser-696`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -128,6 +128,16 @@ foreign batch passed 9/9, and the scoped HTML batch passed 34/34. Local
 documentation, formatting, and whitespace gates passed; remote CI was not
 run. General parser conformance remains open. See
 `tasks/native-engine-browser-695.md`.
+
+Slice 696 is complete locally: initialize RCDATA from `title`/`textarea`
+fragment context, including SVG `title`, and resume ordinary fragment parsing
+after the appropriate context end tag. The regression covers decoded text,
+null replacement, the closing-tag slash boundary, EOF handling, and suffix
+namespace/parentage parity between Rust commits and same-turn projection.
+Full-document parsing retains the SVG `title` HTML-integration behavior from
+slice 690. The HTML batch passed 35/35 and the foreign batch 9/9 after the
+locked package check. Remote CI was not run. See
+`tasks/native-engine-browser-696.md`.
 
 Slice 689 is complete locally: select child element namespaces using SVG and MathML
 HTML integration-point rules across all four parser routes. Preserve the

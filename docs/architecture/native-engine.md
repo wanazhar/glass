@@ -1,9 +1,8 @@
 # Native browser engine
 
-Status: Browser-complete expansion is locally complete through
-`native-engine-browser-695`, following locally completed
-`native-engine-browser-694`; issue #40 remains open. Earlier completed slices
-include `native-engine-browser-693` through `native-engine-browser-687`,
+Status: The latest locally completed browser expansion is
+`native-engine-browser-696`; issue #40 remains open. Earlier completed slices
+include `native-engine-browser-695` through `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
 `native-engine-browser-684`,
@@ -659,6 +658,18 @@ Slice 695 completes this increment locally: the locked package check passed,
 the foreign batch passed 9/9, and the scoped HTML batch passed 34/34.
 Documentation and formatting gates passed locally; remote CI was not run. The
 broader parser remains incomplete.
+
+HTML fragment parsing now initializes tokenizer state from its context
+element, not only from start tags in the input. The RCDATA contexts `title`
+and `textarea` therefore treat markup before their appropriate closing tag as
+decoded text, including an SVG `title` fragment context. After that closing
+tag, the remainder is parsed under the fragment's normal tree-construction
+context. Rust commits and same-turn JavaScript/frame projections agree; the
+full-document SVG `title` integration point and XHR document parsing remain
+unchanged. The locked package check passed, the scoped HTML parser batch passed
+35/35, and the foreign batch passed 9/9. Local formatting, whitespace, and
+maintainer documentation gates passed; remote CI was not run. See
+[`slice 696`](../plan/tasks/native-engine-browser-696.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

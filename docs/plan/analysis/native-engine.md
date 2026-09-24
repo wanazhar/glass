@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-695`. Issue #40
-remains open. It follows locally completed `native-engine-browser-694`,
+completed browser expansion slice is `native-engine-browser-696`. Issue #40
+remains open. It follows locally completed `native-engine-browser-695`,
+`native-engine-browser-694`,
 `native-engine-browser-693`, and
 `native-engine-browser-692` and
 `native-engine-browser-691`,
@@ -818,6 +819,28 @@ Rust `innerHTML` commit, same-turn JavaScript fragment projection, and XHR
 batch (9/9) and the scoped HTML parser batch (34/34). Documentation,
 formatting, and whitespace gates passed locally; remote CI was not run. See
 [`slice 695`](../tasks/native-engine-browser-695.md).
+
+Slice 696 completes context-sensitive RCDATA initialization for HTML fragment
+parsing. `title` and `textarea` contexts, including SVG `title`, consume
+markup-looking source as decoded text until the appropriate context end tag;
+remaining source resumes under normal fragment insertion rules. The context
+target is not inserted or popped. The Rust `innerHTML` commit and immediate
+JavaScript/frame projection agree, while document parsing and XHR behavior
+remain unchanged. The locked package check passed, the scoped HTML batch passed
+35/35, and the foreign batch passed 9/9. Formatting, whitespace, and maintainer
+documentation checks passed locally; remote CI was not run. See
+[`slice 696`](../tasks/native-engine-browser-696.md).
+
+Slice 696 addresses the fragment-context tokenizer state omitted by the
+namespace-aware special-text work in slice 690. The HTML fragment algorithm
+starts in RCDATA for `title` and `textarea` contexts; an SVG `title` context
+also uses that state even though a full-document SVG `title` is an HTML
+integration point. The fragment context element is not a synthetic child or an
+open element to pop. Text before its appropriate closing tag decodes character
+references and replaces nulls; source after the close resumes normal fragment
+tree construction. The Rust commit path and same-turn JavaScript/frame
+projection must agree. Full-document and XHR parsing remain unchanged. See
+[`slice 696`](../tasks/native-engine-browser-696.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

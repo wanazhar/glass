@@ -35822,10 +35822,14 @@ fn document_bootstrap(
   const htmlRawTextElements = new Set([
     "script", "style", "xmp", "iframe", "noembed", "noframes", "noscript",
   ]);
+  const htmlLiteralTextSerializationElements = new Set([
+    ...htmlRawTextElements, "plaintext",
+  ]);
   const serializeHtmlTextNode = (node, value) => {{
     const parent = node.__glassParent || null;
     const name = String(parent && parent.localName || "").toLowerCase();
-    return parent && parent.namespaceURI === HTML_NAMESPACE && htmlRawTextElements.has(name)
+    return parent && parent.namespaceURI === HTML_NAMESPACE
+        && htmlLiteralTextSerializationElements.has(name)
       ? String(value)
       : escapeHtmlText(value);
   }};
@@ -36523,7 +36527,12 @@ fn document_bootstrap(
     const fragmentSpecialTextName = Number(fragment && fragment.nodeType) === 1
       ? String(fragment.localName || "").toLowerCase()
       : "";
-    if (rawTextFragmentContextElements.has(fragmentSpecialTextName)
+    if (fragmentSpecialTextName === "plaintext") {{
+      if (source.length > cursor) {{
+        appendParsedText(source.slice(cursor).replace(/\u0000/g, "\ufffd"));
+      }}
+      cursor = source.length;
+    }} else if (rawTextFragmentContextElements.has(fragmentSpecialTextName)
         || rcdataElements.has(fragmentSpecialTextName)) {{
       const rawText = rawTextFragmentContextElements.has(fragmentSpecialTextName);
       const special = findSpecialEnd(cursor, fragmentSpecialTextName);

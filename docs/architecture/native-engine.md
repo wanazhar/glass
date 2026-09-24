@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-697`; issue #40 remains open. Earlier completed slices
+`native-engine-browser-698`; issue #40 remains open. Earlier completed slices
 include `native-engine-browser-696` through `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
@@ -682,6 +682,17 @@ Script-data and `plaintext` fragment states remain separate. The locked
 package check, focused RAWTEXT tests (2/2), and foreign namespace route test
 (1/1) passed locally. Remote CI was not run. See
 [`slice 697`](../plan/tasks/native-engine-browser-697.md).
+
+Slice 698 initializes fragment parsing for a `plaintext` context directly in
+the PLAINTEXT state. All source, including markup-like suffixes and any
+`</plaintext>` sequence, remains one literal text node through EOF. U+0000 is
+replaced with U+FFFD, HTML newlines are normalized, and JavaScript/Rust
+serialization preserves the raw text. The locked package check and six
+focused RCDATA/RAWTEXT/PLAINTEXT fragment-context tests passed, along with
+formatting and local documentation gates. The optional inventory/link check
+was skipped because its debug binaries were absent; remote CI was not run.
+Document/XHR `plaintext` start-tag parsing remains separate. See
+[`slice 698`](../plan/tasks/native-engine-browser-698.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

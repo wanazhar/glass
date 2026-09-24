@@ -906,6 +906,11 @@ impl NativeEngine {
         target_url: &str,
     ) -> Result<bool, NativeEngineError> {
         self.require_running("frame discovery")?;
+        if is_file_url(&self.url) {
+            return self
+                .loader
+                .allows_rooted_file_frame_navigation(&self.url, target_url);
+        }
         let Some(frame_sources) = self.document_frame_sources.as_deref() else {
             return Ok(true);
         };

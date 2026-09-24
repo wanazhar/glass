@@ -10,6 +10,8 @@ Authority: [issue #40](https://github.com/wanazhar/glass/issues/40), with the
 implementation and ownership contract in
 [`docs/architecture/native-engine.md`](../architecture/native-engine.md).
 
+[wpt-about-blank]: https://github.com/web-platform-tests/wpt/blob/master/content-security-policy/child-src/child-src-about-blank-allowed-by-default.sub.html
+
 ## Purpose
 
 `GCWP-0.1` defines the smallest profile that can honestly replace Chromium/CDP
@@ -141,6 +143,19 @@ It is never an implicit fallback for a native request.
   classes, file-origin data/blob policy, report-only file policies, and
   complete CSP conformance remain open. See
   [task 726](tasks/native-engine-browser-726.md).
+- Slice 727 implements and tests the rooted-file contract for embedded frame
+  navigations.
+  The current enforced policy container is checked before selecting the child
+  document URL; `frame-src` falls back through `child-src` to `default-src`,
+  policies remain conjunctive, and `'self'` means a file admitted by the
+  Document's most-specific configured root. Explicit file sources remain
+  subject to configured-root admission. Runtime-added head policies govern
+  frames created after capture; a denied frame follows the existing
+  `about:blank` blocked-frame behavior, while an explicit `about:blank` frame
+  remains an allowed initial empty document ([WPT coverage][wpt-about-blank]).
+  This slice does not claim report-only file policy or complete CSP
+  conformance. See
+  [task 727](tasks/native-engine-browser-727.md).
 - Local implementation evidence: slices 713–717 cover runtime-valued imports
   in page classic/module scripts, dedicated classic/module Workers, and
   classic/module SharedWorkers, including nested computed imports through their

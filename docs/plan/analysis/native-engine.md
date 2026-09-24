@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-699`. Issue #40
+completed browser expansion slice is `native-engine-browser-700`. Issue #40
 remains open. It follows locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,
@@ -877,6 +877,15 @@ document, fragment, JavaScript/frame, and XHR paths agree. This bounded
 scanner correction is not full tokenizer or script-execution conformance;
 remote CI was not run. See
 [`slice 699`](../tasks/native-engine-browser-699.md).
+
+Slice 700 is complete locally. Connected insertion of dynamically created
+classic inline scripts through `appendChild` and `insertBefore` executes them
+once and returns normally. Detached preparation does not execute, and
+removal/reinsertion does not rerun an already-started script. The parser-only
+active-formatting block was removed from the DOM mutation path. The locked
+package check and focused regression passed 1/1; remote CI was not run.
+Dynamic external/module loading and general script conformance remain open.
+See [`slice 700`](../tasks/native-engine-browser-700.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

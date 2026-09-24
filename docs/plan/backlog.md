@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-720`.
+The latest locally completed parser/script slice is `native-engine-browser-721`.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
 shared, and service-worker module graphs. See the task records for scope and
@@ -47,6 +47,15 @@ unit tests, process-backed JSON tests, and documentation gates passed locally;
 remote CI was not run. Dynamic import options, broader file-origin propagation,
 and full module scheduling remain open. See
 `tasks/native-engine-browser-720.md`.
+Slice 721 replaces literal dynamic-import prefetch with invocation-driven
+loading and implements dynamic JSON options across page, dedicated/shared
+Worker, classic `importScripts()` dependency, and configured-root file owners.
+It verifies that unexecuted/invalid calls issue no request, preserves
+specifier/options conversion order, and keeps Service Worker rejection
+fetch-free. The scoped target check, seven unit tests, six process-backed
+regressions, formatting, and whitespace checks passed locally; remote CI was
+not run. Other module types, broader file-origin propagation, and full module
+scheduling remain open. See `tasks/native-engine-browser-721.md`.
 At the 715 checkpoint, computed imports in classic `importScripts()`
 dependencies remained open. Slice 714 adds runtime-valued computed imports in
 dedicated classic and module Workers through the worker-owned fetch queue,

@@ -37,25 +37,25 @@ use super::javascript::{
     MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
     MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES, MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES,
     MAX_NATIVE_WEBSOCKET_PROTOCOLS, MAX_NATIVE_WORKER_MESSAGES, MAX_NATIVE_XHR_TIMEOUT_MS,
-    NativeCookieChange, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
-    NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
-    NativeHashChangeEvent, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
-    NativeMessagePortPageMessage, NativePageEventBatch, NativePageMessagePortCommand,
-    NativePageScript, NativePageScriptResult, NativePopupRequest, NativePostMessageRequest,
-    NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerClientMessage,
-    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
-    NativeStaticModuleRequest, NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerEventSourceCommand,
-    NativeWorkerMessage, NativeWorkerRegistry, NativeWorkerWebSocketCommand,
-    apply_document_commands_with_font_face_ack, apply_page_script_evaluation,
-    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts, host_event_batch,
-    host_key_event_batch, host_key_event_batch_with_modifiers, host_submit_event_batch,
-    literal_dynamic_module_specifiers, load_indexed_db_profile, load_service_worker_cache_profile,
-    load_service_worker_registration_profiles, load_web_storage_profile, native_module_loader_name,
-    order_page_scripts, page_script_sources_to_scripts, resolve_module_request_url,
-    save_service_worker_cache_profile, save_web_storage_profile, static_module_requests,
-    storage_key, validate_message_port_transfers, validate_native_message_payload,
-    validate_native_object_url_transfers,
+    NATIVE_JSON_MODULE_NAME_PREFIX, NativeCookieChange, NativeCookieProfileEntry, NativeDialog,
+    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
+    NativeFrameScriptWindow, NativeHashChangeEvent, NativeIndexedDbChange, NativeIndexedDbState,
+    NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativePageEventBatch,
+    NativePageMessagePortCommand, NativePageScript, NativePageScriptResult, NativePopupRequest,
+    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
+    NativeServiceWorkerOpenWindowRequest, NativeStorageEvent, NativeWebStorageState,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    NativeWorkerEventSourceCommand, NativeWorkerMessage, NativeWorkerRegistry,
+    NativeWorkerWebSocketCommand, apply_document_commands_with_font_face_ack,
+    apply_page_script_evaluation, diff_indexed_db_changes, execute_dynamic_page_scripts,
+    execute_page_scripts, host_event_batch, host_key_event_batch,
+    host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
+    load_service_worker_cache_profile, load_service_worker_registration_profiles,
+    load_web_storage_profile, native_module_loader_name, order_page_scripts,
+    page_script_sources_to_scripts, resolve_module_request_url, save_service_worker_cache_profile,
+    save_web_storage_profile, static_module_requests, storage_key, validate_message_port_transfers,
+    validate_native_message_payload, validate_native_object_url_transfers,
 };
 use super::layout::NativePoint;
 use super::module_import_map::NativeModuleImportMap;
@@ -181,6 +181,7 @@ type NativeScriptFetch = (
     bool,
     Option<String>,
     bool,
+    Option<NativeModuleResourceType>,
 );
 
 pub(crate) struct NativeContentLoad {
@@ -8718,17 +8719,11 @@ async fn load_module_dependencies(
         source.to_owned(),
     )];
     let mut requested_urls = seen.clone();
-    while let Some((_, current_base_url, current_source)) = pending.pop() {
-        let mut requests = static_module_requests(&current_source)?;
-        requests.extend(
-            literal_dynamic_module_specifiers(&current_source)
-                .into_iter()
-                .map(|specifier| NativeStaticModuleRequest {
-                    specifier,
-                    module_type: NativeModuleResourceType::JavaScript,
-                    specifier_span: None,
-                }),
-        );
+    while let Some((module_identity, current_base_url, current_source)) = pending.pop() {
+        if module_identity.starts_with(NATIVE_JSON_MODULE_NAME_PREFIX) {
+            continue;
+        }
+        let requests = static_module_requests(&current_source)?;
         for request in requests {
             if request.module_type == NativeModuleResourceType::Unsupported {
                 return Err(NativeEngineError::UnsupportedUrl {
@@ -11898,6 +11893,7 @@ fn fetch_commands(
         .filter_map(|command| match command {
             NativeScriptCommand::Fetch {
                 request_id,
+                worker_id: _,
                 href,
                 credentials,
                 method,
@@ -11912,7 +11908,7 @@ fn fetch_commands(
                 upload_stream_id,
                 destination,
                 module_referrer,
-                ..
+                module_type,
             } => Some((
                 *request_id,
                 href.clone(),
@@ -11929,6 +11925,7 @@ fn fetch_commands(
                 *credentials,
                 destination.clone(),
                 module_referrer.clone(),
+                *module_type,
             )),
             _ => None,
         })
@@ -11949,6 +11946,7 @@ fn fetch_commands(
                 credentials,
                 destination,
                 module_referrer,
+                module_type,
             )| {
                 if timeout_ms.is_some_and(|value| value > MAX_NATIVE_XHR_TIMEOUT_MS) {
                     return Err(NativeEngineError::invalid(
@@ -12025,6 +12023,14 @@ fn fetch_commands(
                         "must be present only for a module-destination request",
                     ));
                 }
+                if (!module_destination && module_type.is_some())
+                    || module_type == Some(NativeModuleResourceType::Unsupported)
+                {
+                    return Err(NativeEngineError::invalid(
+                        "dynamic module resource type",
+                        "must be supported and present only for module-destination requests",
+                    ));
+                }
                 Ok((
                     request_id,
                     href,
@@ -12041,6 +12047,7 @@ fn fetch_commands(
                     font_destination,
                     module_referrer,
                     module_destination,
+                    module_type,
                 ))
             },
         )
@@ -12299,6 +12306,7 @@ async fn load_dynamic_page_module(
     document_url: &str,
     module_referrer: &str,
     specifier: &str,
+    module_type: Option<NativeModuleResourceType>,
     runtime: &NativeJavaScriptRuntime,
     loader: &mut NativeResourceLoader,
 ) -> Result<String, NativeEngineError> {
@@ -12315,9 +12323,16 @@ async fn load_dynamic_page_module(
             reason: "dynamic module URL is outside the supported page module schemes".into(),
         });
     };
+    let module_type = module_type.unwrap_or(NativeModuleResourceType::JavaScript);
+    if module_type == NativeModuleResourceType::Unsupported {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "dynamic module import attributes request an unsupported module type".into(),
+        });
+    }
+    let module_name = native_module_loader_name(&target, module_type);
 
     let (module_sources, _) = runtime.module_sources_snapshot()?;
-    if module_sources.contains_key(&target) {
+    if module_sources.contains_key(&module_name) {
         return runtime.register_dynamic_module_alias(request_id, &target);
     }
     if module_sources.len() >= MAX_NATIVE_MODULE_IMPORTS {
@@ -12330,42 +12345,28 @@ async fn load_dynamic_page_module(
 
     let object_url = runtime.object_url_resource(&target)?;
     let integrity = import_map.integrity_for_url(&target);
-    let resource = if let Some(object_url) = object_url.as_ref() {
-        loader
-            .load_script_async_with_metadata_and_object_url(
-                document_url,
-                &target,
-                MAX_NATIVE_SCRIPT_BYTES,
-                false,
-                None,
-                integrity,
-                Some("anonymous"),
-                Some(object_url),
-            )
-            .await?
-    } else {
-        loader
-            .load_script_async_with_metadata(
-                document_url,
-                &target,
-                MAX_NATIVE_SCRIPT_BYTES,
-                false,
-                None,
-                integrity,
-                Some("anonymous"),
-            )
-            .await?
-    }
-    .ok_or_else(|| NativeEngineError::Network {
-        operation: "dynamic module import".into(),
-        reason: "dynamic module resource could not be loaded".into(),
-    })?;
+    let resource = loader
+        .load_module_dependency_async(
+            document_url,
+            &target,
+            MAX_NATIVE_SCRIPT_BYTES,
+            false,
+            integrity,
+            Some("anonymous"),
+            object_url.as_ref(),
+            module_type,
+        )
+        .await?
+        .ok_or_else(|| NativeEngineError::Network {
+            operation: "dynamic module import".into(),
+            reason: "dynamic module resource could not be loaded".into(),
+        })?;
 
     let base_url = resource.url;
     let source = resource.body;
     let (existing_sources, _) = runtime.module_sources_snapshot()?;
     let mut seen = existing_sources.keys().cloned().collect::<BTreeSet<_>>();
-    if !seen.insert(target.clone()) {
+    if !seen.insert(module_name.clone()) {
         return runtime.register_dynamic_module_alias(request_id, &target);
     }
     let mut total_bytes = existing_sources.values().map(String::len).sum::<usize>();
@@ -12382,14 +12383,14 @@ async fn load_dynamic_page_module(
     let mut graph = vec![(
         NativePageScriptTiming::ParserBlocking,
         NativePageScript::ModuleDependency {
-            name: target.clone(),
+            name: module_name.clone(),
             source: source.clone(),
             base_url: base_url.clone(),
         },
     )];
     load_module_dependencies(
         document_url,
-        &target,
+        &module_name,
         &base_url,
         &source,
         NativePageScriptTiming::ParserBlocking,
@@ -12597,6 +12598,7 @@ async fn resolve_script_fetches(
             font_destination,
             module_referrer,
             module_destination,
+            module_type,
         )) = selected_fetch.take()
         {
             resolved_count = resolved_count.saturating_add(1);
@@ -12630,6 +12632,7 @@ async fn resolve_script_fetches(
                         &current_url,
                         module_referrer.as_deref().unwrap_or_default(),
                         &href,
+                        module_type,
                         runtime,
                         loader,
                     )
@@ -13871,6 +13874,7 @@ mod tests {
             upload_stream_id: None,
             destination: destination.map(str::to_owned),
             module_referrer: None,
+            module_type: None,
         };
 
         let mut font = fetch_commands(&[command(Some("font"))]).unwrap();
@@ -13888,7 +13892,28 @@ mod tests {
             *module_referrer = Some("https://page.test/app.js".into());
         }
         let mut module_requests = fetch_commands(&[module]).unwrap();
-        assert!(module_requests.pop_front().unwrap().14);
+        let module_request = module_requests.pop_front().unwrap();
+        assert!(module_request.14);
+        assert_eq!(module_request.15, None);
+
+        let mut json_module = command(Some("module"));
+        if let NativeScriptCommand::Fetch { module_type, .. } = &mut json_module {
+            *module_type = Some(NativeModuleResourceType::Json);
+        }
+        assert_eq!(
+            fetch_commands(&[json_module])
+                .unwrap()
+                .pop_front()
+                .unwrap()
+                .15,
+            Some(NativeModuleResourceType::Json)
+        );
+
+        let mut invalid_destination = command(None);
+        if let NativeScriptCommand::Fetch { module_type, .. } = &mut invalid_destination {
+            *module_type = Some(NativeModuleResourceType::Json);
+        }
+        assert!(fetch_commands(&[invalid_destination]).is_err());
     }
 
     #[test]

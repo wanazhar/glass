@@ -57,10 +57,10 @@ use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
-    NativeCspViolation, NativeFetchResponse, NativeNavigationMethod, NativeNavigationPolicyKind,
-    NativeNavigationRequest, NativeObjectUrlTransfer, NativeResource, NativeResourceLoader,
-    csp_sources_allow, csp_sources_allow_for_redirect, referrer_for_navigation,
-    validate_target_navigation_payload,
+    NativeCspViolation, NativeFetchResponse, NativeModuleResourceType, NativeNavigationMethod,
+    NativeNavigationPolicyKind, NativeNavigationRequest, NativeObjectUrlTransfer, NativeResource,
+    NativeResourceLoader, csp_sources_allow, csp_sources_allow_for_redirect,
+    referrer_for_navigation, validate_target_navigation_payload,
 };
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
@@ -4556,6 +4556,7 @@ impl NativeEngine {
             upload_stream_id,
             destination,
             module_referrer,
+            module_type,
         } = command
         else {
             return Err(NativeEngineError::invalid(
@@ -4582,7 +4583,8 @@ impl NativeEngine {
             && cache.as_deref() == Some("default")
             && timeout_ms.is_none()
             && upload_stream_id.is_none()
-            && destination.as_deref() == Some("module");
+            && destination.as_deref() == Some("module")
+            && module_type != Some(NativeModuleResourceType::Unsupported);
 
         let runtime = self
             .javascript
@@ -4592,7 +4594,13 @@ impl NativeEngine {
                 reason: "page JavaScript runtime is unavailable".into(),
             })?;
         let loaded_module = if request_is_valid {
-            self.load_local_dynamic_page_module(request_id, &module_referrer, &href, runtime)
+            self.load_local_dynamic_page_module(
+                request_id,
+                &module_referrer,
+                &href,
+                module_type,
+                runtime,
+            )
         } else {
             Err(NativeEngineError::invalid(
                 "rooted-file dynamic module request",
@@ -4635,6 +4643,7 @@ impl NativeEngine {
         request_id: u32,
         module_referrer: &str,
         specifier: &str,
+        module_type: Option<NativeModuleResourceType>,
         runtime: &NativeJavaScriptRuntime,
     ) -> Result<String, NativeEngineError> {
         if !is_file_url(&self.url) || !is_file_url(module_referrer) {
@@ -4662,9 +4671,16 @@ impl NativeEngine {
                 reason: "rooted-file dynamic module target must use the file scheme".into(),
             });
         }
+        let module_type = module_type.unwrap_or(NativeModuleResourceType::JavaScript);
+        if module_type == NativeModuleResourceType::Unsupported {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "rooted-file dynamic import attributes request an unsupported type".into(),
+            });
+        }
+        let module_name = super::javascript::native_module_loader_name(&target, module_type);
 
         let (existing_sources, _) = runtime.module_sources_snapshot()?;
-        if existing_sources.contains_key(&target) {
+        if existing_sources.contains_key(&module_name) {
             return runtime.register_dynamic_module_alias(request_id, &target);
         }
         if existing_sources.len() >= MAX_NATIVE_MODULE_IMPORTS {
@@ -4696,7 +4712,7 @@ impl NativeEngine {
         let graph_result = load_local_file_dynamic_module_graph_with_import_map(
             &self.loader,
             &self.url,
-            target.clone(),
+            module_name.clone(),
             resource.url,
             resource.body,
             &mut import_map,

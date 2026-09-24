@@ -277,6 +277,8 @@ pub(crate) enum NativeScriptCommand {
         destination: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         module_referrer: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        module_type: Option<NativeModuleResourceType>,
     },
     /// Install bytes loaded by a page-realm `FontFace`. The fetch or inline
     /// source resolution happens in JavaScript first; this bounded command
@@ -1812,13 +1814,7 @@ impl NativeWorkerRegistry {
             dynamic_import_referrers,
         ) = if is_module {
             let graph = self
-                .load_worker_module_graph(
-                    loader,
-                    owner_url,
-                    module_request_url,
-                    resource.clone(),
-                    true,
-                )
+                .load_worker_module_graph(loader, owner_url, module_request_url, resource.clone())
                 .await?;
             (
                 resource.body.clone(),
@@ -2012,13 +2008,7 @@ impl NativeWorkerRegistry {
             dynamic_import_referrers,
         ) = if is_module {
             let graph = self
-                .load_worker_module_graph(
-                    loader,
-                    owner_url,
-                    module_request_url,
-                    resource.clone(),
-                    true,
-                )
+                .load_worker_module_graph(loader, owner_url, module_request_url, resource.clone())
                 .await?;
             (
                 resource.body.clone(),
@@ -3304,6 +3294,7 @@ impl NativeWorkerRegistry {
             upload_stream_id,
             destination,
             module_referrer,
+            module_type,
         } = command
         else {
             return Err(NativeEngineError::invalid(
@@ -3327,6 +3318,14 @@ impl NativeWorkerRegistry {
                 ));
             }
         };
+        if (!module_destination && module_type.is_some())
+            || module_type == Some(NativeModuleResourceType::Unsupported)
+        {
+            return Err(NativeEngineError::invalid(
+                "native Worker dynamic module type",
+                "must be supported and present only for module-destination requests",
+            ));
+        }
         if module_destination
             && (!credentials
                 || method != "GET"
@@ -3425,6 +3424,7 @@ impl NativeWorkerRegistry {
                     &worker_url,
                     module_referrer,
                     &href,
+                    module_type,
                     loader,
                 )
                 .await
@@ -3511,9 +3511,18 @@ impl NativeWorkerRegistry {
         worker_url: &str,
         module_referrer: &str,
         specifier: &str,
+        module_type: Option<NativeModuleResourceType>,
         loader: &mut NativeResourceLoader,
     ) -> Result<String, NativeEngineError> {
         let target = resolve_worker_module_specifier(module_referrer, specifier)?;
+        let module_type = module_type.unwrap_or(NativeModuleResourceType::JavaScript);
+        if module_type == NativeModuleResourceType::Unsupported {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "dynamic Worker module import attributes request an unsupported type"
+                    .into(),
+            });
+        }
+        let module_name = native_module_loader_name(&target, module_type);
         let existing_sources = {
             let worker = self.workers.get(&worker_id).ok_or_else(|| {
                 NativeEngineError::invalid(
@@ -3530,7 +3539,7 @@ impl NativeWorkerRegistry {
                 });
             }
             let (sources, _) = worker.runtime.module_sources_snapshot()?;
-            if sources.contains_key(&target) {
+            if sources.contains_key(&module_name) {
                 return worker
                     .runtime
                     .register_dynamic_module_alias(request_id, &target);
@@ -3539,14 +3548,19 @@ impl NativeWorkerRegistry {
         };
 
         let resource = loader
-            .load_worker_async(worker_url, &target, MAX_NATIVE_SCRIPT_BYTES)
+            .load_worker_module_dependency_async(
+                worker_url,
+                &target,
+                MAX_NATIVE_SCRIPT_BYTES,
+                module_type,
+            )
             .await?
             .ok_or_else(|| NativeEngineError::Network {
                 operation: "native Worker dynamic module import".into(),
                 reason: "dynamic Worker module was blocked or unavailable".into(),
             })?;
         let graph = self
-            .load_worker_module_graph(loader, worker_url, target.clone(), resource, true)
+            .load_worker_module_graph(loader, worker_url, module_name.clone(), resource)
             .await?;
         let new_sources = graph
             .sources
@@ -3799,7 +3813,6 @@ impl NativeWorkerRegistry {
         owner_url: &str,
         root_request_url: String,
         root: NativeScriptResource,
-        include_dynamic_imports: bool,
     ) -> Result<NativeWorkerModuleGraph, NativeEngineError> {
         if root.body.is_empty() {
             return Err(NativeEngineError::invalid(
@@ -3814,19 +3827,11 @@ impl NativeWorkerRegistry {
         let mut pending = VecDeque::from([(root_name.clone(), root_base_url.clone(), root.body)]);
         let mut total_bytes = sources.values().map(String::len).sum::<usize>();
         let mut import_edges = 0usize;
-        while let Some((_, module_base_url, module_source)) = pending.pop_front() {
-            let mut requests = static_module_requests(&module_source)?;
-            if include_dynamic_imports {
-                requests.extend(
-                    literal_dynamic_module_specifiers(&module_source)
-                        .into_iter()
-                        .map(|specifier| NativeStaticModuleRequest {
-                            specifier,
-                            module_type: NativeModuleResourceType::JavaScript,
-                            specifier_span: None,
-                        }),
-                );
+        while let Some((module_name, module_base_url, module_source)) = pending.pop_front() {
+            if module_name.starts_with(NATIVE_JSON_MODULE_NAME_PREFIX) {
+                continue;
             }
+            let requests = static_module_requests(&module_source)?;
             for request in requests {
                 if request.module_type == NativeModuleResourceType::Unsupported {
                     return Err(NativeEngineError::UnsupportedUrl {
@@ -3918,7 +3923,7 @@ pub(crate) async fn load_service_worker_source(
     let registry = NativeWorkerRegistry::new();
     if is_module {
         let module_graph = registry
-            .load_worker_module_graph(loader, owner_url, root_request_url, resource.clone(), false)
+            .load_worker_module_graph(loader, owner_url, root_request_url, resource.clone())
             .await?;
         Ok((resource.body, BTreeMap::new(), Some(module_graph)))
     } else {
@@ -7203,7 +7208,7 @@ struct NativeModuleResolver {
     dynamic_module_aliases: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
-const NATIVE_JSON_MODULE_NAME_PREFIX: &str = "glass-internal-json-module:";
+pub(crate) const NATIVE_JSON_MODULE_NAME_PREFIX: &str = "glass-internal-json-module:";
 // QuickJS deduplicates static request literals before the resolver sees their
 // import attributes. This marker keeps JSON and JavaScript requests distinct.
 const NATIVE_JSON_MODULE_REQUEST_PREFIX: &str = "glass-internal-json-request:";
@@ -7774,17 +7779,11 @@ fn load_local_file_module_graph_with_import_map_and_existing(
             total_bytes,
         ));
     }
-    while let Some((_, module_base_url, module_source)) = pending.pop() {
-        let mut requests = static_module_requests(&module_source)?;
-        requests.extend(
-            literal_dynamic_module_specifiers(&module_source)
-                .into_iter()
-                .map(|specifier| NativeStaticModuleRequest {
-                    specifier,
-                    module_type: NativeModuleResourceType::JavaScript,
-                    specifier_span: None,
-                }),
-        );
+    while let Some((module_name, module_base_url, module_source)) = pending.pop() {
+        if module_name.starts_with(NATIVE_JSON_MODULE_NAME_PREFIX) {
+            continue;
+        }
+        let requests = static_module_requests(&module_source)?;
         for request in requests {
             if request.module_type == NativeModuleResourceType::Unsupported {
                 return Err(NativeEngineError::UnsupportedUrl {
@@ -18682,30 +18681,6 @@ fn rewrite_static_json_module_specifiers(source: &str) -> Result<String, NativeE
     Ok(output)
 }
 
-/// Extract dynamic-import specifiers whose entire first argument is statically
-/// composed of quoted strings and `+`. Runtime-valued expressions remain
-/// unresolved and receive no implicit network capability.
-pub(crate) fn literal_dynamic_module_specifiers(source: &str) -> Vec<String> {
-    let bytes = source.as_bytes();
-    let mut specifiers = Vec::new();
-    for (_, open, close) in javascript_dynamic_import_call_sites(bytes) {
-        let specifier_start = skip_javascript_space_and_comments(bytes, open + 1);
-        if let Some((specifier, end)) = read_static_string_expression(bytes, specifier_start, 0)
-            && end <= close
-            && matches!(
-                bytes.get(skip_javascript_space_and_comments(bytes, end)),
-                Some(b')' | b',')
-            )
-        {
-            specifiers.push(specifier);
-            if specifiers.len() >= MAX_NATIVE_MODULE_IMPORTS {
-                break;
-            }
-        }
-    }
-    specifiers
-}
-
 fn rewrite_runtime_dynamic_module_imports(
     source: &str,
     referrer_expression: &str,
@@ -18732,15 +18707,7 @@ fn rewrite_runtime_dynamic_module_imports_with_count(
     let mut rewritten_import_calls = 0usize;
     for (start, open, close) in sites {
         let specifier_start = skip_javascript_space_and_comments(bytes, open + 1);
-        if specifier_start == close
-            || read_static_string_expression(bytes, specifier_start, 0).is_some_and(|(_, end)| {
-                end <= close
-                    && matches!(
-                        bytes.get(skip_javascript_space_and_comments(bytes, end)),
-                        Some(b')' | b',')
-                    )
-            })
-        {
+        if specifier_start == close {
             continue;
         }
         output.push_str(&source[copied_until..start]);
@@ -19189,49 +19156,14 @@ fn javascript_dynamic_import_call_sites_in_range(
     sites.extend(local.into_iter().take(remaining));
 }
 
-fn read_static_string_expression(
-    bytes: &[u8],
-    index: usize,
-    depth: usize,
-) -> Option<(String, usize)> {
-    const MAX_DEPTH: usize = 64;
-    if depth > MAX_DEPTH {
-        return None;
-    }
-
-    let (mut value, mut index) = read_static_string_primary(bytes, index, depth)?;
-    loop {
-        let operator = skip_javascript_space_and_comments(bytes, index);
-        if bytes.get(operator) != Some(&b'+') {
-            return Some((value, index));
-        }
-        let (part, end) = read_static_string_primary(bytes, operator + 1, depth)?;
-        value.push_str(&part);
-        index = end;
-    }
-}
-
-fn read_static_string_primary(bytes: &[u8], index: usize, depth: usize) -> Option<(String, usize)> {
-    let index = skip_javascript_space_and_comments(bytes, index);
-    match bytes.get(index).copied()? {
-        b'\'' | b'"' => read_javascript_string(bytes, index),
-        b'(' => {
-            let (value, end) = read_static_string_expression(bytes, index + 1, depth + 1)?;
-            let close = skip_javascript_space_and_comments(bytes, end);
-            (bytes.get(close) == Some(&b')')).then_some((value, close + 1))
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod native_static_dynamic_import_tests {
     use super::{
         BTreeMap, MAX_NATIVE_MODULE_IMPORTS, Module, NativeJavaScriptRuntime,
-        NativeModuleImportMap, NativeModuleResourceType, literal_dynamic_module_specifiers,
-        native_module_loader_name, rewrite_dynamic_imports_as_rejected,
-        rewrite_dynamic_imports_as_rejected_with_count, rewrite_runtime_dynamic_module_imports,
-        rewrite_static_json_module_specifiers, static_module_requests,
+        NativeModuleImportMap, NativeModuleResourceType, native_module_loader_name,
+        rewrite_dynamic_imports_as_rejected, rewrite_dynamic_imports_as_rejected_with_count,
+        rewrite_runtime_dynamic_module_imports, rewrite_static_json_module_specifiers,
+        static_module_requests,
     };
 
     #[test]
@@ -19415,51 +19347,10 @@ mod native_static_dynamic_import_tests {
     }
 
     #[test]
-    fn dynamic_import_prefetch_folds_quoted_string_concatenation() {
-        let source = r#"
-            import("./" + /* retained parser trivia */ 'first.js');
-            import(("./second/" + ('entry.js')));
-            import('./' + runtimeName);
-            import('./options.json', { with: { type: 'json' } });
-        "#;
-
-        assert_eq!(
-            literal_dynamic_module_specifiers(source),
-            ["./first.js", "./second/entry.js", "./options.json"]
-        );
-    }
-
-    #[test]
-    fn dynamic_import_prefetch_ignores_member_methods_named_import() {
-        let source = r#"
-            import("./actual-dynamic-import.js");
-            module.import("./member.js");
-            module?.import("./optional-member.js");
-            module /* member access trivia */ . /* import token trivia */ import("./commented-member.js");
-        "#;
-
-        assert_eq!(
-            literal_dynamic_module_specifiers(source),
-            ["./actual-dynamic-import.js"]
-        );
-    }
-
-    #[test]
-    fn dynamic_import_prefetch_does_not_accept_partial_expressions() {
-        let source = r#"
-            import('./' + runtimeName);
-            import('./' + getName());
-            import('./' * 'not-a-module');
-        "#;
-
-        assert!(literal_dynamic_module_specifiers(source).is_empty());
-    }
-
-    #[test]
     fn service_worker_dynamic_import_rewrite_rejects_literal_and_computed_calls() {
         let source = r#"
-            import('./literal.js');
-            import(runtimeSpecifier);
+            import('./literal.js', { with: { type: 'json' } });
+            import(runtimeSpecifier, options);
             import.meta.url;
             worker.import(runtimeSpecifier);
             const text = "import('./string.js')";
@@ -19468,8 +19359,12 @@ mod native_static_dynamic_import_tests {
         let (rewritten, calls) = rewrite_dynamic_imports_as_rejected_with_count(source).unwrap();
 
         assert_eq!(calls, 2);
-        assert!(rewritten.contains("globalThis.__glassRejectDynamicImport('./literal.js')"));
-        assert!(rewritten.contains("globalThis.__glassRejectDynamicImport(runtimeSpecifier)"));
+        assert!(rewritten.contains(
+            "globalThis.__glassRejectDynamicImport('./literal.js', { with: { type: 'json' } })"
+        ));
+        assert!(
+            rewritten.contains("globalThis.__glassRejectDynamicImport(runtimeSpecifier, options)")
+        );
         assert!(rewritten.contains("import.meta.url"));
         assert!(rewritten.contains("worker.import(runtimeSpecifier)"));
         assert!(rewritten.contains("import('./string.js')"));
@@ -19483,16 +19378,16 @@ mod native_static_dynamic_import_tests {
     }
 
     #[test]
-    fn runtime_dynamic_import_rewrite_preserves_only_real_computed_import_calls() {
+    fn runtime_dynamic_import_rewrite_preserves_literal_and_computed_import_calls() {
         let source = r#"
             import './static-declaration.js';
-            import('./static-call.js');
+            import('./literal.json', { with: { type: 'json' } });
             const text = "import(getName())";
             const pattern = /import\\(getName\\)/;
             module.import(getName());
             module?.import(getOptionalName());
             module /* member trivia */ . /* token trivia */ import(getCommentedName());
-            const computed = import(/* first arg */ getName());
+            const computed = import(/* first arg */ getName(), options);
             const template = `${import(getNestedName())}`;
             const methods = { import(value) {} };
         "#;
@@ -19503,13 +19398,17 @@ mod native_static_dynamic_import_tests {
             rewritten
                 .matches("globalThis.__glassDynamicImport(")
                 .count(),
-            2,
-            "only the two actual computed ImportCalls should be rewritten: {rewritten}"
+            3,
+            "all three actual ImportCalls should be rewritten: {rewritten}"
         );
         assert!(rewritten.contains(
-            "globalThis.__glassDynamicImport(import.meta.url,/* first arg */ getName())"
+            "globalThis.__glassDynamicImport(import.meta.url,'./literal.json', { with: { type: 'json' } })"
         ));
-        assert!(rewritten.contains("import('./static-call.js')"));
+        assert!(rewritten.contains(
+            "globalThis.__glassDynamicImport(import.meta.url,/* first arg */ getName(), options)"
+        ));
+        assert!(rewritten.contains("__glassDynamicImport(import.meta.url,getNestedName())"));
+        assert!(rewritten.contains("import './static-declaration.js'"));
         assert!(rewritten.contains("module.import(getName())"));
         assert!(rewritten.contains("module?.import(getOptionalName())"));
         assert!(rewritten.contains("import(value) {}"));
@@ -21952,6 +21851,53 @@ mod native_font_face_tests {
     }
 }
 
+const NATIVE_DYNAMIC_IMPORT_OPTIONS_BOOTSTRAP: &str = r###"
+if (globalThis.__glassDynamicImportIntrinsics === undefined) {
+  const intrinsics = ((PromiseConstructor, ObjectKeys, StringConstructor, TypeErrorConstructor) => {
+    const isObject = (value) => value !== null
+      && (typeof value === "object" || typeof value === "function");
+    const normalize = (specifier, options) => {
+      const specifierString = `${specifier}`;
+      let moduleType = null;
+      if (options !== undefined) {
+        if (!isObject(options))
+          throw new TypeErrorConstructor("dynamic import options must be an object");
+        const attributes = options.with;
+        if (attributes !== undefined) {
+          if (!isObject(attributes))
+            throw new TypeErrorConstructor("dynamic import attributes must be an object");
+          const keys = ObjectKeys(attributes);
+          const entries = [];
+          for (let index = 0; index < keys.length; index += 1) {
+            entries[index] = [keys[index], attributes[keys[index]]];
+          }
+          for (let index = 0; index < entries.length; index += 1) {
+            if (typeof entries[index][1] !== "string")
+              throw new TypeErrorConstructor("dynamic import attribute values must be strings");
+          }
+          for (let index = 0; index < entries.length; index += 1) {
+            if (entries[index][0] !== "type")
+              throw new TypeErrorConstructor("unsupported dynamic import attribute");
+          }
+          for (let index = 0; index < entries.length; index += 1) {
+            if (entries[index][0] === "type") {
+              if (entries[index][1] !== "json")
+                throw new TypeErrorConstructor("unsupported dynamic import module type");
+              moduleType = "json";
+            }
+          }
+        }
+      }
+      return { specifier: specifierString, moduleType };
+    };
+    return Object.freeze({ PromiseConstructor, StringConstructor, TypeErrorConstructor, normalize });
+  })(Promise, Object.keys, String, TypeError);
+  Object.defineProperty(globalThis, "__glassDynamicImportIntrinsics", {
+    value: intrinsics, enumerable: false, configurable: false, writable: false,
+  });
+}
+"###;
+
 fn worker_bootstrap(
     worker_id: u32,
     worker_url: &str,
@@ -21980,7 +21926,7 @@ fn worker_bootstrap(
         })?;
     let message_channel_script = message_channel_bootstrap();
     let is_module = if is_module { "true" } else { "false" };
-    Ok(format!(
+    let mut bootstrap = format!(
         r###"(() => {{
   const workerId = {worker_id};
   const workerUrl = {worker_url};
@@ -26805,36 +26751,39 @@ fn worker_bootstrap(
   globalThis.__glassNextWorkerFetchRequestId = nextWorkerFetchRequestId;
   globalThis.fetch = workerFetchNative;
   globalThis.__glassDynamicImport = (referrer, specifier, options) => {{
-    let normalizedReferrer;
-    let normalizedSpecifier;
-    try {{
-      if (options !== undefined) throw new TypeError("native Worker dynamic import attributes are unsupported");
-      if (typeof referrer === "symbol" || typeof specifier === "symbol")
-        throw new TypeError("dynamic import URL values cannot be Symbols");
-      normalizedReferrer = String(referrer);
-      normalizedSpecifier = String(specifier);
-    }} catch (error) {{ return Promise.reject(error); }}
-    if (!Number.isSafeInteger(nextWorkerFetchRequestId)
-        || nextWorkerFetchRequestId < 1
-        || nextWorkerFetchRequestId > 0xFFFFFFFF) {{
-      return Promise.reject(new RangeError("dynamic import request id limit exceeded"));
-    }}
-    const requestId = nextWorkerFetchRequestId;
-    nextWorkerFetchRequestId += 1;
-    globalThis.__glassNextWorkerFetchRequestId = nextWorkerFetchRequestId;
-    return new Promise((resolve, reject) => {{
+    const intrinsics = globalThis.__glassDynamicImportIntrinsics;
+    return new intrinsics.PromiseConstructor((resolve, reject) => {{
+      let normalizedReferrer;
+      let normalizedRequest;
+      try {{
+        if (typeof referrer === "symbol")
+          throw new intrinsics.TypeErrorConstructor("dynamic import referrer cannot be a Symbol");
+        normalizedReferrer = intrinsics.StringConstructor(referrer);
+        normalizedRequest = intrinsics.normalize(specifier, options);
+      }} catch (error) {{ reject(error); return; }}
+      if (!Number.isSafeInteger(nextWorkerFetchRequestId)
+          || nextWorkerFetchRequestId < 1
+          || nextWorkerFetchRequestId > 0xFFFFFFFF) {{
+        reject(new RangeError("dynamic import request id limit exceeded"));
+        return;
+      }}
+      const requestId = nextWorkerFetchRequestId;
+      nextWorkerFetchRequestId += 1;
+      globalThis.__glassNextWorkerFetchRequestId = nextWorkerFetchRequestId;
       workerFetchRequests.set(requestId, {{
         resolve, reject, signal: null, abortListener: null,
         uploadStreamId: null, dynamicModuleImport: true,
+        moduleType: normalizedRequest.moduleType,
       }});
       try {{
         pushCommand({{
           kind: "fetch", request_id: requestId, worker_id: workerId,
-          href: normalizedSpecifier, credentials: true,
+          href: normalizedRequest.specifier, credentials: true,
           method: "GET", headers: {{}}, body: null, body_base64: null,
           content_type: null, mode: "cors", redirect: "follow",
           cache: "default", timeout_ms: null, upload_stream_id: null,
           destination: "module", module_referrer: normalizedReferrer,
+          module_type: normalizedRequest.moduleType,
         }});
       }} catch (error) {{
         workerFetchRequests.delete(requestId);
@@ -26862,7 +26811,10 @@ fn worker_bootstrap(
         pending.reject(new TypeError("Invalid dynamic module response"));
       }} else {{
         try {{
-          import(moduleResult.moduleKey).then(pending.resolve, pending.reject);
+          const modulePromise = pending.moduleType === "json"
+            ? import(moduleResult.moduleKey, {{ with: {{ type: "json" }} }})
+            : import(moduleResult.moduleKey);
+          modulePromise.then(pending.resolve, pending.reject);
         }} catch (error) {{ pending.reject(error); }}
       }}
       return null;
@@ -27281,7 +27233,9 @@ fn worker_bootstrap(
         now_ms = now_ms,
         import_script_counts = import_script_counts,
         message_channel_script = message_channel_script,
-    ))
+    );
+    bootstrap.push_str(NATIVE_DYNAMIC_IMPORT_OPTIONS_BOOTSTRAP);
+    Ok(bootstrap)
 }
 
 fn service_worker_bootstrap(
@@ -31283,19 +31237,20 @@ fn native_xml_document_script() -> String {
 }
 
 const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
-  const rejectServiceWorkerDynamicImport = ((PromiseConstructor, promiseReject, apply, StringConstructor, TypeErrorConstructor) =>
-    (specifier, _options) => {
+  const rejectServiceWorkerDynamicImport = (specifier, options) => {
+    const intrinsics = globalThis.__glassDynamicImportIntrinsics;
+    return new intrinsics.PromiseConstructor((resolve, reject) => {
       try {
-        if (typeof specifier === "symbol")
-          throw new TypeErrorConstructor("dynamic import URL values cannot be Symbols");
-        StringConstructor(specifier);
+        intrinsics.normalize(specifier, options);
       } catch (error) {
-        return apply(promiseReject, PromiseConstructor, [error]);
+        reject(error);
+        return;
       }
-      return apply(promiseReject, PromiseConstructor, [
-        new TypeErrorConstructor("dynamic import is not permitted in Service Workers"),
-      ]);
-    })(Promise, Promise.reject, Reflect.apply, String, TypeError);
+      reject(new intrinsics.TypeErrorConstructor(
+        "dynamic import is not permitted in Service Workers",
+      ));
+    });
+  };
   if (globalThis.__glassRejectDynamicImport === undefined) {
     Object.defineProperty(globalThis, "__glassRejectDynamicImport", {
       value: rejectServiceWorkerDynamicImport,
@@ -31896,7 +31851,7 @@ fn document_bootstrap(
     let service_worker_page_script = service_worker_page_script();
     let xml_document_script = native_xml_document_script();
     let font_face_script = native_font_face_script();
-    Ok(format!(
+    let mut bootstrap = format!(
         r###"(() => {{
   const host = {serialized};
   globalThis.__glassMessageRealmKey = "page:" + String(host.context_id || "native");
@@ -33311,37 +33266,40 @@ fn document_bootstrap(
     ? globalThis.__glassNextFetchRequestId
     : 1;
   globalThis.__glassDynamicImport = (referrer, specifier, options) => {{
-    let normalizedReferrer;
-    let normalizedSpecifier;
-    try {{
-      if (options !== undefined) throw new TypeError("native dynamic import attributes are unsupported");
-      if (typeof referrer === "symbol" || typeof specifier === "symbol")
-        throw new TypeError("dynamic import URL values cannot be Symbols");
-      normalizedReferrer = String(referrer);
-      normalizedSpecifier = String(specifier);
-    }} catch (error) {{ return Promise.reject(error); }}
-    if (!Number.isSafeInteger(nextFetchRequestId)
-        || nextFetchRequestId < 1
-        || nextFetchRequestId > 0xFFFFFFFF) {{
-      return Promise.reject(new RangeError("dynamic import request id limit exceeded"));
-    }}
-    const requestId = nextFetchRequestId;
-    nextFetchRequestId += 1;
-    globalThis.__glassNextFetchRequestId = nextFetchRequestId;
-    return new Promise((resolve, reject) => {{
+    const intrinsics = globalThis.__glassDynamicImportIntrinsics;
+    return new intrinsics.PromiseConstructor((resolve, reject) => {{
+      let normalizedReferrer;
+      let normalizedRequest;
+      try {{
+        if (typeof referrer === "symbol")
+          throw new intrinsics.TypeErrorConstructor("dynamic import referrer cannot be a Symbol");
+        normalizedReferrer = intrinsics.StringConstructor(referrer);
+        normalizedRequest = intrinsics.normalize(specifier, options);
+      }} catch (error) {{ reject(error); return; }}
+      if (!Number.isSafeInteger(nextFetchRequestId)
+          || nextFetchRequestId < 1
+          || nextFetchRequestId > 0xFFFFFFFF) {{
+        reject(new RangeError("dynamic import request id limit exceeded"));
+        return;
+      }}
+      const requestId = nextFetchRequestId;
+      nextFetchRequestId += 1;
+      globalThis.__glassNextFetchRequestId = nextFetchRequestId;
       const pending = {{
         resolve, reject, signal: null, abortListener: null,
         uploadStreamId: null, dynamicModuleImport: true,
+        moduleType: normalizedRequest.moduleType,
       }};
       fetchRequests.set(requestId, pending);
       try {{
         pushCommand({{
-          kind: "fetch", request_id: requestId, href: normalizedSpecifier,
+          kind: "fetch", request_id: requestId, href: normalizedRequest.specifier,
           credentials: true, method: "GET", headers: {{}}, body: null,
           body_base64: null, content_type: null, mode: "cors",
           redirect: "follow", cache: "default", timeout_ms: null,
           upload_stream_id: null, destination: "module",
           module_referrer: normalizedReferrer,
+          module_type: normalizedRequest.moduleType,
         }});
       }} catch (error) {{
         fetchRequests.delete(requestId);
@@ -37372,7 +37330,10 @@ fn document_bootstrap(
         pending.reject(new TypeError("Invalid dynamic module response"));
       }} else {{
         try {{
-          import(moduleResult.moduleKey).then(pending.resolve, pending.reject);
+          const modulePromise = pending.moduleType === "json"
+            ? import(moduleResult.moduleKey, {{ with: {{ type: "json" }} }})
+            : import(moduleResult.moduleKey);
+          modulePromise.then(pending.resolve, pending.reject);
         }} catch (error) {{ pending.reject(error); }}
       }}
       return;
@@ -48484,5 +48445,7 @@ fn document_bootstrap(
         message_channel_script = message_channel_script,
         service_worker_page_script = service_worker_page_script,
         xml_document_script = xml_document_script,
-    ))
+    );
+    bootstrap.push_str(NATIVE_DYNAMIC_IMPORT_OPTIONS_BOOTSTRAP);
+    Ok(bootstrap)
 }

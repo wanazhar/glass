@@ -27,13 +27,16 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-707`; issue #40
-remains open. Slices 704–705 connect bounded inline `imports` and referrer
-`scopes` maps to module prefetch and QuickJS resolution. Slice 706 adds
+expansion is complete locally through `native-engine-browser-708`; issue #40
+remains open. Slices 704–705 connect bounded
+inline `imports` and referrer `scopes` maps to module prefetch and QuickJS
+resolution. Slice 706 adds
 URL-keyed import-map integrity enforcement and module CORS defaults. Slice 707
 adds parser-order map processing and bounded resolved-specifier locking.
-Dynamic map registration, worker/file-origin propagation, module fragment
-identity, and full module timing remain open. Slice 703 separates
+Slice 708 adds dynamic map registration and mapped dynamic-module graph loading
+across process-backed and rooted-file paths. Computed dynamic imports, worker
+maps, broader worker/file-origin propagation, module fragment identity, and
+full module timing remain open. Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type
 essences are matched case-insensitively without parameters on script elements;
@@ -328,6 +331,18 @@ documentation gates passed across 1,335 files; remote CI was not run. Computed
 dynamic imports, dynamically inserted map registration, worker maps,
 fragment-distinct module identity, and full module scheduling remain separate
 gates.
+
+[`native-engine-browser-708`](tasks/native-engine-browser-708.md) is complete
+locally. Newly attached import maps are merged into current runtime state, and
+dynamic inline module roots use the resource handoff to prefetch mapped
+dependencies before evaluation. Coverage includes detached-then-attached
+source ordering, local runtime registration, a process-backed later-turn module
+root, and a rooted-file mapped dependency. The attachment-order test, 16 library
+tests, 4 process-backed tests, rooted-file fixture, scoped check, formatting,
+and all four documentation gates passed across 1,336 Markdown files; remote CI
+was not run.
+Computed dynamic imports, worker maps, broader worker/file-origin propagation,
+fragment-distinct identity, and full module scheduling remain open.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

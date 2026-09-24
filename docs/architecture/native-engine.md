@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-707`; issue #40 remains open. Earlier completed slices
+`native-engine-browser-708`; issue #40 remains open. Earlier completed slices
 include `native-engine-browser-696` through `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
@@ -789,6 +789,20 @@ dynamic imports, dynamically inserted import-map registration, worker maps,
 fragment-distinct module identity, and complete parser/module scheduling
 remain open. See
 [`slice 707`](../plan/tasks/native-engine-browser-707.md).
+
+Slice 708 registers dynamically attached import maps in attachment order and
+atomically merges each valid map into current runtime state. Dynamic inline
+module roots now use the process-backed graph loader, including when their map
+was registered in an earlier host turn. The rooted-file path also resolves and
+loads mapped dependencies, and no-loader contexts retain local map registration.
+The opposite-creation/attachment-order test, 16 library tests, 4
+process-backed import-map tests, rooted-file fixture, scoped check, formatting,
+and all four documentation gates passed across 1,336 Markdown files with zero
+stale-current-claim failures. Remote CI was not run. Computed
+dynamic imports, worker maps, broader file/worker-origin propagation,
+fragment-distinct module identity, and complete module scheduling remain open.
+See
+[`slice 708`](../plan/tasks/native-engine-browser-708.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

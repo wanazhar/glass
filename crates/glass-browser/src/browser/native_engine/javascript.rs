@@ -6984,7 +6984,8 @@ pub(crate) fn execute_inline_scripts(
                 }
             }
             NativePageScriptSource::External { .. }
-            | NativePageScriptSource::ModuleExternal { .. } => None,
+            | NativePageScriptSource::ModuleExternal { .. }
+            | NativePageScriptSource::ImportMap { .. } => None,
         })
         .collect::<Vec<_>>();
     let mut sources = order_page_scripts(sources);
@@ -7055,6 +7056,95 @@ pub(crate) fn load_local_file_module_graph(
             }
             let resource = loader
                 .load_local_file_script(document_url, &target, MAX_NATIVE_SCRIPT_BYTES, None)?
+                .ok_or_else(|| NativeEngineError::Network {
+                    operation: "file module dependency".into(),
+                    reason: format!(
+                        "file module dependency {specifier:?} was blocked or unavailable"
+                    ),
+                })?;
+            total_bytes = total_bytes.saturating_add(resource.body.len());
+            if total_bytes > MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS) {
+                return Err(NativeEngineError::limit(
+                    "native file module graph bytes",
+                    MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS),
+                    total_bytes,
+                ));
+            }
+            let name = resource.url;
+            let source = resource.body;
+            sources.push((
+                timing,
+                NativePageScript::ModuleDependency {
+                    name: name.clone(),
+                    source: source.clone(),
+                },
+            ));
+            pending.push((name, source));
+        }
+    }
+    Ok(sources)
+}
+
+pub(crate) fn load_local_file_module_graph_with_import_map(
+    loader: &NativeResourceLoader,
+    document_url: &str,
+    root_name: String,
+    root_source: String,
+    timing: NativePageScriptTiming,
+    node_index: u32,
+    import_map: &mut NativeModuleImportMap,
+) -> Result<Vec<(NativePageScriptTiming, NativePageScript)>, NativeEngineError> {
+    let mut sources = vec![(
+        timing,
+        NativePageScript::Module {
+            name: root_name.clone(),
+            source: root_source.clone(),
+            node_index: Some(node_index),
+        },
+    )];
+    if !is_file_url(document_url) {
+        return Ok(sources);
+    }
+
+    let mut seen = BTreeSet::from([root_name.clone()]);
+    let mut pending = vec![(root_name, root_source.clone())];
+    let mut import_edges = 0usize;
+    let mut total_bytes = root_source.len();
+    while let Some((module_url, module_source)) = pending.pop() {
+        let mut specifiers = static_module_specifiers(&module_source)?;
+        specifiers.extend(literal_dynamic_module_specifiers(&module_source));
+        for specifier in specifiers {
+            import_edges = import_edges.saturating_add(1);
+            if import_edges > MAX_NATIVE_MODULE_IMPORTS {
+                return Err(NativeEngineError::limit(
+                    "native file module imports",
+                    MAX_NATIVE_MODULE_IMPORTS,
+                    import_edges,
+                ));
+            }
+            let target = import_map
+                .resolve_and_record(&module_url, &specifier)
+                .map_err(|reason| NativeEngineError::Network {
+                    operation: "file module dependency".into(),
+                    reason: reason.into(),
+                })?;
+            if !seen.insert(target.clone()) {
+                continue;
+            }
+            if seen.len() > MAX_NATIVE_MODULE_IMPORTS {
+                return Err(NativeEngineError::limit(
+                    "native file module graph entries",
+                    MAX_NATIVE_MODULE_IMPORTS,
+                    seen.len(),
+                ));
+            }
+            let resource = loader
+                .load_local_file_script(
+                    document_url,
+                    &target,
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    import_map.integrity_for_url(&target),
+                )?
                 .ok_or_else(|| NativeEngineError::Network {
                     operation: "file module dependency".into(),
                     reason: format!(
@@ -7877,17 +7967,20 @@ fn enqueue_dynamic_page_scripts(
         MAX_NATIVE_INLINE_SCRIPTS,
         MAX_NATIVE_SCRIPT_BYTES,
     );
-    let deferred_sources = sources
-        .iter()
-        .filter(|source| {
-            matches!(
-                source,
-                NativePageScriptSource::External { .. }
-                    | NativePageScriptSource::ModuleExternal { .. }
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
+    let requires_loader = sources.iter().any(|source| {
+        matches!(
+            source,
+            NativePageScriptSource::External { .. }
+                | NativePageScriptSource::ModuleInline { .. }
+                | NativePageScriptSource::ModuleExternal { .. }
+                | NativePageScriptSource::ImportMap { .. }
+        )
+    });
+    let deferred_sources = if requires_loader {
+        sources.clone()
+    } else {
+        Vec::new()
+    };
     if pending_script_sources
         .len()
         .saturating_add(deferred_sources.len())
@@ -7902,6 +7995,9 @@ fn enqueue_dynamic_page_scripts(
         ));
     }
     pending_script_sources.extend(deferred_sources);
+    if requires_loader {
+        return Ok(());
+    }
     for script in page_script_sources_to_scripts(sources, document_url, "glass-dynamic-module")
         .into_iter()
         .rev()
@@ -7934,7 +8030,8 @@ pub(crate) fn page_script_sources_to_scripts(
                 node_index: Some(node_index),
             }),
             NativePageScriptSource::External { .. }
-            | NativePageScriptSource::ModuleExternal { .. } => None,
+            | NativePageScriptSource::ModuleExternal { .. }
+            | NativePageScriptSource::ImportMap { .. } => None,
         })
         .collect()
 }

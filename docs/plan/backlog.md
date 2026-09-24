@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-707`.
+The latest locally completed parser/script slice is `native-engine-browser-708`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -31,6 +31,16 @@ full module scheduling remain separate Core Web Profile gates. See
 `tasks/native-engine-browser-704.md` and `tasks/native-engine-browser-705.md`.
 See `tasks/native-engine-browser-706.md` and
 `tasks/native-engine-browser-707.md` for the latest completed verification.
+Slice `native-engine-browser-708` routes dynamically attached import maps and
+inline module roots through existing runtime-map, CSP, and dependency-loader
+paths, preserving attachment order even when creation order differs. The
+opposite-creation/attachment-order test, 16 library tests, 4 process-backed
+tests, rooted-file fixture, scoped check, formatting, and all four docs gates
+passed across 1,336 Markdown files with zero stale-current-claim failures;
+remote CI was not run. Computed dynamic imports, worker maps
+and broader worker/file-origin
+propagation, module fragment identity, and complete module scheduling remain
+separate gates.
 Recover verifiable scope and test evidence for slices 650–671 from authoritative
 commits; do not infer passing checks from summary prose. Keep the issue body and
 this record explicit about local versus remote evidence.

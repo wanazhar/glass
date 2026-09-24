@@ -1919,6 +1919,12 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
                 script.src = {script_literal};
                 script.addEventListener('load', () => dynamicFileEvents.push('script-load'));
                 script.addEventListener('error', () => dynamicFileEvents.push('script-error'));
+                const map = document.createElement('script');
+                map.type = 'importmap';
+                map.textContent = '{{"imports":{{"mapped":"./late-module-dependency.js"}}}}';
+                const inlineModule = document.createElement('script');
+                inlineModule.type = 'module';
+                inlineModule.textContent = "import {{ value }} from 'mapped'; globalThis.dynamicMappedFileModuleValue = value;";
                 const module = document.createElement('script');
                 module.type = 'module';
                 module.src = {module_literal};
@@ -1933,7 +1939,7 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
                 image.src = {image_literal};
                 image.addEventListener('load', () => dynamicFileEvents.push('image-load'));
                 image.addEventListener('error', () => dynamicFileEvents.push('image-error'));
-                host.append(script, module, link, image);
+                host.append(script, map, inlineModule, module, link, image);
                 globalThis.dynamicFileImage = image;
                 return true;
             }})()"#,
@@ -1944,12 +1950,13 @@ async fn native_file_document_loads_rooted_dynamic_subresources() {
     assert_eq!(
         engine
             .evaluate_async(
-                "[dynamicFileScriptValue, dynamicFileModuleValue, dynamicFileEvents, getComputedStyle(document.getElementById('target')).color, dynamicFileImage.complete, dynamicFileImage.naturalWidth, dynamicFileImage.currentSrc]",
+                "[dynamicFileScriptValue, dynamicFileModuleValue, dynamicMappedFileModuleValue, dynamicFileEvents, getComputedStyle(document.getElementById('target')).color, dynamicFileImage.complete, dynamicFileImage.naturalWidth, dynamicFileImage.currentSrc]",
             )
             .await
             .unwrap(),
         serde_json::json!([
             "executed",
+            "module-executed",
             "module-executed",
             ["script-load", "module-load", "style-load", "image-load"],
             "rgb(4, 5, 6)",
@@ -20072,6 +20079,97 @@ async fn native_content_process_resolves_module_graphs_through_inline_import_map
     assert_eq!(requests, expected_requests);
     assert_eq!(dynamic_mapped, serde_json::json!("dynamic"));
     assert_eq!(dynamic_scoped, serde_json::json!("nested"));
+}
+
+#[tokio::test]
+async fn native_content_process_uses_dynamic_import_map_for_a_later_module_root() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let mut requests = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener
+                    .accept()
+                    .await
+                    .expect("dynamic import-map listener remains available");
+                let request = read_http_request(&mut stream).await;
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("HTTP request includes a path")
+                    .to_owned();
+                let (content_type, body) = match path.as_str() {
+                    "/page" => (
+                        "text/html",
+                        "<html><head></head><body><p>Dynamic map</p></body></html>",
+                    ),
+                    "/mapped.js" => (
+                        "application/javascript",
+                        "export const value = 'dynamic-map';",
+                    ),
+                    other => panic!("unexpected dynamic import-map request: {other}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push(path);
+            }
+            requests
+        })
+        .await
+        .expect("dynamic import-map fixture stays within its time bound")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    const map = document.createElement('script');
+                    map.type = 'importmap';
+                    map.textContent = JSON.stringify({ imports: { 'dynamic-package': '/mapped.js' } });
+                    document.head.appendChild(map);
+                    return true;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    const module = document.createElement('script');
+                    module.type = 'module';
+                    module.textContent = "import { value } from 'dynamic-package'; globalThis.dynamicMapValue = value;";
+                    document.head.appendChild(module);
+                    return true;
+                })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.dynamicMapValue")
+            .await
+            .unwrap(),
+        serde_json::json!("dynamic-map")
+    );
+    engine.close_async().await.unwrap();
+
+    let requests = server.await.unwrap();
+    assert_eq!(requests, ["/page", "/mapped.js"]);
 }
 
 #[tokio::test]

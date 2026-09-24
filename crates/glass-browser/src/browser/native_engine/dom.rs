@@ -776,9 +776,14 @@ pub(crate) enum NativePageScriptSource {
         crossorigin: Option<String>,
         parser_inserted: bool,
     },
+    ImportMap {
+        source: Option<String>,
+        node_index: u32,
+        nonce: Option<String>,
+    },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativePageImportMapSource {
     pub(crate) source: Option<String>,
     pub(crate) node_index: u32,
@@ -800,8 +805,19 @@ impl NativePageScriptSource {
             | Self::ModuleExternal {
                 parser_inserted, ..
             } => *parser_inserted = false,
+            Self::ImportMap { .. } => {}
         }
         self
+    }
+
+    pub(crate) fn node_index(&self) -> u32 {
+        match self {
+            Self::Inline { node_index, .. }
+            | Self::External { node_index, .. }
+            | Self::ModuleInline { node_index, .. }
+            | Self::ModuleExternal { node_index, .. }
+            | Self::ImportMap { node_index, .. } => *node_index,
+        }
     }
 }
 
@@ -4477,6 +4493,7 @@ impl NativeDocument {
         max_source_bytes: usize,
     ) -> Vec<NativePageScriptSource> {
         let mut roots = Vec::new();
+        let mut attachment_roots = Vec::new();
         let mut realm_started = BTreeSet::new();
         for command in commands {
             let node_index = match command {
@@ -4486,7 +4503,10 @@ impl NativeDocument {
                     ..
                 } if tag_name.eq_ignore_ascii_case("script") => Some(*node_index),
                 NativeScriptCommand::AppendChild { child_index, .. }
-                | NativeScriptCommand::InsertBefore { child_index, .. } => Some(*child_index),
+                | NativeScriptCommand::InsertBefore { child_index, .. } => {
+                    attachment_roots.push(*child_index);
+                    Some(*child_index)
+                }
                 NativeScriptCommand::StartScript { node_index } => {
                     let id = self
                         .script_node_ids
@@ -4512,30 +4532,76 @@ impl NativeDocument {
         }
 
         let mut candidate_nodes = BTreeSet::new();
-        for root in roots {
+        for root in roots.iter().copied() {
             self.collect_attached_script_nodes(root, &mut candidate_nodes);
         }
         if candidate_nodes.is_empty() {
             return Vec::new();
         }
 
-        let sources = self
+        let mut attachment_order = Vec::new();
+        let mut ordered_nodes = BTreeSet::new();
+        for root in attachment_roots.iter().copied() {
+            let id = self
+                .script_node_ids
+                .get(&root)
+                .copied()
+                .unwrap_or_else(|| NativeNodeId::from_parts(self.generation, root));
+            self.collect_attached_script_nodes_in_order(
+                id,
+                &mut attachment_order,
+                &mut ordered_nodes,
+            );
+        }
+        for root in roots {
+            self.collect_attached_script_nodes_in_order(
+                root,
+                &mut attachment_order,
+                &mut ordered_nodes,
+            );
+        }
+        let source_order = attachment_order
+            .into_iter()
+            .enumerate()
+            .map(|(order, node_index)| (node_index, order))
+            .collect::<BTreeMap<_, _>>();
+
+        let mut sources = self
             .page_script_sources(self.nodes.len(), max_source_bytes)
             .into_iter()
             .filter(|source| {
-                let node_index = match source {
-                    NativePageScriptSource::Inline { node_index, .. }
-                    | NativePageScriptSource::External { node_index, .. }
-                    | NativePageScriptSource::ModuleInline { node_index, .. }
-                    | NativePageScriptSource::ModuleExternal { node_index, .. } => *node_index,
-                };
+                let node_index = source.node_index();
                 candidate_nodes.contains(&node_index)
                     && !self.started_script_nodes.contains(&node_index)
                     && !realm_started.contains(&node_index)
             })
-            .take(max_scripts)
-            .map(NativePageScriptSource::as_dynamic)
             .collect::<Vec<_>>();
+        sources.extend(
+            self.page_import_map_sources(self.nodes.len(), max_source_bytes)
+                .into_iter()
+                .filter(|source| {
+                    candidate_nodes.contains(&source.node_index)
+                        && !self.started_script_nodes.contains(&source.node_index)
+                        && !realm_started.contains(&source.node_index)
+                })
+                .map(|source| NativePageScriptSource::ImportMap {
+                    source: source.source,
+                    node_index: source.node_index,
+                    nonce: source.nonce,
+                }),
+        );
+        sources.sort_by_key(|source| {
+            let node_index = source.node_index();
+            (
+                source_order.get(&node_index).copied().unwrap_or(usize::MAX),
+                node_index,
+            )
+        });
+        sources.truncate(max_scripts);
+        let sources = sources
+            .into_iter()
+            .map(NativePageScriptSource::as_dynamic)
+            .collect();
         self.started_script_nodes.extend(candidate_nodes);
         sources
     }
@@ -4552,6 +4618,26 @@ impl NativeDocument {
         }
         for child in node.children() {
             self.collect_attached_script_nodes(*child, output);
+        }
+    }
+
+    fn collect_attached_script_nodes_in_order(
+        &self,
+        id: NativeNodeId,
+        output: &mut Vec<u32>,
+        seen: &mut BTreeSet<u32>,
+    ) {
+        if !self.is_attached(id) {
+            return;
+        }
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        if node.element_name() == Some("script") && seen.insert(id.index()) {
+            output.push(id.index());
+        }
+        for child in node.children() {
+            self.collect_attached_script_nodes_in_order(*child, output, seen);
         }
     }
 
@@ -16531,6 +16617,76 @@ mod tests {
         document
             .apply_script_commands(&evaluation.commands)
             .expect("dynamic MIME script DOM commands must commit");
+    }
+
+    #[test]
+    fn dynamic_import_map_sources_follow_attachment_order_and_start_once() {
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .expect("dynamic import-map document must parse");
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("dynamic-import-map-order")
+            .expect("native JavaScript runtime must construct");
+        let prepared = runtime
+            .evaluate(
+                r#"(() => {
+                    const module = document.createElement('script');
+                    module.type = 'module';
+                    module.textContent = "import 'pkg';";
+                    const map = document.createElement('script');
+                    map.type = 'importmap';
+                    map.textContent = '{"imports":{"pkg":"/mapped.js"}}';
+                    globalThis.dynamicMap = map;
+                    globalThis.dynamicModule = module;
+                    return true;
+                })()"#,
+                &document,
+                "https://example.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("detached dynamic scripts must be created");
+        document
+            .apply_script_commands(&prepared.commands)
+            .expect("detached dynamic script nodes must commit");
+        assert!(
+            document
+                .take_newly_attached_page_script_sources(&prepared.commands, 8, 4096)
+                .is_empty()
+        );
+
+        let attached = runtime
+            .evaluate(
+                "document.querySelector('#root').appendChild(dynamicMap); document.querySelector('#root').appendChild(dynamicModule); true",
+                &document,
+                "https://example.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("dynamic scripts must attach");
+        document
+            .apply_script_commands(&attached.commands)
+            .expect("dynamic script attachment must commit");
+        let sources = document.take_newly_attached_page_script_sources(&attached.commands, 8, 4096);
+        assert!(
+            sources[0].node_index() > sources[1].node_index(),
+            "the module was created before the map but attached after it"
+        );
+        assert!(matches!(
+            sources.as_slice(),
+            [
+                NativePageScriptSource::ImportMap {
+                    source: Some(map_source),
+                    ..
+                },
+                NativePageScriptSource::ModuleInline { source, .. },
+            ] if map_source.contains("\"pkg\":\"/mapped.js\"")
+                && source.contains("import 'pkg'")
+        ));
+        assert!(
+            document
+                .take_newly_attached_page_script_sources(&attached.commands, 8, 4096)
+                .is_empty()
+        );
     }
 
     #[test]

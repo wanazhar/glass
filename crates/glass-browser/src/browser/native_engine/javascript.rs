@@ -7483,6 +7483,14 @@ pub(crate) fn execute_inline_scripts(
     cookie: &str,
     loader: &mut NativeResourceLoader,
 ) -> Result<NativePageScriptResult, NativeEngineError> {
+    if runtime.is_none() {
+        *runtime = Some(NativeJavaScriptRuntime::new_with_context_id(context_id)?);
+    }
+    let current_runtime = runtime.as_ref().expect("inline page runtime initialized");
+    current_runtime.set_inline_script_policy(loader.inline_script_policy(document_url)?);
+    current_runtime.mark_processed_inline_csp_meta_nodes(
+        document.processed_content_security_policy_meta_nodes(),
+    );
     let mut resource_events = Vec::new();
     let mut module_dependency_sources = Vec::new();
     let mut import_map = runtime
@@ -11902,6 +11910,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     service_worker_registrations: Arc<Mutex<Vec<NativeServiceWorkerRegistrationState>>>,
     service_worker_clients: Arc<Mutex<Vec<serde_json::Value>>>,
     inline_script_policy: Arc<Mutex<NativeInlineScriptPolicy>>,
+    processed_inline_csp_meta_nodes: Arc<Mutex<BTreeSet<u32>>>,
     pending_window_proxy_updates: Arc<Mutex<Vec<NativeWindowProxyUpdate>>>,
     frame_script_bindings: Arc<Mutex<Vec<NativeFrameScriptBinding>>>,
     frame_script_context: Arc<Mutex<Option<NativeFrameScriptContext>>>,
@@ -12079,6 +12088,7 @@ impl NativeJavaScriptRuntime {
             service_worker_registrations: Arc::new(Mutex::new(Vec::new())),
             service_worker_clients: Arc::new(Mutex::new(Vec::new())),
             inline_script_policy: Arc::new(Mutex::new(NativeInlineScriptPolicy::default())),
+            processed_inline_csp_meta_nodes: Arc::new(Mutex::new(BTreeSet::new())),
             pending_window_proxy_updates: Arc::new(Mutex::new(Vec::new())),
             frame_script_bindings: Arc::new(Mutex::new(Vec::new())),
             frame_script_context: Arc::new(Mutex::new(None)),
@@ -12353,6 +12363,15 @@ impl NativeJavaScriptRuntime {
     pub(crate) fn set_inline_script_policy(&self, policy: NativeInlineScriptPolicy) {
         if let Ok(mut current) = self.inline_script_policy.lock() {
             *current = policy;
+        }
+    }
+
+    pub(crate) fn mark_processed_inline_csp_meta_nodes(
+        &self,
+        node_indexes: impl IntoIterator<Item = u32>,
+    ) {
+        if let Ok(mut current) = self.processed_inline_csp_meta_nodes.lock() {
+            current.extend(node_indexes);
         }
     }
 
@@ -14245,6 +14264,7 @@ impl NativeJavaScriptRuntime {
             install_native_inline_script_policy(
                 ctx.clone(),
                 Arc::clone(&self.inline_script_policy),
+                Arc::clone(&self.processed_inline_csp_meta_nodes),
                 document_url,
             )?;
             ctx.eval::<(), _>(bootstrap.as_str())
@@ -16422,6 +16442,7 @@ mod native_ed25519_tests {
 fn install_native_inline_script_policy<'js>(
     ctx: rquickjs::Ctx<'js>,
     policy: Arc<Mutex<NativeInlineScriptPolicy>>,
+    processed_meta_nodes: Arc<Mutex<BTreeSet<u32>>>,
     document_url: &str,
 ) -> Result<(), NativeEngineError> {
     let allows = Function::new(ctx.clone(), {
@@ -16461,6 +16482,33 @@ fn install_native_inline_script_policy<'js>(
         operation: "install report-only inline script policy".into(),
         reason: "native report-only inline script policy could not be installed".into(),
     })?;
+    let append_meta_policy = Function::new(ctx.clone(), {
+        let policy = Arc::clone(&policy);
+        let processed_meta_nodes = Arc::clone(&processed_meta_nodes);
+        move |node_index: u32, source: String| -> bool {
+            if source.is_empty() {
+                return true;
+            }
+            let Ok(mut processed_meta_nodes) = processed_meta_nodes.lock() else {
+                return false;
+            };
+            if processed_meta_nodes.contains(&node_index) {
+                return true;
+            }
+            let Ok(mut policy) = policy.lock() else {
+                return false;
+            };
+            if policy.append_meta_policy(&source).is_err() {
+                return false;
+            }
+            processed_meta_nodes.insert(node_index);
+            true
+        }
+    })
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "install runtime CSP meta policy".into(),
+        reason: "native runtime CSP meta policy callback could not be installed".into(),
+    })?;
     let allows_attribute = Function::new(ctx.clone(), move |source: String| -> bool {
         policy
             .lock()
@@ -16482,6 +16530,12 @@ fn install_native_inline_script_policy<'js>(
         .map_err(|_| NativeEngineError::Worker {
             operation: "publish report-only inline script policy".into(),
             reason: "native report-only inline script policy could not be published".into(),
+        })?;
+    ctx.globals()
+        .set("__glassAppendMetaCspPolicy", append_meta_policy)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "publish runtime CSP meta policy".into(),
+            reason: "native runtime CSP meta policy callback could not be published".into(),
         })?;
     ctx.globals()
         .set("__glassAllowsInlineEventHandler", allows_attribute)
@@ -40050,6 +40104,7 @@ fn document_bootstrap(
     if (localName === "math") return MATHML_NAMESPACE;
     return HTML_NAMESPACE;
   }};
+  let captureDynamicCspMetaPolicy = () => {{}};
   const makeElement = (initialEntry, exactTextForNode = null) => {{
     let entry = initialEntry;
     let textContent = snapshotElementTextContent(entry, exactTextForNode);
@@ -40116,6 +40171,7 @@ fn document_bootstrap(
         value,
         namespace_uri: namespaceURI === null ? "" : namespaceURI,
       }});
+      if (namespaceURI === null) captureDynamicCspMetaPolicy(element);
     }};
     const namespacedAttributeValue = (namespace, name) => {{
       const namespaceURI = normalizeAttributeNamespace(namespace);
@@ -40418,6 +40474,7 @@ fn document_bootstrap(
         if (key === "multiple") multiple = true;
         element.__glassSyncContent();
         pushCommand({{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue, namespace_uri: "" }});
+        captureDynamicCspMetaPolicy(element);
       }},
       __glassSetParsedAttribute(name, value, namespace) {{
         const qualifiedName = String(name);
@@ -41059,8 +41116,38 @@ fn document_bootstrap(
   const classicJavascriptMimeTypes = new Set([{javascript_mime_type_essences}]);
   const asciiLowercase = (value) => String(value).replace(/[A-Z]/g, (character) =>
     String.fromCharCode(character.charCodeAt(0) + 32));
+  const dynamicCspMetaProcessedThisTurn = new WeakSet();
+  let dynamicCspMetaPolicyFailure = false;
+  captureDynamicCspMetaPolicy = (node) => {{
+    if (!node || Number(node.nodeType) !== 1
+        || String(node.localName || "").toLowerCase() !== "meta"
+        || dynamicCspMetaProcessedThisTurn.has(node)) return;
+    const head = globalThis.document && globalThis.document.head;
+    let current = node.__glassParent || null;
+    let underHead = false;
+    for (let depth = 0; current && depth <= {max_commands}; depth += 1) {{
+      if (current === head) {{ underHead = true; break; }}
+      current = current.__glassParent || null;
+    }}
+    if (!underHead
+        || asciiLowercase(String(node.getAttribute("http-equiv") || "").trim())
+          !== "content-security-policy") return;
+    const source = String(node.getAttribute("content") || "");
+    if (source.length === 0) return;
+    dynamicCspMetaProcessedThisTurn.add(node);
+    try {{
+      const appendPolicy = globalThis.__glassAppendMetaCspPolicy;
+      if (typeof appendPolicy !== "function"
+          || !appendPolicy(Number(node.nodeIndex), source)) {{
+        dynamicCspMetaPolicyFailure = true;
+      }}
+    }} catch (_error) {{
+      dynamicCspMetaPolicyFailure = true;
+    }}
+  }};
   const executeInsertedScripts = (node) => {{
     if (suppressHostCommands > 0 || !node) return;
+    captureDynamicCspMetaPolicy(node);
     if (Number(node.nodeType) === 1 && String(node.localName || "").toLowerCase() === "script"
         && node.__glassDynamicScriptStarted === false) {{
       node.__glassDynamicScriptStarted = true;
@@ -41084,10 +41171,10 @@ fn document_bootstrap(
             }}
           }} catch (_error) {{}}
         }}
-        let allowed = true;
+        let allowed = !dynamicCspMetaPolicyFailure;
         if (typeof globalThis.__glassAllowsInlineScript === "function") {{
           try {{
-            allowed = Boolean(globalThis.__glassAllowsInlineScript(
+            allowed = allowed && Boolean(globalThis.__glassAllowsInlineScript(
               source,
               String(node.getAttribute("nonce") || ""),
             ));

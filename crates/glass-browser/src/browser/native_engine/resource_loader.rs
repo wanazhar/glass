@@ -1890,6 +1890,19 @@ pub(crate) struct NativeInlineScriptPolicy {
 }
 
 impl NativeInlineScriptPolicy {
+    pub(crate) fn append_meta_policy(&mut self, value: &str) -> Result<(), NativeEngineError> {
+        let next_len = self.policies.len().saturating_add(1);
+        if next_len > MAX_NATIVE_CSP_POLICIES {
+            return Err(NativeEngineError::limit(
+                "CSP policies",
+                MAX_NATIVE_CSP_POLICIES,
+                next_len,
+            ));
+        }
+        self.policies.push(parse_csp_directives(value));
+        Ok(())
+    }
+
     pub(crate) fn allows(&self, source: &str, nonce: Option<&str>) -> bool {
         self.policies
             .iter()

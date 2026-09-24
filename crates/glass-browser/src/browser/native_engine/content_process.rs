@@ -7752,7 +7752,7 @@ pub(crate) fn refresh_inline_style_policy(
 /// Apply CSP meta policies which were inserted into the live document after
 /// parser processing. The document ledger makes this append-only: removing a
 /// processed meta element or editing its content cannot relax the policy.
-fn apply_pending_meta_content_security_policies(
+pub(crate) fn apply_pending_meta_content_security_policies(
     document: &mut NativeDocument,
     loader: &mut NativeResourceLoader,
     document_url: &str,

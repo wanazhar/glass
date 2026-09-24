@@ -2581,6 +2581,127 @@ async fn native_file_inline_style_csp_enforces_nonce_hash_and_runtime_mutations(
 }
 
 #[tokio::test]
+async fn native_file_dynamic_csp_meta_is_head_scoped_and_append_only() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-dynamic-csp-meta-{}",
+        std::process::id()
+    ));
+    let site = root.join("site");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&site).unwrap();
+    let page_path = site.join("index.html");
+    fs::write(
+        &page_path,
+        "<html><head><meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'unsafe-inline'\"></head><body></body></html>",
+    )
+    .unwrap();
+    fs::write(
+        site.join("late.js"),
+        "globalThis.dynamicMetaState.externalRan = true;",
+    )
+    .unwrap();
+
+    let config = NativeEngineConfig::default()
+        .with_initial_url(native_test_file_url(&page_path))
+        .with_allowed_file_root(&site);
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    engine
+        .evaluate_async(
+            r#"(() => {
+                globalThis.dynamicMetaState = { bodyMetaRan: false, headMetaRan: false, errors: [] };
+                const bodyMeta = document.createElement('meta');
+                bodyMeta.setAttribute('http-equiv', 'Content-Security-Policy');
+                bodyMeta.setAttribute('content', "script-src 'none'");
+                document.body.appendChild(bodyMeta);
+                const bodyScript = document.createElement('script');
+                bodyScript.textContent = 'globalThis.dynamicMetaState.bodyMetaRan = true;';
+                document.body.appendChild(bodyScript);
+                return true;
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.dynamicMetaState.bodyMetaRan")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+
+    engine
+        .evaluate_async(
+            r#"(() => {
+                const meta = document.createElement('meta');
+                meta.setAttribute('id', 'dynamic-csp-policy');
+                meta.setAttribute('http-equiv', 'Content-Security-Policy');
+                meta.setAttribute('content', "script-src 'none'");
+                document.head.appendChild(meta);
+                globalThis.dynamicMetaState.capturedContent = meta.getAttribute('content');
+                meta.setAttribute('content', "script-src 'unsafe-inline'");
+                meta.remove();
+                const script = document.createElement('script');
+                script.addEventListener('error', () => globalThis.dynamicMetaState.errors.push('head'));
+                script.textContent = 'globalThis.dynamicMetaState.headMetaRan = true;';
+                document.body.appendChild(script);
+                const external = document.createElement('script');
+                external.addEventListener('error', () => globalThis.dynamicMetaState.errors.push('external'));
+                external.src = 'late.js';
+                document.body.appendChild(external);
+                return true;
+            })()"#,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ capturedContent: globalThis.dynamicMetaState.capturedContent, headMetaRan: Boolean(globalThis.dynamicMetaState.headMetaRan), externalRan: Boolean(globalThis.dynamicMetaState.externalRan), errors: globalThis.dynamicMetaState.errors })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "capturedContent": "script-src 'none'",
+            "headMetaRan": false,
+            "externalRan": false,
+            "errors": ["head", "external"]
+        })
+    );
+
+    engine
+        .evaluate_async(
+            r#"(() => {
+                const script = document.createElement('script');
+                script.addEventListener('error', () => globalThis.dynamicMetaState.errors.push('retained'));
+                script.textContent = 'globalThis.dynamicMetaState.headMetaRan = true;';
+                document.body.appendChild(script);
+                return true;
+            })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ bodyMetaRan: globalThis.dynamicMetaState.bodyMetaRan, headMetaRan: Boolean(globalThis.dynamicMetaState.headMetaRan), errors: globalThis.dynamicMetaState.errors })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "bodyMetaRan": true,
+            "headMetaRan": false,
+            "errors": ["head", "external", "retained"]
+        })
+    );
+
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn native_file_stylesheet_csp_enforces_self_nonce_and_dynamic_error() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-style-csp-root-{}",

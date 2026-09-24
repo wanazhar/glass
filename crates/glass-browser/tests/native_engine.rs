@@ -1904,6 +1904,174 @@ async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
 }
 
 #[tokio::test]
+async fn native_file_document_resolves_runtime_valued_imports_from_initial_scripts() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-runtime-imports-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let site = root.join("site");
+    fs::create_dir_all(site.join("classic")).unwrap();
+    fs::create_dir_all(site.join("module")).unwrap();
+    fs::write(
+        root.join("secret.js"),
+        "export const value = 'must-not-leak';",
+    )
+    .unwrap();
+    fs::write(
+        site.join("index.html"),
+        "<html><head><script src='classic-entry.js'></script><script type='module' src='module-entry.js'></script></head><body>rooted</body></html>",
+    )
+    .unwrap();
+    fs::write(
+        site.join("classic-entry.js"),
+        r#"globalThis.fileClassicImportState = "pending";
+           const target = "./classic/main.js";
+           Promise.all([
+             import(target),
+             import(target),
+             import("../secret.js").then(() => "unexpected", () => "rejected"),
+           ]).then(async ([first, second, escape]) => {
+             globalThis.fileClassicImportState = first.value;
+             globalThis.fileClassicImportIdentity = first === second;
+             globalThis.fileClassicNestedValue = await first.nested;
+             globalThis.fileEscapeImportState = escape;
+           }, error => { globalThis.fileClassicImportError = String(error); });"#,
+    )
+    .unwrap();
+    fs::write(
+        site.join("classic/main.js"),
+        "export const value = 'classic-loaded'; const nestedTarget = './nested.js'; export const nested = import(nestedTarget).then(({ value }) => value);",
+    )
+    .unwrap();
+    fs::write(
+        site.join("classic/nested.js"),
+        "export const value = 'classic-nested-loaded';",
+    )
+    .unwrap();
+    fs::write(
+        site.join("module-entry.js"),
+        "globalThis.fileModuleImportState = 'pending'; const target = './module/main.js'; import(target).then(async module => { globalThis.fileModuleImportState = module.value; globalThis.fileModuleNestedValue = await module.nested; }, error => { globalThis.fileModuleImportError = String(error); });",
+    )
+    .unwrap();
+    fs::write(
+        site.join("module/main.js"),
+        "export const value = 'module-loaded'; const nestedTarget = './nested.js'; export const nested = import(nestedTarget).then(({ value }) => value);",
+    )
+    .unwrap();
+    fs::write(
+        site.join("module/nested.js"),
+        "export const value = 'module-nested-loaded';",
+    )
+    .unwrap();
+
+    let config = NativeEngineConfig::default()
+        .with_initial_url(native_test_file_url(&site.join("index.html")))
+        .with_allowed_file_root(site.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[globalThis.fileClassicImportState, globalThis.fileClassicImportIdentity ?? null, globalThis.fileClassicNestedValue ?? null, globalThis.fileEscapeImportState ?? null, globalThis.fileModuleImportState, globalThis.fileModuleNestedValue ?? null, globalThis.fileClassicImportError ?? null, globalThis.fileModuleImportError ?? null]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "classic-loaded",
+            true,
+            "classic-nested-loaded",
+            "rejected",
+            "module-loaded",
+            "module-nested-loaded",
+            null,
+            null
+        ])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn native_file_document_resolves_runtime_imports_from_late_classic_scripts() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-late-runtime-imports-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let site = root.join("site");
+    fs::create_dir_all(site.join("late")).unwrap();
+    fs::write(
+        site.join("index.html"),
+        "<html><head></head><body>rooted</body></html>",
+    )
+    .unwrap();
+    fs::write(
+        site.join("late-entry.js"),
+        "globalThis.lateFileImportState = 'pending'; const target = 'late-package'; import(target).then(async module => { globalThis.lateFileImportState = module.value; globalThis.lateFileNestedValue = await module.loadNested(); }, error => { globalThis.lateFileImportError = String(error); });",
+    )
+    .unwrap();
+    fs::write(
+        site.join("late/main.js"),
+        "export const value = 'late-module-loaded'; export async function loadNested() { const target = './nested.js'; return (await import(target)).value; }",
+    )
+    .unwrap();
+    fs::write(
+        site.join("late/nested.js"),
+        "export const value = 'late-nested-loaded';",
+    )
+    .unwrap();
+    fs::write(
+        site.join("late/module-entry.js"),
+        "globalThis.lateFileModuleImportState = 'pending'; const target = 'late-module-package'; import(target).then(async module => { globalThis.lateFileModuleImportState = module.value; globalThis.lateFileModuleNestedValue = await module.nested; }, error => { globalThis.lateFileModuleImportError = String(error); });",
+    )
+    .unwrap();
+    fs::write(
+        site.join("late/module.js"),
+        "export const value = 'late-module-script-loaded'; const nestedTarget = './module-nested.js'; export const nested = import(nestedTarget).then(({ value }) => value);",
+    )
+    .unwrap();
+    fs::write(
+        site.join("late/module-nested.js"),
+        "export const value = 'late-module-nested-loaded';",
+    )
+    .unwrap();
+    let config = NativeEngineConfig::default()
+        .with_initial_url(native_test_file_url(&site.join("index.html")))
+        .with_allowed_file_root(site.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const map = document.createElement('script'); map.type = 'importmap'; map.textContent = JSON.stringify({ imports: { 'late-package': './late/main.js', 'late-module-package': './late/module.js' } }); document.head.append(map); const script = document.createElement('script'); script.src = 'late-entry.js'; document.head.append(script); const module = document.createElement('script'); module.type = 'module'; module.src = 'late/module-entry.js'; document.head.append(module); return true; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[globalThis.lateFileImportState, globalThis.lateFileNestedValue ?? null, globalThis.lateFileModuleImportState, globalThis.lateFileModuleNestedValue ?? null, globalThis.lateFileImportError ?? null, globalThis.lateFileModuleImportError ?? null]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "late-module-loaded",
+            "late-nested-loaded",
+            "late-module-script-loaded",
+            "late-module-nested-loaded",
+            null,
+            null
+        ])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn native_file_document_loads_rooted_dynamic_subresources() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-dynamic-resources-{}",

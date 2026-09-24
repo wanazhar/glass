@@ -878,6 +878,16 @@ message delivery. Service Worker classic imports remain on their existing path
 until they have the same settlement owner. See
 [`slice 716`](../plan/tasks/native-engine-browser-716.md).
 
+Slice 717 resolves runtime-valued imports from initial rooted-file classic and
+module scripts and dynamically attached classic/module scripts. It applies the
+installed Document import map, validates active file referrers, admits targets
+only through the configured-root loader, retains existing module identities
+within the shared graph-entry/byte limits, and settles successful or failed
+loads through the original JavaScript promise. Local fixtures cover nested
+imports, duplicate identity, and out-of-root rejection. Initial parser-sourced
+file import-map ingestion remains a separate issue #40 gate. See
+[`slice 717`](../plan/tasks/native-engine-browser-717.md).
+
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript
 fragment projections, and XHR HTML documents. Text, attributes, comments,
@@ -2685,10 +2695,18 @@ map before evaluation. Duplicate entries are admitted once; cycles remain
 finite; bare, network/data/blob, credential-bearing, missing, oversized, and
 out-of-root dependencies fail closed with the owning module's error event.
 Dynamic file module attachments use the same graph owner, and page/worker URL
-facades preserve canonical `file:///` authority markers. Import maps and
-runtime-valued dynamic imports from rooted-file modules remain open, as do file
-fonts/workers/downloads, complete file-origin semantics, and full Web IDL
-parity.
+facades preserve canonical `file:///` authority markers. Slice 717 closes
+runtime-valued dynamic imports from rooted-file page scripts through the
+bounded local module owner. Parser-sourced import-map initialization on rooted
+file navigation remains open, as do file fonts/workers/downloads, complete
+file-origin semantics, and full Web IDL parity.
+
+The rooted-file dynamic-import contract resolves runtime-valued `ImportCall`s
+with the active page-script/module referrer and current Document import map.
+Only configured-root `file:` targets enter the existing bounded local module
+graph; loaded module records retain request identity and response-base
+resolution, while missing or out-of-root targets reject the original promise.
+Slice 717 implements this contract and records its local regression evidence.
 
 Slice `native-engine-browser-476` closes stylesheet-relative URL resolution for
 rooted file CSS. Loaded static and dynamic file stylesheets canonicalize

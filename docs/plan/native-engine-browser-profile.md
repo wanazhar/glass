@@ -71,19 +71,30 @@ It is never an implicit fallback for a native request.
   relative module specifiers from its final response URL, not the Worker entry
   URL; the host uses the owning Worker module loader and no Document import
   map.
-- Local implementation evidence: slices 713–716 cover runtime-valued imports
+- A rooted-file Document resolves runtime-valued imports using the active
+  script/module referrer and current Document import map, then admits only
+  configured-root `file:` resources through the local module loader. Loaded
+  modules retain request-URL identity and response-URL descendant bases;
+  missing, unsupported, and out-of-root targets reject the original import
+  promise without escaping the file root or entering network transport.
+- Local implementation evidence: slices 713–717 cover runtime-valued imports
   in page classic/module scripts, dedicated classic/module Workers, and
   classic/module SharedWorkers, including nested computed imports through their
   host fetch queues. Slice 715 also covers rejection and connected-port
   settlement. Slice 716 covers computed imports in statically preloaded
   classic `importScripts()` dependencies against their final response URLs,
   including nested imports, dedicated/shared settlement, and local fixtures.
-  Rooted-file page imports, Service Worker classic-import settlement, import
-  options, and complete module scheduling remain unverified. See
+  Slice 717 covers initial rooted-file classic/module scripts, dynamically
+  attached classic/module scripts, an installed Document import map, nested
+  imports, duplicate module identity, and out-of-root rejection. Rooted-file
+  parser-sourced import-map initialization, Service Worker classic-import
+  settlement, import options, and complete module scheduling remain
+  unverified. See
   [task 713](tasks/native-engine-browser-713.md),
   [task 714](tasks/native-engine-browser-714.md),
-  [task 715](tasks/native-engine-browser-715.md), and
-  [task 716](tasks/native-engine-browser-716.md).
+  [task 715](tasks/native-engine-browser-715.md),
+  [task 716](tasks/native-engine-browser-716.md), and
+  [task 717](tasks/native-engine-browser-717.md).
 - Import options/attributes, nested imports, promise/microtask ordering, and
   module evaluation errors follow the selected ECMAScript and HTML host
   algorithms; a bounded implementation must report unsupported profile

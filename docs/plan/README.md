@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-716`; issue #40
+expansion is complete locally through `native-engine-browser-717`; issue #40
 remains open. Slices 709–710 preserve request-URL module identity, including
 query and fragment, separately from the final response URL used as the
 descendant base across page, dedicated/shared worker, and service-worker module
@@ -52,10 +52,15 @@ verifies nested imports, rejected fetches, and delivery through connected
 ports. Slice 716 rewrites runtime-valued imports in preloaded classic
 `importScripts()` dependencies against each dependency's final response URL
 before concatenation, with nested module imports and dedicated/shared Worker
-settlement covered by process-backed HTTP and local-fixture tests. Rooted-file
-page imports, Service Worker classic-import settlement, import
-options/attributes, and complete module scheduling remain open. See
-[task 716](tasks/native-engine-browser-716.md). Slice 703 separates
+settlement covered by process-backed HTTP and local-fixture tests. Slice 717
+settles runtime-valued imports from initial rooted-file classic and
+module scripts and dynamically attached classic/module scripts. It applies the
+installed Document import map, retains existing module records under the graph
+bounds, resolves nested imports, and rejects out-of-root loads through the
+original promise. The initial parser-sourced file import-map path, Service
+Worker classic-import settlement, import options/attributes, and complete
+module scheduling remain open. See
+[task 717](tasks/native-engine-browser-717.md). Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type
 essences are matched case-insensitively without parameters on script elements;

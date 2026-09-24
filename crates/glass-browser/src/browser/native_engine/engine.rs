@@ -27,19 +27,21 @@ use super::interaction::{
 };
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
-    MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_WORKER_MESSAGES, NativeCookieProfileEntry, NativeDialog,
-    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
-    NativeHashChangeEvent, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
-    NativeMessagePortPageMessage, NativeMessagePortTransfer, NativePageEventBatch,
-    NativePageMessageEvent, NativePageMessagePortCommand, NativePageNavigation, NativePageScript,
-    NativePageScriptResult, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
+    MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_WORKER_MESSAGES,
+    NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
+    NativeFrameScriptRequest, NativeHashChangeEvent, NativeIndexedDbChange, NativeIndexedDbState,
+    NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativeMessagePortTransfer,
+    NativePageEventBatch, NativePageMessageEvent, NativePageMessagePortCommand,
+    NativePageNavigation, NativePageScript, NativePageScriptResult, NativePopupRequest,
+    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
+    NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
     apply_document_commands_with_font_face_ack, apply_indexed_db_changes, diff_indexed_db_changes,
     execute_dynamic_page_scripts, execute_inline_scripts, frame_event_batch, host_event_batch,
     host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
+    load_local_file_dynamic_module_graph_with_import_map,
     load_local_file_module_graph_with_import_map, load_service_worker_client_leases,
     load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
     register_storage_reader, resolve_module_request_url, save_web_storage_profile,
@@ -4459,8 +4461,303 @@ impl NativeEngine {
 
     fn apply_local_script_commands(
         &mut self,
-        commands: &[super::javascript::NativeScriptCommand],
+        commands: &[NativeScriptCommand],
         allow_script_navigation: bool,
+    ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
+        if commands.is_empty() {
+            return Ok(None);
+        }
+
+        let mut command_queue = VecDeque::from(commands.to_vec());
+        let mut module_fetches = VecDeque::new();
+        let mut navigation = None;
+        let mut resolved_module_requests = 0usize;
+        while !command_queue.is_empty() || !module_fetches.is_empty() {
+            let mut batch = Vec::new();
+            while let Some(command) = command_queue.pop_front() {
+                match &command {
+                    NativeScriptCommand::Fetch {
+                        destination: Some(destination),
+                        module_referrer: Some(_),
+                        ..
+                    } if destination == "module" => module_fetches.push_back(command),
+                    NativeScriptCommand::Fetch { .. }
+                    | NativeScriptCommand::WebSocketOpen { .. }
+                    | NativeScriptCommand::WebSocketSend { .. }
+                    | NativeScriptCommand::WebSocketClose { .. }
+                    | NativeScriptCommand::EventSourceOpen { .. }
+                    | NativeScriptCommand::EventSourceClose { .. }
+                    | NativeScriptCommand::FetchStreamRead { .. }
+                    | NativeScriptCommand::FetchStreamCancel { .. } => {
+                        return Err(NativeEngineError::UnsupportedUrl {
+                            reason: "script network transport requires a process-backed HTTP(S) document"
+                                .into(),
+                        });
+                    }
+                    _ => batch.push(command),
+                }
+            }
+
+            if !batch.is_empty() {
+                let mut follow_up_fetches = Vec::new();
+                let batch_navigation = self.apply_local_script_command_batch(
+                    &batch,
+                    allow_script_navigation,
+                    &mut follow_up_fetches,
+                )?;
+                module_fetches.extend(follow_up_fetches);
+                if let Some(batch_navigation) = batch_navigation {
+                    if navigation.is_some() {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason:
+                                "one script event-loop batch cannot activate multiple navigations"
+                                    .into(),
+                        });
+                    }
+                    navigation = Some(batch_navigation);
+                }
+            }
+
+            let Some(module_fetch) = module_fetches.pop_front() else {
+                continue;
+            };
+            resolved_module_requests = resolved_module_requests.saturating_add(1);
+            if resolved_module_requests > MAX_NATIVE_MODULE_IMPORTS {
+                return Err(NativeEngineError::limit(
+                    "rooted-file dynamic module requests",
+                    MAX_NATIVE_MODULE_IMPORTS,
+                    resolved_module_requests,
+                ));
+            }
+            command_queue.extend(self.resolve_local_dynamic_module_fetch(module_fetch)?);
+        }
+
+        Ok(navigation)
+    }
+
+    fn resolve_local_dynamic_module_fetch(
+        &self,
+        command: NativeScriptCommand,
+    ) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
+        let NativeScriptCommand::Fetch {
+            request_id,
+            worker_id,
+            href,
+            credentials,
+            method,
+            headers,
+            body,
+            body_base64,
+            content_type,
+            mode,
+            redirect,
+            cache,
+            timeout_ms,
+            upload_stream_id,
+            destination,
+            module_referrer,
+        } = command
+        else {
+            return Err(NativeEngineError::invalid(
+                "rooted-file dynamic module request",
+                "command was not a fetch request",
+            ));
+        };
+        if request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "rooted-file dynamic module request id",
+                "must be positive",
+            ));
+        }
+        let module_referrer = module_referrer.unwrap_or_default();
+        let request_is_valid = worker_id.is_none()
+            && credentials
+            && method == "GET"
+            && headers.is_empty()
+            && body.is_none()
+            && body_base64.is_none()
+            && content_type.is_none()
+            && mode.as_deref() == Some("cors")
+            && redirect.as_deref() == Some("follow")
+            && cache.as_deref() == Some("default")
+            && timeout_ms.is_none()
+            && upload_stream_id.is_none()
+            && destination.as_deref() == Some("module");
+
+        let runtime = self
+            .javascript
+            .as_ref()
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "rooted-file dynamic module import".into(),
+                reason: "page JavaScript runtime is unavailable".into(),
+            })?;
+        let loaded_module = if request_is_valid {
+            self.load_local_dynamic_page_module(request_id, &module_referrer, &href, runtime)
+        } else {
+            Err(NativeEngineError::invalid(
+                "rooted-file dynamic module request",
+                "must be a credentialed bodyless CORS GET with default cache and follow redirects",
+            ))
+        };
+        let module_alias = loaded_module.as_ref().ok().cloned();
+        let payload = match loaded_module {
+            Ok(module_key) => serde_json::json!({
+                "dynamicModuleImport": {"moduleKey": module_key},
+            }),
+            Err(_) => serde_json::json!({
+                "dynamicModuleImport": {"error": "Failed to load dynamically imported module"},
+            }),
+        };
+        let evaluation = runtime.resolve_fetch(
+            request_id,
+            &payload,
+            &self.document,
+            &self.url,
+            &self.origin,
+            self.config.viewport,
+            &NativePageEventBatch::default(),
+        );
+        if let Some(module_alias) = module_alias {
+            runtime.discard_dynamic_module_alias(&module_alias);
+        }
+        let evaluation = evaluation?;
+        if evaluation.top_level_await_pending {
+            return Err(NativeEngineError::Worker {
+                operation: "rooted-file dynamic module import".into(),
+                reason: "module evaluation remained pending without a native host operation".into(),
+            });
+        }
+        Ok(evaluation.commands)
+    }
+
+    fn load_local_dynamic_page_module(
+        &self,
+        request_id: u32,
+        module_referrer: &str,
+        specifier: &str,
+        runtime: &NativeJavaScriptRuntime,
+    ) -> Result<String, NativeEngineError> {
+        if !is_file_url(&self.url) || !is_file_url(module_referrer) {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason:
+                    "rooted-file dynamic modules require a file document and active file referrer"
+                        .into(),
+            });
+        }
+        if !runtime.is_dynamic_import_referrer_allowed(module_referrer)? {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "dynamic module referrer is not an active page script".into(),
+            });
+        }
+
+        let mut import_map = runtime.module_import_map()?;
+        let target_result = import_map.resolve_and_record(module_referrer, specifier);
+        runtime.set_module_import_map(import_map.clone());
+        let target = target_result.map_err(|reason| NativeEngineError::Network {
+            operation: "rooted-file dynamic module import".into(),
+            reason: reason.into(),
+        })?;
+        if !is_file_url(&target) {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "rooted-file dynamic module target must use the file scheme".into(),
+            });
+        }
+
+        let (existing_sources, _) = runtime.module_sources_snapshot()?;
+        if existing_sources.contains_key(&target) {
+            return runtime.register_dynamic_module_alias(request_id, &target);
+        }
+        if existing_sources.len() >= MAX_NATIVE_MODULE_IMPORTS {
+            return Err(NativeEngineError::limit(
+                "native page module graph entries",
+                MAX_NATIVE_MODULE_IMPORTS,
+                existing_sources.len().saturating_add(1),
+            ));
+        }
+        let existing_names = existing_sources.keys().cloned().collect::<BTreeSet<_>>();
+        let existing_bytes = existing_sources
+            .values()
+            .map(String::len)
+            .fold(0usize, usize::saturating_add);
+        let integrity = import_map.integrity_for_url(&target).map(str::to_owned);
+        let resource = self
+            .loader
+            .load_local_file_script(
+                &self.url,
+                &target,
+                MAX_NATIVE_SCRIPT_BYTES,
+                integrity.as_deref(),
+            )?
+            .ok_or_else(|| NativeEngineError::Network {
+                operation: "rooted-file dynamic module import".into(),
+                reason: "module resource is missing, blocked, or outside the configured file root"
+                    .into(),
+            })?;
+        let graph_result = load_local_file_dynamic_module_graph_with_import_map(
+            &self.loader,
+            &self.url,
+            target.clone(),
+            resource.url,
+            resource.body,
+            &mut import_map,
+            &existing_names,
+            existing_bytes,
+        );
+        runtime.set_module_import_map(import_map);
+        let graph = graph_result?;
+
+        let mut new_sources = BTreeMap::new();
+        let mut new_base_urls = BTreeMap::new();
+        for (_, script) in graph {
+            let (name, source, base_url) = match script {
+                NativePageScript::Module {
+                    name,
+                    source,
+                    base_url,
+                    ..
+                }
+                | NativePageScript::ModuleDependency {
+                    name,
+                    source,
+                    base_url,
+                } => (name, source, base_url),
+                NativePageScript::Classic { .. } | NativePageScript::ImportMap(_) => continue,
+            };
+            new_sources.entry(name.clone()).or_insert(source);
+            new_base_urls.entry(name).or_insert(base_url);
+        }
+        let combined_entries = existing_sources.len().saturating_add(new_sources.len());
+        if combined_entries > MAX_NATIVE_MODULE_IMPORTS {
+            return Err(NativeEngineError::limit(
+                "native page module graph entries",
+                MAX_NATIVE_MODULE_IMPORTS,
+                combined_entries,
+            ));
+        }
+        let combined_bytes = existing_bytes.saturating_add(
+            new_sources
+                .values()
+                .map(String::len)
+                .fold(0usize, usize::saturating_add),
+        );
+        let maximum_module_bytes =
+            MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS);
+        if combined_bytes > maximum_module_bytes {
+            return Err(NativeEngineError::limit(
+                "native page module graph bytes",
+                maximum_module_bytes,
+                combined_bytes,
+            ));
+        }
+        runtime.extend_module_sources(new_sources, new_base_urls)?;
+        runtime.register_dynamic_module_alias(request_id, &target)
+    }
+
+    fn apply_local_script_command_batch(
+        &mut self,
+        commands: &[NativeScriptCommand],
+        allow_script_navigation: bool,
+        pending_fetches: &mut Vec<NativeScriptCommand>,
     ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         if commands.is_empty() {
             return Ok(None);
@@ -4468,14 +4765,14 @@ impl NativeEngine {
         if commands.iter().any(|command| {
             matches!(
                 command,
-                super::javascript::NativeScriptCommand::Fetch { .. }
-                    | super::javascript::NativeScriptCommand::WebSocketOpen { .. }
-                    | super::javascript::NativeScriptCommand::WebSocketSend { .. }
-                    | super::javascript::NativeScriptCommand::WebSocketClose { .. }
-                    | super::javascript::NativeScriptCommand::EventSourceOpen { .. }
-                    | super::javascript::NativeScriptCommand::EventSourceClose { .. }
-                    | super::javascript::NativeScriptCommand::FetchStreamRead { .. }
-                    | super::javascript::NativeScriptCommand::FetchStreamCancel { .. }
+                NativeScriptCommand::Fetch { .. }
+                    | NativeScriptCommand::WebSocketOpen { .. }
+                    | NativeScriptCommand::WebSocketSend { .. }
+                    | NativeScriptCommand::WebSocketClose { .. }
+                    | NativeScriptCommand::EventSourceOpen { .. }
+                    | NativeScriptCommand::EventSourceClose { .. }
+                    | NativeScriptCommand::FetchStreamRead { .. }
+                    | NativeScriptCommand::FetchStreamCancel { .. }
             )
         }) {
             return Err(NativeEngineError::UnsupportedUrl {
@@ -4483,6 +4780,7 @@ impl NativeEngine {
                     .into(),
             });
         }
+
         let mut effective_commands = commands.to_vec();
         let mut document = self.document.clone();
         let (mut events, font_face_follow_up_commands) = self
@@ -4536,8 +4834,8 @@ impl NativeEngine {
                             .into(),
                     });
                 }
-                if !dynamic_result.pending_fetches.is_empty()
-                    || !dynamic_result.websocket_commands.is_empty()
+                pending_fetches.extend(dynamic_result.pending_fetches);
+                if !dynamic_result.websocket_commands.is_empty()
                     || !dynamic_result.event_source_commands.is_empty()
                 {
                     return Err(NativeEngineError::UnsupportedUrl {
@@ -4596,6 +4894,7 @@ impl NativeEngine {
             if let Some(evaluation) =
                 self.evaluate_local_events(&document, &[(node_id, event_kind)])?
             {
+                retain_page_script_fetch_commands(&evaluation.commands, pending_fetches);
                 let (effects, follow_up_commands) = self
                     .apply_local_document_commands_with_font_face_ack(
                         &mut document,
@@ -4617,6 +4916,7 @@ impl NativeEngine {
             if let Some(evaluation) =
                 self.evaluate_local_events(&document, &[(node_id, event_kind)])?
             {
+                retain_page_script_fetch_commands(&evaluation.commands, pending_fetches);
                 let (effects, follow_up_commands) = self
                     .apply_local_document_commands_with_font_face_ack(
                         &mut document,
@@ -4638,6 +4938,7 @@ impl NativeEngine {
             if let Some(evaluation) =
                 self.evaluate_local_events(&document, &[(node_id, event_kind)])?
             {
+                retain_page_script_fetch_commands(&evaluation.commands, pending_fetches);
                 let (effects, follow_up_commands) = self
                     .apply_local_document_commands_with_font_face_ack(
                         &mut document,
@@ -4662,6 +4963,7 @@ impl NativeEngine {
         if !validation_events.is_empty()
             && let Some(evaluation) = self.evaluate_local_events(&document, &validation_events)?
         {
+            retain_page_script_fetch_commands(&evaluation.commands, pending_fetches);
             let (effects, follow_up_commands) = self
                 .apply_local_document_commands_with_font_face_ack(
                     &mut document,
@@ -4704,6 +5006,7 @@ impl NativeEngine {
                         operation: "native submit event".into(),
                         reason: "native JavaScript realm disappeared during submit dispatch".into(),
                     })?;
+                retain_page_script_fetch_commands(&evaluation.commands, pending_fetches);
                 let allowed = evaluation
                     .value
                     .as_array()
@@ -4737,6 +5040,7 @@ impl NativeEngine {
                     .map(|id| (id, NativeEventKind::Invalid))
                     .collect::<Vec<_>>();
                 if let Some(evaluation) = self.evaluate_local_events(&document, &invalid_events)? {
+                    retain_page_script_fetch_commands(&evaluation.commands, pending_fetches);
                     events.extend(invalid_events);
                     let (effects, follow_up_commands) = self
                         .apply_local_document_commands_with_font_face_ack(
@@ -7106,6 +7410,7 @@ impl NativeEngine {
             javascript.set_environment(self.environment.clone());
         }
         let mut dialogs = std::mem::take(&mut prepared.dialogs);
+        let mut initial_module_fetches = Vec::new();
         let page_navigation = if execute_page_scripts {
             if let Some(javascript) = javascript.as_ref() {
                 javascript.set_sync_xhr_loader(&self.loader);
@@ -7128,6 +7433,16 @@ impl NativeEngine {
                 self.loader.merge_fetch_task_state(updated_loader)?;
             }
             let result = result?;
+            initial_module_fetches.extend(result.pending_fetches.into_iter().filter(|command| {
+                matches!(
+                    command,
+                    NativeScriptCommand::Fetch {
+                        destination: Some(destination),
+                        module_referrer: Some(_),
+                        ..
+                    } if destination == "module"
+                )
+            }));
             dialogs.extend(result.dialogs);
             initial_events.extend(result.events);
             initial_scroll_commands.extend(result.scroll_commands);
@@ -7206,10 +7521,21 @@ impl NativeEngine {
             if let Some(javascript) = self.javascript.as_mut() {
                 javascript.reset_timer_clock();
             }
-            let page_navigation = match page_navigation {
+            let mut page_navigation = match page_navigation {
                 Some(page_navigation) => Some(self.page_navigation_request(page_navigation)?),
                 None => self.dispatch_local_page_show()?,
             };
+            if let Some(import_navigation) =
+                self.apply_local_script_commands(&initial_module_fetches, true)?
+            {
+                if page_navigation.is_some() {
+                    return Err(NativeEngineError::TargetNotActionable {
+                        reason: "one navigation commit cannot activate multiple page navigations"
+                            .into(),
+                    });
+                }
+                page_navigation = Some(import_navigation);
+            }
             if let Some(javascript) = self.javascript.as_mut() {
                 javascript.reset_timer_clock();
             }
@@ -9043,6 +9369,18 @@ fn is_file_subresource_source(document_url: &str, source: &str) -> bool {
         && base
             .join(source)
             .is_ok_and(|target| target.scheme().eq_ignore_ascii_case("file"))
+}
+
+fn retain_page_script_fetch_commands(
+    commands: &[NativeScriptCommand],
+    pending_fetches: &mut Vec<NativeScriptCommand>,
+) {
+    pending_fetches.extend(
+        commands
+            .iter()
+            .filter(|command| matches!(command, NativeScriptCommand::Fetch { .. }))
+            .cloned(),
+    );
 }
 
 fn load_font_faces(

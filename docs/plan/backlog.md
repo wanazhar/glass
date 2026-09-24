@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser slice is `native-engine-browser-698`.
+The latest locally completed parser slice is `native-engine-browser-699`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -145,7 +145,8 @@ Slice 697 is complete locally: initialize fragment parsing in RAWTEXT for
 resume ordinary fragment parsing afterward, and align all parser routes plus
 serialization. The focused RAWTEXT tests passed 2/2 and the foreign namespace
 route test passed 1/1 after the locked package check. Remote CI was not run;
-script-data and `plaintext` contexts remain separate. See
+script-data and `plaintext` initialization are outside slice 697 and are
+handled separately by slices 699 and 698. See
 `tasks/native-engine-browser-697.md`.
 
 Slice 698 is complete locally: initialize a `plaintext` fragment target in
@@ -157,6 +158,14 @@ focused RCDATA/RAWTEXT/PLAINTEXT fragment-context tests passed. Formatting and
 local documentation gates passed; inventory/link coverage was skipped because
 its debug binaries were absent, and remote CI was not run. Document/XHR
 start-tag parsing remains separate. See `tasks/native-engine-browser-698.md`.
+
+Slice 699 is complete locally: distinguish Script Data, escaped, and
+double-escaped tokenizer states when finding the appropriate HTML `script`
+end tag. A double-escaped `</script>` remains text and only returns the
+tokenizer to the escaped state. The covered document, Rust fragment,
+same-turn JavaScript/frame, and XHR routes agree. General tokenizer and script
+execution conformance remain open; remote CI was not run. See
+`tasks/native-engine-browser-699.md`.
 
 Slice 689 is complete locally: select child element namespaces using SVG and MathML
 HTML integration-point rules across all four parser routes. Preserve the

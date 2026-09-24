@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-698`; issue #40 remains open. Earlier completed slices
+`native-engine-browser-699`; issue #40 remains open. Earlier completed slices
 include `native-engine-browser-696` through `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
@@ -678,7 +678,8 @@ nulls become U+FFFD, and the suffix resumes ordinary fragment parsing. The
 same mode set is used by document/XHR tokenization and HTML serialization.
 Rust commits, same-turn JavaScript/frame projection, and XHR document parsing
 agree; foreign SVG/MathML reprocessing and RCDATA behavior remain intact.
-Script-data and `plaintext` fragment states remain separate. The locked
+Script-data and `plaintext` fragment states are outside slice 697 and are
+handled separately by slices 699 and 698. The locked
 package check, focused RAWTEXT tests (2/2), and foreign namespace route test
 (1/1) passed locally. Remote CI was not run. See
 [`slice 697`](../plan/tasks/native-engine-browser-697.md).
@@ -693,6 +694,15 @@ formatting and local documentation gates. The optional inventory/link check
 was skipped because its debug binaries were absent; remote CI was not run.
 Document/XHR `plaintext` start-tag parsing remains separate. See
 [`slice 698`](../plan/tasks/native-engine-browser-698.md).
+
+Slice 699 is complete locally: HTML `script` fragment contexts distinguish
+Script Data, escaped, and double-escaped states when locating the appropriate
+end tag. A `</script>` encountered in double-escaped content remains literal
+and only transitions the tokenizer back to escaped content. Character
+references remain literal, and the covered document, Rust fragment,
+JavaScript/frame, and XHR routes agree. General tokenizer and script-execution
+conformance remain open; remote CI was not run. See
+[`slice 699`](../plan/tasks/native-engine-browser-699.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

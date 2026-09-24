@@ -25,8 +25,9 @@ context end tag.
   commits, same-turn JavaScript/frame projections, and HTML serialization.
   `noscript` uses RAWTEXT because this browser runtime has scripting enabled.
 - Preserve foreign-content reprocessing for same-named SVG/MathML elements and
-  existing RCDATA behavior. Script-data and `plaintext` fragment states remain
-  separate follow-ups; this is not a general HTML conformance claim.
+  existing RCDATA behavior. At the slice 697 checkpoint, Script Data and
+  `plaintext` fragment initialization were separate follow-ups; see slices
+  699 and 698 respectively. This is not a general HTML conformance claim.
 
 ## Context
 

@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-697`. Issue #40
+completed browser expansion slice is `native-engine-browser-699`. Issue #40
 remains open. It follows locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,
@@ -852,8 +852,9 @@ Document parsing, Rust fragment commit, same-turn JavaScript/frame projection,
 XHR HTML parsing, and HTML serialization agree. Foreign SVG/MathML
 reprocessing and RCDATA behavior are preserved. The locked package check,
 focused RAWTEXT tests (2/2), foreign namespace route test (1/1), formatting,
-and local documentation gates passed; remote CI was not run. Script-data and
-`plaintext` initialization remain separate. See
+and local documentation gates passed; remote CI was not run. Script Data and
+`plaintext` initialization were separate follow-ups at this checkpoint and are
+covered by slices 699 and 698 respectively. See
 [`slice 697`](../tasks/native-engine-browser-697.md).
 
 Slice 698 initializes a `plaintext` fragment context in the PLAINTEXT state
@@ -866,6 +867,16 @@ tests passed with formatting and local documentation gates. Inventory/link
 coverage was skipped because its debug binaries were absent; remote CI was not
 run. Document/XHR start-tag tokenization is unchanged. See
 [`slice 698`](../tasks/native-engine-browser-698.md).
+
+Slice 699 is complete locally. The script end-tag scan tracks Script Data,
+escaped, and double-escaped states: `</script>` in double-escaped content is
+emitted as text and changes the state back to escaped rather than closing the
+element. Only an appropriate end tag emitted from Script Data or escaped end
+tag-name state closes it. Literal references are preserved, and the covered
+document, fragment, JavaScript/frame, and XHR paths agree. This bounded
+scanner correction is not full tokenizer or script-execution conformance;
+remote CI was not run. See
+[`slice 699`](../tasks/native-engine-browser-699.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

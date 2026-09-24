@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-701`. Issue #40
+completed browser expansion slice is `native-engine-browser-702`. Issue #40
 remains open. It follows locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,
@@ -896,6 +896,15 @@ types remain inert. The locked package check and focused test passed 1/1.
 This does not change external/module loading or certify complete scheduling;
 remote CI was not run. See
 [`slice 701`](../tasks/native-engine-browser-701.md).
+
+Slice 702 shares the five-type JavaScript MIME essence matcher between
+initial-document script classification and external response validation.
+Initial inline and external classic scripts now align with the dynamic inline
+path; parameters and ASCII case differences are handled consistently, while
+`application/json` remains a data block. The locked package check passed and
+the paired MIME-policy tests passed 2/2. The full JavaScript MIME registry and
+script scheduling remain outside this bounded slice; remote CI was not run.
+See [`slice 702`](../tasks/native-engine-browser-702.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

@@ -6711,7 +6711,7 @@ impl NativeResourceLoader {
             .content_type
             .as_deref()
             .is_some_and(|content_type| {
-                !content_type.is_empty() && !script_content_type_text_allowed(content_type)
+                !content_type.is_empty() && !javascript_mime_essence_allowed(content_type)
             })
         {
             return Ok(None);
@@ -6981,7 +6981,7 @@ impl NativeResourceLoader {
                 .content_type
                 .as_deref()
                 .is_some_and(|content_type| {
-                    !content_type.is_empty() && !script_content_type_text_allowed(content_type)
+                    !content_type.is_empty() && !javascript_mime_essence_allowed(content_type)
                 })
             {
                 return Ok(None);
@@ -8153,10 +8153,10 @@ fn script_content_type_allowed(
         operation: "script content-type validation".into(),
         reason: "script content type is not valid ASCII".into(),
     })?;
-    Ok(script_content_type_text_allowed(value))
+    Ok(javascript_mime_essence_allowed(value))
 }
 
-fn script_content_type_text_allowed(value: &str) -> bool {
+pub(crate) fn javascript_mime_essence_allowed(value: &str) -> bool {
     matches!(
         value
             .split(';')

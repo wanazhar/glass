@@ -28,7 +28,7 @@ use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
     MAX_NATIVE_CSP_POLICIES, MAX_NATIVE_MEDIA_BYTES, NativeMediaMetadata, NativeNavigationRequest,
-    NativeRequestBody,
+    NativeRequestBody, javascript_mime_essence_allowed,
 };
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES, TextFragmentTerms, Viewport},
@@ -4349,12 +4349,7 @@ impl NativeDocument {
                 let module = match node.attribute("type") {
                     None | Some("") => false,
                     Some(value) if value.eq_ignore_ascii_case("module") => true,
-                    Some(value)
-                        if value.eq_ignore_ascii_case("text/javascript")
-                            || value.eq_ignore_ascii_case("application/javascript") =>
-                    {
-                        false
-                    }
+                    Some(value) if javascript_mime_essence_allowed(value) => false,
                     Some(_) => return None,
                 };
                 let external = node
@@ -16477,6 +16472,49 @@ mod tests {
         document
             .apply_script_commands(&evaluation.commands)
             .expect("dynamic MIME script DOM commands must commit");
+    }
+
+    #[test]
+    fn parsed_inline_scripts_use_external_javascript_mime_policy() {
+        let mime_types = [
+            "text/javascript",
+            "application/javascript",
+            "application/ecmascript",
+            "text/ecmascript",
+            "application/x-javascript",
+            "APPLICATION/ECMASCRIPT; charset=utf-8",
+        ];
+        let mut markup = String::from(
+            "<html><head><script>window.__parsedMime0 = true</script><script type=''>window.__parsedMime1 = true</script>",
+        );
+        for (index, mime_type) in mime_types.iter().enumerate() {
+            markup.push_str(&format!(
+                "<script type=\"{mime_type}\">window.__parsedMime{index}_accepted = true</script>"
+            ));
+        }
+        markup.push_str(
+            "<script type='application/json'>window.__parsedMimeJson = true</script></head><body></body></html>",
+        );
+
+        let document = NativeDocument::parse(&markup, &NativeEngineLimits::default())
+            .expect("script MIME document must parse");
+        let sources = document.page_script_sources(16, 4096);
+        assert_eq!(sources.len(), mime_types.len() + 2);
+        assert!(
+            sources
+                .iter()
+                .all(|source| matches!(source, NativePageScriptSource::Inline { .. }))
+        );
+        assert!(sources.iter().any(|source| matches!(
+            source,
+            NativePageScriptSource::Inline { source, .. }
+                if source.contains("__parsedMime5_accepted")
+        )));
+        assert!(!sources.iter().any(|source| matches!(
+            source,
+            NativePageScriptSource::Inline { source, .. }
+                if source.contains("__parsedMimeJson")
+        )));
     }
 
     #[test]

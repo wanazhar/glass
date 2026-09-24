@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-701`.
+The latest locally completed parser/script slice is `native-engine-browser-702`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -183,6 +183,13 @@ insensitively and ignoring parameters. Unsupported data MIME types remain
 inert. The locked package check and focused regression passed; remote CI was
 not run. Full script/task scheduling and general conformance remain open. See
 `tasks/native-engine-browser-701.md`.
+
+Slice 702 is complete locally: initial-document inline/external classic-script
+classification uses the same five-type JavaScript MIME essence matcher as
+external response validation and dynamic inline insertion. The paired focused
+MIME-policy tests passed 2/2 after the locked package check; remote CI was not
+run. Full registry and scheduling conformance remain open. See
+`tasks/native-engine-browser-702.md`.
 
 Slice 689 is complete locally: select child element namespaces using SVG and MathML
 HTML integration-point rules across all four parser routes. Preserve the

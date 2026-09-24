@@ -27631,6 +27631,68 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
   const nativeHtmlNamespaceUri = "http://www.w3.org/1999/xhtml";
   const nativeSvgNamespaceUri = "http://www.w3.org/2000/svg";
   const nativeMathmlNamespaceUri = "http://www.w3.org/1998/Math/MathML";
+  const nativeHtmlXlinkNamespaceUri = "http://www.w3.org/1999/xlink";
+  const nativeHtmlXmlNamespaceUri = "http://www.w3.org/XML/1998/namespace";
+  const nativeHtmlXmlnsNamespaceUri = "http://www.w3.org/2000/xmlns/";
+  const nativeHtmlSvgAttributeNameAdjustments = new Map([
+    ["attributename", "attributeName"], ["attributetype", "attributeType"],
+    ["basefrequency", "baseFrequency"], ["baseprofile", "baseProfile"],
+    ["calcmode", "calcMode"], ["clippathunits", "clipPathUnits"],
+    ["diffuseconstant", "diffuseConstant"], ["edgemode", "edgeMode"],
+    ["filterunits", "filterUnits"], ["glyphref", "glyphRef"],
+    ["gradienttransform", "gradientTransform"], ["gradientunits", "gradientUnits"],
+    ["kernelmatrix", "kernelMatrix"], ["kernelunitlength", "kernelUnitLength"],
+    ["keypoints", "keyPoints"], ["keysplines", "keySplines"], ["keytimes", "keyTimes"],
+    ["lengthadjust", "lengthAdjust"], ["limitingconeangle", "limitingConeAngle"],
+    ["markerheight", "markerHeight"], ["markerunits", "markerUnits"],
+    ["markerwidth", "markerWidth"], ["maskcontentunits", "maskContentUnits"],
+    ["maskunits", "maskUnits"], ["numoctaves", "numOctaves"], ["pathlength", "pathLength"],
+    ["patterncontentunits", "patternContentUnits"], ["patterntransform", "patternTransform"],
+    ["patternunits", "patternUnits"], ["pointsatx", "pointsAtX"],
+    ["pointsaty", "pointsAtY"], ["pointsatz", "pointsAtZ"],
+    ["preservealpha", "preserveAlpha"], ["preserveaspectratio", "preserveAspectRatio"],
+    ["primitiveunits", "primitiveUnits"], ["refx", "refX"], ["refy", "refY"],
+    ["repeatcount", "repeatCount"], ["repeatdur", "repeatDur"],
+    ["requiredextensions", "requiredExtensions"], ["requiredfeatures", "requiredFeatures"],
+    ["specularconstant", "specularConstant"], ["specularexponent", "specularExponent"],
+    ["spreadmethod", "spreadMethod"], ["startoffset", "startOffset"],
+    ["stddeviation", "stdDeviation"], ["stitchtiles", "stitchTiles"],
+    ["surfacescale", "surfaceScale"], ["systemlanguage", "systemLanguage"],
+    ["tablevalues", "tableValues"], ["targetx", "targetX"], ["targety", "targetY"],
+    ["textlength", "textLength"], ["viewbox", "viewBox"], ["viewtarget", "viewTarget"],
+    ["xchannelselector", "xChannelSelector"], ["ychannelselector", "yChannelSelector"],
+    ["zoomandpan", "zoomAndPan"],
+  ]);
+  const nativeHtmlForeignAttributeAdjustments = new Map([
+    ["xlink:actuate", ["xlink", "actuate", nativeHtmlXlinkNamespaceUri]],
+    ["xlink:arcrole", ["xlink", "arcrole", nativeHtmlXlinkNamespaceUri]],
+    ["xlink:href", ["xlink", "href", nativeHtmlXlinkNamespaceUri]],
+    ["xlink:role", ["xlink", "role", nativeHtmlXlinkNamespaceUri]],
+    ["xlink:show", ["xlink", "show", nativeHtmlXlinkNamespaceUri]],
+    ["xlink:title", ["xlink", "title", nativeHtmlXlinkNamespaceUri]],
+    ["xlink:type", ["xlink", "type", nativeHtmlXlinkNamespaceUri]],
+    ["xml:lang", ["xml", "lang", nativeHtmlXmlNamespaceUri]],
+    ["xml:space", ["xml", "space", nativeHtmlXmlNamespaceUri]],
+    ["xmlns", [null, "xmlns", nativeHtmlXmlnsNamespaceUri]],
+    ["xmlns:xlink", ["xmlns", "xlink", nativeHtmlXmlnsNamespaceUri]],
+  ]);
+  const nativeHtmlAdjustForeignAttribute = (name, namespaceURI) => {
+    let adjustedName = String(name).toLowerCase();
+    if (namespaceURI === nativeSvgNamespaceUri) {
+      adjustedName = nativeHtmlSvgAttributeNameAdjustments.get(adjustedName) || adjustedName;
+    } else if (namespaceURI === nativeMathmlNamespaceUri && adjustedName === "definitionurl") {
+      adjustedName = "definitionURL";
+    }
+    const foreign = namespaceURI === nativeHtmlNamespaceUri
+      ? null
+      : nativeHtmlForeignAttributeAdjustments.get(adjustedName);
+    return {
+      name: adjustedName,
+      prefix: foreign ? foreign[0] : null,
+      localName: foreign ? foreign[1] : adjustedName,
+      namespaceURI: foreign ? foreign[2] : null,
+    };
+  };
   const nativeHtmlVoidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
   const nativeHtmlRawTextElements = new Set(["script", "style"]);
   const nativeHtmlRcdataElements = new Set(["textarea", "title"]);
@@ -28354,7 +28416,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         const parent = fosterLocation ? fosterLocation.parent : state.stack[state.stack.length - 1];
         append(parent, { type: "text", html: true, value: normalized }, fosterLocation && fosterLocation.before);
       };
-      const parseAttributes = (element, rawTag, offset) => {
+      const parseAttributes = (element, rawTag, offset, countNodes = true) => {
         const seen = new Set();
         let cursor = offset;
         while (cursor < rawTag.length) {
@@ -28386,12 +28448,13 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           }
           if (seen.has(attributeName)) continue;
           seen.add(attributeName);
-          nativeXmlAddNode(state, { type: "attribute" });
+          if (countNodes) nativeXmlAddNode(state, { type: "attribute" });
+          const adjusted = nativeHtmlAdjustForeignAttribute(attributeName, element.namespaceURI);
           element.attributes.push({
-            name: attributeName,
-            prefix: null,
-            localName: attributeName,
-            namespaceURI: null,
+            name: adjusted.name,
+            prefix: adjusted.prefix,
+            localName: adjusted.localName,
+            namespaceURI: adjusted.namespaceURI,
             value: nativeHtmlDecodeEntities(value).replace(/\u0000/g, "\ufffd"),
             owner: element,
           });
@@ -28515,9 +28578,10 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         const name = opening[1].toLowerCase();
         let selfClosing = /\/\s*$/.test(rawTag);
         let fontAttributes = null;
+        let fontReprocessedAsHtml = false;
         if (name === "font") {
           const probe = nativeHtmlRawElement(name, state.stack[state.stack.length - 1]);
-          parseAttributes(probe, rawTag, opening[0].length);
+          parseAttributes(probe, rawTag, opening[0].length, false);
           fontAttributes = probe.attributes;
         }
         const foreignBreakout = isForeignContentBreakoutStartTag(name, fontAttributes || []);
@@ -28527,6 +28591,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           while (state.stack.length > 1
               && usesForeignCharacterRules(state.stack[state.stack.length - 1])) state.stack.pop();
           clearMarkersForPoppedElements(stackBeforeBreakout);
+          fontReprocessedAsHtml = name === "font";
           // HTML ignores the self-closing flag on non-void elements.
           selfClosing = false;
         }
@@ -28546,9 +28611,12 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
             && nativeHtmlShouldAutoClose(state.stack[state.stack.length - 1].localName, name)) state.stack.pop();
         insertImpliedTableElements(name);
         const element = nativeHtmlRawElement(name, state.stack[state.stack.length - 1]);
-        if (fontAttributes) {
+        if (fontAttributes && !fontReprocessedAsHtml) {
           element.attributes = fontAttributes;
-          for (const attribute of fontAttributes) attribute.owner = element;
+          for (const attribute of fontAttributes) {
+            nativeXmlAddNode(state, { type: "attribute" });
+            attribute.owner = element;
+          }
         } else {
           parseAttributes(element, rawTag, opening[0].length);
         }
@@ -28666,11 +28734,11 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
       }},
       getNamedItem: { configurable: true, value(name) {
         const requested = String(name);
-        return list.find((attribute) => attribute.name === (html ? requested.toLowerCase() : requested)) || null;
+        return Array.from(list).find((attribute) => attribute.name === (html ? requested.toLowerCase() : requested)) || null;
       }},
       getNamedItemNS: { configurable: true, value(namespaceURI, localName) {
         const namespace = namespaceURI === null || namespaceURI === undefined ? null : String(namespaceURI);
-        return list.find((attribute) => attribute.namespaceURI === namespace && attribute.localName === String(localName)) || null;
+        return Array.from(list).find((attribute) => attribute.namespaceURI === namespace && attribute.localName === String(localName)) || null;
       }},
     });
     return Object.freeze(list);
@@ -28776,12 +28844,18 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           localName: { configurable: true, enumerable: true, value: raw.localName },
           prefix: { configurable: true, enumerable: true, value: raw.prefix },
           namespaceURI: { configurable: true, enumerable: true, value: raw.namespaceURI },
-          attributes: { configurable: true, enumerable: true, value: nativeXmlAttributeList(raw.attributes.map((attribute) => materializeAttribute(attribute, ownerDocument, target)), raw.html === true) },
+          attributes: { configurable: true, enumerable: true, value: nativeXmlAttributeList(
+            raw.attributes.map((attribute) => materializeAttribute(attribute, ownerDocument, target)),
+            raw.namespaceURI === nativeHtmlNamespaceUri,
+          ) },
         });
         const attributes = target.attributes;
         Object.defineProperties(target, {
           getAttribute: { configurable: true, value(name) {
-            const attribute = Array.from(attributes).find((candidate) => nativeXmlAttributeNameMatches(raw.html ? { name: candidate.name, html: true } : { name: candidate.name, html: false }, name));
+            const attribute = Array.from(attributes).find((candidate) => nativeXmlAttributeNameMatches(
+              { name: candidate.name, html: raw.namespaceURI === nativeHtmlNamespaceUri },
+              name,
+            ));
             return attribute ? attribute.value : null;
           }},
           getAttributeNS: { configurable: true, value(namespaceURI, localName) {
@@ -28789,8 +28863,17 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
             const attribute = Array.from(attributes).find((candidate) => candidate.namespaceURI === namespace && candidate.localName === String(localName));
             return attribute ? attribute.value : null;
           }},
+          getAttributeNode: { configurable: true, value(name) {
+            return attributes.getNamedItem(name);
+          }},
+          getAttributeNodeNS: { configurable: true, value(namespaceURI, localName) {
+            return attributes.getNamedItemNS(namespaceURI, localName);
+          }},
           hasAttribute: { configurable: true, value(name) {
-            return Array.from(attributes).some((candidate) => nativeXmlAttributeNameMatches(raw.html ? { name: candidate.name, html: true } : { name: candidate.name, html: false }, name));
+            return Array.from(attributes).some((candidate) => nativeXmlAttributeNameMatches(
+              { name: candidate.name, html: raw.namespaceURI === nativeHtmlNamespaceUri },
+              name,
+            ));
           } },
           hasAttributeNS: { configurable: true, value(namespaceURI, localName) {
             const namespace = namespaceURI === null || namespaceURI === undefined ? null : String(namespaceURI);
@@ -28803,7 +28886,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           getElementsByTagNameNS: { configurable: true, value(namespaceURI, localName) {
             const namespace = namespaceURI === null || namespaceURI === undefined ? null : String(namespaceURI);
             const requested = String(localName);
-            return nativeXmlNodeList(nativeXmlDescendants(raw, false).filter((candidate) => (namespace === "*" || candidate.namespaceURI === namespace) && (requested === "*" || candidate.localName === (candidate.html ? requested.toLowerCase() : requested))).map((candidate) => materialized.get(candidate)));
+            return nativeXmlNodeList(nativeXmlDescendants(raw, false).filter((candidate) => (namespace === "*" || candidate.namespaceURI === namespace) && (requested === "*" || candidate.localName === (candidate.namespaceURI === nativeHtmlNamespaceUri ? requested.toLowerCase() : requested))).map((candidate) => materialized.get(candidate)));
           }},
           querySelector: { configurable: true, value(selector) { return nativeXmlQuery(this, selector, false)[0] || null; } },
           querySelectorAll: { configurable: true, value(selector) { return nativeXmlNodeList(nativeXmlQuery(this, selector, false)); } },
@@ -36531,8 +36614,12 @@ fn document_bootstrap(
         .replace(/\/\s*$/, "");
       const attributes = /([A-Za-z_:][A-Za-z0-9:._-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+)))?/g;
       const parsedAttributes = [];
+      const seenParsedAttributes = new Set();
       let attribute;
       while ((attribute = attributes.exec(attributeSource)) !== null) {{
+        const attributeName = attribute[1].toLowerCase();
+        if (seenParsedAttributes.has(attributeName)) continue;
+        seenParsedAttributes.add(attributeName);
         const value = attribute[2] !== undefined
           ? attribute[2]
           : attribute[3] !== undefined
@@ -36540,7 +36627,7 @@ fn document_bootstrap(
             : attribute[4] !== undefined
               ? attribute[4]
               : "";
-        parsedAttributes.push([attribute[1], decodeHtmlEntities(value).replace(/\u0000/g, "\ufffd")]);
+        parsedAttributes.push([attributeName, decodeHtmlEntities(value).replace(/\u0000/g, "\ufffd")]);
       }}
       const foreignBreakout = foreignContentBreakoutStartTags.has(normalizedName)
         || (normalizedName === "font" && parsedAttributes.some(([name]) =>
@@ -36592,10 +36679,12 @@ fn document_bootstrap(
         namespaceForChildElement(parent, normalizedName, forceHtmlContext && parent === fragment),
       );
       for (const [name, value] of parsedAttributes) {{
-        if (!element.hasAttribute(name)) {{
-          const attributeNamespace = parsedAttributeNamespace(name, element.namespaceURI);
-          if (attributeNamespace === null) element.setAttribute(name, value);
-          else element.setAttributeNS(attributeNamespace, name, value);
+        const adjusted = nativeHtmlAdjustForeignAttribute(name, element.namespaceURI);
+        if (!element.hasAttribute(adjusted.name)) {{
+          if (typeof element.__glassSetParsedAttribute !== "function") {{
+            throw new TypeError("native parser element cannot preserve adjusted attributes");
+          }}
+          element.__glassSetParsedAttribute(adjusted.name, value, adjusted.namespaceURI);
         }}
       }}
       insertParsedNode(parent, element, fosterLocation && fosterLocation.before);
@@ -37072,7 +37161,7 @@ fn document_bootstrap(
     return value;
   }};
   const attributeNodeKey = (namespace, name) =>
-    String(namespace || "") + "\u0000" + String(name).toLowerCase();
+    String(namespace || "") + "\u0000" + String(name);
   const normalizeAttributeNodeName = (name) => {{
     const value = String(name);
     if (!/^[A-Za-z_:][A-Za-z0-9:._-]*$/.test(value)) {{
@@ -37082,10 +37171,10 @@ fn document_bootstrap(
     }}
     return value.toLowerCase();
   }};
-  const makeAttributeNode = (name, initialValue = "", ownerDocumentResolver = () => null, namespace = null) => {{
-    const normalized = normalizeAttributeNodeName(name);
+  const makeAttributeNode = (name, initialValue = "", ownerDocumentResolver = () => null, namespace = null, preserveName = false) => {{
     const namespaceURI = normalizeAttributeNamespace(namespace);
-    const separator = normalized.indexOf(":");
+    const normalized = preserveName ? String(name) : normalizeAttributeNodeName(name);
+    const separator = namespaceURI === null ? -1 : normalized.indexOf(":");
     let attributeValue = String(initialValue);
     if (attributeValue.length > {storage_value_limit}) throw new RangeError("native attribute value exceeds its limit");
     let ownerElement = null;
@@ -37216,7 +37305,8 @@ fn document_bootstrap(
     if (originalSetAttribute) {{
       element.setAttribute = (name, value) => {{
         originalSetAttribute(name, value);
-        const key = attributeNodeKey(null, name);
+        const keyName = element.namespaceURI === HTML_NAMESPACE ? String(name).toLowerCase() : String(name);
+        const key = attributeNodeKey(null, keyName);
         const attribute = attributeNodes.get(key);
         if (attribute) {{
           attribute.__glassRefreshValue(element.getAttribute(attribute.name));
@@ -37228,7 +37318,8 @@ fn document_bootstrap(
     if (originalRemoveAttribute) {{
       element.removeAttribute = (name) => {{
         originalRemoveAttribute(name);
-        const key = attributeNodeKey(null, name);
+        const keyName = element.namespaceURI === HTML_NAMESPACE ? String(name).toLowerCase() : String(name);
+        const key = attributeNodeKey(null, keyName);
         const attribute = attributeNodes.get(key);
         if (attribute) {{
           attribute.__glassSetOwner(null);
@@ -37238,12 +37329,14 @@ fn document_bootstrap(
       }};
     }}
     const getAttributeNode = (name) => {{
-      const key = normalizeAttributeNodeName(name);
+      const key = element.namespaceURI === HTML_NAMESPACE
+        ? normalizeAttributeNodeName(name)
+        : String(name);
       if (element.getAttribute(key) === null) return null;
       const namespaceURI = typeof element.__glassAttributeNamespace === "function"
         ? element.__glassAttributeNamespace(key)
         : null;
-      if (namespaceURI !== null) return getAttributeNodeNS(namespaceURI, attributeLocalName(key));
+      if (namespaceURI !== null) return getAttributeNodeNS(namespaceURI, storedAttributeLocalName(key, namespaceURI));
       const nodeKey = attributeNodeKey(null, key);
       const existing = attributeNodes.get(nodeKey);
       if (existing) {{
@@ -37251,7 +37344,7 @@ fn document_bootstrap(
         existing.__glassSetOwner(element);
         return existing;
       }}
-      const attribute = makeAttributeNode(key, element.getAttribute(key), ownerDocumentResolver);
+      const attribute = makeAttributeNode(key, element.getAttribute(key), ownerDocumentResolver, null, true);
       attribute.__glassSetOwner(element);
       attributeNodes.set(nodeKey, attribute);
       return attribute;
@@ -37287,12 +37380,14 @@ fn document_bootstrap(
     }};
     const getAttributeNodeNS = (namespace, name) => {{
       const namespaceURI = normalizeAttributeNamespace(namespace);
-      const localName = attributeLocalName(name);
-      const candidate = element.getAttributeNames().find((attributeName) =>
-        attributeLocalName(attributeName) === localName
-          && (typeof element.__glassAttributeNamespace === "function"
-            ? element.__glassAttributeNamespace(attributeName)
-            : null) === namespaceURI);
+      const localName = String(name);
+      const candidate = element.getAttributeNames().find((attributeName) => {{
+        const candidateNamespace = typeof element.__glassAttributeNamespace === "function"
+          ? element.__glassAttributeNamespace(attributeName)
+          : null;
+        return candidateNamespace === namespaceURI
+          && storedAttributeLocalName(attributeName, candidateNamespace) === localName;
+      }});
       if (candidate === undefined) return null;
       if (namespaceURI === null) return getAttributeNode(candidate);
       const nodeKey = attributeNodeKey(namespaceURI, candidate);
@@ -37303,7 +37398,7 @@ fn document_bootstrap(
         existing.__glassSetOwner(element);
         return existing;
       }}
-      const attribute = makeAttributeNode(candidate, value, ownerDocumentResolver, namespaceURI);
+      const attribute = makeAttributeNode(candidate, value, ownerDocumentResolver, namespaceURI, true);
       attribute.__glassSetOwner(element);
       attributeNodes.set(nodeKey, attribute);
       return attribute;
@@ -37402,10 +37497,12 @@ fn document_bootstrap(
   }};
   const normalizedAttributeName = (name) => normalizeAttributeNodeName(name);
   const attributeLocalName = (name) => {{
-    const normalized = normalizedAttributeName(name);
-    const separator = normalized.indexOf(":");
-    return separator < 0 ? normalized : normalized.slice(separator + 1);
+    const qualifiedName = String(name);
+    const separator = qualifiedName.indexOf(":");
+    return separator < 0 ? qualifiedName : qualifiedName.slice(separator + 1);
   }};
+  const storedAttributeLocalName = (name, namespaceURI) =>
+    namespaceURI === null ? String(name) : attributeLocalName(name);
   const qualifiedAttributeName = (name, namespace) => {{
     const normalized = normalizedAttributeName(name);
     const separator = normalized.indexOf(":");
@@ -37438,14 +37535,6 @@ fn document_bootstrap(
       : {{}};
     const value = namespaces[key];
     return value === undefined || value === "" ? null : String(value);
-  }};
-  const parsedAttributeNamespace = (name, elementNamespace) => {{
-    if (elementNamespace !== SVG_NAMESPACE && elementNamespace !== MATHML_NAMESPACE) return null;
-    const lower = String(name).toLowerCase();
-    if (lower === "xmlns" || lower.startsWith("xmlns:")) return XMLNS_NAMESPACE;
-    if (lower.startsWith("xml:")) return XML_NAMESPACE;
-    if (lower.startsWith("xlink:")) return XLINK_NAMESPACE;
-    return null;
   }};
   const namespaceForChildElement = (parent, localName, forceHtmlRules = false) => {{
     const parentNamespace = parent && parent.namespaceURI;
@@ -37537,19 +37626,22 @@ fn document_bootstrap(
     }};
     const namespacedAttributeValue = (namespace, name) => {{
       const namespaceURI = normalizeAttributeNamespace(namespace);
-      const localName = attributeLocalName(name);
+      const localName = String(name);
       for (const key of Object.keys(entry.attributes)) {{
-        if (attributeLocalName(key) === localName
-            && attributeNamespaceForEntry(entry, key) === namespaceURI) return entry.attributes[key];
+        const keyNamespace = attributeNamespaceForEntry(entry, key);
+        if (storedAttributeLocalName(key, keyNamespace) === localName
+            && keyNamespace === namespaceURI) return entry.attributes[key];
       }}
       return null;
     }};
     const removeNamespacedAttribute = (namespace, name) => {{
       const namespaceURI = normalizeAttributeNamespace(namespace);
-      const localName = attributeLocalName(name);
-      const key = Object.keys(entry.attributes).find((candidate) =>
-        attributeLocalName(candidate) === localName
-          && attributeNamespaceForEntry(entry, candidate) === namespaceURI);
+      const localName = String(name);
+      const key = Object.keys(entry.attributes).find((candidate) => {{
+        const candidateNamespace = attributeNamespaceForEntry(entry, candidate);
+        return storedAttributeLocalName(candidate, candidateNamespace) === localName
+          && candidateNamespace === namespaceURI;
+      }});
       if (key === undefined) return;
       delete entry.attributes[key];
       delete entry.attributeNamespaces[key];
@@ -37696,9 +37788,10 @@ fn document_bootstrap(
         return Number(geometry.scrollHeight) || Number(geometry.height) || 0;
       }},
       getAttribute(name) {{
-        const key = String(name).toLowerCase();
+        const htmlElement = element.namespaceURI === HTML_NAMESPACE;
+        const key = htmlElement ? String(name).toLowerCase() : String(name);
         for (const attr of Object.keys(entry.attributes)) {{
-          if (attr.toLowerCase() === key) return entry.attributes[attr];
+          if (htmlElement ? attr.toLowerCase() === key : attr === key) return entry.attributes[attr];
         }}
         return null;
       }},
@@ -37707,6 +37800,7 @@ fn document_bootstrap(
       }},
       getAttributeNames() {{ return Object.keys(entry.attributes); }},
       hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
+      hasAttributeNS(namespace, name) {{ return this.getAttributeNS(namespace, name) !== null; }},
       matches(selector) {{ return matchesSelector(element, selector); }},
       closest(selector) {{
         let current = element;
@@ -37831,6 +37925,36 @@ fn document_bootstrap(
         if (key === "multiple") multiple = true;
         element.__glassSyncContent();
         pushCommand({{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue, namespace_uri: "" }});
+      }},
+      __glassSetParsedAttribute(name, value, namespace) {{
+        const qualifiedName = String(name);
+        const namespaceURI = namespace === null || namespace === undefined ? null : String(namespace);
+        const stringValue = String(value);
+        if (stringValue.length > {storage_value_limit}) throw new RangeError("native parsed attribute value exceeds its limit");
+        entry.attributes[qualifiedName] = stringValue;
+        if (namespaceURI === null) delete entry.attributeNamespaces[qualifiedName];
+        else entry.attributeNamespaces[qualifiedName] = namespaceURI;
+        const key = qualifiedName.toLowerCase();
+        installInlineAttributeHandler(key, stringValue);
+        if (["src", "srcset", "sizes"].includes(key) && element.tagName === "IMG") {{
+          resetImageState(stringValue === "" && key === "src");
+        }}
+        if ((element.tagName === "AUDIO" || element.tagName === "VIDEO") && key === "src") resetMediaState();
+        if (element.tagName === "SOURCE" && ["src", "type"].includes(key)
+            && element.__glassParent && typeof element.__glassParent.__glassMediaReset === "function") {{
+          element.__glassParent.__glassMediaReset();
+        }}
+        if (key === "disabled") disabled = true;
+        if (key === "hidden") hidden = true;
+        if (key === "multiple") multiple = true;
+        element.__glassSyncContent();
+        pushCommand({{
+          kind: "setAttribute",
+          node_index: entry.nodeIndex,
+          name: qualifiedName,
+          value: stringValue,
+          namespace_uri: namespaceURI === null ? "" : namespaceURI,
+        }});
       }},
       setAttributeNS(namespace, qualifiedName, value) {{
         setNamespacedAttribute(namespace, qualifiedName, value);
@@ -39569,7 +39693,9 @@ fn document_bootstrap(
             const namespaceURI = typeof node.__glassAttributeNamespace === "function"
               ? node.__glassAttributeNamespace(name)
               : null;
-            if (namespaceURI === null) clone.setAttribute(name, value);
+            if (typeof clone.__glassSetParsedAttribute === "function") {{
+              clone.__glassSetParsedAttribute(name, value, namespaceURI);
+            }} else if (namespaceURI === null) clone.setAttribute(name, value);
             else clone.setAttributeNS(namespaceURI, name, value);
           }}
           copyChildren(clone);
@@ -43754,6 +43880,8 @@ fn document_bootstrap(
         const value = attributeNamespaces[String(name)];
         return value === undefined || value === "" ? null : String(value);
       }};
+      const frameStoredAttributeLocalName = (name) =>
+        storedAttributeLocalName(name, frameAttributeNamespace(name));
       const setFrameNamespacedAttribute = (namespace, name, nextValue) => {{
         const namespaceURI = normalizeAttributeNamespace(namespace);
         const qualified = qualifiedAttributeName(name, namespaceURI);
@@ -43774,17 +43902,19 @@ fn document_bootstrap(
       }};
       const frameNamespacedAttributeValue = (namespace, name) => {{
         const namespaceURI = normalizeAttributeNamespace(namespace);
-        const localName = attributeLocalName(name);
+        const localName = String(name);
         for (const key of Object.keys(attributes)) {{
-          if (attributeLocalName(key) === localName && frameAttributeNamespace(key) === namespaceURI) return attributes[key];
+          if (frameStoredAttributeLocalName(key) === localName
+              && frameAttributeNamespace(key) === namespaceURI) return attributes[key];
         }}
         return null;
       }};
       const removeFrameNamespacedAttribute = (namespace, name) => {{
         const namespaceURI = normalizeAttributeNamespace(namespace);
-        const localName = attributeLocalName(name);
+        const localName = String(name);
         const key = Object.keys(attributes).find((candidate) =>
-          attributeLocalName(candidate) === localName && frameAttributeNamespace(candidate) === namespaceURI);
+          frameStoredAttributeLocalName(candidate) === localName
+            && frameAttributeNamespace(candidate) === namespaceURI);
         if (key === undefined) return;
         delete attributes[key];
         delete attributeNamespaces[key];
@@ -43827,15 +43957,17 @@ fn document_bootstrap(
         get scrollWidth() {{ return Number(geometryForNode(projected).width) || 0; }},
         get scrollHeight() {{ return Number(geometryForNode(projected).height) || 0; }},
         getAttribute(name) {{
-          const key = String(name).toLowerCase();
+          const htmlElement = namespaceURI === HTML_NAMESPACE;
+          const key = htmlElement ? String(name).toLowerCase() : String(name);
           for (const attribute of Object.keys(attributes)) {{
-            if (attribute.toLowerCase() === key) return attributes[attribute];
+            if (htmlElement ? attribute.toLowerCase() === key : attribute === key) return attributes[attribute];
           }}
           return null;
         }},
         getAttributeNS(namespace, name) {{ return frameNamespacedAttributeValue(namespace, name); }},
         getAttributeNames() {{ return Object.keys(attributes); }},
         hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
+        hasAttributeNS(namespace, name) {{ return this.getAttributeNS(namespace, name) !== null; }},
         matches(selector) {{ return matchesSelector(projected, selector); }},
         closest(selector) {{
           let current = projected;
@@ -44447,6 +44579,8 @@ fn document_bootstrap(
         const value = attributeNamespaces[String(name)];
         return value === undefined || value === "" ? null : String(value);
       }};
+      const frameStoredAttributeLocalName = (name) =>
+        storedAttributeLocalName(name, frameAttributeNamespace(name));
       const setFrameNamespacedAttribute = (namespace, name, nextValue) => {{
         const namespaceURI = normalizeAttributeNamespace(namespace);
         const qualified = qualifiedAttributeName(name, namespaceURI);
@@ -44467,17 +44601,19 @@ fn document_bootstrap(
       }};
       const frameNamespacedAttributeValue = (namespace, name) => {{
         const namespaceURI = normalizeAttributeNamespace(namespace);
-        const localName = attributeLocalName(name);
+        const localName = String(name);
         for (const key of Object.keys(attributes)) {{
-          if (attributeLocalName(key) === localName && frameAttributeNamespace(key) === namespaceURI) return attributes[key];
+          if (frameStoredAttributeLocalName(key) === localName
+              && frameAttributeNamespace(key) === namespaceURI) return attributes[key];
         }}
         return null;
       }};
       const removeFrameNamespacedAttribute = (namespace, name) => {{
         const namespaceURI = normalizeAttributeNamespace(namespace);
-        const localName = attributeLocalName(name);
+        const localName = String(name);
         const key = Object.keys(attributes).find((candidate) =>
-          attributeLocalName(candidate) === localName && frameAttributeNamespace(candidate) === namespaceURI);
+          frameStoredAttributeLocalName(candidate) === localName
+            && frameAttributeNamespace(candidate) === namespaceURI);
         if (key === undefined) return;
         delete attributes[key];
         delete attributeNamespaces[key];
@@ -44507,15 +44643,17 @@ fn document_bootstrap(
         hidden,
         multiple,
         getAttribute(name) {{
-          const key = String(name).toLowerCase();
+          const htmlElement = namespaceURI === HTML_NAMESPACE;
+          const key = htmlElement ? String(name).toLowerCase() : String(name);
           for (const attribute of Object.keys(attributes)) {{
-            if (attribute.toLowerCase() === key) return attributes[attribute];
+            if (htmlElement ? attribute.toLowerCase() === key : attribute === key) return attributes[attribute];
           }}
           return null;
         }},
         getAttributeNS(namespace, name) {{ return frameNamespacedAttributeValue(namespace, name); }},
         getAttributeNames() {{ return Object.keys(attributes); }},
         hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
+        hasAttributeNS(namespace, name) {{ return this.getAttributeNS(namespace, name) !== null; }},
         matches(selector) {{ return projectedFrameMatches(projected, selector); }},
         closest(selector) {{
           let current = projected;
@@ -44544,6 +44682,27 @@ fn document_bootstrap(
           if (key === "multiple") multiple = true;
           projected.__glassSyncContent();
           queueFrameCommand(currentBinding, {{ kind: "setAttribute", node_index: nodeIndex, name: key, value: stringValue, namespace_uri: "" }});
+        }},
+        __glassSetParsedAttribute(name, nextValue, namespace) {{
+          const qualifiedName = String(name);
+          const namespaceURI = namespace === null || namespace === undefined ? null : String(namespace);
+          const stringValue = String(nextValue);
+          if (stringValue.length > storageValueLimit) throw new RangeError("native parsed frame attribute value exceeds its limit");
+          attributes[qualifiedName] = stringValue;
+          if (namespaceURI === null) delete attributeNamespaces[qualifiedName];
+          else attributeNamespaces[qualifiedName] = namespaceURI;
+          const key = qualifiedName.toLowerCase();
+          if (key === "disabled") disabled = true;
+          if (key === "hidden") hidden = true;
+          if (key === "multiple") multiple = true;
+          projected.__glassSyncContent();
+          queueFrameCommand(currentBinding, {{
+            kind: "setAttribute",
+            node_index: nodeIndex,
+            name: qualifiedName,
+            value: stringValue,
+            namespace_uri: namespaceURI === null ? "" : namespaceURI,
+          }});
         }},
         setAttributeNS(namespace, qualifiedName, nextValue) {{
           setFrameNamespacedAttribute(namespace, qualifiedName, nextValue);
@@ -45435,9 +45594,10 @@ fn document_bootstrap(
       disabled: Boolean(entry.disabled),
       hidden: Boolean(entry.hidden),
       getAttribute(name) {{
-        const key = String(name).toLowerCase();
+        const htmlElement = namespaceUriForEntry(entry) === HTML_NAMESPACE;
+        const key = htmlElement ? String(name).toLowerCase() : String(name);
         for (const attribute of Object.keys(attributes)) {{
-          if (attribute.toLowerCase() === key) return attributes[attribute];
+          if (htmlElement ? attribute.toLowerCase() === key : attribute === key) return attributes[attribute];
         }}
         return null;
       }},

@@ -480,14 +480,18 @@ impl NativeNode {
     /// Return a case-insensitive local-name match in one attribute namespace.
     pub fn attribute_in_namespace(&self, namespace_uri: Option<&str>, name: &str) -> Option<&str> {
         self.attributes()?.iter().find_map(|(attribute, value)| {
-            let local_name = attribute
-                .rsplit_once(':')
-                .map_or(attribute.as_str(), |(_, local_name)| local_name);
             let attribute_namespace = self
                 .state
                 .attribute_namespaces
                 .get(attribute)
                 .map(String::as_str);
+            let local_name = if attribute_namespace.is_some() {
+                attribute
+                    .rsplit_once(':')
+                    .map_or(attribute.as_str(), |(_, local_name)| local_name)
+            } else {
+                attribute.as_str()
+            };
             (attribute_namespace == namespace_uri && local_name.eq_ignore_ascii_case(name))
                 .then_some(value.as_str())
         })
@@ -505,18 +509,21 @@ impl NativeNode {
         name: &str,
     ) -> Option<(&str, Option<&str>)> {
         self.attributes()?.iter().find_map(|(attribute, value)| {
-            let local_name = attribute
-                .rsplit_once(':')
-                .map_or(attribute.as_str(), |(_, local_name)| local_name);
-            local_name.eq_ignore_ascii_case(name).then(|| {
-                (
-                    value.as_str(),
-                    self.state
-                        .attribute_namespaces
-                        .get(attribute)
-                        .map(String::as_str),
-                )
-            })
+            let attribute_namespace = self
+                .state
+                .attribute_namespaces
+                .get(attribute)
+                .map(String::as_str);
+            let local_name = if attribute_namespace.is_some() {
+                attribute
+                    .rsplit_once(':')
+                    .map_or(attribute.as_str(), |(_, local_name)| local_name)
+            } else {
+                attribute.as_str()
+            };
+            local_name
+                .eq_ignore_ascii_case(name)
+                .then_some((value.as_str(), attribute_namespace))
         })
     }
 
@@ -1202,6 +1209,7 @@ impl NativeDocument {
                         None => document.add_node(parent, kind, limits.max_nodes)?,
                     };
                     document.assign_parsed_namespace_to_node(id, parent)?;
+                    document.adjust_parsed_foreign_attributes(id)?;
                     let html_namespace_element = document
                         .raw_node(id)
                         .is_some_and(|node| node.namespace_uri() == Some(HTML_NAMESPACE_URI));
@@ -3826,6 +3834,20 @@ impl NativeDocument {
                 reason: "tree builder lost an element during namespace assignment".into(),
             })?;
         node.state.namespace_uri = Some(namespace.to_owned());
+        Ok(())
+    }
+
+    fn adjust_parsed_foreign_attributes(
+        &mut self,
+        id: NativeNodeId,
+    ) -> Result<(), NativeEngineError> {
+        let node = self
+            .raw_node_mut(id)
+            .ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "tree builder lost an element during attribute adjustment".into(),
+            })?;
+        adjust_parsed_attributes_for_namespace(node);
         Ok(())
     }
 
@@ -6538,6 +6560,7 @@ impl NativeDocument {
                         parent,
                         fragment_html_context && parent == id,
                     )?;
+                    self.adjust_parsed_foreign_attributes(child)?;
                     let html_namespace_element = self
                         .raw_node(child)
                         .is_some_and(|node| node.namespace_uri() == Some(HTML_NAMESPACE_URI));
@@ -12550,6 +12573,114 @@ fn inferred_attribute_namespace(name: &str) -> Option<&'static str> {
     }
 }
 
+const SVG_ATTRIBUTE_NAME_ADJUSTMENTS: &[(&str, &str)] = &[
+    ("attributename", "attributeName"),
+    ("attributetype", "attributeType"),
+    ("basefrequency", "baseFrequency"),
+    ("baseprofile", "baseProfile"),
+    ("calcmode", "calcMode"),
+    ("clippathunits", "clipPathUnits"),
+    ("diffuseconstant", "diffuseConstant"),
+    ("edgemode", "edgeMode"),
+    ("filterunits", "filterUnits"),
+    ("glyphref", "glyphRef"),
+    ("gradienttransform", "gradientTransform"),
+    ("gradientunits", "gradientUnits"),
+    ("kernelmatrix", "kernelMatrix"),
+    ("kernelunitlength", "kernelUnitLength"),
+    ("keypoints", "keyPoints"),
+    ("keysplines", "keySplines"),
+    ("keytimes", "keyTimes"),
+    ("lengthadjust", "lengthAdjust"),
+    ("limitingconeangle", "limitingConeAngle"),
+    ("markerheight", "markerHeight"),
+    ("markerunits", "markerUnits"),
+    ("markerwidth", "markerWidth"),
+    ("maskcontentunits", "maskContentUnits"),
+    ("maskunits", "maskUnits"),
+    ("numoctaves", "numOctaves"),
+    ("pathlength", "pathLength"),
+    ("patterncontentunits", "patternContentUnits"),
+    ("patterntransform", "patternTransform"),
+    ("patternunits", "patternUnits"),
+    ("pointsatx", "pointsAtX"),
+    ("pointsaty", "pointsAtY"),
+    ("pointsatz", "pointsAtZ"),
+    ("preservealpha", "preserveAlpha"),
+    ("preserveaspectratio", "preserveAspectRatio"),
+    ("primitiveunits", "primitiveUnits"),
+    ("refx", "refX"),
+    ("refy", "refY"),
+    ("repeatcount", "repeatCount"),
+    ("repeatdur", "repeatDur"),
+    ("requiredextensions", "requiredExtensions"),
+    ("requiredfeatures", "requiredFeatures"),
+    ("specularconstant", "specularConstant"),
+    ("specularexponent", "specularExponent"),
+    ("spreadmethod", "spreadMethod"),
+    ("startoffset", "startOffset"),
+    ("stddeviation", "stdDeviation"),
+    ("stitchtiles", "stitchTiles"),
+    ("surfacescale", "surfaceScale"),
+    ("systemlanguage", "systemLanguage"),
+    ("tablevalues", "tableValues"),
+    ("targetx", "targetX"),
+    ("targety", "targetY"),
+    ("textlength", "textLength"),
+    ("viewbox", "viewBox"),
+    ("viewtarget", "viewTarget"),
+    ("xchannelselector", "xChannelSelector"),
+    ("ychannelselector", "yChannelSelector"),
+    ("zoomandpan", "zoomAndPan"),
+];
+
+fn adjust_parsed_attributes_for_namespace(node: &mut NativeNode) {
+    let namespace = node
+        .namespace_uri()
+        .unwrap_or(HTML_NAMESPACE_URI)
+        .to_owned();
+    let NativeNodeKind::Element { attributes, .. } = &mut node.kind else {
+        return;
+    };
+    let original_attributes = std::mem::take(attributes);
+    let mut adjusted_attributes = BTreeMap::new();
+    let mut attribute_namespaces = BTreeMap::new();
+    for (name, value) in original_attributes {
+        let adjusted_name = match (namespace.as_str(), name.as_str()) {
+            (SVG_NAMESPACE_URI, name) => SVG_ATTRIBUTE_NAME_ADJUSTMENTS
+                .iter()
+                .find_map(|(token_name, adjusted)| (*token_name == name).then_some(*adjusted))
+                .unwrap_or(name),
+            (MATHML_NAMESPACE_URI, "definitionurl") => "definitionURL",
+            _ => name.as_str(),
+        };
+        let attribute_namespace = match name.as_str() {
+            "xlink:actuate" | "xlink:arcrole" | "xlink:href" | "xlink:role" | "xlink:show"
+            | "xlink:title" | "xlink:type"
+                if namespace.as_str() != HTML_NAMESPACE_URI =>
+            {
+                Some(XLINK_NAMESPACE_URI)
+            }
+            "xml:lang" | "xml:space" if namespace.as_str() != HTML_NAMESPACE_URI => {
+                Some(XML_NAMESPACE_URI)
+            }
+            "xmlns" | "xmlns:xlink" if namespace.as_str() != HTML_NAMESPACE_URI => {
+                Some(XMLNS_NAMESPACE_URI)
+            }
+            _ => None,
+        };
+        if adjusted_attributes.contains_key(adjusted_name) {
+            continue;
+        }
+        if let Some(attribute_namespace) = attribute_namespace {
+            attribute_namespaces.insert(adjusted_name.to_owned(), attribute_namespace.to_owned());
+        }
+        adjusted_attributes.insert(adjusted_name.to_owned(), value);
+    }
+    *attributes = adjusted_attributes;
+    node.state.attribute_namespaces = attribute_namespaces;
+}
+
 fn collapse_text(value: &str, max_bytes: usize) -> (String, bool) {
     let mut output = String::new();
     let mut truncated = false;
@@ -15830,6 +15961,369 @@ mod tests {
             .apply_script_commands(&evaluation.commands)
             .expect("Rust fragment commit must share foreign end-tag dispatch");
         assert_eq!(summarize_native(&projected), expected);
+    }
+
+    #[test]
+    fn foreign_parser_attributes_adjust_names_and_namespaces_across_routes() {
+        const EXPECTED_SVG_ADJUSTMENTS: &[(&str, &str)] = &[
+            ("attributename", "attributeName"),
+            ("attributetype", "attributeType"),
+            ("basefrequency", "baseFrequency"),
+            ("baseprofile", "baseProfile"),
+            ("calcmode", "calcMode"),
+            ("clippathunits", "clipPathUnits"),
+            ("diffuseconstant", "diffuseConstant"),
+            ("edgemode", "edgeMode"),
+            ("filterunits", "filterUnits"),
+            ("glyphref", "glyphRef"),
+            ("gradienttransform", "gradientTransform"),
+            ("gradientunits", "gradientUnits"),
+            ("kernelmatrix", "kernelMatrix"),
+            ("kernelunitlength", "kernelUnitLength"),
+            ("keypoints", "keyPoints"),
+            ("keysplines", "keySplines"),
+            ("keytimes", "keyTimes"),
+            ("lengthadjust", "lengthAdjust"),
+            ("limitingconeangle", "limitingConeAngle"),
+            ("markerheight", "markerHeight"),
+            ("markerunits", "markerUnits"),
+            ("markerwidth", "markerWidth"),
+            ("maskcontentunits", "maskContentUnits"),
+            ("maskunits", "maskUnits"),
+            ("numoctaves", "numOctaves"),
+            ("pathlength", "pathLength"),
+            ("patterncontentunits", "patternContentUnits"),
+            ("patterntransform", "patternTransform"),
+            ("patternunits", "patternUnits"),
+            ("pointsatx", "pointsAtX"),
+            ("pointsaty", "pointsAtY"),
+            ("pointsatz", "pointsAtZ"),
+            ("preservealpha", "preserveAlpha"),
+            ("preserveaspectratio", "preserveAspectRatio"),
+            ("primitiveunits", "primitiveUnits"),
+            ("refx", "refX"),
+            ("refy", "refY"),
+            ("repeatcount", "repeatCount"),
+            ("repeatdur", "repeatDur"),
+            ("requiredextensions", "requiredExtensions"),
+            ("requiredfeatures", "requiredFeatures"),
+            ("specularconstant", "specularConstant"),
+            ("specularexponent", "specularExponent"),
+            ("spreadmethod", "spreadMethod"),
+            ("startoffset", "startOffset"),
+            ("stddeviation", "stdDeviation"),
+            ("stitchtiles", "stitchTiles"),
+            ("surfacescale", "surfaceScale"),
+            ("systemlanguage", "systemLanguage"),
+            ("tablevalues", "tableValues"),
+            ("targetx", "targetX"),
+            ("targety", "targetY"),
+            ("textlength", "textLength"),
+            ("viewbox", "viewBox"),
+            ("viewtarget", "viewTarget"),
+            ("xchannelselector", "xChannelSelector"),
+            ("ychannelselector", "yChannelSelector"),
+            ("zoomandpan", "zoomAndPan"),
+        ];
+        const FOREIGN_ATTRIBUTES: &[(&str, Option<&str>, &str, &str)] = &[
+            (
+                "xlink:actuate",
+                Some("xlink"),
+                "actuate",
+                XLINK_NAMESPACE_URI,
+            ),
+            (
+                "xlink:arcrole",
+                Some("xlink"),
+                "arcrole",
+                XLINK_NAMESPACE_URI,
+            ),
+            ("xlink:href", Some("xlink"), "href", XLINK_NAMESPACE_URI),
+            ("xlink:role", Some("xlink"), "role", XLINK_NAMESPACE_URI),
+            ("xlink:show", Some("xlink"), "show", XLINK_NAMESPACE_URI),
+            ("xlink:title", Some("xlink"), "title", XLINK_NAMESPACE_URI),
+            ("xlink:type", Some("xlink"), "type", XLINK_NAMESPACE_URI),
+            ("xml:lang", Some("xml"), "lang", XML_NAMESPACE_URI),
+            ("xml:space", Some("xml"), "space", XML_NAMESPACE_URI),
+            ("xmlns", None, "xmlns", XMLNS_NAMESPACE_URI),
+            ("xmlns:xlink", Some("xmlns"), "xlink", XMLNS_NAMESPACE_URI),
+        ];
+        const HTML_PREFIX_ATTRIBUTES: &[(&str, &str)] = &[
+            ("xlink:href", "plain-href"),
+            ("xml:lang", "plain-lang"),
+            ("xmlns", "plain-xmlns"),
+            ("xmlns:xlink", "plain-xmlns-xlink"),
+        ];
+
+        assert_eq!(
+            SVG_ATTRIBUTE_NAME_ADJUSTMENTS, EXPECTED_SVG_ADJUSTMENTS,
+            "the native SVG map must match the complete pinned WHATWG table"
+        );
+
+        let mut svg_attributes = EXPECTED_SVG_ADJUSTMENTS
+            .iter()
+            .filter(|(token_name, _)| *token_name != "viewbox")
+            .map(|(token_name, _)| format!("{token_name}='value-{token_name}'"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        svg_attributes.push_str(" viewbox='first-viewbox' VIEWBOX='second-viewbox'");
+        for (name, _, _, _) in FOREIGN_ATTRIBUTES {
+            svg_attributes.push_str(&format!(" {name}='value-{name}'"));
+        }
+        let html_attributes = HTML_PREFIX_ATTRIBUTES
+            .iter()
+            .map(|(name, value)| format!("{name}='{value}'"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let markup = format!(
+            "<section id='zone'><svg id='svg' {svg_attributes}></svg>\
+             <math id='math' definitionurl='value-definitionurl'>\
+             <mi id='mi' definitionurl='value-mi-definitionurl' xlink:href='math-href'></mi>\
+             </math><div id='plain' {html_attributes}></div></section>"
+        );
+        let verify_native = |tree: &NativeDocument| {
+            let svg = tree
+                .node(
+                    tree.find_element_by_id("svg")
+                        .expect("SVG fixture must exist"),
+                )
+                .expect("SVG fixture node must resolve");
+            for (token_name, adjusted_name) in EXPECTED_SVG_ADJUSTMENTS {
+                let expected_value = if *token_name == "viewbox" {
+                    "first-viewbox".to_owned()
+                } else {
+                    format!("value-{token_name}")
+                };
+                assert_eq!(
+                    svg.attribute_with_namespace_uri(adjusted_name),
+                    Some((expected_value.as_str(), None)),
+                    "adjusted SVG attribute {adjusted_name} must be unnamespaced"
+                );
+                assert!(
+                    !svg.attributes().unwrap().contains_key(*token_name),
+                    "raw SVG token name {token_name} must not survive adjustment"
+                );
+            }
+            for (name, _, _, namespace_uri) in FOREIGN_ATTRIBUTES {
+                let expected_value = format!("value-{name}");
+                assert_eq!(
+                    svg.attribute_with_namespace_uri(name),
+                    Some((expected_value.as_str(), Some(*namespace_uri))),
+                    "foreign attribute {name} must preserve its namespace"
+                );
+            }
+            assert_eq!(
+                svg.attribute_in_namespace(Some(XLINK_NAMESPACE_URI), "href"),
+                Some("value-xlink:href")
+            );
+            let math = tree
+                .node(
+                    tree.find_element_by_id("math")
+                        .expect("MathML fixture must exist"),
+                )
+                .expect("MathML fixture node must resolve");
+            assert_eq!(
+                math.attribute_with_namespace_uri("definitionURL"),
+                Some(("value-definitionurl", None))
+            );
+            let mi = tree
+                .node(
+                    tree.find_element_by_id("mi")
+                        .expect("MathML child must exist"),
+                )
+                .expect("MathML child node must resolve");
+            assert_eq!(
+                mi.attribute_with_namespace_uri("definitionURL"),
+                Some(("value-mi-definitionurl", None))
+            );
+            assert_eq!(
+                mi.attribute_with_namespace_uri("xlink:href"),
+                Some(("math-href", Some(XLINK_NAMESPACE_URI)))
+            );
+            let plain = tree
+                .node(
+                    tree.find_element_by_id("plain")
+                        .expect("HTML fixture must exist"),
+                )
+                .expect("HTML fixture node must resolve");
+            for (name, value) in HTML_PREFIX_ATTRIBUTES {
+                assert_eq!(
+                    plain.attribute_with_namespace_uri(name),
+                    Some((*value, None)),
+                    "HTML attribute {name} must remain unnamespaced"
+                );
+            }
+            assert_eq!(
+                plain.attribute_in_namespace(None, "xlink:href"),
+                Some("plain-href")
+            );
+            assert_eq!(plain.attribute_in_namespace(None, "href"), None);
+            assert_eq!(plain.attribute_in_any_namespace_with_uri("href"), None);
+            let zone = tree
+                .find_element_by_id("zone")
+                .expect("fixture root must exist");
+            let serialized = tree.element_inner_html(zone, 256 * 1024);
+            for (_, adjusted_name) in EXPECTED_SVG_ADJUSTMENTS {
+                assert!(
+                    serialized.contains(&format!(" {adjusted_name}=\"")),
+                    "HTML serialization must retain adjusted name {adjusted_name}"
+                );
+            }
+            assert!(serialized.contains(" viewBox=\"first-viewbox\""));
+            assert!(!serialized.contains(" viewbox=\""));
+            for (name, _, _, _) in FOREIGN_ATTRIBUTES {
+                assert!(serialized.contains(&format!(" {name}=\"")));
+            }
+            assert!(serialized.contains(" definitionURL=\"value-definitionurl\""));
+        };
+
+        let direct = NativeDocument::parse(&markup, &NativeEngineLimits::default())
+            .expect("direct HTML document parsing must adjust foreign attributes");
+        verify_native(&direct);
+
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("foreign-attribute-adjustment")
+            .expect("native JavaScript runtime must construct");
+        let mut projected =
+            NativeDocument::parse("<main id='host'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let script = r##"(() => {
+            const markup = __HTML_MARKUP__;
+            const svgAdjustments = __SVG_ADJUSTMENTS__;
+            const foreignAttributes = __FOREIGN_ATTRIBUTES__;
+            const htmlAttributes = __HTML_ATTRIBUTES__;
+            const xlinkNamespace = "http://www.w3.org/1999/xlink";
+            const xmlNamespace = "http://www.w3.org/XML/1998/namespace";
+            const xmlnsNamespace = "http://www.w3.org/2000/xmlns/";
+            const check = (condition, message) => {
+                if (!condition) throw new Error("foreign-attribute fixture: " + message);
+            };
+            const getAttrNode = (element, name) => typeof element.getAttributeNode === "function"
+                ? element.getAttributeNode(name)
+                : element.attributes.getNamedItem(name);
+            const getAttrNodeNS = (element, namespaceURI, localName) =>
+                typeof element.getAttributeNodeNS === "function"
+                    ? element.getAttributeNodeNS(namespaceURI, localName)
+                    : element.attributes.getNamedItemNS(namespaceURI, localName);
+            const verifyTree = (tree) => {
+                const svg = tree.querySelector("#svg");
+                const math = tree.querySelector("#math");
+                const mi = tree.querySelector("#mi");
+                const plain = tree.querySelector("#plain");
+                check(svg && math && mi && plain, "all fixture elements must exist");
+                for (const [tokenName, adjustedName] of svgAdjustments) {
+                    const value = tokenName === "viewbox"
+                        ? "first-viewbox"
+                        : "value-" + tokenName;
+                    const attribute = getAttrNode(svg, adjustedName);
+                    check(attribute !== null, "SVG Attr " + adjustedName + " must exist");
+                    check(attribute.name === adjustedName, "SVG qualified name " + adjustedName);
+                    check(attribute.prefix === null, "SVG prefix for " + adjustedName);
+                    check(attribute.localName === adjustedName, "SVG local name " + adjustedName);
+                    check(attribute.namespaceURI === null, "SVG namespace for " + adjustedName);
+                    check(attribute.value === value, "SVG value for " + adjustedName);
+                    check(svg.getAttribute(adjustedName) === value, "SVG getAttribute " + adjustedName);
+                    check(svg.getAttribute(tokenName) === null, "SVG source case " + tokenName);
+                    check(svg.getAttributeNS(null, adjustedName) === value, "SVG getAttributeNS " + adjustedName);
+                }
+                for (const [qualifiedName, prefix, localName, namespaceURI] of foreignAttributes) {
+                    const value = "value-" + qualifiedName;
+                    const attribute = getAttrNode(svg, qualifiedName);
+                    const namespaced = getAttrNodeNS(svg, namespaceURI, localName);
+                    check(attribute !== null && namespaced === attribute, "Attr identity " + qualifiedName);
+                    check(attribute.name === qualifiedName, "qualified name " + qualifiedName);
+                    check(attribute.prefix === prefix, "prefix " + qualifiedName);
+                    check(attribute.localName === localName, "local name " + qualifiedName);
+                    check(attribute.namespaceURI === namespaceURI, "namespace " + qualifiedName);
+                    check(attribute.value === value, "value " + qualifiedName);
+                    check(svg.getAttribute(qualifiedName) === value, "getAttribute " + qualifiedName);
+                    check(svg.getAttributeNS(namespaceURI, localName) === value, "getAttributeNS " + qualifiedName);
+                    check(svg.hasAttributeNS(namespaceURI, localName), "hasAttributeNS " + qualifiedName);
+                }
+                for (const [name, value] of htmlAttributes) {
+                    const attribute = getAttrNode(plain, name);
+                    check(attribute !== null, "HTML Attr " + name + " must exist");
+                    check(attribute.name === name, "HTML qualified name " + name);
+                    check(attribute.prefix === null, "HTML prefix " + name);
+                    check(attribute.localName === name, "HTML local name " + name);
+                    check(attribute.namespaceURI === null, "HTML namespace " + name);
+                    check(attribute.value === value, "HTML value " + name);
+                    check(plain.getAttributeNS(null, name) === value, "HTML null namespace lookup " + name);
+                    check(!plain.hasAttributeNS(xlinkNamespace, "href"), "HTML XLink must remain unnamespaced");
+                    check(!plain.hasAttributeNS(xmlNamespace, "lang"), "HTML XML must remain unnamespaced");
+                    check(!plain.hasAttributeNS(xmlnsNamespace, name === "xmlns:xlink" ? "xlink" : "xmlns"),
+                        "HTML XMLNS must remain unnamespaced");
+                }
+                const definition = getAttrNode(math, "definitionURL");
+                check(definition && definition.name === "definitionURL"
+                    && definition.localName === "definitionURL"
+                    && definition.namespaceURI === null
+                    && definition.value === "value-definitionurl", "MathML definitionURL");
+                check(math.getAttribute("definitionurl") === null, "MathML source case");
+                const childDefinition = getAttrNode(mi, "definitionURL");
+                check(childDefinition && childDefinition.localName === "definitionURL"
+                    && childDefinition.value === "value-mi-definitionurl", "nested MathML definitionURL");
+                const mathHref = mi.getAttributeNodeNS(xlinkNamespace, "href");
+                check(mathHref && mathHref.prefix === "xlink"
+                    && mathHref.localName === "href"
+                    && mathHref.namespaceURI === xlinkNamespace
+                    && mathHref.value === "math-href", "MathML XLink adjustment");
+                const serialized = svg.outerHTML;
+                for (const [, adjustedName] of svgAdjustments) {
+                    check(serialized.includes(" " + adjustedName + "="), "SVG serialization " + adjustedName);
+                }
+                check(serialized.includes(" viewBox=") && !serialized.includes(" viewbox="),
+                    "first duplicate wins and serializes the canonical name");
+                for (const [qualifiedName] of foreignAttributes) {
+                    check(serialized.includes(" " + qualifiedName + "="), "foreign serialization " + qualifiedName);
+                }
+                return true;
+            };
+            const host = document.querySelector("#host");
+            host.innerHTML = markup;
+            const xhrDocument = globalThis.__glassParseHtmlDocument(
+                markup,
+                "https://example.test/foreign-attribute-adjustment.html",
+                "text/html",
+            );
+            const clone = host.querySelector("#svg").cloneNode(true);
+            const cloneHref = clone.getAttributeNodeNS(xlinkNamespace, "href");
+            check(cloneHref && cloneHref.name === "xlink:href"
+                && cloneHref.prefix === "xlink" && cloneHref.localName === "href"
+                && cloneHref.namespaceURI === xlinkNamespace, "clone preserves XLink identity");
+            clone.removeAttributeNS(xlinkNamespace, "href");
+            check(clone.getAttributeNS(xlinkNamespace, "href") === null
+                && clone.getAttribute("xlink:href") === null, "namespaced removal uses local name");
+            check(host.querySelector("#svg").getAttributeNS(xlinkNamespace, "href") === "value-xlink:href",
+                "clone removal leaves the source intact");
+            return [verifyTree(host), verifyTree(xhrDocument), true];
+        })()"##
+            .replace("__HTML_MARKUP__", &serde_json::to_string(&markup).unwrap())
+            .replace(
+                "__SVG_ADJUSTMENTS__",
+                &serde_json::to_string(EXPECTED_SVG_ADJUSTMENTS).unwrap(),
+            )
+            .replace(
+                "__FOREIGN_ATTRIBUTES__",
+                &serde_json::to_string(FOREIGN_ATTRIBUTES).unwrap(),
+            )
+            .replace(
+                "__HTML_ATTRIBUTES__",
+                &serde_json::to_string(HTML_PREFIX_ATTRIBUTES).unwrap(),
+            );
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &projected,
+                "fixture://foreign-attribute-adjustment.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("fragment projection and XHR parsing must preserve adjusted attributes");
+        assert_eq!(evaluation.value, serde_json::json!([true, true, true]));
+        projected
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must preserve adjusted foreign attributes");
+        verify_native(&projected);
     }
 
     #[test]

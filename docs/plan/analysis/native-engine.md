@@ -1,8 +1,9 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-694`. Issue #40
-remains open. It follows locally completed `native-engine-browser-693` and
+completed browser expansion slice is `native-engine-browser-695`. Issue #40
+remains open. It follows locally completed `native-engine-browser-694`,
+`native-engine-browser-693`, and
 `native-engine-browser-692` and
 `native-engine-browser-691`,
 `native-engine-browser-690`, and `native-engine-browser-689`; it follows completed
@@ -805,6 +806,18 @@ slice changed no CLI/MCP/module inventory and the debug CLI binaries were not
 built. Remote CI was not run.
 General foreign-content and parser conformance remain open. See
 [`slice 694`](../tasks/native-engine-browser-694.md).
+
+Slice 695 is complete locally. The contract applies the complete current WHATWG
+SVG attribute adjustment table, MathML `definitionurl` → `definitionURL`, and
+foreign qualified-attribute mappings for XLink, XML, and XMLNS. Parser-created
+foreign attributes preserve their adjusted qualified names and namespace
+identity through the Rust DOM state and JavaScript projections; HTML
+prefix-looking attributes remain unnamespaced. The scope is document parsing,
+Rust `innerHTML` commit, same-turn JavaScript fragment projection, and XHR
+`text/html` parsing. The locked package check passed, as did the foreign test
+batch (9/9) and the scoped HTML parser batch (34/34). Documentation,
+formatting, and whitespace gates passed locally; remote CI was not run. See
+[`slice 695`](../tasks/native-engine-browser-695.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

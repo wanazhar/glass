@@ -27,9 +27,9 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion through `native-engine-browser-694` is complete locally; issue #40
-remains open. The latest completed slice follows
-`native-engine-browser-693`.
+expansion through `native-engine-browser-695` is complete locally; issue #40
+remains open. Slice 695 follows the completed
+`native-engine-browser-694` checkpoint.
 The earlier expansion chain includes completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`,
@@ -184,6 +184,18 @@ foreign ancestor from being closed across an integration boundary. The foreign
 batch passed 8/8 and the HTML batch passed 34/34. Release-truth, documentation
 depth, shortcut, formatting, and whitespace checks passed; full inventory/link
 coverage and remote CI were not run. General parser conformance remains open.
+
+[`native-engine-browser-695`](tasks/native-engine-browser-695.md) is complete
+locally. It applies the current WHATWG SVG and MathML attribute-name
+adjustments and the XLink, XML, and XMLNS qualified-attribute namespace
+adjustments across document parsing, Rust fragment commit, same-turn
+JavaScript projection, and XHR HTML-document parsing. It preserves
+first-duplicate-wins behavior, keeps prefix-looking attributes in HTML
+elements unnamespaced, and carries adjusted identity through DOM access,
+cloning, and serialization. The locked package check passed; the foreign batch
+passed 9/9 and the scoped HTML batch passed 34/34. Documentation, formatting,
+and whitespace gates passed. Remote CI was not run; general parser
+conformance remains open.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

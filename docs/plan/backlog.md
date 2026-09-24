@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser slice is `native-engine-browser-694`.
+The latest locally completed parser slice is `native-engine-browser-695`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -118,6 +118,16 @@ release-truth, depth, and shortcut validators passed. The full documentation
 inventory/link check was not run because no CLI/MCP/module inventory changed
 and debug CLI binaries were not built. Remote CI was not run. General HTML
 parser conformance remains open. See `tasks/native-engine-browser-694.md`.
+
+Slice 695 is complete locally: apply WHATWG SVG/MathML attribute-name
+adjustment and XLink/XML/XMLNS foreign-attribute mappings across all four
+parser routes. Keep the prefix, local name, namespace URI, and serialization
+consistent; preserve unnamespaced attributes in HTML elements and
+first-duplicate-wins tokenization. The locked package check passed, the
+foreign batch passed 9/9, and the scoped HTML batch passed 34/34. Local
+documentation, formatting, and whitespace gates passed; remote CI was not
+run. General parser conformance remains open. See
+`tasks/native-engine-browser-695.md`.
 
 Slice 689 is complete locally: select child element namespaces using SVG and MathML
 HTML integration-point rules across all four parser routes. Preserve the

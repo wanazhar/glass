@@ -26608,9 +26608,9 @@ mod tests {
         assert!(matched_ids("#foreign[type='text']").is_empty());
         assert_eq!(matched_ids("#foreign[type='text' i]"), vec!["foreign"]);
         assert!(matched_ids("#namespaced[xml|type='text']").is_empty());
-        assert_eq!(
-            matched_ids("#namespaced[xml|type='text' i]"),
-            vec!["namespaced"]
+        assert!(
+            matched_ids("#namespaced[xml|type='text' i]").is_empty(),
+            "a prefix-looking attribute on an HTML element has no XML namespace"
         );
     }
 

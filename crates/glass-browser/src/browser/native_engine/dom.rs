@@ -9849,7 +9849,15 @@ fn tokenize_inner_html(
 
     if !matches!(
         context_name,
-        "title" | "textarea" | "style" | "xmp" | "iframe" | "noembed" | "noframes" | "noscript"
+        "title"
+            | "textarea"
+            | "script"
+            | "style"
+            | "xmp"
+            | "iframe"
+            | "noembed"
+            | "noframes"
+            | "noscript"
     ) {
         return tokenize(source, max_tokens);
     }
@@ -10340,7 +10348,33 @@ fn is_html_literal_text_element(name: &str) -> bool {
     is_html_raw_text_element(name) || name == "plaintext"
 }
 
+#[derive(Clone, Copy)]
+enum HtmlScriptDataState {
+    Data,
+    LessThan,
+    EndTagOpen,
+    EndTagName,
+    EscapeStart,
+    EscapeStartDash,
+    Escaped,
+    EscapedDash,
+    EscapedDashDash,
+    EscapedLessThan,
+    EscapedEndTagOpen,
+    EscapedEndTagName,
+    DoubleEscapeStart,
+    DoubleEscaped,
+    DoubleEscapedDash,
+    DoubleEscapedDashDash,
+    DoubleEscapedLessThan,
+    DoubleEscapeEnd,
+}
+
 fn find_raw_text_end(source: &str, start: usize, name: &str) -> Option<usize> {
+    if name == "script" {
+        return find_script_data_end(source, start);
+    }
+
     let bytes = source.as_bytes();
     let mut candidate = start;
     while candidate < bytes.len() {
@@ -10359,6 +10393,194 @@ fn find_raw_text_end(source: &str, start: usize, name: &str) -> Option<usize> {
         }
         candidate = opening.saturating_add(1);
     }
+    None
+}
+
+fn find_script_data_end(source: &str, start: usize) -> Option<usize> {
+    fn is_delimiter(byte: u8) -> bool {
+        matches!(byte, b'\t' | b'\n' | b'\x0c' | b'\r' | b' ' | b'/' | b'>')
+    }
+
+    let bytes = source.as_bytes();
+    let mut state = HtmlScriptDataState::Data;
+    let mut position = start;
+    let mut tag_start = 0;
+    let mut temporary_buffer = Vec::new();
+
+    while let Some(&byte) = bytes.get(position) {
+        let mut reconsume = false;
+        match state {
+            HtmlScriptDataState::Data => {
+                if byte == b'<' {
+                    state = HtmlScriptDataState::LessThan;
+                }
+            }
+            HtmlScriptDataState::LessThan => match byte {
+                b'/' => {
+                    tag_start = position.saturating_sub(1);
+                    temporary_buffer.clear();
+                    state = HtmlScriptDataState::EndTagOpen;
+                }
+                b'!' => state = HtmlScriptDataState::EscapeStart,
+                _ => {
+                    state = HtmlScriptDataState::Data;
+                    reconsume = true;
+                }
+            },
+            HtmlScriptDataState::EndTagOpen => {
+                if byte.is_ascii_alphabetic() {
+                    state = HtmlScriptDataState::EndTagName;
+                    reconsume = true;
+                } else {
+                    state = HtmlScriptDataState::Data;
+                    reconsume = true;
+                }
+            }
+            HtmlScriptDataState::EndTagName => {
+                if byte.is_ascii_alphabetic() {
+                    temporary_buffer.push(byte.to_ascii_lowercase());
+                } else if is_delimiter(byte) {
+                    if temporary_buffer == b"script" {
+                        return find_tag_end(source, position).map(|_| tag_start);
+                    }
+                    state = HtmlScriptDataState::Data;
+                    reconsume = true;
+                } else {
+                    state = HtmlScriptDataState::Data;
+                    reconsume = true;
+                }
+            }
+            HtmlScriptDataState::EscapeStart => {
+                if byte == b'-' {
+                    state = HtmlScriptDataState::EscapeStartDash;
+                } else {
+                    state = HtmlScriptDataState::Data;
+                    reconsume = true;
+                }
+            }
+            HtmlScriptDataState::EscapeStartDash => {
+                if byte == b'-' {
+                    state = HtmlScriptDataState::EscapedDashDash;
+                } else {
+                    state = HtmlScriptDataState::Data;
+                    reconsume = true;
+                }
+            }
+            HtmlScriptDataState::Escaped => match byte {
+                b'-' => state = HtmlScriptDataState::EscapedDash,
+                b'<' => state = HtmlScriptDataState::EscapedLessThan,
+                _ => {}
+            },
+            HtmlScriptDataState::EscapedDash => match byte {
+                b'-' => state = HtmlScriptDataState::EscapedDashDash,
+                b'<' => state = HtmlScriptDataState::EscapedLessThan,
+                _ => state = HtmlScriptDataState::Escaped,
+            },
+            HtmlScriptDataState::EscapedDashDash => match byte {
+                b'-' => {}
+                b'<' => state = HtmlScriptDataState::EscapedLessThan,
+                b'>' => state = HtmlScriptDataState::Data,
+                _ => state = HtmlScriptDataState::Escaped,
+            },
+            HtmlScriptDataState::EscapedLessThan => match byte {
+                b'/' => {
+                    tag_start = position.saturating_sub(1);
+                    temporary_buffer.clear();
+                    state = HtmlScriptDataState::EscapedEndTagOpen;
+                }
+                value if value.is_ascii_alphabetic() => {
+                    temporary_buffer.clear();
+                    state = HtmlScriptDataState::DoubleEscapeStart;
+                    reconsume = true;
+                }
+                _ => {
+                    state = HtmlScriptDataState::Escaped;
+                    reconsume = true;
+                }
+            },
+            HtmlScriptDataState::EscapedEndTagOpen => {
+                if byte.is_ascii_alphabetic() {
+                    state = HtmlScriptDataState::EscapedEndTagName;
+                    reconsume = true;
+                } else {
+                    state = HtmlScriptDataState::Escaped;
+                    reconsume = true;
+                }
+            }
+            HtmlScriptDataState::EscapedEndTagName => {
+                if byte.is_ascii_alphabetic() {
+                    temporary_buffer.push(byte.to_ascii_lowercase());
+                } else if is_delimiter(byte) {
+                    if temporary_buffer == b"script" {
+                        return find_tag_end(source, position).map(|_| tag_start);
+                    }
+                    state = HtmlScriptDataState::Escaped;
+                    reconsume = true;
+                } else {
+                    state = HtmlScriptDataState::Escaped;
+                    reconsume = true;
+                }
+            }
+            HtmlScriptDataState::DoubleEscapeStart => {
+                if byte.is_ascii_alphabetic() {
+                    temporary_buffer.push(byte.to_ascii_lowercase());
+                } else if is_delimiter(byte) {
+                    state = if temporary_buffer == b"script" {
+                        HtmlScriptDataState::DoubleEscaped
+                    } else {
+                        HtmlScriptDataState::Escaped
+                    };
+                } else {
+                    state = HtmlScriptDataState::Escaped;
+                    reconsume = true;
+                }
+            }
+            HtmlScriptDataState::DoubleEscaped => match byte {
+                b'-' => state = HtmlScriptDataState::DoubleEscapedDash,
+                b'<' => state = HtmlScriptDataState::DoubleEscapedLessThan,
+                _ => {}
+            },
+            HtmlScriptDataState::DoubleEscapedDash => match byte {
+                b'-' => state = HtmlScriptDataState::DoubleEscapedDashDash,
+                b'<' => state = HtmlScriptDataState::DoubleEscapedLessThan,
+                _ => state = HtmlScriptDataState::DoubleEscaped,
+            },
+            HtmlScriptDataState::DoubleEscapedDashDash => match byte {
+                b'-' => {}
+                b'<' => state = HtmlScriptDataState::DoubleEscapedLessThan,
+                b'>' => state = HtmlScriptDataState::Data,
+                _ => state = HtmlScriptDataState::DoubleEscaped,
+            },
+            HtmlScriptDataState::DoubleEscapedLessThan => {
+                if byte == b'/' {
+                    temporary_buffer.clear();
+                    state = HtmlScriptDataState::DoubleEscapeEnd;
+                } else {
+                    state = HtmlScriptDataState::DoubleEscaped;
+                    reconsume = true;
+                }
+            }
+            HtmlScriptDataState::DoubleEscapeEnd => {
+                if byte.is_ascii_alphabetic() {
+                    temporary_buffer.push(byte.to_ascii_lowercase());
+                } else if is_delimiter(byte) {
+                    state = if temporary_buffer == b"script" {
+                        HtmlScriptDataState::Escaped
+                    } else {
+                        HtmlScriptDataState::DoubleEscaped
+                    };
+                } else {
+                    state = HtmlScriptDataState::DoubleEscaped;
+                    reconsume = true;
+                }
+            }
+        }
+
+        if !reconsume {
+            position += 1;
+        }
+    }
+
     None
 }
 
@@ -12913,7 +13135,7 @@ fn append_bounded_markup(output: &mut String, value: &str, max_bytes: usize, tru
 #[cfg(test)]
 mod tests {
     use super::super::css::NativeFontPaletteName;
-    use super::super::javascript::NativeJavaScriptRuntime;
+    use super::super::javascript::{NativeFrameScriptBinding, NativeJavaScriptRuntime};
     use super::super::origin::NativeOrigin;
     use super::*;
 
@@ -15915,6 +16137,212 @@ mod tests {
         assert_eq!(document.element_inner_html(target_id, 1 << 20), expected);
         assert!(document.find_element_by_id("fake").is_none());
         assert!(document.find_element_by_id("suffix").is_none());
+    }
+
+    #[test]
+    fn html_script_data_end_scanner_handles_false_and_double_escaped_closers() {
+        let source = "<!--<script>double</script>escaped--></SCRIPT >suffix";
+        let close = find_script_data_end(source, 0).expect("final script close must be found");
+        assert_eq!(&source[close..], "</SCRIPT >suffix");
+
+        let source = "<!--escaped </script>suffix";
+        let close = find_script_data_end(source, 0).expect("escaped script close must be found");
+        assert_eq!(&source[close..], "</script>suffix");
+
+        let source = "before </scriptx> after </script>";
+        let close =
+            find_script_data_end(source, 0).expect("appropriate script close must be found");
+        assert_eq!(&source[close..], "</script>");
+
+        assert!(find_script_data_end("before </script", 0).is_none());
+        assert!(find_script_data_end("no closing script", 0).is_none());
+    }
+
+    #[test]
+    fn html_script_data_contexts_match_all_parser_routes() {
+        let markup = "<script id='double'><!--<script>double &amp; </script>escaped\0--></script><span id='after-double'>double tail</span><script id='escaped'><!-- escaped </SCRIPT ><b id='after-escaped'>escaped tail</b><script id='prefix'>before </scriptx> after</script><u id='after-prefix'>prefix tail</u><script id='fragment'></script>";
+        let double_text = format!("<!--<script>double &amp; </script>escaped{}-->", '\u{FFFD}');
+        let expected = serde_json::json!([
+            [double_text, double_text, "double tail", true],
+            ["<!-- escaped ", "<!-- escaped ", "escaped tail", true],
+            [
+                "before </scriptx> after",
+                "before </scriptx> after",
+                "prefix tail",
+                true
+            ]
+        ]);
+        let document_markup =
+            format!("<main id='root'>{markup}<script id='unterminated'></script></main>");
+        let mut document = NativeDocument::parse(&document_markup, &NativeEngineLimits::default())
+            .expect("script-data fixture document must parse");
+        let direct_root = document.find_element_by_id("root").unwrap();
+        for (id, text, after_id) in [
+            ("double", expected[0][0].as_str().unwrap(), "after-double"),
+            ("escaped", "<!-- escaped ", "after-escaped"),
+            ("prefix", "before </scriptx> after", "after-prefix"),
+        ] {
+            let script_id = document.find_element_by_id(id).unwrap();
+            let script = document.node(script_id).unwrap();
+            assert_eq!(script.children().len(), 1, "{id} has one script text node");
+            assert_eq!(
+                document.node(script.children()[0]).unwrap().kind(),
+                &NativeNodeKind::Text(text.to_owned())
+            );
+            assert_eq!(document.element_inner_html(script_id, 1 << 20), text);
+            let after_id = document.find_element_by_id(after_id).unwrap();
+            assert_eq!(document.node(after_id).unwrap().parent(), Some(direct_root));
+        }
+
+        let fragment_source =
+            "inside<!--<script>double</script>after--></SCRIPT ><i id='fragment-tail'>tail</i>";
+        let unterminated_source = "EOF &amp; </script";
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("script-data-fragment-context")
+            .expect("native JavaScript runtime must construct");
+        let script = format!(
+            "(() => {{\
+                const markup = {};\
+                const fragment = document.querySelector('#fragment');\
+                fragment.innerHTML = {};\
+                const unterminated = document.querySelector('#unterminated');\
+                unterminated.innerHTML = {};\
+                const summarize = (scope) => {{\
+                    const host = scope.querySelector('#root');\
+                    return ['double', 'escaped', 'prefix'].map((id) => {{\
+                        const element = scope.querySelector(`#${{id}}`);\
+                        const after = scope.querySelector(`#after-${{id}}`);\
+                        return [element.textContent, element.innerHTML,\
+                            after.textContent, after.parentElement === host];\
+                    }});\
+                }};\
+                const response = __glassParseHtmlDocument(\
+                    markup, 'https://example.test/script-data-routes.html', 'text/html');\
+                return [summarize(document), summarize(response),\
+                    [fragment.textContent, fragment.innerHTML,\
+                        fragment.querySelector('#fragment-tail').parentElement === fragment],\
+                    [unterminated.textContent, unterminated.innerHTML,\
+                        unterminated.childNodes.length, unterminated.children.length]];\
+            }})()",
+            serde_json::to_string(&document_markup).unwrap(),
+            serde_json::to_string(fragment_source).unwrap(),
+            serde_json::to_string(unterminated_source).unwrap(),
+        );
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://script-data-fragment-context.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("script-data parser routes must project consistently");
+        let fragment_text = "inside<!--<script>double</script>after-->";
+        let fragment_html = format!("{fragment_text}<i id=\"fragment-tail\">tail</i>");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                expected,
+                expected,
+                [format!("{fragment_text}tail"), fragment_html, true],
+                [unterminated_source, unterminated_source, 1, 0]
+            ])
+        );
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust script fragment commit must match same-turn projection");
+        let committed_root = document.find_element_by_id("root").unwrap();
+        for (id, text) in [
+            ("double", expected[0][0].as_str().unwrap()),
+            ("escaped", "<!-- escaped "),
+            ("prefix", "before </scriptx> after"),
+        ] {
+            let script_id = document.find_element_by_id(id).unwrap();
+            let script = document.node(script_id).unwrap();
+            assert_eq!(script.children().len(), 1);
+            assert_eq!(
+                document.node(script.children()[0]).unwrap().kind(),
+                &NativeNodeKind::Text(text.to_owned())
+            );
+            assert_eq!(document.element_inner_html(script_id, 1 << 20), text);
+            let after_id = document.find_element_by_id(&format!("after-{id}")).unwrap();
+            assert_eq!(
+                document.node(after_id).unwrap().parent(),
+                Some(committed_root)
+            );
+        }
+        let fragment_id = document.find_element_by_id("fragment").unwrap();
+        let fragment = document.node(fragment_id).unwrap();
+        assert_eq!(
+            fragment.children().len(),
+            2,
+            "fragment children: {:?}",
+            fragment
+                .children()
+                .iter()
+                .map(|child| document.node(*child).unwrap().kind())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            document.node(fragment.children()[0]).unwrap().kind(),
+            &NativeNodeKind::Text(fragment_text.to_owned())
+        );
+        assert_eq!(
+            document.element_inner_html(fragment_id, 1 << 20),
+            fragment_html
+        );
+        let unterminated_id = document.find_element_by_id("unterminated").unwrap();
+        let unterminated = document.node(unterminated_id).unwrap();
+        assert_eq!(unterminated.children().len(), 1);
+        assert_eq!(
+            document.node(unterminated.children()[0]).unwrap().kind(),
+            &NativeNodeKind::Text(unterminated_source.to_owned())
+        );
+        assert_eq!(
+            document.element_inner_html(unterminated_id, 1 << 20),
+            unterminated_source
+        );
+
+        let frame_parent = NativeDocument::parse(
+            "<iframe id='frame'></iframe>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("frame parent document must parse");
+        let frame_child = NativeDocument::parse(
+            "<script id='frame-script'><!--<script>double</script>escaped   &amp;</script><span id='frame-after'>tail</span>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("frame child document must parse");
+        let frame_runtime =
+            NativeJavaScriptRuntime::new_with_context_id("script-data-frame-context")
+                .expect("native frame JavaScript runtime must construct");
+        frame_runtime.set_frame_script_bindings(vec![NativeFrameScriptBinding {
+            node_index: frame_parent.find_element_by_id("frame").unwrap().index(),
+            frame_id: "script-data-child".into(),
+            url: "https://example.test/script-data-child.html".into(),
+            origin: "https://example.test".into(),
+            generation: 1,
+            revision: 1,
+            same_origin: true,
+            document: frame_child.script_snapshot_for_viewport(1 << 20, Viewport::default()),
+            children: Vec::new(),
+        }]);
+        let frame_evaluation = frame_runtime
+            .evaluate(
+                "(() => { const script = document.querySelector('#frame').contentDocument.querySelector('#frame-script'); return [script.textContent, script.innerHTML]; })()",
+                &frame_parent,
+                "https://example.test/script-data-parent.html",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("same-origin frame script snapshot must project");
+        assert_eq!(
+            frame_evaluation.value,
+            serde_json::json!([
+                "<!--<script>double</script>escaped   &amp;",
+                "<!--<script>double</script>escaped   &amp;"
+            ])
+        );
     }
 
     #[test]

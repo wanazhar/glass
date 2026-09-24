@@ -27,10 +27,11 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-698`; issue #40
-remains open. Slice 698 follows the completed `native-engine-browser-697`
-checkpoint. The `plaintext` fragment context now consumes all input literally
-through EOF; document/XHR start-tag tokenization remains separate.
+expansion is complete locally through `native-engine-browser-699`; issue #40
+remains open. Slice 699 follows the completed `native-engine-browser-698`
+checkpoint. Script fragment contexts now recognize appropriate end tags
+across Script Data, escaped, and double-escaped states; document, fragment,
+same-turn main/frame projections, and XHR parsing agree for the covered cases.
 The earlier expansion chain includes completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`,
@@ -213,8 +214,9 @@ locally. It initializes fragment parsing in RAWTEXT for `style`, `xmp`,
 literal through the appropriate context end tag, then ordinary fragment
 parsing resumes. Document/XHR tokenization and serialization use the same mode
 set. The focused RAWTEXT tests passed 2/2 and the foreign namespace route test
-passed 1/1 after the locked package check. Remote CI was not run; script-data,
-`plaintext`, and general parser conformance remain open.
+passed 1/1 after the locked package check. Remote CI was not run; Script Data
+and `plaintext` initialization are outside slice 697 and are handled in slices
+699 and 698 respectively. General parser conformance remains open.
 
 [`native-engine-browser-698`](tasks/native-engine-browser-698.md) is complete
 locally. A `plaintext` fragment target consumes all source through
@@ -225,6 +227,14 @@ PLAINTEXT fragment-context tests passed; formatting and local documentation
 gates passed. Inventory/link coverage was skipped because its debug binaries
 were absent; remote CI was not run. Document/XHR start-tag tokenization
 remains separate.
+
+[`native-engine-browser-699`](tasks/native-engine-browser-699.md) is complete
+locally. Script fragment contexts initialize Script Data correctly, including
+the escaped/double-escaped transitions that keep an inner `</script>` as text
+until the later appropriate close. Literal source is preserved, and the
+document, Rust fragment commit, same-turn JavaScript/frame projections, and
+XHR HTML parser agree for the covered cases. General tokenizer and script
+execution conformance remain open; remote CI was not run.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

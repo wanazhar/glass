@@ -27764,7 +27764,69 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
     }
     return -1;
   };
+  const nativeHtmlScriptDataEnd = (value, offset) => {
+    const isDelimiter = (character) => character === " " || character === "\t"
+      || character === "\n" || character === "\r" || character === "\f"
+      || character === "/" || character === ">";
+    const scriptToken = (cursor, closing) => {
+      const needle = closing ? "</script" : "<script";
+      if (value.slice(cursor, cursor + needle.length).toLowerCase() !== needle) return null;
+      const boundary = value[cursor + needle.length];
+      if (!isDelimiter(boundary)) return null;
+      return { boundaryIndex: cursor + needle.length };
+    };
+    let state = "data";
+    let cursor = offset;
+    while (cursor < value.length) {
+      if (state === "data") {
+        if (value.startsWith("<!--", cursor)) {
+          state = "escaped";
+          cursor += 4;
+          continue;
+        }
+        const closing = scriptToken(cursor, true);
+        if (closing) {
+          const end = nativeHtmlMarkupEnd(value, closing.boundaryIndex);
+          if (end >= 0) return { start: cursor, end: end + 1 };
+        }
+      } else if (state === "escaped") {
+        if (value.startsWith("-->", cursor)) {
+          state = "data";
+          cursor += 3;
+          continue;
+        }
+        const closing = scriptToken(cursor, true);
+        if (closing) {
+          const end = nativeHtmlMarkupEnd(value, closing.boundaryIndex);
+          if (end >= 0) return { start: cursor, end: end + 1 };
+        }
+        const opening = scriptToken(cursor, false);
+        if (opening) {
+          state = "double-escaped";
+          cursor = opening.boundaryIndex + 1;
+          continue;
+        }
+      } else {
+        if (value.startsWith("-->", cursor)) {
+          state = "data";
+          cursor += 3;
+          continue;
+        }
+        const closing = scriptToken(cursor, true);
+        if (closing) {
+          state = "escaped";
+          cursor = closing.boundaryIndex + 1;
+          continue;
+        }
+      }
+      cursor += 1;
+    }
+    return null;
+  };
   const nativeHtmlSpecialEnd = (value, offset, name) => {
+    if (String(name).toLowerCase() === "script") {
+      return nativeHtmlScriptDataEnd(value, offset);
+    }
     const lower = value.toLowerCase();
     const needle = "</" + name;
     let candidate = lower.indexOf(needle, offset);
@@ -29661,6 +29723,32 @@ fn document_bootstrap(
   globalThis.__glassMessageRealmKey = "page:" + String(host.context_id || "native");
   const initialPageCryptoBytes = {initial_page_crypto_bytes};
   const state = host.state;
+  const createSnapshotTextContentResolver = (snapshots) => {{
+    const nodes = new Map((Array.isArray(snapshots) ? snapshots : [])
+      .filter((entry) => entry && Number.isSafeInteger(Number(entry.nodeIndex)))
+      .map((entry) => [Number(entry.nodeIndex), entry]));
+    const cached = new Map();
+    const resolve = (nodeIndex, active) => {{
+      const index = Number(nodeIndex);
+      if (!Number.isSafeInteger(index)) return "";
+      if (cached.has(index)) return cached.get(index);
+      const entry = nodes.get(index);
+      if (!entry || active.has(index)) return "";
+      if (Number(entry.nodeType) === 3) {{
+        const value = String(entry.nodeValue || "");
+        cached.set(index, value);
+        return value;
+      }}
+      if ([8, 10].includes(Number(entry.nodeType))) return "";
+      active.add(index);
+      const value = (Array.isArray(entry.children) ? entry.children : [])
+        .map((childIndex) => resolve(childIndex, active)).join("");
+      active.delete(index);
+      cached.set(index, value);
+      return value;
+    }};
+    return (nodeIndex) => resolve(nodeIndex, new Set());
+  }};
   const geometryByIndex = globalThis.__glassHostGeometry instanceof Map
     ? globalThis.__glassHostGeometry
     : new Map();
@@ -35874,7 +35962,7 @@ fn document_bootstrap(
     const rawTextElements = htmlRawTextElements;
     const rcdataElements = new Set(["textarea", "title"]);
     const rawTextFragmentContextElements = new Set([
-      "style", "xmp", "iframe", "noembed", "noframes", "noscript",
+      "script", "style", "xmp", "iframe", "noembed", "noframes", "noscript",
     ]);
     const tableStructureElements = new Set(["table", "tbody", "tfoot", "thead", "tr"]);
     const tableSpecialStartTags = new Set([
@@ -36508,7 +36596,172 @@ fn document_bootstrap(
       }}
       return -1;
     }};
+    const findScriptDataEnd = (from) => {{
+      const isAsciiAlpha = (character) => /^[A-Za-z]$/.test(character);
+      const isDelimiter = (character) => character === " " || character === "\t"
+        || character === "\n" || character === "\r" || character === "\f"
+        || character === "/" || character === ">";
+      let state = "data";
+      let cursor = from;
+      let tagStart = 0;
+      let temporaryBuffer = "";
+      while (cursor < source.length) {{
+        const character = source[cursor];
+        let reconsume = false;
+        switch (state) {{
+          case "data":
+            if (character === "<") state = "less-than";
+            break;
+          case "less-than":
+            if (character === "/") {{
+              tagStart = cursor - 1;
+              temporaryBuffer = "";
+              state = "end-tag-open";
+            }} else if (character === "!") {{
+              state = "escape-start";
+            }} else {{
+              state = "data";
+              reconsume = true;
+            }}
+            break;
+          case "end-tag-open":
+            if (isAsciiAlpha(character)) {{
+              state = "end-tag-name";
+              reconsume = true;
+            }} else {{
+              state = "data";
+              reconsume = true;
+            }}
+            break;
+          case "end-tag-name":
+            if (isAsciiAlpha(character)) {{
+              temporaryBuffer += character.toLowerCase();
+            }} else if (isDelimiter(character)) {{
+              if (temporaryBuffer === "script") {{
+                const end = findTagEnd(cursor);
+                return end < 0 ? null : {{ start: tagStart, end: end + 1 }};
+              }}
+              state = "data";
+              reconsume = true;
+            }} else {{
+              state = "data";
+              reconsume = true;
+            }}
+            break;
+          case "escape-start":
+            if (character === "-") state = "escape-start-dash";
+            else {{ state = "data"; reconsume = true; }}
+            break;
+          case "escape-start-dash":
+            if (character === "-") state = "escaped-dash-dash";
+            else {{ state = "data"; reconsume = true; }}
+            break;
+          case "escaped":
+            if (character === "-") state = "escaped-dash";
+            else if (character === "<") state = "escaped-less-than";
+            break;
+          case "escaped-dash":
+            if (character === "-") state = "escaped-dash-dash";
+            else if (character === "<") state = "escaped-less-than";
+            else state = "escaped";
+            break;
+          case "escaped-dash-dash":
+            if (character === "-") {{}}
+            else if (character === "<") state = "escaped-less-than";
+            else if (character === ">") state = "data";
+            else state = "escaped";
+            break;
+          case "escaped-less-than":
+            if (character === "/") {{
+              tagStart = cursor - 1;
+              temporaryBuffer = "";
+              state = "escaped-end-tag-open";
+            }} else if (isAsciiAlpha(character)) {{
+              temporaryBuffer = "";
+              state = "double-escape-start";
+              reconsume = true;
+            }} else {{
+              state = "escaped";
+              reconsume = true;
+            }}
+            break;
+          case "escaped-end-tag-open":
+            if (isAsciiAlpha(character)) {{
+              state = "escaped-end-tag-name";
+              reconsume = true;
+            }} else {{
+              state = "escaped";
+              reconsume = true;
+            }}
+            break;
+          case "escaped-end-tag-name":
+            if (isAsciiAlpha(character)) {{
+              temporaryBuffer += character.toLowerCase();
+            }} else if (isDelimiter(character)) {{
+              if (temporaryBuffer === "script") {{
+                const end = findTagEnd(cursor);
+                return end < 0 ? null : {{ start: tagStart, end: end + 1 }};
+              }}
+              state = "escaped";
+              reconsume = true;
+            }} else {{
+              state = "escaped";
+              reconsume = true;
+            }}
+            break;
+          case "double-escape-start":
+            if (isAsciiAlpha(character)) {{
+              temporaryBuffer += character.toLowerCase();
+            }} else if (isDelimiter(character)) {{
+              state = temporaryBuffer === "script" ? "double-escaped" : "escaped";
+            }} else {{
+              state = "escaped";
+              reconsume = true;
+            }}
+            break;
+          case "double-escaped":
+            if (character === "-") state = "double-escaped-dash";
+            else if (character === "<") state = "double-escaped-less-than";
+            break;
+          case "double-escaped-dash":
+            if (character === "-") state = "double-escaped-dash-dash";
+            else if (character === "<") state = "double-escaped-less-than";
+            else state = "double-escaped";
+            break;
+          case "double-escaped-dash-dash":
+            if (character === "-") {{}}
+            else if (character === "<") state = "double-escaped-less-than";
+            else if (character === ">") state = "data";
+            else state = "double-escaped";
+            break;
+          case "double-escaped-less-than":
+            if (character === "/") {{
+              temporaryBuffer = "";
+              state = "double-escape-end";
+            }} else {{
+              state = "double-escaped";
+              reconsume = true;
+            }}
+            break;
+          case "double-escape-end":
+            if (isAsciiAlpha(character)) {{
+              temporaryBuffer += character.toLowerCase();
+            }} else if (isDelimiter(character)) {{
+              state = temporaryBuffer === "script" ? "escaped" : "double-escaped";
+            }} else {{
+              state = "double-escaped";
+              reconsume = true;
+            }}
+            break;
+          default:
+            throw new TypeError("invalid native script-data tokenizer state");
+        }}
+        if (!reconsume) cursor += 1;
+      }}
+      return null;
+    }};
     const findSpecialEnd = (from, name) => {{
+      if (String(name).toLowerCase() === "script") return findScriptDataEnd(from);
       const lowerSource = source.toLowerCase();
       const needle = "</" + name.toLowerCase();
       let candidate = lowerSource.indexOf(needle, from);
@@ -36532,8 +36785,10 @@ fn document_bootstrap(
         appendParsedText(source.slice(cursor).replace(/\u0000/g, "\ufffd"));
       }}
       cursor = source.length;
-    }} else if (rawTextFragmentContextElements.has(fragmentSpecialTextName)
-        || rcdataElements.has(fragmentSpecialTextName)) {{
+    }} else if ((fragmentSpecialTextName !== "script"
+        || fragment.namespaceURI === HTML_NAMESPACE)
+        && (rawTextFragmentContextElements.has(fragmentSpecialTextName)
+            || rcdataElements.has(fragmentSpecialTextName))) {{
       const rawText = rawTextFragmentContextElements.has(fragmentSpecialTextName);
       const special = findSpecialEnd(cursor, fragmentSpecialTextName);
       const textEnd = special ? special.start : source.length;
@@ -37513,6 +37768,13 @@ fn document_bootstrap(
     if (entry.namespaceUri === null || entry.namespaceUri === "") return null;
     return String(entry.namespaceUri);
   }};
+  const snapshotElementTextContent = (entry, exactTextForNode) => {{
+    const isHtmlScript = String(entry && entry.tagName || "").toLowerCase() === "script"
+      && namespaceUriForEntry(entry) === HTML_NAMESPACE;
+    return isHtmlScript && typeof exactTextForNode === "function"
+      ? exactTextForNode(entry.nodeIndex)
+      : String(entry && entry.text || "");
+  }};
   const tagNameForEntry = (entry) => {{
     const localName = String(entry.tagName || "").toLowerCase();
     return namespaceUriForEntry(entry) === HTML_NAMESPACE ? localName.toUpperCase() : localName;
@@ -37595,9 +37857,9 @@ fn document_bootstrap(
     if (localName === "math") return MATHML_NAMESPACE;
     return HTML_NAMESPACE;
   }};
-  const makeElement = (initialEntry) => {{
+  const makeElement = (initialEntry, exactTextForNode = null) => {{
     let entry = initialEntry;
-    let textContent = String(entry.text || "");
+    let textContent = snapshotElementTextContent(entry, exactTextForNode);
     let innerHtml = String(entry.innerHtml || "");
     let value = entry.value === null
       ? (entry.tagName.toLowerCase() === "option"
@@ -38477,7 +38739,7 @@ fn document_bootstrap(
     Object.defineProperty(element, "__glassRefresh", {{
       enumerable: false,
       configurable: false,
-      value(nextEntry) {{
+      value(nextEntry, nextExactTextForNode = exactTextForNode) {{
         clearInlineAttributeHandlers();
         entry = nextEntry;
         computedStyle = nextEntry.computedStyle && typeof nextEntry.computedStyle === "object"
@@ -38490,7 +38752,7 @@ fn document_bootstrap(
         element.tagName = tagNameForEntry(nextEntry);
         element.nodeName = tagNameForEntry(nextEntry);
         element.localName = nextEntry.tagName.toLowerCase();
-        textContent = String(nextEntry.text || "");
+        textContent = snapshotElementTextContent(nextEntry, nextExactTextForNode);
         innerHtml = String(nextEntry.innerHtml || "");
         disabled = Boolean(nextEntry.disabled);
         hidden = Boolean(nextEntry.hidden);
@@ -39113,13 +39375,14 @@ fn document_bootstrap(
     ? globalThis.__glassHostNodes
     : new Map();
   const snapshotNodes = Array.isArray(state.nodes) ? state.nodes : [];
+  const snapshotTextContentForNode = createSnapshotTextContentResolver(snapshotNodes);
   const elements = state.elements.map((entry) => {{
     const existing = scriptNodeAliasesByIndex.get(entry.nodeIndex) || previousElements.get(entry.nodeIndex);
     if (existing && typeof existing.__glassRefresh === "function") {{
-      existing.__glassRefresh(entry);
+      existing.__glassRefresh(entry, snapshotTextContentForNode);
       return existing;
     }}
-    return makeElement(entry);
+    return makeElement(entry, snapshotTextContentForNode);
   }});
   const elementsByIndex = new Map(elements.map((element) => [element.nodeIndex, element]));
   const textNodes = snapshotNodes
@@ -43892,10 +44155,11 @@ fn document_bootstrap(
     }}
     let frameDocumentTitle = String(snapshot.title || "");
     let frameDocument;
+    const frameSnapshotTextContentForNode = createSnapshotTextContentResolver(snapshot.nodes);
     const frameElements = (Array.isArray(snapshot.elements) ? snapshot.elements : []).map((entry) => {{
       const existing = frameScriptNodeAliasesByIndex.get(Number(entry.nodeIndex));
       if (existing && typeof existing.__glassRefresh === "function") {{
-        existing.__glassRefresh(entry);
+        existing.__glassRefresh(entry, frameSnapshotTextContentForNode);
         return existing;
       }}
       const attributes = entry.attributes && typeof entry.attributes === "object" ? entry.attributes : {{}};
@@ -43905,7 +44169,7 @@ fn document_bootstrap(
           ? entry.attributeNamespaces
           : {{}},
       )) attributeNamespaces[name] = String(namespace);
-      let textContent = String(entry.text || "");
+      let textContent = snapshotElementTextContent(entry, frameSnapshotTextContentForNode);
       let innerHtml = String(entry.innerHtml || "");
       const namespaceURI = namespaceUriForEntry(entry);
       let value = entry.value == null ? "" : entry.value;
@@ -44880,7 +45144,7 @@ fn document_bootstrap(
       Object.defineProperty(projected, "__glassRefresh", {{
         enumerable: false,
         configurable: false,
-        value(nextEntry) {{
+        value(nextEntry, nextExactTextForNode = frameSnapshotTextContentForNode) {{
           nodeIndex = Number(nextEntry.nodeIndex);
           projected.nodeIndex = nodeIndex;
           projected.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
@@ -44897,7 +45161,7 @@ fn document_bootstrap(
             ? nextEntry.attributeNamespaces
             : {{}};
           for (const [name, namespace] of Object.entries(nextAttributeNamespaces)) attributeNamespaces[name] = String(namespace);
-          textContent = String(nextEntry.text || "");
+          textContent = snapshotElementTextContent(nextEntry, nextExactTextForNode);
           innerHtml = String(nextEntry.innerHtml || "");
           value = nextEntry.value == null ? "" : nextEntry.value;
           checked = Boolean(nextEntry.checked);

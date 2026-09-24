@@ -1252,6 +1252,7 @@ struct NativeDedicatedWorker {
     module_base_url: String,
     runtime: NativeJavaScriptRuntime,
     import_script_counts: BTreeMap<String, usize>,
+    dynamic_import_referrers: BTreeSet<String>,
     module_sources: BTreeMap<String, String>,
     module_base_urls: BTreeMap<String, String>,
     is_module: bool,
@@ -1266,6 +1267,18 @@ pub(crate) struct NativeWorkerModuleGraph {
     pub(crate) base_urls: BTreeMap<String, String>,
 }
 
+struct NativeWorkerClassicScriptGraph {
+    source: String,
+    import_script_counts: BTreeMap<String, usize>,
+    dynamic_import_referrers: BTreeSet<String>,
+}
+
+#[derive(Clone, Copy)]
+enum NativeWorkerClassicDynamicImportMode {
+    Preserve,
+    RewritePerScript,
+}
+
 #[derive(Debug, Clone)]
 struct NativeMessagePortRoute {
     worker_id: u32,
@@ -1277,6 +1290,9 @@ impl NativeDedicatedWorker {
         worker_id: u32,
         source: &str,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        for referrer in &self.dynamic_import_referrers {
+            self.runtime.register_dynamic_import_referrer(referrer)?;
+        }
         if self.is_shared && self.is_module {
             self.runtime.evaluate_shared_worker_module(
                 worker_id,
@@ -1288,7 +1304,7 @@ impl NativeDedicatedWorker {
                 &self.module_base_urls,
             )
         } else if self.is_shared {
-            self.runtime.evaluate_shared_worker(
+            self.runtime.evaluate_shared_worker_prepared(
                 worker_id,
                 &self.url,
                 source,
@@ -1305,8 +1321,12 @@ impl NativeDedicatedWorker {
                 &self.module_base_urls,
             )
         } else {
-            self.runtime
-                .evaluate_worker(worker_id, &self.url, source, &self.import_script_counts)
+            self.runtime.evaluate_worker_prepared(
+                worker_id,
+                &self.url,
+                source,
+                &self.import_script_counts,
+            )
         }
     }
 
@@ -1789,6 +1809,7 @@ impl NativeWorkerRegistry {
             module_base_url,
             module_sources,
             module_base_urls,
+            dynamic_import_referrers,
         ) = if is_module {
             let graph = self
                 .load_worker_module_graph(loader, owner_url, module_request_url, resource.clone())
@@ -1800,18 +1821,24 @@ impl NativeWorkerRegistry {
                 graph.root_base_url,
                 graph.sources,
                 graph.base_urls,
+                BTreeSet::new(),
             )
         } else {
-            let (source, import_script_counts) = self
-                .load_worker_script_graph(loader, resource.clone())
+            let graph = self
+                .load_worker_script_graph(
+                    loader,
+                    resource.clone(),
+                    NativeWorkerClassicDynamicImportMode::RewritePerScript,
+                )
                 .await?;
             (
-                source,
-                import_script_counts,
+                graph.source,
+                graph.import_script_counts,
                 resource.url.clone(),
                 resource.url.clone(),
                 BTreeMap::new(),
                 BTreeMap::new(),
+                graph.dynamic_import_referrers,
             )
         };
         let runtime =
@@ -1830,6 +1857,7 @@ impl NativeWorkerRegistry {
                 module_name,
                 module_base_url,
                 import_script_counts,
+                dynamic_import_referrers,
                 module_sources,
                 module_base_urls,
                 is_module,
@@ -1975,6 +2003,7 @@ impl NativeWorkerRegistry {
             module_base_url,
             module_sources,
             module_base_urls,
+            dynamic_import_referrers,
         ) = if is_module {
             let graph = self
                 .load_worker_module_graph(loader, owner_url, module_request_url, resource.clone())
@@ -1986,18 +2015,24 @@ impl NativeWorkerRegistry {
                 graph.root_base_url,
                 graph.sources,
                 graph.base_urls,
+                BTreeSet::new(),
             )
         } else {
-            let (source, import_script_counts) = self
-                .load_worker_script_graph(loader, resource.clone())
+            let graph = self
+                .load_worker_script_graph(
+                    loader,
+                    resource.clone(),
+                    NativeWorkerClassicDynamicImportMode::RewritePerScript,
+                )
                 .await?;
             (
-                source,
-                import_script_counts,
+                graph.source,
+                graph.import_script_counts,
                 resource.url.clone(),
                 resource.url.clone(),
                 BTreeMap::new(),
                 BTreeMap::new(),
+                graph.dynamic_import_referrers,
             )
         };
         let runtime = match NativeJavaScriptRuntime::new_with_context_id(format!(
@@ -2016,6 +2051,7 @@ impl NativeWorkerRegistry {
                 module_name,
                 module_base_url,
                 import_script_counts,
+                dynamic_import_referrers,
                 module_sources,
                 module_base_urls,
                 is_module,
@@ -3598,7 +3634,8 @@ impl NativeWorkerRegistry {
         &self,
         loader: &mut NativeResourceLoader,
         root: NativeScriptResource,
-    ) -> Result<(String, BTreeMap<String, usize>), NativeEngineError> {
+        dynamic_import_mode: NativeWorkerClassicDynamicImportMode,
+    ) -> Result<NativeWorkerClassicScriptGraph, NativeEngineError> {
         struct PendingWorkerScript {
             resource: NativeScriptResource,
             imports: Vec<String>,
@@ -3612,12 +3649,20 @@ impl NativeWorkerRegistry {
             ));
         }
         let root_imports = static_worker_import_specifiers(&root.body)?;
+        let mut dynamic_import_referrers = BTreeSet::new();
+        if matches!(
+            dynamic_import_mode,
+            NativeWorkerClassicDynamicImportMode::RewritePerScript
+        ) {
+            dynamic_import_referrers.insert(root.url.clone());
+        }
         let mut stack = vec![PendingWorkerScript {
             resource: root,
             imports: root_imports,
             next_import: 0,
         }];
         let mut import_script_counts = BTreeMap::<String, usize>::new();
+        let mut runtime_import_calls = 0usize;
         let mut import_edges = 0usize;
         let mut combined_source = String::new();
         while !stack.is_empty() {
@@ -3666,9 +3711,47 @@ impl NativeWorkerRegistry {
                 continue;
             }
             let frame = stack.pop().expect("worker script stack was non-empty");
+            let script_source = match dynamic_import_mode {
+                NativeWorkerClassicDynamicImportMode::Preserve => frame.resource.body,
+                NativeWorkerClassicDynamicImportMode::RewritePerScript => {
+                    let referrer = serde_json::to_string(&frame.resource.url).map_err(|_| {
+                        NativeEngineError::Worker {
+                            operation: "prepare Worker importScripts referrer".into(),
+                            reason: "Worker importScripts referrer could not be encoded".into(),
+                        }
+                    })?;
+                    let (source, rewritten_calls) =
+                        rewrite_runtime_dynamic_module_imports_with_count(
+                            &frame.resource.body,
+                            &referrer,
+                        )?;
+                    runtime_import_calls = runtime_import_calls.saturating_add(rewritten_calls);
+                    if runtime_import_calls > MAX_NATIVE_MODULE_IMPORTS {
+                        return Err(NativeEngineError::limit(
+                            "native worker runtime dynamic imports",
+                            MAX_NATIVE_MODULE_IMPORTS,
+                            runtime_import_calls,
+                        ));
+                    }
+                    if rewritten_calls > 0 {
+                        if !dynamic_import_referrers.contains(&frame.resource.url)
+                            && dynamic_import_referrers.len() >= MAX_NATIVE_MODULE_IMPORTS
+                        {
+                            return Err(NativeEngineError::limit(
+                                "dynamic module referrers",
+                                MAX_NATIVE_MODULE_IMPORTS,
+                                dynamic_import_referrers.len().saturating_add(1),
+                            ));
+                        }
+                        dynamic_import_referrers.insert(frame.resource.url.clone());
+                    }
+                    source
+                }
+            };
             let next_length = combined_source
                 .len()
-                .saturating_add(frame.resource.body.len());
+                .saturating_add(script_source.len())
+                .saturating_add(2);
             if next_length > MAX_NATIVE_SCRIPT_BYTES {
                 return Err(NativeEngineError::limit(
                     "combined worker importScripts source",
@@ -3676,10 +3759,14 @@ impl NativeWorkerRegistry {
                     next_length,
                 ));
             }
-            combined_source.push_str(&frame.resource.body);
+            combined_source.push_str(&script_source);
             combined_source.push_str("\n;");
         }
-        Ok((combined_source, import_script_counts))
+        Ok(NativeWorkerClassicScriptGraph {
+            source: combined_source,
+            import_script_counts,
+            dynamic_import_referrers,
+        })
     }
 
     async fn load_worker_module_graph(
@@ -3787,9 +3874,14 @@ pub(crate) async fn load_service_worker_source(
             .await?;
         Ok((resource.body, BTreeMap::new(), Some(module_graph)))
     } else {
-        let (source, import_script_counts) =
-            registry.load_worker_script_graph(loader, resource).await?;
-        Ok((source, import_script_counts, None))
+        let graph = registry
+            .load_worker_script_graph(
+                loader,
+                resource,
+                NativeWorkerClassicDynamicImportMode::Preserve,
+            )
+            .await?;
+        Ok((graph.source, graph.import_script_counts, None))
     }
 }
 
@@ -14147,6 +14239,20 @@ impl NativeJavaScriptRuntime {
         self.evaluate_worker_source(worker_id, worker_url, None, &source, import_script_counts)
     }
 
+    /// Evaluate a classic Worker graph whose computed imports were already
+    /// rewritten per source resource before the scripts were concatenated.
+    pub(crate) fn evaluate_worker_prepared(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        source: &str,
+        import_script_counts: &BTreeMap<String, usize>,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.set_dynamic_module_imports_enabled(true)?;
+        self.register_dynamic_import_referrer(worker_url)?;
+        self.evaluate_worker_source(worker_id, worker_url, None, source, import_script_counts)
+    }
+
     /// Evaluate one module dedicated-worker turn using the prefetched module
     /// graph installed in the runtime's native module loader.
     pub(crate) fn evaluate_worker_module(
@@ -14209,6 +14315,27 @@ impl NativeJavaScriptRuntime {
             worker_url,
             None,
             &source,
+            import_script_counts,
+        )
+    }
+
+    /// Evaluate a classic SharedWorker graph whose computed imports were
+    /// already rewritten per source resource before the scripts were
+    /// concatenated.
+    pub(crate) fn evaluate_shared_worker_prepared(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        source: &str,
+        import_script_counts: &BTreeMap<String, usize>,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.set_dynamic_module_imports_enabled(true)?;
+        self.register_dynamic_import_referrer(worker_url)?;
+        self.evaluate_shared_worker_source(
+            worker_id,
+            worker_url,
+            None,
+            source,
             import_script_counts,
         )
     }
@@ -18245,10 +18372,19 @@ fn rewrite_runtime_dynamic_module_imports(
     source: &str,
     referrer_expression: &str,
 ) -> Result<String, NativeEngineError> {
+    rewrite_runtime_dynamic_module_imports_with_count(source, referrer_expression)
+        .map(|(rewritten, _)| rewritten)
+}
+
+fn rewrite_runtime_dynamic_module_imports_with_count(
+    source: &str,
+    referrer_expression: &str,
+) -> Result<(String, usize), NativeEngineError> {
     let bytes = source.as_bytes();
     let sites = javascript_dynamic_import_call_sites(bytes);
     let mut output = String::with_capacity(source.len());
     let mut copied_until = 0;
+    let mut rewritten_import_calls = 0usize;
     for (start, open, close) in sites {
         let specifier_start = skip_javascript_space_and_comments(bytes, open + 1);
         if specifier_start == close
@@ -18267,6 +18403,7 @@ fn rewrite_runtime_dynamic_module_imports(
         output.push_str(referrer_expression);
         output.push(',');
         copied_until = open + 1;
+        rewritten_import_calls = rewritten_import_calls.saturating_add(1);
     }
     output.push_str(&source[copied_until..]);
     if output.len() > MAX_NATIVE_SCRIPT_BYTES {
@@ -18276,7 +18413,7 @@ fn rewrite_runtime_dynamic_module_imports(
             output.len(),
         ));
     }
-    Ok(output)
+    Ok((output, rewritten_import_calls))
 }
 
 fn javascript_dynamic_import_call_sites(bytes: &[u8]) -> Vec<(usize, usize, usize)> {

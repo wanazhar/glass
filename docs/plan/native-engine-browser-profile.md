@@ -66,14 +66,24 @@ It is never an implicit fallback for a native request.
   provide descendant bases.
 - Module workers use their own worker module map and URL/referrer rules. A
   Document import map is never exposed as a worker capability.
-- Local implementation evidence: slices 713–715 cover runtime-valued imports
+- A classic script loaded by `importScripts()` keeps its own response URL as
+  the active-script base for `import()`. A redirected imported script resolves
+  relative module specifiers from its final response URL, not the Worker entry
+  URL; the host uses the owning Worker module loader and no Document import
+  map.
+- Local implementation evidence: slices 713–716 cover runtime-valued imports
   in page classic/module scripts, dedicated classic/module Workers, and
   classic/module SharedWorkers, including nested computed imports through their
   host fetch queues. Slice 715 also covers rejection and connected-port
-  settlement. Rooted-file page computed imports remain unverified; see
+  settlement. Slice 716 covers computed imports in statically preloaded
+  classic `importScripts()` dependencies against their final response URLs,
+  including nested imports, dedicated/shared settlement, and local fixtures.
+  Rooted-file page imports, Service Worker classic-import settlement, import
+  options, and complete module scheduling remain unverified. See
   [task 713](tasks/native-engine-browser-713.md),
-  [task 714](tasks/native-engine-browser-714.md), and
-  [task 715](tasks/native-engine-browser-715.md).
+  [task 714](tasks/native-engine-browser-714.md),
+  [task 715](tasks/native-engine-browser-715.md), and
+  [task 716](tasks/native-engine-browser-716.md).
 - Import options/attributes, nested imports, promise/microtask ordering, and
   module evaluation errors follow the selected ECMAScript and HTML host
   algorithms; a bounded implementation must report unsupported profile

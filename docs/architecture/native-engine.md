@@ -866,6 +866,18 @@ SharedWorker runtime imports were still open. Computed imports from
 options/attributes, and full asynchronous module scheduling remain open. See
 [`slice 714`](../plan/tasks/native-engine-browser-714.md).
 
+Slice 715 extends runtime-valued imports to classic and module SharedWorkers,
+including nested imports, rejected fetches, and settlement through connected
+ports. Slice 716 adds per-script computed-import rewriting for statically
+preloaded classic Worker `importScripts()` dependencies, using each dependency's
+final response URL before graph concatenation. It registers the Worker entry
+and imported-source referrers before execution and continues using the bounded
+Worker module loader without Document import maps. Dedicated/shared process
+fixtures verify redirect bases, nested imports, exact request paths, and
+message delivery. Service Worker classic imports remain on their existing path
+until they have the same settlement owner. See
+[`slice 716`](../plan/tasks/native-engine-browser-716.md).
+
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript
 fragment projections, and XHR HTML documents. Text, attributes, comments,

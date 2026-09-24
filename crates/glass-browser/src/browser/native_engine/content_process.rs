@@ -7696,7 +7696,7 @@ fn service_worker_fetch_resource(
     })
 }
 
-fn inline_style_policy_nodes(
+pub(crate) fn inline_style_policy_nodes(
     document: &mut NativeDocument,
     loader: &mut NativeResourceLoader,
     document_url: &str,
@@ -7739,7 +7739,7 @@ fn inline_style_policy_nodes(
     Ok(allowed)
 }
 
-fn refresh_inline_style_policy(
+pub(crate) fn refresh_inline_style_policy(
     document: &mut NativeDocument,
     loader: &mut NativeResourceLoader,
     document_url: &str,

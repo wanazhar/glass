@@ -954,10 +954,21 @@ updated external stylesheets and every local CSS import. It applies
 Document's most-specific admitted root, carries link nonce metadata only for
 that link request, and rejects denied stylesheet bytes before read. Its loader
 tests pass 2/2; the new process-backed tests pass 2/2, alongside the unrooted
-import and rooted script/stylesheet/image regressions (1/1 each). Inline
-styles/attributes, blob/data stylesheets, CSS image/font subresources,
-report-only file policy, and full CSP conformance remain open. See
+import and rooted script/stylesheet/image regressions (1/1 each). At the end of
+slice 723, inline styles/attributes, blob/data stylesheets, CSS image/font
+subresources, report-only file policy, and full CSP conformance remained open.
+Slice 724 closes the inline-style gap; the other CSP gaps remain open. See
 [slice 723](../plan/tasks/native-engine-browser-723.md).
+
+Slice 724 applies rooted-file CSP to inline `<style>` blocks and `style`
+attributes. Blocks use `style-src-elem` → `style-src` → `default-src`; inline
+attributes use `style-src-attr` → `style-src` → `default-src`. Element
+nonces/hashes and attribute hashes gated by `'unsafe-hashes'` use the shared
+inline source matcher; nonces do not authorize attributes. Parser content and
+committed runtime mutations are rechecked; changed style blocks rebuild the
+stylesheet from currently authorized sources, while style-attribute changes
+invalidate computed style. Policies remain conjunctive. See [slice
+724](../plan/tasks/native-engine-browser-724.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

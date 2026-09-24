@@ -2494,6 +2494,93 @@ async fn native_file_stylesheet_import_rejects_unrooted_dependency() {
 }
 
 #[tokio::test]
+async fn native_file_inline_style_csp_enforces_nonce_hash_and_runtime_mutations() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-inline-style-csp-{}",
+        std::process::id()
+    ));
+    let site = root.join("site");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&site).unwrap();
+    let page_path = site.join("index.html");
+    let nonce_style = "#nonce-target { color: rgb(1, 2, 3); }";
+    let hash_style = "#hash-target { color: rgb(4, 5, 6); }";
+    let allowed_attribute = "color: rgb(7, 8, 9);";
+    let blocked_attribute = "color: rgb(10, 11, 12);";
+    let style_element_hash =
+        base64::engine::general_purpose::STANDARD.encode(Sha256::digest(hash_style.as_bytes()));
+    let style_attribute_hash = base64::engine::general_purpose::STANDARD
+        .encode(Sha256::digest(allowed_attribute.as_bytes()));
+    fs::write(
+        &page_path,
+        format!(
+            "<html><head><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'self'; style-src-elem 'nonce-Style123' 'sha256-{style_element_hash}'; style-src-attr 'unsafe-hashes' 'sha256-{style_attribute_hash}'\"><style nonce=\"Style123\">{nonce_style}</style><style>#blocked-target {{ color: rgb(9, 8, 7); }}</style><style>{hash_style}</style></head><body><div id=\"nonce-target\">nonce</div><div id=\"blocked-target\">blocked</div><div id=\"hash-target\">hash</div><div id=\"attribute-hash-target\" style=\"{allowed_attribute}\">attribute hash</div><div id=\"attribute-blocked-target\" style=\"{blocked_attribute}\">attribute blocked</div><div id=\"dynamic-style-target\">dynamic style</div><div id=\"initial-script-target\">initial script</div><div id=\"dynamic-script-target\">dynamic script</div><div id=\"dynamic-attribute-target\">dynamic attribute</div><script>const style = document.createElement('style'); style.setAttribute('nonce', 'Style123'); style.textContent = '#initial-script-target {{ color: rgb(16, 17, 18); }}'; document.head.appendChild(style);</script></body></html>"
+        ),
+    )
+    .unwrap();
+
+    let page_url = native_test_file_url(&page_path);
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url)
+        .with_allowed_file_root(site);
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[getComputedStyle(document.getElementById('nonce-target')).color, getComputedStyle(document.getElementById('blocked-target')).color, getComputedStyle(document.getElementById('hash-target')).color, getComputedStyle(document.getElementById('attribute-hash-target')).color, getComputedStyle(document.getElementById('attribute-blocked-target')).color, getComputedStyle(document.getElementById('initial-script-target')).color]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "rgb(1, 2, 3)",
+            "rgb(0, 0, 0)",
+            "rgb(4, 5, 6)",
+            "rgb(7, 8, 9)",
+            "rgb(0, 0, 0)",
+            "rgb(16, 17, 18)"
+        ])
+    );
+
+    engine
+        .evaluate_async(&format!(
+            r#"(() => {{
+                const allowedStyle = document.createElement('style');
+                allowedStyle.setAttribute('nonce', 'Style123');
+                allowedStyle.textContent = '#dynamic-style-target {{ color: rgb(13, 14, 15); }}';
+                document.head.appendChild(allowedStyle);
+                const blockedStyle = document.createElement('style');
+                blockedStyle.textContent = '#dynamic-style-target {{ color: rgb(16, 17, 18); }}';
+                document.head.appendChild(blockedStyle);
+                const dynamicScript = document.createElement('script');
+                dynamicScript.textContent = "const style = document.createElement('style'); style.setAttribute('nonce', 'Style123'); style.textContent = '#dynamic-script-target {{ color: rgb(19, 20, 21); }}'; document.head.appendChild(style);";
+                document.head.appendChild(dynamicScript);
+                document.getElementById('attribute-hash-target').setAttribute('style', {blocked_attribute:?});
+                document.getElementById('dynamic-attribute-target').setAttribute('style', {allowed_attribute:?});
+                return true;
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[getComputedStyle(document.getElementById('dynamic-style-target')).color, getComputedStyle(document.getElementById('dynamic-script-target')).color, getComputedStyle(document.getElementById('attribute-hash-target')).color, getComputedStyle(document.getElementById('dynamic-attribute-target')).color]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "rgb(13, 14, 15)",
+            "rgb(19, 20, 21)",
+            "rgb(0, 0, 0)",
+            "rgb(7, 8, 9)"
+        ])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn native_file_stylesheet_csp_enforces_self_nonce_and_dynamic_error() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-style-csp-root-{}",

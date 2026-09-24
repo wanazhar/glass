@@ -4384,7 +4384,7 @@ impl NativeEngine {
     }
 
     fn apply_local_document_commands_with_font_face_ack(
-        &self,
+        &mut self,
         document: &mut NativeDocument,
         commands: &[NativeScriptCommand],
         allow_script_navigation: bool,
@@ -4395,7 +4395,10 @@ impl NativeEngine {
         ),
         NativeEngineError,
     > {
-        if let Some(javascript) = self.javascript.as_ref() {
+        let inline_style_state_before = (is_file_url(&self.url)
+            && script_commands_may_change_inline_styles(commands))
+        .then(|| inline_style_source_state(document));
+        let result = if let Some(javascript) = self.javascript.as_ref() {
             apply_document_commands_with_font_face_ack(
                 document,
                 javascript,
@@ -4412,7 +4415,18 @@ impl NativeEngine {
                 document.apply_script_commands(commands)?
             };
             Ok((events, Vec::new()))
+        };
+        let (events, follow_up_commands) = result?;
+        if let Some(inline_style_state_before) = inline_style_state_before {
+            refresh_rooted_file_inline_styles(
+                document,
+                &mut self.loader,
+                &self.url,
+                self.javascript.as_ref(),
+                &inline_style_state_before,
+            )?;
         }
+        Ok((events, follow_up_commands))
     }
 
     fn retain_local_font_face_follow_up_commands(
@@ -4447,7 +4461,7 @@ impl NativeEngine {
     }
 
     fn apply_local_evaluation_commands(
-        &self,
+        &mut self,
         document: &mut NativeDocument,
         commands: &[NativeScriptCommand],
         history_commands: &mut Vec<NativeScriptCommand>,
@@ -7189,6 +7203,11 @@ impl NativeEngine {
                 &document.content_security_policy_meta(),
             )?;
             document.mark_content_security_policy_meta_processed();
+            let allowed_inline_style_nodes = super::content_process::inline_style_policy_nodes(
+                &mut document,
+                &mut self.loader,
+                &resource.url,
+            )?;
             let (stylesheet_states, mut events) = load_local_initial_file_stylesheets(
                 &document,
                 &self.loader,
@@ -7204,12 +7223,15 @@ impl NativeEngine {
                     })
                 })
                 .collect::<Vec<_>>();
-            document = NativeDocument::parse_with_stylesheets(
+            document = NativeDocument::parse_with_stylesheets_and_inline_style_policy(
                 &resource.body,
                 &self.config.limits,
                 &external_stylesheets,
                 generation,
+                Some(&allowed_inline_style_nodes),
             )?;
+            document.mark_inline_style_reports_seen();
+            document.mark_content_security_policy_meta_processed();
             document.set_external_stylesheet_states(stylesheet_states);
             events.extend(load_local_initial_file_images(
                 &mut document,
@@ -7438,6 +7460,8 @@ impl NativeEngine {
             if let Some(javascript) = javascript.as_ref() {
                 javascript.set_sync_xhr_loader(&self.loader);
             }
+            let inline_style_state_before = is_file_url(&prepared.resource.url)
+                .then(|| inline_style_source_state(&prepared.document));
             let result = execute_inline_scripts(
                 &mut prepared.document,
                 &mut javascript,
@@ -7456,6 +7480,17 @@ impl NativeEngine {
                 self.loader.merge_fetch_task_state(updated_loader)?;
             }
             let result = result?;
+            if let Some(inline_style_state_before) = inline_style_state_before
+                && inline_style_state_before != inline_style_source_state(&prepared.document)
+            {
+                refresh_rooted_file_inline_styles(
+                    &mut prepared.document,
+                    &mut self.loader,
+                    &prepared.resource.url,
+                    javascript.as_ref(),
+                    &inline_style_state_before,
+                )?;
+            }
             initial_module_fetches.extend(result.pending_fetches.into_iter().filter(|command| {
                 matches!(
                     command,
@@ -8826,6 +8861,8 @@ fn execute_local_dynamic_page_script_batches(
         }
         let (scripts, resource_events) =
             load_local_dynamic_page_script_sources(sources, runtime, loader, document_url)?;
+        let inline_style_state_before =
+            is_file_url(document_url).then(|| inline_style_source_state(document));
         runtime.set_sync_xhr_loader(loader);
         let mut result = execute_dynamic_page_scripts(
             document,
@@ -8837,6 +8874,15 @@ fn execute_local_dynamic_page_script_batches(
             &resource_events,
             &[],
         )?;
+        if let Some(inline_style_state_before) = inline_style_state_before {
+            refresh_rooted_file_inline_styles(
+                document,
+                loader,
+                document_url,
+                Some(runtime),
+                &inline_style_state_before,
+            )?;
+        }
         if let Some(updated_loader) = runtime.take_sync_xhr_loader() {
             loader.merge_fetch_task_state(updated_loader)?;
         }
@@ -8846,6 +8892,52 @@ fn execute_local_dynamic_page_script_batches(
             return Ok(aggregate);
         }
     }
+}
+
+fn inline_style_source_state(
+    document: &NativeDocument,
+) -> (Vec<(u32, String, Option<String>)>, Vec<(u32, String)>) {
+    (
+        document.inline_style_elements(),
+        document.inline_style_attributes(),
+    )
+}
+
+fn script_commands_may_change_inline_styles(commands: &[NativeScriptCommand]) -> bool {
+    commands.iter().any(|command| match command {
+        NativeScriptCommand::SetAttribute { name, .. }
+        | NativeScriptCommand::RemoveAttribute { name, .. } => {
+            name.eq_ignore_ascii_case("style") || name.eq_ignore_ascii_case("nonce")
+        }
+        NativeScriptCommand::SetTextContent { .. }
+        | NativeScriptCommand::SetInnerHtml { .. }
+        | NativeScriptCommand::AppendChild { .. }
+        | NativeScriptCommand::InsertBefore { .. }
+        | NativeScriptCommand::RemoveNode { .. } => true,
+        _ => false,
+    })
+}
+
+fn refresh_rooted_file_inline_styles(
+    document: &mut NativeDocument,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    runtime: Option<&NativeJavaScriptRuntime>,
+    previous_state: &(Vec<(u32, String, Option<String>)>, Vec<(u32, String)>),
+) -> Result<(), NativeEngineError> {
+    if !is_file_url(document_url) {
+        return Ok(());
+    }
+    let current_state = inline_style_source_state(document);
+    if *previous_state == current_state {
+        return Ok(());
+    }
+    super::content_process::refresh_inline_style_policy(document, loader, document_url)?;
+    if previous_state.0 != current_state.0 {
+        document.rebuild_external_stylesheet(document_url)?;
+        load_font_faces(document, runtime, loader, document_url)?;
+    }
+    Ok(())
 }
 
 fn load_local_dynamic_stylesheets(

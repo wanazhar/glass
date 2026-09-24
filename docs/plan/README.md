@@ -27,9 +27,10 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-723`; issue #40
-remains open. Slice 723 extends rooted-file CSP to external stylesheets and
-CSS imports. Slices 709–710 preserve request-URL module identity, including
+expansion is complete locally through `native-engine-browser-724`; issue #40
+remains open. Slice 724 enforces rooted-file inline style CSP, including
+runtime mutations. Slice 723 extends rooted-file CSP to external stylesheets
+and CSS imports. Slices 709–710 preserve request-URL module identity, including
 query and fragment, separately from the final response URL used as the
 descendant base across page, dedicated/shared worker, and service-worker module
 graphs. Slices 704–705 connect bounded

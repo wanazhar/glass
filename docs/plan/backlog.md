@@ -75,10 +75,24 @@ stylesheet links and recursive local CSS imports. Style-source fallback,
 configured-root `'self'`, link nonce metadata, SRI and resource bounds are
 preserved; disallowed stylesheet bytes are rejected before read. The loader
 tests pass 2/2, the new process-backed tests pass 2/2, and the existing
-unrooted-import and rooted stylesheet regressions pass 1/1 each. Inline styles,
-blob/data stylesheets, CSS image/font loads, report-only file policies, and
-complete CSP conformance remain separate. Remote CI was not run. See
+unrooted-import and rooted stylesheet regressions pass 1/1 each. At the end of
+slice 723, inline styles, blob/data stylesheets, CSS image/font loads,
+report-only file policies, and complete CSP conformance remained separate;
+slice 724 closes the inline-style gap. Remote CI was not run. See
 `tasks/native-engine-browser-723.md`.
+
+### Slice 724 completed locally: rooted-file inline style CSP
+
+Inline style blocks and attributes in configured-root file Documents now use
+their CSP directive fallback chains and shared nonce/hash checks. Parser
+content, initial-script mutations, dynamically attached scripts, and committed
+DOM style changes are rechecked. Changed style blocks rebuild the authorized
+CSS sources; style-attribute changes invalidate computed style. The focused
+loader and process-backed tests passed, as did the existing HTTP inline-CSP and
+rooted-file stylesheet regressions. Release-documentation truth, documentation
+depth, shortcut, formatting, and whitespace checks passed. Local links passed;
+the full CLI inventory check lacked `target/debug/glass`. Remote CI was not run.
+See `tasks/native-engine-browser-724.md`.
 
 ### Follow-up observed during slice 722
 

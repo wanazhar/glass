@@ -109,8 +109,18 @@ It is never an implicit fallback for a native request.
   external stylesheet links and recursive local CSS imports. It applies the
   style-source fallback, same-root `'self'`, link nonce metadata, and pre-read
   rejection. Focused loader and process-backed tests plus the existing local
-  stylesheet regressions pass. Inline style sources and other file resource
-  classes remain separate; see [task 723](tasks/native-engine-browser-723.md).
+  stylesheet regressions pass. Inline style sources were a separate gap at the
+  end of slice 723 and are now covered by slice 724; other file resource
+  classes remain separate. See [task 723](tasks/native-engine-browser-723.md).
+- Rooted-file inline style enforcement uses separate `style-src-elem` and
+  `style-src-attr` fallback chains, each falling back through `style-src` to
+  `default-src`. Element nonces/hashes and attribute `'unsafe-hashes'` follow
+  the shared CSP source matcher; a nonce never authorizes a style attribute.
+  The policy applies to parser-created styles and committed runtime mutations,
+  and remains conjunctive across policies. Slice 724 implements this contract;
+  changed style blocks rebuild from authorized sources. Dynamic CSP meta
+  insertion and report-only file policies remain separate; see
+  [task 724](tasks/native-engine-browser-724.md).
 - Local implementation evidence: slices 713–717 cover runtime-valued imports
   in page classic/module scripts, dedicated classic/module Workers, and
   classic/module SharedWorkers, including nested computed imports through their

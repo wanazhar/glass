@@ -6876,7 +6876,9 @@ impl NativeDocument {
             return output;
         };
         let raw_text_context = element.namespace_uri() == Some(HTML_NAMESPACE_URI)
-            && element.element_name().is_some_and(is_html_raw_text_element);
+            && element
+                .element_name()
+                .is_some_and(is_html_literal_text_element);
         let children = element.children().to_vec();
         for child in children {
             self.append_serialized_node(
@@ -6979,7 +6981,7 @@ impl NativeDocument {
                 }
                 let children = node.children().to_vec();
                 let child_raw_text = node.namespace_uri() == Some(HTML_NAMESPACE_URI)
-                    && is_html_raw_text_element(name);
+                    && is_html_literal_text_element(name);
                 for child in children {
                     self.append_serialized_node(
                         child,
@@ -9832,6 +9834,19 @@ fn tokenize_inner_html(
     max_tokens: usize,
     context_name: &str,
 ) -> Result<Vec<HtmlToken>, NativeEngineError> {
+    if context_name == "plaintext" {
+        let source = normalize_html_newlines(source);
+        if source.is_empty() {
+            return Ok(Vec::new());
+        }
+        if max_tokens == 0 {
+            return Err(NativeEngineError::limit("HTML tokens", max_tokens, 1));
+        }
+        return Ok(vec![HtmlToken::FragmentRawText(
+            replace_html_nulls(source.as_ref(), "\u{FFFD}").into_owned(),
+        )]);
+    }
+
     if !matches!(
         context_name,
         "title" | "textarea" | "style" | "xmp" | "iframe" | "noembed" | "noframes" | "noscript"
@@ -10319,6 +10334,10 @@ fn is_html_raw_text_element(name: &str) -> bool {
         name,
         "script" | "style" | "xmp" | "iframe" | "noembed" | "noframes" | "noscript"
     )
+}
+
+fn is_html_literal_text_element(name: &str) -> bool {
+    is_html_raw_text_element(name) || name == "plaintext"
 }
 
 fn find_raw_text_end(source: &str, start: usize, name: &str) -> Option<usize> {
@@ -15842,6 +15861,60 @@ mod tests {
             );
         }
         assert!(document.find_element_by_id("eof-fake").is_none());
+    }
+
+    #[test]
+    fn html_plaintext_fragment_context_consumes_source_to_eof() {
+        let source = "before &amp; \0 <b id='fake'>inside</b></plaintext><span id='suffix'>tail</span>\r\nlast\rend";
+        let expected = "before &amp; \u{FFFD} <b id='fake'>inside</b></plaintext><span id='suffix'>tail</span>\nlast\nend";
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .expect("fragment host document must parse");
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("plaintext-fragment-context")
+            .expect("native JavaScript runtime must construct");
+        let script = format!(
+            "(() => {{\
+                const target = document.createElement('plaintext');\
+                target.setAttribute('id', 'plain');\
+                document.querySelector('#root').appendChild(target);\
+                target.innerHTML = {};\
+                return [target.textContent, target.innerHTML, target.childNodes.length,\
+                    target.firstChild.nodeType, target.children.length,\
+                    target.querySelector('#fake') === null,\
+                    target.querySelector('#suffix') === null];\
+            }})()",
+            serde_json::to_string(source).expect("plaintext source must serialize")
+        );
+        let evaluation = runtime
+            .evaluate(
+                &script,
+                &document,
+                "fixture://plaintext-fragment-context.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("plaintext fragment context must project immediately");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([expected, expected, 1, 3, 0, true, true])
+        );
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must match the PLAINTEXT projection");
+        let target_id = document
+            .find_element_by_id("plain")
+            .expect("plaintext target must remain attached");
+        let target = document.node(target_id).unwrap();
+        assert_eq!(target.children().len(), 1);
+        assert_eq!(
+            document.node(target.children()[0]).unwrap().kind(),
+            &NativeNodeKind::Text(expected.to_owned())
+        );
+        assert_eq!(document.element_inner_html(target_id, 1 << 20), expected);
+        assert!(document.find_element_by_id("fake").is_none());
+        assert!(document.find_element_by_id("suffix").is_none());
     }
 
     #[test]

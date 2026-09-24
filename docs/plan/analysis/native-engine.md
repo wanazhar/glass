@@ -856,6 +856,17 @@ and local documentation gates passed; remote CI was not run. Script-data and
 `plaintext` initialization remain separate. See
 [`slice 697`](../tasks/native-engine-browser-697.md).
 
+Slice 698 initializes a `plaintext` fragment context in the PLAINTEXT state
+and consumes the complete submitted fragment as one literal text node;
+`</plaintext>` does not terminate the state. Character references remain
+literal, nulls become U+FFFD, HTML newlines normalize, and serialization stays
+literal. Rust commit and same-turn JavaScript/frame projection agree. The
+locked package check and six focused RCDATA/RAWTEXT/PLAINTEXT fragment-context
+tests passed with formatting and local documentation gates. Inventory/link
+coverage was skipped because its debug binaries were absent; remote CI was not
+run. Document/XHR start-tag tokenization is unchanged. See
+[`slice 698`](../tasks/native-engine-browser-698.md).
+
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript
 fragments, and XHR HTML documents. The Rust route retains submitted-source

@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser slice is `native-engine-browser-697`.
+The latest locally completed parser slice is `native-engine-browser-698`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -147,6 +147,16 @@ serialization. The focused RAWTEXT tests passed 2/2 and the foreign namespace
 route test passed 1/1 after the locked package check. Remote CI was not run;
 script-data and `plaintext` contexts remain separate. See
 `tasks/native-engine-browser-697.md`.
+
+Slice 698 is complete locally: initialize a `plaintext` fragment target in
+the PLAINTEXT state and consume all source as one literal text node through
+EOF, including markup-looking suffixes after `</plaintext>`. Preserve
+references, replace nulls, normalize newlines, and serialize literally across
+same-turn projection and Rust commit. The locked package check and six
+focused RCDATA/RAWTEXT/PLAINTEXT fragment-context tests passed. Formatting and
+local documentation gates passed; inventory/link coverage was skipped because
+its debug binaries were absent, and remote CI was not run. Document/XHR
+start-tag parsing remains separate. See `tasks/native-engine-browser-698.md`.
 
 Slice 689 is complete locally: select child element namespaces using SVG and MathML
 HTML integration-point rules across all four parser routes. Preserve the

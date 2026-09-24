@@ -27,9 +27,10 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-697`; issue #40
-remains open. Slice 697 follows the completed `native-engine-browser-696`
-checkpoint.
+expansion is complete locally through `native-engine-browser-698`; issue #40
+remains open. Slice 698 follows the completed `native-engine-browser-697`
+checkpoint. The `plaintext` fragment context now consumes all input literally
+through EOF; document/XHR start-tag tokenization remains separate.
 The earlier expansion chain includes completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`,
@@ -214,6 +215,16 @@ parsing resumes. Document/XHR tokenization and serialization use the same mode
 set. The focused RAWTEXT tests passed 2/2 and the foreign namespace route test
 passed 1/1 after the locked package check. Remote CI was not run; script-data,
 `plaintext`, and general parser conformance remain open.
+
+[`native-engine-browser-698`](tasks/native-engine-browser-698.md) is complete
+locally. A `plaintext` fragment target consumes all source through
+EOF as one literal text node, including markup-like input after
+`</plaintext>`, with U+0000 replacement, newline normalization, and literal
+serialization. The locked package check and six focused RCDATA/RAWTEXT/
+PLAINTEXT fragment-context tests passed; formatting and local documentation
+gates passed. Inventory/link coverage was skipped because its debug binaries
+were absent; remote CI was not run. Document/XHR start-tag tokenization
+remains separate.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

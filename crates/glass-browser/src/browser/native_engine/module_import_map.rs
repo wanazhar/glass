@@ -7,6 +7,7 @@ use url::Url;
 const MAX_IMPORT_MAP_ENTRIES: usize = 128;
 const MAX_IMPORT_MAP_SCOPES: usize = 32;
 const MAX_IMPORT_MAP_INTEGRITY_BYTES: usize = 4 * 1024;
+const MAX_IMPORT_MAP_RESOLUTIONS: usize = 1024;
 
 type NativeModuleSpecifierMap = BTreeMap<String, String>;
 type NativeModuleIntegrityMap = BTreeMap<String, String>;
@@ -167,6 +168,7 @@ pub(crate) struct NativeModuleImportMap {
     imports: NativeModuleSpecifierMap,
     scopes: BTreeMap<String, NativeModuleSpecifierMap>,
     integrity: NativeModuleIntegrityMap,
+    resolved: BTreeMap<(String, String), String>,
 }
 
 impl NativeModuleImportMap {
@@ -214,14 +216,29 @@ impl NativeModuleImportMap {
             imports,
             scopes,
             integrity,
+            resolved: BTreeMap::new(),
         })
     }
 
     pub(crate) fn merge(&mut self, newer: Self) -> Result<(), &'static str> {
         let mut merged = self.clone();
         let mut entry_count = merged.entry_count();
-        merge_specifier_map(&mut merged.imports, newer.imports, &mut entry_count)?;
+        let newer_imports: NativeModuleSpecifierMap = newer
+            .imports
+            .into_iter()
+            .filter(|(specifier, _)| !merged.mapping_conflicts_with_resolved(None, specifier))
+            .collect();
+        merge_specifier_map(&mut merged.imports, newer_imports, &mut entry_count)?;
         for (scope, newer_specifiers) in newer.scopes {
+            let newer_specifiers: NativeModuleSpecifierMap = newer_specifiers
+                .into_iter()
+                .filter(|(specifier, _)| {
+                    !merged.mapping_conflicts_with_resolved(Some(&scope), specifier)
+                })
+                .collect();
+            if newer_specifiers.is_empty() && !merged.scopes.contains_key(&scope) {
+                continue;
+            }
             if !merged.scopes.contains_key(&scope) {
                 if merged.scopes.len() >= MAX_IMPORT_MAP_SCOPES {
                     return Err("merged import maps exceed their scope limit");
@@ -244,16 +261,40 @@ impl NativeModuleImportMap {
     }
 
     pub(crate) fn resolve(&self, referrer: &str, specifier: &str) -> Result<String, &'static str> {
-        let mut referrer_url =
-            Url::parse(referrer).map_err(|_| "module referrer URL is invalid")?;
-        referrer_url.set_fragment(None);
-        let normalized_specifier = if is_url_like(specifier) {
-            resolve_url(&referrer_url, specifier)?.to_string()
-        } else {
-            specifier.to_owned()
-        };
+        let (referrer_url, normalized_specifier) = normalize_resolution_input(referrer, specifier)?;
+        let resolution_key = (referrer_url.to_string(), normalized_specifier.clone());
+        if let Some(resolved) = self.resolved.get(&resolution_key) {
+            return Ok(resolved.clone());
+        }
+        self.resolve_normalized(&referrer_url, specifier, &normalized_specifier)
+    }
 
+    pub(crate) fn resolve_and_record(
+        &mut self,
+        referrer: &str,
+        specifier: &str,
+    ) -> Result<String, &'static str> {
+        let (referrer_url, normalized_specifier) = normalize_resolution_input(referrer, specifier)?;
+        let resolution_key = (referrer_url.to_string(), normalized_specifier.clone());
+        if let Some(resolved) = self.resolved.get(&resolution_key) {
+            return Ok(resolved.clone());
+        }
+        let resolved = self.resolve_normalized(&referrer_url, specifier, &normalized_specifier)?;
+        if self.resolved.len() >= MAX_IMPORT_MAP_RESOLUTIONS {
+            return Err("resolved module specifier set exceeds its entry limit");
+        }
+        self.resolved.insert(resolution_key, resolved.clone());
+        Ok(resolved)
+    }
+
+    fn resolve_normalized(
+        &self,
+        referrer_url: &Url,
+        original_specifier: &str,
+        normalized_specifier: &str,
+    ) -> Result<String, &'static str> {
         let serialized_referrer = referrer_url.as_str();
+
         let mut applicable_scopes = self
             .scopes
             .iter()
@@ -263,14 +304,16 @@ impl NativeModuleImportMap {
             right.len().cmp(&left.len()).then_with(|| left.cmp(right))
         });
         for (_, scope_imports) in applicable_scopes {
-            if let Some(target) = resolve_imports(scope_imports, &normalized_specifier)? {
+            if let Some(target) = resolve_imports(scope_imports, normalized_specifier)? {
                 return Ok(target.to_string());
             }
         }
 
-        let target = match resolve_imports(&self.imports, &normalized_specifier)? {
+        let target = match resolve_imports(&self.imports, normalized_specifier)? {
             Some(target) => target,
-            None if is_url_like(specifier) => resolve_url(&referrer_url, specifier)?,
+            None if is_url_like(original_specifier) => {
+                resolve_url(referrer_url, original_specifier)?
+            }
             None => return Err("bare module specifiers require an import map"),
         };
         if !target.username().is_empty() || target.password().is_some() {
@@ -281,11 +324,48 @@ impl NativeModuleImportMap {
         Ok(target.to_string())
     }
 
+    fn mapping_conflicts_with_resolved(&self, scope: Option<&str>, map_key: &str) -> bool {
+        self.resolved.iter().any(|((referrer, specifier), _)| {
+            scope.is_none_or(|scope| scope_matches(scope, referrer))
+                && mapping_key_affects_specifier(map_key, specifier)
+        })
+    }
+
     fn entry_count(&self) -> usize {
         self.imports.len()
             + self.scopes.values().map(BTreeMap::len).sum::<usize>()
             + self.integrity.len()
     }
+}
+
+fn normalize_resolution_input(
+    referrer: &str,
+    specifier: &str,
+) -> Result<(Url, String), &'static str> {
+    let mut referrer_url = Url::parse(referrer).map_err(|_| "module referrer URL is invalid")?;
+    referrer_url.set_fragment(None);
+    let normalized_specifier = if is_url_like(specifier) {
+        resolve_url(&referrer_url, specifier)?.to_string()
+    } else {
+        specifier.to_owned()
+    };
+    Ok((referrer_url, normalized_specifier))
+}
+
+fn mapping_key_affects_specifier(map_key: &str, specifier: &str) -> bool {
+    if map_key == specifier {
+        return true;
+    }
+    if !map_key.ends_with('/') || !specifier.starts_with(map_key) {
+        return false;
+    }
+    let Ok(specifier_url) = Url::parse(specifier) else {
+        return true;
+    };
+    matches!(
+        specifier_url.scheme(),
+        "file" | "ftp" | "http" | "https" | "ws" | "wss"
+    )
 }
 
 fn parse_integrity_map(
@@ -458,7 +538,10 @@ fn resolve_url(base: &Url, value: &str) -> Result<Url, &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_IMPORT_MAP_ENTRIES, MAX_IMPORT_MAP_INTEGRITY_BYTES, NativeModuleImportMap};
+    use super::{
+        MAX_IMPORT_MAP_ENTRIES, MAX_IMPORT_MAP_INTEGRITY_BYTES, MAX_IMPORT_MAP_RESOLUTIONS,
+        NativeModuleImportMap,
+    };
 
     const BASE: &str = "https://example.test/app/index.html";
 
@@ -600,6 +683,107 @@ mod tests {
             map.resolve("https://example.test/new/main.js", "pkg")
                 .unwrap(),
             "https://example.test/new.js"
+        );
+    }
+
+    #[test]
+    fn resolved_module_specifiers_lock_affected_global_and_scoped_rules_only() {
+        let mut map = NativeModuleImportMap::parse(
+            r#"{"imports":{"pkg/":"/v1/"},"scopes":{"/scoped/":{"scope/":"/scope-v1/"}}}"#,
+            BASE,
+        )
+        .expect("initial import map");
+        let global_referrer = "https://example.test/app/main.js";
+        let scoped_referrer = "https://example.test/scoped/main.js";
+
+        assert_eq!(
+            map.resolve_and_record(global_referrer, "pkg/item.js")
+                .unwrap(),
+            "https://example.test/v1/item.js"
+        );
+        assert_eq!(
+            map.resolve_and_record(scoped_referrer, "scope/item.js")
+                .unwrap(),
+            "https://example.test/scope-v1/item.js"
+        );
+        map.merge(
+            NativeModuleImportMap::parse(
+                r#"{"imports":{"pkg/item.js":"/v2/item.js","later":"/later.js"},"scopes":{"/scoped/":{"scope/item.js":"/scope-v2/item.js","scope/new.js":"/scope-new.js"},"/other/":{"scope/item.js":"/other-scope.js"}}}"#,
+                BASE,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            map.resolve_and_record(global_referrer, "pkg/item.js")
+                .unwrap(),
+            "https://example.test/v1/item.js"
+        );
+        assert_eq!(
+            map.resolve(global_referrer, "later").unwrap(),
+            "https://example.test/later.js"
+        );
+        assert_eq!(
+            map.resolve(scoped_referrer, "scope/item.js").unwrap(),
+            "https://example.test/scope-v1/item.js"
+        );
+        assert_eq!(
+            map.resolve(scoped_referrer, "scope/new.js").unwrap(),
+            "https://example.test/scope-new.js"
+        );
+        assert_eq!(
+            map.resolve("https://example.test/other/main.js", "scope/item.js")
+                .unwrap(),
+            "https://example.test/other-scope.js"
+        );
+    }
+
+    #[test]
+    fn later_url_prefix_rules_cannot_rewrite_a_resolved_module_specifier() {
+        let mut map = NativeModuleImportMap::default();
+        let referrer = "https://example.test/app/main.js";
+        assert_eq!(
+            map.resolve_and_record(referrer, "./assets/module.js?variant=one")
+                .unwrap(),
+            "https://example.test/app/assets/module.js?variant=one"
+        );
+
+        map.merge(
+            NativeModuleImportMap::parse(
+                r#"{"imports":{"./assets/":"/replacement/","later":"/later.js"}}"#,
+                BASE,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            map.resolve(referrer, "./assets/module.js?variant=one")
+                .unwrap(),
+            "https://example.test/app/assets/module.js?variant=one"
+        );
+        assert_eq!(
+            map.resolve(referrer, "later").unwrap(),
+            "https://example.test/later.js"
+        );
+    }
+
+    #[test]
+    fn resolved_module_specifier_records_fail_closed_at_their_bound() {
+        let mut map = NativeModuleImportMap::default();
+        for index in 0..MAX_IMPORT_MAP_RESOLUTIONS {
+            map.resolve_and_record(
+                "https://example.test/app/main.js",
+                &format!("./module-{index}.js"),
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            map.resolve_and_record("https://example.test/app/main.js", "./module-overflow.js")
+                .unwrap_err(),
+            "resolved module specifier set exceeds its entry limit"
         );
     }
 

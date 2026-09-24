@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-706`.
+The latest locally completed parser/script slice is `native-engine-browser-707`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -21,12 +21,16 @@ JSON key order: later normalized collisions replace earlier entries within one
 map, while map merges preserve older entries. Exact and prefix mappings,
 most-specific nested scope selection, less-specific/global fallback, nested
 literal-dynamic imports, and the two-origin SRI/CORS integration pass locally.
-Dynamic map registration, worker/file-origin coverage, resolved-specifier
-locking, module fragment identity, and full module scheduling remain separate
-Core Web Profile gates. The locked target check and four documentation gates
-passed locally; remote CI was not run. See
+Slice `native-engine-browser-707` completes source-order map processing and
+resolved-specifier locks, bounded at 1,024 successful resolutions and shared
+with QuickJS. The locked check, 14 resolver/module unit tests, 11
+process-backed module tests, formatting, and four documentation gates passed
+locally; remote CI was not run. Computed dynamic imports, dynamically inserted
+map registration, worker/file-origin coverage, module fragment identity, and
+full module scheduling remain separate Core Web Profile gates. See
 `tasks/native-engine-browser-704.md` and `tasks/native-engine-browser-705.md`.
-See `tasks/native-engine-browser-706.md` for the latest verification record.
+See `tasks/native-engine-browser-706.md` and
+`tasks/native-engine-browser-707.md` for the latest completed verification.
 Recover verifiable scope and test evidence for slices 650–671 from authoritative
 commits; do not infer passing checks from summary prose. Keep the issue body and
 this record explicit about local versus remote evidence.

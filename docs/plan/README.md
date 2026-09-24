@@ -27,12 +27,13 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-706`; issue #40
+expansion is complete locally through `native-engine-browser-707`; issue #40
 remains open. Slices 704–705 connect bounded inline `imports` and referrer
 `scopes` maps to module prefetch and QuickJS resolution. Slice 706 adds
-URL-keyed import-map integrity enforcement and module CORS defaults. Dynamic
-map registration, resolved-specifier locking, worker/file-origin propagation,
-module fragment identity, and full module timing remain open. Slice 703 separates
+URL-keyed import-map integrity enforcement and module CORS defaults. Slice 707
+adds parser-order map processing and bounded resolved-specifier locking.
+Dynamic map registration, worker/file-origin propagation, module fragment
+identity, and full module timing remain open. Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type
 essences are matched case-insensitively without parameters on script elements;
@@ -315,6 +316,18 @@ guides/19 contracts, 15 shortcut keys/63 markers, 346 MCP tools, 17 examples,
 and 22 public modules. Remote CI was not run. Dynamic map registration, worker
 propagation, resolved-specifier locking, module fragment identity, and
 complete parser/module scheduling remain open.
+
+[`native-engine-browser-707`](tasks/native-engine-browser-707.md) is complete
+locally. Parser-discovered maps are merged around module roots in document
+order; up to 1,024 successful normalized resolutions are locked across later
+global or matching-scope maps and the same records are installed for QuickJS.
+Fourteen resolver/module unit tests and 11 process-backed module tests passed,
+including observed request paths and evaluated values for a later conflicting
+exact entry plus an unrelated accepted mapping. Formatting and all four local
+documentation gates passed across 1,335 files; remote CI was not run. Computed
+dynamic imports, dynamically inserted map registration, worker maps,
+fragment-distinct module identity, and full module scheduling remain separate
+gates.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

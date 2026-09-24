@@ -20075,6 +20075,97 @@ async fn native_content_process_resolves_module_graphs_through_inline_import_map
 }
 
 #[tokio::test]
+async fn native_content_process_locks_module_resolutions_between_parser_import_maps() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let mut requests = Vec::new();
+            for _ in 0..6 {
+                let (mut stream, _) = listener
+                    .accept()
+                    .await
+                    .expect("ordered import-map fixture listener remains available");
+                let request = read_http_request(&mut stream).await;
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("HTTP request includes a path")
+                    .to_owned();
+                let (content_type, body) = match path.as_str() {
+                    "/page" => (
+                        "text/html",
+                        "<script>globalThis.orderedValues = []; globalThis.addEventListener('error', event => globalThis.orderedValues.push(String(event.message)), true);</script><script type='importmap'>{\"imports\":{\"pkg/\":\"/v1/\"}}</script><script type='module' src='/early.js'></script><script type='importmap'>{\"imports\":{\"pkg/item.js\":\"/v2/item.js\",\"later\":\"/later.js\"}}</script><script type='module' src='/late.js'></script>",
+                    ),
+                    "/early.js" => (
+                        "application/javascript",
+                        "import { value } from 'pkg/item.js'; globalThis.earlyValue = value;",
+                    ),
+                    "/late.js" => (
+                        "application/javascript",
+                        "import { value } from 'pkg/item.js'; import { later } from 'later'; globalThis.lateValues = value + '-' + later;",
+                    ),
+                    "/v1/item.js" => (
+                        "application/javascript",
+                        "export const value = 'v1';",
+                    ),
+                    "/later.js" => (
+                        "application/javascript",
+                        "export const later = 'unrelated';",
+                    ),
+                    _ => panic!("unexpected ordered import-map request {path}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push(path);
+            }
+            requests
+        })
+        .await
+        .expect("the ordered import-map fixture stays within its time bound")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let early_value = engine
+        .evaluate_async("globalThis.earlyValue")
+        .await
+        .unwrap();
+    let late_values = engine
+        .evaluate_async("globalThis.lateValues")
+        .await
+        .unwrap();
+    let module_errors = engine
+        .evaluate_async("globalThis.orderedValues")
+        .await
+        .unwrap();
+    engine.close_async().await.unwrap();
+
+    let requests = server.await.unwrap();
+    assert_eq!(
+        requests,
+        [
+            "/page",
+            "/early.js",
+            "/v1/item.js",
+            "/late.js",
+            "/v1/item.js",
+            "/later.js",
+        ]
+    );
+    assert_eq!(early_value, serde_json::json!("v1"));
+    assert_eq!(late_values, serde_json::json!("v1-unrelated"));
+    assert_eq!(module_errors, serde_json::json!([]));
+}
+
+#[tokio::test]
 async fn native_content_process_enforces_import_map_integrity_before_module_execution() {
     let _guard = native_content_process_test_lock().lock().await;
     let document_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

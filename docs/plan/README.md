@@ -27,10 +27,13 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-700`; issue #40
-remains open. Slice 700 follows the completed `native-engine-browser-699`
-checkpoint. Connected insertion of dynamically created classic inline scripts
-now executes once and returns normally through append/insert operations.
+expansion is complete locally through `native-engine-browser-701`; issue #40
+remains open. Slice 701 follows the completed `native-engine-browser-700`
+checkpoint. Connected dynamic inline classic scripts now recognize the same
+five JavaScript MIME types as the external-script response policy, ignoring
+case and parameters; unsupported data types do not execute. Slice 700 fixed
+connected insertion and execute-once behavior.
+
 Script fragment contexts recognize appropriate end tags across Script Data,
 escaped, and double-escaped states across the covered parser routes.
 The earlier expansion chain includes completed
@@ -244,6 +247,13 @@ already-started script does not rerun it. The focused regression covers Rust
 command commit. Bounded process-backed dynamic external/module loading remains
 as implemented in slices 279–281; full parser/task timing, async/defer
 semantics, general script conformance, and remote CI remain open.
+
+[`native-engine-browser-701`](tasks/native-engine-browser-701.md) is complete
+locally. Dynamically inserted inline classic scripts accept the five
+JavaScript MIME types recognized by the existing external-script response
+policy, with case-insensitive MIME essence matching and parameters ignored.
+`application/json` remains inert. Full script/task scheduling and general
+conformance remain open; remote CI was not run.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

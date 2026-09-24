@@ -1275,8 +1275,8 @@ struct NativeWorkerClassicScriptGraph {
 
 #[derive(Clone, Copy)]
 enum NativeWorkerClassicDynamicImportMode {
-    Preserve,
     RewritePerScript,
+    RejectPerScript,
 }
 
 #[derive(Debug, Clone)]
@@ -1812,7 +1812,13 @@ impl NativeWorkerRegistry {
             dynamic_import_referrers,
         ) = if is_module {
             let graph = self
-                .load_worker_module_graph(loader, owner_url, module_request_url, resource.clone())
+                .load_worker_module_graph(
+                    loader,
+                    owner_url,
+                    module_request_url,
+                    resource.clone(),
+                    true,
+                )
                 .await?;
             (
                 resource.body.clone(),
@@ -2006,7 +2012,13 @@ impl NativeWorkerRegistry {
             dynamic_import_referrers,
         ) = if is_module {
             let graph = self
-                .load_worker_module_graph(loader, owner_url, module_request_url, resource.clone())
+                .load_worker_module_graph(
+                    loader,
+                    owner_url,
+                    module_request_url,
+                    resource.clone(),
+                    true,
+                )
                 .await?;
             (
                 resource.body.clone(),
@@ -3534,7 +3546,7 @@ impl NativeWorkerRegistry {
                 reason: "dynamic Worker module was blocked or unavailable".into(),
             })?;
         let graph = self
-            .load_worker_module_graph(loader, worker_url, target.clone(), resource)
+            .load_worker_module_graph(loader, worker_url, target.clone(), resource, true)
             .await?;
         let new_sources = graph
             .sources
@@ -3712,7 +3724,6 @@ impl NativeWorkerRegistry {
             }
             let frame = stack.pop().expect("worker script stack was non-empty");
             let script_source = match dynamic_import_mode {
-                NativeWorkerClassicDynamicImportMode::Preserve => frame.resource.body,
                 NativeWorkerClassicDynamicImportMode::RewritePerScript => {
                     let referrer = serde_json::to_string(&frame.resource.url).map_err(|_| {
                         NativeEngineError::Worker {
@@ -3747,6 +3758,19 @@ impl NativeWorkerRegistry {
                     }
                     source
                 }
+                NativeWorkerClassicDynamicImportMode::RejectPerScript => {
+                    let (source, rewritten_calls) =
+                        rewrite_dynamic_imports_as_rejected_with_count(&frame.resource.body)?;
+                    runtime_import_calls = runtime_import_calls.saturating_add(rewritten_calls);
+                    if runtime_import_calls > MAX_NATIVE_MODULE_IMPORTS {
+                        return Err(NativeEngineError::limit(
+                            "native service worker dynamic imports",
+                            MAX_NATIVE_MODULE_IMPORTS,
+                            runtime_import_calls,
+                        ));
+                    }
+                    source
+                }
             };
             let next_length = combined_source
                 .len()
@@ -3775,6 +3799,7 @@ impl NativeWorkerRegistry {
         owner_url: &str,
         root_request_url: String,
         root: NativeScriptResource,
+        include_dynamic_imports: bool,
     ) -> Result<NativeWorkerModuleGraph, NativeEngineError> {
         if root.body.is_empty() {
             return Err(NativeEngineError::invalid(
@@ -3791,7 +3816,9 @@ impl NativeWorkerRegistry {
         let mut import_edges = 0usize;
         while let Some((_, module_base_url, module_source)) = pending.pop_front() {
             let mut specifiers = static_module_specifiers(&module_source)?;
-            specifiers.extend(literal_dynamic_module_specifiers(&module_source));
+            if include_dynamic_imports {
+                specifiers.extend(literal_dynamic_module_specifiers(&module_source));
+            }
             for specifier in specifiers {
                 import_edges = import_edges.saturating_add(1);
                 if import_edges > MAX_NATIVE_MODULE_IMPORTS {
@@ -3870,7 +3897,7 @@ pub(crate) async fn load_service_worker_source(
     let registry = NativeWorkerRegistry::new();
     if is_module {
         let module_graph = registry
-            .load_worker_module_graph(loader, owner_url, root_request_url, resource.clone())
+            .load_worker_module_graph(loader, owner_url, root_request_url, resource.clone(), false)
             .await?;
         Ok((resource.body, BTreeMap::new(), Some(module_graph)))
     } else {
@@ -3878,7 +3905,7 @@ pub(crate) async fn load_service_worker_source(
             .load_worker_script_graph(
                 loader,
                 resource,
-                NativeWorkerClassicDynamicImportMode::Preserve,
+                NativeWorkerClassicDynamicImportMode::RejectPerScript,
             )
             .await?;
         Ok((graph.source, graph.import_script_counts, None))
@@ -7194,10 +7221,17 @@ impl Resolver for NativeModuleResolver {
     }
 }
 
+#[derive(Clone, Copy)]
+enum NativeModuleDynamicImportMode {
+    Preserve,
+    Resolve,
+    Reject,
+}
+
 struct NativeModuleLoader {
     sources: Arc<Mutex<BTreeMap<String, String>>>,
     module_base_urls: Arc<Mutex<BTreeMap<String, String>>>,
-    dynamic_imports_enabled: Arc<Mutex<bool>>,
+    dynamic_import_mode: Arc<Mutex<NativeModuleDynamicImportMode>>,
 }
 
 impl Loader for NativeModuleLoader {
@@ -7213,26 +7247,33 @@ impl Loader for NativeModuleLoader {
             .ok()
             .and_then(|sources| sources.get(name).cloned())
             .ok_or_else(|| Error::new_loading_message(name, "module was not prefetched"))?;
-        let dynamic_imports_enabled = *self
-            .dynamic_imports_enabled
+        let dynamic_import_mode = *self
+            .dynamic_import_mode
             .lock()
             .map_err(|_| Error::new_loading_message(name, "module loader state is unavailable"))?;
-        let source = if dynamic_imports_enabled {
-            let module_base_url = self
-                .module_base_urls
-                .lock()
-                .map_err(|_| Error::new_loading_message(name, "module base URLs are unavailable"))?
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| name.to_owned());
-            let module_referrer = serde_json::to_string(&module_base_url).map_err(|_| {
-                Error::new_loading_message(name, "module base URL could not be encoded")
-            })?;
-            rewrite_runtime_dynamic_module_imports(&source, &module_referrer).map_err(|_| {
+        let source = match dynamic_import_mode {
+            NativeModuleDynamicImportMode::Preserve => source,
+            NativeModuleDynamicImportMode::Resolve => {
+                let module_base_url = self
+                    .module_base_urls
+                    .lock()
+                    .map_err(|_| {
+                        Error::new_loading_message(name, "module base URLs are unavailable")
+                    })?
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.to_owned());
+                let module_referrer = serde_json::to_string(&module_base_url).map_err(|_| {
+                    Error::new_loading_message(name, "module base URL could not be encoded")
+                })?;
+                rewrite_runtime_dynamic_module_imports(&source, &module_referrer).map_err(|_| {
+                    Error::new_loading_message(name, "transformed module exceeds its size limit")
+                })?
+            }
+            NativeModuleDynamicImportMode::Reject => rewrite_dynamic_imports_as_rejected(&source)
+                .map_err(|_| {
                 Error::new_loading_message(name, "transformed module exceeds its size limit")
-            })?
-        } else {
-            source
+            })?,
         };
         Module::declare(ctx.clone(), name, source)
     }
@@ -11697,7 +11738,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     module_base_urls: Arc<Mutex<BTreeMap<String, String>>>,
     module_import_map: Arc<Mutex<NativeModuleImportMap>>,
     dynamic_module_aliases: Arc<Mutex<BTreeMap<String, String>>>,
-    dynamic_imports_enabled: Arc<Mutex<bool>>,
+    dynamic_import_mode: Arc<Mutex<NativeModuleDynamicImportMode>>,
     dynamic_import_referrers: Arc<Mutex<BTreeSet<String>>>,
     sync_xhr_loader: Arc<Mutex<Option<NativeResourceLoader>>>,
     sync_xhr_loader_used: Arc<AtomicBool>,
@@ -11784,7 +11825,7 @@ impl NativeJavaScriptRuntime {
         let module_base_urls = Arc::new(Mutex::new(BTreeMap::new()));
         let module_import_map = Arc::new(Mutex::new(NativeModuleImportMap::default()));
         let dynamic_module_aliases = Arc::new(Mutex::new(BTreeMap::new()));
-        let dynamic_imports_enabled = Arc::new(Mutex::new(false));
+        let dynamic_import_mode = Arc::new(Mutex::new(NativeModuleDynamicImportMode::Preserve));
         runtime.set_loader(
             NativeModuleResolver {
                 import_map: Arc::clone(&module_import_map),
@@ -11794,7 +11835,7 @@ impl NativeJavaScriptRuntime {
             NativeModuleLoader {
                 sources: Arc::clone(&module_sources),
                 module_base_urls: Arc::clone(&module_base_urls),
-                dynamic_imports_enabled: Arc::clone(&dynamic_imports_enabled),
+                dynamic_import_mode: Arc::clone(&dynamic_import_mode),
             },
         );
         runtime.set_memory_limit(NATIVE_SCRIPT_MEMORY_BYTES);
@@ -11859,7 +11900,7 @@ impl NativeJavaScriptRuntime {
             module_base_urls,
             module_import_map,
             dynamic_module_aliases,
-            dynamic_imports_enabled,
+            dynamic_import_mode,
             dynamic_import_referrers: Arc::new(Mutex::new(BTreeSet::new())),
             sync_xhr_loader: Arc::new(Mutex::new(None)),
             sync_xhr_loader_used: Arc::new(AtomicBool::new(false)),
@@ -13752,15 +13793,26 @@ impl NativeJavaScriptRuntime {
         Ok(())
     }
 
-    fn set_dynamic_module_imports_enabled(&self, enabled: bool) -> Result<(), NativeEngineError> {
+    fn set_dynamic_module_import_mode(
+        &self,
+        mode: NativeModuleDynamicImportMode,
+    ) -> Result<(), NativeEngineError> {
         *self
-            .dynamic_imports_enabled
+            .dynamic_import_mode
             .lock()
             .map_err(|_| NativeEngineError::Worker {
                 operation: "configure native dynamic module imports".into(),
                 reason: "native module loader configuration is unavailable".into(),
-            })? = enabled;
+            })? = mode;
         Ok(())
+    }
+
+    fn set_dynamic_module_imports_enabled(&self, enabled: bool) -> Result<(), NativeEngineError> {
+        self.set_dynamic_module_import_mode(if enabled {
+            NativeModuleDynamicImportMode::Resolve
+        } else {
+            NativeModuleDynamicImportMode::Preserve
+        })
     }
 
     pub(crate) fn register_dynamic_import_referrer(
@@ -14893,6 +14945,8 @@ impl NativeJavaScriptRuntime {
         source: &str,
         import_script_counts: &BTreeMap<String, usize>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.set_dynamic_module_import_mode(NativeModuleDynamicImportMode::Reject)?;
+        let source = rewrite_dynamic_imports_as_rejected(source)?;
         let bootstrap = service_worker_bootstrap(
             worker_id,
             worker_url,
@@ -14904,7 +14958,7 @@ impl NativeJavaScriptRuntime {
             worker_id,
             worker_url,
             module_name,
-            source,
+            &source,
             bootstrap,
             true,
             false,
@@ -18452,6 +18506,13 @@ fn rewrite_runtime_dynamic_module_imports_with_count(
 ) -> Result<(String, usize), NativeEngineError> {
     let bytes = source.as_bytes();
     let sites = javascript_dynamic_import_call_sites(bytes);
+    if sites.len() > MAX_NATIVE_MODULE_IMPORTS {
+        return Err(NativeEngineError::limit(
+            "native runtime dynamic imports per script",
+            MAX_NATIVE_MODULE_IMPORTS,
+            sites.len(),
+        ));
+    }
     let mut output = String::with_capacity(source.len());
     let mut copied_until = 0;
     let mut rewritten_import_calls = 0usize;
@@ -18486,12 +18547,51 @@ fn rewrite_runtime_dynamic_module_imports_with_count(
     Ok((output, rewritten_import_calls))
 }
 
+fn rewrite_dynamic_imports_as_rejected(source: &str) -> Result<String, NativeEngineError> {
+    rewrite_dynamic_imports_as_rejected_with_count(source).map(|(rewritten, _)| rewritten)
+}
+
+fn rewrite_dynamic_imports_as_rejected_with_count(
+    source: &str,
+) -> Result<(String, usize), NativeEngineError> {
+    let bytes = source.as_bytes();
+    let sites = javascript_dynamic_import_call_sites(bytes);
+    if sites.len() > MAX_NATIVE_MODULE_IMPORTS {
+        return Err(NativeEngineError::limit(
+            "native service worker dynamic imports per script",
+            MAX_NATIVE_MODULE_IMPORTS,
+            sites.len(),
+        ));
+    }
+    let mut output = String::with_capacity(source.len());
+    let mut copied_until = 0;
+    let mut rewritten_import_calls = 0usize;
+    for (start, open, close) in sites {
+        if skip_javascript_space_and_comments(bytes, open + 1) == close {
+            continue;
+        }
+        output.push_str(&source[copied_until..start]);
+        output.push_str("globalThis.__glassRejectDynamicImport(");
+        copied_until = open + 1;
+        rewritten_import_calls = rewritten_import_calls.saturating_add(1);
+    }
+    output.push_str(&source[copied_until..]);
+    if output.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "transformed Service Worker JavaScript source",
+            MAX_NATIVE_SCRIPT_BYTES,
+            output.len(),
+        ));
+    }
+    Ok((output, rewritten_import_calls))
+}
+
 fn javascript_dynamic_import_call_sites(bytes: &[u8]) -> Vec<(usize, usize, usize)> {
     fn collect(bytes: &[u8], start: usize, end: usize, sites: &mut Vec<(usize, usize, usize)>) {
         let mut index = start;
         let mut previous_is_member_access = false;
         let mut previous_can_end_expression = false;
-        while index < end && sites.len() < MAX_NATIVE_MODULE_IMPORTS {
+        while index < end && sites.len() <= MAX_NATIVE_MODULE_IMPORTS {
             index = skip_javascript_space_and_comments(bytes, index);
             if index >= end {
                 break;
@@ -18606,7 +18706,7 @@ fn javascript_dynamic_import_call_sites(bytes: &[u8]) -> Vec<(usize, usize, usiz
     let mut sites = Vec::new();
     collect(bytes, 0, bytes.len(), &mut sites);
     sites.sort_unstable_by_key(|(start, _, _)| *start);
-    sites.truncate(MAX_NATIVE_MODULE_IMPORTS);
+    sites.truncate(MAX_NATIVE_MODULE_IMPORTS.saturating_add(1));
     sites
 }
 
@@ -18750,7 +18850,7 @@ fn collect_template_dynamic_imports(
     sites: &mut Vec<(usize, usize, usize)>,
 ) -> usize {
     let mut index = start + 1;
-    while index < end {
+    while index < end && sites.len() <= MAX_NATIVE_MODULE_IMPORTS {
         match bytes[index] {
             b'\\' => index = index.saturating_add(2),
             b'`' => return index + 1,
@@ -18869,7 +18969,10 @@ fn javascript_dynamic_import_call_sites_in_range(
         *open += start;
         *close += start;
     }
-    sites.extend(local);
+    let remaining = MAX_NATIVE_MODULE_IMPORTS
+        .saturating_add(1)
+        .saturating_sub(sites.len());
+    sites.extend(local.into_iter().take(remaining));
 }
 
 fn read_static_string_expression(
@@ -18909,7 +19012,11 @@ fn read_static_string_primary(bytes: &[u8], index: usize, depth: usize) -> Optio
 
 #[cfg(test)]
 mod native_static_dynamic_import_tests {
-    use super::{literal_dynamic_module_specifiers, rewrite_runtime_dynamic_module_imports};
+    use super::{
+        MAX_NATIVE_MODULE_IMPORTS, literal_dynamic_module_specifiers,
+        rewrite_dynamic_imports_as_rejected, rewrite_dynamic_imports_as_rejected_with_count,
+        rewrite_runtime_dynamic_module_imports,
+    };
 
     #[test]
     fn dynamic_import_prefetch_folds_quoted_string_concatenation() {
@@ -18950,6 +19057,33 @@ mod native_static_dynamic_import_tests {
         "#;
 
         assert!(literal_dynamic_module_specifiers(source).is_empty());
+    }
+
+    #[test]
+    fn service_worker_dynamic_import_rewrite_rejects_literal_and_computed_calls() {
+        let source = r#"
+            import('./literal.js');
+            import(runtimeSpecifier);
+            import.meta.url;
+            worker.import(runtimeSpecifier);
+            const text = "import('./string.js')";
+        "#;
+
+        let (rewritten, calls) = rewrite_dynamic_imports_as_rejected_with_count(source).unwrap();
+
+        assert_eq!(calls, 2);
+        assert!(rewritten.contains("globalThis.__glassRejectDynamicImport('./literal.js')"));
+        assert!(rewritten.contains("globalThis.__glassRejectDynamicImport(runtimeSpecifier)"));
+        assert!(rewritten.contains("import.meta.url"));
+        assert!(rewritten.contains("worker.import(runtimeSpecifier)"));
+        assert!(rewritten.contains("import('./string.js')"));
+    }
+
+    #[test]
+    fn service_worker_dynamic_import_rewrite_enforces_script_call_limit() {
+        let source = "import(runtimeSpecifier);".repeat(MAX_NATIVE_MODULE_IMPORTS + 1);
+
+        assert!(rewrite_dynamic_imports_as_rejected(&source).is_err());
     }
 
     #[test]
@@ -30671,6 +30805,27 @@ fn native_xml_document_script() -> String {
 }
 
 const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
+  const rejectServiceWorkerDynamicImport = ((PromiseConstructor, promiseReject, apply, StringConstructor, TypeErrorConstructor) =>
+    (specifier, _options) => {
+      try {
+        if (typeof specifier === "symbol")
+          throw new TypeErrorConstructor("dynamic import URL values cannot be Symbols");
+        StringConstructor(specifier);
+      } catch (error) {
+        return apply(promiseReject, PromiseConstructor, [error]);
+      }
+      return apply(promiseReject, PromiseConstructor, [
+        new TypeErrorConstructor("dynamic import is not permitted in Service Workers"),
+      ]);
+    })(Promise, Promise.reject, Reflect.apply, String, TypeError);
+  if (globalThis.__glassRejectDynamicImport === undefined) {
+    Object.defineProperty(globalThis, "__glassRejectDynamicImport", {
+      value: rejectServiceWorkerDynamicImport,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  }
   globalThis.__glassServiceWorkerClientState = null;
   globalThis.__glassServiceWorkerClients = [];
   globalThis.__glassSetServiceWorkerClients = (clients) => {

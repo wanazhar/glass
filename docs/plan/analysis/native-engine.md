@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-717`. Issue #40
+completed browser expansion slice is `native-engine-browser-719`. Issue #40
 remains open. It follows
 locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
@@ -1060,22 +1060,31 @@ rooted-file parser-sourced import-map initialization, Service Worker
 classic-import settlement, import options/attributes, and complete module
 scheduling remain separate gates. See
 [`slice 717`](../tasks/native-engine-browser-717.md).
-Slice 718 is the active follow-up for parser-sourced import-map registration
-on initial rooted-file navigation. The local path must preserve parser order,
-map-resolution locks, CSP/error behavior, and rooted module loading; no
-implementation or conformance evidence was claimed before this slice's
-verification. The implementation now registers bounded maps in source order,
-uses map-aware rooted module graphs for inline/external roots, and passes inline
-sources through the existing loader policy check. Full file-origin CSP policy
-input remains open. The focused test covers static/nested and
-runtime imports, accepted later mappings, conflict preservation, malformed
-map isolation, and rejection outside the file root. The scoped check and
-focused tests pass locally. Maintainer gates passed across 1,346 Markdown files
-with zero current-claim failures, 93 guides/19 contracts, 15 shortcut keys/63
-markers, and 346 MCP tools (101 browser-only), 17 examples, and 22 public
-modules. Remote CI was not run. Service Worker classic-import settlement,
-import options, and full scheduling remain open.
-See [`slice 718`](../tasks/native-engine-browser-718.md).
+Slice 718 completes parser-sourced import-map registration on initial rooted-
+file navigation. It registers bounded maps in source order, uses map-aware
+rooted module graphs for inline/external roots, and passes inline sources
+through the existing loader policy check. Full file-origin CSP policy input
+remains open. The focused test covers static/nested and runtime imports,
+accepted later mappings, conflict preservation, malformed-map isolation, and
+rejection outside the file root. The scoped check and focused tests pass
+locally. Maintainer gates passed across 1,346 Markdown files with zero
+current-claim failures, 93 guides/19 contracts, 15 shortcut keys/63 markers,
+and 346 MCP tools (101 browser-only), 17 examples, and 22 public modules.
+At the slice 718 checkpoint, remote CI was not run and Service Worker
+dynamic-import rejection, import options, and full scheduling remained open.
+See
+[`slice 718`](../tasks/native-engine-browser-718.md).
+
+Slice 719 implements the Service Worker-specific result required by the HTML
+Standard's `HostLoadImportedModule` algorithm: dynamic imports in classic
+entry/`importScripts()` sources and module entry/static dependencies reject
+with `TypeError` without fetching or prefetching dynamic targets. Static
+`importScripts()` and static module dependencies remain available. Its
+process-backed regression verifies argument evaluation, static imports,
+already-in-graph and uncached dynamic targets, and the exact request set.
+Focused tests and documentation gates passed locally; remote CI was not run.
+See
+[`slice 719`](../tasks/native-engine-browser-719.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

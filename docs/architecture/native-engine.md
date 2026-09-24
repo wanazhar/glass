@@ -894,10 +894,16 @@ policy check, and inline/external module graphs use the existing map-aware
 rooted-file loader. Full file-origin CSP policy input remains open. A local
 regression covers mapped static/nested
 and runtime imports, conflicting and later maps, malformed-map isolation, and
-out-of-root rejection; the scoped check and focused tests pass locally. Service
-Worker classic-import settlement, import options/attributes, complete module
+out-of-root rejection; the scoped check and focused tests pass locally. Slice
+719 now enforces the Service Worker rule from the HTML Standard: dynamic
+imports in classic entry/`importScripts()` sources and module entry/static
+dependencies reject with `TypeError`, preserve argument evaluation, and do not
+fetch dynamic targets, even when a target is already in the static module
+graph. Its process-backed regression covers both Service Worker kinds and the
+exact network request set. Import options/attributes, complete module
 scheduling, and broader file-origin propagation remain open. See
-[`slice 718`](../plan/tasks/native-engine-browser-718.md).
+[`slice 718`](../plan/tasks/native-engine-browser-718.md) and
+[`slice 719`](../plan/tasks/native-engine-browser-719.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

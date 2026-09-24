@@ -3269,10 +3269,32 @@ impl NativeWorkerRegistry {
                 "worker id does not match the owning worker",
             ));
         }
-        if destination.is_some() || module_referrer.is_some() {
+        let module_destination = match destination.as_deref() {
+            None | Some("") if module_referrer.is_none() => false,
+            Some("module") if module_referrer.is_some() => true,
+            _ => {
+                return Err(NativeEngineError::invalid(
+                    "native Worker fetch destination",
+                    "module destination requires a referrer; other destinations are unsupported",
+                ));
+            }
+        };
+        if module_destination
+            && (!credentials
+                || method != "GET"
+                || !headers.is_empty()
+                || body.is_some()
+                || body_base64.is_some()
+                || content_type.is_some()
+                || mode.as_deref() != Some("cors")
+                || redirect.as_deref() != Some("follow")
+                || cache.as_deref() != Some("default")
+                || timeout_ms.is_some()
+                || upload_stream_id.is_some())
+        {
             return Err(NativeEngineError::invalid(
-                "native Worker fetch destination",
-                "worker fetch destinations and module referrers are not supported",
+                "native Worker dynamic module request",
+                "must be a credentialed bodyless CORS GET with default cache and follow redirects",
             ));
         }
         if request_id == 0 {
@@ -3346,7 +3368,27 @@ impl NativeWorkerRegistry {
             })?;
             worker.url.clone()
         };
-        let payload = if let Some(upload_stream_id) = upload_stream_id {
+        let payload = if module_destination {
+            let module_referrer = module_referrer.as_deref().unwrap_or_default();
+            match self
+                .load_dynamic_worker_module(
+                    worker_id,
+                    request_id,
+                    &worker_url,
+                    module_referrer,
+                    &href,
+                    loader,
+                )
+                .await
+            {
+                Ok(module_key) => serde_json::json!({
+                    "dynamicModuleImport": {"moduleKey": module_key},
+                }),
+                Err(_) => serde_json::json!({
+                    "dynamicModuleImport": {"error": "Failed to load dynamically imported module"},
+                }),
+            }
+        } else if let Some(upload_stream_id) = upload_stream_id {
             if !self.stream_worker_fetches {
                 worker_fetch_response_payload(Err(NativeEngineError::UnsupportedUrl {
                     reason: "streaming Worker request bodies require the native stream host".into(),
@@ -3412,6 +3454,95 @@ impl NativeWorkerRegistry {
                 },
             )
         })
+    }
+
+    async fn load_dynamic_worker_module(
+        &mut self,
+        worker_id: u32,
+        request_id: u32,
+        worker_url: &str,
+        module_referrer: &str,
+        specifier: &str,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<String, NativeEngineError> {
+        let target = resolve_worker_module_specifier(module_referrer, specifier)?;
+        let existing_sources = {
+            let worker = self.workers.get(&worker_id).ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native Worker dynamic import",
+                    "worker no longer exists",
+                )
+            })?;
+            if !worker
+                .runtime
+                .is_dynamic_import_referrer_allowed(module_referrer)?
+            {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "dynamic module referrer is not an active Worker script".into(),
+                });
+            }
+            let (sources, _) = worker.runtime.module_sources_snapshot()?;
+            if sources.contains_key(&target) {
+                return worker
+                    .runtime
+                    .register_dynamic_module_alias(request_id, &target);
+            }
+            sources
+        };
+
+        let resource = loader
+            .load_worker_async(worker_url, &target, MAX_NATIVE_SCRIPT_BYTES)
+            .await?
+            .ok_or_else(|| NativeEngineError::Network {
+                operation: "native Worker dynamic module import".into(),
+                reason: "dynamic Worker module was blocked or unavailable".into(),
+            })?;
+        let graph = self
+            .load_worker_module_graph(loader, worker_url, target.clone(), resource)
+            .await?;
+        let new_sources = graph
+            .sources
+            .into_iter()
+            .filter(|(name, _)| !existing_sources.contains_key(name))
+            .collect::<BTreeMap<_, _>>();
+        let new_base_urls = graph
+            .base_urls
+            .into_iter()
+            .filter(|(name, _)| new_sources.contains_key(name))
+            .collect::<BTreeMap<_, _>>();
+        let added_bytes = new_sources.values().map(String::len).sum::<usize>();
+        let total_entries = existing_sources.len().saturating_add(new_sources.len());
+        if total_entries > MAX_NATIVE_MODULE_IMPORTS {
+            return Err(NativeEngineError::limit(
+                "native Worker module graph entries",
+                MAX_NATIVE_MODULE_IMPORTS,
+                total_entries,
+            ));
+        }
+        let total_bytes = existing_sources
+            .values()
+            .map(String::len)
+            .sum::<usize>()
+            .saturating_add(added_bytes);
+        let byte_limit = MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS);
+        if total_bytes > byte_limit {
+            return Err(NativeEngineError::limit(
+                "native Worker module graph bytes",
+                byte_limit,
+                total_bytes,
+            ));
+        }
+        let worker = self.workers.get_mut(&worker_id).ok_or_else(|| {
+            NativeEngineError::invalid("native Worker dynamic import", "worker no longer exists")
+        })?;
+        worker
+            .runtime
+            .extend_module_sources(new_sources.clone(), new_base_urls.clone())?;
+        worker.module_sources.extend(new_sources);
+        worker.module_base_urls.extend(new_base_urls);
+        worker
+            .runtime
+            .register_dynamic_module_alias(request_id, &target)
     }
 
     fn queue_error(
@@ -14005,7 +14136,15 @@ impl NativeJavaScriptRuntime {
         source: &str,
         import_script_counts: &BTreeMap<String, usize>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
-        self.evaluate_worker_source(worker_id, worker_url, None, source, import_script_counts)
+        self.set_dynamic_module_imports_enabled(true)?;
+        self.register_dynamic_import_referrer(worker_url)?;
+        let referrer =
+            serde_json::to_string(worker_url).map_err(|_| NativeEngineError::Worker {
+                operation: "prepare Worker dynamic module referrer".into(),
+                reason: "Worker dynamic module referrer could not be encoded".into(),
+            })?;
+        let source = rewrite_runtime_dynamic_module_imports(source, &referrer)?;
+        self.evaluate_worker_source(worker_id, worker_url, None, &source, import_script_counts)
     }
 
     /// Evaluate one module dedicated-worker turn using the prefetched module
@@ -14030,11 +14169,19 @@ impl NativeJavaScriptRuntime {
         let mut module_base_urls = module_base_urls.clone();
         module_base_urls.insert(module_name.to_owned(), module_base_url.to_owned());
         self.set_module_base_urls(module_base_urls);
+        self.set_dynamic_module_imports_enabled(true)?;
+        self.register_dynamic_import_referrer(module_base_url)?;
+        let referrer =
+            serde_json::to_string(module_base_url).map_err(|_| NativeEngineError::Worker {
+                operation: "prepare Worker module referrer".into(),
+                reason: "Worker module referrer could not be encoded".into(),
+            })?;
+        let source = rewrite_runtime_dynamic_module_imports(source, &referrer)?;
         self.evaluate_worker_source(
             worker_id,
             worker_url,
             Some(module_name),
-            source,
+            &source,
             &BTreeMap::new(),
         )
     }
@@ -25822,6 +25969,44 @@ fn worker_bootstrap(
   globalThis.__glassWorkerFetchRequests = workerFetchRequests;
   globalThis.__glassNextWorkerFetchRequestId = nextWorkerFetchRequestId;
   globalThis.fetch = workerFetchNative;
+  globalThis.__glassDynamicImport = (referrer, specifier, options) => {{
+    let normalizedReferrer;
+    let normalizedSpecifier;
+    try {{
+      if (options !== undefined) throw new TypeError("native Worker dynamic import attributes are unsupported");
+      if (typeof referrer === "symbol" || typeof specifier === "symbol")
+        throw new TypeError("dynamic import URL values cannot be Symbols");
+      normalizedReferrer = String(referrer);
+      normalizedSpecifier = String(specifier);
+    }} catch (error) {{ return Promise.reject(error); }}
+    if (!Number.isSafeInteger(nextWorkerFetchRequestId)
+        || nextWorkerFetchRequestId < 1
+        || nextWorkerFetchRequestId > 0xFFFFFFFF) {{
+      return Promise.reject(new RangeError("dynamic import request id limit exceeded"));
+    }}
+    const requestId = nextWorkerFetchRequestId;
+    nextWorkerFetchRequestId += 1;
+    globalThis.__glassNextWorkerFetchRequestId = nextWorkerFetchRequestId;
+    return new Promise((resolve, reject) => {{
+      workerFetchRequests.set(requestId, {{
+        resolve, reject, signal: null, abortListener: null,
+        uploadStreamId: null, dynamicModuleImport: true,
+      }});
+      try {{
+        pushCommand({{
+          kind: "fetch", request_id: requestId, worker_id: workerId,
+          href: normalizedSpecifier, credentials: true,
+          method: "GET", headers: {{}}, body: null, body_base64: null,
+          content_type: null, mode: "cors", redirect: "follow",
+          cache: "default", timeout_ms: null, upload_stream_id: null,
+          destination: "module", module_referrer: normalizedReferrer,
+        }});
+      }} catch (error) {{
+        workerFetchRequests.delete(requestId);
+        reject(error);
+      }}
+    }});
+  }};
   globalThis.__glassResolveWorkerFetch = (requestId, payload) => {{
     const pending = workerFetchRequests.get(Number(requestId));
     if (!pending) return null;
@@ -25832,6 +26017,20 @@ fn worker_bootstrap(
       const uploadGroup = workerFetchUploadGroups.get(pending.uploadStreamId);
       cancelWorkerFetchUploadGroup(uploadGroup, "native Worker fetch request completed");
       workerFetchUploadGroups.delete(pending.uploadStreamId);
+    }}
+    if (pending.dynamicModuleImport) {{
+      const moduleResult = payload && payload.dynamicModuleImport;
+      if (!moduleResult || moduleResult.error) {{
+        pending.reject(new TypeError(String(moduleResult && moduleResult.error
+          || "Failed to load dynamically imported module")));
+      }} else if (typeof moduleResult.moduleKey !== "string") {{
+        pending.reject(new TypeError("Invalid dynamic module response"));
+      }} else {{
+        try {{
+          import(moduleResult.moduleKey).then(pending.resolve, pending.reject);
+        }} catch (error) {{ pending.reject(error); }}
+      }}
+      return null;
     }}
     if (payload && payload.error) {{
       const error = new Error(String(payload.error));

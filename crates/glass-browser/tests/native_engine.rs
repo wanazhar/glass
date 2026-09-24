@@ -20432,7 +20432,7 @@ async fn native_content_process_locks_module_resolutions_between_parser_import_m
     let server = tokio::spawn(async move {
         tokio::time::timeout(Duration::from_secs(30), async {
             let mut requests = Vec::new();
-            for _ in 0..6 {
+            for _ in 0..10 {
                 let (mut stream, _) = listener
                     .accept()
                     .await
@@ -21147,6 +21147,86 @@ async fn native_content_process_preserves_worker_module_identities_and_response_
         "worker modules must keep fragment-distinct records and resolve from the redirected response URL"
     );
     assert_eq!(requests.len(), 6);
+}
+
+#[tokio::test]
+async fn native_content_process_resolves_runtime_worker_module_imports() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let mut requests = Vec::new();
+            for _ in 0..6 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("worker module request includes a URL")
+                    .to_owned();
+                let body = match path.as_str() {
+                    "/page" => "<script>globalThis.workerMessages = []; globalThis.workerErrors = []; const listen = worker => { worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message); }; globalThis.moduleWorker = new Worker('/module-worker.js', { type: 'module' }); listen(moduleWorker); globalThis.classicWorker = new Worker('/classic-worker.js'); listen(classicWorker);</script>",
+                    "/module-worker.js" => "const target = './module-dep.js?request=runtime'; import(target).then(async module => postMessage({ kind: 'module', value: module.value, nested: await module.loadNested() }), error => postMessage({ kind: 'module-error', message: String(error) }));",
+                    "/module-dep.js?request=runtime" => "export const value = 'module-worker'; export async function loadNested() { const nestedTarget = './module-nested.js?query=nested'; return (await import(nestedTarget)).value; }",
+                    "/module-nested.js?query=nested" => "export const value = 'nested-worker-module';",
+                    "/classic-worker.js" => "const target = './classic-dep.js'; import(target).then(module => postMessage({ kind: 'classic', value: module.value }), error => postMessage({ kind: 'classic-error', message: String(error) }));",
+                    "/classic-dep.js" => "export const value = 'classic-worker';",
+                    other => panic!("unexpected worker dynamic-module request: {other}"),
+                };
+                let content_type = if path == "/page" {
+                    "text/html"
+                } else {
+                    "application/javascript"
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push(path);
+            }
+            requests.sort();
+            requests
+        })
+        .await
+        .expect("runtime worker module requests stay within their time bound")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let result = engine
+        .evaluate_async("({ messages: workerMessages.slice().sort((a, b) => String(a.kind).localeCompare(String(b.kind))), errors: workerErrors })")
+        .await
+        .unwrap();
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "messages": [
+                {"kind": "classic", "value": "classic-worker"},
+                {"kind": "module", "value": "module-worker", "nested": "nested-worker-module"},
+            ],
+            "errors": [],
+        }),
+        "computed dynamic imports in dedicated classic/module workers and a nested worker module must evaluate without worker errors"
+    );
+    assert_eq!(
+        requests,
+        vec![
+            "/classic-dep.js",
+            "/classic-worker.js",
+            "/module-dep.js?request=runtime",
+            "/module-nested.js?query=nested",
+            "/module-worker.js",
+            "/page",
+        ]
+    );
 }
 
 #[tokio::test]

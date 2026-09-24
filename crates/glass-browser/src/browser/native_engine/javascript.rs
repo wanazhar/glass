@@ -38868,9 +38868,12 @@ fn document_bootstrap(
     if (Number(node.nodeType) === 1 && String(node.localName || "").toLowerCase() === "script"
         && node.__glassDynamicScriptStarted === false) {{
       node.__glassDynamicScriptStarted = true;
-      const type = String(node.getAttribute("type") || "").trim().toLowerCase();
+      const type = String(node.getAttribute("type") || "")
+        .split(";", 1)[0].trim().toLowerCase();
       const source = String(node.textContent || "");
-      const classic = type === "" || type === "text/javascript" || type === "application/javascript";
+      const classic = type === "" || type === "text/javascript"
+        || type === "application/javascript" || type === "application/ecmascript"
+        || type === "text/ecmascript" || type === "application/x-javascript";
       if (!node.getAttribute("src") && classic && source) {{
         pushCommand({{ kind: "startScript", node_index: node.nodeIndex }});
         if (typeof globalThis.__glassReportOnlyInlineScript === "function") {{

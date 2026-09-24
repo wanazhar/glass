@@ -16425,6 +16425,61 @@ mod tests {
     }
 
     #[test]
+    fn javascript_dynamic_inline_scripts_match_external_script_mime_policy() {
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .expect("dynamic script MIME document must parse");
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("dynamic-script-mime")
+            .expect("native JavaScript runtime must construct");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    globalThis.__dynamicScriptMimeRuns = 0;
+                    const root = document.querySelector("#root");
+                    const types = [
+                        "text/javascript",
+                        "application/javascript",
+                        "application/ecmascript",
+                        "text/ecmascript",
+                        "application/x-javascript",
+                        "APPLICATION/ECMASCRIPT; charset=utf-8",
+                    ];
+                    for (const [index, type] of types.entries()) {
+                        const script = document.createElement("script");
+                        script.id = `accepted-${index}`;
+                        script.setAttribute("type", type);
+                        script.textContent = "globalThis.__dynamicScriptMimeRuns += 1";
+                        root.appendChild(script);
+                    }
+                    const data = document.createElement("script");
+                    data.id = "data-script";
+                    data.type = "application/json";
+                    data.textContent = "globalThis.__dynamicScriptMimeRuns += 100";
+                    root.appendChild(data);
+                    return globalThis.__dynamicScriptMimeRuns;
+                })()"##,
+                &document,
+                "fixture://dynamic-script-mime.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("dynamic inline script MIME policy must evaluate");
+        assert_eq!(evaluation.value, serde_json::json!(6));
+        assert_eq!(
+            evaluation
+                .commands
+                .iter()
+                .filter(|command| matches!(command, NativeScriptCommand::StartScript { .. }))
+                .count(),
+            6,
+            "only supported classic JavaScript MIME types start"
+        );
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("dynamic MIME script DOM commands must commit");
+    }
+
+    #[test]
     fn foreign_content_breakout_start_tag_set_matches_html_rules() {
         let names = [
             "b",

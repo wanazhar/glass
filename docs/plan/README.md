@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-721`; issue #40
+expansion is complete locally through `native-engine-browser-722`; issue #40
 remains open. Slices 709–710 preserve request-URL module identity, including
 query and fragment, separately from the final response URL used as the
 descendant base across page, dedicated/shared worker, and service-worker module
@@ -101,6 +101,19 @@ remote CI was not run. Other module types, broader file-origin propagation,
 and complete module scheduling remain open. See
 [task 720](tasks/native-engine-browser-720.md) and
 [task 721](tasks/native-engine-browser-721.md).
+Slice 722 installs parser-sourced head CSP meta policies before configured-
+root file scripts load. It enforces script-source fallback for inline
+scripts, classic/module roots, static dependencies, and invoked dynamic
+imports. File `'self'` maps to the Document's most-specific admitted root;
+explicit `file:` remains bounded, same-URL navigation replaces meta policy,
+and denied script bytes are rejected before read. The scoped check, focused
+rooted-file behavior, 16/16 CSP unit tests, formatting, whitespace, and
+maintainer documentation gates passed locally. The broader CSP integration
+batch passed 18/19; a report-only network report-URI test also timed out on
+standalone replay and remains a separate issue. Remote CI was not run. Other
+file resource classes, report-only file policy, dynamic meta insertion, and
+complete CSP conformance remain open. See
+[task 722](tasks/native-engine-browser-722.md).
 Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type

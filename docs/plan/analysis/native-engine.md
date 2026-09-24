@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-721`. Issue #40
+completed browser expansion slice is `native-engine-browser-722`. Issue #40
 remains open. It follows
 locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
@@ -1110,6 +1110,18 @@ regressions, and formatting/whitespace checks passed locally. Remote CI was
 not run; other module types, broader file-origin propagation, and complete
 module scheduling remain open. See
 [`slice 721`](../tasks/native-engine-browser-721.md).
+
+Slice 722 installs head-parsed CSP meta policies for configured-root file
+Documents before local resources load. It enforces script-source fallback for
+inline classic/module scripts, external roots, static dependencies, and invoked
+dynamic imports; binds file `'self'` to the Document's most-specific admitted
+root; and rejects disallowed files before reading their bytes. The focused
+rooted-file test passed, as did 16/16 CSP unit tests and 18/19 CSP integration
+tests. One report-only network report-URI test timed out both in the batch and
+on an exact standalone replay; it is outside this script-enforcement slice.
+The scoped package check and maintainer documentation gates passed locally;
+remote CI was not run. Full file-origin/CSP coverage remains open. See
+[`slice 722`](../tasks/native-engine-browser-722.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

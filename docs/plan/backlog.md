@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-721`.
+The latest locally completed parser/script slice is `native-engine-browser-722`.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
 shared, and service-worker module graphs. See the task records for scope and
@@ -56,6 +56,26 @@ fetch-free. The scoped target check, seven unit tests, six process-backed
 regressions, formatting, and whitespace checks passed locally; remote CI was
 not run. Other module types, broader file-origin propagation, and full module
 scheduling remain open. See `tasks/native-engine-browser-721.md`.
+Slice 722 installs parser-sourced head CSP meta policies before rooted-file
+Document scripts load. Inline scripts, classic/module roots, static
+dependencies, and invoked dynamic imports obey script-src-elem/script-src/
+default-src fallback. File `'self'` is scoped to the most-specific admitted
+root, explicit `file:` sources remain root-bounded, same-URL reload replaces
+meta policy, and denied target bytes are not read. The focused test and scoped
+check passed. Of 16 CSP unit and 19 CSP integration tests, 16 and 18 passed;
+one report-only network report-URI test timed out, including on standalone
+replay, and is outside this slice. Maintainer documentation gates passed;
+remote CI was not run. Other file CSP resource classes, report-only file policy,
+and full CSP conformance remain open. See `tasks/native-engine-browser-722.md`.
+
+### Follow-up observed during slice 722
+
+`native_content_process_delivers_report_only_csp_report_uri_network_reports`
+timed out waiting for its loopback report POST, both in the 19-test CSP batch
+and when replayed alone. Its root cause is unestablished; do not attribute it
+to slice 722 or call it an established pre-existing failure. It is outside the
+rooted-file enforced-script contract and remains an issue #40 report-delivery
+follow-up.
 At the 715 checkpoint, computed imports in classic `importScripts()`
 dependencies remained open. Slice 714 adds runtime-valued computed imports in
 dedicated classic and module Workers through the worker-owned fetch queue,

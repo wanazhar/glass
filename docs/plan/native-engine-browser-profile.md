@@ -96,6 +96,15 @@ It is never an implicit fallback for a native request.
   modules retain request-URL identity and response-URL descendant bases;
   missing, unsupported, and out-of-root targets reject the original import
   promise without escaping the file root or entering network transport.
+- Slice 722 installs parser-sourced CSP meta policies for rooted-file
+  Documents before their local subresources load. `script-src-elem`,
+  `script-src`, and `default-src` govern inline scripts, classic/module roots,
+  static dependencies, and invoked dynamic imports. This file profile binds
+  `'self'` to the most-specific admitted file root; an explicit `file:` source
+  cannot bypass root admission. Denied script bytes are rejected before read.
+  Other file resource classes, report-only file policies, dynamic meta
+  insertion, and full CSP conformance remain open; see
+  [task 722](tasks/native-engine-browser-722.md).
 - Local implementation evidence: slices 713–717 cover runtime-valued imports
   in page classic/module scripts, dedicated classic/module Workers, and
   classic/module SharedWorkers, including nested computed imports through their
@@ -128,8 +137,9 @@ It is never an implicit fallback for a native request.
   [task 717](tasks/native-engine-browser-717.md),
   [task 718](tasks/native-engine-browser-718.md), and
   [task 719](tasks/native-engine-browser-719.md),
-  [task 720](tasks/native-engine-browser-720.md), and
-  [task 721](tasks/native-engine-browser-721.md).
+  [task 720](tasks/native-engine-browser-720.md),
+  [task 721](tasks/native-engine-browser-721.md), and
+  [task 722](tasks/native-engine-browser-722.md).
 - Supported dynamic-import options (`type: "json"`) and bounded nested
   imports follow the selected ECMAScript and HTML host algorithms. Unsupported
   module types reject explicitly. Promise/microtask ordering and module

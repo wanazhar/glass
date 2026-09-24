@@ -4698,10 +4698,12 @@ impl NativeEngine {
         let integrity = import_map.integrity_for_url(&target).map(str::to_owned);
         let resource = self
             .loader
-            .load_local_file_script(
+            .load_local_file_script_with_policy(
                 &self.url,
                 &target,
                 MAX_NATIVE_SCRIPT_BYTES,
+                false,
+                None,
                 integrity.as_deref(),
             )?
             .ok_or_else(|| NativeEngineError::Network {
@@ -7182,6 +7184,11 @@ impl NativeEngine {
             NativeDocument::parse_with_generation(&resource.body, &self.config.limits, generation)?;
         document.set_viewport(self.config.viewport)?;
         let initial_events = if is_file_url(&resource.url) {
+            self.loader.apply_meta_content_security_policies(
+                &resource.url,
+                &document.content_security_policy_meta(),
+            )?;
+            document.mark_content_security_policy_meta_processed();
             let (stylesheet_states, mut events) = load_local_initial_file_stylesheets(
                 &document,
                 &self.loader,
@@ -8659,7 +8666,9 @@ fn load_local_dynamic_page_script_sources(
             NativePageScriptSource::External {
                 href,
                 node_index,
+                nonce,
                 integrity,
+                parser_inserted,
                 ..
             } => {
                 let is_blob = href
@@ -8683,10 +8692,12 @@ fn load_local_dynamic_page_script_sources(
                         object_url.as_ref(),
                     )
                 } else {
-                    loader.load_local_file_script(
+                    loader.load_local_file_script_with_policy(
                         document_url,
                         &href,
                         MAX_NATIVE_SCRIPT_BYTES,
+                        parser_inserted,
+                        nonce.as_deref(),
                         integrity.as_deref(),
                     )
                 };
@@ -8706,7 +8717,9 @@ fn load_local_dynamic_page_script_sources(
                 href,
                 timing,
                 node_index,
+                nonce,
                 integrity,
+                parser_inserted,
                 ..
             } => {
                 let request_url = match resolve_module_request_url(document_url, &href) {
@@ -8737,10 +8750,12 @@ fn load_local_dynamic_page_script_sources(
                         object_url.as_ref(),
                     )
                 } else {
-                    loader.load_local_file_script(
+                    loader.load_local_file_script_with_policy(
                         document_url,
                         &href,
                         MAX_NATIVE_SCRIPT_BYTES,
+                        parser_inserted,
+                        nonce.as_deref(),
                         integrity.as_deref(),
                     )
                 };

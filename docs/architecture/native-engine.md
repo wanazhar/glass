@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-721`; issue #40 remains open. Earlier completed slices
+`native-engine-browser-722`; issue #40 remains open. Earlier completed slices
 include `native-engine-browser-696` through `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
@@ -933,6 +933,20 @@ check, seven parser/rewrite unit tests, six process-backed regressions, and
 format/whitespace checks passed locally; remote CI was not run. Other module
 types, broader file-origin propagation, and complete module scheduling remain
 open. See [`slice 721`](../plan/tasks/native-engine-browser-721.md).
+
+Slice 722 installs parser-sourced CSP meta policies before configured-root
+file-document subresources and enforces script-src-elem/script-src/default-src
+for inline scripts, classic and module roots, static module dependencies, and
+invoked dynamic imports. For this profile, `'self'` is bound to the
+Document's most-specific admitted file root; explicit `file:` sources still
+pass configured-root checks. Policy is replaced when the same file URL is
+navigated again, and denied script bytes are not read. The focused rooted-file
+regression passed. CSP coverage passed 16/16 unit tests and 18/19 integration
+tests; the remaining report-only network report-URI test timed out on an exact
+standalone replay and is outside this script-policy slice. The scoped package
+check and local documentation gates passed; remote CI was not run. File CSP
+for other resource classes, report-only file policy, and full CSP conformance
+remain open. See [`slice 722`](../plan/tasks/native-engine-browser-722.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

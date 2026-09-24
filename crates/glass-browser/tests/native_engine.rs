@@ -2042,6 +2042,117 @@ async fn native_file_document_resolves_runtime_valued_imports_from_initial_scrip
 }
 
 #[tokio::test]
+async fn native_rooted_file_csp_enforces_script_sources_and_replaces_on_reload() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-script-csp-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let site = root.join("site");
+    let other_root = root.join("other");
+    fs::create_dir_all(&site).unwrap();
+    fs::create_dir_all(&other_root).unwrap();
+    fs::write(
+        other_root.join("other.js"),
+        "globalThis.fileCspOtherRoot = 'must-not-run';",
+    )
+    .unwrap();
+    fs::write(
+        site.join("classic.js"),
+        "globalThis.fileCspClassic = 'same-root-classic';",
+    )
+    .unwrap();
+    fs::write(
+        site.join("dependency.js"),
+        "export const value = 'same-root-module';",
+    )
+    .unwrap();
+    fs::write(
+        site.join("entry.js"),
+        "import { value } from './dependency.js'; globalThis.fileCspModule = value;",
+    )
+    .unwrap();
+    fs::write(
+        site.join("dynamic.js"),
+        "export const value = 'same-root-dynamic';",
+    )
+    .unwrap();
+    let page_url = native_test_file_url(&site.join("index.html"));
+    let other_script_url = native_test_file_url(&other_root.join("other.js"));
+    fs::write(
+        site.join("index.html"),
+        format!(
+            r#"<!doctype html><html><head>
+              <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'nonce-bootstrap'">
+              <script src="classic.js"></script>
+              <script type="module" src="entry.js"></script>
+              <script nonce="bootstrap">
+                globalThis.fileCspInline = 'nonce-allowed';
+                globalThis.fileCspDynamicState = 'pending';
+                import('./dynamic.js').then(
+                  module => globalThis.fileCspDynamicState = module.value,
+                  () => globalThis.fileCspDynamicState = 'rejected'
+                );
+                globalThis.fileCspCrossRootState = 'pending';
+                import({other_script_url:?}).then(
+                  () => globalThis.fileCspCrossRootState = 'unexpected',
+                  () => globalThis.fileCspCrossRootState = 'rejected'
+                );
+              </script>
+            </head><body>rooted CSP</body></html>"#
+        ),
+    )
+    .unwrap();
+
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url.clone())
+        .with_allowed_file_root(site.clone())
+        .with_allowed_file_root(other_root.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[fileCspClassic ?? null, fileCspModule ?? null, fileCspInline ?? null, fileCspDynamicState ?? null, fileCspCrossRootState ?? null, globalThis.fileCspOtherRoot ?? null]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "same-root-classic",
+            "same-root-module",
+            "nonce-allowed",
+            "same-root-dynamic",
+            "rejected",
+            null
+        ])
+    );
+
+    fs::write(
+        site.join("index.html"),
+        "<!doctype html><html><head><meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'none'\"><script src=\"classic.js\"></script><script>globalThis.fileCspBlockedInline = true;</script></head><body>csp reload</body></html>",
+    )
+    .unwrap();
+    fs::write(
+        site.join("classic.js"),
+        "globalThis.fileCspClassic = 'must-not-run-after-reload';",
+    )
+    .unwrap();
+    engine.navigate_async(page_url).await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[document.body.textContent, globalThis.fileCspClassic, 'fileCspBlockedInline' in globalThis]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["csp reload", null, false])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn native_file_document_applies_parser_import_maps_to_initial_scripts() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-parser-import-map-{}",

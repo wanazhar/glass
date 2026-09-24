@@ -3197,16 +3197,10 @@ impl NativeResourceLoader {
         nonce: Option<&str>,
         report: bool,
     ) -> Result<bool, NativeEngineError> {
-        validate_url_text("CSP document URL", document_url)?;
-        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
-            NativeEngineError::UnsupportedUrl {
-                reason: "CSP document URL is not valid URL syntax".into(),
-            }
-        })?;
-        reject_credentials(&document_url)?;
-        if !is_network_url(document_url.as_str()) {
+        let Some((document_url, _)) = self.csp_document_owner(document_url, "CSP document URL")?
+        else {
             return Ok(true);
-        }
+        };
         let policy = self
             .network
             .document_policies
@@ -3247,16 +3241,10 @@ impl NativeResourceLoader {
         source: &str,
         report: bool,
     ) -> Result<bool, NativeEngineError> {
-        validate_url_text("CSP document URL", document_url)?;
-        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
-            NativeEngineError::UnsupportedUrl {
-                reason: "CSP document URL is not valid URL syntax".into(),
-            }
-        })?;
-        reject_credentials(&document_url)?;
-        if !is_network_url(document_url.as_str()) {
+        let Some((document_url, _)) = self.csp_document_owner(document_url, "CSP document URL")?
+        else {
             return Ok(true);
-        }
+        };
         let policy = self
             .network
             .document_policies
@@ -10732,6 +10720,118 @@ mod tests {
                 .load_local_file_stylesheet(&document_url, &denied_stylesheet_url, None)
                 .unwrap()
                 .is_none()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rooted_file_inline_style_csp_enforces_fallback_nonce_hash_and_conjunction() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-native-rooted-file-inline-style-csp-{}",
+            std::process::id()
+        ));
+        let site = root.join("site");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&site).unwrap();
+        let document_path = site.join("index.html");
+        fs::write(&document_path, "<!doctype html>").unwrap();
+        let document_url = Url::from_file_path(&document_path).unwrap().to_string();
+        let style_element = "#element { color: red; }";
+        let style_attribute = "color: blue;";
+        let style_element_hash = base64::engine::general_purpose::STANDARD
+            .encode(Sha256::digest(style_element.as_bytes()));
+        let style_attribute_hash = base64::engine::general_purpose::STANDARD
+            .encode(Sha256::digest(style_attribute.as_bytes()));
+        let config = NativeEngineConfig::default().with_allowed_file_root(&site);
+        let mut loader = NativeResourceLoader::new(&config).unwrap();
+
+        loader
+            .apply_meta_content_security_policies(
+                &document_url,
+                &[format!(
+                    "default-src 'none'; style-src 'self'; style-src-elem 'nonce-Style123' 'sha256-{style_element_hash}'; style-src-attr 'unsafe-hashes' 'sha256-{style_attribute_hash}'"
+                )],
+            )
+            .unwrap();
+        assert!(
+            loader
+                .allows_inline_style_element(
+                    &document_url,
+                    "#element { color: green; }",
+                    Some("Style123")
+                )
+                .unwrap()
+        );
+        assert!(
+            loader
+                .allows_inline_style_element(&document_url, style_element, None)
+                .unwrap()
+        );
+        assert!(
+            !loader
+                .allows_inline_style_element(&document_url, "#element { color: red; } ", None)
+                .unwrap()
+        );
+        assert!(
+            loader
+                .allows_inline_style_attribute(&document_url, style_attribute)
+                .unwrap()
+        );
+        assert!(
+            !loader
+                .allows_inline_style_attribute(&document_url, "color: green;")
+                .unwrap()
+        );
+
+        loader
+            .apply_meta_content_security_policies(
+                &document_url,
+                &["style-src 'unsafe-inline'".to_owned()],
+            )
+            .unwrap();
+        assert!(
+            loader
+                .allows_inline_style_element(&document_url, style_element, None)
+                .unwrap()
+        );
+        assert!(
+            loader
+                .allows_inline_style_attribute(&document_url, style_attribute)
+                .unwrap()
+        );
+
+        loader
+            .apply_meta_content_security_policies(&document_url, &["default-src 'none'".to_owned()])
+            .unwrap();
+        assert!(
+            !loader
+                .allows_inline_style_element(&document_url, style_element, None)
+                .unwrap()
+        );
+        assert!(
+            !loader
+                .allows_inline_style_attribute(&document_url, style_attribute)
+                .unwrap()
+        );
+
+        loader
+            .apply_meta_content_security_policies(
+                &document_url,
+                &[
+                    "style-src-elem 'unsafe-inline'; style-src-attr 'unsafe-inline'".to_owned(),
+                    "default-src 'none'".to_owned(),
+                ],
+            )
+            .unwrap();
+        assert!(
+            !loader
+                .allows_inline_style_element(&document_url, style_element, None)
+                .unwrap()
+        );
+        assert!(
+            !loader
+                .allows_inline_style_attribute(&document_url, style_attribute)
+                .unwrap()
         );
         fs::remove_dir_all(root).unwrap();
     }

@@ -1131,15 +1131,32 @@ preserving configured-root admission, SRI, byte/graph bounds, and element
 events. Its loader tests pass 2/2, the new process-backed tests pass 2/2, and
 the current focused process test observes an initial blocked-link error effect
 and JavaScript error listeners for both dynamic denial paths. The existing
-unrooted-import and rooted stylesheet regressions pass 1/1 each.
-Inline style elements/attributes, blob/data stylesheets, CSS image/font
-subresources, report-only file policy, and complete CSP conformance remain
-separate work. Release-documentation truth, documentation depth, shortcuts,
-formatting, whitespace, and repository-local Markdown links passed. The live
-CLI/MCP documentation coverage gate could not complete because the scoped
-clean-target checks did not build `target/debug/glass` or
-`target/debug/glass-browser`; this slice changes no CLI or MCP inventory.
-Remote CI was not run. See `docs/plan/tasks/native-engine-browser-723.md`.
+unrooted-import and rooted stylesheet regressions pass 1/1 each. At the end of
+slice 723, inline style elements/attributes, blob/data stylesheets, CSS
+image/font subresources, report-only file policy, and complete CSP conformance
+remained separate work; slice 724 closes the inline-style gap. Release-
+documentation truth, documentation depth, shortcuts, formatting, whitespace,
+and repository-local Markdown links passed. The live CLI/MCP documentation
+coverage gate could not complete because the scoped clean-target checks did not
+build `target/debug/glass` or `target/debug/glass-browser`; this slice changes
+no CLI or MCP inventory. Remote CI was not run. See
+`docs/plan/tasks/native-engine-browser-723.md`.
+
+Slice 724 enforces rooted-file `style-src-elem` / `style-src-attr` fallback,
+nonce/hash authorization, and policy conjunction for inline CSS. Initial
+markup, styles inserted during navigation scripts or dynamically attached
+scripts, and committed style/attribute mutations re-evaluate the active file
+policies. Changed style blocks rebuild CSS from authorized sources; changed
+style attributes invalidate computed style. The loader test and process-backed
+file test pass, as do the existing HTTP inline-CSP and rooted-file external
+stylesheet tests. The file test covers nonce/hash allow, blocked initial
+content, initial-page-script and dynamically attached-script styles, and
+runtime style mutation allow/revocation. Release-documentation truth (1,352
+Markdown files, zero current-claim failures), documentation depth (93
+guides/19 contracts), shortcuts (15 keys/63 markers), formatting, and
+whitespace pass. Link coverage reports no broken repository-local links; its
+live CLI inventory could not complete because `target/debug/glass` is absent.
+Remote CI was not run. See `docs/plan/tasks/native-engine-browser-724.md`.
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

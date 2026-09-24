@@ -1,8 +1,8 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-696`; issue #40 remains open. Earlier completed slices
-include `native-engine-browser-695` through `native-engine-browser-687`,
+`native-engine-browser-697`; issue #40 remains open. Earlier completed slices
+include `native-engine-browser-696` through `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
 `native-engine-browser-684`,
@@ -670,6 +670,18 @@ unchanged. The locked package check passed, the scoped HTML parser batch passed
 35/35, and the foreign batch passed 9/9. Local formatting, whitespace, and
 maintainer documentation gates passed; remote CI was not run. See
 [`slice 696`](../plan/tasks/native-engine-browser-696.md).
+
+HTML fragment parsing now initializes RAWTEXT for `style`, `xmp`, `iframe`,
+`noembed`, `noframes`, and scripting-enabled `noscript` contexts. Markup and
+character references remain literal until the appropriate context end tag;
+nulls become U+FFFD, and the suffix resumes ordinary fragment parsing. The
+same mode set is used by document/XHR tokenization and HTML serialization.
+Rust commits, same-turn JavaScript/frame projection, and XHR document parsing
+agree; foreign SVG/MathML reprocessing and RCDATA behavior remain intact.
+Script-data and `plaintext` fragment states remain separate. The locked
+package check, focused RAWTEXT tests (2/2), and foreign namespace route test
+(1/1) passed locally. Remote CI was not run. See
+[`slice 697`](../plan/tasks/native-engine-browser-697.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

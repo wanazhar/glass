@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser slice is `native-engine-browser-696`.
+The latest locally completed parser slice is `native-engine-browser-697`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -138,6 +138,15 @@ Full-document parsing retains the SVG `title` HTML-integration behavior from
 slice 690. The HTML batch passed 35/35 and the foreign batch 9/9 after the
 locked package check. Remote CI was not run. See
 `tasks/native-engine-browser-696.md`.
+
+Slice 697 is complete locally: initialize fragment parsing in RAWTEXT for
+`style`, `xmp`, `iframe`, `noembed`, `noframes`, and scripting-enabled
+`noscript`. Preserve literal source through the matching context end tag,
+resume ordinary fragment parsing afterward, and align all parser routes plus
+serialization. The focused RAWTEXT tests passed 2/2 and the foreign namespace
+route test passed 1/1 after the locked package check. Remote CI was not run;
+script-data and `plaintext` contexts remain separate. See
+`tasks/native-engine-browser-697.md`.
 
 Slice 689 is complete locally: select child element namespaces using SVG and MathML
 HTML integration-point rules across all four parser routes. Preserve the

@@ -27694,7 +27694,9 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
     };
   };
   const nativeHtmlVoidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
-  const nativeHtmlRawTextElements = new Set(["script", "style"]);
+  const nativeHtmlRawTextElements = new Set([
+    "script", "style", "xmp", "iframe", "noembed", "noframes", "noscript",
+  ]);
   const nativeHtmlRcdataElements = new Set(["textarea", "title"]);
   const nativeHtmlHeadElements = new Set(["base", "link", "meta", "title", "style", "noscript", "template"]);
   const nativeHtmlShouldAutoClose = (current, next) =>
@@ -27768,7 +27770,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
     let candidate = lower.indexOf(needle, offset);
     while (candidate >= 0) {
       const boundary = value[candidate + needle.length];
-      if (boundary === undefined || /[\s>]/.test(boundary)) {
+      if (boundary === undefined || /[\s/>]/.test(boundary)) {
         const end = nativeHtmlMarkupEnd(value, candidate + needle.length);
         if (end >= 0) return { start: candidate, end: end + 1 };
       }
@@ -35817,6 +35819,16 @@ fn document_bootstrap(
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+  const htmlRawTextElements = new Set([
+    "script", "style", "xmp", "iframe", "noembed", "noframes", "noscript",
+  ]);
+  const serializeHtmlTextNode = (node, value) => {{
+    const parent = node.__glassParent || null;
+    const name = String(parent && parent.localName || "").toLowerCase();
+    return parent && parent.namespaceURI === HTML_NAMESPACE && htmlRawTextElements.has(name)
+      ? String(value)
+      : escapeHtmlText(value);
+  }};
   const textFromHtml = (value) => String(value)
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/<[^>]*>/g, "")
@@ -35855,8 +35867,11 @@ fn document_bootstrap(
     const rawSource = String(markup);
     const source = rawSource.includes("\r") ? rawSource.replace(/\r\n?/g, "\n") : rawSource;
     const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
-    const rawTextElements = new Set(["script", "style"]);
+    const rawTextElements = htmlRawTextElements;
     const rcdataElements = new Set(["textarea", "title"]);
+    const rawTextFragmentContextElements = new Set([
+      "style", "xmp", "iframe", "noembed", "noframes", "noscript",
+    ]);
     const tableStructureElements = new Set(["table", "tbody", "tfoot", "thead", "tr"]);
     const tableSpecialStartTags = new Set([
       "caption", "col", "colgroup", "tbody", "tfoot", "thead", "tr", "td", "th",
@@ -36505,14 +36520,17 @@ fn document_bootstrap(
       return null;
     }};
     let cursor = 0;
-    const fragmentRCDATAName = Number(fragment && fragment.nodeType) === 1
+    const fragmentSpecialTextName = Number(fragment && fragment.nodeType) === 1
       ? String(fragment.localName || "").toLowerCase()
       : "";
-    if (rcdataElements.has(fragmentRCDATAName)) {{
-      const special = findSpecialEnd(cursor, fragmentRCDATAName);
+    if (rawTextFragmentContextElements.has(fragmentSpecialTextName)
+        || rcdataElements.has(fragmentSpecialTextName)) {{
+      const rawText = rawTextFragmentContextElements.has(fragmentSpecialTextName);
+      const special = findSpecialEnd(cursor, fragmentSpecialTextName);
       const textEnd = special ? special.start : source.length;
       if (textEnd > cursor) {{
-        appendParsedText(decodeHtmlEntities(source.slice(cursor, textEnd)).replace(/\u0000/g, "\ufffd"));
+        const text = source.slice(cursor, textEnd);
+        appendParsedText((rawText ? text : decodeHtmlEntities(text)).replace(/\u0000/g, "\ufffd"));
       }}
       cursor = special ? special.end : source.length;
     }}
@@ -38671,7 +38689,7 @@ fn document_bootstrap(
     Object.defineProperty(text, "__glassMarkup", {{
       enumerable: false,
       configurable: false,
-      get() {{ return escapeHtmlText(textContent); }},
+      get() {{ return serializeHtmlTextNode(text, textContent); }},
     }});
     Object.defineProperty(text, "__glassRefresh", {{
       enumerable: false,
@@ -39023,7 +39041,7 @@ fn document_bootstrap(
     Object.defineProperty(text, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
     Object.defineProperty(text, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: false }});
     Object.defineProperty(text, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return isComment ? "" : textContent; }} }});
-    Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return isComment ? "<!--" + textContent + "-->" : escapeHtmlText(textContent); }} }});
+    Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return isComment ? "<!--" + textContent + "-->" : serializeHtmlTextNode(text, textContent); }} }});
     Object.defineProperty(text, "parentElement", {{
       enumerable: false,
       configurable: false,
@@ -44419,7 +44437,7 @@ fn document_bootstrap(
         Object.defineProperty(text, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: false }});
         Object.defineProperty(text, "__glassAttached", {{ enumerable: false, configurable: false, writable: true, value: true }});
     Object.defineProperty(text, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return isComment ? "" : textContent; }} }});
-        Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return isComment ? "<!--" + textContent + "-->" : escapeHtmlText(textContent); }} }});
+        Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return isComment ? "<!--" + textContent + "-->" : serializeHtmlTextNode(text, textContent); }} }});
         Object.defineProperty(text, "parentElement", {{
           enumerable: false,
           configurable: false,
@@ -44999,7 +45017,7 @@ fn document_bootstrap(
       Object.defineProperty(text, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: true }});
       Object.defineProperty(text, "__glassAttached", {{ enumerable: false, configurable: false, writable: true, value: false }});
       Object.defineProperty(text, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
-      Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return escapeHtmlText(textContent); }} }});
+      Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return serializeHtmlTextNode(text, textContent); }} }});
       Object.defineProperty(text, "parentElement", {{ enumerable: false, configurable: false, get() {{
         let current = text.__glassParent || null;
         while (current && current.nodeType !== 1) current = current.__glassParent || null;

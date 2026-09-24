@@ -27,11 +27,12 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-699`; issue #40
-remains open. Slice 699 follows the completed `native-engine-browser-698`
-checkpoint. Script fragment contexts now recognize appropriate end tags
-across Script Data, escaped, and double-escaped states; document, fragment,
-same-turn main/frame projections, and XHR parsing agree for the covered cases.
+expansion is complete locally through `native-engine-browser-700`; issue #40
+remains open. Slice 700 follows the completed `native-engine-browser-699`
+checkpoint. Connected insertion of dynamically created classic inline scripts
+now executes once and returns normally through append/insert operations.
+Script fragment contexts recognize appropriate end tags across Script Data,
+escaped, and double-escaped states across the covered parser routes.
 The earlier expansion chain includes completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`,
@@ -235,6 +236,13 @@ until the later appropriate close. Literal source is preserved, and the
 document, Rust fragment commit, same-turn JavaScript/frame projections, and
 XHR HTML parser agree for the covered cases. General tokenizer and script
 execution conformance remain open; remote CI was not run.
+
+[`native-engine-browser-700`](tasks/native-engine-browser-700.md) is complete
+locally. Dynamically created classic inline scripts execute once when
+connected by `appendChild` or `insertBefore`; removing and reinserting an
+already-started script does not rerun it. The focused regression covers Rust
+command commit. Dynamic external/module script loading, general script
+conformance, and remote CI remain open.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

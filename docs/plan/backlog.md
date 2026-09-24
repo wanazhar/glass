@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser slice is `native-engine-browser-699`.
+The latest locally completed parser/script slice is `native-engine-browser-700`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
@@ -166,6 +166,15 @@ tokenizer to the escaped state. The covered document, Rust fragment,
 same-turn JavaScript/frame, and XHR routes agree. General tokenizer and script
 execution conformance remain open; remote CI was not run. See
 `tasks/native-engine-browser-699.md`.
+
+Slice 700 is complete locally: dynamically created classic inline scripts
+execute once when connected through `appendChild` or `insertBefore`; detached
+preparation and reinsertion of an already-started script do not cause execution
+or errors. Parser-only active-formatting state was removed from the runtime
+mutation path. The focused regression passed 1/1 after the locked package
+check. Dynamic external/module loading and general script conformance remain
+separate; remote CI was not run. See
+`tasks/native-engine-browser-700.md`.
 
 Slice 689 is complete locally: select child element namespaces using SVG and MathML
 HTML integration-point rules across all four parser routes. Preserve the

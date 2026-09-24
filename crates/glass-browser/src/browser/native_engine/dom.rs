@@ -13135,7 +13135,9 @@ fn append_bounded_markup(output: &mut String, value: &str, max_bytes: usize, tru
 #[cfg(test)]
 mod tests {
     use super::super::css::NativeFontPaletteName;
-    use super::super::javascript::{NativeFrameScriptBinding, NativeJavaScriptRuntime};
+    use super::super::javascript::{
+        NativeFrameScriptBinding, NativeJavaScriptRuntime, NativeScriptCommand,
+    };
     use super::super::origin::NativeOrigin;
     use super::*;
 
@@ -16343,6 +16345,83 @@ mod tests {
                 "<!--<script>double</script>escaped   &amp;"
             ])
         );
+    }
+
+    #[test]
+    fn javascript_dynamic_inline_script_insertion_runs_once() {
+        let mut document = NativeDocument::parse(
+            "<main id='root'><span id='anchor'></span></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("dynamic script document must parse");
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("dynamic-script-insertion")
+            .expect("native JavaScript runtime must construct");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    globalThis.__dynamicScriptRuns = 0;
+                    const root = document.querySelector("#root");
+                    const first = document.createElement("script");
+                    first.id = "first-script";
+                    first.textContent = "globalThis.__dynamicScriptRuns += 1";
+                    root.appendChild(first);
+                    const afterAppend = globalThis.__dynamicScriptRuns;
+                    first.remove();
+                    root.appendChild(first);
+                    const afterReinsert = globalThis.__dynamicScriptRuns;
+                    const second = document.createElement("script");
+                    second.id = "second-script";
+                    second.textContent = "globalThis.__dynamicScriptRuns += 10";
+                    const anchor = document.querySelector("#anchor");
+                    root.insertBefore(second, anchor);
+                    return [
+                        afterAppend,
+                        afterReinsert,
+                        globalThis.__dynamicScriptRuns,
+                        first.parentElement === root,
+                        second.parentElement === root,
+                        anchor.previousSibling === second,
+                    ];
+                })()"##,
+                &document,
+                "fixture://dynamic-script-insertion.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("connected dynamic inline script insertion must return normally");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([1, 1, 11, true, true, true])
+        );
+        assert_eq!(
+            evaluation
+                .commands
+                .iter()
+                .filter(|command| matches!(command, NativeScriptCommand::StartScript { .. }))
+                .count(),
+            2,
+            "each newly inserted inline script gets one start marker"
+        );
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("dynamic script DOM commands must commit");
+        let root = document.find_element_by_id("root").unwrap();
+        let child_ids = document
+            .node(root)
+            .unwrap()
+            .children()
+            .iter()
+            .map(|child| {
+                document
+                    .node(*child)
+                    .unwrap()
+                    .attribute("id")
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(child_ids, ["second-script", "anchor", "first-script"]);
     }
 
     #[test]

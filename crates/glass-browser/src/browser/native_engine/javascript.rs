@@ -38909,10 +38909,6 @@ fn document_bootstrap(
           dispatchTarget(node, createEvent("error"));
         }}
       }}
-      if (element.namespaceURI === HTML_NAMESPACE) {{
-        if (activeFormattingMarkerNames.has(normalizedName)) activeFormatting.push(null);
-        else if (htmlFormattingNames.has(normalizedName)) pushActiveFormatting(element);
-      }}
     }}
     for (const child of node.__glassChildren || []) executeInsertedScripts(child);
   }};

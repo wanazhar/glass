@@ -2494,6 +2494,159 @@ async fn native_file_stylesheet_import_rejects_unrooted_dependency() {
 }
 
 #[tokio::test]
+async fn native_file_stylesheet_csp_enforces_self_nonce_and_dynamic_error() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-style-csp-root-{}",
+        std::process::id()
+    ));
+    let site = root.join("site");
+    let other = root.join("other");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&site).unwrap();
+    fs::create_dir_all(&other).unwrap();
+
+    let page_path = site.join("index.html");
+    let stylesheet_path = site.join("main.css");
+    let dependency_path = site.join("dependency.css");
+    let nonce_stylesheet_path = other.join("nonce.css");
+    let denied_stylesheet_path = other.join("denied.css");
+    let dynamic_stylesheet_path = other.join("dynamic-denied.css");
+    fs::write(
+        &stylesheet_path,
+        "@import './dependency.css'; #target { color: rgb(1, 2, 3); }",
+    )
+    .unwrap();
+    fs::write(
+        &dependency_path,
+        "#target { background-color: rgb(4, 5, 6); }",
+    )
+    .unwrap();
+    fs::write(&nonce_stylesheet_path, "#target { color: rgb(7, 8, 9); }").unwrap();
+    fs::write(&denied_stylesheet_path, "#target { color: rgb(9, 8, 7); }").unwrap();
+    fs::write(&dynamic_stylesheet_path, "#target { color: rgb(6, 5, 4); }").unwrap();
+    let nonce_stylesheet_url = native_test_file_url(&nonce_stylesheet_path);
+    let denied_stylesheet_url = native_test_file_url(&denied_stylesheet_path);
+    fs::write(
+        &page_path,
+        format!(
+            "<html><head><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'self' 'nonce-Style123'; script-src 'unsafe-inline' 'unsafe-eval'\"><link rel=\"stylesheet\" href=\"main.css\"><link rel=\"stylesheet\" nonce=\"Style123\" href=\"{nonce_stylesheet_url}\"><link id=\"blocked\" rel=\"stylesheet\" href=\"{denied_stylesheet_url}\"></head><body><div id=\"target\">rooted</div></body></html>"
+        ),
+    )
+    .unwrap();
+
+    let page_url = native_test_file_url(&page_path);
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url)
+        .with_allowed_file_root(site)
+        .with_allowed_file_root(other);
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .effects_since(0)
+            .unwrap()
+            .effects
+            .iter()
+            .filter(|effect| effect.kind == NativeEventKind::Error)
+            .count(),
+        1
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[getComputedStyle(document.getElementById('target')).color, getComputedStyle(document.getElementById('target')).backgroundColor]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["rgb(7, 8, 9)", "rgb(4, 5, 6)"])
+    );
+
+    let dynamic_stylesheet_url = native_test_file_url(&dynamic_stylesheet_path);
+    engine
+        .evaluate_async(&format!(
+            r#"(() => {{
+                globalThis.dynamicStyleCspEvents = [];
+                const updated = document.getElementById('blocked');
+                updated.addEventListener('error', () => dynamicStyleCspEvents.push('updated-error'));
+                updated.href = {dynamic_stylesheet_url:?};
+                const link = document.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = {dynamic_stylesheet_url:?};
+                link.addEventListener('load', () => dynamicStyleCspEvents.push('load'));
+                link.addEventListener('error', () => dynamicStyleCspEvents.push('error'));
+                document.head.appendChild(link);
+                return true;
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("dynamicStyleCspEvents")
+            .await
+            .unwrap(),
+        serde_json::json!(["updated-error", "error"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("getComputedStyle(document.getElementById('target')).color")
+            .await
+            .unwrap(),
+        serde_json::json!("rgb(7, 8, 9)")
+    );
+
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn native_file_stylesheet_csp_blocks_import_from_another_allowed_root() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-style-import-csp-{}",
+        std::process::id()
+    ));
+    let site = root.join("site");
+    let other = root.join("other");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&site).unwrap();
+    fs::create_dir_all(&other).unwrap();
+    let page_path = site.join("index.html");
+    let stylesheet_path = site.join("main.css");
+    let imported_path = other.join("imported.css");
+    fs::write(&imported_path, "#target { color: rgb(9, 8, 7); }").unwrap();
+    let imported_url = native_test_file_url(&imported_path);
+    fs::write(
+        &stylesheet_path,
+        format!("@import {imported_url:?}; #target {{ color: rgb(1, 2, 3); }}"),
+    )
+    .unwrap();
+    fs::write(
+        &page_path,
+        "<html><head><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'self'\"><link rel=\"stylesheet\" href=\"main.css\"></head><body><div id=\"target\">rooted</div></body></html>",
+    )
+    .unwrap();
+
+    let page_url = native_test_file_url(&page_path);
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url)
+        .with_allowed_file_root(site)
+        .with_allowed_file_root(other);
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("getComputedStyle(document.getElementById('target')).color")
+            .await
+            .unwrap(),
+        serde_json::json!("rgb(0, 0, 0)")
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn native_file_document_runs_dedicated_and_shared_workers() {
     let root =
         std::env::temp_dir().join(format!("glass-native-file-workers-{}", std::process::id()));

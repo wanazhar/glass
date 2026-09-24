@@ -68,6 +68,18 @@ replay, and is outside this slice. Maintainer documentation gates passed;
 remote CI was not run. Other file CSP resource classes, report-only file policy,
 and full CSP conformance remain open. See `tasks/native-engine-browser-722.md`.
 
+### Slice 723 completed locally: rooted-file stylesheet CSP
+
+Enforced parser-meta CSP for initial and dynamically attached/updated file
+stylesheet links and recursive local CSS imports. Style-source fallback,
+configured-root `'self'`, link nonce metadata, SRI and resource bounds are
+preserved; disallowed stylesheet bytes are rejected before read. The loader
+tests pass 2/2, the new process-backed tests pass 2/2, and the existing
+unrooted-import and rooted stylesheet regressions pass 1/1 each. Inline styles,
+blob/data stylesheets, CSS image/font loads, report-only file policies, and
+complete CSP conformance remain separate. Remote CI was not run. See
+`tasks/native-engine-browser-723.md`.
+
 ### Follow-up observed during slice 722
 
 `native_content_process_delivers_report_only_csp_report_uri_network_reports`

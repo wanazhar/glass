@@ -948,6 +948,17 @@ check and local documentation gates passed; remote CI was not run. File CSP
 for other resource classes, report-only file policy, and full CSP conformance
 remain open. See [`slice 722`](../plan/tasks/native-engine-browser-722.md).
 
+Slice 723 extends rooted-file CSP to initial and dynamically attached or
+updated external stylesheets and every local CSS import. It applies
+`style-src-elem`/`style-src`/`default-src` fallback, binds file `'self'` to the
+Document's most-specific admitted root, carries link nonce metadata only for
+that link request, and rejects denied stylesheet bytes before read. Its loader
+tests pass 2/2; the new process-backed tests pass 2/2, alongside the unrooted
+import and rooted script/stylesheet/image regressions (1/1 each). Inline
+styles/attributes, blob/data stylesheets, CSS image/font subresources,
+report-only file policy, and full CSP conformance remain open. See
+[slice 723](../plan/tasks/native-engine-browser-723.md).
+
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript
 fragment projections, and XHR HTML documents. Text, attributes, comments,

@@ -8856,19 +8856,19 @@ fn load_local_dynamic_stylesheets(
     viewport: Viewport,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
     let links = document
-        .external_stylesheet_links()
+        .external_stylesheet_links_with_nonce()
         .into_iter()
         .take(MAX_NATIVE_LOCAL_STYLESHEETS)
         .collect::<Vec<_>>();
     let previous_states = document.external_stylesheet_states();
     let live_local_nodes = links
         .iter()
-        .filter(|(_, href, _, _)| {
+        .filter(|(_, href, _, _, _)| {
             href.get(..5)
                 .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"))
                 || is_file_subresource_source(document_url, href)
         })
-        .map(|(node_index, _, _, _)| *node_index)
+        .map(|(node_index, _, _, _, _)| *node_index)
         .collect::<BTreeSet<_>>();
     let mut states = document
         .external_stylesheet_states()
@@ -8883,7 +8883,7 @@ fn load_local_dynamic_stylesheets(
         .sum::<usize>();
     let mut events = Vec::new();
 
-    for (node_index, href, integrity, _) in links {
+    for (node_index, href, integrity, _, nonce) in links {
         let is_blob = href
             .get(..5)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"));
@@ -8922,7 +8922,12 @@ fn load_local_dynamic_stylesheets(
                 Ok(None) | Err(_) => None,
             }
         } else {
-            match loader.load_local_file_stylesheet(document_url, &href, integrity.as_deref()) {
+            match loader.load_local_file_stylesheet_with_nonce(
+                document_url,
+                &href,
+                integrity.as_deref(),
+                nonce.as_deref(),
+            ) {
                 Ok(Some(stylesheet)) => expand_local_file_stylesheet_imports(
                     loader,
                     document_url,
@@ -9100,24 +9105,28 @@ fn load_local_initial_file_stylesheets(
     let mut states = Vec::new();
     let mut events = Vec::new();
     let mut loaded_bytes = 0usize;
-    for (node_index, href, integrity, _) in document
-        .external_stylesheet_links()
+    for (node_index, href, integrity, _, nonce) in document
+        .external_stylesheet_links_with_nonce()
         .into_iter()
         .take(MAX_NATIVE_LOCAL_STYLESHEETS)
     {
-        let body =
-            match loader.load_local_file_stylesheet(document_url, &href, integrity.as_deref()) {
-                Ok(Some(stylesheet)) => expand_local_file_stylesheet_imports(
-                    loader,
-                    document_url,
-                    &href,
-                    stylesheet,
-                    &mut loaded_bytes,
-                    viewport,
-                )
-                .ok(),
-                Ok(None) | Err(_) => None,
-            };
+        let body = match loader.load_local_file_stylesheet_with_nonce(
+            document_url,
+            &href,
+            integrity.as_deref(),
+            nonce.as_deref(),
+        ) {
+            Ok(Some(stylesheet)) => expand_local_file_stylesheet_imports(
+                loader,
+                document_url,
+                &href,
+                stylesheet,
+                &mut loaded_bytes,
+                viewport,
+            )
+            .ok(),
+            Ok(None) | Err(_) => None,
+        };
         let event_kind = body
             .as_ref()
             .map_or(NativeEventKind::Error, |_| NativeEventKind::Load);

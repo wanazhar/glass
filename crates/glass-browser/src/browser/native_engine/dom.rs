@@ -2214,6 +2214,22 @@ impl NativeDocument {
             .collect()
     }
 
+    pub(crate) fn external_stylesheet_links_with_nonce(
+        &self,
+    ) -> Vec<(u32, String, Option<String>, Option<String>, Option<String>)> {
+        self.external_stylesheet_links()
+            .into_iter()
+            .map(|(node_index, href, integrity, crossorigin)| {
+                let nonce = self
+                    .nodes
+                    .get(node_index as usize)
+                    .and_then(|node| node.attribute("nonce"))
+                    .map(str::to_owned);
+                (node_index, href, integrity, crossorigin, nonce)
+            })
+            .collect()
+    }
+
     pub(crate) fn external_image_links(&self, viewport: Viewport) -> Vec<(u32, String)> {
         self.nodes
             .iter()

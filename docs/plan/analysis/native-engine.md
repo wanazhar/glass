@@ -1123,6 +1123,24 @@ The scoped package check and maintainer documentation gates passed locally;
 remote CI was not run. Full file-origin/CSP coverage remains open. See
 [`slice 722`](../tasks/native-engine-browser-722.md).
 
+Slice 723 extends parser-meta CSP to initial and dynamically attached/updated
+rooted-file stylesheet links and every local CSS import. It applies
+`style-src-elem`/`style-src`/`default-src` fallback, most-specific-root `'self'`,
+link nonce metadata only for the link request, and pre-read denial while
+preserving configured-root admission, SRI, byte/graph bounds, and element
+events. Its loader tests pass 2/2, the new process-backed tests pass 2/2, and
+the current focused process test observes an initial blocked-link error effect
+and JavaScript error listeners for both dynamic denial paths. The existing
+unrooted-import and rooted stylesheet regressions pass 1/1 each.
+Inline style elements/attributes, blob/data stylesheets, CSS image/font
+subresources, report-only file policy, and complete CSP conformance remain
+separate work. Release-documentation truth, documentation depth, shortcuts,
+formatting, whitespace, and repository-local Markdown links passed. The live
+CLI/MCP documentation coverage gate could not complete because the scoped
+clean-target checks did not build `target/debug/glass` or
+`target/debug/glass-browser`; this slice changes no CLI or MCP inventory.
+Remote CI was not run. See `docs/plan/tasks/native-engine-browser-723.md`.
+
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript
 fragments, and XHR HTML documents. The Rust route retains submitted-source

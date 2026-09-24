@@ -1400,6 +1400,7 @@ impl NativeDocument {
                                 parent.index,
                                 &value,
                                 &BTreeMap::new(),
+                                false,
                             )?;
                         } else {
                             document.add_node(
@@ -1419,7 +1420,12 @@ impl NativeDocument {
                         .raw_node(parent)
                         .is_some_and(|node| node.namespace_uri() != Some(HTML_NAMESPACE_URI))
                     {
-                        document.apply_script_inner_html(parent.index, &value, &BTreeMap::new())?;
+                        document.apply_script_inner_html(
+                            parent.index,
+                            &value,
+                            &BTreeMap::new(),
+                            false,
+                        )?;
                     } else {
                         let decoded = decode_html_character_data(&value, false);
                         if !decoded.is_empty() {
@@ -5646,7 +5652,7 @@ impl NativeDocument {
                     self.apply_script_document_title(value)?;
                 }
                 NativeScriptCommand::SetInnerHtml { node_index, value } => {
-                    self.apply_script_inner_html(*node_index, value, &script_nodes)?;
+                    self.apply_script_inner_html(*node_index, value, &script_nodes, true)?;
                 }
                 NativeScriptCommand::RemoveNode { node_index } => {
                     let id = self.resolve_script_node_id(*node_index, &script_nodes);
@@ -6398,6 +6404,7 @@ impl NativeDocument {
         node_index: u32,
         value: &str,
         script_nodes: &BTreeMap<u32, NativeNodeId>,
+        fragment_context: bool,
     ) -> Result<(), NativeEngineError> {
         if value.len() > MAX_LOCATOR_BYTES {
             return Err(NativeEngineError::limit(
@@ -6425,7 +6432,11 @@ impl NativeDocument {
         }
         let available_nodes = self.max_nodes.saturating_sub(self.nodes.len());
         let max_tokens = available_nodes.saturating_mul(2).saturating_add(1).max(1);
-        let tokens = tokenize(value, max_tokens)?;
+        let tokens = if fragment_context {
+            tokenize_inner_html(value, max_tokens, &target_name)?
+        } else {
+            tokenize(value, max_tokens)?
+        };
         for child in old_children {
             self.detach_subtree(child)?;
         }
@@ -6766,7 +6777,12 @@ impl NativeDocument {
                             .raw_node(parent)
                             .is_some_and(|node| node.namespace_uri() != Some(HTML_NAMESPACE_URI))
                         {
-                            self.apply_script_inner_html(parent.index, &value, script_nodes)?;
+                            self.apply_script_inner_html(
+                                parent.index,
+                                &value,
+                                script_nodes,
+                                false,
+                            )?;
                         } else {
                             self.add_node(parent, NativeNodeKind::Text(value), self.max_nodes)?;
                         }
@@ -6781,7 +6797,7 @@ impl NativeDocument {
                         .raw_node(parent)
                         .is_some_and(|node| node.namespace_uri() != Some(HTML_NAMESPACE_URI))
                     {
-                        self.apply_script_inner_html(parent.index, &value, script_nodes)?;
+                        self.apply_script_inner_html(parent.index, &value, script_nodes, false)?;
                     } else {
                         let decoded = decode_html_character_data(&value, false);
                         if !decoded.is_empty() {
@@ -9784,6 +9800,68 @@ fn tokenize(source: &str, max_tokens: usize) -> Result<Vec<HtmlToken>, NativeEng
     )
 }
 
+fn tokenize_inner_html(
+    source: &str,
+    max_tokens: usize,
+    context_name: &str,
+) -> Result<Vec<HtmlToken>, NativeEngineError> {
+    if !matches!(context_name, "title" | "textarea") {
+        return tokenize(source, max_tokens);
+    }
+
+    // The HTML fragment algorithm starts title/textarea contexts in RCDATA.
+    // Use the existing tokenizer's appropriate-end-tag handling without
+    // inserting a synthetic context element into the committed fragment.
+    let prefix = format!("<{context_name}>");
+    let wrapped_source = format!("{prefix}{source}");
+    let tokenizer_limit = max_tokens.saturating_add(1);
+    let mut tokens = tokenize(&wrapped_source, tokenizer_limit).map_err(|error| match error {
+        NativeEngineError::Parse { offset, reason } => NativeEngineError::Parse {
+            offset: offset.saturating_sub(prefix.len()),
+            reason,
+        },
+        NativeEngineError::LimitExceeded {
+            resource,
+            limit,
+            actual,
+        } if resource == "HTML tokens" && limit == tokenizer_limit => {
+            NativeEngineError::limit(resource, max_tokens, actual.saturating_sub(1))
+        }
+        other => other,
+    })?;
+
+    if !matches!(
+        tokens.first(),
+        Some(HtmlToken::StartTag { name, .. }) if name == context_name
+    ) {
+        return Err(NativeEngineError::Parse {
+            offset: 0,
+            reason: "fragment RCDATA context did not produce its synthetic start tag".into(),
+        });
+    }
+    tokens.remove(0);
+
+    // Only the first RCDATA token comes from the fragment context. Convert it
+    // to ordinary text so a foreign SVG title receives the same literal text
+    // projection as an HTML title or textarea.
+    if matches!(tokens.first(), Some(HtmlToken::RcData(_))) {
+        let token = std::mem::replace(&mut tokens[0], HtmlToken::Text(String::new()));
+        if let HtmlToken::RcData(value) = token {
+            tokens[0] = HtmlToken::Text(value);
+        }
+    }
+
+    // The matching end tag terminates the tokenizer state but the fragment
+    // context is not an open element and must not be popped by tree building.
+    if let Some(index) = tokens
+        .iter()
+        .position(|token| matches!(token, HtmlToken::EndTag(name) if name == context_name))
+    {
+        tokens.remove(index);
+    }
+    Ok(tokens)
+}
+
 fn normalize_html_newlines(source: &str) -> Cow<'_, str> {
     if !source.as_bytes().contains(&b'\r') {
         return Cow::Borrowed(source);
@@ -10211,7 +10289,7 @@ fn find_raw_text_end(source: &str, start: usize, name: &str) -> Option<usize> {
             && bytes[name_start..name_end].eq_ignore_ascii_case(name.as_bytes())
             && bytes
                 .get(name_end)
-                .is_none_or(|byte| byte.is_ascii_whitespace() || *byte == b'>')
+                .is_none_or(|byte| byte.is_ascii_whitespace() || matches!(*byte, b'/' | b'>'))
         {
             return Some(opening);
         }
@@ -15387,6 +15465,105 @@ mod tests {
             .apply_script_commands(&evaluation.commands)
             .expect("Rust fragment commit must respect foreign text modes");
         assert_eq!(summarize_native(&document), expected);
+    }
+
+    #[test]
+    fn html_rcdata_fragment_contexts_match_same_turn_and_committed_trees() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("rcdata-fragment-context")
+            .expect("native JavaScript runtime must construct");
+        let mut document = NativeDocument::parse(
+            "<svg id='svg-root'><title id='svg-title'></title></svg><title id='html-title'></title><textarea id='textarea'></textarea>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("RCDATA fragment context document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const svgTitle = document.querySelector("#svg-title");
+                    const htmlTitle = document.querySelector("#html-title");
+                    const textarea = document.querySelector("#textarea");
+                    svgTitle.innerHTML = "<span id='svg-literal'>SVG &amp; text</span>";
+                    const svgLiteral = [
+                        svgTitle.textContent,
+                        document.querySelector("#svg-literal") === null,
+                    ];
+                    htmlTitle.innerHTML = "<b id='html-literal'>HTML &amp; text</b>";
+                    const htmlLiteral = [
+                        htmlTitle.textContent,
+                        document.querySelector("#html-literal") === null,
+                    ];
+                    textarea.innerHTML = "<i id='textarea-literal'>TA &amp; text</i>";
+                    const textareaLiteral = [
+                        textarea.textContent,
+                        document.querySelector("#textarea-literal") === null,
+                    ];
+                    svgTitle.innerHTML = "prefix &amp; \u0000 </title/><span id='after-close'>after</span>";
+                    const afterClose = document.querySelector("#after-close");
+                    return [
+                        svgLiteral,
+                        htmlLiteral,
+                        textareaLiteral,
+                        [svgTitle.textContent, afterClose.namespaceURI, afterClose.parentElement === svgTitle],
+                    ];
+                })()"##,
+                &document,
+                "fixture://rcdata-fragment-context.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("RCDATA fragment context must project immediately");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                ["<span id='svg-literal'>SVG & text</span>", true],
+                ["<b id='html-literal'>HTML & text</b>", true],
+                ["<i id='textarea-literal'>TA & text</i>", true],
+                [
+                    format!("prefix & {} after", '\u{FFFD}'),
+                    HTML_NAMESPACE_URI,
+                    true
+                ]
+            ])
+        );
+
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("Rust fragment commit must match the immediate RCDATA projection");
+        for (element_id, expected_text) in [
+            ("html-title", "<b id='html-literal'>HTML & text</b>"),
+            ("textarea", "<i id='textarea-literal'>TA & text</i>"),
+        ] {
+            let element_id = document
+                .find_element_by_id(element_id)
+                .expect("RCDATA context element must remain attached");
+            let element = document
+                .node(element_id)
+                .expect("RCDATA context element must resolve");
+            assert_eq!(element.children().len(), 1);
+            assert_eq!(
+                document.node(element.children()[0]).unwrap().kind(),
+                &NativeNodeKind::Text(expected_text.to_owned())
+            );
+        }
+
+        let svg_title_id = document
+            .find_element_by_id("svg-title")
+            .expect("SVG title context must remain attached");
+        let svg_title = document.node(svg_title_id).unwrap();
+        assert_eq!(svg_title.children().len(), 2);
+        assert_eq!(
+            document.node(svg_title.children()[0]).unwrap().kind(),
+            &NativeNodeKind::Text(format!("prefix & {} ", '\u{FFFD}'))
+        );
+        let after_close_id = document
+            .find_element_by_id("after-close")
+            .expect("markup after the RCDATA context end tag must parse");
+        let after_close = document.node(after_close_id).unwrap();
+        assert_eq!(after_close.namespace_uri(), Some(HTML_NAMESPACE_URI));
+        assert_eq!(after_close.parent(), Some(svg_title_id));
+        assert!(document.find_element_by_id("svg-literal").is_none());
+        assert!(document.find_element_by_id("html-literal").is_none());
+        assert!(document.find_element_by_id("textarea-literal").is_none());
     }
 
     #[test]

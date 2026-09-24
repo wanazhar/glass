@@ -36496,7 +36496,7 @@ fn document_bootstrap(
       while (candidate >= 0) {{
         const afterName = candidate + needle.length;
         const boundary = source[afterName];
-        if (boundary === undefined || /[\s>]/.test(boundary)) {{
+        if (boundary === undefined || /[\s/>]/.test(boundary)) {{
           const end = findTagEnd(afterName);
           if (end >= 0) return {{ start: candidate, end: end + 1 }};
         }}
@@ -36505,6 +36505,17 @@ fn document_bootstrap(
       return null;
     }};
     let cursor = 0;
+    const fragmentRCDATAName = Number(fragment && fragment.nodeType) === 1
+      ? String(fragment.localName || "").toLowerCase()
+      : "";
+    if (rcdataElements.has(fragmentRCDATAName)) {{
+      const special = findSpecialEnd(cursor, fragmentRCDATAName);
+      const textEnd = special ? special.start : source.length;
+      if (textEnd > cursor) {{
+        appendParsedText(decodeHtmlEntities(source.slice(cursor, textEnd)).replace(/\u0000/g, "\ufffd"));
+      }}
+      cursor = special ? special.end : source.length;
+    }}
     while (cursor < source.length) {{
       let parent = stack[stack.length - 1];
       if (source.startsWith("<!--", cursor)) {{

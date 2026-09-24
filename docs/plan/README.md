@@ -27,9 +27,9 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion through `native-engine-browser-695` is complete locally; issue #40
-remains open. Slice 695 follows the completed
-`native-engine-browser-694` checkpoint.
+expansion is complete locally through `native-engine-browser-696`; issue #40
+remains open. Slice 696 follows the completed `native-engine-browser-695`
+checkpoint.
 The earlier expansion chain includes completed
 `native-engine-browser-687`, following completed
 `native-engine-browser-686`,
@@ -196,6 +196,15 @@ cloning, and serialization. The locked package check passed; the foreign batch
 passed 9/9 and the scoped HTML batch passed 34/34. Documentation, formatting,
 and whitespace gates passed. Remote CI was not run; general parser
 conformance remains open.
+
+[`native-engine-browser-696`](tasks/native-engine-browser-696.md) is complete
+locally. Fragment tokenization begins in RCDATA for `title` and `textarea`
+contexts, including SVG `title`, and resumes ordinary fragment parsing after
+the appropriate closing tag. Rust commits and same-turn projections agree;
+full-document SVG integration-point parsing remains unchanged. The HTML batch
+passed 35/35 and the foreign batch 9/9 after the locked package check. Local
+documentation, formatting, and whitespace gates passed; remote CI was not
+run.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

@@ -1291,6 +1291,7 @@ struct NativeCspDeclaration {
 struct NativeCspPolicy {
     policies: Vec<NativeCspDirectives>,
     header_policy_count: usize,
+    rooted_file_self_root: Option<PathBuf>,
     report_only_policies: Vec<NativeCspDeclaration>,
     reporting_endpoints: BTreeMap<String, Vec<String>>,
 }
@@ -1327,6 +1328,27 @@ impl NativeCspDirectives {
             resource_url,
             parser_inserted,
             nonce,
+        )
+    }
+
+    fn allows_rooted_file_script(
+        &self,
+        document_url: &Url,
+        resource_url: &Url,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+        same_root: bool,
+    ) -> bool {
+        let sources = self
+            .sources_for(NativeSubresourceKind::Script)
+            .or(self.default_sources.as_ref());
+        csp_script_sources_allow_for_rooted_file(
+            sources.map(Vec::as_slice),
+            document_url,
+            resource_url,
+            parser_inserted,
+            nonce,
+            same_root,
         )
     }
 
@@ -1564,6 +1586,29 @@ impl NativeCspPolicy {
         self.policies
             .iter()
             .all(|policy| policy.allows_script(document_url, resource_url, parser_inserted, nonce))
+    }
+
+    fn allows_rooted_file_script(
+        &self,
+        document_url: &Url,
+        resource_url: &Url,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+        resource_root: Option<&Path>,
+    ) -> bool {
+        let same_root = self
+            .rooted_file_self_root
+            .as_deref()
+            .is_some_and(|root| resource_root.is_some_and(|resource_root| resource_root == root));
+        self.policies.iter().all(|policy| {
+            policy.allows_rooted_file_script(
+                document_url,
+                resource_url,
+                parser_inserted,
+                nonce,
+                same_root,
+            )
+        })
     }
 
     fn allows_script_redirect(
@@ -1999,6 +2044,41 @@ fn csp_script_sources_allow_with_path(
         return !parser_inserted;
     }
     csp_sources_allow_with_path(Some(sources), document_url, resource_url, ignore_path)
+}
+
+fn csp_script_sources_allow_for_rooted_file(
+    sources: Option<&[String]>,
+    document_url: &Url,
+    resource_url: &Url,
+    parser_inserted: bool,
+    nonce: Option<&str>,
+    same_root: bool,
+) -> bool {
+    let Some(sources) = sources else {
+        return true;
+    };
+    if nonce.is_some_and(|nonce| {
+        sources
+            .iter()
+            .any(|candidate| csp_nonce_matches(candidate, nonce))
+    }) {
+        return true;
+    }
+    if sources
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case("'strict-dynamic'"))
+    {
+        return !parser_inserted;
+    }
+    sources.iter().any(|source| {
+        if source.eq_ignore_ascii_case("'none'") {
+            return false;
+        }
+        if source.eq_ignore_ascii_case("'self'") {
+            return same_root;
+        }
+        csp_source_expression_matches(source, document_url, resource_url, false)
+    })
 }
 
 fn csp_source_expression_matches(
@@ -2683,6 +2763,14 @@ impl NativeResourceLoader {
         Ok(canonical_path)
     }
 
+    fn allowed_file_root_for_path(&self, path: &Path) -> Option<&Path> {
+        self.allowed_file_roots
+            .iter()
+            .filter(|root| path.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .map(PathBuf::as_path)
+    }
+
     fn local_file_subresource_path(
         &self,
         document_url: &str,
@@ -3005,16 +3093,10 @@ impl NativeResourceLoader {
         source: &str,
         nonce: Option<&str>,
     ) -> Result<bool, NativeEngineError> {
-        validate_url_text("CSP document URL", document_url)?;
-        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
-            NativeEngineError::UnsupportedUrl {
-                reason: "CSP document URL is not valid URL syntax".into(),
-            }
-        })?;
-        reject_credentials(&document_url)?;
-        if !is_network_url(document_url.as_str()) {
+        let Some((document_url, _)) = self.csp_document_owner(document_url, "CSP document URL")?
+        else {
             return Ok(true);
-        }
+        };
         let policy = self
             .network
             .document_policies
@@ -3138,20 +3220,46 @@ impl NativeResourceLoader {
         &self,
         document_url: &str,
     ) -> Result<Option<&NativeCspPolicy>, NativeEngineError> {
-        validate_url_text("CSP document URL", document_url)?;
-        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
-            NativeEngineError::UnsupportedUrl {
-                reason: "CSP document URL is not valid URL syntax".into(),
-            }
-        })?;
-        if !is_network_url(document_url.as_str()) {
+        let Some((document_url, _)) = self.csp_document_owner(document_url, "CSP document URL")?
+        else {
             return Ok(None);
-        }
-        reject_credentials(&document_url)?;
+        };
         Ok(self
             .network
             .document_policies
             .get(&cache_key(&document_url)))
+    }
+
+    fn csp_document_owner(
+        &self,
+        document_url: &str,
+        resource_name: &str,
+    ) -> Result<Option<(Url, Option<PathBuf>)>, NativeEngineError> {
+        validate_url_text(resource_name, document_url)?;
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: format!("{resource_name} is not valid URL syntax"),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        if is_network_url(document_url.as_str()) {
+            return Ok(Some((document_url, None)));
+        }
+        if !is_file_url(document_url.as_str()) {
+            return Ok(None);
+        }
+        let Some((_, path)) = self.local_file_subresource_path(
+            document_url.as_str(),
+            document_url.as_str(),
+            resource_name,
+        )?
+        else {
+            return Ok(None);
+        };
+        let file_root = self
+            .allowed_file_root_for_path(&path)
+            .map(Path::to_path_buf);
+        Ok(file_root.map(|file_root| (document_url, Some(file_root))))
     }
 
     pub(crate) fn websocket_target(
@@ -3511,16 +3619,11 @@ impl NativeResourceLoader {
         document_url: &str,
         policies: &[String],
     ) -> Result<(), NativeEngineError> {
-        validate_url_text("CSP meta policy owner URL", document_url)?;
-        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
-            NativeEngineError::UnsupportedUrl {
-                reason: "CSP meta policy owner URL is not valid URL syntax".into(),
-            }
-        })?;
-        if !is_network_url(document_url.as_str()) {
+        let Some((document_url, file_root)) =
+            self.csp_document_owner(document_url, "CSP meta policy owner URL")?
+        else {
             return Ok(());
-        }
-        reject_credentials(&document_url)?;
+        };
         if policies.len() > MAX_NATIVE_CSP_POLICIES {
             return Err(NativeEngineError::limit(
                 "CSP meta policies",
@@ -3530,6 +3633,7 @@ impl NativeResourceLoader {
         }
         let key = cache_key(&document_url);
         let policy = self.network.document_policies.entry(key).or_default();
+        policy.rooted_file_self_root = file_root;
         policy.replace_meta_policies(policies)
     }
 
@@ -3541,16 +3645,11 @@ impl NativeResourceLoader {
         if policies.is_empty() {
             return Ok(());
         }
-        validate_url_text("CSP meta policy owner URL", document_url)?;
-        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
-            NativeEngineError::UnsupportedUrl {
-                reason: "CSP meta policy owner URL is not valid URL syntax".into(),
-            }
-        })?;
-        if !is_network_url(document_url.as_str()) {
+        let Some((document_url, file_root)) =
+            self.csp_document_owner(document_url, "CSP meta policy owner URL")?
+        else {
             return Ok(());
-        }
-        reject_credentials(&document_url)?;
+        };
         if policies.len() > MAX_NATIVE_CSP_POLICIES {
             return Err(NativeEngineError::limit(
                 "CSP meta policies",
@@ -3560,6 +3659,7 @@ impl NativeResourceLoader {
         }
         let key = cache_key(&document_url);
         let policy = self.network.document_policies.entry(key).or_default();
+        policy.rooted_file_self_root = file_root;
         policy.append_meta_policies(policies)
     }
 
@@ -6761,6 +6861,35 @@ impl NativeResourceLoader {
         max_source_bytes: usize,
         integrity: Option<&str>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.load_local_file_script_internal(document_url, href, max_source_bytes, integrity, None)
+    }
+
+    pub(crate) fn load_local_file_script_with_policy(
+        &self,
+        document_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+        integrity: Option<&str>,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.load_local_file_script_internal(
+            document_url,
+            href,
+            max_source_bytes,
+            integrity,
+            Some((parser_inserted, nonce)),
+        )
+    }
+
+    fn load_local_file_script_internal(
+        &self,
+        document_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        integrity: Option<&str>,
+        script_metadata: Option<(bool, Option<&str>)>,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text("script URL", href)?;
         if max_source_bytes == 0 {
@@ -6774,6 +6903,31 @@ impl NativeResourceLoader {
         else {
             return Ok(None);
         };
+        if let Some((parser_inserted, nonce)) = script_metadata {
+            let Some((document_url, _)) =
+                self.csp_document_owner(document_url, "file script CSP owner URL")?
+            else {
+                return Ok(None);
+            };
+            let Some(resource_root) = self.allowed_file_root_for_path(&path) else {
+                return Ok(None);
+            };
+            let policy = self
+                .network
+                .document_policies
+                .get(&cache_key(&document_url))
+                .cloned()
+                .unwrap_or_default();
+            if !policy.allows_rooted_file_script(
+                &document_url,
+                &target_url,
+                parser_inserted,
+                nonce,
+                Some(resource_root),
+            ) {
+                return Ok(None);
+            }
+        }
         let bytes = read_bounded_file(&path, max_source_bytes, "file script subresource")?;
         if !subresource_integrity_matches(integrity, &bytes) {
             return Ok(None);
@@ -9329,7 +9483,8 @@ mod tests {
         NativeResource, NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
         cache_control_requires_revalidation, cached_resource_content_type_text_allowed,
         content_security_policy, cors_origin_header, cors_preflight_response_allowed,
-        cors_response_allowed, csp_report_deliveries_for_declaration, csp_sources_allow,
+        cors_response_allowed, csp_report_deliveries_for_declaration,
+        csp_script_sources_allow_for_rooted_file, csp_sources_allow,
         csp_sources_allow_for_redirect, data_font_bytes, data_media_metadata, decode_html_body,
         document_cache_fresh_until, document_cache_storage_allowed,
         javascript_mime_essence_allowed, javascript_mime_type_essence_match,
@@ -10278,6 +10433,84 @@ mod tests {
 
         let image = Url::parse("https://unlisted.test/logo.png").unwrap();
         assert!(!policy.allows(NativeSubresourceKind::Image, &document, &image));
+    }
+
+    #[test]
+    fn rooted_file_csp_self_uses_the_admitting_configured_root() {
+        let document = Url::parse("file:///trusted/site/index.html").unwrap();
+        let same_root = Url::parse("file:///trusted/site/app.js").unwrap();
+        let other_root = Url::parse("file:///trusted/other/app.js").unwrap();
+        let self_source = vec!["'self'".to_owned()];
+
+        assert!(csp_script_sources_allow_for_rooted_file(
+            Some(&self_source),
+            &document,
+            &same_root,
+            true,
+            None,
+            true,
+        ));
+        assert!(!csp_script_sources_allow_for_rooted_file(
+            Some(&self_source),
+            &document,
+            &other_root,
+            true,
+            None,
+            false,
+        ));
+
+        let explicit_file_scheme = vec!["file:".to_owned()];
+        assert!(csp_script_sources_allow_for_rooted_file(
+            Some(&explicit_file_scheme),
+            &document,
+            &other_root,
+            true,
+            None,
+            false,
+        ));
+    }
+
+    #[test]
+    fn rooted_file_csp_denies_script_before_reading_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-native-rooted-file-csp-{}",
+            std::process::id()
+        ));
+        let site = root.join("site");
+        let other = root.join("other");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&site).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let document_path = site.join("index.html");
+        let denied_script_path = other.join("invalid-utf8.js");
+        fs::write(&document_path, "<!doctype html>").unwrap();
+        fs::write(&denied_script_path, [0xff]).unwrap();
+        let document_url = Url::from_file_path(&document_path).unwrap().to_string();
+        let denied_script_url = Url::from_file_path(&denied_script_path)
+            .unwrap()
+            .to_string();
+        let config = NativeEngineConfig::default()
+            .with_allowed_file_root(site)
+            .with_allowed_file_root(other);
+        let mut loader = NativeResourceLoader::new(&config).unwrap();
+        loader
+            .apply_meta_content_security_policies(&document_url, &["script-src 'self'".to_owned()])
+            .unwrap();
+
+        assert!(
+            loader
+                .load_local_file_script_with_policy(
+                    &document_url,
+                    &denied_script_url,
+                    1024,
+                    true,
+                    None,
+                    None,
+                )
+                .unwrap()
+                .is_none()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

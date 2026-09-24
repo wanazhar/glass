@@ -27,10 +27,10 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-701`; issue #40
-remains open. Slice 701 follows the completed `native-engine-browser-700`
-checkpoint. Connected dynamic inline classic scripts now recognize the same
-five JavaScript MIME types as the external-script response policy, ignoring
+expansion is complete locally through `native-engine-browser-702`; issue #40
+remains open. Slice 702 follows the completed `native-engine-browser-701`
+checkpoint. Initial-document and dynamic inline classic scripts now share the
+same five JavaScript MIME types as external response validation, ignoring
 case and parameters; unsupported data types do not execute. Slice 700 fixed
 connected insertion and execute-once behavior.
 
@@ -254,6 +254,13 @@ JavaScript MIME types recognized by the existing external-script response
 policy, with case-insensitive MIME essence matching and parameters ignored.
 `application/json` remains inert. Full script/task scheduling and general
 conformance remain open; remote CI was not run.
+
+[`native-engine-browser-702`](tasks/native-engine-browser-702.md) is complete
+locally. Initial-document inline/external classic-script classification now
+uses the same shared five-type JavaScript MIME essence helper as external
+response validation and dynamic inline insertion. Parameterized and
+case-varied essences are accepted; `application/json` stays inert. Complete
+script type/scheduling conformance remains open; remote CI was not run.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

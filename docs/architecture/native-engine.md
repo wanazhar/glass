@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-701`; issue #40 remains open. Earlier completed slices
+`native-engine-browser-702`; issue #40 remains open. Earlier completed slices
 include `native-engine-browser-696` through `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
@@ -720,6 +720,14 @@ types such as `application/json` do not execute. This does not change the
 bounded process-backed external/module loader or claim full script scheduling
 conformance. Remote CI was not run. See
 [`slice 701`](../plan/tasks/native-engine-browser-701.md).
+
+Slice 702 uses the same five-type JavaScript MIME essence policy when the
+initial document parser classifies inline and external classic scripts. The
+policy is shared with external response validation; case is ignored and
+parameters are discarded consistently. Module handling is unchanged, and
+data types such as `application/json` remain inert. This does not claim the
+full JavaScript MIME registry or complete script scheduling. Remote CI was not
+run. See [`slice 702`](../plan/tasks/native-engine-browser-702.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

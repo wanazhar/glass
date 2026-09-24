@@ -6792,17 +6792,46 @@ pub(crate) enum NativePageScript {
     Module {
         name: String,
         source: String,
+        base_url: String,
         node_index: Option<u32>,
     },
     ModuleDependency {
         name: String,
         source: String,
+        base_url: String,
     },
     ImportMap(NativeModuleImportMap),
 }
 
+fn module_source_maps(
+    sources: &[NativePageScript],
+) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+    let mut module_sources = BTreeMap::new();
+    let mut module_base_urls = BTreeMap::new();
+    for source in sources {
+        let (name, module_source, base_url) = match source {
+            NativePageScript::Module {
+                name,
+                source,
+                base_url,
+                ..
+            }
+            | NativePageScript::ModuleDependency {
+                name,
+                source,
+                base_url,
+            } => (name, source, base_url),
+            NativePageScript::Classic { .. } | NativePageScript::ImportMap(_) => continue,
+        };
+        module_sources.insert(name.clone(), module_source.clone());
+        module_base_urls.insert(name.clone(), base_url.clone());
+    }
+    (module_sources, module_base_urls)
+}
+
 struct NativeModuleResolver {
     import_map: Arc<Mutex<NativeModuleImportMap>>,
+    module_base_urls: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 impl Resolver for NativeModuleResolver {
@@ -6813,8 +6842,18 @@ impl Resolver for NativeModuleResolver {
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<String> {
-        let base = Url::parse(base)
-            .map_err(|_| Error::new_resolving_message(base, name, "module base is not a URL"))?;
+        let base_url = self
+            .module_base_urls
+            .lock()
+            .map_err(|_| {
+                Error::new_resolving_message(base, name, "module base URL map is unavailable")
+            })?
+            .get(base)
+            .cloned()
+            .unwrap_or_else(|| base.to_owned());
+        let base = Url::parse(&base_url).map_err(|_| {
+            Error::new_resolving_message(&base_url, name, "module base is not a URL")
+        })?;
         let import_map = self.import_map.lock().map_err(|_| {
             Error::new_resolving_message(base.as_str(), name, "module import map is unavailable")
         })?;
@@ -6912,6 +6951,7 @@ pub(crate) fn execute_inline_scripts(
                 NativePageScript::Module {
                     name: format!("{document_url}#glass-inline-module-{index}"),
                     source,
+                    base_url: document_url.to_owned(),
                     node_index: Some(node_index),
                 },
             )),
@@ -6951,6 +6991,13 @@ pub(crate) fn execute_inline_scripts(
                 integrity,
                 ..
             } if is_file_url(document_url) => {
+                let request_url = match resolve_local_file_module_specifier(document_url, &href) {
+                    Ok(request_url) => request_url,
+                    Err(_) => {
+                        resource_events.push((node_index, NativeEventKind::Error));
+                        return None;
+                    }
+                };
                 match loader.load_local_file_script(
                     document_url,
                     &href,
@@ -6961,6 +7008,7 @@ pub(crate) fn execute_inline_scripts(
                         match load_local_file_module_graph(
                             loader,
                             document_url,
+                            request_url,
                             resource,
                             timing,
                             node_index,
@@ -7013,25 +7061,28 @@ pub(crate) fn execute_inline_scripts(
 pub(crate) fn load_local_file_module_graph(
     loader: &NativeResourceLoader,
     document_url: &str,
+    root_request_url: String,
     root: NativeScriptResource,
     timing: NativePageScriptTiming,
     node_index: u32,
 ) -> Result<Vec<(NativePageScriptTiming, NativePageScript)>, NativeEngineError> {
-    let root_name = root.url.clone();
+    let root_name = root_request_url;
+    let root_base_url = root.url.clone();
     let root_source = root.body.clone();
     let mut sources = vec![(
         timing,
         NativePageScript::Module {
             name: root_name.clone(),
             source: root_source.clone(),
+            base_url: root_base_url.clone(),
             node_index: Some(node_index),
         },
     )];
     let mut seen = BTreeSet::from([root_name.clone()]);
-    let mut pending = vec![(root_name, root_source)];
+    let mut pending = vec![(root_name, root_base_url, root_source)];
     let mut import_edges = 0usize;
     let mut total_bytes = root.body.len();
-    while let Some((module_url, module_source)) = pending.pop() {
+    while let Some((_, module_base_url, module_source)) = pending.pop() {
         let mut specifiers = static_module_specifiers(&module_source)?;
         specifiers.extend(literal_dynamic_module_specifiers(&module_source));
         for specifier in specifiers {
@@ -7043,7 +7094,7 @@ pub(crate) fn load_local_file_module_graph(
                     import_edges,
                 ));
             }
-            let target = resolve_local_file_module_specifier(&module_url, &specifier)?;
+            let target = resolve_local_file_module_specifier(&module_base_url, &specifier)?;
             if !seen.insert(target.clone()) {
                 continue;
             }
@@ -7070,16 +7121,18 @@ pub(crate) fn load_local_file_module_graph(
                     total_bytes,
                 ));
             }
-            let name = resource.url;
+            let name = target;
+            let base_url = resource.url;
             let source = resource.body;
             sources.push((
                 timing,
                 NativePageScript::ModuleDependency {
                     name: name.clone(),
                     source: source.clone(),
+                    base_url: base_url.clone(),
                 },
             ));
-            pending.push((name, source));
+            pending.push((name, base_url, source));
         }
     }
     Ok(sources)
@@ -7089,6 +7142,7 @@ pub(crate) fn load_local_file_module_graph_with_import_map(
     loader: &NativeResourceLoader,
     document_url: &str,
     root_name: String,
+    root_base_url: String,
     root_source: String,
     timing: NativePageScriptTiming,
     node_index: u32,
@@ -7099,6 +7153,7 @@ pub(crate) fn load_local_file_module_graph_with_import_map(
         NativePageScript::Module {
             name: root_name.clone(),
             source: root_source.clone(),
+            base_url: root_base_url.clone(),
             node_index: Some(node_index),
         },
     )];
@@ -7107,10 +7162,10 @@ pub(crate) fn load_local_file_module_graph_with_import_map(
     }
 
     let mut seen = BTreeSet::from([root_name.clone()]);
-    let mut pending = vec![(root_name, root_source.clone())];
+    let mut pending = vec![(root_name, root_base_url, root_source.clone())];
     let mut import_edges = 0usize;
     let mut total_bytes = root_source.len();
-    while let Some((module_url, module_source)) = pending.pop() {
+    while let Some((_, module_base_url, module_source)) = pending.pop() {
         let mut specifiers = static_module_specifiers(&module_source)?;
         specifiers.extend(literal_dynamic_module_specifiers(&module_source));
         for specifier in specifiers {
@@ -7123,7 +7178,7 @@ pub(crate) fn load_local_file_module_graph_with_import_map(
                 ));
             }
             let target = import_map
-                .resolve_and_record(&module_url, &specifier)
+                .resolve_and_record(&module_base_url, &specifier)
                 .map_err(|reason| NativeEngineError::Network {
                     operation: "file module dependency".into(),
                     reason: reason.into(),
@@ -7159,19 +7214,41 @@ pub(crate) fn load_local_file_module_graph_with_import_map(
                     total_bytes,
                 ));
             }
-            let name = resource.url;
+            let name = target;
+            let base_url = resource.url;
             let source = resource.body;
             sources.push((
                 timing,
                 NativePageScript::ModuleDependency {
                     name: name.clone(),
                     source: source.clone(),
+                    base_url: base_url.clone(),
                 },
             ));
-            pending.push((name, source));
+            pending.push((name, base_url, source));
         }
     }
     Ok(sources)
+}
+
+pub(crate) fn resolve_module_request_url(
+    base_url: &str,
+    specifier: &str,
+) -> Result<String, NativeEngineError> {
+    let base = Url::parse(base_url).map_err(|_| NativeEngineError::UnsupportedUrl {
+        reason: "module base URL is not valid URL syntax".into(),
+    })?;
+    let target = base
+        .join(specifier)
+        .map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "module request URL could not be resolved against its base".into(),
+        })?;
+    if !target.username().is_empty() || target.password().is_some() {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "module request URL must not contain credentials".into(),
+        });
+    }
+    Ok(target.to_string())
 }
 
 fn resolve_local_file_module_specifier(
@@ -7195,7 +7272,7 @@ fn resolve_local_file_module_specifier(
             reason: "file module owner URL is not valid URL syntax".into(),
         }
     })?;
-    let mut target = if is_absolute_file {
+    let target = if is_absolute_file {
         Url::parse(specifier)
     } else {
         base.join(specifier)
@@ -7208,7 +7285,6 @@ fn resolve_local_file_module_specifier(
             reason: "file module URL must not contain credentials".into(),
         });
     }
-    target.set_fragment(None);
     if !is_file_url(target.as_str()) {
         return Err(NativeEngineError::UnsupportedUrl {
             reason: "file module URL must use the file scheme".into(),
@@ -7256,20 +7332,15 @@ pub(crate) fn execute_page_scripts(
         .as_mut()
         .expect("page script runtime initialized")
         .set_ready_state("loading");
-    let module_sources = sources
-        .iter()
-        .filter_map(|source| match source {
-            NativePageScript::Module { name, source, .. }
-            | NativePageScript::ModuleDependency { name, source } => {
-                Some((name.clone(), source.clone()))
-            }
-            NativePageScript::Classic { .. } | NativePageScript::ImportMap(_) => None,
-        })
-        .collect::<BTreeMap<_, _>>();
+    let (module_sources, module_base_urls) = module_source_maps(sources);
     runtime
         .as_ref()
         .expect("page script runtime initialized")
         .set_module_sources(module_sources);
+    runtime
+        .as_ref()
+        .expect("page script runtime initialized")
+        .set_module_base_urls(module_base_urls);
     let mut pending_fetches = Vec::new();
     let mut websocket_commands = Vec::new();
     let mut event_source_commands = Vec::new();
@@ -7650,17 +7721,9 @@ pub(crate) fn execute_dynamic_page_scripts(
     resource_events: &[(u32, NativeEventKind)],
     csp_violations: &[NativeCspViolation],
 ) -> Result<NativePageScriptResult, NativeEngineError> {
-    let module_sources = sources
-        .iter()
-        .filter_map(|source| match source {
-            NativePageScript::Module { name, source, .. }
-            | NativePageScript::ModuleDependency { name, source } => {
-                Some((name.clone(), source.clone()))
-            }
-            NativePageScript::Classic { .. } | NativePageScript::ImportMap(_) => None,
-        })
-        .collect::<BTreeMap<_, _>>();
+    let (module_sources, module_base_urls) = module_source_maps(&sources);
     runtime.set_module_sources(module_sources);
+    runtime.set_module_base_urls(module_base_urls);
 
     let mut pending = VecDeque::from(sources);
     let mut pending_fetches = Vec::new();
@@ -8027,6 +8090,7 @@ pub(crate) fn page_script_sources_to_scripts(
             } => Some(NativePageScript::Module {
                 name: format!("{document_url}#{module_name_prefix}-{node_index}-{index}"),
                 source,
+                base_url: document_url.to_owned(),
                 node_index: Some(node_index),
             }),
             NativePageScriptSource::External { .. }
@@ -11154,6 +11218,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     deadline: Arc<Mutex<Option<Instant>>>,
     environment: Arc<Mutex<NativeEnvironmentOverrides>>,
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
+    module_base_urls: Arc<Mutex<BTreeMap<String, String>>>,
     module_import_map: Arc<Mutex<NativeModuleImportMap>>,
     sync_xhr_loader: Arc<Mutex<Option<NativeResourceLoader>>>,
     sync_xhr_loader_used: Arc<AtomicBool>,
@@ -11237,10 +11302,12 @@ impl NativeJavaScriptRuntime {
             reason: "native JavaScript runtime could not be created".into(),
         })?;
         let module_sources = Arc::new(Mutex::new(BTreeMap::new()));
+        let module_base_urls = Arc::new(Mutex::new(BTreeMap::new()));
         let module_import_map = Arc::new(Mutex::new(NativeModuleImportMap::default()));
         runtime.set_loader(
             NativeModuleResolver {
                 import_map: Arc::clone(&module_import_map),
+                module_base_urls: Arc::clone(&module_base_urls),
             },
             NativeModuleLoader {
                 sources: Arc::clone(&module_sources),
@@ -11305,6 +11372,7 @@ impl NativeJavaScriptRuntime {
             deadline,
             environment: Arc::new(Mutex::new(NativeEnvironmentOverrides::default())),
             module_sources,
+            module_base_urls,
             module_import_map,
             sync_xhr_loader: Arc::new(Mutex::new(None)),
             sync_xhr_loader_used: Arc::new(AtomicBool::new(false)),
@@ -13150,6 +13218,12 @@ impl NativeJavaScriptRuntime {
     pub(crate) fn set_module_sources(&self, sources: BTreeMap<String, String>) {
         if let Ok(mut current) = self.module_sources.lock() {
             *current = sources;
+        }
+    }
+
+    pub(crate) fn set_module_base_urls(&self, base_urls: BTreeMap<String, String>) {
+        if let Ok(mut current) = self.module_base_urls.lock() {
+            *current = base_urls;
         }
     }
 

@@ -52,9 +52,10 @@ use super::javascript::{
     host_key_event_batch_with_modifiers, host_submit_event_batch,
     literal_dynamic_module_specifiers, load_indexed_db_profile, load_service_worker_cache_profile,
     load_service_worker_registration_profiles, load_web_storage_profile, order_page_scripts,
-    page_script_sources_to_scripts, save_service_worker_cache_profile, save_web_storage_profile,
-    static_module_specifiers, storage_key, validate_message_port_transfers,
-    validate_native_message_payload, validate_native_object_url_transfers,
+    page_script_sources_to_scripts, resolve_module_request_url, save_service_worker_cache_profile,
+    save_web_storage_profile, static_module_specifiers, storage_key,
+    validate_message_port_transfers, validate_native_message_payload,
+    validate_native_object_url_transfers,
 };
 use super::layout::NativePoint;
 use super::module_import_map::NativeModuleImportMap;
@@ -8324,12 +8325,14 @@ async fn load_page_script_source_list(
                     NativePageScript::Module {
                         name: name.clone(),
                         source: source.clone(),
+                        base_url: document_url.to_owned(),
                         node_index: Some(node_index),
                     },
                 ));
                 let dependency_result = load_module_dependencies(
                     document_url,
                     &name,
+                    document_url,
                     &source,
                     timing,
                     loader,
@@ -8399,6 +8402,13 @@ async fn load_page_script_source_list(
                 crossorigin,
                 parser_inserted,
             } => {
+                let request_url = match resolve_module_request_url(document_url, &href) {
+                    Ok(request_url) => request_url,
+                    Err(_) => {
+                        resource_events.push((node_index, NativeEventKind::Error));
+                        continue;
+                    }
+                };
                 let object_url = runtime
                     .map(|runtime| runtime.object_url_resource(&href))
                     .transpose()?
@@ -8420,7 +8430,8 @@ async fn load_page_script_source_list(
                     Ok(resource) => match resource {
                         Some(resource) => {
                             let script_start = sources.len();
-                            let name = resource.url;
+                            let name = request_url;
+                            let base_url = resource.url;
                             let source = resource.body;
                             let mut seen = BTreeSet::new();
                             seen.insert(name.clone());
@@ -8430,12 +8441,14 @@ async fn load_page_script_source_list(
                                 NativePageScript::Module {
                                     name: name.clone(),
                                     source: source.clone(),
+                                    base_url: base_url.clone(),
                                     node_index: Some(node_index),
                                 },
                             ));
                             let dependency_result = load_module_dependencies(
                                 document_url,
                                 &name,
+                                &base_url,
                                 &source,
                                 timing,
                                 loader,
@@ -8683,7 +8696,8 @@ pub(crate) fn merge_dynamic_page_script_result(
 
 async fn load_module_dependencies(
     owner_url: &str,
-    module_url: &str,
+    module_identity: &str,
+    module_base_url: &str,
     source: &str,
     timing: NativePageScriptTiming,
     loader: &mut NativeResourceLoader,
@@ -8693,13 +8707,17 @@ async fn load_module_dependencies(
     seen: &mut BTreeSet<String>,
     total_bytes: &mut usize,
 ) -> Result<(), NativeEngineError> {
-    let mut pending = vec![(module_url.to_owned(), source.to_owned())];
+    let mut pending = vec![(
+        module_identity.to_owned(),
+        module_base_url.to_owned(),
+        source.to_owned(),
+    )];
     let mut requested_urls = seen.clone();
-    while let Some((current_url, current_source)) = pending.pop() {
+    while let Some((_, current_base_url, current_source)) = pending.pop() {
         let mut specifiers = static_module_specifiers(&current_source)?;
         specifiers.extend(literal_dynamic_module_specifiers(&current_source));
         for specifier in specifiers {
-            let Some(target) = resolve_module_specifier(&current_url, &specifier, import_map)?
+            let Some(target) = resolve_module_specifier(&current_base_url, &specifier, import_map)?
             else {
                 continue;
             };
@@ -8750,7 +8768,7 @@ async fn load_module_dependencies(
                     reason: "module dependency could not be loaded".into(),
                 });
             };
-            let name = resource.url;
+            let name = target;
             if !seen.insert(name.clone()) {
                 continue;
             }
@@ -8761,6 +8779,7 @@ async fn load_module_dependencies(
                     seen.len(),
                 ));
             }
+            let base_url = resource.url;
             let source = resource.body;
             *total_bytes = total_bytes.saturating_add(source.len());
             if *total_bytes > MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS) {
@@ -8775,9 +8794,10 @@ async fn load_module_dependencies(
                 NativePageScript::ModuleDependency {
                     name: name.clone(),
                     source: source.clone(),
+                    base_url: base_url.clone(),
                 },
             ));
-            pending.push((name, source));
+            pending.push((name, base_url, source));
         }
     }
     Ok(())
@@ -8804,7 +8824,7 @@ fn resolve_module_specifier(
     import_map: &mut NativeModuleImportMap,
 ) -> Result<Option<String>, NativeEngineError> {
     let target = import_map
-        .resolve_and_record(without_fragment(module_url), specifier)
+        .resolve_and_record(module_url, specifier)
         .map_err(|reason| NativeEngineError::UnsupportedUrl {
             reason: reason.into(),
         })?;

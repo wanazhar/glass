@@ -66,6 +66,13 @@ pub(crate) enum NativeSubresourceKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeModuleResourceType {
+    JavaScript,
+    Json,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeNavigationPolicyKind {
     FormAction,
     NavigateTo,
@@ -838,6 +845,7 @@ struct NativeImageCacheEntry {
 struct NativeTextCacheEntry {
     url: String,
     body: String,
+    content_type: Option<String>,
     fresh_until: Option<Instant>,
     etag: Option<String>,
     last_modified: Option<String>,
@@ -1005,6 +1013,7 @@ impl NativeTextCacheEntry {
         Some(Self {
             url,
             body,
+            content_type: response_header_text(headers, reqwest::header::CONTENT_TYPE),
             fresh_until: document_cache_fresh_until(headers, now),
             etag: response_header_text(headers, reqwest::header::ETAG),
             last_modified: response_header_text(headers, reqwest::header::LAST_MODIFIED),
@@ -1029,6 +1038,9 @@ impl NativeTextCacheEntry {
         }
         if let Some(last_modified) = response_header_text(headers, reqwest::header::LAST_MODIFIED) {
             self.last_modified = Some(last_modified);
+        }
+        if let Some(content_type) = response_header_text(headers, reqwest::header::CONTENT_TYPE) {
+            self.content_type = Some(content_type);
         }
         Some(self)
     }
@@ -6818,6 +6830,33 @@ impl NativeResourceLoader {
             integrity,
             crossorigin,
             object_url,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_module_dependency_async(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        parser_inserted: bool,
+        integrity: Option<&str>,
+        crossorigin: Option<&str>,
+        object_url: Option<&NativeObjectUrlResource>,
+        module_type: NativeModuleResourceType,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.load_script_like_async(
+            document_url,
+            href,
+            max_source_bytes,
+            NativeSubresourceKind::Script,
+            parser_inserted,
+            None,
+            integrity,
+            crossorigin,
+            object_url,
+            Some(module_type),
         )
         .await
     }
@@ -6838,6 +6877,29 @@ impl NativeResourceLoader {
             None,
             None,
             None,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_worker_module_dependency_async(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        module_type: NativeModuleResourceType,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.load_script_like_async(
+            document_url,
+            href,
+            max_source_bytes,
+            NativeSubresourceKind::Worker,
+            true,
+            None,
+            None,
+            None,
+            None,
+            Some(module_type),
         )
         .await
     }
@@ -6853,6 +6915,7 @@ impl NativeResourceLoader {
         integrity: Option<&str>,
         crossorigin: Option<&str>,
         object_url: Option<&NativeObjectUrlResource>,
+        module_type: Option<NativeModuleResourceType>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text(
@@ -6959,13 +7022,19 @@ impl NativeResourceLoader {
                 return Ok(None);
             };
             NativeOrigin::from_blob_url(without_fragment(target_url.as_str()))?;
-            if object_url
-                .content_type
-                .as_deref()
-                .is_some_and(|content_type| {
-                    !content_type.is_empty() && !javascript_mime_essence_allowed(content_type)
-                })
-            {
+            let content_type_allowed = match module_type {
+                Some(module_type) => module_content_type_text_allowed(
+                    module_type,
+                    object_url.content_type.as_deref(),
+                ),
+                None => object_url
+                    .content_type
+                    .as_deref()
+                    .is_none_or(|content_type| {
+                        content_type.is_empty() || javascript_mime_essence_allowed(content_type)
+                    }),
+            };
+            if !content_type_allowed {
                 return Ok(None);
             }
             if object_url.body.len() > max_source_bytes {
@@ -6996,13 +7065,24 @@ impl NativeResourceLoader {
                     .script_cache
                     .get(&requested_cache_key)
                     .cloned()
-                    .filter(|cached| can_reuse_cached_script && !cached.is_fresh(Instant::now()))
+                    .filter(|cached| {
+                        can_reuse_cached_script
+                            && !cached.is_fresh(Instant::now())
+                            && cached_resource_content_type_text_allowed(
+                                module_type,
+                                cached.content_type.as_deref(),
+                            )
+                    })
             })
             .flatten();
         if subresource_kind == NativeSubresourceKind::Script
             && can_reuse_cached_script
             && let Some(cached) = self.network.script_cache.get(&requested_cache_key)
             && cached.is_fresh(Instant::now())
+            && cached_resource_content_type_text_allowed(
+                module_type,
+                cached.content_type.as_deref(),
+            )
         {
             return if subresource_integrity_matches(integrity, cached.body.as_bytes()) {
                 Ok(Some(NativeScriptResource {
@@ -7026,10 +7106,18 @@ impl NativeResourceLoader {
         let response = loop {
             let mut request_url = current_url.clone();
             request_url.set_fragment(None);
-            let mut request = self.apply_environment_headers(client.get(request_url).header(
-                reqwest::header::ACCEPT,
-                "text/javascript, application/javascript, application/ecmascript, */*",
-            ));
+            let accept = match module_type {
+                Some(NativeModuleResourceType::Json) => "application/json, text/json, */*",
+                Some(
+                    NativeModuleResourceType::JavaScript | NativeModuleResourceType::Unsupported,
+                )
+                | None => "text/javascript, application/javascript, application/ecmascript, */*",
+            };
+            let mut request = self.apply_environment_headers(
+                client
+                    .get(request_url)
+                    .header(reqwest::header::ACCEPT, accept),
+            );
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
@@ -7145,6 +7233,12 @@ impl NativeResourceLoader {
                 url: cached.url.clone(),
                 body: cached.body.clone(),
             };
+            if !cached_resource_content_type_text_allowed(
+                module_type,
+                cached.content_type.as_deref(),
+            ) {
+                return Ok(None);
+            }
             if !subresource_integrity_matches(integrity, cached_resource.body.as_bytes()) {
                 return Ok(None);
             }
@@ -7174,7 +7268,16 @@ impl NativeResourceLoader {
         ) {
             return Ok(None);
         }
-        if !script_content_type_allowed(response.headers().get(reqwest::header::CONTENT_TYPE))? {
+        let content_type_allowed = match module_type {
+            Some(module_type) => module_content_type_allowed(
+                module_type,
+                response.headers().get(reqwest::header::CONTENT_TYPE),
+            )?,
+            None => {
+                script_content_type_allowed(response.headers().get(reqwest::header::CONTENT_TYPE))?
+            }
+        };
+        if !content_type_allowed {
             return Ok(None);
         }
         let content_length = response.content_length();
@@ -8136,6 +8239,65 @@ fn script_content_type_allowed(
         reason: "script content type is not valid ASCII".into(),
     })?;
     Ok(javascript_mime_essence_allowed(value))
+}
+
+fn module_content_type_allowed(
+    module_type: NativeModuleResourceType,
+    value: Option<&reqwest::header::HeaderValue>,
+) -> Result<bool, NativeEngineError> {
+    let Some(value) = value else {
+        return Ok(false);
+    };
+    let value = value.to_str().map_err(|_| NativeEngineError::Network {
+        operation: "module content-type validation".into(),
+        reason: "module content type is not valid ASCII".into(),
+    })?;
+    Ok(module_content_type_text_allowed(module_type, Some(value)))
+}
+
+fn module_content_type_text_allowed(
+    module_type: NativeModuleResourceType,
+    value: Option<&str>,
+) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    let essence = value.split(';').next().unwrap_or_default().trim();
+    match module_type {
+        NativeModuleResourceType::JavaScript => javascript_mime_essence_allowed(essence),
+        NativeModuleResourceType::Json => {
+            if essence.eq_ignore_ascii_case("application/json")
+                || essence.eq_ignore_ascii_case("text/json")
+            {
+                return true;
+            }
+            essence
+                .split_once('/')
+                .is_some_and(|(media_type, subtype)| {
+                    mime_type_token(media_type)
+                        && mime_type_token(subtype)
+                        && subtype.to_ascii_lowercase().ends_with("+json")
+                })
+        }
+        NativeModuleResourceType::Unsupported => false,
+    }
+}
+
+fn mime_type_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+}
+
+fn cached_resource_content_type_text_allowed(
+    module_type: Option<NativeModuleResourceType>,
+    value: Option<&str>,
+) -> bool {
+    match module_type {
+        Some(module_type) => module_content_type_text_allowed(module_type, value),
+        None => value.is_none_or(javascript_mime_essence_allowed),
+    }
 }
 
 pub(crate) const JAVASCRIPT_MIME_TYPE_ESSENCES: &[&str] = &[
@@ -9183,15 +9345,16 @@ mod tests {
         JAVASCRIPT_MIME_TYPE_ESSENCES, MAX_NATIVE_CACHE_ENTRIES,
         MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, MAX_NATIVE_MEDIA_BYTES, NativeCookieProfileEntry,
         NativeCorsMode, NativeEngineConfig, NativeEngineError, NativeFetchMethod,
-        NativeInlineCspKind, NativeNavigationMethod, NativeNavigationPolicyKind,
-        NativeNetworkState, NativeObjectUrlResource, NativeRequestBody, NativeResource,
-        NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
-        cache_control_requires_revalidation, content_security_policy, cors_origin_header,
-        cors_preflight_response_allowed, cors_response_allowed,
-        csp_report_deliveries_for_declaration, csp_sources_allow, csp_sources_allow_for_redirect,
-        data_font_bytes, data_media_metadata, decode_html_body, document_cache_fresh_until,
-        document_cache_storage_allowed, javascript_mime_essence_allowed,
-        javascript_mime_type_essence_match, media_metadata_from_bytes, mixed_content_allowed,
+        NativeInlineCspKind, NativeModuleResourceType, NativeNavigationMethod,
+        NativeNavigationPolicyKind, NativeNetworkState, NativeObjectUrlResource, NativeRequestBody,
+        NativeResource, NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
+        cache_control_requires_revalidation, cached_resource_content_type_text_allowed,
+        content_security_policy, cors_origin_header, cors_preflight_response_allowed,
+        cors_response_allowed, csp_report_deliveries_for_declaration, csp_sources_allow,
+        csp_sources_allow_for_redirect, data_font_bytes, data_media_metadata, decode_html_body,
+        document_cache_fresh_until, document_cache_storage_allowed,
+        javascript_mime_essence_allowed, javascript_mime_type_essence_match,
+        media_metadata_from_bytes, mixed_content_allowed, module_content_type_text_allowed,
         referrer_for_navigation, resolve_subresource_url, subresource_integrity_matches,
         supported_media_type_text,
     };
@@ -9227,6 +9390,51 @@ mod tests {
         }
         assert!(!javascript_mime_essence_allowed("application/json"));
         assert!(!javascript_mime_type_essence_match("application/json"));
+    }
+
+    #[test]
+    fn json_module_mime_type_uses_the_mime_sniffing_json_group() {
+        for content_type in [
+            "application/json",
+            "application/json; charset=utf-8",
+            "text/json",
+            "application/problem+json",
+            "text/vnd.api+json; charset=utf-8",
+        ] {
+            assert!(
+                module_content_type_text_allowed(
+                    NativeModuleResourceType::Json,
+                    Some(content_type)
+                ),
+                "{content_type}"
+            );
+        }
+        for content_type in ["text/plain", "text/javascript", "application/octet-stream"] {
+            assert!(
+                !module_content_type_text_allowed(
+                    NativeModuleResourceType::Json,
+                    Some(content_type)
+                ),
+                "{content_type}"
+            );
+        }
+        assert!(!module_content_type_text_allowed(
+            NativeModuleResourceType::Json,
+            None
+        ));
+        assert!(!module_content_type_text_allowed(
+            NativeModuleResourceType::JavaScript,
+            None
+        ));
+        assert!(!module_content_type_text_allowed(
+            NativeModuleResourceType::Unsupported,
+            Some("application/json")
+        ));
+        assert!(cached_resource_content_type_text_allowed(None, None));
+        assert!(!cached_resource_content_type_text_allowed(
+            None,
+            Some("application/json")
+        ));
     }
 
     #[test]

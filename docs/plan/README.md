@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-719`; issue #40
+expansion is complete locally through `native-engine-browser-720`; issue #40
 remains open. Slices 709–710 preserve request-URL module identity, including
 query and fragment, separately from the final response URL used as the
 descendant base across page, dedicated/shared worker, and service-worker module
@@ -83,6 +83,16 @@ gates passed locally. Remote CI was not run. See
 [task 717](tasks/native-engine-browser-717.md),
 [task 718](tasks/native-engine-browser-718.md), and
 [task 719](tasks/native-engine-browser-719.md).
+Slice 720 implements static JSON module imports across HTTP page, dedicated and
+shared Worker, Service Worker, and configured-root file graphs. JSON resources
+are checked for JSON MIME, expose only a default export, and preserve
+request-URL-plus-type identity, including when the same URL is also imported
+as JavaScript. A narrow QuickJS compatibility rewrite separates those static
+requests before parsing and restores the original specifier before import-map
+resolution. Focused runtime and process-backed tests passed locally; remote CI
+was not run. Dynamic import options, broader file-origin propagation, and
+complete module scheduling remain open. See
+[task 720](tasks/native-engine-browser-720.md).
 Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type

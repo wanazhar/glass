@@ -1803,6 +1803,48 @@ async fn native_file_module_graph_keeps_fragment_distinct_identities() {
 }
 
 #[tokio::test]
+async fn native_json_module_file_graph_loads_rooted_imports() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-json-modules-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("index.html"),
+        "<script type='module' src='./app.js'></script>",
+    )
+    .unwrap();
+    fs::write(
+        root.join("app.js"),
+        "import data from './data.json' with { type: 'json' }; globalThis.fileJsonModule = [data.name, Object.prototype.hasOwnProperty.call(data, '__proto__'), data.__proto__.polluted];",
+    )
+    .unwrap();
+    fs::write(
+        root.join("data.json"),
+        r#"{"name":"file-json","__proto__":{"polluted":true}}"#,
+    )
+    .unwrap();
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(native_test_file_url(&root.join("index.html")))
+            .with_allowed_file_root(root.clone()),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.fileJsonModule")
+            .await
+            .unwrap(),
+        serde_json::json!(["file-json", true, true])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn native_file_document_loads_rooted_script_stylesheet_and_image() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-subresources-{}",
@@ -3637,7 +3679,7 @@ async fn native_local_worker_import_scripts_dynamic_import_uses_source_url() {
 }
 
 #[tokio::test]
-async fn native_local_module_worker_imports_dependencies_and_handles_messages() {
+async fn native_json_module_worker_graphs_support_dedicated_and_shared_workers() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://module-worker-page",
@@ -3646,7 +3688,7 @@ async fn native_local_module_worker_imports_dependencies_and_handles_messages() 
         .unwrap()
         .with_fixture(
             "fixture://module-worker-root",
-            "import { workerValue } from 'fixture://module-worker-dependency'; let importScriptsRejected = false; try { importScripts('fixture://module-worker-dependency'); } catch (error) { importScriptsRejected = error instanceof TypeError; } self.onmessage = event => postMessage({ kind: 'reply', value: workerValue + event.data, module: typeof importScripts, hasDocument: typeof document !== 'undefined' }); postMessage({ kind: 'ready', value: workerValue, importScriptsRejected });",
+            "import { workerValue } from 'fixture://module-worker-dependency'; import workerConfig from 'fixture://module-worker-json' with { type: 'json' }; let importScriptsRejected = false; try { importScripts('fixture://module-worker-dependency'); } catch (error) { importScriptsRejected = error instanceof TypeError; } self.onmessage = event => postMessage({ kind: 'reply', value: workerValue + event.data, module: typeof importScripts, hasDocument: typeof document !== 'undefined' }); postMessage({ kind: 'ready', value: workerValue, importScriptsRejected, json: workerConfig.kind });",
         )
         .unwrap()
         .with_fixture(
@@ -3654,15 +3696,19 @@ async fn native_local_module_worker_imports_dependencies_and_handles_messages() 
             "export const workerValue = 7;",
         )
         .unwrap()
+        .with_fixture("fixture://module-worker-json", r#"{"kind":"worker-json"}"#)
+        .unwrap()
         .with_fixture(
             "fixture://module-shared-worker-root",
-            "import { sharedValue } from 'fixture://module-shared-worker-dependency#first'; import { sharedValue as second } from 'fixture://module-shared-worker-dependency#second'; onconnect = event => { const port = event.ports[0]; port.postMessage({ kind: 'shared-ready', value: sharedValue, executions: globalThis.sharedModuleExecutions }); port.onmessage = message => port.postMessage({ kind: 'shared-reply', value: sharedValue + Number(message.data) }); port.start(); };",
+            "import { sharedValue } from 'fixture://module-shared-worker-dependency#first'; import { sharedValue as second } from 'fixture://module-shared-worker-dependency#second'; import sharedConfig from 'fixture://module-shared-worker-json' with { type: 'json' }; onconnect = event => { const port = event.ports[0]; port.postMessage({ kind: 'shared-ready', value: sharedValue, executions: globalThis.sharedModuleExecutions, json: sharedConfig.kind }); port.onmessage = message => port.postMessage({ kind: 'shared-reply', value: sharedValue + Number(message.data) }); port.start(); };",
         )
         .unwrap()
         .with_fixture(
             "fixture://module-shared-worker-dependency",
             "globalThis.sharedModuleExecutions = (globalThis.sharedModuleExecutions || 0) + 1; export const sharedValue = 5;",
         )
+        .unwrap()
+        .with_fixture("fixture://module-shared-worker-json", r#"{"kind":"shared-json"}"#)
         .unwrap()
         .with_initial_url("fixture://module-worker-page");
     let mut engine = NativeEngine::new(config).unwrap();
@@ -3688,8 +3734,8 @@ async fn native_local_module_worker_imports_dependencies_and_handles_messages() 
             .await
             .unwrap(),
         serde_json::json!([
-            [{"kind": "ready", "value": 7, "importScriptsRejected": true}],
-            [{"kind": "shared-ready", "value": 5, "executions": 2}],
+            [{"kind": "ready", "value": 7, "importScriptsRejected": true, "json": "worker-json"}],
+            [{"kind": "shared-ready", "value": 5, "executions": 2, "json": "shared-json"}],
         ])
     );
     assert_eq!(
@@ -3700,8 +3746,8 @@ async fn native_local_module_worker_imports_dependencies_and_handles_messages() 
             .await
             .unwrap(),
         serde_json::json!([
-            [{"kind": "ready", "value": 7, "importScriptsRejected": true}],
-            [{"kind": "shared-ready", "value": 5, "executions": 2}],
+            [{"kind": "ready", "value": 7, "importScriptsRejected": true, "json": "worker-json"}],
+            [{"kind": "shared-ready", "value": 5, "executions": 2, "json": "shared-json"}],
         ])
     );
     assert_eq!(
@@ -3711,7 +3757,7 @@ async fn native_local_module_worker_imports_dependencies_and_handles_messages() 
             .unwrap(),
         serde_json::json!([
             [
-                {"kind": "ready", "value": 7, "importScriptsRejected": true},
+                {"kind": "ready", "value": 7, "importScriptsRejected": true, "json": "worker-json"},
                 {
                     "kind": "reply",
                     "value": 11,
@@ -3720,7 +3766,7 @@ async fn native_local_module_worker_imports_dependencies_and_handles_messages() 
                 },
             ],
             [
-                {"kind": "shared-ready", "value": 5, "executions": 2},
+                {"kind": "shared-ready", "value": 5, "executions": 2, "json": "shared-json"},
                 {"kind": "shared-reply", "value": 8},
             ],
         ])
@@ -6429,7 +6475,7 @@ async fn native_content_process_worker_fetch_preserves_large_response_payload() 
 }
 
 #[tokio::test]
-async fn native_content_process_registers_service_worker_and_intercepts_fetch_and_navigation() {
+async fn native_json_module_service_worker_static_imports() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -6449,6 +6495,7 @@ async fn native_content_process_registers_service_worker_and_intercepts_fetch_an
                 Cow::Borrowed(
                     r#"import { execution as first } from './sw-dep.js#first';
 import { execution as second } from './sw-dep.js#second';
+import swConfiguration from './sw-config.json' with { type: 'json' };
 const moduleExecutionCount = first + second;
 self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
@@ -6480,6 +6527,7 @@ self.addEventListener('fetch', event => {
         workers: workers.length,
         nestedLength,
         moduleExecutionCount,
+        serviceWorkerJson: swConfiguration.kind,
         clientIdPresent: Boolean(client && client.id),
         eventClientIdPresent: Boolean(event.clientId),
         clientUrl: client && client.url,
@@ -6513,6 +6561,11 @@ self.addEventListener('fetch', event => {
                 Cow::Borrowed(
                     "globalThis.serviceWorkerModuleExecutions = (globalThis.serviceWorkerModuleExecutions || 0) + 1; export const execution = globalThis.serviceWorkerModuleExecutions;",
                 ),
+            ),
+            (
+                "/sw-config.json",
+                "application/vnd.glass+json; charset=utf-8",
+                Cow::Borrowed(r#"{"kind":"service-worker-json"}"#),
             ),
             (
                 "/service-worker-large-data",
@@ -6618,6 +6671,7 @@ self.addEventListener('fetch', event => {
                 "workers": 0,
                 "nestedLength": 20_000,
                 "moduleExecutionCount": 3,
+                "serviceWorkerJson": "service-worker-json",
                 "clientIdPresent": true,
                 "eventClientIdPresent": true,
                 "clientUrl": format!("http://{address}/app/page"),
@@ -20612,6 +20666,191 @@ async fn native_content_process_prefetches_static_module_graphs() {
 }
 
 #[tokio::test]
+async fn native_json_module_page_graph_uses_module_type_identity() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let expected_paths = ["/page", "/app.js", "/data.json", "/data.json", "/dep.js"];
+        let mut requests = Vec::new();
+        let mut data_module_accepts_json = Vec::new();
+        for expected_path in expected_paths {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("HTTP request includes a path")
+                .to_owned();
+            assert_eq!(path, expected_path);
+            let accepts_json = request
+                .to_ascii_lowercase()
+                .lines()
+                .any(|line| line.starts_with("accept:") && line.contains("application/json"));
+            if path == "/data.json" {
+                data_module_accepts_json.push(accepts_json);
+            }
+            let (content_type, body) = match path.as_str() {
+                "/page" => (
+                    "text/html",
+                    r#"<script type='module' src='/app.js'></script><script>globalThis.nativeModuleEvents = []; globalThis.nativeWindowErrors = []; document.querySelector("script[type='module']").addEventListener('error', event => nativeModuleEvents.push({ type: event.type, message: event.message })); window.addEventListener('error', event => nativeWindowErrors.push({ message: event.message, filename: event.filename }));</script>"#,
+                ),
+                "/app.js" => (
+                    "application/javascript",
+                    "import data from './data.json' with { type: 'json' }; import * as dataModule from './data.json' with { type: 'json' }; import { suffix as typedSuffix } from './data.json'; import { suffix } from './dep.js'; globalThis.nativeJsonModule = [Object.keys(dataModule).join(','), data.name, Object.prototype.hasOwnProperty.call(data, '__proto__'), Object.getPrototypeOf(data) === Object.prototype, data.__proto__.polluted, suffix, typedSuffix];",
+                ),
+                "/data.json" if accepts_json => (
+                    "application/vnd.glass+json; charset=utf-8",
+                    r#"{"name":"first","name":"json","__proto__":{"polluted":true}}"#,
+                ),
+                "/data.json" => (
+                    "application/javascript",
+                    "export const suffix = 'same-url-js';",
+                ),
+                _ => ("application/javascript", "export const suffix = 'dep';"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push(path);
+        }
+        (requests, data_module_accepts_json)
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let result = engine
+        .evaluate_async(
+            "({ value: globalThis.nativeJsonModule, moduleEvents: globalThis.nativeModuleEvents, windowErrors: globalThis.nativeWindowErrors })",
+        )
+        .await
+        .unwrap();
+    engine.close_async().await.unwrap();
+    let (requests, data_module_accepts_json) = server.await.unwrap();
+    assert_eq!(
+        requests,
+        vec![
+            "/page".to_owned(),
+            "/app.js".to_owned(),
+            "/data.json".to_owned(),
+            "/data.json".to_owned(),
+            "/dep.js".to_owned(),
+        ]
+    );
+    assert_eq!(data_module_accepts_json, [true, false]);
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "value": ["default", "json", true, true, true, "dep", "same-url-js"],
+            "moduleEvents": [],
+            "windowErrors": [],
+        }),
+        "module-type identity failure details: paths={requests:?}, JSON accepts={data_module_accepts_json:?}"
+    );
+}
+
+#[tokio::test]
+async fn native_json_module_rejects_wrong_mime_and_invalid_json() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let expected_paths = [
+            "/mime-page",
+            "/mime-app.js",
+            "/wrong.json",
+            "/invalid-page",
+            "/invalid-app.js",
+            "/invalid.json",
+        ];
+        let mut requests = Vec::new();
+        for expected_path in expected_paths {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("HTTP request includes a path")
+                .to_owned();
+            assert_eq!(path, expected_path);
+            let (content_type, body) = match path.as_str() {
+                "/mime-page" => (
+                    "text/html",
+                    "<script type='module' src='/mime-app.js'></script>",
+                ),
+                "/invalid-page" => (
+                    "text/html",
+                    "<script type='module' src='/invalid-app.js'></script>",
+                ),
+                "/mime-app.js" => (
+                    "application/javascript",
+                    "import value from './wrong.json' with { type: 'json' }; globalThis.wrongMimeAppExecuted = true;",
+                ),
+                "/wrong.json" => (
+                    "text/javascript",
+                    "globalThis.wrongMimeResourceExecuted = true; export default {};",
+                ),
+                "/invalid-app.js" => (
+                    "application/javascript",
+                    "import value from './invalid.json' with { type: 'json' }; globalThis.invalidJsonAppExecuted = true;",
+                ),
+                _ => ("application/json", r#"{"value":"unterminated}"#),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push(path);
+        }
+        requests
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/mime-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("[typeof wrongMimeAppExecuted, typeof wrongMimeResourceExecuted]")
+            .await
+            .unwrap(),
+        serde_json::json!(["undefined", "undefined"]),
+        "a JavaScript response must not be executed as a JSON module"
+    );
+    engine
+        .navigate_async(format!("http://{address}/invalid-page"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("typeof invalidJsonAppExecuted")
+            .await
+            .unwrap(),
+        serde_json::json!("undefined"),
+        "invalid JSON must prevent the importing module from evaluating"
+    );
+    engine.close_async().await.unwrap();
+    assert_eq!(
+        server.await.unwrap(),
+        vec![
+            "/mime-page".to_owned(),
+            "/mime-app.js".to_owned(),
+            "/wrong.json".to_owned(),
+            "/invalid-page".to_owned(),
+            "/invalid-app.js".to_owned(),
+            "/invalid.json".to_owned(),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn native_content_process_keeps_fragment_module_identities_and_response_bases() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -21028,7 +21267,7 @@ async fn native_content_process_locks_module_resolutions_between_parser_import_m
 
     let requests = server.await.unwrap();
     assert_eq!(
-        requests,
+        requests.iter().map(String::as_str).collect::<Vec<_>>(),
         [
             "/page",
             "/early.js",
@@ -21594,7 +21833,7 @@ async fn native_content_process_resolves_static_expression_dynamic_imports() {
 }
 
 #[tokio::test]
-async fn native_content_process_preserves_worker_module_identities_and_response_bases() {
+async fn native_json_module_worker_graph_uses_redirected_response_base() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -21602,11 +21841,12 @@ async fn native_content_process_preserves_worker_module_identities_and_response_
         tokio::time::timeout(Duration::from_secs(30), async {
             let expected_paths = [
                 "/page",
-                "/entry.js?version=one",
-                "/workers/entry-real.js?version=two",
-                "/workers/dep.js?variant=one",
-                "/workers/dep.js?variant=one",
-                "/workers/dep.js?variant=two",
+                    "/entry.js?version=one",
+                    "/workers/entry-real.js?version=two",
+                    "/workers/dep.js?variant=one",
+                    "/workers/dep.js?variant=one",
+                    "/workers/data.json",
+                    "/workers/dep.js?variant=two",
             ];
             let mut requests = Vec::new();
             for expected_path in expected_paths {
@@ -21630,7 +21870,7 @@ async fn native_content_process_preserves_worker_module_identities_and_response_
                         "HTTP/1.1 302 Found\r\nLocation: /workers/entry-real.js?version=two\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
                     }
                     "/workers/entry-real.js?version=two" => {
-                        let body = "import './dep.js?variant=one#first'; import './dep.js?variant=one#second'; import('./dep.js?variant=' + 'two').then(() => postMessage({ kind: 'ready', executions: globalThis.workerFragmentExecutions }));";
+                        let body = "import './dep.js?variant=one#first'; import './dep.js?variant=one#second'; import workerConfig from './data.json' with { type: 'json' }; import('./dep.js?variant=' + 'two').then(() => postMessage({ kind: 'ready', executions: globalThis.workerFragmentExecutions, json: workerConfig.kind }));";
                         format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                             body.len()
@@ -21640,6 +21880,13 @@ async fn native_content_process_preserves_worker_module_identities_and_response_
                         let body = "globalThis.workerFragmentExecutions = (globalThis.workerFragmentExecutions || 0) + 1; export const execution = globalThis.workerFragmentExecutions;";
                         format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    }
+                    "/workers/data.json" => {
+                        let body = r#"{"kind":"redirected-worker-json"}"#;
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/problem+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                             body.len()
                         )
                     }
@@ -21669,12 +21916,23 @@ async fn native_content_process_preserves_worker_module_identities_and_response_
     assert_eq!(
         result,
         serde_json::json!({
-            "messages": [{"kind": "ready", "executions": 3}],
+            "messages": [{"kind": "ready", "executions": 3, "json": "redirected-worker-json"}],
             "errors": [],
         }),
         "worker modules must keep fragment-distinct records and resolve from the redirected response URL"
     );
-    assert_eq!(requests.len(), 6);
+    assert_eq!(
+        requests,
+        [
+            "/page",
+            "/entry.js?version=one",
+            "/workers/entry-real.js?version=two",
+            "/workers/dep.js?variant=one",
+            "/workers/dep.js?variant=one",
+            "/workers/data.json",
+            "/workers/dep.js?variant=two",
+        ]
+    );
 }
 
 #[tokio::test]

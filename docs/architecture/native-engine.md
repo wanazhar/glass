@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-719`; issue #40 remains open. Earlier completed slices
+`native-engine-browser-720`; issue #40 remains open. Earlier completed slices
 include `native-engine-browser-696` through `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
@@ -900,10 +900,25 @@ imports in classic entry/`importScripts()` sources and module entry/static
 dependencies reject with `TypeError`, preserve argument evaluation, and do not
 fetch dynamic targets, even when a target is already in the static module
 graph. Its process-backed regression covers both Service Worker kinds and the
-exact network request set. Import options/attributes, complete module
-scheduling, and broader file-origin propagation remain open. See
+exact network request set. Dynamic import options, non-JSON attribute types,
+complete module scheduling, and broader file-origin propagation remain open. See
 [`slice 718`](../plan/tasks/native-engine-browser-718.md) and
 [`slice 719`](../plan/tasks/native-engine-browser-719.md).
+
+Slice 720 implements static `with { type: "json" }` dependencies across page,
+dedicated/shared Worker, Service Worker, and configured-root file module
+graphs. HTTP JSON resources require a JSON MIME type, and JSON modules expose
+only a default export parsed by the realm-captured JSON parser. Request URL
+plus module type remains the graph identity; redirected JavaScript modules
+continue to resolve descendants from the final response URL. QuickJS merges
+static requests by their literal specifier before import attributes reach the
+resolver, so the engine disambiguates JSON request literals before parsing and
+removes that internal marker before import-map resolution. Process-backed
+coverage includes same-URL JSON/JavaScript imports, workers, redirects, rooted
+files, MIME rejection, invalid JSON, and exact requests. Dynamic import
+options, other module types, broader file-origin propagation, and complete
+module scheduling remain open. See
+[`slice 720`](../plan/tasks/native-engine-browser-720.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

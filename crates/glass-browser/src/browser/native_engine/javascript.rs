@@ -35,8 +35,8 @@ use super::resource_loader::{
     JAVASCRIPT_MIME_TYPE_ESSENCES, MAX_NATIVE_CSP_VIOLATIONS, NativeCorsMode, NativeCspViolation,
     NativeFetchCacheMode, NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest,
     NativeFetchResponse, NativeFetchResponseStream, NativeInlineScriptPolicy,
-    NativeNavigationMethod, NativeObjectUrlResource, NativeObjectUrlTransfer, NativeRequestBody,
-    NativeResourceLoader, NativeScriptResource,
+    NativeModuleResourceType, NativeNavigationMethod, NativeObjectUrlResource,
+    NativeObjectUrlTransfer, NativeRequestBody, NativeResourceLoader, NativeScriptResource,
 };
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes192, Aes256};
@@ -3815,11 +3815,26 @@ impl NativeWorkerRegistry {
         let mut total_bytes = sources.values().map(String::len).sum::<usize>();
         let mut import_edges = 0usize;
         while let Some((_, module_base_url, module_source)) = pending.pop_front() {
-            let mut specifiers = static_module_specifiers(&module_source)?;
+            let mut requests = static_module_requests(&module_source)?;
             if include_dynamic_imports {
-                specifiers.extend(literal_dynamic_module_specifiers(&module_source));
+                requests.extend(
+                    literal_dynamic_module_specifiers(&module_source)
+                        .into_iter()
+                        .map(|specifier| NativeStaticModuleRequest {
+                            specifier,
+                            module_type: NativeModuleResourceType::JavaScript,
+                            specifier_span: None,
+                        }),
+                );
             }
-            for specifier in specifiers {
+            for request in requests {
+                if request.module_type == NativeModuleResourceType::Unsupported {
+                    return Err(NativeEngineError::UnsupportedUrl {
+                        reason:
+                            "Worker module import attributes request an unsupported module type"
+                                .into(),
+                    });
+                }
                 import_edges = import_edges.saturating_add(1);
                 if import_edges > MAX_NATIVE_MODULE_IMPORTS {
                     return Err(NativeEngineError::limit(
@@ -3828,8 +3843,9 @@ impl NativeWorkerRegistry {
                         import_edges,
                     ));
                 }
-                let target = resolve_worker_module_specifier(&module_base_url, &specifier)?;
-                if sources.contains_key(&target) {
+                let target = resolve_worker_module_specifier(&module_base_url, &request.specifier)?;
+                let name = native_module_loader_name(&target, request.module_type);
+                if sources.contains_key(&name) {
                     continue;
                 }
                 if sources.len() >= MAX_NATIVE_MODULE_IMPORTS {
@@ -3840,12 +3856,18 @@ impl NativeWorkerRegistry {
                     ));
                 }
                 let resource = loader
-                    .load_worker_async(owner_url, &target, MAX_NATIVE_SCRIPT_BYTES)
+                    .load_worker_module_dependency_async(
+                        owner_url,
+                        &target,
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        request.module_type,
+                    )
                     .await?
                     .ok_or_else(|| NativeEngineError::Network {
                         operation: "native Worker module dependency".into(),
                         reason: format!(
-                            "Worker module dependency {specifier:?} was blocked or unavailable"
+                            "Worker module dependency {:?} was blocked or unavailable",
+                            request.specifier
                         ),
                     })?;
                 if resource.body.is_empty() {
@@ -3862,7 +3884,6 @@ impl NativeWorkerRegistry {
                         total_bytes,
                     ));
                 }
-                let name = target;
                 let base_url = resource.url;
                 let source = resource.body;
                 if sources.insert(name.clone(), source.clone()).is_none() {
@@ -7182,23 +7203,81 @@ struct NativeModuleResolver {
     dynamic_module_aliases: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
+const NATIVE_JSON_MODULE_NAME_PREFIX: &str = "glass-internal-json-module:";
+// QuickJS deduplicates static request literals before the resolver sees their
+// import attributes. This marker keeps JSON and JavaScript requests distinct.
+const NATIVE_JSON_MODULE_REQUEST_PREFIX: &str = "glass-internal-json-request:";
+
+pub(crate) fn native_module_loader_name(
+    url: &str,
+    module_type: NativeModuleResourceType,
+) -> String {
+    match module_type {
+        NativeModuleResourceType::JavaScript => url.to_owned(),
+        NativeModuleResourceType::Json => format!("{NATIVE_JSON_MODULE_NAME_PREFIX}{url}"),
+        NativeModuleResourceType::Unsupported => {
+            format!("glass-internal-unsupported-module:{url}")
+        }
+    }
+}
+
+fn native_module_type_from_attributes<'js>(
+    attributes: Option<ImportAttributes<'js>>,
+    base: &str,
+    name: &str,
+) -> rquickjs::Result<NativeModuleResourceType> {
+    let Some(attributes) = attributes else {
+        return Ok(NativeModuleResourceType::JavaScript);
+    };
+    for key in attributes.keys() {
+        let key = key.map_err(|_| {
+            Error::new_resolving_message(base, name, "module import attributes are unavailable")
+        })?;
+        if key != "type" {
+            return Err(Error::new_resolving_message(
+                base,
+                name,
+                "only the module import attribute `type` is supported",
+            ));
+        }
+    }
+    match attributes.get_type().map_err(|_| {
+        Error::new_resolving_message(base, name, "module import type attribute is invalid")
+    })? {
+        None => Ok(NativeModuleResourceType::JavaScript),
+        Some(value) if value == "json" => Ok(NativeModuleResourceType::Json),
+        Some(_) => Err(Error::new_resolving_message(
+            base,
+            name,
+            "the requested module type is unsupported",
+        )),
+    }
+}
+
 impl Resolver for NativeModuleResolver {
     fn resolve<'js>(
         &mut self,
         _ctx: &rquickjs::Ctx<'js>,
         base: &str,
         name: &str,
-        _attributes: Option<ImportAttributes<'js>>,
+        attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<String> {
-        if let Some(target) = self
+        let module_type = native_module_type_from_attributes(attributes, base, name)?;
+        let requested_name = if module_type == NativeModuleResourceType::Json {
+            name.strip_prefix(NATIVE_JSON_MODULE_REQUEST_PREFIX)
+                .unwrap_or(name)
+        } else {
+            name
+        };
+        let alias_target = self
             .dynamic_module_aliases
             .lock()
             .map_err(|_| {
                 Error::new_resolving_message(base, name, "dynamic module aliases are unavailable")
             })?
-            .remove(name)
-        {
-            return Ok(target);
+            .remove(requested_name);
+        if let Some(target) = alias_target {
+            return Ok(native_module_loader_name(&target, module_type));
         }
         let base_url = self
             .module_base_urls
@@ -7215,9 +7294,12 @@ impl Resolver for NativeModuleResolver {
         let import_map = self.import_map.lock().map_err(|_| {
             Error::new_resolving_message(base.as_str(), name, "module import map is unavailable")
         })?;
-        import_map
-            .resolve(base.as_str(), name)
-            .map_err(|reason| Error::new_resolving_message(base.as_str(), name, reason))
+        let target = import_map
+            .resolve(base.as_str(), requested_name)
+            .map_err(|reason| {
+                Error::new_resolving_message(base.as_str(), requested_name, reason)
+            })?;
+        Ok(native_module_loader_name(&target, module_type))
     }
 }
 
@@ -7239,8 +7321,19 @@ impl Loader for NativeModuleLoader {
         &mut self,
         ctx: &rquickjs::Ctx<'js>,
         name: &str,
-        _attributes: Option<ImportAttributes<'js>>,
+        attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<Module<'js>> {
+        let module_type =
+            native_module_type_from_attributes(attributes, name, name).map_err(|_| {
+                Error::new_loading_message(name, "module import attributes are invalid")
+            })?;
+        let is_json_module = name.starts_with(NATIVE_JSON_MODULE_NAME_PREFIX);
+        if is_json_module != (module_type == NativeModuleResourceType::Json) {
+            return Err(Error::new_loading_message(
+                name,
+                "module name and import type do not match",
+            ));
+        }
         let source = self
             .sources
             .lock()
@@ -7251,29 +7344,62 @@ impl Loader for NativeModuleLoader {
             .dynamic_import_mode
             .lock()
             .map_err(|_| Error::new_loading_message(name, "module loader state is unavailable"))?;
-        let source = match dynamic_import_mode {
-            NativeModuleDynamicImportMode::Preserve => source,
-            NativeModuleDynamicImportMode::Resolve => {
-                let module_base_url = self
-                    .module_base_urls
-                    .lock()
-                    .map_err(|_| {
-                        Error::new_loading_message(name, "module base URLs are unavailable")
-                    })?
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| name.to_owned());
-                let module_referrer = serde_json::to_string(&module_base_url).map_err(|_| {
-                    Error::new_loading_message(name, "module base URL could not be encoded")
-                })?;
-                rewrite_runtime_dynamic_module_imports(&source, &module_referrer).map_err(|_| {
-                    Error::new_loading_message(name, "transformed module exceeds its size limit")
-                })?
+        let source = if is_json_module {
+            let json_text = serde_json::to_string(&source)
+                .map_err(|_| Error::new_loading_message(name, "JSON module text is invalid"))?;
+            let source = format!("export default globalThis.__glassParseJSONModule({json_text});");
+            if source.len() > MAX_NATIVE_SCRIPT_BYTES {
+                return Err(Error::new_loading_message(
+                    name,
+                    "transformed JSON module exceeds its size limit",
+                ));
             }
-            NativeModuleDynamicImportMode::Reject => rewrite_dynamic_imports_as_rejected(&source)
-                .map_err(|_| {
-                Error::new_loading_message(name, "transformed module exceeds its size limit")
-            })?,
+            source
+        } else {
+            match dynamic_import_mode {
+                NativeModuleDynamicImportMode::Preserve => source,
+                NativeModuleDynamicImportMode::Resolve => {
+                    let module_base_url = self
+                        .module_base_urls
+                        .lock()
+                        .map_err(|_| {
+                            Error::new_loading_message(name, "module base URLs are unavailable")
+                        })?
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| name.to_owned());
+                    let module_referrer =
+                        serde_json::to_string(&module_base_url).map_err(|_| {
+                            Error::new_loading_message(name, "module base URL could not be encoded")
+                        })?;
+                    rewrite_runtime_dynamic_module_imports(&source, &module_referrer).map_err(
+                        |_| {
+                            Error::new_loading_message(
+                                name,
+                                "transformed module exceeds its size limit",
+                            )
+                        },
+                    )?
+                }
+                NativeModuleDynamicImportMode::Reject => {
+                    rewrite_dynamic_imports_as_rejected(&source).map_err(|_| {
+                        Error::new_loading_message(
+                            name,
+                            "transformed module exceeds its size limit",
+                        )
+                    })?
+                }
+            }
+        };
+        let source = if is_json_module {
+            source
+        } else {
+            rewrite_static_json_module_specifiers(&source).map_err(|_| {
+                Error::new_loading_message(
+                    name,
+                    "static JSON module requests could not be transformed",
+                )
+            })?
         };
         Module::declare(ctx.clone(), name, source)
     }
@@ -7649,9 +7775,23 @@ fn load_local_file_module_graph_with_import_map_and_existing(
         ));
     }
     while let Some((_, module_base_url, module_source)) = pending.pop() {
-        let mut specifiers = static_module_specifiers(&module_source)?;
-        specifiers.extend(literal_dynamic_module_specifiers(&module_source));
-        for specifier in specifiers {
+        let mut requests = static_module_requests(&module_source)?;
+        requests.extend(
+            literal_dynamic_module_specifiers(&module_source)
+                .into_iter()
+                .map(|specifier| NativeStaticModuleRequest {
+                    specifier,
+                    module_type: NativeModuleResourceType::JavaScript,
+                    specifier_span: None,
+                }),
+        );
+        for request in requests {
+            if request.module_type == NativeModuleResourceType::Unsupported {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "file module import attributes request an unsupported module type"
+                        .into(),
+                });
+            }
             import_edges = import_edges.saturating_add(1);
             if import_edges > MAX_NATIVE_MODULE_IMPORTS {
                 return Err(NativeEngineError::limit(
@@ -7661,12 +7801,13 @@ fn load_local_file_module_graph_with_import_map_and_existing(
                 ));
             }
             let target = import_map
-                .resolve_and_record(&module_base_url, &specifier)
+                .resolve_and_record(&module_base_url, &request.specifier)
                 .map_err(|reason| NativeEngineError::Network {
                     operation: "file module dependency".into(),
                     reason: reason.into(),
                 })?;
-            if !seen.insert(target.clone()) {
+            let name = native_module_loader_name(&target, request.module_type);
+            if !seen.insert(name.clone()) {
                 continue;
             }
             if seen.len() > MAX_NATIVE_MODULE_IMPORTS {
@@ -7686,7 +7827,8 @@ fn load_local_file_module_graph_with_import_map_and_existing(
                 .ok_or_else(|| NativeEngineError::Network {
                     operation: "file module dependency".into(),
                     reason: format!(
-                        "file module dependency {specifier:?} was blocked or unavailable"
+                        "file module dependency {:?} was blocked or unavailable",
+                        request.specifier
                     ),
                 })?;
             total_bytes = total_bytes.saturating_add(resource.body.len());
@@ -7697,7 +7839,6 @@ fn load_local_file_module_graph_with_import_map_and_existing(
                     total_bytes,
                 ));
             }
-            let name = target;
             let base_url = resource.url;
             let source = resource.body;
             sources.push((
@@ -11891,6 +12032,21 @@ impl NativeJavaScriptRuntime {
             operation: "create JavaScript context".into(),
             reason: "native JavaScript context could not be created".into(),
         })?;
+        context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    r#"Object.defineProperty(globalThis, "__glassParseJSONModule", {
+                      value: JSON.parse,
+                      writable: false,
+                      configurable: false,
+                      enumerable: false,
+                    });"#,
+                )
+            })
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "initialize JavaScript module intrinsics".into(),
+                reason: "the JSON module parser intrinsic could not be captured".into(),
+            })?;
         Ok(Self {
             runtime,
             context,
@@ -14628,6 +14784,10 @@ impl NativeJavaScriptRuntime {
                 "must not be empty",
             ));
         }
+        let transformed_module_source = module_name
+            .map(|_| rewrite_static_json_module_specifiers(source))
+            .transpose()?;
+        let source = transformed_module_source.as_deref().unwrap_or(source);
         if source.len() > MAX_NATIVE_SCRIPT_BYTES {
             return Err(NativeEngineError::limit(
                 "worker script source",
@@ -15485,6 +15645,7 @@ impl NativeJavaScriptRuntime {
                 reason: "module base URL could not be encoded".into(),
             })?;
         let source = rewrite_runtime_dynamic_module_imports(source, &module_referrer)?;
+        let source = rewrite_static_json_module_specifiers(&source)?;
         let storage_events = self.take_storage_events();
         let proxy_updates = self.take_window_proxy_updates();
         let window_name = self.window_name();
@@ -18421,10 +18582,19 @@ fn contains_await_token(source: &str) -> bool {
 /// JavaScript parser. QuickJS remains authoritative for module grammar and
 /// evaluation; this pass only discovers URLs that the content process must
 /// fetch before installing the in-memory module loader.
-pub(crate) fn static_module_specifiers(source: &str) -> Result<Vec<String>, NativeEngineError> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeStaticModuleRequest {
+    pub(crate) specifier: String,
+    pub(crate) module_type: NativeModuleResourceType,
+    pub(crate) specifier_span: Option<(usize, usize)>,
+}
+
+pub(crate) fn static_module_requests(
+    source: &str,
+) -> Result<Vec<NativeStaticModuleRequest>, NativeEngineError> {
     let bytes = source.as_bytes();
     let mut index = 0;
-    let mut specifiers = Vec::new();
+    let mut requests = Vec::new();
     while index < bytes.len() {
         index = skip_javascript_space_and_comments(bytes, index);
         if index >= bytes.len() {
@@ -18447,25 +18617,69 @@ pub(crate) fn static_module_specifiers(source: &str) -> Result<Vec<String>, Nati
         if keyword != b"import" && keyword != b"export" {
             continue;
         }
-        if let Some(specifier) = module_specifier_after_keyword(bytes, index, keyword == b"import")
-        {
-            if specifier.is_empty() {
+        if let Some(request) = module_request_after_keyword(bytes, index, keyword == b"import") {
+            if request.specifier.is_empty() {
                 return Err(NativeEngineError::invalid(
                     "module import",
                     "module specifier must not be empty",
                 ));
             }
-            specifiers.push(specifier);
-            if specifiers.len() > MAX_NATIVE_MODULE_IMPORTS {
+            requests.push(request);
+            if requests.len() > MAX_NATIVE_MODULE_IMPORTS {
                 return Err(NativeEngineError::limit(
                     "module imports",
                     MAX_NATIVE_MODULE_IMPORTS,
-                    specifiers.len(),
+                    requests.len(),
                 ));
             }
         }
     }
-    Ok(specifiers)
+    Ok(requests)
+}
+
+fn rewrite_static_json_module_specifiers(source: &str) -> Result<String, NativeEngineError> {
+    let requests = static_module_requests(source)?;
+    let mut output = String::with_capacity(source.len());
+    let mut copied_until = 0;
+    let mut rewritten = false;
+    for request in requests {
+        if request.module_type != NativeModuleResourceType::Json {
+            continue;
+        }
+        let Some((start, end)) = request.specifier_span else {
+            continue;
+        };
+        if start < copied_until || end < start || end > source.len() {
+            return Err(NativeEngineError::invalid(
+                "static JSON module request",
+                "specifier range is invalid",
+            ));
+        }
+        output.push_str(&source[copied_until..start]);
+        let internal_specifier =
+            format!("{NATIVE_JSON_MODULE_REQUEST_PREFIX}{}", request.specifier);
+        let internal_literal = serde_json::to_string(&internal_specifier).map_err(|_| {
+            NativeEngineError::invalid(
+                "static JSON module request",
+                "specifier could not be encoded",
+            )
+        })?;
+        output.push_str(&internal_literal);
+        copied_until = end;
+        rewritten = true;
+    }
+    if !rewritten {
+        return Ok(source.to_owned());
+    }
+    output.push_str(&source[copied_until..]);
+    if output.len() > MAX_NATIVE_SCRIPT_BYTES {
+        return Err(NativeEngineError::limit(
+            "transformed JavaScript source",
+            MAX_NATIVE_SCRIPT_BYTES,
+            output.len(),
+        ));
+    }
+    Ok(output)
 }
 
 /// Extract dynamic-import specifiers whose entire first argument is statically
@@ -19013,10 +19227,192 @@ fn read_static_string_primary(bytes: &[u8], index: usize, depth: usize) -> Optio
 #[cfg(test)]
 mod native_static_dynamic_import_tests {
     use super::{
-        MAX_NATIVE_MODULE_IMPORTS, literal_dynamic_module_specifiers,
-        rewrite_dynamic_imports_as_rejected, rewrite_dynamic_imports_as_rejected_with_count,
-        rewrite_runtime_dynamic_module_imports,
+        BTreeMap, MAX_NATIVE_MODULE_IMPORTS, Module, NativeJavaScriptRuntime,
+        NativeModuleImportMap, NativeModuleResourceType, literal_dynamic_module_specifiers,
+        native_module_loader_name, rewrite_dynamic_imports_as_rejected,
+        rewrite_dynamic_imports_as_rejected_with_count, rewrite_runtime_dynamic_module_imports,
+        rewrite_static_json_module_specifiers, static_module_requests,
     };
+
+    #[test]
+    fn static_module_prefetch_preserves_json_import_attributes() {
+        let requests = static_module_requests(
+            r#"
+                import "./side-effect.json" with { type: "json" };
+                import data from "./data.json" /* trivia */ with { "type": 'json' };
+                export { default as config } from "./config.json" with { type: "json" };
+                import { value } from "./code.js";
+                import("./dynamic.json", { with: { type: "json" } });
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            requests
+                .into_iter()
+                .map(|request| (request.specifier, request.module_type))
+                .collect::<Vec<_>>(),
+            [
+                ("./side-effect.json".into(), NativeModuleResourceType::Json),
+                ("./data.json".into(), NativeModuleResourceType::Json),
+                ("./config.json".into(), NativeModuleResourceType::Json),
+                ("./code.js".into(), NativeModuleResourceType::JavaScript),
+            ]
+        );
+    }
+
+    #[test]
+    fn static_module_prefetch_fails_closed_for_unsupported_import_attributes() {
+        let requests = static_module_requests(
+            r#"
+                import sheet from "./sheet.css" with { type: "css" };
+                export { default as payload } from "./payload.json" with { encoding: "utf-8" };
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.module_type == NativeModuleResourceType::Unsupported)
+        );
+    }
+
+    #[test]
+    fn json_module_loader_captures_the_json_parser_and_exposes_only_default() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("json-module-test")
+            .expect("native JavaScript runtime must construct");
+        let module_url = "https://json-module.test/data.json";
+        let entry_url = "https://json-module.test/app.js";
+        runtime.set_module_sources(BTreeMap::from([(
+            native_module_loader_name(module_url, NativeModuleResourceType::Json),
+            r#"{"value":"first","value":"json","__proto__":{"polluted":true}}"#.to_owned(),
+        )]));
+        runtime.set_module_base_urls(BTreeMap::from([(
+            entry_url.to_owned(),
+            entry_url.to_owned(),
+        )]));
+
+        runtime.context.with(|ctx| {
+            ctx.eval::<(), _>("JSON.parse = () => { throw new Error('mutable parser used'); };")
+                .expect("the page may mutate its public JSON parser");
+            Module::evaluate(
+                ctx.clone(),
+                entry_url,
+                r#"
+                    import data from "./data.json" with { type: "json" };
+                    import * as dataModule from "./data.json" with { type: "json" };
+                    globalThis.jsonModuleResult = [
+                      Object.keys(dataModule).join(","),
+                      data.value,
+                      Object.prototype.hasOwnProperty.call(data, "__proto__"),
+                      Object.getPrototypeOf(data) === Object.prototype,
+                      data.__proto__.polluted,
+                    ];
+                "#,
+            )
+            .expect("JSON module must parse and link")
+            .finish::<()>()
+            .expect("JSON module evaluation must complete");
+            assert_eq!(
+                ctx.eval::<String, _>("JSON.stringify(globalThis.jsonModuleResult)")
+                    .expect("JSON module result must serialize"),
+                r#"["default","json",true,true,true]"#
+            );
+
+            let invalid_url = "https://json-module.test/invalid.json";
+            let invalid_entry = "https://json-module.test/invalid-app.js";
+            runtime.set_module_sources(BTreeMap::from([(
+                native_module_loader_name(invalid_url, NativeModuleResourceType::Json),
+                "not valid JSON".to_owned(),
+            )]));
+            runtime.set_module_base_urls(BTreeMap::from([(
+                invalid_entry.to_owned(),
+                invalid_entry.to_owned(),
+            )]));
+            ctx.eval::<(), _>("globalThis.invalidJsonEvaluated = false;")
+                .expect("invalid JSON module result flag must initialize");
+            let invalid_json = Module::evaluate(
+                ctx.clone(),
+                invalid_entry,
+                r#"import value from "./invalid.json" with { type: "json" }; globalThis.invalidJsonEvaluated = true;"#,
+            )
+            .and_then(|module| module.finish::<()>());
+            assert!(invalid_json.is_err(), "invalid JSON must reject module evaluation");
+            assert!(!ctx
+                .eval::<bool, _>("globalThis.invalidJsonEvaluated")
+                .expect("invalid JSON execution state must be readable"));
+        });
+    }
+
+    #[test]
+    fn same_static_specifier_can_resolve_as_json_and_javascript() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("json-module-identity-test")
+            .expect("native JavaScript runtime must construct");
+        let module_url = "https://json-module.test/mapped/shared.js";
+        let marker_prefixed_js_url = "https://json-module.test/ordinary.js";
+        let dependency_url = "https://json-module.test/dependency.js";
+        let nested_json_url = "https://json-module.test/nested.json";
+        let entry_url = "https://json-module.test/identity-app.js";
+        runtime.set_module_sources(BTreeMap::from([
+            (
+                native_module_loader_name(module_url, NativeModuleResourceType::Json),
+                r#"{"kind":"json"}"#.to_owned(),
+            ),
+            (
+                module_url.to_owned(),
+                "export const kind = 'javascript';".to_owned(),
+            ),
+            (
+                marker_prefixed_js_url.to_owned(),
+                "export const kind = 'marker-prefixed-javascript';".to_owned(),
+            ),
+            (
+                dependency_url.to_owned(),
+                "import nestedValue from './nested.json' with { type: 'json' }; export const nestedKind = nestedValue.kind;".to_owned(),
+            ),
+            (
+                native_module_loader_name(nested_json_url, NativeModuleResourceType::Json),
+                r#"{"kind":"nested-json"}"#.to_owned(),
+            ),
+        ]));
+        runtime.set_module_base_urls(BTreeMap::from([
+            (entry_url.to_owned(), entry_url.to_owned()),
+            (dependency_url.to_owned(), dependency_url.to_owned()),
+        ]));
+        runtime.set_module_import_map(
+            NativeModuleImportMap::parse(
+                r#"{"imports":{"./shared.js":"/mapped/shared.js","glass-internal-json-request:./ordinary.js":"/ordinary.js","./dependency.js":"/dependency.js","./nested.json":"/nested.json"}}"#,
+                entry_url,
+            )
+            .expect("the test import map must parse"),
+        );
+
+        let source = rewrite_static_json_module_specifiers(
+            r#"
+                import jsonValue from "./shared.js" with { type: "json" };
+                import { kind as javascriptKind } from "./shared.js";
+                import { kind as markerPrefixedJavascriptKind } from "glass-internal-json-request:./ordinary.js";
+                import { nestedKind } from "./dependency.js";
+                globalThis.sameSpecifierModuleTypes = [jsonValue.kind, javascriptKind, markerPrefixedJavascriptKind, nestedKind];
+            "#,
+        )
+        .expect("the static JSON request must be disambiguated");
+        assert!(source.contains("glass-internal-json-request:./shared.js"));
+
+        runtime.context.with(|ctx| {
+            Module::evaluate(ctx.clone(), entry_url, source)
+                .expect("JSON and JavaScript requests must link independently")
+                .finish::<()>()
+                .expect("both module types must evaluate");
+            assert_eq!(
+                ctx.eval::<String, _>("JSON.stringify(globalThis.sameSpecifierModuleTypes)")
+                    .expect("module-type result must serialize"),
+                r#"["json","javascript","marker-prefixed-javascript","nested-json"]"#
+            );
+        });
+    }
 
     #[test]
     fn dynamic_import_prefetch_folds_quoted_string_concatenation() {
@@ -19203,46 +19599,128 @@ pub(crate) fn static_worker_import_specifiers(
     Ok(specifiers)
 }
 
-fn module_specifier_after_keyword(
+fn module_request_after_keyword(
     bytes: &[u8],
     keyword_end: usize,
     import_keyword: bool,
-) -> Option<String> {
+) -> Option<NativeStaticModuleRequest> {
     let start = skip_javascript_space_and_comments(bytes, keyword_end);
     if import_keyword && bytes.get(start) == Some(&b'(') {
         return None;
     }
-    if bytes
+    let (specifier, end, specifier_span) = if bytes
         .get(start)
         .is_some_and(|byte| matches!(byte, b'\'' | b'"'))
     {
-        return read_javascript_string(bytes, start).map(|(value, _)| value);
+        let (specifier, end) = read_javascript_string(bytes, start)?;
+        (specifier, end, (start, end))
+    } else {
+        let mut index = start;
+        loop {
+            index = skip_javascript_space_and_comments(bytes, index);
+            if index >= bytes.len() || bytes[index] == b';' {
+                return None;
+            }
+            if matches!(bytes[index], b'\'' | b'"' | b'`') {
+                index = skip_javascript_string(bytes, index);
+                continue;
+            }
+            if is_javascript_identifier_start(bytes[index]) {
+                let identifier_start = index;
+                index += 1;
+                while index < bytes.len() && is_javascript_identifier_continue(bytes[index]) {
+                    index += 1;
+                }
+                if &bytes[identifier_start..index] == b"from" {
+                    let specifier_start = skip_javascript_space_and_comments(bytes, index);
+                    let (specifier, end) = read_javascript_string(bytes, specifier_start)?;
+                    break (specifier, end, (specifier_start, end));
+                }
+                continue;
+            }
+            index += 1;
+        }
+    };
+    Some(NativeStaticModuleRequest {
+        specifier,
+        module_type: static_module_resource_type_after(bytes, end),
+        specifier_span: Some(specifier_span),
+    })
+}
+
+fn static_module_resource_type_after(bytes: &[u8], end: usize) -> NativeModuleResourceType {
+    let start = skip_javascript_space_and_comments(bytes, end);
+    let mut keyword_end = start;
+    while keyword_end < bytes.len() && is_javascript_identifier_continue(bytes[keyword_end]) {
+        keyword_end += 1;
     }
-    let mut index = start;
-    while index < bytes.len() {
+    if &bytes[start..keyword_end] == b"assert" {
+        return NativeModuleResourceType::Unsupported;
+    }
+    if &bytes[start..keyword_end] != b"with" {
+        return NativeModuleResourceType::JavaScript;
+    }
+    let object_start = skip_javascript_space_and_comments(bytes, keyword_end);
+    if bytes.get(object_start) != Some(&b'{') {
+        return NativeModuleResourceType::Unsupported;
+    }
+    let mut index = object_start + 1;
+    let mut module_type = None;
+    let mut unsupported_attribute = false;
+    loop {
         index = skip_javascript_space_and_comments(bytes, index);
-        if index >= bytes.len() || bytes[index] == b';' {
-            return None;
+        if bytes.get(index) == Some(&b'}') {
+            break;
         }
-        if matches!(bytes[index], b'\'' | b'"' | b'`') {
-            index = skip_javascript_string(bytes, index);
-            continue;
-        }
-        if is_javascript_identifier_start(bytes[index]) {
-            let start = index;
+        let Some(&first) = bytes.get(index) else {
+            return NativeModuleResourceType::Unsupported;
+        };
+        let (key, key_end) = if matches!(first, b'\'' | b'"') {
+            let Some((key, key_end)) = read_javascript_string(bytes, index) else {
+                return NativeModuleResourceType::Unsupported;
+            };
+            (key, key_end)
+        } else if is_javascript_identifier_start(first) {
+            let key_start = index;
             index += 1;
             while index < bytes.len() && is_javascript_identifier_continue(bytes[index]) {
                 index += 1;
             }
-            if &bytes[start..index] == b"from" {
-                let specifier_start = skip_javascript_space_and_comments(bytes, index);
-                return read_javascript_string(bytes, specifier_start).map(|(value, _)| value);
-            }
-            continue;
+            (
+                String::from_utf8_lossy(&bytes[key_start..index]).into_owned(),
+                index,
+            )
+        } else {
+            return NativeModuleResourceType::Unsupported;
+        };
+        index = skip_javascript_space_and_comments(bytes, key_end);
+        if bytes.get(index) != Some(&b':') {
+            return NativeModuleResourceType::Unsupported;
         }
-        index += 1;
+        let value_start = skip_javascript_space_and_comments(bytes, index + 1);
+        let Some((value, value_end)) = read_javascript_string(bytes, value_start) else {
+            return NativeModuleResourceType::Unsupported;
+        };
+        if key == "type" {
+            module_type = Some(match value.as_str() {
+                "json" => NativeModuleResourceType::Json,
+                _ => NativeModuleResourceType::Unsupported,
+            });
+        } else {
+            unsupported_attribute = true;
+        }
+        index = skip_javascript_space_and_comments(bytes, value_end);
+        match bytes.get(index) {
+            Some(b',') => index += 1,
+            Some(b'}') => break,
+            _ => return NativeModuleResourceType::Unsupported,
+        }
     }
-    None
+    if unsupported_attribute {
+        NativeModuleResourceType::Unsupported
+    } else {
+        module_type.unwrap_or(NativeModuleResourceType::JavaScript)
+    }
 }
 
 fn skip_javascript_space_and_comments(bytes: &[u8], mut index: usize) -> usize {

@@ -103,17 +103,22 @@ It is never an implicit fallback for a native request.
   entry/static-dependency sources. The process-backed test confirms
   `TypeError` settlement, argument evaluation, static dependency availability,
   no prefetching, no request for uncached dynamic targets, and no additional
-  request when a dynamic target is already in the static module graph. Import
-  options and complete module scheduling remain
-  unverified. See
+  request when a dynamic target is already in the static module graph. Slice
+  720 implements static JSON import attributes for page, Worker, Service
+  Worker, and configured-root file graphs. Tests cover MIME validation,
+  default-only exports, same-URL typed identity, redirects, and rooted-file
+  loading. Dynamic import options, other module types, and complete module
+  scheduling remain unverified. See
   [task 713](tasks/native-engine-browser-713.md),
   [task 714](tasks/native-engine-browser-714.md),
   [task 715](tasks/native-engine-browser-715.md),
   [task 716](tasks/native-engine-browser-716.md),
   [task 717](tasks/native-engine-browser-717.md),
   [task 718](tasks/native-engine-browser-718.md), and
-  [task 719](tasks/native-engine-browser-719.md).
-- Import options/attributes, nested imports, promise/microtask ordering, and
+  [task 719](tasks/native-engine-browser-719.md), and
+  [task 720](tasks/native-engine-browser-720.md).
+- Dynamic import options, unsupported attribute types, nested imports,
+  promise/microtask ordering, and
   module evaluation errors follow the selected ECMAScript and HTML host
   algorithms; a bounded implementation must report unsupported profile
   behavior explicitly rather than silently returning a partial namespace.

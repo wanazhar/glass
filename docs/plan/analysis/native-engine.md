@@ -1086,6 +1086,18 @@ Focused tests and documentation gates passed locally; remote CI was not run.
 See
 [`slice 719`](../tasks/native-engine-browser-719.md).
 
+Slice 720 implements static JSON imports declared with
+`with { type: "json" }` across page, Worker, Service Worker, and rooted-file
+module graphs. It enforces JSON MIME, default-only namespace exports, and
+request-URL-plus-type identity. Because QuickJS coalesces static requests by
+literal specifier before resolving import attributes, the engine rewrites JSON
+request literals before parsing and restores the original specifier in the
+resolver, before import-map lookup. The scoped package check, 10 focused unit
+tests, and six process-backed JSON module tests passed locally. Remote CI was
+not run. Dynamic import options, broader file-origin propagation, and complete
+module scheduling remain open. See
+[`slice 720`](../tasks/native-engine-browser-720.md).
+
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript
 fragments, and XHR HTML documents. The Rust route retains submitted-source

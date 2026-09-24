@@ -43,18 +43,18 @@ use super::javascript::{
     NativeMessagePortPageMessage, NativePageEventBatch, NativePageMessagePortCommand,
     NativePageScript, NativePageScriptResult, NativePopupRequest, NativePostMessageRequest,
     NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerClientMessage,
-    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
-    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
-    NativeWorkerRegistry, NativeWorkerWebSocketCommand, apply_document_commands_with_font_face_ack,
-    apply_page_script_evaluation, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_page_scripts, host_event_batch, host_key_event_batch,
-    host_key_event_batch_with_modifiers, host_submit_event_batch,
+    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
+    NativeStaticModuleRequest, NativeStorageEvent, NativeWebStorageState, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerEventSourceCommand,
+    NativeWorkerMessage, NativeWorkerRegistry, NativeWorkerWebSocketCommand,
+    apply_document_commands_with_font_face_ack, apply_page_script_evaluation,
+    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts, host_event_batch,
+    host_key_event_batch, host_key_event_batch_with_modifiers, host_submit_event_batch,
     literal_dynamic_module_specifiers, load_indexed_db_profile, load_service_worker_cache_profile,
-    load_service_worker_registration_profiles, load_web_storage_profile, order_page_scripts,
-    page_script_sources_to_scripts, resolve_module_request_url, save_service_worker_cache_profile,
-    save_web_storage_profile, static_module_specifiers, storage_key,
-    validate_message_port_transfers, validate_native_message_payload,
+    load_service_worker_registration_profiles, load_web_storage_profile, native_module_loader_name,
+    order_page_scripts, page_script_sources_to_scripts, resolve_module_request_url,
+    save_service_worker_cache_profile, save_web_storage_profile, static_module_requests,
+    storage_key, validate_message_port_transfers, validate_native_message_payload,
     validate_native_object_url_transfers,
 };
 use super::layout::NativePoint;
@@ -65,10 +65,11 @@ use super::resource_loader::{
     MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES, MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
     MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
     NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
-    NativeFetchResponseStream, NativeNavigationMethod, NativeNavigationPolicyKind,
-    NativeNavigationRequest, NativeObjectUrlResource, NativeRequestBody, NativeResource,
-    NativeResourceLoader, NativeStylesheetResource, NativeWebSocketTarget, resolve_subresource_url,
-    schedule_native_csp_report_deliveries, validate_target_navigation_payload,
+    NativeFetchResponseStream, NativeModuleResourceType, NativeNavigationMethod,
+    NativeNavigationPolicyKind, NativeNavigationRequest, NativeObjectUrlResource,
+    NativeRequestBody, NativeResource, NativeResourceLoader, NativeStylesheetResource,
+    NativeWebSocketTarget, resolve_subresource_url, schedule_native_csp_report_deliveries,
+    validate_target_navigation_payload,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -8718,14 +8719,29 @@ async fn load_module_dependencies(
     )];
     let mut requested_urls = seen.clone();
     while let Some((_, current_base_url, current_source)) = pending.pop() {
-        let mut specifiers = static_module_specifiers(&current_source)?;
-        specifiers.extend(literal_dynamic_module_specifiers(&current_source));
-        for specifier in specifiers {
-            let Some(target) = resolve_module_specifier(&current_base_url, &specifier, import_map)?
+        let mut requests = static_module_requests(&current_source)?;
+        requests.extend(
+            literal_dynamic_module_specifiers(&current_source)
+                .into_iter()
+                .map(|specifier| NativeStaticModuleRequest {
+                    specifier,
+                    module_type: NativeModuleResourceType::JavaScript,
+                    specifier_span: None,
+                }),
+        );
+        for request in requests {
+            if request.module_type == NativeModuleResourceType::Unsupported {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "module import attributes request an unsupported module type".into(),
+                });
+            }
+            let Some(target) =
+                resolve_module_specifier(&current_base_url, &request.specifier, import_map)?
             else {
                 continue;
             };
-            if seen.contains(&target) || !requested_urls.insert(target.clone()) {
+            let name = native_module_loader_name(&target, request.module_type);
+            if seen.contains(&name) || !requested_urls.insert(name.clone()) {
                 continue;
             }
             if requested_urls.len() > MAX_NATIVE_MODULE_IMPORTS {
@@ -8740,39 +8756,24 @@ async fn load_module_dependencies(
                 .transpose()?
                 .flatten();
             let integrity = import_map.integrity_for_url(&target);
-            let resource = if let Some(object_url) = object_url.as_ref() {
-                loader
-                    .load_script_async_with_metadata_and_object_url(
-                        owner_url,
-                        &target,
-                        MAX_NATIVE_SCRIPT_BYTES,
-                        true,
-                        None,
-                        integrity,
-                        Some("anonymous"),
-                        Some(object_url),
-                    )
-                    .await?
-            } else {
-                loader
-                    .load_script_async_with_metadata(
-                        owner_url,
-                        &target,
-                        MAX_NATIVE_SCRIPT_BYTES,
-                        true,
-                        None,
-                        integrity,
-                        Some("anonymous"),
-                    )
-                    .await?
-            };
+            let resource = loader
+                .load_module_dependency_async(
+                    owner_url,
+                    &target,
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    true,
+                    integrity,
+                    Some("anonymous"),
+                    object_url.as_ref(),
+                    request.module_type,
+                )
+                .await?;
             let Some(resource) = resource else {
                 return Err(NativeEngineError::Network {
                     operation: "module dependency".into(),
                     reason: "module dependency could not be loaded".into(),
                 });
             };
-            let name = target;
             if !seen.insert(name.clone()) {
                 continue;
             }

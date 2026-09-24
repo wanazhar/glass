@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-719`.
+The latest locally completed parser/script slice is `native-engine-browser-720`.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
 shared, and service-worker module graphs. See the task records for scope and
@@ -37,6 +37,16 @@ target is already in the static module graph and avoids requests for uncached
 dynamic targets; process-backed coverage asserts the exact request set.
 Import options, broader file-origin propagation, and full module scheduling
 remain open. See `tasks/native-engine-browser-719.md`.
+Slice 720 implements static JSON imports across page, Worker, Service Worker,
+and configured-root file module graphs. JSON MIME validation and default-only
+exports are enforced, and request URL plus module type remains the graph
+identity even when a JavaScript import uses the same URL. The QuickJS
+compatibility rewrite separates typed static requests before parse and restores
+the original specifier before import-map resolution. The scoped check, focused
+unit tests, process-backed JSON tests, and documentation gates passed locally;
+remote CI was not run. Dynamic import options, broader file-origin propagation,
+and full module scheduling remain open. See
+`tasks/native-engine-browser-720.md`.
 At the 715 checkpoint, computed imports in classic `importScripts()`
 dependencies remained open. Slice 714 adds runtime-valued computed imports in
 dedicated classic and module Workers through the worker-owned fetch queue,

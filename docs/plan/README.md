@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-714`; issue #40
+expansion is complete locally through `native-engine-browser-715`; issue #40
 remains open. Slices 709–710 preserve request-URL module identity, including
 query and fragment, separately from the final response URL used as the
 descendant base across page, dedicated/shared worker, and service-worker module
@@ -47,9 +47,11 @@ through the asynchronous host module-fetch path, preserving active script
 response bases and Document import-map scopes, including nested computed
 imports. Slice 714 adds runtime-valued imports for dedicated classic and module
 Workers, including nested worker-module imports through the bounded worker
-fetch path. SharedWorker imports, rooted-file page imports, import
-options/attributes, and complete module scheduling remain open. See
-[task 714](tasks/native-engine-browser-714.md). Slice 703 separates
+fetch path. Slice 715 extends this to classic and module SharedWorkers and
+verifies nested imports, rejected fetches, and delivery through connected
+ports. Rooted-file page imports, computed imports in classic `importScripts()`
+dependencies, import options/attributes, and complete module scheduling remain
+open. See [task 715](tasks/native-engine-browser-715.md). Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type
 essences are matched case-insensitively without parameters on script elements;
@@ -381,8 +383,9 @@ It also resolves ordinary rooted-file module-script `src` URLs relative to the
 document while preserving the stricter bare-specifier rule for module imports.
 The focused page, redirected-worker, rooted-file, and parser tests and scoped
 check pass locally; remote CI and documentation gates are recorded in the task.
-Runtime-valued dynamic imports, worker import maps, and complete module
-scheduling remain open.
+At the 711 checkpoint, runtime-valued dynamic imports and complete module
+scheduling remained open; worker import maps were later removed as a
+non-standard target.
 
 [`native-engine-browser-712`](tasks/native-engine-browser-712.md) prevents
 member methods named `import` from triggering speculative dynamic-module
@@ -398,9 +401,12 @@ worker fetch owner, preserving worker referrers, bounded graphs, and nested
 response bases. The scoped check and both the new dynamic-worker integration
 case and prior identity/base regression passed; formatting and all four
 maintainer documentation gates passed across 1,342 Markdown documents, with
-zero current-claim failures. Remote CI was not run. SharedWorker imports,
-rooted-file page imports, import options/attributes, and complete module
-scheduling remain open.
+zero current-claim failures. Remote CI was not run. At the 714 checkpoint,
+SharedWorker imports remained open. Slice
+[`native-engine-browser-715`](tasks/native-engine-browser-715.md) now covers
+runtime-valued imports in classic and module SharedWorkers, nested module
+imports, rejection, and connected-port settlement. Rooted-file page imports,
+import options/attributes, and complete module scheduling remain open.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

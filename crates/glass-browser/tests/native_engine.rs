@@ -21230,6 +21230,126 @@ async fn native_content_process_resolves_runtime_worker_module_imports() {
 }
 
 #[tokio::test]
+async fn native_content_process_resolves_runtime_shared_worker_module_imports() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(25), async {
+            let mut requests = Vec::new();
+            for _ in 0..8 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("SharedWorker module request includes a URL")
+                    .to_owned();
+                let (status, content_type, body) = match path.as_str() {
+                    "/page" => (
+                        "200 OK",
+                        "text/html",
+                        "<script>globalThis.sharedWorkerMessages = []; const listen = worker => { worker.port.onmessage = event => sharedWorkerMessages.push(event.data); worker.port.start(); }; globalThis.classicShared = new SharedWorker('/classic-shared.js', { name: 'dynamic-classic' }); listen(classicShared); globalThis.moduleShared = new SharedWorker('/module-shared.js', { name: 'dynamic-module', type: 'module' }); listen(moduleShared);</script>",
+                    ),
+                    "/classic-shared.js" => (
+                        "200 OK",
+                        "application/javascript",
+                        "globalThis.onconnect = event => { const port = event.ports[0]; const target = './classic-dep.js?runtime=classic'; import(target).then(async module => { port.postMessage({ kind: 'classic', value: module.value, nested: await module.loadNested() }); }, error => port.postMessage({ kind: 'classic-error', message: String(error) })); const missing = './classic-missing.js'; import(missing).then(() => port.postMessage({ kind: 'unexpected' }), error => port.postMessage({ kind: 'rejected', type: error instanceof TypeError })); };",
+                    ),
+                    "/classic-dep.js?runtime=classic" => (
+                        "200 OK",
+                        "application/javascript",
+                        "export const value = 'classic-shared'; export async function loadNested() { const nested = './classic-nested.js?runtime=nested'; return (await import(nested)).value; }",
+                    ),
+                    "/classic-nested.js?runtime=nested" => (
+                        "200 OK",
+                        "application/javascript",
+                        "export const value = 'classic-nested';",
+                    ),
+                    "/classic-missing.js" => (
+                        "404 Not Found",
+                        "application/javascript",
+                        "not found",
+                    ),
+                    "/module-shared.js" => (
+                        "200 OK",
+                        "application/javascript",
+                        "globalThis.onconnect = event => { const port = event.ports[0]; const target = './module-dep.js?runtime=module'; import(target).then(async module => { port.postMessage({ kind: 'module', value: module.value, nested: await module.loadNested() }); }, error => port.postMessage({ kind: 'module-error', message: String(error) })); };",
+                    ),
+                    "/module-dep.js?runtime=module" => (
+                        "200 OK",
+                        "application/javascript",
+                        "export const value = 'module-shared'; export async function loadNested() { const nested = './module-nested.js?runtime=nested'; return (await import(nested)).value; }",
+                    ),
+                    "/module-nested.js?runtime=nested" => (
+                        "200 OK",
+                        "application/javascript",
+                        "export const value = 'module-nested';",
+                    ),
+                    other => panic!("unexpected SharedWorker dynamic-module request: {other}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push(path);
+            }
+            requests.sort();
+            requests
+        })
+        .await
+        .expect("SharedWorker dynamic-module requests stay within their time bound")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    for _ in 0..4 {
+        let count = engine
+            .evaluate_async("sharedWorkerMessages.length")
+            .await
+            .unwrap();
+        if count.as_u64() == Some(3) {
+            break;
+        }
+    }
+    let result = engine
+        .evaluate_async(
+            "sharedWorkerMessages.slice().sort((a, b) => String(a.kind).localeCompare(String(b.kind)))",
+        )
+        .await
+        .unwrap();
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(
+        result,
+        serde_json::json!([
+            {"kind": "classic", "value": "classic-shared", "nested": "classic-nested"},
+            {"kind": "module", "value": "module-shared", "nested": "module-nested"},
+            {"kind": "rejected", "type": true},
+        ]),
+        "classic and module SharedWorker imports must settle into their connected MessagePorts, including nested imports and rejections"
+    );
+    assert_eq!(
+        requests,
+        vec![
+            "/classic-dep.js?runtime=classic",
+            "/classic-missing.js",
+            "/classic-nested.js?runtime=nested",
+            "/classic-shared.js",
+            "/module-dep.js?runtime=module",
+            "/module-nested.js?runtime=nested",
+            "/module-shared.js",
+            "/page",
+        ]
+    );
+}
+
+#[tokio::test]
 async fn native_content_process_form_attribute_associates_external_controls() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

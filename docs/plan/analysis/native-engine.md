@@ -983,8 +983,9 @@ distinctions remain graph keys while descendants resolve from redirected
 response URLs. The process-backed redirect/query/fragment case, rooted-file
 worker case, and module service-worker case passed, along with the scoped check
 and all local documentation gates across 1,338 Markdown files. Remote CI was
-not run. Worker import maps, computed dynamic imports, and complete module
-scheduling remain open. See
+not run. At the 710 checkpoint, computed dynamic imports and complete module
+scheduling remained open; worker import maps were later removed as a
+non-standard target. See
 [`slice 710`](../tasks/native-engine-browser-710.md).
 
 Slice 711 extends bounded dynamic-import discovery to fully static quoted
@@ -993,8 +994,9 @@ partially known runtime expressions. It also resolves rooted-file external
 module-script URLs as document-relative URLs instead of applying the bare
 module-import rule to HTML `src` values. Focused page, redirected-worker, and
 rooted-file cases pass with the scoped check and all four documentation gates;
-remote CI was not run. Runtime-valued expressions, worker import maps, and
-complete module scheduling remain open. See
+remote CI was not run. At the 711 checkpoint, runtime-valued expressions and
+complete module scheduling remained open; worker import maps were later
+removed as a non-standard target. See
 [`slice 711`](../tasks/native-engine-browser-711.md).
 
 Slice 712 prevents the static prefetch scanner from treating `object.import()`
@@ -1007,8 +1009,10 @@ Slice 713 routes runtime-valued `ImportCall`s from page classic and module
 scripts through the asynchronous host fetch loop. The active script's
 response/document base selects the Document import-map scope; fetched modules
 can issue nested computed imports through the same bounded graph. The
-process-backed fixture covers classic and module callers. Worker/rooted-file
-computed imports, import options, and complete module scheduling remain open.
+process-backed fixture covers classic and module callers. At the 713
+checkpoint, Worker/rooted-file computed imports, import options, and complete
+module scheduling remained open; slices 714–715 subsequently cover dedicated
+and shared workers.
 See [`slice 713`](../tasks/native-engine-browser-713.md).
 
 Slice 714 carries computed `ImportCall`s from dedicated classic and module
@@ -1016,10 +1020,20 @@ Worker entry scripts through the existing Worker fetch path. The host verifies
 the active worker-script referrer, resolves without Document import maps,
 loads the bounded dependency graph, extends the worker module map, and settles
 the import promise in the owning realm. Process-backed coverage passed for
-both dedicated script kinds and a nested computed module. SharedWorker runtime
-imports, `importScripts()` source-base handling, rooted-file page imports,
-import options/attributes, and complete module scheduling remain open. See
+both dedicated script kinds and a nested computed module. At the 714
+checkpoint, SharedWorker runtime imports were still open. `importScripts()`
+source-base handling, rooted-file page imports, import options/attributes, and
+complete module scheduling remain open. See
 [`slice 714`](../tasks/native-engine-browser-714.md).
+
+Slice 715 extends runtime-valued `ImportCall`s to classic and module
+SharedWorker entry scripts. It reuses the bounded worker module loader and
+settles imports in the persistent shared realm so connected MessagePorts
+receive successful nested imports and rejected fetches. Its process-backed
+fixture asserts the exact request set across both worker types. Computed
+imports in classic `importScripts()` dependencies, rooted-file page imports,
+import options/attributes, and complete module scheduling remain open. See
+[`slice 715`](../tasks/native-engine-browser-715.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

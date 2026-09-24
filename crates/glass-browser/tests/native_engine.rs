@@ -2094,10 +2094,14 @@ async fn native_file_document_runs_dedicated_and_shared_workers() {
     .unwrap();
     fs::write(
         &module_worker_path,
-        "import { value } from './module-worker-dependency.js'; postMessage({ kind: 'module-ready', value }); self.onmessage = event => postMessage({ kind: 'module-reply', value: value + event.data });",
+        "import { value } from './module-worker-dependency.js#first'; import { value as second } from './module-worker-dependency.js#second'; globalThis.fileModuleWorkerDependencyValues = [value, second]; postMessage({ kind: 'module-ready', value, executions: globalThis.fileModuleDependencyExecutions }); self.onmessage = event => postMessage({ kind: 'module-reply', value: value + event.data });",
     )
     .unwrap();
-    fs::write(&module_dependency_path, "export const value = 7;").unwrap();
+    fs::write(
+        &module_dependency_path,
+        "globalThis.fileModuleDependencyExecutions = (globalThis.fileModuleDependencyExecutions || 0) + 1; export const value = 7;",
+    )
+    .unwrap();
     fs::write(
         &shared_worker_path,
         "importScripts('./shared-worker-dependency.js'); let connections = 0; onconnect = event => { const port = event.ports[0]; const connection = ++connections; port.onmessage = message => port.postMessage({ kind: 'shared-reply', value: fileSharedDependency + Number(message.data) + connection }); port.start(); port.postMessage({ kind: 'shared-ready', value: fileSharedDependency, connection }); };",
@@ -2132,7 +2136,7 @@ async fn native_file_document_runs_dedicated_and_shared_workers() {
                 "kind": "ready",
                 "href": native_test_file_url(&worker_path),
             }],
-            [{ "kind": "module-ready", "value": 7 }],
+            [{ "kind": "module-ready", "value": 7, "executions": 2 }],
             [{ "kind": "shared-ready", "value": 9, "connection": 1 }],
             native_test_file_url(&worker_path),
             native_test_file_url(&module_worker_path),
@@ -2156,7 +2160,7 @@ async fn native_file_document_runs_dedicated_and_shared_workers() {
                 { "kind": "reply", "value": 7 },
             ],
             [
-                { "kind": "module-ready", "value": 7 },
+                { "kind": "module-ready", "value": 7, "executions": 2 },
                 { "kind": "module-reply", "value": 13 },
             ],
             [
@@ -3321,6 +3325,16 @@ async fn native_local_module_worker_imports_dependencies_and_handles_messages() 
             "export const workerValue = 7;",
         )
         .unwrap()
+        .with_fixture(
+            "fixture://module-shared-worker-root",
+            "import { sharedValue } from 'fixture://module-shared-worker-dependency#first'; import { sharedValue as second } from 'fixture://module-shared-worker-dependency#second'; onconnect = event => { const port = event.ports[0]; port.postMessage({ kind: 'shared-ready', value: sharedValue, executions: globalThis.sharedModuleExecutions }); port.onmessage = message => port.postMessage({ kind: 'shared-reply', value: sharedValue + Number(message.data) }); port.start(); };",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://module-shared-worker-dependency",
+            "globalThis.sharedModuleExecutions = (globalThis.sharedModuleExecutions || 0) + 1; export const sharedValue = 5;",
+        )
+        .unwrap()
         .with_initial_url("fixture://module-worker-page");
     let mut engine = NativeEngine::new(config).unwrap();
     engine.initialize_async().await.unwrap();
@@ -3328,29 +3342,58 @@ async fn native_local_module_worker_imports_dependencies_and_handles_messages() 
     assert_eq!(
         engine
             .evaluate_async(
-                "globalThis.workerMessages = []; globalThis.worker = new Worker('fixture://module-worker-root', { type: 'module' }); worker.onmessage = event => workerMessages.push(event.data); [worker instanceof Worker, worker.url]",
+                "globalThis.workerMessages = []; globalThis.sharedMessages = []; globalThis.worker = new Worker('fixture://module-worker-root', { type: 'module' }); worker.onmessage = event => workerMessages.push(event.data); globalThis.shared = new SharedWorker('fixture://module-shared-worker-root', { name: 'module-shared', type: 'module' }); shared.port.onmessage = event => sharedMessages.push(event.data); shared.port.start(); [worker instanceof Worker, worker.url, shared instanceof SharedWorker, shared.url]",
             )
             .await
             .unwrap(),
-        serde_json::json!([true, "fixture://module-worker-root"])
+        serde_json::json!([
+            true,
+            "fixture://module-worker-root",
+            true,
+            "fixture://module-shared-worker-root",
+        ])
     );
     assert_eq!(
         engine
-            .evaluate_async("worker.postMessage(4); workerMessages")
+            .evaluate_async("[workerMessages, sharedMessages]")
             .await
             .unwrap(),
-        serde_json::json!([{"kind": "ready", "value": 7, "importScriptsRejected": true}])
+        serde_json::json!([
+            [{"kind": "ready", "value": 7, "importScriptsRejected": true}],
+            [{"kind": "shared-ready", "value": 5, "executions": 2}],
+        ])
     );
     assert_eq!(
-        engine.evaluate_async("workerMessages").await.unwrap(),
+        engine
+            .evaluate_async(
+                "worker.postMessage(4); shared.port.postMessage(3); [workerMessages, sharedMessages]",
+            )
+            .await
+            .unwrap(),
         serde_json::json!([
-            {"kind": "ready", "value": 7, "importScriptsRejected": true},
-            {
-                "kind": "reply",
-                "value": 11,
-                "module": "function",
-                "hasDocument": false,
-            },
+            [{"kind": "ready", "value": 7, "importScriptsRejected": true}],
+            [{"kind": "shared-ready", "value": 5, "executions": 2}],
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("[workerMessages, sharedMessages]")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            [
+                {"kind": "ready", "value": 7, "importScriptsRejected": true},
+                {
+                    "kind": "reply",
+                    "value": 11,
+                    "module": "function",
+                    "hasDocument": false,
+                },
+            ],
+            [
+                {"kind": "shared-ready", "value": 5, "executions": 2},
+                {"kind": "shared-reply", "value": 8},
+            ],
         ])
     );
     engine.close_async().await.unwrap();
@@ -6068,14 +6111,17 @@ async fn native_content_process_registers_service_worker_and_intercepts_fetch_an
                 "/register",
                 "text/html",
                 Cow::Borrowed(
-                    "<!doctype html><html><body><script>globalThis.controllerChanges = 0; navigator.serviceWorker.addEventListener('controllerchange', () => controllerChanges++); globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>registration page</main></body></html>",
+                    "<!doctype html><html><body><script>globalThis.controllerChanges = 0; navigator.serviceWorker.addEventListener('controllerchange', () => controllerChanges++); globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/', type: 'module' });</script><main>registration page</main></body></html>",
                 ),
             ),
             (
                 "/sw.js",
                 "application/javascript",
                 Cow::Borrowed(
-                    r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+                    r#"import { execution as first } from './sw-dep.js#first';
+import { execution as second } from './sw-dep.js#second';
+const moduleExecutionCount = first + second;
+self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', event => {
     const path = new URL(event.request.url).pathname;
@@ -6104,6 +6150,7 @@ self.addEventListener('fetch', event => {
         all: all.length,
         workers: workers.length,
         nestedLength,
+        moduleExecutionCount,
         clientIdPresent: Boolean(client && client.id),
         eventClientIdPresent: Boolean(event.clientId),
         clientUrl: client && client.url,
@@ -6122,6 +6169,20 @@ self.addEventListener('fetch', event => {
     }));
   }
 });"#,
+                ),
+            ),
+            (
+                "/sw-dep.js",
+                "application/javascript",
+                Cow::Borrowed(
+                    "globalThis.serviceWorkerModuleExecutions = (globalThis.serviceWorkerModuleExecutions || 0) + 1; export const execution = globalThis.serviceWorkerModuleExecutions;",
+                ),
+            ),
+            (
+                "/sw-dep.js",
+                "application/javascript",
+                Cow::Borrowed(
+                    "globalThis.serviceWorkerModuleExecutions = (globalThis.serviceWorkerModuleExecutions || 0) + 1; export const execution = globalThis.serviceWorkerModuleExecutions;",
                 ),
             ),
             (
@@ -6227,6 +6288,7 @@ self.addEventListener('fetch', event => {
                 "all": 1,
                 "workers": 0,
                 "nestedLength": 20_000,
+                "moduleExecutionCount": 3,
                 "clientIdPresent": true,
                 "eventClientIdPresent": true,
                 "clientUrl": format!("http://{address}/app/page"),
@@ -20929,6 +20991,90 @@ async fn native_content_process_resolves_literal_dynamic_imports() {
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_preserves_worker_module_identities_and_response_bases() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let expected_paths = [
+                "/page",
+                "/entry.js?version=one",
+                "/workers/entry-real.js?version=two",
+                "/workers/dep.js?variant=one",
+                "/workers/dep.js?variant=one",
+                "/workers/dep.js?variant=two",
+            ];
+            let mut requests = Vec::new();
+            for expected_path in expected_paths {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("worker module request includes a URL")
+                    .to_owned();
+                assert_eq!(path, expected_path);
+                let response = match path.as_str() {
+                    "/page" => {
+                        let body = "<script>globalThis.workerMessages = []; globalThis.workerErrors = []; globalThis.worker = new Worker('/entry.js?version=one#root', { type: 'module' }); worker.onmessage = event => workerMessages.push(event.data); worker.onerror = event => workerErrors.push(event.message);</script>";
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    }
+                    "/entry.js?version=one" => {
+                        "HTTP/1.1 302 Found\r\nLocation: /workers/entry-real.js?version=two\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
+                    }
+                    "/workers/entry-real.js?version=two" => {
+                        let body = "import './dep.js?variant=one#first'; import './dep.js?variant=one#second'; import './dep.js?variant=two'; postMessage({ kind: 'ready', executions: globalThis.workerFragmentExecutions });";
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    }
+                    "/workers/dep.js?variant=one" | "/workers/dep.js?variant=two" => {
+                        let body = "globalThis.workerFragmentExecutions = (globalThis.workerFragmentExecutions || 0) + 1; export const execution = globalThis.workerFragmentExecutions;";
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    }
+                    other => panic!("unexpected worker module request: {other}"),
+                };
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push(path);
+            }
+            requests
+        })
+        .await
+        .expect("worker module graph stays within its time bound")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let result = engine
+        .evaluate_async("({ messages: workerMessages, errors: workerErrors })")
+        .await
+        .unwrap();
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "messages": [{"kind": "ready", "executions": 3}],
+            "errors": [],
+        }),
+        "worker modules must keep fragment-distinct records and resolve from the redirected response URL"
+    );
+    assert_eq!(requests.len(), 6);
 }
 
 #[tokio::test]

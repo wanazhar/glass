@@ -1245,12 +1245,22 @@ pub(crate) struct NativeWorkerEventSourceCommand {
 
 struct NativeDedicatedWorker {
     url: String,
+    module_name: String,
+    module_base_url: String,
     runtime: NativeJavaScriptRuntime,
     import_script_counts: BTreeMap<String, usize>,
     module_sources: BTreeMap<String, String>,
+    module_base_urls: BTreeMap<String, String>,
     is_module: bool,
     is_shared: bool,
     next_module_turn: AtomicU64,
+}
+
+pub(crate) struct NativeWorkerModuleGraph {
+    pub(crate) root_name: String,
+    pub(crate) root_base_url: String,
+    pub(crate) sources: BTreeMap<String, String>,
+    pub(crate) base_urls: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1268,9 +1278,11 @@ impl NativeDedicatedWorker {
             self.runtime.evaluate_shared_worker_module(
                 worker_id,
                 &self.url,
-                &self.url,
+                &self.module_name,
+                &self.module_base_url,
                 source,
                 &self.module_sources,
+                &self.module_base_urls,
             )
         } else if self.is_shared {
             self.runtime.evaluate_shared_worker(
@@ -1283,9 +1295,11 @@ impl NativeDedicatedWorker {
             self.runtime.evaluate_worker_module(
                 worker_id,
                 &self.url,
-                &self.url,
+                &self.module_name,
+                &self.module_base_url,
                 source,
                 &self.module_sources,
+                &self.module_base_urls,
             )
         } else {
             self.runtime
@@ -1300,13 +1314,15 @@ impl NativeDedicatedWorker {
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if self.is_shared && self.is_module {
             let turn = self.next_module_turn.fetch_add(1, Ordering::Relaxed);
-            let module_name = format!("{}#glass-shared-worker-turn-{turn}", self.url);
+            let module_name = format!("{}#glass-shared-worker-turn-{turn}", self.module_name);
             self.runtime.evaluate_shared_worker_module(
                 worker_id,
                 &self.url,
                 &module_name,
+                &self.module_base_url,
                 source,
                 &self.module_sources,
+                &self.module_base_urls,
             )
         } else if self.is_shared {
             self.runtime.evaluate_shared_worker(
@@ -1317,13 +1333,15 @@ impl NativeDedicatedWorker {
             )
         } else if self.is_module {
             let turn = self.next_module_turn.fetch_add(1, Ordering::Relaxed);
-            let module_name = format!("{}#glass-worker-turn-{turn}", self.url);
+            let module_name = format!("{}#glass-worker-turn-{turn}", self.module_name);
             self.runtime.evaluate_worker_module(
                 worker_id,
                 &self.url,
                 &module_name,
+                &self.module_base_url,
                 source,
                 &self.module_sources,
+                &self.module_base_urls,
             )
         } else {
             self.runtime
@@ -1735,6 +1753,17 @@ impl NativeWorkerRegistry {
                 reason: "native Worker type must be classic or module".into(),
             });
         }
+        let module_request_url = if is_module {
+            match resolve_module_request_url(owner_url, &href) {
+                Ok(url) => url,
+                Err(error) => {
+                    self.queue_error(worker_id, &href, &error.to_string())?;
+                    return Ok(());
+                }
+            }
+        } else {
+            String::new()
+        };
 
         let resource = match loader
             .load_worker_async(owner_url, &href, MAX_NATIVE_SCRIPT_BYTES)
@@ -1750,16 +1779,37 @@ impl NativeWorkerRegistry {
                 return Ok(());
             }
         };
-        let (source, import_script_counts, module_sources) = if is_module {
-            let module_sources = self
-                .load_worker_module_graph(loader, owner_url, resource.clone())
+        let (
+            source,
+            import_script_counts,
+            module_name,
+            module_base_url,
+            module_sources,
+            module_base_urls,
+        ) = if is_module {
+            let graph = self
+                .load_worker_module_graph(loader, owner_url, module_request_url, resource.clone())
                 .await?;
-            (resource.body.clone(), BTreeMap::new(), module_sources)
+            (
+                resource.body.clone(),
+                BTreeMap::new(),
+                graph.root_name,
+                graph.root_base_url,
+                graph.sources,
+                graph.base_urls,
+            )
         } else {
             let (source, import_script_counts) = self
                 .load_worker_script_graph(loader, resource.clone())
                 .await?;
-            (source, import_script_counts, BTreeMap::new())
+            (
+                source,
+                import_script_counts,
+                resource.url.clone(),
+                resource.url.clone(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+            )
         };
         let runtime =
             match NativeJavaScriptRuntime::new_with_context_id(format!("glass-worker-{worker_id}"))
@@ -1774,8 +1824,11 @@ impl NativeWorkerRegistry {
             worker_id,
             NativeDedicatedWorker {
                 url: resource.url.clone(),
+                module_name,
+                module_base_url,
                 import_script_counts,
                 module_sources,
+                module_base_urls,
                 is_module,
                 is_shared: false,
                 next_module_turn: AtomicU64::new(1),
@@ -1836,6 +1889,17 @@ impl NativeWorkerRegistry {
                 reason: "native SharedWorker type must be classic or module".into(),
             });
         }
+        let module_request_url = if is_module {
+            match resolve_module_request_url(owner_url, &href) {
+                Ok(url) => url,
+                Err(error) => {
+                    self.queue_error(connection_id, &href, &error.to_string())?;
+                    return Ok(());
+                }
+            }
+        } else {
+            String::new()
+        };
         validate_message_port_transfers(std::slice::from_ref(&transfer_port))?;
         let shared_key = format!("{href}\u{0}{name}\u{0}{worker_type}");
         if let Some(worker_id) = self.shared_worker_keys.get(&shared_key).copied() {
@@ -1901,16 +1965,37 @@ impl NativeWorkerRegistry {
                 return Ok(());
             }
         };
-        let (source, import_script_counts, module_sources) = if is_module {
-            let module_sources = self
-                .load_worker_module_graph(loader, owner_url, resource.clone())
+        let (
+            source,
+            import_script_counts,
+            module_name,
+            module_base_url,
+            module_sources,
+            module_base_urls,
+        ) = if is_module {
+            let graph = self
+                .load_worker_module_graph(loader, owner_url, module_request_url, resource.clone())
                 .await?;
-            (resource.body.clone(), BTreeMap::new(), module_sources)
+            (
+                resource.body.clone(),
+                BTreeMap::new(),
+                graph.root_name,
+                graph.root_base_url,
+                graph.sources,
+                graph.base_urls,
+            )
         } else {
             let (source, import_script_counts) = self
                 .load_worker_script_graph(loader, resource.clone())
                 .await?;
-            (source, import_script_counts, BTreeMap::new())
+            (
+                source,
+                import_script_counts,
+                resource.url.clone(),
+                resource.url.clone(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+            )
         };
         let runtime = match NativeJavaScriptRuntime::new_with_context_id(format!(
             "glass-shared-worker-{connection_id}"
@@ -1925,8 +2010,11 @@ impl NativeWorkerRegistry {
             connection_id,
             NativeDedicatedWorker {
                 url: resource.url.clone(),
+                module_name,
+                module_base_url,
                 import_script_counts,
                 module_sources,
+                module_base_urls,
                 is_module,
                 is_shared: true,
                 next_module_turn: AtomicU64::new(1),
@@ -3463,19 +3551,23 @@ impl NativeWorkerRegistry {
         &self,
         loader: &mut NativeResourceLoader,
         owner_url: &str,
+        root_request_url: String,
         root: NativeScriptResource,
-    ) -> Result<BTreeMap<String, String>, NativeEngineError> {
+    ) -> Result<NativeWorkerModuleGraph, NativeEngineError> {
         if root.body.is_empty() {
             return Err(NativeEngineError::invalid(
                 "worker module source",
                 "must not be empty",
             ));
         }
-        let mut sources = BTreeMap::from([(root.url.clone(), root.body.clone())]);
-        let mut pending = VecDeque::from([(root.url, root.body)]);
+        let root_name = root_request_url;
+        let root_base_url = root.url.clone();
+        let mut sources = BTreeMap::from([(root_name.clone(), root.body.clone())]);
+        let mut base_urls = BTreeMap::from([(root_name.clone(), root_base_url.clone())]);
+        let mut pending = VecDeque::from([(root_name.clone(), root_base_url.clone(), root.body)]);
         let mut total_bytes = sources.values().map(String::len).sum::<usize>();
         let mut import_edges = 0usize;
-        while let Some((module_url, module_source)) = pending.pop_front() {
+        while let Some((_, module_base_url, module_source)) = pending.pop_front() {
             let mut specifiers = static_module_specifiers(&module_source)?;
             specifiers.extend(literal_dynamic_module_specifiers(&module_source));
             for specifier in specifiers {
@@ -3487,7 +3579,7 @@ impl NativeWorkerRegistry {
                         import_edges,
                     ));
                 }
-                let target = resolve_worker_module_specifier(&module_url, &specifier)?;
+                let target = resolve_worker_module_specifier(&module_base_url, &specifier)?;
                 if sources.contains_key(&target) {
                     continue;
                 }
@@ -3521,74 +3613,74 @@ impl NativeWorkerRegistry {
                         total_bytes,
                     ));
                 }
-                let name = resource.url;
+                let name = target;
+                let base_url = resource.url;
                 let source = resource.body;
                 if sources.insert(name.clone(), source.clone()).is_none() {
-                    pending.push_back((name, source));
+                    base_urls.insert(name.clone(), base_url.clone());
+                    pending.push_back((name, base_url, source));
                 }
             }
         }
-        Ok(sources)
+        Ok(NativeWorkerModuleGraph {
+            root_name,
+            root_base_url,
+            sources,
+            base_urls,
+        })
     }
 }
 
 pub(crate) async fn load_service_worker_source(
     loader: &mut NativeResourceLoader,
     owner_url: &str,
+    root_request_url: String,
     resource: NativeScriptResource,
     is_module: bool,
-) -> Result<(String, BTreeMap<String, usize>, BTreeMap<String, String>), NativeEngineError> {
+) -> Result<
+    (
+        String,
+        BTreeMap<String, usize>,
+        Option<NativeWorkerModuleGraph>,
+    ),
+    NativeEngineError,
+> {
     let registry = NativeWorkerRegistry::new();
     if is_module {
-        let module_sources = registry
-            .load_worker_module_graph(loader, owner_url, resource.clone())
+        let module_graph = registry
+            .load_worker_module_graph(loader, owner_url, root_request_url, resource.clone())
             .await?;
-        Ok((resource.body, BTreeMap::new(), module_sources))
+        Ok((resource.body, BTreeMap::new(), Some(module_graph)))
     } else {
         let (source, import_script_counts) =
             registry.load_worker_script_graph(loader, resource).await?;
-        Ok((source, import_script_counts, BTreeMap::new()))
+        Ok((source, import_script_counts, None))
     }
 }
 
 fn resolve_worker_module_specifier(
-    module_url: &str,
+    module_base_url: &str,
     specifier: &str,
 ) -> Result<String, NativeEngineError> {
-    let is_absolute = specifier.starts_with("http://")
-        || specifier.starts_with("https://")
-        || specifier.starts_with("fixture://")
-        || specifier
-            .get(..5)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"));
-    if !is_absolute
-        && !specifier.starts_with("./")
+    if !specifier.starts_with("./")
         && !specifier.starts_with("../")
         && !specifier.starts_with('/')
+        && !specifier.starts_with("http://")
+        && !specifier.starts_with("https://")
+        && !specifier.starts_with("fixture://")
+        && !specifier
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"))
         && !specifier.starts_with("//")
     {
         return Err(NativeEngineError::UnsupportedUrl {
             reason: "bare Worker module specifiers require an import map".into(),
         });
     }
-    let mut base = Url::parse(module_url).map_err(|_| NativeEngineError::UnsupportedUrl {
-        reason: "Worker module owner URL is not valid URL syntax".into(),
+    let target = resolve_module_request_url(module_base_url, specifier)?;
+    let target = Url::parse(&target).map_err(|_| NativeEngineError::UnsupportedUrl {
+        reason: "Worker module URL is invalid".into(),
     })?;
-    base.set_fragment(None);
-    let mut target = if is_absolute {
-        Url::parse(specifier)
-    } else {
-        base.join(specifier)
-    }
-    .map_err(|_| NativeEngineError::UnsupportedUrl {
-        reason: "Worker module specifier could not be resolved against its owner".into(),
-    })?;
-    if !target.username().is_empty() || target.password().is_some() {
-        return Err(NativeEngineError::UnsupportedUrl {
-            reason: "Worker module URL must not contain credentials".into(),
-        });
-    }
-    target.set_fragment(None);
     if !matches!(target.scheme(), "http" | "https" | "fixture" | "file") {
         return Err(NativeEngineError::UnsupportedUrl {
             reason: "Worker module URL must use HTTP(S), a registered fixture, or a rooted file"
@@ -13649,8 +13741,10 @@ impl NativeJavaScriptRuntime {
         worker_id: u32,
         worker_url: &str,
         module_name: &str,
+        module_base_url: &str,
         source: &str,
         module_sources: &BTreeMap<String, String>,
+        module_base_urls: &BTreeMap<String, String>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if module_name.is_empty() {
             return Err(NativeEngineError::invalid(
@@ -13659,6 +13753,9 @@ impl NativeJavaScriptRuntime {
             ));
         }
         self.set_module_sources(module_sources.clone());
+        let mut module_base_urls = module_base_urls.clone();
+        module_base_urls.insert(module_name.to_owned(), module_base_url.to_owned());
+        self.set_module_base_urls(module_base_urls);
         self.evaluate_worker_source(
             worker_id,
             worker_url,
@@ -13694,8 +13791,10 @@ impl NativeJavaScriptRuntime {
         worker_id: u32,
         worker_url: &str,
         module_name: &str,
+        module_base_url: &str,
         source: &str,
         module_sources: &BTreeMap<String, String>,
+        module_base_urls: &BTreeMap<String, String>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if module_name.is_empty() {
             return Err(NativeEngineError::invalid(
@@ -13704,6 +13803,9 @@ impl NativeJavaScriptRuntime {
             ));
         }
         self.set_module_sources(module_sources.clone());
+        let mut module_base_urls = module_base_urls.clone();
+        module_base_urls.insert(module_name.to_owned(), module_base_url.to_owned());
+        self.set_module_base_urls(module_base_urls);
         self.evaluate_shared_worker_source(
             worker_id,
             worker_url,

@@ -813,6 +813,15 @@ check; remote CI was not run. Worker module identity, computed dynamic imports,
 and complete module scheduling remain open. See the
 [`slice 709` task](../plan/tasks/native-engine-browser-709.md).
 
+Slice 710 applies the identity/base split to dedicated, shared, and
+service-worker module graphs: request URLs remain module-record keys, while
+final response URLs remain descendant bases after redirects. It preserves
+worker `location`, fetch policy, and the existing no-import-map worker
+contract. Redirect, query/fragment, rooted-file, and service-worker module
+regressions passed with the scoped check and documentation gates; remote CI was
+not run. Computed dynamic imports and full module scheduling remain open. See
+the [`slice 710` task](../plan/tasks/native-engine-browser-710.md).
+
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript
 fragment projections, and XHR HTML documents. Text, attributes, comments,

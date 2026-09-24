@@ -6,7 +6,7 @@ use super::config::{
 };
 use super::content_process::{
     NativeContentLoad, NativeContentLoadResult, NativeContentMutation, NativeContentNavigation,
-    NativeContentProcess, NativeContentScriptResult,
+    NativeContentProcess, NativeContentScriptResult, merge_dynamic_page_script_result,
 };
 use super::css::{
     FontWeightValue, NativeFontFaceSource, absolutize_stylesheet_urls, css_import_matches,
@@ -32,17 +32,17 @@ use super::javascript::{
     NativeHashChangeEvent, NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
     NativeMessagePortPageMessage, NativeMessagePortTransfer, NativePageEventBatch,
     NativePageMessageEvent, NativePageMessagePortCommand, NativePageNavigation, NativePageScript,
-    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
-    NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
+    NativePageScriptResult, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
+    NativeScriptEvaluation, NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
     apply_document_commands_with_font_face_ack, apply_indexed_db_changes, diff_indexed_db_changes,
     execute_dynamic_page_scripts, execute_inline_scripts, frame_event_batch, host_event_batch,
     host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
-    load_local_file_module_graph, load_service_worker_client_leases, load_web_storage_profile,
-    new_storage_writer_id, read_storage_event_journal, register_storage_reader,
-    save_web_storage_profile, storage_event_cursor, storage_key,
+    load_local_file_module_graph_with_import_map, load_service_worker_client_leases,
+    load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
+    register_storage_reader, save_web_storage_profile, storage_event_cursor, storage_key,
     unregister_service_worker_client_lease, unregister_storage_reader,
     validate_frame_script_command, validate_message_port_transfers,
     validate_native_message_payload, validate_native_object_url_transfers,
@@ -50,6 +50,7 @@ use super::javascript::{
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
+use super::module_import_map::NativeModuleImportMap;
 use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
@@ -4520,27 +4521,15 @@ impl NativeEngine {
                 MAX_NATIVE_SCRIPT_BYTES,
             );
             if !dynamic_sources.is_empty() {
-                let (dynamic_scripts, resource_events) = load_local_dynamic_page_script_sources(
-                    dynamic_sources,
-                    javascript,
-                    &mut self.loader,
-                    &self.url,
-                )?;
-                javascript.set_sync_xhr_loader(&self.loader);
-                let dynamic_result = execute_dynamic_page_scripts(
+                let dynamic_result = execute_local_dynamic_page_script_batches(
                     &mut document,
                     javascript,
-                    dynamic_scripts,
+                    dynamic_sources,
+                    &mut self.loader,
                     &self.url,
                     &self.origin,
                     self.config.viewport,
-                    &resource_events,
-                    &[],
-                );
-                if let Some(updated_loader) = javascript.take_sync_xhr_loader() {
-                    self.loader.merge_fetch_task_state(updated_loader)?;
-                }
-                let dynamic_result = dynamic_result?;
+                )?;
                 if !dynamic_result.pending_script_sources.is_empty() {
                     return Err(NativeEngineError::UnsupportedUrl {
                         reason: "dynamic external/module scripts require a process-backed HTTP(S) document"
@@ -8260,10 +8249,36 @@ fn load_local_dynamic_page_script_sources(
     loader: &mut NativeResourceLoader,
     document_url: &str,
 ) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
-    let mut scripts = Vec::new();
+    let mut import_map = runtime.module_import_map()?;
+    let mut scripts = vec![NativePageScript::ImportMap(import_map.clone())];
     let mut resource_events = Vec::new();
     for (index, source) in sources.into_iter().enumerate() {
         match source {
+            NativePageScriptSource::ImportMap {
+                source,
+                node_index,
+                nonce,
+            } => {
+                let Some(source) = source else {
+                    resource_events.push((node_index, NativeEventKind::Error));
+                    continue;
+                };
+                if !loader.allows_inline_script(document_url, &source, nonce.as_deref())? {
+                    resource_events.push((node_index, NativeEventKind::Error));
+                    continue;
+                }
+                let Ok(parsed) = NativeModuleImportMap::parse(&source, document_url) else {
+                    resource_events.push((node_index, NativeEventKind::Error));
+                    continue;
+                };
+                let mut merged = import_map.clone();
+                if merged.merge(parsed).is_err() {
+                    resource_events.push((node_index, NativeEventKind::Error));
+                    continue;
+                }
+                import_map = merged;
+                scripts.push(NativePageScript::ImportMap(import_map.clone()));
+            }
             NativePageScriptSource::Inline {
                 source, node_index, ..
             } => scripts.push(NativePageScript::Classic {
@@ -8271,12 +8286,32 @@ fn load_local_dynamic_page_script_sources(
                 node_index: Some(node_index),
             }),
             NativePageScriptSource::ModuleInline {
-                source, node_index, ..
-            } => scripts.push(NativePageScript::Module {
-                name: format!("{document_url}#glass-local-dynamic-module-{node_index}-{index}"),
                 source,
-                node_index: Some(node_index),
-            }),
+                timing,
+                node_index,
+                nonce,
+                ..
+            } => {
+                if !loader.allows_inline_script(document_url, &source, nonce.as_deref())? {
+                    resource_events.push((node_index, NativeEventKind::Error));
+                    continue;
+                }
+                let name =
+                    format!("{document_url}#glass-local-dynamic-module-{node_index}-{index}");
+                match load_local_file_module_graph_with_import_map(
+                    loader,
+                    document_url,
+                    name,
+                    source,
+                    timing,
+                    node_index,
+                    &mut import_map,
+                ) {
+                    Ok(graph) => scripts.extend(graph.into_iter().map(|(_, script)| script)),
+                    Err(_) => resource_events.push((node_index, NativeEventKind::Error)),
+                }
+                scripts.push(NativePageScript::ImportMap(import_map.clone()));
+            }
             NativePageScriptSource::External {
                 href,
                 node_index,
@@ -8360,12 +8395,14 @@ fn load_local_dynamic_page_script_sources(
                 match resource {
                     Ok(Some(resource)) => {
                         let graph = if is_file {
-                            load_local_file_module_graph(
+                            load_local_file_module_graph_with_import_map(
                                 loader,
                                 document_url,
-                                resource,
+                                resource.url,
+                                resource.body,
                                 timing,
                                 node_index,
+                                &mut import_map,
                             )
                         } else {
                             Ok(vec![(
@@ -8386,6 +8423,7 @@ fn load_local_dynamic_page_script_sources(
                                 resource_events.push((node_index, NativeEventKind::Error));
                             }
                         }
+                        scripts.push(NativePageScript::ImportMap(import_map.clone()));
                     }
                     Ok(None) | Err(_) => resource_events.push((node_index, NativeEventKind::Error)),
                 }
@@ -8393,6 +8431,50 @@ fn load_local_dynamic_page_script_sources(
         }
     }
     Ok((scripts, resource_events))
+}
+
+fn execute_local_dynamic_page_script_batches(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    mut sources: Vec<NativePageScriptSource>,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+) -> Result<NativePageScriptResult, NativeEngineError> {
+    let mut aggregate = NativePageScriptResult::default();
+    let mut batches = 0usize;
+    loop {
+        batches = batches.saturating_add(1);
+        if batches > super::javascript::MAX_NATIVE_INLINE_SCRIPTS {
+            return Err(NativeEngineError::limit(
+                "native local dynamic script turns",
+                super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
+                batches,
+            ));
+        }
+        let (scripts, resource_events) =
+            load_local_dynamic_page_script_sources(sources, runtime, loader, document_url)?;
+        runtime.set_sync_xhr_loader(loader);
+        let mut result = execute_dynamic_page_scripts(
+            document,
+            runtime,
+            scripts,
+            document_url,
+            document_origin,
+            viewport,
+            &resource_events,
+            &[],
+        )?;
+        if let Some(updated_loader) = runtime.take_sync_xhr_loader() {
+            loader.merge_fetch_task_state(updated_loader)?;
+        }
+        sources = std::mem::take(&mut result.pending_script_sources);
+        merge_dynamic_page_script_result(&mut aggregate, result)?;
+        if sources.is_empty() {
+            return Ok(aggregate);
+        }
+    }
 }
 
 fn load_local_dynamic_stylesheets(

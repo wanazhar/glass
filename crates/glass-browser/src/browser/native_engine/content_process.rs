@@ -8250,12 +8250,7 @@ async fn load_page_script_source_list(
     ));
     let mut page_import_maps = page_import_maps.into_iter().peekable();
     for (index, script) in page_sources.into_iter().enumerate() {
-        let node_index = match &script {
-            NativePageScriptSource::Inline { node_index, .. }
-            | NativePageScriptSource::External { node_index, .. }
-            | NativePageScriptSource::ModuleInline { node_index, .. }
-            | NativePageScriptSource::ModuleExternal { node_index, .. } => *node_index,
-        };
+        let node_index = script.node_index();
         while page_import_maps
             .peek()
             .is_some_and(|map_source| map_source.node_index < node_index)
@@ -8273,6 +8268,22 @@ async fn load_page_script_source_list(
             )?;
         }
         match script {
+            NativePageScriptSource::ImportMap {
+                source,
+                node_index,
+                nonce,
+            } => register_page_import_map_source(
+                NativePageImportMapSource {
+                    source,
+                    node_index,
+                    nonce,
+                },
+                &mut import_map,
+                loader,
+                document_url,
+                &mut sources,
+                &mut resource_events,
+            )?,
             NativePageScriptSource::Inline {
                 source,
                 timing,
@@ -8559,7 +8570,90 @@ async fn execute_dynamic_page_scripts_with_loader(
     }
 }
 
-fn merge_dynamic_page_script_result(
+fn execute_dynamic_page_scripts_without_loader(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    mut sources: Vec<NativePageScriptSource>,
+    document_url: &str,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+) -> Result<NativePageScriptResult, NativeEngineError> {
+    let mut aggregate = NativePageScriptResult::default();
+    let mut batches = 0usize;
+    loop {
+        batches = batches.saturating_add(1);
+        if batches > super::javascript::MAX_NATIVE_INLINE_SCRIPTS {
+            return Err(NativeEngineError::limit(
+                "native dynamic script turns",
+                super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
+                batches,
+            ));
+        }
+
+        let mut import_map = runtime.module_import_map()?;
+        let mut scripts = vec![NativePageScript::ImportMap(import_map.clone())];
+        let mut resource_events = Vec::new();
+        for source in sources {
+            match source {
+                NativePageScriptSource::ImportMap {
+                    source,
+                    node_index,
+                    nonce: _,
+                } => {
+                    let Some(source) = source else {
+                        resource_events.push((node_index, NativeEventKind::Error));
+                        continue;
+                    };
+                    let Ok(parsed) = NativeModuleImportMap::parse(&source, document_url) else {
+                        resource_events.push((node_index, NativeEventKind::Error));
+                        continue;
+                    };
+                    let mut merged = import_map.clone();
+                    if merged.merge(parsed).is_err() {
+                        resource_events.push((node_index, NativeEventKind::Error));
+                        continue;
+                    }
+                    import_map = merged;
+                    scripts.push(NativePageScript::ImportMap(import_map.clone()));
+                }
+                NativePageScriptSource::External { .. }
+                | NativePageScriptSource::ModuleExternal { .. } => {
+                    return Err(NativeEngineError::UnsupportedUrl {
+                        reason:
+                            "dynamic external/module scripts require a process-backed HTTP(S) document"
+                                .into(),
+                    });
+                }
+                source => {
+                    scripts.extend(page_script_sources_to_scripts(
+                        vec![source],
+                        document_url,
+                        "glass-dynamic-module",
+                    ));
+                }
+            }
+        }
+
+        let mut result = execute_dynamic_page_scripts(
+            document,
+            runtime,
+            scripts,
+            document_url,
+            document_origin,
+            viewport,
+            &resource_events,
+            &[],
+        )?;
+        let next_sources = std::mem::take(&mut result.pending_script_sources);
+        merge_dynamic_page_script_result(&mut aggregate, result)?;
+        if next_sources.is_empty() {
+            return Ok(aggregate);
+        }
+        sources = next_sources;
+    }
+}
+
+pub(crate) fn merge_dynamic_page_script_result(
     aggregate: &mut NativePageScriptResult,
     result: NativePageScriptResult,
 ) -> Result<(), NativeEngineError> {
@@ -10460,19 +10554,13 @@ async fn mutate_script_document(
                             .into(),
                 });
             }
-            execute_dynamic_page_scripts(
+            execute_dynamic_page_scripts_without_loader(
                 &mut next,
                 runtime,
-                page_script_sources_to_scripts(
-                    dynamic_sources,
-                    &document_url,
-                    "glass-dynamic-module",
-                ),
+                dynamic_sources,
                 &document_url,
                 document_origin,
                 viewport,
-                &[],
-                &[],
             )?
         };
         if !dynamic_result.pending_script_sources.is_empty() {
@@ -13561,6 +13649,59 @@ mod tests {
         let mut ordinary = fetch_commands(&[command(None)]).unwrap();
         assert!(!ordinary.pop_front().unwrap().12);
         assert!(fetch_commands(&[command(Some("image"))]).is_err());
+    }
+
+    #[test]
+    fn dynamic_import_map_updates_a_local_runtime_without_a_resource_loader() {
+        let mut document = NativeDocument::parse(
+            "<html><head></head><body></body></html>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("local dynamic import-map document must parse");
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("local-dynamic-import-map")
+            .expect("native JavaScript runtime must construct");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                    const map = document.createElement('script');
+                    map.type = 'importmap';
+                    map.textContent = '{"imports":{"pkg":"/mapped.js"}}';
+                    document.head.appendChild(map);
+                    return true;
+                })()"#,
+                &document,
+                "https://example.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("dynamic import map must attach in the local runtime");
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("dynamic import-map attachment must commit");
+        let sources = document.take_newly_attached_page_script_sources(
+            &evaluation.commands,
+            super::super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
+            MAX_NATIVE_SCRIPT_BYTES,
+        );
+
+        let result = execute_dynamic_page_scripts_without_loader(
+            &mut document,
+            &runtime,
+            sources,
+            "https://example.test/",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+        )
+        .expect("local dynamic import map must be registered");
+        assert!(result.events.is_empty());
+        assert_eq!(
+            runtime
+                .module_import_map()
+                .expect("runtime import map must remain readable")
+                .resolve("https://example.test/main.js", "pkg")
+                .expect("dynamically mapped bare specifier must resolve"),
+            "https://example.test/mapped.js"
+        );
     }
 
     #[tokio::test]

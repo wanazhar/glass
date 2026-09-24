@@ -2702,6 +2702,71 @@ async fn native_file_dynamic_csp_meta_is_head_scoped_and_append_only() {
 }
 
 #[tokio::test]
+async fn native_file_dynamic_csp_meta_blocks_same_turn_image_resource() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-dynamic-image-csp-{}",
+        std::process::id()
+    ));
+    let site = root.join("site");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&site).unwrap();
+    let page_path = site.join("index.html");
+    let image_path = site.join("pixel.png");
+    fs::write(
+        &page_path,
+        "<!doctype html><html><head></head><body></body></html>",
+    )
+    .unwrap();
+    fs::write(&image_path, native_test_png_bytes()).unwrap();
+
+    let config = NativeEngineConfig::default()
+        .with_initial_url(native_test_file_url(&page_path))
+        .with_allowed_file_root(&site);
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    engine
+        .evaluate_async(&format!(
+            r#"(() => {{
+                globalThis.dynamicFileImageErrors = [];
+                const policy = document.createElement('meta');
+                policy.setAttribute('http-equiv', 'Content-Security-Policy');
+                policy.setAttribute('content', "img-src 'none'");
+                document.head.appendChild(policy);
+                const image = document.createElement('img');
+                image.setAttribute('width', '2');
+                image.setAttribute('height', '2');
+                image.addEventListener('error', () => dynamicFileImageErrors.push('blocked'));
+                image.src = {image_url:?};
+                document.body.appendChild(image);
+                return true;
+            }})()"#,
+            image_url = native_test_file_url(&image_path),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async("dynamicFileImageErrors")
+            .await
+            .unwrap(),
+        serde_json::json!(["blocked"])
+    );
+    assert!(
+        !engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeDisplayCommand::Image { .. }))
+    );
+
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn native_file_stylesheet_csp_enforces_self_nonce_and_dynamic_error() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-style-csp-root-{}",

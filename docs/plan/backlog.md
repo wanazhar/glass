@@ -105,6 +105,20 @@ inline/external-script, edit/removal, and body-meta tests pass, as do the
 rooted-file parser/style and HTTP(S) meta regressions. See
 `tasks/native-engine-browser-725.md`.
 
+### Slice 726 complete: rooted-file image, font, and media CSP
+
+Rooted-file `img-src`, `font-src`, and `media-src` now use their directive
+fallbacks, same-root `'self'` semantics, configured-root file admission, and
+conjunctive enforcement before resource bytes are read. Loader tests cover
+same-root allow, cross-root deny, explicit `file:` sources, `default-src`
+fallback, and added-policy denial. A same-evaluation process-backed test
+confirms a dynamically attached image is rejected by a newly connected head
+policy and is not rendered. The scoped check, focused tests, formatting, and
+static documentation gates passed. Remote CI and the live inventory/link gate
+were not run; `target/debug/glass` is absent. Other file-origin CSP classes,
+data/blob policy, report-only policy, and complete CSP conformance remain
+open. See `tasks/native-engine-browser-726.md`.
+
 ### Follow-up observed during slice 722
 
 `native_content_process_delivers_report_only_csp_report_uri_network_reports`

@@ -1170,6 +1170,21 @@ HTTP(S) meta test pass. See
 [`slice 725`](../tasks/native-engine-browser-725.md) and the [CSP Level 3 meta
 element contract](https://www.w3.org/TR/CSP/#meta-element).
 
+Slice 726 adds root-aware `img-src`, `font-src`, and `media-src` enforcement
+to the rooted-file image, font, and media loaders. The resource-specific
+directive falls back to `default-src`; `'self'` requires the same
+most-specific configured file root, while explicit `file:` sources remain
+subject to root admission. Each gate runs before the loader reads resource
+bytes. The loader matrix covers same-root and cross-root resources, default
+fallback, explicit file sources, out-of-root denial, and conjunction. A
+process-backed engine regression inserts a head policy and image in one
+JavaScript evaluation and observes an error event with no image in the display
+list. The scoped check, both focused tests, formatting, whitespace, and static
+maintainer documentation gates passed. Remote CI and live CLI/link inventory
+were not run. File-origin data/blob handling, other resource classes,
+report-only file policies, and complete CSP conformance remain open. See
+[`slice 726`](../tasks/native-engine-browser-726.md).
+
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript
 fragments, and XHR HTML documents. The Rust route retains submitted-source

@@ -982,6 +982,16 @@ rooted-file same-turn test and existing parser, style, and HTTP(S) meta CSP
 regressions pass. See
 [`slice 725`](../plan/tasks/native-engine-browser-725.md).
 
+Slice 726 enforces rooted-file `img-src`, `font-src`, and `media-src` for
+matching file-backed resources, each falling back to `default-src`. For
+`'self'`, resource and Document paths must belong to the same most-specific
+configured root. Root admission and CSP are checked before resource bytes are
+read; runtime meta policies use the same append-only Document ledger as script
+and style checks. Loader and same-evaluation engine tests cover these routes.
+File-origin data/blob resources, other CSP resource classes, report-only file
+policy, and complete CSP conformance remain open; see
+[`slice 726`](../plan/tasks/native-engine-browser-726.md).
+
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript
 fragment projections, and XHR HTML documents. Text, attributes, comments,

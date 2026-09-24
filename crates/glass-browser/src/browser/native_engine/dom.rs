@@ -778,6 +778,13 @@ pub(crate) enum NativePageScriptSource {
     },
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct NativePageImportMapSource {
+    pub(crate) source: Option<String>,
+    pub(crate) node_index: u32,
+    pub(crate) nonce: Option<String>,
+}
+
 impl NativePageScriptSource {
     fn as_dynamic(mut self) -> Self {
         match &mut self {
@@ -4410,6 +4417,38 @@ impl NativeDocument {
                         parser_inserted: true,
                     }
                 })
+            })
+            .collect()
+    }
+
+    pub(crate) fn page_import_map_sources(
+        &self,
+        max_maps: usize,
+        max_source_bytes: usize,
+    ) -> Vec<NativePageImportMapSource> {
+        self.nodes
+            .iter()
+            .filter(|node| self.is_attached(node.id()))
+            .filter(|node| node.element_name() == Some("script"))
+            .filter(|node| node.namespace_uri() == Some(HTML_NAMESPACE_URI))
+            .filter(|node| {
+                node.attribute("type")
+                    .is_some_and(|value| value.eq_ignore_ascii_case("importmap"))
+            })
+            .take(max_maps)
+            .map(|node| {
+                let source = if node.attribute("src").is_some() {
+                    None
+                } else {
+                    let mut source = String::new();
+                    self.collect_raw_text(node.id(), &mut source);
+                    (source.len() <= max_source_bytes).then_some(source)
+                };
+                NativePageImportMapSource {
+                    source,
+                    node_index: node.id().index(),
+                    nonce: node.attribute("nonce").map(str::to_owned),
+                }
             })
             .collect()
     }

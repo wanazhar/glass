@@ -23,6 +23,7 @@ mod interaction;
 mod javascript;
 mod layout;
 mod lifecycle;
+mod module_import_map;
 mod origin;
 mod paint;
 mod raster;

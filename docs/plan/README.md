@@ -241,8 +241,9 @@ execution conformance remain open; remote CI was not run.
 locally. Dynamically created classic inline scripts execute once when
 connected by `appendChild` or `insertBefore`; removing and reinserting an
 already-started script does not rerun it. The focused regression covers Rust
-command commit. Dynamic external/module script loading, general script
-conformance, and remote CI remain open.
+command commit. Bounded process-backed dynamic external/module loading remains
+as implemented in slices 279–281; full parser/task timing, async/defer
+semantics, general script conformance, and remote CI remain open.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

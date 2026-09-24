@@ -885,8 +885,19 @@ only through the configured-root loader, retains existing module identities
 within the shared graph-entry/byte limits, and settles successful or failed
 loads through the original JavaScript promise. Local fixtures cover nested
 imports, duplicate identity, and out-of-root rejection. Initial parser-sourced
-file import-map ingestion remains a separate issue #40 gate. See
+file import-map ingestion remained a separate issue #40 gate at that
+checkpoint. See
 [`slice 717`](../plan/tasks/native-engine-browser-717.md).
+Slice 718 closes that startup gap: bounded parser-sourced Document maps are
+registered in document order, inline sources pass through the loader's current
+policy check, and inline/external module graphs use the existing map-aware
+rooted-file loader. Full file-origin CSP policy input remains open. A local
+regression covers mapped static/nested
+and runtime imports, conflicting and later maps, malformed-map isolation, and
+out-of-root rejection; the scoped check and focused tests pass locally. Service
+Worker classic-import settlement, import options/attributes, complete module
+scheduling, and broader file-origin propagation remain open. See
+[`slice 718`](../plan/tasks/native-engine-browser-718.md).
 
 Slice 687 normalizes HTML input newlines before tokenization: CRLF and lone CR
 become LF across direct documents, Rust fragment commits, same-turn JavaScript

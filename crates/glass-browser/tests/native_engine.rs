@@ -1994,6 +1994,96 @@ async fn native_file_document_resolves_runtime_valued_imports_from_initial_scrip
 }
 
 #[tokio::test]
+async fn native_file_document_applies_parser_import_maps_to_initial_scripts() {
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-file-parser-import-map-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let site = root.join("site");
+    fs::create_dir_all(site.join("mapped")).unwrap();
+    fs::write(
+        root.join("secret.js"),
+        "export const value = 'must-not-leak';",
+    )
+    .unwrap();
+    fs::write(
+        site.join("index.html"),
+        r#"<html><head>
+          <script type="importmap">{"imports":{"local-package":"./mapped/package.js","escape-package":"../secret.js"}}</script>
+          <script type="module" src="entry.js"></script>
+          <script type="importmap">{"imports":{"local-package":"./mapped/alternate.js","later-package":"./mapped/later.js"}}</script>
+          <script type="importmap">{malformed</script>
+          <script>
+            globalThis.fileParserImportMapClassic = "pending";
+            const localSpecifier = "local-package";
+            const laterSpecifier = "later-package";
+            const escapeSpecifier = "escape-package";
+            Promise.all([
+              import(localSpecifier).then(({ value }) => value),
+              import(laterSpecifier).then(({ value }) => value),
+              import(escapeSpecifier).then(() => "unexpected", () => "rejected"),
+            ]).then(([local, later, escaped]) => {
+              globalThis.fileParserImportMapClassic = [local, later, escaped];
+            }, error => {
+              globalThis.fileParserImportMapClassicError = String(error);
+            });
+          </script>
+        </head><body>rooted import maps</body></html>"#,
+    )
+    .unwrap();
+    fs::write(
+        site.join("entry.js"),
+        "import { value } from 'local-package'; globalThis.fileParserImportMapStatic = value; const specifier = 'later-package'; import(specifier).then(({ value }) => { globalThis.fileParserImportMapModuleRuntime = value; }, error => { globalThis.fileParserImportMapModuleError = String(error); });",
+    )
+    .unwrap();
+    fs::write(
+        site.join("mapped/package.js"),
+        "import { value as nested } from './nested.js'; export const value = `primary:${nested}`;",
+    )
+    .unwrap();
+    fs::write(
+        site.join("mapped/nested.js"),
+        "export const value = 'nested';",
+    )
+    .unwrap();
+    fs::write(
+        site.join("mapped/alternate.js"),
+        "export const value = 'alternate';",
+    )
+    .unwrap();
+    fs::write(
+        site.join("mapped/later.js"),
+        "export const value = 'later';",
+    )
+    .unwrap();
+
+    let config = NativeEngineConfig::default()
+        .with_initial_url(native_test_file_url(&site.join("index.html")))
+        .with_allowed_file_root(site.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[globalThis.fileParserImportMapStatic ?? null, globalThis.fileParserImportMapModuleRuntime ?? null, globalThis.fileParserImportMapClassic ?? null, globalThis.fileParserImportMapModuleError ?? null, globalThis.fileParserImportMapClassicError ?? null]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "primary:nested",
+            "later",
+            ["primary:nested", "later", "rejected"],
+            null,
+            null
+        ])
+    );
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn native_file_document_resolves_runtime_imports_from_late_classic_scripts() {
     let root = std::env::temp_dir().join(format!(
         "glass-native-file-late-runtime-imports-{}",

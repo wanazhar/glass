@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-717`.
+The latest locally completed parser/script slice is `native-engine-browser-718`.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
 shared, and service-worker module graphs. See the task records for scope and
@@ -24,9 +24,15 @@ scripts and dynamically attached classic/module scripts, honors the installed
 Document import map, retains existing module identities within graph bounds,
 and rejects out-of-root requests through the import promise. Its focused tests
 cover nested imports, duplicate module identity, and the file-root boundary.
-The initial parser-sourced file import-map path, Service Worker classic-import
-settlement, import options, broader file-origin propagation, and full module
-scheduling remain open; see `tasks/native-engine-browser-717.md`.
+Slice 718 registers parser-sourced Document maps in source order on initial
+rooted-file navigation and applies them to mapped static and runtime module
+imports through the configured-root loader. The focused fixture covers an
+initial classic dynamic import, mapped static and nested module loading, a
+later accepted mapping, a malformed map that leaves prior mappings intact,
+conflict preservation, and out-of-root rejection. The scoped check and focused
+tests passed locally. Service Worker classic-import settlement, import
+options, broader file-origin propagation, and full module scheduling remain
+open; see `tasks/native-engine-browser-718.md`.
 At the 715 checkpoint, computed imports in classic `importScripts()`
 dependencies remained open. Slice 714 adds runtime-valued computed imports in
 dedicated classic and module Workers through the worker-owned fetch queue,

@@ -131,6 +131,16 @@ It is never an implicit fallback for a native request.
   outside `head` are ignored. Slice 725 wires this contract into the direct
   local-document mutation path; report-only file policies and complete CSP
   conformance remain open. See [task 725](tasks/native-engine-browser-725.md).
+- For rooted-file Documents, `img-src`, `font-src`, and `media-src` govern
+  file-backed image, font, and media subresources, respectively, with
+  `default-src` fallback. `'self'` is scoped to the Document's
+  most-specific configured root; explicit file sources remain bounded by
+  configured-root admission. Runtime-inserted policies apply before later
+  resource bytes are read. Slice 726 implements and tests these file-resource
+  checks, including same-evaluation runtime policy delivery; other resource
+  classes, file-origin data/blob policy, report-only file policies, and
+  complete CSP conformance remain open. See
+  [task 726](tasks/native-engine-browser-726.md).
 - Local implementation evidence: slices 713–717 cover runtime-valued imports
   in page classic/module scripts, dedicated classic/module Workers, and
   classic/module SharedWorkers, including nested computed imports through their

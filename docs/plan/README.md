@@ -27,9 +27,10 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-725`; issue #40
-remains open. Slice 725 enforces runtime CSP meta policies before same-turn
-inline script execution and later external resource processing. Slice 724
+expansion is complete locally through `native-engine-browser-726`; issue #40
+remains open. Slice 726 enforces rooted-file image, font, and media CSP.
+Slice 725 enforces runtime CSP meta policies before same-turn inline script
+execution and later external resource processing. Slice 724
 enforces rooted-file inline style CSP, including runtime mutations. Slice 723
 extends rooted-file CSP to external stylesheets and CSS imports. Slices 709–710 preserve request-URL module identity, including
 query and fragment, separately from the final response URL used as the
@@ -128,6 +129,16 @@ truth (1,353 Markdown files, zero current-claim failures), documentation depth
 and whitespace checks passed. Full link/CLI inventory was not run because
 `target/debug/glass` is absent. Remote CI was not run. See
 [task 725](tasks/native-engine-browser-725.md).
+Slice 726 adds root-aware `img-src`, `font-src`, and `media-src` checks before
+local image, font, and media bytes are read. The tests cover same-root allow,
+cross-root deny, explicit `file:` sources constrained by configured roots,
+`default-src` fallback, policy conjunction, and a same-evaluation runtime meta
+policy blocking a dynamically attached image. The scoped package check, loader
+test, end-to-end rendering test, formatting, and whitespace checks passed.
+Static maintainer documentation gates passed; live link/CLI inventory was not
+run because `target/debug/glass` is absent. Remote CI was not run. File-origin
+data/blob and other CSP resource classes, report-only file policy, and complete
+CSP conformance remain open. See [task 726](tasks/native-engine-browser-726.md).
 Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type

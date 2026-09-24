@@ -1367,6 +1367,23 @@ impl NativeCspDirectives {
         csp_sources_allow_for_rooted_file(sources, document_url, resource_url, nonce, same_root)
     }
 
+    fn allows_rooted_file_resource(
+        &self,
+        kind: NativeSubresourceKind,
+        document_url: &Url,
+        resource_url: &Url,
+        same_root: bool,
+    ) -> bool {
+        let sources = self.sources_for(kind).or(self.default_sources.as_ref());
+        csp_sources_allow_for_rooted_file(
+            sources.map(Vec::as_slice),
+            document_url,
+            resource_url,
+            None,
+            same_root,
+        )
+    }
+
     fn allows_script_redirect(
         &self,
         document_url: &Url,
@@ -1639,6 +1656,22 @@ impl NativeCspPolicy {
             .is_some_and(|root| resource_root.is_some_and(|resource_root| resource_root == root));
         self.policies.iter().all(|policy| {
             policy.allows_rooted_file_style(document_url, resource_url, nonce, same_root)
+        })
+    }
+
+    fn allows_rooted_file_resource(
+        &self,
+        kind: NativeSubresourceKind,
+        document_url: &Url,
+        resource_url: &Url,
+        resource_root: Option<&Path>,
+    ) -> bool {
+        let same_root = self
+            .rooted_file_self_root
+            .as_deref()
+            .is_some_and(|root| resource_root.is_some_and(|resource_root| resource_root == root));
+        self.policies.iter().all(|policy| {
+            policy.allows_rooted_file_resource(kind, document_url, resource_url, same_root)
         })
     }
 
@@ -2863,6 +2896,36 @@ impl NativeResourceLoader {
         };
         let path = self.allowed_file_path(&target_url, resource_name)?;
         Ok(Some((target_url, path)))
+    }
+
+    fn rooted_file_subresource_allowed(
+        &self,
+        document_url: &str,
+        resource_url: &Url,
+        resource_path: &Path,
+        kind: NativeSubresourceKind,
+        resource_name: &str,
+    ) -> Result<bool, NativeEngineError> {
+        let Some((policy_owner_url, Some(_))) =
+            self.csp_document_owner(document_url, resource_name)?
+        else {
+            return Ok(true);
+        };
+        let Some(resource_root) = self.allowed_file_root_for_path(resource_path) else {
+            return Ok(false);
+        };
+        let policy = self
+            .network
+            .document_policies
+            .get(&cache_key(&policy_owner_url))
+            .cloned()
+            .unwrap_or_default();
+        Ok(policy.allows_rooted_file_resource(
+            kind,
+            &policy_owner_url,
+            resource_url,
+            Some(resource_root),
+        ))
     }
 
     pub(crate) fn set_environment(
@@ -5422,10 +5485,20 @@ impl NativeResourceLoader {
     ) -> Result<Option<NativeImage>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text("image URL", src)?;
-        let Some((_, path)) = self.local_file_subresource_path(document_url, src, "file image")?
+        let Some((target_url, path)) =
+            self.local_file_subresource_path(document_url, src, "file image")?
         else {
             return Ok(None);
         };
+        if !self.rooted_file_subresource_allowed(
+            document_url,
+            &target_url,
+            &path,
+            NativeSubresourceKind::Image,
+            "file image CSP owner URL",
+        )? {
+            return Ok(None);
+        }
         let bytes = read_bounded_file(&path, MAX_NATIVE_IMAGE_TRANSFER_BYTES, "file image")?;
         let Some(media_type) = file_image_media_type(&path) else {
             return Ok(None);
@@ -6215,11 +6288,22 @@ impl NativeResourceLoader {
         if !target_url.scheme().eq_ignore_ascii_case("file") {
             return Ok(None);
         }
-        match self.load_file_media_url(&target_url) {
-            Ok(metadata) => Ok(metadata),
-            Err(NativeEngineError::UnsupportedUrl { .. }) => Ok(None),
-            Err(error) => Err(error),
+        let path = match self.allowed_file_path(&target_url, "file media") {
+            Ok(path) => path,
+            Err(NativeEngineError::UnsupportedUrl { .. }) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if !self.rooted_file_subresource_allowed(
+            document_url.as_str(),
+            &target_url,
+            &path,
+            NativeSubresourceKind::Media,
+            "file media CSP owner URL",
+        )? {
+            return Ok(None);
         }
+        let bytes = read_bounded_file(&path, MAX_NATIVE_MEDIA_BYTES, "file media")?;
+        media_metadata_from_bytes(file_media_type(&path), &bytes)
     }
 
     fn load_file_media_url(
@@ -6314,6 +6398,15 @@ impl NativeResourceLoader {
                 return Ok(None);
             }
             let path = self.allowed_file_path(&target_url, "file font")?;
+            if !self.rooted_file_subresource_allowed(
+                document_url.as_str(),
+                &target_url,
+                &path,
+                NativeSubresourceKind::Font,
+                "file font CSP owner URL",
+            )? {
+                return Ok(None);
+            }
             let bytes = read_bounded_file(&path, MAX_NATIVE_FONT_BYTES, "file font")?;
             return Ok((!bytes.is_empty()).then_some(bytes));
         }
@@ -10734,6 +10827,182 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rooted_file_image_font_media_csp_uses_directives_fallback_and_roots() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-native-rooted-file-image-font-media-csp-{}",
+            std::process::id()
+        ));
+        let site = root.join("site");
+        let other = root.join("other");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&site).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        fs::write(site.join("index.html"), "<!doctype html>").unwrap();
+        for directory in [&site, &other] {
+            fs::write(
+                directory.join("image.jpg"),
+                include_bytes!("../../../tests/fixtures/remote-android-concept.jpg"),
+            )
+            .unwrap();
+            fs::write(directory.join("font.ttf"), b"bounded font bytes").unwrap();
+            fs::write(directory.join("media.wav"), b"bounded media bytes").unwrap();
+        }
+
+        let document_url = Url::from_file_path(site.join("index.html"))
+            .unwrap()
+            .to_string();
+        let other_image_url = Url::from_file_path(other.join("image.jpg"))
+            .unwrap()
+            .to_string();
+        let other_font_url = Url::from_file_path(other.join("font.ttf"))
+            .unwrap()
+            .to_string();
+        let other_media_url = Url::from_file_path(other.join("media.wav"))
+            .unwrap()
+            .to_string();
+        let config = NativeEngineConfig::default()
+            .with_allowed_file_root(&site)
+            .with_allowed_file_root(&other);
+        let mut loader = NativeResourceLoader::new(&config).unwrap();
+        loader
+            .apply_meta_content_security_policies(
+                &document_url,
+                &["default-src 'none'; img-src 'self'; font-src 'self'; media-src 'self'".into()],
+            )
+            .unwrap();
+
+        assert!(
+            loader
+                .load_local_file_image(&document_url, "image.jpg")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            loader
+                .load_font(&document_url, "font.ttf", None)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            loader
+                .load_local_file_media(&document_url, "media.wav")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            loader
+                .load_local_file_image(&document_url, &other_image_url)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            loader
+                .load_font(&document_url, &other_font_url, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            loader
+                .load_local_file_media(&document_url, &other_media_url)
+                .unwrap()
+                .is_none()
+        );
+
+        loader
+            .apply_meta_content_security_policies(&document_url, &["img-src 'none'".into()])
+            .unwrap();
+        assert!(
+            loader
+                .load_local_file_image(&document_url, "image.jpg")
+                .unwrap()
+                .is_none()
+        );
+
+        let mut fallback_loader = NativeResourceLoader::new(&config).unwrap();
+        fallback_loader
+            .apply_meta_content_security_policies(&document_url, &["default-src 'self'".into()])
+            .unwrap();
+        assert!(
+            fallback_loader
+                .load_local_file_image(&document_url, "image.jpg")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            fallback_loader
+                .load_font(&document_url, "font.ttf", None)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            fallback_loader
+                .load_local_file_media(&document_url, "media.wav")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            fallback_loader
+                .load_local_file_image(&document_url, &other_image_url)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            fallback_loader
+                .load_font(&document_url, &other_font_url, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            fallback_loader
+                .load_local_file_media(&document_url, &other_media_url)
+                .unwrap()
+                .is_none()
+        );
+
+        let mut file_scheme_loader = NativeResourceLoader::new(&config).unwrap();
+        file_scheme_loader
+            .apply_meta_content_security_policies(
+                &document_url,
+                &["img-src file:; font-src file:; media-src file:".into()],
+            )
+            .unwrap();
+        assert!(
+            file_scheme_loader
+                .load_local_file_image(&document_url, &other_image_url)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            file_scheme_loader
+                .load_font(&document_url, &other_font_url, None)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            file_scheme_loader
+                .load_local_file_media(&document_url, &other_media_url)
+                .unwrap()
+                .is_some()
+        );
+
+        let unconfigured_root = root.join("unconfigured");
+        fs::create_dir_all(&unconfigured_root).unwrap();
+        let unconfigured_image = unconfigured_root.join("image.jpg");
+        fs::write(
+            &unconfigured_image,
+            include_bytes!("../../../tests/fixtures/remote-android-concept.jpg"),
+        )
+        .unwrap();
+        let unconfigured_image_url = Url::from_file_path(unconfigured_image).unwrap().to_string();
+        assert!(matches!(
+            file_scheme_loader.load_local_file_image(&document_url, &unconfigured_image_url),
+            Err(NativeEngineError::UnsupportedUrl { .. })
+        ));
+
         fs::remove_dir_all(root).unwrap();
     }
 

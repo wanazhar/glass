@@ -15,6 +15,7 @@ use super::origin::NativeOrigin;
 use base64::Engine as _;
 use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -65,7 +66,8 @@ pub(crate) enum NativeSubresourceKind {
     Worker,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum NativeModuleResourceType {
     JavaScript,
     Json,
@@ -6784,29 +6786,6 @@ impl NativeResourceLoader {
             url: target_url.to_string(),
             body,
         }))
-    }
-
-    pub(crate) async fn load_script_async_with_metadata(
-        &mut self,
-        document_url: &str,
-        href: &str,
-        max_source_bytes: usize,
-        parser_inserted: bool,
-        nonce: Option<&str>,
-        integrity: Option<&str>,
-        crossorigin: Option<&str>,
-    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
-        self.load_script_async_with_metadata_and_object_url(
-            document_url,
-            href,
-            max_source_bytes,
-            parser_inserted,
-            nonce,
-            integrity,
-            crossorigin,
-            None,
-        )
-        .await
     }
 
     pub(crate) async fn load_script_async_with_metadata_and_object_url(

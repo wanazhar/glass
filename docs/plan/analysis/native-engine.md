@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-719`. Issue #40
+completed browser expansion slice is `native-engine-browser-721`. Issue #40
 remains open. It follows
 locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
@@ -1097,6 +1097,19 @@ tests, and six process-backed JSON module tests passed locally. Remote CI was
 not run. Dynamic import options, broader file-origin propagation, and complete
 module scheduling remain open. See
 [`slice 720`](../tasks/native-engine-browser-720.md).
+
+Slice 721 routes every dynamic `ImportCall` through the owning asynchronous
+loader only when invoked, including literal specifiers, and supports dynamic
+`type: "json"` options. It preserves ECMAScript string/options conversion and
+getter order, URL-plus-type identity, Document versus Worker import-map
+ownership, Service Worker rejection without fetching, and the configured-root
+file boundary. This removes literal-target prefetch: an unexecuted dynamic
+import issues no module request. The locked test-target check, seven
+rewrite/parser unit tests, six process-backed page/Worker/Service Worker/file
+regressions, and formatting/whitespace checks passed locally. Remote CI was
+not run; other module types, broader file-origin propagation, and complete
+module scheduling remain open. See
+[`slice 721`](../tasks/native-engine-browser-721.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript

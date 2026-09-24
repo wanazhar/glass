@@ -48,7 +48,7 @@ It is never an implicit fallback for a native request.
 | `runtime` | browser and content runtime | process lifecycle, IPC, cancellation, event loop, task/microtask ordering, worker lifecycle, quotas, crash recovery, deterministic traces | lifecycle, cancellation, hostile-content, timeout, and restart tests on every supported OS |
 | `network-origin` | network and security layer | URL/encoding, DNS, HTTP(S), TLS policy, redirects, MIME/charset, cache, cookies, origins/sites, CORS, CSP, Subresource Integrity for scripts/stylesheets/modules, mixed content, referrer, service workers, WebSocket/EventSource where selected, permissions | mandatory security/URL tests, selected Fetch WPT, differential request traces, no cross-origin leaks |
 | `html-dom` | document platform | standards HTML tokenization/tree construction and error recovery, including SVG/MathML attribute-name adjustment and XLink/XML/XMLNS attribute namespace identity; document lifecycle, DOM mutation/selection/ranges, events, forms, focus, shadow DOM, custom elements, frames, and document policies | HTML parser/DOM/event WPT, malformed-document corpus, frame/AX fixtures |
-| `javascript-webidl` | script and binding layer | ECMAScript realms, Web IDL bindings, promises, timers, Document-scoped (see the [HTML Standard's import-map algorithm](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps)) parser- and dynamically registered import maps, module resolution/fetch/integrity and resolved-module-set locking; worker module graphs use worker URL/referrer resolution without Document import maps; request URLs including query/fragment identify distinct page and worker module records, while final response URLs provide descendant bases and fragments are omitted only from I/O; dynamic-import prefetch accepts a fully static string-literal concatenation with comments/parentheses and excludes member methods named `import`; rooted-file external module `src` URLs resolve relative to the document before configured-root validation; structured clone, workers, fetch/XHR, required DOM APIs, exception propagation, microtask ordering | script/evaluate parity, async-ordering, page/worker module identity and base-URL, worker, and binding tests |
+| `javascript-webidl` | script and binding layer | ECMAScript realms, Web IDL bindings, promises, timers, Document-scoped (see the [HTML Standard's import-map algorithm](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps)) parser- and dynamically registered import maps, module resolution/fetch/integrity and resolved-module-set locking; worker module graphs use worker URL/referrer resolution without Document import maps; request URLs including query/fragment plus module type identify distinct page and worker module records, while final response URLs provide descendant bases and fragments are omitted only from I/O; literal and runtime-valued dynamic imports are fetched only when invoked through the owning asynchronous module queue, with dynamic `type: "json"` options and no speculative target requests; rooted-file external module `src` URLs resolve relative to the document before configured-root validation; structured clone, workers, fetch/XHR, required DOM APIs, exception propagation, microtask ordering | script/evaluate parity, async-ordering, page/worker module identity and base-URL, worker, and binding tests |
 | `css-layout` | style and geometry layer | tokenizer/parser, cascade, selectors, inheritance, custom properties, media/container queries, block/inline/flex/grid/table/positioned layout, overflow/scrolling, writing modes/bidi, animation/transition, and selected fragmentation | selected CSS/layout WPT, geometry differential corpus, scroll/hit-test invariants |
 | `rendering` | paint and compositor | fonts/shaping/rasterization, images/SVG/canvas, media resource lifecycle, paint, clipping, transforms, filters, layers, compositing, hit testing, software/headless/GPU surfaces, screenshots, and print where selected | deterministic visual/print corpus, pixel/geometry diffs, capture repeatability |
 | `contexts-input` | browser primitives | tabs/windows, browsing contexts, frames/popups/opener relationships, history/session state, keyboard/pointer/touch/IME, selection, drag/drop, clipboard, file chooser, upload/download, dialogs, prompts, permissions | native-only end-to-end Glass workflows and recovery tests |
@@ -58,8 +58,20 @@ It is never an implicit fallback for a native request.
 
 ### Dynamic module loading contract
 
-- A runtime-valued `ImportCall` resolves when invoked; static discovery must
-  not guess the expression's value or issue speculative module requests.
+- Every `ImportCall`, including a literal specifier, resolves only when the
+  call executes; module-graph discovery must not issue a speculative dynamic
+  target request. Literal and runtime-valued specifiers use the same bounded
+  host fetch queue.
+- `ImportCall` options follow ECMAScript `EvaluateImportCall` ordering:
+  evaluate the specifier expression and then the options expression; convert
+  the specifier to a string; read `options.with`; enumerate its own enumerable
+  string keys and read their values; then validate supported attributes. This
+  profile supports the `type` attribute with value `json` and the default
+  JavaScript type. Invalid options, getter/conversion errors, unknown keys,
+  non-string values, and unsupported module types reject before fetching.
+- Module identity is the resolved request URL plus type. A JavaScript import
+  and JSON import of the same URL do not alias; redirects retain the request
+  key while JavaScript descendants use the final response URL.
 - A Document applies its import map using the active script's URL as referrer,
   then fetches the module asynchronously through the document's security and
   resource policies. Request URLs retain module identity; final response URLs
@@ -105,23 +117,25 @@ It is never an implicit fallback for a native request.
   no prefetching, no request for uncached dynamic targets, and no additional
   request when a dynamic target is already in the static module graph. Slice
   720 implements static JSON import attributes for page, Worker, Service
-  Worker, and configured-root file graphs. Tests cover MIME validation,
-  default-only exports, same-URL typed identity, redirects, and rooted-file
-  loading. Dynamic import options, other module types, and complete module
-  scheduling remain unverified. See
+  Worker, and configured-root file graphs. Slice 721 implements
+  invocation-driven literal and runtime-valued imports, dynamic JSON options,
+  typed identity, and spec-ordered option conversion across those owners.
+  Other module types and complete module scheduling remain unverified. See
   [task 713](tasks/native-engine-browser-713.md),
   [task 714](tasks/native-engine-browser-714.md),
   [task 715](tasks/native-engine-browser-715.md),
   [task 716](tasks/native-engine-browser-716.md),
   [task 717](tasks/native-engine-browser-717.md),
   [task 718](tasks/native-engine-browser-718.md), and
-  [task 719](tasks/native-engine-browser-719.md), and
-  [task 720](tasks/native-engine-browser-720.md).
-- Dynamic import options, unsupported attribute types, nested imports,
-  promise/microtask ordering, and
-  module evaluation errors follow the selected ECMAScript and HTML host
-  algorithms; a bounded implementation must report unsupported profile
-  behavior explicitly rather than silently returning a partial namespace.
+  [task 719](tasks/native-engine-browser-719.md),
+  [task 720](tasks/native-engine-browser-720.md), and
+  [task 721](tasks/native-engine-browser-721.md).
+- Supported dynamic-import options (`type: "json"`) and bounded nested
+  imports follow the selected ECMAScript and HTML host algorithms. Unsupported
+  module types reject explicitly. Promise/microtask ordering and module
+  evaluation errors must remain consistent with those algorithms; a bounded
+  implementation must report unsupported profile behavior rather than
+  silently returning a partial namespace.
 
 ## Explicit exclusions
 

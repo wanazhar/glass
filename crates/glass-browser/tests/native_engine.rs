@@ -1993,17 +1993,22 @@ async fn native_file_document_resolves_runtime_valued_imports_from_initial_scrip
     .unwrap();
     fs::write(
         site.join("module-entry.js"),
-        "globalThis.fileModuleImportState = 'pending'; const target = './module/main.js'; import(target).then(async module => { globalThis.fileModuleImportState = module.value; globalThis.fileModuleNestedValue = await module.nested; }, error => { globalThis.fileModuleImportError = String(error); });",
+        "globalThis.fileModuleImportState = 'pending'; const target = './module/main.js'; import(target).then(async module => { globalThis.fileModuleImportState = module.value; globalThis.fileModuleNestedValue = await module.nested; globalThis.fileModuleJsonValue = await module.jsonValue; }, error => { globalThis.fileModuleImportError = String(error); });",
     )
     .unwrap();
     fs::write(
         site.join("module/main.js"),
-        "export const value = 'module-loaded'; const nestedTarget = './nested.js'; export const nested = import(nestedTarget).then(({ value }) => value);",
+        "export const value = 'module-loaded'; const nestedTarget = './nested.js'; export const nested = import(nestedTarget).then(({ value }) => value); const jsonTarget = './data.json'; export const jsonValue = import(jsonTarget, { with: { type: 'json' } }).then(({ default: data }) => data.kind);",
     )
     .unwrap();
     fs::write(
         site.join("module/nested.js"),
         "export const value = 'module-nested-loaded';",
+    )
+    .unwrap();
+    fs::write(
+        site.join("module/data.json"),
+        r#"{"kind":"module-json-loaded"}"#,
     )
     .unwrap();
 
@@ -2016,7 +2021,7 @@ async fn native_file_document_resolves_runtime_valued_imports_from_initial_scrip
     assert_eq!(
         engine
             .evaluate_async(
-                "[globalThis.fileClassicImportState, globalThis.fileClassicImportIdentity ?? null, globalThis.fileClassicNestedValue ?? null, globalThis.fileEscapeImportState ?? null, globalThis.fileModuleImportState, globalThis.fileModuleNestedValue ?? null, globalThis.fileClassicImportError ?? null, globalThis.fileModuleImportError ?? null]",
+                "[globalThis.fileClassicImportState, globalThis.fileClassicImportIdentity ?? null, globalThis.fileClassicNestedValue ?? null, globalThis.fileEscapeImportState ?? null, globalThis.fileModuleImportState, globalThis.fileModuleNestedValue ?? null, globalThis.fileModuleJsonValue ?? null, globalThis.fileClassicImportError ?? null, globalThis.fileModuleImportError ?? null]",
             )
             .await
             .unwrap(),
@@ -2027,6 +2032,7 @@ async fn native_file_document_resolves_runtime_valued_imports_from_initial_scrip
             "rejected",
             "module-loaded",
             "module-nested-loaded",
+            "module-json-loaded",
             null,
             null
         ])
@@ -3629,7 +3635,7 @@ async fn native_local_worker_import_scripts_dynamic_import_uses_source_url() {
         .unwrap()
         .with_fixture(
             "fixture://worker-import.test/scripts/bridge.js",
-            "const target = './computed.js?source=bridge'; import(target).then(async module => postMessage({ kind: 'loaded', value: module.value, nested: await module.loadNested() }), error => postMessage({ kind: 'error', message: String(error) }));",
+            "const target = './computed.js?source=bridge'; const configTarget = './settings.json'; Promise.all([import(target), import(configTarget, { with: { type: 'json' } })]).then(async ([module, config]) => postMessage({ kind: 'loaded', value: module.value, nested: await module.loadNested(), json: config.default.kind }), error => postMessage({ kind: 'error', message: String(error) }));",
         )
         .unwrap()
         .with_fixture(
@@ -3640,6 +3646,11 @@ async fn native_local_worker_import_scripts_dynamic_import_uses_source_url() {
         .with_fixture(
             "fixture://worker-import.test/scripts/nested.js?source=computed",
             "export const value = 'local-nested';",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-import.test/scripts/settings.json",
+            r#"{"kind":"classic-worker-json"}"#,
         )
         .unwrap()
         .with_initial_url("fixture://worker-import.test/page.html");
@@ -3673,6 +3684,7 @@ async fn native_local_worker_import_scripts_dynamic_import_uses_source_url() {
             "kind": "loaded",
             "value": "local-computed",
             "nested": "local-nested",
+            "json": "classic-worker-json",
         }]),
         "fixture Worker imports must resolve from the imported classic script URL, including nested module imports"
     );
@@ -3688,7 +3700,7 @@ async fn native_json_module_worker_graphs_support_dedicated_and_shared_workers()
         .unwrap()
         .with_fixture(
             "fixture://module-worker-root",
-            "import { workerValue } from 'fixture://module-worker-dependency'; import workerConfig from 'fixture://module-worker-json' with { type: 'json' }; let importScriptsRejected = false; try { importScripts('fixture://module-worker-dependency'); } catch (error) { importScriptsRejected = error instanceof TypeError; } self.onmessage = event => postMessage({ kind: 'reply', value: workerValue + event.data, module: typeof importScripts, hasDocument: typeof document !== 'undefined' }); postMessage({ kind: 'ready', value: workerValue, importScriptsRejected, json: workerConfig.kind });",
+            "import { workerValue } from 'fixture://module-worker-dependency'; import workerConfig from 'fixture://module-worker-json' with { type: 'json' }; const dynamicConfigPromise = import('fixture://module-worker-dynamic-json', { with: { type: 'json' } }).then(module => module.default.kind); let importScriptsRejected = false; try { importScripts('fixture://module-worker-dependency'); } catch (error) { importScriptsRejected = error instanceof TypeError; } self.onmessage = event => postMessage({ kind: 'reply', value: workerValue + event.data, module: typeof importScripts, hasDocument: typeof document !== 'undefined' }); dynamicConfigPromise.then(dynamicJson => postMessage({ kind: 'ready', value: workerValue, importScriptsRejected, json: workerConfig.kind, dynamicJson }));",
         )
         .unwrap()
         .with_fixture(
@@ -3699,8 +3711,13 @@ async fn native_json_module_worker_graphs_support_dedicated_and_shared_workers()
         .with_fixture("fixture://module-worker-json", r#"{"kind":"worker-json"}"#)
         .unwrap()
         .with_fixture(
+            "fixture://module-worker-dynamic-json",
+            r#"{"kind":"dynamic-worker-json"}"#,
+        )
+        .unwrap()
+        .with_fixture(
             "fixture://module-shared-worker-root",
-            "import { sharedValue } from 'fixture://module-shared-worker-dependency#first'; import { sharedValue as second } from 'fixture://module-shared-worker-dependency#second'; import sharedConfig from 'fixture://module-shared-worker-json' with { type: 'json' }; onconnect = event => { const port = event.ports[0]; port.postMessage({ kind: 'shared-ready', value: sharedValue, executions: globalThis.sharedModuleExecutions, json: sharedConfig.kind }); port.onmessage = message => port.postMessage({ kind: 'shared-reply', value: sharedValue + Number(message.data) }); port.start(); };",
+            "import { sharedValue } from 'fixture://module-shared-worker-dependency#first'; import { sharedValue as second } from 'fixture://module-shared-worker-dependency#second'; import sharedConfig from 'fixture://module-shared-worker-json' with { type: 'json' }; const dynamicConfigPromise = import('fixture://module-shared-worker-dynamic-json', { with: { type: 'json' } }).then(module => module.default.kind); onconnect = event => { const port = event.ports[0]; dynamicConfigPromise.then(dynamicJson => { port.postMessage({ kind: 'shared-ready', value: sharedValue, executions: globalThis.sharedModuleExecutions, json: sharedConfig.kind, dynamicJson }); port.onmessage = message => port.postMessage({ kind: 'shared-reply', value: sharedValue + Number(message.data) }); port.start(); }); };",
         )
         .unwrap()
         .with_fixture(
@@ -3709,6 +3726,11 @@ async fn native_json_module_worker_graphs_support_dedicated_and_shared_workers()
         )
         .unwrap()
         .with_fixture("fixture://module-shared-worker-json", r#"{"kind":"shared-json"}"#)
+        .unwrap()
+        .with_fixture(
+            "fixture://module-shared-worker-dynamic-json",
+            r#"{"kind":"dynamic-shared-json"}"#,
+        )
         .unwrap()
         .with_initial_url("fixture://module-worker-page");
     let mut engine = NativeEngine::new(config).unwrap();
@@ -3734,8 +3756,8 @@ async fn native_json_module_worker_graphs_support_dedicated_and_shared_workers()
             .await
             .unwrap(),
         serde_json::json!([
-            [{"kind": "ready", "value": 7, "importScriptsRejected": true, "json": "worker-json"}],
-            [{"kind": "shared-ready", "value": 5, "executions": 2, "json": "shared-json"}],
+            [{"kind": "ready", "value": 7, "importScriptsRejected": true, "json": "worker-json", "dynamicJson": "dynamic-worker-json"}],
+            [{"kind": "shared-ready", "value": 5, "executions": 2, "json": "shared-json", "dynamicJson": "dynamic-shared-json"}],
         ])
     );
     assert_eq!(
@@ -3746,8 +3768,8 @@ async fn native_json_module_worker_graphs_support_dedicated_and_shared_workers()
             .await
             .unwrap(),
         serde_json::json!([
-            [{"kind": "ready", "value": 7, "importScriptsRejected": true, "json": "worker-json"}],
-            [{"kind": "shared-ready", "value": 5, "executions": 2, "json": "shared-json"}],
+            [{"kind": "ready", "value": 7, "importScriptsRejected": true, "json": "worker-json", "dynamicJson": "dynamic-worker-json"}],
+            [{"kind": "shared-ready", "value": 5, "executions": 2, "json": "shared-json", "dynamicJson": "dynamic-shared-json"}],
         ])
     );
     assert_eq!(
@@ -3757,7 +3779,7 @@ async fn native_json_module_worker_graphs_support_dedicated_and_shared_workers()
             .unwrap(),
         serde_json::json!([
             [
-                {"kind": "ready", "value": 7, "importScriptsRejected": true, "json": "worker-json"},
+                {"kind": "ready", "value": 7, "importScriptsRejected": true, "json": "worker-json", "dynamicJson": "dynamic-worker-json"},
                 {
                     "kind": "reply",
                     "value": 11,
@@ -3766,7 +3788,7 @@ async fn native_json_module_worker_graphs_support_dedicated_and_shared_workers()
                 },
             ],
             [
-                {"kind": "shared-ready", "value": 5, "executions": 2, "json": "shared-json"},
+                {"kind": "shared-ready", "value": 5, "executions": 2, "json": "shared-json", "dynamicJson": "dynamic-shared-json"},
                 {"kind": "shared-reply", "value": 8},
             ],
         ])
@@ -6773,7 +6795,7 @@ try {
 } catch {}
 globalThis.__classicResults.rootPromise = import((
   globalThis.__classicResults.specifierEvaluations++, './root-dynamic.js'
-)).then(
+), (globalThis.__classicResults.specifierEvaluations++, { with: { type: 'json' } })).then(
   () => { globalThis.__classicResults.root = 'fulfilled'; },
   error => { globalThis.__classicResults.root = error.name; }
 );
@@ -6800,7 +6822,7 @@ self.addEventListener('fetch', event => {
                             r#"globalThis.__classicResults = { static: 'importScripts dependency', specifierEvaluations: 0 };
 globalThis.__classicResults.depPromise = import((
   globalThis.__classicResults.specifierEvaluations++, './dependency-dynamic.js'
-)).then(
+), (globalThis.__classicResults.specifierEvaluations++, { with: { type: 'json' } })).then(
   () => { globalThis.__classicResults.dependency = 'fulfilled'; },
   error => { globalThis.__classicResults.dependency = error.name; }
 );"#,
@@ -6819,13 +6841,13 @@ try {
 } catch {}
 globalThis.__moduleResults.rootPromise = import((
   globalThis.__moduleResults.specifierEvaluations++, './dep.js'
-)).then(
+), (globalThis.__moduleResults.specifierEvaluations++, { with: { type: 'json' } })).then(
   () => { globalThis.__moduleResults.root = 'fulfilled'; },
   error => { globalThis.__moduleResults.root = error.name; }
 );
 globalThis.__moduleResults.rootUncachedPromise = import((
   globalThis.__moduleResults.specifierEvaluations++, './root-dynamic.js'
-)).then(
+), (globalThis.__moduleResults.specifierEvaluations++, { with: { type: 'json' } })).then(
   () => { globalThis.__moduleResults.rootUncached = 'fulfilled'; },
   error => { globalThis.__moduleResults.rootUncached = error.name; }
 );
@@ -6855,7 +6877,7 @@ self.addEventListener('fetch', event => {
                             r#"globalThis.__moduleResults = globalThis.__moduleResults || { specifierEvaluations: 0 };
 globalThis.__moduleResults.dependencyPromise = import((
   globalThis.__moduleResults.specifierEvaluations++, './dependency-dynamic.js'
-)).then(
+), (globalThis.__moduleResults.specifierEvaluations++, { with: { type: 'json' } })).then(
   () => { globalThis.__moduleResults.dependency = 'fulfilled'; },
   error => { globalThis.__moduleResults.dependency = error.name; }
 );
@@ -6901,7 +6923,7 @@ export const staticValue = 'module static dependency';"#,
             "root": "TypeError",
             "dependency": "TypeError",
             "static": "importScripts dependency",
-            "specifierEvaluations": 2,
+            "specifierEvaluations": 4,
         })
     );
 
@@ -6928,7 +6950,7 @@ export const staticValue = 'module static dependency';"#,
             "rootUncached": "TypeError",
             "dependency": "TypeError",
             "static": "module static dependency",
-            "specifierEvaluations": 3,
+            "specifierEvaluations": 6,
         })
     );
 
@@ -20755,6 +20777,89 @@ async fn native_json_module_page_graph_uses_module_type_identity() {
 }
 
 #[tokio::test]
+async fn native_dynamic_json_import_options_are_demand_loaded_and_type_keyed() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let expected_paths = ["/page", "/app.js", "/dynamic.json", "/dynamic.json"];
+        let mut requests = Vec::new();
+        let mut accepts_json = Vec::new();
+        for expected_path in expected_paths {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("dynamic module request server timed out")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("dynamic module request includes a path")
+                .to_owned();
+            assert_eq!(path, expected_path);
+            let request_accepts_json = request
+                .to_ascii_lowercase()
+                .lines()
+                .any(|line| line.starts_with("accept:") && line.contains("application/json"));
+            if path == "/dynamic.json" {
+                accepts_json.push(request_accepts_json);
+            }
+            let (content_type, body) = match path.as_str() {
+                "/page" => ("text/html", "<script type='module' src='/app.js'></script>"),
+                "/app.js" => (
+                    "application/javascript",
+                    "globalThis.dynamicImportOrder = []; const jsonSpecifier = () => { dynamicImportOrder.push('specifier'); return { [Symbol.toPrimitive](hint) { dynamicImportOrder.push(hint); dynamicImportOrder.push('coerce'); return './dynamic.json'; } }; }; const jsonOptions = () => { dynamicImportOrder.push('options'); return { get with() { dynamicImportOrder.push('with'); return { get type() { dynamicImportOrder.push('type'); return 'json'; } }; } }; }; const states = { json: 'pending', javascript: 'pending', invalid: 'pending', boxedSymbol: 'pending', order: dynamicImportOrder }; globalThis.dynamicImportResults = states; import(jsonSpecifier(), jsonOptions()).then(module => { states.json = module.default.kind; }, error => { states.json = `rejected:${error.name}:${error.message}`; }); import('./dynamic.json').then(module => { states.javascript = module.kind; }, error => { states.javascript = `rejected:${error.name}:${error.message}`; }); import('./invalid.json', { with: { unsupported: 'value' } }).then(() => { states.invalid = 'fulfilled'; }, error => { states.invalid = error.name; }); import(Object(Symbol())).then(() => { states.boxedSymbol = 'fulfilled'; }, error => { states.boxedSymbol = error.name; }); if (false) import('./never-requested.js');",
+                ),
+                "/dynamic.json" if request_accepts_json => {
+                    ("application/json", r#"{"kind":"json-dynamic"}"#)
+                }
+                "/dynamic.json" => (
+                    "application/javascript",
+                    "export const kind = 'javascript-dynamic';",
+                ),
+                _ => panic!("unexpected dynamic module request: {path}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push(path);
+        }
+        (requests, accepts_json)
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let result = engine
+        .evaluate_async("globalThis.dynamicImportResults")
+        .await
+        .unwrap();
+    engine.close_async().await.unwrap();
+    let (requests, accepts_json) = server.await.unwrap();
+
+    assert_eq!(
+        requests,
+        ["/page", "/app.js", "/dynamic.json", "/dynamic.json"]
+    );
+    assert_eq!(accepts_json, [true, false]);
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "json": "json-dynamic",
+            "javascript": "javascript-dynamic",
+            "invalid": "TypeError",
+            "boxedSymbol": "TypeError",
+            "order": ["specifier", "options", "string", "coerce", "with", "type"]
+        }),
+        "dynamic import type identity or options evaluation order was incorrect: paths={requests:?}, JSON accepts={accepts_json:?}"
+    );
+}
+
+#[tokio::test]
 async fn native_json_module_rejects_wrong_mime_and_invalid_json() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -21797,7 +21902,7 @@ async fn native_content_process_resolves_static_expression_dynamic_imports() {
                 "/page" => ("text/html", "<script type='module' src='/app.js'></script>"),
                 "/app.js" => (
                     "application/javascript",
-                    "globalThis.dynamicValue = 'pending'; Promise.all([import('./' + /* static expression */ 'dep.js'), import(( './' + 'other.js' ))]).then(([first, second]) => { globalThis.dynamicValue = [first.value, second.value]; });",
+                    "globalThis.dynamicValue = 'pending'; if (false) import('./never-requested.js'); Promise.all([import('./' + /* static expression */ 'dep.js'), import(( './' + 'other.js' ))]).then(([first, second]) => { globalThis.dynamicValue = [first.value, second.value]; });",
                 ),
                 _ => (
                     "application/javascript",

@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-720`; issue #40
+expansion is complete locally through `native-engine-browser-721`; issue #40
 remains open. Slices 709–710 preserve request-URL module identity, including
 query and fragment, separately from the final response URL used as the
 descendant base across page, dedicated/shared worker, and service-worker module
@@ -90,9 +90,17 @@ request-URL-plus-type identity, including when the same URL is also imported
 as JavaScript. A narrow QuickJS compatibility rewrite separates those static
 requests before parsing and restores the original specifier before import-map
 resolution. Focused runtime and process-backed tests passed locally; remote CI
-was not run. Dynamic import options, broader file-origin propagation, and
-complete module scheduling remain open. See
-[task 720](tasks/native-engine-browser-720.md).
+was not run. Slice 721 replaces literal dynamic-import prefetch with
+invocation-driven loading and supports JSON options with URL-plus-type identity
+across pages, dedicated/shared Workers, classic `importScripts()` dependencies,
+and rooted files. It preserves conversion/getter order, rejects invalid
+options before network access, and keeps Service Worker imports rejected with
+no fetch. The scoped test-target check, seven rewrite/parser unit tests, six
+process-backed regressions, formatting, and whitespace checks passed locally;
+remote CI was not run. Other module types, broader file-origin propagation,
+and complete module scheduling remain open. See
+[task 720](tasks/native-engine-browser-720.md) and
+[task 721](tasks/native-engine-browser-721.md).
 Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type

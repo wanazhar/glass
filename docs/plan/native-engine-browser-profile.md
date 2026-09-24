@@ -87,14 +87,18 @@ It is never an implicit fallback for a native request.
   Slice 717 covers initial rooted-file classic/module scripts, dynamically
   attached classic/module scripts, an installed Document import map, nested
   imports, duplicate module identity, and out-of-root rejection. Rooted-file
-  parser-sourced import-map initialization, Service Worker classic-import
-  settlement, import options, and complete module scheduling remain
-  unverified. See
+  parser-sourced import-map initialization is implemented in slice 718: maps
+  are registered in parser order and govern mapped static and runtime imports
+  through the rooted loader; the focused fixture covers later mappings,
+  conflict preservation, malformed-map isolation, nested modules, and
+  out-of-root rejection. Service Worker classic-import settlement, import
+  options, and complete module scheduling remain unverified. See
   [task 713](tasks/native-engine-browser-713.md),
   [task 714](tasks/native-engine-browser-714.md),
   [task 715](tasks/native-engine-browser-715.md),
   [task 716](tasks/native-engine-browser-716.md), and
-  [task 717](tasks/native-engine-browser-717.md).
+  [task 717](tasks/native-engine-browser-717.md), and
+  [task 718](tasks/native-engine-browser-718.md).
 - Import options/attributes, nested imports, promise/microtask ordering, and
   module evaluation errors follow the selected ECMAScript and HTML host
   algorithms; a bounded implementation must report unsupported profile

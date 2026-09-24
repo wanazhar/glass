@@ -59,8 +59,21 @@ installed Document import map, retains existing module records under the graph
 bounds, resolves nested imports, and rejects out-of-root loads through the
 original promise. The initial parser-sourced file import-map path, Service
 Worker classic-import settlement, import options/attributes, and complete
-module scheduling remain open. See
-[task 717](tasks/native-engine-browser-717.md). Slice 703 separates
+module scheduling remained open at that checkpoint. Slice 718 now registers
+parser-sourced maps in source order on initial rooted-file navigation and uses
+the effective Document map for mapped static and runtime imports through the
+configured-root loader. Its fixture covers later mappings, preservation of an
+earlier conflict, malformed-map isolation, nested modules, and out-of-root
+rejection. The scoped package check, focused tests, and formatting passed
+locally. Maintainer gates passed across 1,346 Markdown files with zero
+current-claim failures, 93 guides/19 contracts, 15 shortcut keys/63 markers,
+and 346 MCP tools (101 browser-only), 17 examples, and 22 public modules.
+Remote CI was not run. Service Worker classic-import settlement, import
+options/attributes, broader file-origin propagation, and complete module
+scheduling remain open. See
+[task 717](tasks/native-engine-browser-717.md) and
+[task 718](tasks/native-engine-browser-718.md).
+Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type
 essences are matched case-insensitively without parameters on script elements;

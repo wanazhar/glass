@@ -12,8 +12,8 @@ use super::css::{
     FontStyleValue, FontWeightValue, parse_font_stretch_range, parse_font_weight_range,
 };
 use super::dom::{
-    NativeDocument, NativeNodeId, NativePageScriptSource, NativePageScriptTiming,
-    NativeScriptDocumentSnapshot, NativeScriptElementSnapshot,
+    NativeDocument, NativeNodeId, NativePageImportMapSource, NativePageScriptSource,
+    NativePageScriptTiming, NativeScriptDocumentSnapshot, NativeScriptElementSnapshot,
 };
 use super::environment::NativeEnvironmentOverrides;
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
@@ -7255,6 +7255,43 @@ pub(crate) fn order_page_scripts(
     parser_and_async
 }
 
+fn register_local_page_import_map_source(
+    map_source: NativePageImportMapSource,
+    import_map: &mut NativeModuleImportMap,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    sources: &mut Vec<(NativePageScriptTiming, NativePageScript)>,
+    resource_events: &mut Vec<(u32, NativeEventKind)>,
+) -> Result<(), NativeEngineError> {
+    let node_index = map_source.node_index;
+    let Some(source) = map_source.source else {
+        resource_events.push((node_index, NativeEventKind::Error));
+        return Ok(());
+    };
+    if !loader.allows_inline_script(document_url, &source, map_source.nonce.as_deref())? {
+        resource_events.push((node_index, NativeEventKind::Error));
+        return Ok(());
+    }
+    let parsed = match NativeModuleImportMap::parse(&source, document_url) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            resource_events.push((node_index, NativeEventKind::Error));
+            return Ok(());
+        }
+    };
+    let mut merged = import_map.clone();
+    if merged.merge(parsed).is_err() {
+        resource_events.push((node_index, NativeEventKind::Error));
+        return Ok(());
+    }
+    *import_map = merged;
+    sources.push((
+        NativePageScriptTiming::ParserBlocking,
+        NativePageScript::ImportMap(import_map.clone()),
+    ));
+    Ok(())
+}
+
 /// Execute the bounded inline scripts discovered in one parsed document.
 ///
 /// The caller owns the realm so local documents and the child content process
@@ -7276,40 +7313,96 @@ pub(crate) fn execute_inline_scripts(
 ) -> Result<NativePageScriptResult, NativeEngineError> {
     let mut resource_events = Vec::new();
     let mut module_dependency_sources = Vec::new();
-    let sources = document
+    let mut import_map = runtime
+        .as_ref()
+        .map(NativeJavaScriptRuntime::module_import_map)
+        .transpose()?
+        .unwrap_or_default();
+    let mut sources = vec![(
+        NativePageScriptTiming::ParserBlocking,
+        NativePageScript::ImportMap(import_map.clone()),
+    )];
+    let mut page_import_maps = document
+        .page_import_map_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_BYTES)
+        .into_iter()
+        .peekable();
+    for (index, source) in document
         .page_script_sources(MAX_NATIVE_INLINE_SCRIPTS, MAX_NATIVE_SCRIPT_BYTES)
         .into_iter()
         .enumerate()
-        .filter_map(|(index, source)| match source {
+    {
+        let node_index = source.node_index();
+        while page_import_maps
+            .peek()
+            .is_some_and(|map_source| map_source.node_index < node_index)
+        {
+            let map_source = page_import_maps
+                .next()
+                .expect("peeked import-map source remains available");
+            register_local_page_import_map_source(
+                map_source,
+                &mut import_map,
+                loader,
+                document_url,
+                &mut sources,
+                &mut resource_events,
+            )?;
+        }
+        match source {
             NativePageScriptSource::Inline {
                 source,
                 timing,
                 node_index,
-                nonce: _,
+                nonce,
                 parser_inserted: _,
-            } => Some((
-                timing,
-                NativePageScript::Classic {
-                    source,
-                    base_url: document_url.to_owned(),
-                    node_index: Some(node_index),
-                },
-            )),
+            } => {
+                if !loader.allows_inline_script(document_url, &source, nonce.as_deref())? {
+                    resource_events.push((node_index, NativeEventKind::Error));
+                    continue;
+                }
+                sources.push((
+                    timing,
+                    NativePageScript::Classic {
+                        source,
+                        base_url: document_url.to_owned(),
+                        node_index: Some(node_index),
+                    },
+                ));
+            }
             NativePageScriptSource::ModuleInline {
                 source,
                 timing,
                 node_index,
-                nonce: _,
+                nonce,
                 parser_inserted: _,
-            } => Some((
-                timing,
-                NativePageScript::Module {
-                    name: format!("{document_url}#glass-inline-module-{index}"),
+            } => {
+                if !loader.allows_inline_script(document_url, &source, nonce.as_deref())? {
+                    resource_events.push((node_index, NativeEventKind::Error));
+                    continue;
+                }
+                let name = format!("{document_url}#glass-inline-module-{index}");
+                match load_local_file_module_graph_with_import_map(
+                    loader,
+                    document_url,
+                    name,
+                    document_url.to_owned(),
                     source,
-                    base_url: document_url.to_owned(),
-                    node_index: Some(node_index),
-                },
-            )),
+                    timing,
+                    node_index,
+                    &mut import_map,
+                ) {
+                    Ok(mut graph) => {
+                        sources.push(graph.remove(0));
+                        module_dependency_sources.extend(graph);
+                        resource_events.push((node_index, NativeEventKind::Load));
+                    }
+                    Err(_) => resource_events.push((node_index, NativeEventKind::Error)),
+                }
+                sources.push((
+                    NativePageScriptTiming::ParserBlocking,
+                    NativePageScript::ImportMap(import_map.clone()),
+                ));
+            }
             NativePageScriptSource::External {
                 href,
                 timing,
@@ -7325,19 +7418,16 @@ pub(crate) fn execute_inline_scripts(
                 ) {
                     Ok(Some(resource)) => {
                         resource_events.push((node_index, NativeEventKind::Load));
-                        Some((
+                        sources.push((
                             timing,
                             NativePageScript::Classic {
                                 source: resource.body,
                                 base_url: resource.url,
                                 node_index: Some(node_index),
                             },
-                        ))
+                        ));
                     }
-                    Ok(None) | Err(_) => {
-                        resource_events.push((node_index, NativeEventKind::Error));
-                        None
-                    }
+                    Ok(None) | Err(_) => resource_events.push((node_index, NativeEventKind::Error)),
                 }
             }
             NativePageScriptSource::ModuleExternal {
@@ -7351,7 +7441,7 @@ pub(crate) fn execute_inline_scripts(
                     Ok(request_url) => request_url,
                     Err(_) => {
                         resource_events.push((node_index, NativeEventKind::Error));
-                        return None;
+                        continue;
                     }
                 };
                 match loader.load_local_file_script(
@@ -7361,37 +7451,46 @@ pub(crate) fn execute_inline_scripts(
                     integrity.as_deref(),
                 ) {
                     Ok(Some(resource)) => {
-                        match load_local_file_module_graph(
+                        match load_local_file_module_graph_with_import_map(
                             loader,
                             document_url,
                             request_url,
-                            resource,
+                            resource.url,
+                            resource.body,
                             timing,
                             node_index,
+                            &mut import_map,
                         ) {
                             Ok(mut graph) => {
-                                let root = graph.remove(0);
+                                sources.push(graph.remove(0));
                                 module_dependency_sources.extend(graph);
                                 resource_events.push((node_index, NativeEventKind::Load));
-                                Some(root)
                             }
-                            Err(_) => {
-                                resource_events.push((node_index, NativeEventKind::Error));
-                                None
-                            }
+                            Err(_) => resource_events.push((node_index, NativeEventKind::Error)),
                         }
+                        sources.push((
+                            NativePageScriptTiming::ParserBlocking,
+                            NativePageScript::ImportMap(import_map.clone()),
+                        ));
                     }
-                    Ok(None) | Err(_) => {
-                        resource_events.push((node_index, NativeEventKind::Error));
-                        None
-                    }
+                    Ok(None) | Err(_) => resource_events.push((node_index, NativeEventKind::Error)),
                 }
             }
             NativePageScriptSource::External { .. }
             | NativePageScriptSource::ModuleExternal { .. }
-            | NativePageScriptSource::ImportMap { .. } => None,
-        })
-        .collect::<Vec<_>>();
+            | NativePageScriptSource::ImportMap { .. } => {}
+        }
+    }
+    for map_source in page_import_maps {
+        register_local_page_import_map_source(
+            map_source,
+            &mut import_map,
+            loader,
+            document_url,
+            &mut sources,
+            &mut resource_events,
+        )?;
+    }
     let mut sources = order_page_scripts(sources);
     sources.extend(
         module_dependency_sources
@@ -7412,86 +7511,6 @@ pub(crate) fn execute_inline_scripts(
         &resource_events,
         &loader.take_csp_violations(),
     )
-}
-
-pub(crate) fn load_local_file_module_graph(
-    loader: &NativeResourceLoader,
-    document_url: &str,
-    root_request_url: String,
-    root: NativeScriptResource,
-    timing: NativePageScriptTiming,
-    node_index: u32,
-) -> Result<Vec<(NativePageScriptTiming, NativePageScript)>, NativeEngineError> {
-    let root_name = root_request_url;
-    let root_base_url = root.url.clone();
-    let root_source = root.body.clone();
-    let mut sources = vec![(
-        timing,
-        NativePageScript::Module {
-            name: root_name.clone(),
-            source: root_source.clone(),
-            base_url: root_base_url.clone(),
-            node_index: Some(node_index),
-        },
-    )];
-    let mut seen = BTreeSet::from([root_name.clone()]);
-    let mut pending = vec![(root_name, root_base_url, root_source)];
-    let mut import_edges = 0usize;
-    let mut total_bytes = root.body.len();
-    while let Some((_, module_base_url, module_source)) = pending.pop() {
-        let mut specifiers = static_module_specifiers(&module_source)?;
-        specifiers.extend(literal_dynamic_module_specifiers(&module_source));
-        for specifier in specifiers {
-            import_edges = import_edges.saturating_add(1);
-            if import_edges > MAX_NATIVE_MODULE_IMPORTS {
-                return Err(NativeEngineError::limit(
-                    "native file module imports",
-                    MAX_NATIVE_MODULE_IMPORTS,
-                    import_edges,
-                ));
-            }
-            let target = resolve_local_file_module_specifier(&module_base_url, &specifier)?;
-            if !seen.insert(target.clone()) {
-                continue;
-            }
-            if seen.len() > MAX_NATIVE_MODULE_IMPORTS {
-                return Err(NativeEngineError::limit(
-                    "native file module graph entries",
-                    MAX_NATIVE_MODULE_IMPORTS,
-                    seen.len(),
-                ));
-            }
-            let resource = loader
-                .load_local_file_script(document_url, &target, MAX_NATIVE_SCRIPT_BYTES, None)?
-                .ok_or_else(|| NativeEngineError::Network {
-                    operation: "file module dependency".into(),
-                    reason: format!(
-                        "file module dependency {specifier:?} was blocked or unavailable"
-                    ),
-                })?;
-            total_bytes = total_bytes.saturating_add(resource.body.len());
-            if total_bytes > MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS) {
-                return Err(NativeEngineError::limit(
-                    "native file module graph bytes",
-                    MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS),
-                    total_bytes,
-                ));
-            }
-            let name = target;
-            let base_url = resource.url;
-            let source = resource.body;
-            sources.push((
-                timing,
-                NativePageScript::ModuleDependency {
-                    name: name.clone(),
-                    source: source.clone(),
-                    base_url: base_url.clone(),
-                },
-            ));
-            pending.push((name, base_url, source));
-        }
-    }
-    Ok(sources)
 }
 
 pub(crate) fn load_local_file_module_graph_with_import_map(
@@ -7669,48 +7688,6 @@ pub(crate) fn resolve_module_request_url(
     if !target.username().is_empty() || target.password().is_some() {
         return Err(NativeEngineError::UnsupportedUrl {
             reason: "module request URL must not contain credentials".into(),
-        });
-    }
-    Ok(target.to_string())
-}
-
-fn resolve_local_file_module_specifier(
-    module_url: &str,
-    specifier: &str,
-) -> Result<String, NativeEngineError> {
-    let is_absolute_file = specifier
-        .get(..5)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"));
-    let is_relative = specifier.starts_with("./")
-        || specifier.starts_with("../")
-        || specifier.starts_with('/')
-        || specifier.starts_with("//");
-    if !is_absolute_file && !is_relative {
-        return Err(NativeEngineError::UnsupportedUrl {
-            reason: "bare file module specifiers require an import map".into(),
-        });
-    }
-    let base = Url::parse(without_fragment(module_url)).map_err(|_| {
-        NativeEngineError::UnsupportedUrl {
-            reason: "file module owner URL is not valid URL syntax".into(),
-        }
-    })?;
-    let target = if is_absolute_file {
-        Url::parse(specifier)
-    } else {
-        base.join(specifier)
-    }
-    .map_err(|_| NativeEngineError::UnsupportedUrl {
-        reason: "file module specifier could not be resolved against its owner".into(),
-    })?;
-    if !target.username().is_empty() || target.password().is_some() {
-        return Err(NativeEngineError::UnsupportedUrl {
-            reason: "file module URL must not contain credentials".into(),
-        });
-    }
-    if !is_file_url(target.as_str()) {
-        return Err(NativeEngineError::UnsupportedUrl {
-            reason: "file module URL must use the file scheme".into(),
         });
     }
     Ok(target.to_string())

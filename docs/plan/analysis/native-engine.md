@@ -997,6 +997,15 @@ remote CI was not run. Runtime-valued expressions, worker import maps, and
 complete module scheduling remain open. See
 [`slice 711`](../tasks/native-engine-browser-711.md).
 
+Slice 712 prevents the static prefetch scanner from treating `object.import()`
+or `object?.import()` as JavaScript `ImportCall`, including member access
+separated by comments or whitespace. This avoids fetching a module that is
+only passed to an ordinary property method. The profile also removes worker
+import maps as a target: the HTML Standard defines import maps for Documents,
+while workers resolve their module graphs against worker URLs/referrers.
+Runtime-valued imports and complete asynchronous module scheduling remain
+open. See [`slice 712`](../tasks/native-engine-browser-712.md).
+
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript
 fragments, and XHR HTML documents. The Rust route retains submitted-source

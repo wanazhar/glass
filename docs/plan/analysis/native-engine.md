@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-703`. Issue #40
+completed browser expansion slice is `native-engine-browser-705`. Issue #40
 remains open. It follows locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,
@@ -907,6 +907,28 @@ case-insensitive essence match without parameters or surrounding whitespace;
 external response `Content-Type` matching ignores parameters. The package
 check passed and the focused MIME test batch passed 4/4. Remote CI was not run.
 See [`slice 703`](../tasks/native-engine-browser-703.md).
+
+Slice 704 connects bounded inline page `imports` maps to module-graph
+prefetching and QuickJS resolution, so exact and prefix bare specifiers reach
+policy-checked HTTP(S) resources. Five resolver/parser tests and one external
+browser integration test passed after the locked target check. Documentation
+coverage passed across 1,332 Markdown files, 346 MCP tools, 17 examples, and 22
+public modules. Scope maps are added in slice 705. Integrity, external/dynamic
+map registration, worker/file-origin coverage, and full module timing remain
+open. See
+[`slice 704`](../tasks/native-engine-browser-704.md).
+
+Slice 705 adds bounded referrer scopes to the shared resolver: most-specific
+matching scope first, then less-specific matching scopes, then global imports.
+Exact and longest-prefix mappings work inside each scope. Prefetch and QuickJS
+resolution select the same URL, including nested static and literal-dynamic
+imports. The locked target check and focused tests passed (8 resolver/parser
+tests and 1 process-backed integration test). All four local documentation
+gates passed across 1,333 Markdown files, 93 guides/19 contracts, 15 shortcut
+keys/63 markers, 346 MCP tools, 17 examples, and 22 public modules. Import-map
+integrity, external/dynamic registration, workers, resolved-specifier locking,
+and full parser/module timing remain separate gates. Remote CI was not run. See
+[`slice 705`](../tasks/native-engine-browser-705.md).
 
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript
@@ -5427,15 +5449,18 @@ The completed bounded static-module-graph follow-up is
 prefetches relative and absolute HTTP(S) static imports/exports through the
 owner-document script policy, bounds duplicate/cyclic graph entries and total
 bytes, and installs only validated final-URL/source pairs into QuickJS's
-in-memory loader. Bare specifiers, import maps, dynamic `import()`, parser
-timing, local external module subresources, and full Web IDL identity remain
-open.
+in-memory loader. At that point, bare specifiers, import maps, and dynamic
+`import()` remained open; bounded dynamic imports and inline map subsets were
+added in slices 031 and 704–705. Parser timing, local external module
+subresources, and full Web IDL identity remain open.
 
 The completed bounded literal-dynamic-import follow-up is
 [native-engine-browser-031](../tasks/native-engine-browser-031.md). Literal
 `import("...")` calls reuse the admitted module graph and a bounded QuickJS
 pending-job drain, preserving module namespace/export resolution and promise
-callback effects. Computed specifiers, bare packages/import maps, parser
+callback effects. At that point, computed specifiers and bare packages/import
+maps remained open; slices 704–705 later add bounded inline maps. Computed
+specifiers, import-map integrity/dynamic registration/worker support, parser
 timing, non-HTTP(S) modules, and full Web IDL identity remain open.
 
 The completed bounded task-turn follow-up is

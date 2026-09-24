@@ -14,8 +14,8 @@ use super::css::{
     decode_css_url_value, static_css_imports,
 };
 use super::dom::{
-    NativeDocument, NativeDocumentWire, NativeNodeId, NativePageScriptSource,
-    NativePageScriptTiming,
+    NativeDocument, NativeDocumentWire, NativeNodeId, NativePageImportMapSource,
+    NativePageScriptSource, NativePageScriptTiming,
 };
 use super::environment::NativeEnvironmentOverrides;
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
@@ -57,6 +57,7 @@ use super::javascript::{
     validate_native_message_payload, validate_native_object_url_transfers,
 };
 use super::layout::NativePoint;
+use super::module_import_map::NativeModuleImportMap;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
     MAX_NATIVE_CSP_VIOLATIONS, MAX_NATIVE_RESPONSE_HEADER_BYTES,
@@ -8199,6 +8200,10 @@ async fn load_page_script_sources(
             super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
             MAX_NATIVE_SCRIPT_BYTES,
         ),
+        document.page_import_map_sources(
+            super::javascript::MAX_NATIVE_INLINE_SCRIPTS,
+            MAX_NATIVE_SCRIPT_BYTES,
+        ),
         loader,
         document_url,
         "glass-inline-module",
@@ -8215,6 +8220,7 @@ async fn load_dynamic_page_script_sources(
 ) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
     load_page_script_source_list(
         sources,
+        Vec::new(),
         loader,
         document_url,
         "glass-dynamic-module",
@@ -8225,6 +8231,7 @@ async fn load_dynamic_page_script_sources(
 
 async fn load_page_script_source_list(
     page_sources: Vec<NativePageScriptSource>,
+    page_import_maps: Vec<NativePageImportMapSource>,
     loader: &mut NativeResourceLoader,
     document_url: &str,
     module_name_prefix: &str,
@@ -8232,7 +8239,59 @@ async fn load_page_script_source_list(
 ) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
     let mut sources = Vec::new();
     let mut resource_events = Vec::new();
+
+    let mut import_map = runtime
+        .map(NativeJavaScriptRuntime::module_import_map)
+        .transpose()?
+        .unwrap_or_default();
+    let base_import_map = import_map.clone();
+    let mut import_map_snapshots = Vec::new();
+    for map_source in page_import_maps {
+        let Some(source) = map_source.source else {
+            resource_events.push((map_source.node_index, NativeEventKind::Error));
+            continue;
+        };
+        if !loader.allows_inline_script(document_url, &source, map_source.nonce.as_deref())? {
+            resource_events.push((map_source.node_index, NativeEventKind::Error));
+            continue;
+        }
+        let parsed = match NativeModuleImportMap::parse(&source, document_url) {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                resource_events.push((map_source.node_index, NativeEventKind::Error));
+                continue;
+            }
+        };
+        let mut merged = import_map.clone();
+        if merged.merge(parsed).is_err() {
+            resource_events.push((map_source.node_index, NativeEventKind::Error));
+            continue;
+        }
+        import_map = merged;
+        import_map_snapshots.push((map_source.node_index, import_map.clone()));
+    }
+    sources.push((
+        NativePageScriptTiming::ParserBlocking,
+        NativePageScript::ImportMap(base_import_map),
+    ));
+    let mut next_import_map = 0usize;
     for (index, script) in page_sources.into_iter().enumerate() {
+        let node_index = match &script {
+            NativePageScriptSource::Inline { node_index, .. }
+            | NativePageScriptSource::External { node_index, .. }
+            | NativePageScriptSource::ModuleInline { node_index, .. }
+            | NativePageScriptSource::ModuleExternal { node_index, .. } => *node_index,
+        };
+        while import_map_snapshots
+            .get(next_import_map)
+            .is_some_and(|(map_node_index, _)| *map_node_index < node_index)
+        {
+            sources.push((
+                NativePageScriptTiming::ParserBlocking,
+                NativePageScript::ImportMap(import_map_snapshots[next_import_map].1.clone()),
+            ));
+            next_import_map += 1;
+        }
         match script {
             NativePageScriptSource::Inline {
                 source,
@@ -8284,6 +8343,7 @@ async fn load_page_script_source_list(
                     timing,
                     loader,
                     runtime,
+                    &import_map,
                     &mut sources,
                     &mut seen,
                     &mut total_bytes,
@@ -8384,6 +8444,7 @@ async fn load_page_script_source_list(
                                 timing,
                                 loader,
                                 runtime,
+                                &import_map,
                                 &mut sources,
                                 &mut seen,
                                 &mut total_bytes,
@@ -8402,6 +8463,13 @@ async fn load_page_script_source_list(
                 }
             }
         }
+    }
+    while let Some((_, snapshot)) = import_map_snapshots.get(next_import_map) {
+        sources.push((
+            NativePageScriptTiming::ParserBlocking,
+            NativePageScript::ImportMap(snapshot.clone()),
+        ));
+        next_import_map += 1;
     }
     Ok((order_page_scripts(sources), resource_events))
 }
@@ -8497,18 +8565,31 @@ async fn load_module_dependencies(
     timing: NativePageScriptTiming,
     loader: &mut NativeResourceLoader,
     runtime: Option<&NativeJavaScriptRuntime>,
+    import_map: &NativeModuleImportMap,
     scripts: &mut Vec<(NativePageScriptTiming, NativePageScript)>,
     seen: &mut BTreeSet<String>,
     total_bytes: &mut usize,
 ) -> Result<(), NativeEngineError> {
     let mut pending = vec![(module_url.to_owned(), source.to_owned())];
+    let mut requested_urls = seen.clone();
     while let Some((current_url, current_source)) = pending.pop() {
         let mut specifiers = static_module_specifiers(&current_source)?;
         specifiers.extend(literal_dynamic_module_specifiers(&current_source));
         for specifier in specifiers {
-            let Some(target) = resolve_module_specifier(&current_url, &specifier)? else {
+            let Some(target) = resolve_module_specifier(&current_url, &specifier, import_map)?
+            else {
                 continue;
             };
+            if seen.contains(&target) || !requested_urls.insert(target.clone()) {
+                continue;
+            }
+            if requested_urls.len() > MAX_NATIVE_MODULE_IMPORTS {
+                return Err(NativeEngineError::limit(
+                    "module graph entries",
+                    MAX_NATIVE_MODULE_IMPORTS,
+                    requested_urls.len(),
+                ));
+            }
             let object_url = runtime
                 .map(|runtime| runtime.object_url_resource(&target))
                 .transpose()?
@@ -8588,35 +8669,16 @@ fn form_action_allows(
 fn resolve_module_specifier(
     module_url: &str,
     specifier: &str,
+    import_map: &NativeModuleImportMap,
 ) -> Result<Option<String>, NativeEngineError> {
-    let is_absolute_network = specifier.starts_with("http://") || specifier.starts_with("https://");
-    let is_absolute_blob = specifier
-        .get(..5)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"));
-    if !is_absolute_network
-        && !is_absolute_blob
-        && !specifier.starts_with("./")
-        && !specifier.starts_with("../")
-        && !specifier.starts_with('/')
-    {
-        return Err(NativeEngineError::UnsupportedUrl {
-            reason: "bare module specifiers require an import map".into(),
-        });
-    }
-    let base = Url::parse(without_fragment(module_url)).map_err(|_| {
-        NativeEngineError::UnsupportedUrl {
-            reason: "module owner URL is not valid URL syntax".into(),
-        }
+    let target = import_map
+        .resolve(without_fragment(module_url), specifier)
+        .map_err(|reason| NativeEngineError::UnsupportedUrl {
+            reason: reason.into(),
+        })?;
+    let target = Url::parse(&target).map_err(|_| NativeEngineError::UnsupportedUrl {
+        reason: "module URL is invalid".into(),
     })?;
-    let mut target = if is_absolute_network || is_absolute_blob {
-        Url::parse(specifier)
-    } else {
-        base.join(specifier)
-    }
-    .map_err(|_| NativeEngineError::UnsupportedUrl {
-        reason: "module specifier could not be resolved against its owner".into(),
-    })?;
-    target.set_fragment(None);
     if !is_network_url(target.as_str()) && !target.scheme().eq_ignore_ascii_case("blob") {
         return Ok(None);
     }

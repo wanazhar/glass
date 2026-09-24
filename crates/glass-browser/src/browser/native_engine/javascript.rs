@@ -29,6 +29,7 @@ use super::interaction::{
     NativeEventKind, validate_native_key,
 };
 use super::layout::NativePoint;
+use super::module_import_map::NativeModuleImportMap;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
     JAVASCRIPT_MIME_TYPE_ESSENCES, MAX_NATIVE_CSP_VIOLATIONS, NativeCorsMode, NativeCspViolation,
@@ -6797,9 +6798,12 @@ pub(crate) enum NativePageScript {
         name: String,
         source: String,
     },
+    ImportMap(NativeModuleImportMap),
 }
 
-struct NativeModuleResolver;
+struct NativeModuleResolver {
+    import_map: Arc<Mutex<NativeModuleImportMap>>,
+}
 
 impl Resolver for NativeModuleResolver {
     fn resolve<'js>(
@@ -6811,19 +6815,12 @@ impl Resolver for NativeModuleResolver {
     ) -> rquickjs::Result<String> {
         let base = Url::parse(base)
             .map_err(|_| Error::new_resolving_message(base, name, "module base is not a URL"))?;
-        let target = Url::parse(name).or_else(|_| base.join(name)).map_err(|_| {
-            Error::new_resolving_message(base.as_str(), name, "module URL is invalid")
+        let import_map = self.import_map.lock().map_err(|_| {
+            Error::new_resolving_message(base.as_str(), name, "module import map is unavailable")
         })?;
-        if !target.username().is_empty() || target.password().is_some() {
-            return Err(Error::new_resolving_message(
-                base.as_str(),
-                name,
-                "module URL must not contain credentials",
-            ));
-        }
-        let mut target = target;
-        target.set_fragment(None);
-        Ok(target.to_string())
+        import_map
+            .resolve(base.as_str(), name)
+            .map_err(|reason| Error::new_resolving_message(base.as_str(), name, reason))
     }
 }
 
@@ -7176,7 +7173,7 @@ pub(crate) fn execute_page_scripts(
             | NativePageScript::ModuleDependency { name, source } => {
                 Some((name.clone(), source.clone()))
             }
-            NativePageScript::Classic { .. } => None,
+            NativePageScript::Classic { .. } | NativePageScript::ImportMap(_) => None,
         })
         .collect::<BTreeMap<_, _>>();
     runtime
@@ -7195,10 +7192,17 @@ pub(crate) fn execute_page_scripts(
     let mut service_worker_commands = Vec::new();
     let mut dialogs = Vec::new();
     for source in sources {
+        if let NativePageScript::ImportMap(import_map) = source {
+            runtime
+                .as_ref()
+                .expect("page script runtime initialized")
+                .set_module_import_map(import_map.clone());
+            continue;
+        }
         let script_node_index = match source {
             NativePageScript::Classic { node_index, .. }
             | NativePageScript::Module { node_index, .. } => *node_index,
-            NativePageScript::ModuleDependency { .. } => None,
+            NativePageScript::ModuleDependency { .. } | NativePageScript::ImportMap(_) => None,
         };
         let evaluation = {
             let script_runtime = runtime.as_ref().expect("page script runtime initialized");
@@ -7218,7 +7222,9 @@ pub(crate) fn execute_page_scripts(
                     document_origin,
                     viewport,
                 ),
-                NativePageScript::ModuleDependency { .. } => continue,
+                NativePageScript::ModuleDependency { .. } | NativePageScript::ImportMap(_) => {
+                    continue;
+                }
             }
         };
         let evaluation = match evaluation {
@@ -7561,7 +7567,7 @@ pub(crate) fn execute_dynamic_page_scripts(
             | NativePageScript::ModuleDependency { name, source } => {
                 Some((name.clone(), source.clone()))
             }
-            NativePageScript::Classic { .. } => None,
+            NativePageScript::Classic { .. } | NativePageScript::ImportMap(_) => None,
         })
         .collect::<BTreeMap<_, _>>();
     runtime.set_module_sources(module_sources);
@@ -7606,6 +7612,10 @@ pub(crate) fn execute_dynamic_page_scripts(
     }
 
     while let Some(source) = pending.pop_front() {
+        if let NativePageScript::ImportMap(import_map) = &source {
+            runtime.set_module_import_map(import_map.clone());
+            continue;
+        }
         if matches!(&source, NativePageScript::ModuleDependency { .. }) {
             continue;
         }
@@ -7620,7 +7630,7 @@ pub(crate) fn execute_dynamic_page_scripts(
         let node_index = match &source {
             NativePageScript::Classic { node_index, .. }
             | NativePageScript::Module { node_index, .. } => *node_index,
-            NativePageScript::ModuleDependency { .. } => None,
+            NativePageScript::ModuleDependency { .. } | NativePageScript::ImportMap(_) => None,
         };
         let evaluation = match &source {
             NativePageScript::Classic { source, .. } => {
@@ -7634,7 +7644,7 @@ pub(crate) fn execute_dynamic_page_scripts(
                 document_origin,
                 viewport,
             ),
-            NativePageScript::ModuleDependency { .. } => continue,
+            NativePageScript::ModuleDependency { .. } | NativePageScript::ImportMap(_) => continue,
         };
         let evaluation = match evaluation {
             Ok(evaluation) => evaluation,
@@ -7740,6 +7750,10 @@ pub(crate) fn execute_dynamic_page_scripts(
     }
 
     while let Some(source) = pending.pop_front() {
+        if let NativePageScript::ImportMap(import_map) = &source {
+            runtime.set_module_import_map(import_map.clone());
+            continue;
+        }
         if matches!(&source, NativePageScript::ModuleDependency { .. }) {
             continue;
         }
@@ -7754,7 +7768,7 @@ pub(crate) fn execute_dynamic_page_scripts(
         let node_index = match &source {
             NativePageScript::Classic { node_index, .. }
             | NativePageScript::Module { node_index, .. } => *node_index,
-            NativePageScript::ModuleDependency { .. } => None,
+            NativePageScript::ModuleDependency { .. } | NativePageScript::ImportMap(_) => None,
         };
         let evaluation = match &source {
             NativePageScript::Classic { source, .. } => {
@@ -7768,7 +7782,7 @@ pub(crate) fn execute_dynamic_page_scripts(
                 document_origin,
                 viewport,
             ),
-            NativePageScript::ModuleDependency { .. } => continue,
+            NativePageScript::ModuleDependency { .. } | NativePageScript::ImportMap(_) => continue,
         };
         let evaluation = match evaluation {
             Ok(evaluation) => evaluation,
@@ -11043,6 +11057,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     deadline: Arc<Mutex<Option<Instant>>>,
     environment: Arc<Mutex<NativeEnvironmentOverrides>>,
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
+    module_import_map: Arc<Mutex<NativeModuleImportMap>>,
     sync_xhr_loader: Arc<Mutex<Option<NativeResourceLoader>>>,
     sync_xhr_loader_used: Arc<AtomicBool>,
     timer_pump_enabled: Arc<Mutex<bool>>,
@@ -11125,8 +11140,11 @@ impl NativeJavaScriptRuntime {
             reason: "native JavaScript runtime could not be created".into(),
         })?;
         let module_sources = Arc::new(Mutex::new(BTreeMap::new()));
+        let module_import_map = Arc::new(Mutex::new(NativeModuleImportMap::default()));
         runtime.set_loader(
-            NativeModuleResolver,
+            NativeModuleResolver {
+                import_map: Arc::clone(&module_import_map),
+            },
             NativeModuleLoader {
                 sources: Arc::clone(&module_sources),
             },
@@ -11190,6 +11208,7 @@ impl NativeJavaScriptRuntime {
             deadline,
             environment: Arc::new(Mutex::new(NativeEnvironmentOverrides::default())),
             module_sources,
+            module_import_map,
             sync_xhr_loader: Arc::new(Mutex::new(None)),
             sync_xhr_loader_used: Arc::new(AtomicBool::new(false)),
             timer_pump_enabled: Arc::new(Mutex::new(true)),
@@ -13035,6 +13054,22 @@ impl NativeJavaScriptRuntime {
         if let Ok(mut current) = self.module_sources.lock() {
             *current = sources;
         }
+    }
+
+    pub(crate) fn set_module_import_map(&self, import_map: NativeModuleImportMap) {
+        if let Ok(mut current) = self.module_import_map.lock() {
+            *current = import_map;
+        }
+    }
+
+    pub(crate) fn module_import_map(&self) -> Result<NativeModuleImportMap, NativeEngineError> {
+        self.module_import_map
+            .lock()
+            .map(|current| current.clone())
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "read page module import map".into(),
+                reason: "page module import map is unavailable".into(),
+            })
     }
 
     pub(crate) fn evaluate(

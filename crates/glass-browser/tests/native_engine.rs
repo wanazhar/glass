@@ -19964,6 +19964,117 @@ async fn native_content_process_prefetches_static_module_graphs() {
 }
 
 #[tokio::test]
+async fn native_content_process_resolves_module_graphs_through_inline_import_maps() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let mut requests = Vec::new();
+            for _ in 0..9 {
+                let (mut stream, _) = listener
+                    .accept()
+                    .await
+                    .expect("module-request listener remains available");
+                let request = read_http_request(&mut stream).await;
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("HTTP request includes a path")
+                    .to_owned();
+                requests.push(path.clone());
+                let (content_type, body) = match path.as_str() {
+                "/page" => (
+                    "text/html",
+                    "<script>globalThis.moduleErrors = []; globalThis.addEventListener('error', event => globalThis.moduleErrors.push([String(event.message), String(event.error), event.error ? String(event.error.message) : 'no-error']), true);</script><script type='IMPORTMAP'>{\"imports\":{\"pkg\":\"/vendor/pkg.js\",\"@lib/\":\"/modules/\"},\"scopes\":{\"/vendor/\":{\"pkg\":\"/vendor/scoped-parent.js\"},\"/vendor/nested/\":{\"pkg\":\"/vendor/scoped-nested.js\"}}}</script><script type='module' src='/app.js'></script>",
+                ),
+                "/app.js" => (
+                    "application/javascript",
+                    "import { exact } from 'pkg'; import { prefix } from '@lib/suffix.js'; import { scoped as parent } from '/vendor/referrer.js'; import { scoped as nested } from '/vendor/nested/referrer.js'; globalThis.mappedModules = [exact, prefix, parent, nested].join('-'); import('@lib/dynamic.js').then(({ value }) => { globalThis.dynamicMapped = value; });",
+                ),
+                "/vendor/pkg.js" => ("application/javascript", "export const exact = 'exact';"),
+                "/modules/suffix.js" => {
+                    ("application/javascript", "export const prefix = 'prefix';")
+                }
+                "/vendor/referrer.js" => (
+                    "application/javascript",
+                    "import { value } from 'pkg'; export const scoped = value;",
+                ),
+                "/vendor/nested/referrer.js" => (
+                    "application/javascript",
+                    "import { value } from 'pkg'; export const scoped = value; import('pkg').then(({ value }) => { globalThis.dynamicScoped = value; });",
+                ),
+                "/vendor/scoped-parent.js" => {
+                    ("application/javascript", "export const value = 'parent';")
+                }
+                "/vendor/scoped-nested.js" => {
+                    ("application/javascript", "export const value = 'nested';")
+                }
+                "/modules/dynamic.js" => {
+                    ("application/javascript", "export const value = 'dynamic';")
+                }
+                _ => ("application/javascript", "export const value = 'dynamic';"),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+            requests
+        })
+        .await
+        .expect("the process-backed import-map test stays within its time bound")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let mapped_modules = engine
+        .evaluate_async("globalThis.mappedModules")
+        .await
+        .unwrap();
+    let dynamic_mapped = engine
+        .evaluate_async("globalThis.dynamicMapped")
+        .await
+        .unwrap();
+    let dynamic_scoped = engine
+        .evaluate_async("globalThis.dynamicScoped")
+        .await
+        .unwrap();
+    let module_errors = engine
+        .evaluate_async("globalThis.moduleErrors")
+        .await
+        .unwrap();
+    engine.close_async().await.unwrap();
+    let mut requests = server.await.unwrap();
+    requests.sort();
+    let mut expected_requests = vec![
+        "/page",
+        "/app.js",
+        "/vendor/pkg.js",
+        "/modules/suffix.js",
+        "/vendor/referrer.js",
+        "/vendor/nested/referrer.js",
+        "/vendor/scoped-parent.js",
+        "/vendor/scoped-nested.js",
+        "/modules/dynamic.js",
+    ];
+    expected_requests.sort();
+    assert_eq!(
+        mapped_modules,
+        serde_json::json!("exact-prefix-parent-nested"),
+        "script errors: {module_errors:?}; requests: {requests:?}"
+    );
+    assert_eq!(module_errors, serde_json::json!([]));
+    assert_eq!(requests, expected_requests);
+    assert_eq!(dynamic_mapped, serde_json::json!("dynamic"));
+    assert_eq!(dynamic_scoped, serde_json::json!("nested"));
+}
+
+#[tokio::test]
 async fn native_content_process_isolates_static_module_dependency_failure() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -2,13 +2,26 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed parser/script slice is `native-engine-browser-703`.
+The latest locally completed parser/script slice is `native-engine-browser-705`.
 Detailed records 650–671 remain missing and must be recovered from authoritative
 commits rather than inferred from summary prose. Keep issue #40 as the remote
 status mirror and refresh its current-checkout summary after each local slice
 checkpoint; the local branch remains unpushed.
 Remote CI, release, registry, and cross-platform promotion evidence are not
 claimed.
+
+## Page JavaScript import maps
+
+Slices `native-engine-browser-704` and `native-engine-browser-705` connect
+bounded inline import-map `imports` and `scopes` to page module graph prefetch
+and QuickJS resolution. Exact and prefix mappings, most-specific nested scope
+selection, less-specific/global fallback, and nested literal-dynamic imports
+pass local resolver and process-backed tests. Integrity, external/dynamic map
+registration, worker/file-origin coverage, resolved-specifier locking, and
+full module scheduling remain separate Core Web Profile gates. The locked
+target check and four documentation gates passed locally; remote CI was not
+run. See
+`tasks/native-engine-browser-704.md` and `tasks/native-engine-browser-705.md`.
 Recover verifiable scope and test evidence for slices 650–671 from authoritative
 commits; do not infer passing checks from summary prose. Keep the issue body and
 this record explicit about local versus remote evidence.

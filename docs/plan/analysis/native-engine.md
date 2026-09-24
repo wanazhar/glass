@@ -977,6 +977,16 @@ tests after the scoped package check. Worker module identity, computed dynamic
 imports, and complete scheduling remain open; remote CI was not run. See
 [`slice 709`](../tasks/native-engine-browser-709.md).
 
+Slice 710 preserves request-URL identity separately from the final response
+base across dedicated, shared, and service-worker module graphs. Query/fragment
+distinctions remain graph keys while descendants resolve from redirected
+response URLs. The process-backed redirect/query/fragment case, rooted-file
+worker case, and module service-worker case passed, along with the scoped check
+and all local documentation gates across 1,338 Markdown files. Remote CI was
+not run. Worker import maps, computed dynamic imports, and complete module
+scheduling remain open. See
+[`slice 710`](../tasks/native-engine-browser-710.md).
+
 Slice 687 completes normalization of each CRLF pair and lone CR to LF before
 HTML tokenization across document parsing, Rust `innerHTML` commit, same-turn JavaScript
 fragments, and XHR HTML documents. The Rust route retains submitted-source

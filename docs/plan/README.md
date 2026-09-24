@@ -27,18 +27,19 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation through `native-engine-234` and browser-complete
-expansion is complete locally through `native-engine-browser-709`; issue #40
-remains open. Slice 709 preserves request-URL module identity, including query
-and fragment, separately from the final response URL used as the descendant
-base. Slices 704–705 connect bounded
+expansion is complete locally through `native-engine-browser-710`; issue #40
+remains open. Slices 709–710 preserve request-URL module identity, including
+query and fragment, separately from the final response URL used as the
+descendant base across page, dedicated/shared worker, and service-worker module
+graphs. Slices 704–705 connect bounded
 inline `imports` and referrer `scopes` maps to module prefetch and QuickJS
 resolution. Slice 706 adds
 URL-keyed import-map integrity enforcement and module CORS defaults. Slice 707
 adds parser-order map processing and bounded resolved-specifier locking.
 Slice 708 adds dynamic map registration and mapped dynamic-module graph loading
 across process-backed and rooted-file paths. Computed dynamic imports, worker
-maps, broader worker/file-origin propagation, worker module identity, and full
-module timing remain open. Slice 703 separates
+import maps, broader worker/file-origin propagation, and complete module
+scheduling remain open. Slice 703 separates
 exact script `type` MIME essence matching
 from external response `Content-Type` handling. All 16 JavaScript MIME type
 essences are matched case-insensitively without parameters on script elements;
@@ -354,6 +355,14 @@ HTTP redirect and rooted-file tests prove that fragment variants instantiate
 separately and resolve from the correct base. The scoped check, 23 library and
 19 integration fragment tests, and 17 library plus 4 integration import-map
 tests passed. Documentation and remote-CI evidence is recorded in the task.
+
+[`native-engine-browser-710`](tasks/native-engine-browser-710.md) completes the
+request-identity/response-base split for dedicated, shared, and service-worker
+module graphs. Process-backed redirect, query/fragment, service-worker, and
+rooted-file regressions pass. The scoped check, four focused integration tests,
+formatting, and all documentation gates passed across 1,338 Markdown files;
+remote CI was not run. Computed dynamic imports, worker import maps, and
+complete parser/module scheduling remain separate gates.
 
 The completed [`native-engine-browser-684`](tasks/native-engine-browser-684.md)
 slice extends the five in-cell ignored end tags to row and row-group contexts

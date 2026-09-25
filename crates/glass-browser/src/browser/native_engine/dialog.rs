@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 pub const NATIVE_DIALOG_TEXT_LIMIT_BYTES: usize = MAX_NATIVE_DIALOG_TEXT_BYTES;
 
 /// A process-backed modal JavaScript dialog awaiting a host decision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativePendingDialog {
     /// Stable identity for resolving this exact pending dialog.

@@ -19,16 +19,19 @@ request is invalid.
 For `2025-11-25`, clients may declare form-mode `elicitation` support during
 initialization. In that case, process-backed native `alert`, `confirm`, and
 `prompt` dialogs are presented to the client during the active browser tool
-call; Glass waits for the human response and resumes that same page operation.
+call; Glass waits for the human response and resumes that same page operation,
+including when the tool is attached to a named persistent native session on
+supported Unix builds.
 The source URL is not included in the elicitation. Prompt responses are
 UTF-8-byte bounded and are not logged or separately echoed in the elicitation
 message. Page text is marked untrusted; control/bidirectional formatting and
 URL-like page text are escaped or omitted, and the client is warned not to
 submit credentials or other secrets in response to a page prompt. Clients that
-select `2024-11-05` or do not declare form elicitation
-retain the non-modal dialog-event behavior. Named persistent MCP sessions do
-not yet opt into this modal host surface. MCP `2026-07-28` multi-round-trip
-negotiation is not implemented by this server.
+select `2024-11-05` or do not declare form elicitation retain the non-modal
+dialog-event behavior for standalone sessions. Without form elicitation, a
+named persistent native session on Unix dismisses an encountered page dialog
+and returns an explicit tool error rather than leaving its owner blocked. MCP
+`2026-07-28` multi-round-trip negotiation is not implemented by this server.
 
 The initialization result contains a discovery manifest in `glass` and an
 immutable effective agreement in `glassAgreement`. The manifest reports the
@@ -247,15 +250,16 @@ remain browser-free and do not start a browser runtime.
 
 ### Native JavaScript dialogs
 
-With the standalone native runtime and negotiated form-mode elicitation,
+With a native runtime and negotiated form-mode elicitation,
 `alert`, `confirm`, and `prompt` are handled as human input nested in the
 active MCP browser-tool call. The same page operation resumes after the user
 responds; Glass does not replay the script. Prompt input is limited to 256
 UTF-8 bytes. Declining or cancelling maps to the browser's dismissal behavior:
 `confirm()` returns `false` and `prompt()` returns `null`. The elicitation
-message marks page text as untrusted and omits the source URL. Clients without
-that capability retain non-modal behavior; named persistent MCP sessions do
-not yet present native modal dialogs.
+message marks page text as untrusted and omits the source URL. For named
+persistent sessions on Unix, the MCP host uses the owner's out-of-band status
+and exact-ID dialog controls; the human elicitation request is never
+transferred to the page or browser process.
 
 `extractStructured` fields are bounded semantic projections. Each field has a
 `name`, a semantic `path`, and a `kind`. Supported explicit kinds are

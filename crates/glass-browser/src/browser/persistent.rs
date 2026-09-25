@@ -101,6 +101,16 @@ struct SessionStatusView {
     error: Option<String>,
 }
 
+#[cfg(feature = "native-engine")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeMcpDialogStatus {
+    #[serde(default)]
+    pub(crate) pending_dialog: Option<NativePendingDialog>,
+    #[serde(default)]
+    pub(crate) active_navigation_revision: Option<u64>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionRequest {
     op: String,
@@ -732,7 +742,9 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                             }
                         }
                     }
-                    "mcp" => {
+                    "mcp" | "mcp-hosted-dialogs" => {
+                        let pause_navigation_timeout_for_dialog =
+                            request.op == "mcp-hosted-dialogs";
                         let params = request
                             .mcp_params
                             .ok_or("native MCP request is missing its params")?;
@@ -745,6 +757,7 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                                 session,
                                 &record.profile,
                                 &policy,
+                                pause_navigation_timeout_for_dialog,
                             )
                             .await?;
                             Ok(json!({"ok": true, "result": result}))
@@ -925,6 +938,7 @@ async fn write_native_owner_response(
 fn native_owner_status(
     record: &PersistentSessionRecord,
     pending_dialog: Option<NativePendingDialog>,
+    active_navigation_revision: Option<u64>,
 ) -> BrowserResult<serde_json::Value> {
     let mut status = serde_json::to_value(record)?;
     let fields = status
@@ -933,6 +947,10 @@ fn native_owner_status(
     fields.insert(
         "pendingDialog".into(),
         serde_json::to_value(pending_dialog)?,
+    );
+    fields.insert(
+        "activeNavigationRevision".into(),
+        serde_json::to_value(active_navigation_revision)?,
     );
     Ok(status)
 }
@@ -965,12 +983,19 @@ where
                         return Ok(response);
                     }
                     Ok(request) if request.op == "status" => {
-                        match session.native_pending_dialog_control() {
-                            Ok(pending_dialog) => match native_owner_status(record, pending_dialog) {
-                                Ok(status) => status,
-                                Err(error) => json!({"ok": false, "error": error.to_string()}),
-                            },
-                            Err(error) => json!({"ok": false, "error": error.to_string()}),
+                        match (
+                            session.native_pending_dialog_control(),
+                            session.active_native_navigation_revision(),
+                        ) {
+                            (Ok(pending_dialog), Ok(active_revision)) => {
+                                match native_owner_status(record, pending_dialog, active_revision) {
+                                    Ok(status) => status,
+                                    Err(error) => json!({"ok": false, "error": error.to_string()}),
+                                }
+                            }
+                            (Err(error), _) | (_, Err(error)) => {
+                                json!({"ok": false, "error": error.to_string()})
+                            }
                         }
                     }
                     Ok(request) if request.op == "control" => {
@@ -1342,6 +1367,23 @@ pub async fn execute_native_mcp(
     name: &str,
     params: serde_json::Value,
 ) -> BrowserResult<serde_json::Value> {
+    execute_native_mcp_request(name, params, "mcp").await
+}
+
+#[cfg(feature = "native-engine")]
+pub(crate) async fn execute_native_mcp_with_dialog_host(
+    name: &str,
+    params: serde_json::Value,
+) -> BrowserResult<serde_json::Value> {
+    execute_native_mcp_request(name, params, "mcp-hosted-dialogs").await
+}
+
+#[cfg(feature = "native-engine")]
+async fn execute_native_mcp_request(
+    name: &str,
+    params: serde_json::Value,
+    operation: &str,
+) -> BrowserResult<serde_json::Value> {
     let Some(record) = read_record(name)? else {
         return Err(format!("persistent session `{name}` is not running; start it first").into());
     };
@@ -1354,7 +1396,7 @@ pub async fn execute_native_mcp(
     let response = send_request_payload(
         &record.socket,
         &SessionRequest {
-            op: "mcp".into(),
+            op: operation.into(),
             argv: Vec::new(),
             control: None,
             mcp_params: Some(params),
@@ -1366,6 +1408,21 @@ pub async fn execute_native_mcp(
         .get("result")
         .cloned()
         .ok_or_else(|| "native persistent MCP request returned no result".into())
+}
+
+#[cfg(feature = "native-engine")]
+pub(crate) async fn native_mcp_dialog_status(name: &str) -> BrowserResult<NativeMcpDialogStatus> {
+    let Some(record) = read_record(name)? else {
+        return Err(format!("persistent session `{name}` is not running; start it first").into());
+    };
+    if !record.runtime.is_native() {
+        return Err(format!("persistent session `{name}` is not a native session").into());
+    }
+    if !process_is_alive(record.pid) {
+        return Err(format!("persistent session `{name}` is stale; restart it first").into());
+    }
+    let response = send_request(&record.socket, "status").await?;
+    Ok(serde_json::from_value(response)?)
 }
 
 #[cfg(feature = "native-engine")]

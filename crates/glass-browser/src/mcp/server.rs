@@ -77,6 +77,7 @@ const MAX_QUEUED_RESPONSES: usize = 16;
 const FRAME_BODY_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_DIALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const MCP_CANCELLATION_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const MCP_PERSISTENT_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MCP_DIALOG_PROMPT_MAX_BYTES: usize = 256;
 
 #[derive(Debug, Deserialize)]
@@ -541,7 +542,25 @@ struct McpElicitationClient {
     transport: McpServerTransport,
     format: FrameFormat,
     parent_cancellation: Arc<Notify>,
+    parent_cancelled: Arc<AtomicBool>,
+    supports_form: bool,
 }
+
+#[cfg(feature = "native-engine")]
+#[derive(Debug)]
+struct NativeMcpFormElicitationRequired;
+
+#[cfg(feature = "native-engine")]
+impl std::fmt::Display for NativeMcpFormElicitationRequired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(
+            "MCP client did not negotiate form elicitation; native page dialog was dismissed",
+        )
+    }
+}
+
+#[cfg(feature = "native-engine")]
+impl std::error::Error for NativeMcpFormElicitationRequired {}
 
 struct PendingServerResponseCleanup {
     key: String,
@@ -1135,16 +1154,25 @@ where
         let task_persistent_native_session = persistent_native_session.clone();
         let task_outbound = outbound_tx.clone();
         let task_cancellations = Arc::clone(&cancellations);
-        let task_elicitation_cancellation = (native_runtime
-            && client_supports_form_elicitation
-            && task_persistent_native_session.is_none())
-        .then(|| Arc::new(Notify::new()));
-        let task_elicitation = task_elicitation_cancellation
-            .as_ref()
-            .map(|parent_cancellation| McpElicitationClient {
+        let task_elicitation_cancellation = native_runtime.then(|| Arc::new(Notify::new()));
+        let task_parent_cancelled = native_runtime.then(|| Arc::new(AtomicBool::new(false)));
+        let persistent_dialog_host = task_persistent_native_session.is_some();
+        let task_elicitation = (native_runtime
+            && (client_supports_form_elicitation || persistent_dialog_host))
+            .then(|| McpElicitationClient {
                 transport: server_transport.clone(),
                 format,
-                parent_cancellation: Arc::clone(parent_cancellation),
+                parent_cancellation: Arc::clone(
+                    task_elicitation_cancellation
+                        .as_ref()
+                        .expect("native request has a cancellation notifier"),
+                ),
+                parent_cancelled: Arc::clone(
+                    task_parent_cancelled
+                        .as_ref()
+                        .expect("native request has a cancellation state"),
+                ),
+                supports_form: client_supports_form_elicitation,
             });
         let native_session_owned = Arc::new(AtomicBool::new(false));
         let task_native_session_owned = Arc::clone(&native_session_owned);
@@ -1179,6 +1207,9 @@ where
                 _ = cancel_rx => {
                     #[cfg(feature = "native-engine")]
                     if native_runtime && native_session_owned.load(Ordering::Acquire) {
+                        if let Some(cancelled) = &task_parent_cancelled {
+                            cancelled.store(true, Ordering::Release);
+                        }
                         if let Some(cancellation) = &task_elicitation_cancellation {
                             cancellation.notify_one();
                         }
@@ -2011,6 +2042,13 @@ fn mcp_trace_action(tool: Option<&str>) -> ActionKind {
 }
 
 fn typed_browser_error(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    #[cfg(feature = "native-engine")]
+    if error
+        .downcast_ref::<NativeMcpFormElicitationRequired>()
+        .is_some()
+    {
+        return Some(error.to_string());
+    }
     if let Some(error) = error.downcast_ref::<crate::web_ir::WebIrValidationError>() {
         return serde_json::to_string(&json!({
             "kind": "webIrValidation",
@@ -2289,9 +2327,19 @@ async fn call_tool(
         #[cfg(feature = "native-engine")]
         {
             if let Some(name) = _persistent_native_session {
-                return crate::browser::persistent::execute_native_mcp(
+                let navigation_timeout_ms = match &invocation {
+                    ToolInvocation::Navigate { timeout_ms, .. } => Some(*timeout_ms),
+                    _ => None,
+                };
+                let operation = crate::browser::persistent::execute_native_mcp_with_dialog_host(
                     name,
                     request.params.clone(),
+                );
+                return run_native_persistent_mcp_dialog_host(
+                    name,
+                    elicitation,
+                    operation,
+                    navigation_timeout_ms,
                 )
                 .await;
             }
@@ -3854,6 +3902,250 @@ where
 }
 
 #[cfg(feature = "native-engine")]
+async fn run_native_persistent_mcp_dialog_host<F>(
+    session_name: &str,
+    client: Option<&McpElicitationClient>,
+    operation: F,
+    navigation_timeout_ms: Option<u64>,
+) -> BrowserResult<Value>
+where
+    F: Future<Output = BrowserResult<Value>>,
+{
+    let mut remaining = navigation_timeout_ms.map(Duration::from_millis);
+    tokio::pin!(operation);
+
+    loop {
+        let status_started = tokio::time::Instant::now();
+        let status = crate::browser::persistent::native_mcp_dialog_status(session_name).await?;
+        if let Some(pending) = status.pending_dialog {
+            let client_supports_form = client.is_some_and(|client| client.supports_form);
+            let resolution = match client {
+                Some(client)
+                    if client.supports_form && !client.parent_cancelled.load(Ordering::Acquire) =>
+                {
+                    mcp_dialog_resolution(client, &pending).await
+                }
+                Some(client) if client.parent_cancelled.load(Ordering::Acquire) => {
+                    Err("parent MCP browser request was cancelled".into())
+                }
+                _ => Err(
+                    "MCP client did not negotiate form elicitation; native page dialog dismissed"
+                        .into(),
+                ),
+            };
+            match resolution {
+                Ok(resolution) => {
+                    if !resolve_native_persistent_mcp_dialog(session_name, &pending, resolution)
+                        .await?
+                    {
+                        continue;
+                    }
+                }
+                Err(error) => {
+                    if !resolve_native_persistent_mcp_dialog(
+                        session_name,
+                        &pending,
+                        NativeDialogResolution {
+                            accepted: false,
+                            prompt_value: None,
+                        },
+                    )
+                    .await?
+                    {
+                        continue;
+                    }
+                    stop_native_persistent_navigation(
+                        session_name,
+                        status.active_navigation_revision,
+                    )
+                    .await?;
+                    if tokio::time::timeout(MCP_CANCELLATION_DRAIN_TIMEOUT, &mut operation)
+                        .await
+                        .is_err()
+                    {
+                        return Err(format!(
+                            "persistent native MCP operation did not drain after dialog dismissal: {error}"
+                        )
+                        .into());
+                    }
+                    if !client_supports_form {
+                        return Err(NativeMcpFormElicitationRequired.into());
+                    }
+                    return Err(error.into());
+                }
+            }
+            continue;
+        }
+
+        if client.is_some_and(|client| client.parent_cancelled.load(Ordering::Acquire)) {
+            stop_native_persistent_navigation(session_name, status.active_navigation_revision)
+                .await?;
+            if tokio::time::timeout(MCP_CANCELLATION_DRAIN_TIMEOUT, &mut operation)
+                .await
+                .is_err()
+            {
+                return Err(
+                    "persistent native MCP operation did not drain after cancellation".into(),
+                );
+            }
+            return Err("parent MCP browser request was cancelled".into());
+        }
+
+        match remaining {
+            Some(timeout) => {
+                let active_timeout = timeout.saturating_sub(status_started.elapsed());
+                if active_timeout.is_zero() {
+                    stop_native_persistent_navigation(
+                        session_name,
+                        status.active_navigation_revision,
+                    )
+                    .await?;
+                    if tokio::time::timeout(MCP_CANCELLATION_DRAIN_TIMEOUT, &mut operation)
+                        .await
+                        .is_err()
+                    {
+                        return Err(
+                            "persistent native MCP navigation did not drain at its deadline".into(),
+                        );
+                    }
+                    return Err(format!(
+                        "persistent native MCP navigation exceeded its {}ms deadline",
+                        navigation_timeout_ms.unwrap_or_default()
+                    )
+                    .into());
+                }
+                let active_started = tokio::time::Instant::now();
+                tokio::select! {
+                    result = tokio::time::timeout(active_timeout, &mut operation) => match result {
+                        Ok(result) => return result,
+                        Err(_) => {
+                            stop_native_persistent_navigation(
+                                session_name,
+                                status.active_navigation_revision,
+                            )
+                            .await?;
+                            if tokio::time::timeout(
+                                MCP_CANCELLATION_DRAIN_TIMEOUT,
+                                &mut operation,
+                            )
+                            .await
+                            .is_err()
+                            {
+                                return Err("persistent native MCP navigation did not drain at its deadline".into());
+                            }
+                            return Err(format!(
+                                "persistent native MCP navigation exceeded its {}ms deadline",
+                                navigation_timeout_ms.unwrap_or_default()
+                            )
+                            .into());
+                        }
+                    },
+                    () = wait_for_native_mcp_parent_cancellation(client) => {
+                        stop_native_persistent_navigation(
+                            session_name,
+                            status.active_navigation_revision,
+                        )
+                        .await?;
+                        if tokio::time::timeout(
+                            MCP_CANCELLATION_DRAIN_TIMEOUT,
+                            &mut operation,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            return Err("persistent native MCP operation did not drain after cancellation".into());
+                        }
+                        return Err("parent MCP browser request was cancelled".into());
+                    }
+                    () = tokio::time::sleep(MCP_PERSISTENT_STATUS_POLL_INTERVAL) => {
+                        remaining = Some(
+                            active_timeout.saturating_sub(active_started.elapsed()),
+                        );
+                    }
+                }
+            }
+            None => {
+                tokio::select! {
+                    result = &mut operation => return result,
+                    () = wait_for_native_mcp_parent_cancellation(client) => {
+                        stop_native_persistent_navigation(
+                            session_name,
+                            status.active_navigation_revision,
+                        )
+                        .await?;
+                        if tokio::time::timeout(
+                            MCP_CANCELLATION_DRAIN_TIMEOUT,
+                            &mut operation,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            return Err("persistent native MCP operation did not drain after cancellation".into());
+                        }
+                        return Err("parent MCP browser request was cancelled".into());
+                    }
+                    () = tokio::time::sleep(MCP_PERSISTENT_STATUS_POLL_INTERVAL) => {}
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn wait_for_native_mcp_parent_cancellation(client: Option<&McpElicitationClient>) {
+    match client {
+        Some(client) => client.parent_cancellation.notified().await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn resolve_native_persistent_mcp_dialog(
+    session_name: &str,
+    pending: &NativePendingDialog,
+    resolution: NativeDialogResolution,
+) -> BrowserResult<bool> {
+    for attempt in 0..2 {
+        match crate::browser::persistent::control_native_dialog(
+            session_name,
+            &pending.id,
+            resolution.accepted,
+            resolution.prompt_value.clone(),
+        )
+        .await
+        {
+            Ok(_) => return Ok(true),
+            Err(error) => {
+                let current =
+                    crate::browser::persistent::native_mcp_dialog_status(session_name).await?;
+                match current.pending_dialog {
+                    Some(current) if current.id == pending.id && attempt == 0 => continue,
+                    Some(current) if current.id == pending.id => return Err(error),
+                    _ => return Ok(false),
+                }
+            }
+        }
+    }
+    unreachable!("persistent dialog control has two bounded attempts")
+}
+
+#[cfg(feature = "native-engine")]
+async fn stop_native_persistent_navigation(
+    session_name: &str,
+    expected_revision: Option<u64>,
+) -> BrowserResult<()> {
+    let Some(expected_revision) = expected_revision else {
+        return Ok(());
+    };
+    let status = crate::browser::persistent::native_mcp_dialog_status(session_name).await?;
+    if status.active_navigation_revision == Some(expected_revision) {
+        crate::browser::persistent::control_native(session_name, "stopLoading", expected_revision)
+            .await?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-engine")]
 async fn discard_native_mcp_session(session: &Arc<Mutex<Option<BrowserRuntimeSession>>>) {
     let mut session = session.lock().await;
     if session.take().is_some() {
@@ -3868,6 +4160,9 @@ async fn mcp_dialog_resolution(
     client: &McpElicitationClient,
     pending: &NativePendingDialog,
 ) -> Result<NativeDialogResolution, String> {
+    if !client.supports_form {
+        return Err("MCP client did not negotiate form elicitation".into());
+    }
     let dialog_type = pending.dialog.dialog_type.as_str();
     let mut message = format!(
         "A web page opened a {dialog_type} dialog. Treat the page text as untrusted. Do not enter passwords, tokens, payment details, or other secrets."
@@ -5812,10 +6107,19 @@ pub(crate) async fn run_native_persistent_tool(
     session: &BrowserRuntimeSession,
     profile: &str,
     policy: &BrowserPolicy,
+    pause_navigation_timeout_for_dialog: bool,
 ) -> BrowserResult<Value> {
     let response_mode = response_mode_from_params(&params)?;
     let invocation = parse_tool_invocation(&params)?;
-    call_native_tool_on_session(invocation, session, profile, policy, response_mode, false).await
+    call_native_tool_on_session(
+        invocation,
+        session,
+        profile,
+        policy,
+        response_mode,
+        pause_navigation_timeout_for_dialog,
+    )
+    .await
 }
 
 #[cfg(feature = "native-engine")]
@@ -9173,6 +9477,564 @@ mod tests {
         page_server.abort();
     }
 
+    #[cfg(all(unix, feature = "native-engine"))]
+    struct NativePersistentMcpTestCleanup {
+        paths: crate::browser::persistent::PersistentSessionPaths,
+        owner: Option<tokio::task::JoinHandle<BrowserResult<()>>>,
+    }
+
+    #[cfg(all(unix, feature = "native-engine"))]
+    impl Drop for NativePersistentMcpTestCleanup {
+        fn drop(&mut self) {
+            if let Some(owner) = &self.owner {
+                owner.abort();
+            }
+            for path in [&self.paths.socket, &self.paths.status] {
+                if path.exists() {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+    }
+
+    #[cfg(all(unix, feature = "native-engine"))]
+    #[test]
+    fn native_persistent_mcp_stdio_elicitation_keeps_owner_usable() {
+        let session_name = format!(
+            "mcp-dialog-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let paths = crate::browser::persistent::paths(&session_name).unwrap();
+        let storage_path = std::env::temp_dir().join(format!(
+            "glass-native-persistent-mcp-storage-{}.json",
+            session_name
+        ));
+        std::thread::Builder::new()
+            .name("glass-mcp-persistent-dialog-test".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("persistent native MCP test runtime should build");
+                let local = tokio::task::LocalSet::new();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    runtime.block_on(local.run_until(
+                        native_persistent_mcp_stdio_elicitation_inner(
+                            session_name.clone(),
+                            storage_path.clone(),
+                        ),
+                    ));
+                }));
+                drop(local);
+                drop(runtime);
+                for path in [&paths.socket, &paths.status, &storage_path] {
+                    if path.exists() {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+                let lock_path = storage_path.with_extension("lock");
+                if lock_path.exists() {
+                    let _ = std::fs::remove_file(lock_path);
+                }
+                if let Err(panic) = result {
+                    std::panic::resume_unwind(panic);
+                }
+            })
+            .expect("persistent native MCP test thread should spawn")
+            .join()
+            .expect("persistent native MCP test thread should not panic");
+    }
+
+    #[cfg(all(unix, feature = "native-engine"))]
+    async fn native_persistent_mcp_stdio_elicitation_inner(
+        session_name: String,
+        storage_path: std::path::PathBuf,
+    ) {
+        use clap::Parser as _;
+
+        let dialog_html = r#"<!doctype html><title>Persistent dialog</title><body><script>
+window.dialogTrace = ["before"];
+window.dialogTrace.push("confirm:" + confirm("continue?"));
+window.dialogTrace.push("prompt:" + prompt("name?", "Ada"));
+alert("finish");
+window.dialogTrace.push("after");
+document.body.textContent = window.dialogTrace.join("|");
+</script></body>"#;
+        let warm_html = "<!doctype html><title>Warm</title><body>Native MCP warm page</body>";
+        let single_dialog_html = "<!doctype html><title>Single dialog</title><body><script>var answer=prompt('Single prompt','');document.body.textContent='Prompt dismissed '+(answer===null);</script></body>";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let observed_paths = Arc::new(StdMutex::new(Vec::new()));
+        let page_observed_paths = Arc::clone(&observed_paths);
+        let page_server = tokio::task::spawn_local(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request_line = String::new();
+                if reader
+                    .read_line(&mut request_line)
+                    .await
+                    .unwrap_or_default()
+                    == 0
+                {
+                    continue;
+                }
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).await.unwrap_or_default() == 0
+                        || header == "\r\n"
+                    {
+                        break;
+                    }
+                }
+                let mut stream = reader.into_inner();
+                let path = request_line.split_whitespace().nth(1).unwrap_or_default();
+                page_observed_paths.lock().unwrap().push(path.to_owned());
+                let (status, body) = if path.starts_with("/warm") {
+                    ("200 OK", warm_html)
+                } else if path.starts_with("/single") {
+                    ("200 OK", single_dialog_html)
+                } else if path.starts_with("/dialogs") {
+                    ("200 OK", dialog_html)
+                } else {
+                    ("404 Not Found", "")
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let paths = crate::browser::persistent::paths(&session_name).unwrap();
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        let owner = tokio::task::spawn_local(crate::browser::persistent::serve(
+            crate::browser::persistent::PersistentSessionServeConfig {
+                name: session_name.clone(),
+                socket: paths.socket.clone(),
+                status_path: paths.status.clone(),
+                runtime: crate::browser::runtime::BrowserRuntime::Native,
+                port: 0,
+                profile: session_name.clone(),
+                headed: false,
+                chrome_path: None,
+                policy,
+                native_config: Some(NativeEngineConfig::default().with_storage_path(&storage_path)),
+            },
+        ));
+        let mut cleanup = NativePersistentMcpTestCleanup {
+            paths: paths.clone(),
+            owner: Some(owner),
+        };
+        let record = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if let Some(record) = crate::browser::persistent::read_record(&session_name)
+                    .unwrap()
+                    .filter(|record| record.state == "running")
+                {
+                    break record;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("native persistent owner should become ready");
+        assert_eq!(
+            record.runtime,
+            crate::browser::runtime::BrowserRuntime::Native
+        );
+        assert_eq!(record.browser_pid, 0);
+        assert_eq!(record.port, 0);
+        let idle_status = crate::browser::persistent::native_mcp_dialog_status(&session_name)
+            .await
+            .unwrap();
+        assert!(idle_status.pending_dialog.is_none());
+        assert!(idle_status.active_navigation_revision.is_none());
+
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--browser-runtime",
+            "native",
+            "--session",
+            session_name.as_str(),
+            "--mcp",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.browser_runtime,
+            crate::browser::runtime::BrowserRuntime::Native
+        );
+        assert_eq!(cli.session.as_deref(), Some(session_name.as_str()));
+        let (mut client_to_server, mut client_from_server, server) =
+            start_native_test_mcp_connection(cli);
+        initialize_native_test_mcp_connection(&mut client_to_server, &mut client_from_server).await;
+        write_test_mcp_message(
+            &mut client_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"warm","method":"tools/call",
+                "params":{"name":"observe","arguments":{}}
+            }),
+        )
+        .await;
+        let warm = read_test_mcp_message(&mut client_from_server).await;
+        assert_eq!(warm["id"], "warm");
+        assert_ne!(warm["result"]["isError"], true, "{warm}");
+        write_test_mcp_message(
+            &mut client_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"warm-navigation","method":"tools/call",
+                "params":{"name":"navigate","arguments":{
+                    "url":format!("http://{address}/warm"),"timeoutMs":30_000
+                }}
+            }),
+        )
+        .await;
+        let warm_navigation = tokio::time::timeout(
+            Duration::from_secs(35),
+            read_test_mcp_message(&mut client_from_server),
+        )
+        .await
+        .expect("persistent native MCP warm navigation should finish");
+        assert_eq!(warm_navigation["id"], "warm-navigation");
+        assert_ne!(
+            warm_navigation["result"]["isError"], true,
+            "{warm_navigation}"
+        );
+        write_test_mcp_message(
+            &mut client_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"navigate","method":"tools/call",
+                "params":{"name":"navigate","arguments":{
+                    "url":format!("http://{address}/dialogs"),"timeoutMs":5_000,
+                    "includeTrace":true
+                }}
+            }),
+        )
+        .await;
+        let navigate = tokio::time::timeout(Duration::from_secs(25), async {
+            let mut observed = Vec::new();
+            let mut owner_status = None;
+            loop {
+                let message = tokio::select! {
+                    message = read_test_mcp_message(&mut client_from_server) => message,
+                    () = tokio::time::sleep(MCP_PERSISTENT_STATUS_POLL_INTERVAL) => {
+                        owner_status = Some(
+                            crate::browser::persistent::native_mcp_dialog_status(&session_name).await,
+                        );
+                        continue;
+                    }
+                };
+                if message.get("method").and_then(Value::as_str) == Some("elicitation/create") {
+                    let prompt = message["params"]["message"].as_str().unwrap();
+                    let result = if prompt.contains("confirm dialog") {
+                        observed.push("confirm");
+                        json!({"action":"accept","content":{"accepted":true}})
+                    } else if prompt.contains("prompt dialog") {
+                        observed.push("prompt");
+                        let status =
+                            crate::browser::persistent::native_mcp_dialog_status(&session_name)
+                                .await
+                                .unwrap();
+                        assert!(status.pending_dialog.is_some());
+                        assert!(status.active_navigation_revision.is_some());
+                        tokio::time::sleep(Duration::from_millis(5_100)).await;
+                        json!({"action":"accept","content":{"response":"Grace"}})
+                    } else {
+                        observed.push("alert");
+                        json!({"action":"accept","content":{}})
+                    };
+                    write_test_mcp_message(
+                        &mut client_to_server,
+                        &json!({"jsonrpc":"2.0","id":message["id"],"result":result}),
+                    )
+                    .await;
+                    continue;
+                }
+                assert_eq!(message["id"], "navigate");
+                assert!(message.get("error").is_none(), "{message}");
+                let page_text_after_failure = if message["result"]["isError"] == true {
+                    crate::browser::persistent::execute_native_mcp(
+                        &session_name,
+                        json!({"name":"getText","arguments":{}}),
+                    )
+                    .await
+                    .ok()
+                } else {
+                    None
+                };
+                assert_ne!(
+                    message["result"]["isError"],
+                    true,
+                    "{message}; owner status: {owner_status:?}; HTTP paths: {:?}; page text: {page_text_after_failure:?}",
+                    observed_paths.lock().unwrap()
+                );
+                assert_eq!(observed, ["confirm", "prompt", "alert"], "{message}");
+                break message;
+            }
+        })
+        .await
+        .expect("persistent dialog sequence should finish beyond its navigation deadline");
+        assert_eq!(navigate["id"], "navigate");
+        write_test_mcp_message(
+            &mut client_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"page-text","method":"tools/call",
+                "params":{"name":"getText","arguments":{}}
+            }),
+        )
+        .await;
+        let page_text = read_test_mcp_message(&mut client_from_server).await;
+        assert_eq!(page_text["id"], "page-text");
+        assert!(
+            page_text["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("before|confirm:true|prompt:Grace|after")
+        );
+        client_to_server.shutdown().await.unwrap();
+        server.await.unwrap().unwrap();
+
+        let old_client_cli = Cli::try_parse_from([
+            "glass",
+            "--browser-runtime",
+            "native",
+            "--session",
+            session_name.as_str(),
+            "--mcp",
+        ])
+        .unwrap();
+        let (mut old_client_to_server, mut old_client_from_server, old_server) =
+            start_native_test_mcp_connection(old_client_cli);
+        let initialize = json!({
+            "jsonrpc":"2.0","id":"initialize","method":"initialize",
+            "params":{
+                "protocolVersion":MCP_PROTOCOL_VERSION,
+                "capabilities":{},
+                "clientInfo":{"name":"glass-mcp-legacy-test","version":"1"}
+            }
+        });
+        write_test_mcp_message(&mut old_client_to_server, &initialize).await;
+        let initialized = read_test_mcp_message(&mut old_client_from_server).await;
+        assert_eq!(
+            initialized["result"]["protocolVersion"],
+            MCP_PROTOCOL_VERSION
+        );
+        write_test_mcp_message(
+            &mut old_client_to_server,
+            &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+        write_test_mcp_message(
+            &mut old_client_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"no-form","method":"tools/call",
+                "params":{"name":"navigate","arguments":{
+                    "url":format!("http://{address}/single"),"timeoutMs":5_000
+                }}
+            }),
+        )
+        .await;
+        let no_form = tokio::time::timeout(
+            Duration::from_secs(15),
+            read_test_mcp_message(&mut old_client_from_server),
+        )
+        .await
+        .expect("legacy MCP client should receive a bounded dialog error");
+        assert_eq!(no_form["id"], "no-form");
+        assert_eq!(no_form["result"]["isError"], true, "{no_form}");
+        assert!(
+            no_form["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("did not negotiate form elicitation"),
+            "unexpected legacy-client dialog result: {no_form}"
+        );
+        write_test_mcp_message(
+            &mut old_client_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"legacy-after-error","method":"tools/call",
+                "params":{"name":"getText","arguments":{}}
+            }),
+        )
+        .await;
+        let after_no_form = read_test_mcp_message(&mut old_client_from_server).await;
+        assert_eq!(after_no_form["id"], "legacy-after-error");
+        assert_ne!(
+            after_no_form["result"]["isError"], true,
+            "persistent owner was unusable after dismissing the legacy client's dialog: {after_no_form}"
+        );
+        assert!(
+            crate::browser::persistent::native_mcp_dialog_status(&session_name)
+                .await
+                .unwrap()
+                .pending_dialog
+                .is_none()
+        );
+        old_client_to_server.shutdown().await.unwrap();
+        old_server.await.unwrap().unwrap();
+
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--browser-runtime",
+            "native",
+            "--session",
+            session_name.as_str(),
+            "--mcp",
+        ])
+        .unwrap();
+        let (mut cancel_to_server, mut cancel_from_server, cancel_server) =
+            start_native_test_mcp_connection(cli);
+        initialize_native_test_mcp_connection(&mut cancel_to_server, &mut cancel_from_server).await;
+        write_test_mcp_message(
+            &mut cancel_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"cancel-me","method":"tools/call",
+                "params":{"name":"navigate","arguments":{
+                    "url":format!("http://{address}/single"),"timeoutMs":10_000
+                }}
+            }),
+        )
+        .await;
+        let elicitation = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let message = read_test_mcp_message(&mut cancel_from_server).await;
+                if message.get("method").and_then(Value::as_str) == Some("elicitation/create") {
+                    break message;
+                }
+            }
+        })
+        .await
+        .expect("persistent MCP prompt should be elicited before cancellation");
+        assert!(
+            crate::browser::persistent::native_mcp_dialog_status(&session_name)
+                .await
+                .unwrap()
+                .pending_dialog
+                .is_some()
+        );
+        write_test_mcp_message(
+            &mut cancel_to_server,
+            &json!({
+                "jsonrpc":"2.0","method":"notifications/cancelled",
+                "params":{"requestId":"cancel-me"}
+            }),
+        )
+        .await;
+        let cancelled_elicitation = read_test_mcp_message(&mut cancel_from_server).await;
+        assert_eq!(cancelled_elicitation["method"], "notifications/cancelled");
+        assert_eq!(
+            cancelled_elicitation["params"]["requestId"],
+            elicitation["id"]
+        );
+        let cancelled = read_test_mcp_message(&mut cancel_from_server).await;
+        assert_eq!(cancelled["id"], "cancel-me");
+        assert_eq!(cancelled["error"]["code"], -32800);
+        assert!(
+            crate::browser::persistent::native_mcp_dialog_status(&session_name)
+                .await
+                .unwrap()
+                .pending_dialog
+                .is_none(),
+            "owner retained a pending dialog after cancellation completed"
+        );
+        write_test_mcp_message(
+            &mut cancel_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"after-cancel","method":"tools/call",
+                "params":{"name":"getText","arguments":{}}
+            }),
+        )
+        .await;
+        let after_cancel = read_test_mcp_message(&mut cancel_from_server).await;
+        assert_eq!(after_cancel["id"], "after-cancel");
+        assert_ne!(
+            after_cancel["result"]["isError"], true,
+            "persistent owner was unusable after parent cancellation: {after_cancel}"
+        );
+        assert!(
+            crate::browser::persistent::native_mcp_dialog_status(&session_name)
+                .await
+                .unwrap()
+                .pending_dialog
+                .is_none()
+        );
+        cancel_to_server.shutdown().await.unwrap();
+        cancel_server.await.unwrap().unwrap();
+
+        let cli = Cli::try_parse_from([
+            "glass",
+            "--browser-runtime",
+            "native",
+            "--session",
+            session_name.as_str(),
+            "--mcp",
+        ])
+        .unwrap();
+        let (mut eof_to_server, mut eof_from_server, eof_server) =
+            start_native_test_mcp_connection(cli);
+        initialize_native_test_mcp_connection(&mut eof_to_server, &mut eof_from_server).await;
+        write_test_mcp_message(
+            &mut eof_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"eof-me","method":"tools/call",
+                "params":{"name":"navigate","arguments":{
+                    "url":format!("http://{address}/single"),"timeoutMs":10_000
+                }}
+            }),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let message = read_test_mcp_message(&mut eof_from_server).await;
+                if message.get("method").and_then(Value::as_str) == Some("elicitation/create") {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("persistent MCP prompt should be elicited before stdio EOF");
+        eof_to_server.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), eof_server)
+            .await
+            .expect("stdio EOF should release the persistent modal browser call")
+            .unwrap()
+            .unwrap();
+        let after_eof = crate::browser::persistent::execute_native_mcp(
+            &session_name,
+            json!({"name":"getText","arguments":{}}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            after_eof["isError"] != true,
+            "persistent owner was unusable after stdio EOF: {after_eof}"
+        );
+        assert!(
+            crate::browser::persistent::native_mcp_dialog_status(&session_name)
+                .await
+                .unwrap()
+                .pending_dialog
+                .is_none()
+        );
+        let final_record = crate::browser::persistent::read_record(&session_name)
+            .unwrap()
+            .expect("persistent owner should survive MCP EOF");
+        assert_eq!(final_record.pid, record.pid);
+        assert_eq!(final_record.browser_pid, 0);
+
+        crate::browser::persistent::stop(&session_name)
+            .await
+            .unwrap();
+        cleanup.owner.take().unwrap().await.unwrap().unwrap();
+        page_server.abort();
+    }
+
     #[cfg(feature = "native-engine")]
     fn start_native_test_mcp_connection(
         cli: Cli,
@@ -10652,6 +11514,8 @@ mod tests {
             },
             format: FrameFormat::Newline,
             parent_cancellation: Arc::new(Notify::new()),
+            parent_cancelled: Arc::new(AtomicBool::new(false)),
+            supports_form: true,
         };
         let dialog =
             tokio::task::spawn_local(async move { mcp_dialog_resolution(&client, &pending).await });

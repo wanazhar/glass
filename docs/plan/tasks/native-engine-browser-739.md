@@ -1,6 +1,6 @@
 id: native-engine-browser-739
 scope: glass-browser/native-mcp-modal-dialog-host
-status: in-progress
+status: done
 depends-on: [native-engine-browser-738]
 
 # Glass native-engine browser slice 739: MCP modal-dialog host
@@ -89,4 +89,4 @@ because client-side schema validation is not trusted.
 - `cargo test -p glass-browser --lib native_mcp_stdio_elicitation_resumes_process_page_dialogs --locked -- --nocapture` — passed. Covers the real process-backed dialog sequence, navigation deadline pause, parent cancellation followed by a same-session `getText`, and stdio EOF.
 - `cargo fmt --all -- --check` and `git diff --check` — passed.
 - Documentation truth, depth/index, TUI shortcut, and coverage checks — passed; 1367 Markdown files inventoried with 0 current-claim failures.
-- Remote CI and Windows/macOS native certification remain pending; keep this task `in-progress` until those gates are recorded.
+- Remote CI and Windows/macOS native certification were not run; they remain issue-level gates and are not claimed by this Linux slice.

@@ -421,6 +421,7 @@ pub struct NativeEngine {
     pending_lifecycle_effects: Vec<(NativeNodeId, NativeEventKind)>,
     skip_next_navigation_lifecycle: bool,
     document_has_sticky_activation: bool,
+    outgoing_lifecycle_dispatch_depth: usize,
 }
 
 impl Drop for NativeEngine {
@@ -540,6 +541,7 @@ impl NativeEngine {
             pending_lifecycle_effects: Vec::new(),
             skip_next_navigation_lifecycle: false,
             document_has_sticky_activation: false,
+            outgoing_lifecycle_dispatch_depth: 0,
         })
     }
 
@@ -2126,7 +2128,10 @@ impl NativeEngine {
             .as_mut()
             .is_some_and(NativeContentProcess::refresh_health)
         {
-            if let Some(next_navigation) = self.dispatch_content_events_async(&events).await? {
+            self.outgoing_lifecycle_dispatch_depth += 1;
+            let event_result = self.dispatch_content_events_async(&events).await;
+            self.outgoing_lifecycle_dispatch_depth -= 1;
+            if let Some(next_navigation) = event_result? {
                 if navigation.is_some() {
                     return Err(NativeEngineError::TargetNotActionable {
                         reason: "multiple outgoing lifecycle navigations are not supported".into(),
@@ -2159,6 +2164,15 @@ impl NativeEngine {
     }
 
     async fn dispatch_content_before_unload_async(
+        &mut self,
+    ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
+        self.outgoing_lifecycle_dispatch_depth += 1;
+        let result = self.dispatch_content_before_unload_inner_async().await;
+        self.outgoing_lifecycle_dispatch_depth -= 1;
+        result
+    }
+
+    async fn dispatch_content_before_unload_inner_async(
         &mut self,
     ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
         let mutation = {
@@ -5907,6 +5921,15 @@ impl NativeEngine {
     fn dispatch_local_navigation_lifecycle(
         &mut self,
     ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
+        self.outgoing_lifecycle_dispatch_depth += 1;
+        let result = self.dispatch_local_navigation_lifecycle_inner();
+        self.outgoing_lifecycle_dispatch_depth -= 1;
+        result
+    }
+
+    fn dispatch_local_navigation_lifecycle_inner(
+        &mut self,
+    ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         let window = NativeNodeId::from_parts(self.document.generation(), u32::MAX);
         let lifecycle_events = [
             (window, NativeEventKind::PageHide),
@@ -5949,6 +5972,15 @@ impl NativeEngine {
     }
 
     fn dispatch_local_before_unload(
+        &mut self,
+    ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
+        self.outgoing_lifecycle_dispatch_depth += 1;
+        let result = self.dispatch_local_before_unload_inner();
+        self.outgoing_lifecycle_dispatch_depth -= 1;
+        result
+    }
+
+    fn dispatch_local_before_unload_inner(
         &mut self,
     ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
         let window = NativeNodeId::from_parts(self.document.generation(), u32::MAX);
@@ -7246,6 +7278,25 @@ impl NativeEngine {
         }
     }
 
+    fn navigate_lifecycle_handoff_sync(
+        &mut self,
+        navigation: NativeNavigationRequest,
+    ) -> Result<(), NativeEngineError> {
+        let previous_skip = std::mem::replace(&mut self.skip_next_navigation_lifecycle, true);
+        let result = self.navigate_page_script_sync(navigation, 1);
+        if self.skip_next_navigation_lifecycle {
+            self.skip_next_navigation_lifecycle = previous_skip;
+        }
+        result
+    }
+
+    fn synchronous_beforeunload_error() -> NativeEngineError {
+        NativeEngineError::invalid(
+            "native beforeunload prompt",
+            "synchronous navigation cannot wait for a user decision; use an async native session with a responsive dialog controller",
+        )
+    }
+
     pub fn effects_since(
         &self,
         since_revision: u64,
@@ -7459,10 +7510,7 @@ impl NativeEngine {
         if !skip_lifecycle && self.javascript.is_some() {
             let (allowed, before_navigation) = self.dispatch_local_before_unload()?;
             if !allowed && self.document_has_sticky_activation {
-                return Err(NativeEngineError::invalid(
-                    "native beforeunload prompt",
-                    "synchronous navigation cannot wait for a user decision; use an async native session with a responsive dialog controller",
-                ));
+                return Err(Self::synchronous_beforeunload_error());
             }
             let lifecycle_navigation = self.dispatch_local_navigation_lifecycle()?;
             if before_navigation.is_some() && lifecycle_navigation.is_some() {
@@ -8116,6 +8164,7 @@ impl NativeEngine {
             })?;
         self.history
             .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
+        self.flush_pending_lifecycle_effects();
         Ok(())
     }
 
@@ -8169,6 +8218,7 @@ impl NativeEngine {
             .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
         self.sync_content_scroll_offsets_async().await?;
         self.sync_content_history_async().await?;
+        self.flush_pending_lifecycle_effects();
         Ok(())
     }
 
@@ -8189,10 +8239,26 @@ impl NativeEngine {
             })?
             .url
             .clone();
+        let same_document_target = self.history.is_same_document(history_index)
+            || self.is_same_document_navigation(&target_url);
+        if !same_document_target {
+            if self.outgoing_lifecycle_dispatch_depth > 0 {
+                return Err(NativeEngineError::invalid(
+                    "native history traversal",
+                    "cross-document traversal cannot re-enter an outgoing lifecycle callback",
+                ));
+            }
+            if self.content_process.is_some() {
+                return Err(NativeEngineError::invalid(
+                    "synchronous native history traversal",
+                    "process-backed cross-document history requires the asynchronous native history API",
+                ));
+            }
+        }
         if !self.allows_top_level_navigation(&target_url)? {
             return Ok(Some(self.snapshot_unchecked()));
         }
-        if self.history.is_same_document(history_index) {
+        if same_document_target {
             if let Some(navigation) = self.commit_same_document_navigation(
                 target_url,
                 HistoryCommit::Activate(history_index),
@@ -8201,6 +8267,47 @@ impl NativeEngine {
             }
             return Ok(Some(self.snapshot_unchecked()));
         }
+        if !self.allows_frame_navigation(&target_url)? {
+            return Ok(Some(self.snapshot_unchecked()));
+        }
+        let current_history_index = self.history.current_index();
+        let target_document_id = self
+            .history
+            .entry(history_index)
+            .map(|entry| entry.document_id)
+            .ok_or_else(|| NativeEngineError::Scheduler {
+                reason: "history target is no longer available".into(),
+            })?;
+        let (beforeunload_allowed, beforeunload_navigation) = if self.javascript.is_some() {
+            self.dispatch_local_before_unload()?
+        } else {
+            (true, None)
+        };
+        if !beforeunload_allowed && self.document_has_sticky_activation {
+            return Err(Self::synchronous_beforeunload_error());
+        }
+        let lifecycle_navigation = if self.javascript.is_some() {
+            self.dispatch_local_navigation_lifecycle()?
+        } else {
+            None
+        };
+        if beforeunload_navigation.is_some() && lifecycle_navigation.is_some() {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "multiple outgoing lifecycle navigations are not supported".into(),
+            });
+        }
+        if let Some(navigation) = beforeunload_navigation.or(lifecycle_navigation) {
+            self.navigate_lifecycle_handoff_sync(navigation)?;
+            return Ok(Some(self.snapshot_unchecked()));
+        }
+        if self.history.current_index() != current_history_index
+            || self.history.entry(history_index).is_none_or(|entry| {
+                entry.document_id != target_document_id || entry.url != target_url
+            })
+        {
+            return Ok(Some(self.snapshot_unchecked()));
+        }
+        self.persist_local_web_storage()?;
         let resource = self.loader.load(&target_url)?;
         if self.is_same_document_navigation(&resource.url) {
             if let Some(navigation) = self.commit_same_document_navigation(
@@ -8269,6 +8376,12 @@ impl NativeEngine {
             })?;
         let same_document_target = self.history.is_same_document(history_index)
             || self.is_same_document_navigation(&target_url);
+        if !same_document_target && self.outgoing_lifecycle_dispatch_depth > 0 {
+            return Err(NativeEngineError::invalid(
+                "native history traversal",
+                "cross-document traversal cannot re-enter an outgoing lifecycle callback",
+            ));
+        }
         let allowed = self
             .allows_top_level_navigation_async(&target_url, true)
             .await?;
@@ -10135,6 +10248,184 @@ mod tests {
                 .await
                 .unwrap(),
             serde_json::json!(["seen", null, null])
+        );
+        engine.close_async().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn synchronous_local_history_beforeunload_fails_closed_after_activation() {
+        let config = NativeEngineConfig::default()
+            .with_fixture("fixture://sync-history-first", "<title>First</title>")
+            .unwrap()
+            .with_fixture(
+                "fixture://sync-history-second",
+                "<script>addEventListener('beforeunload', event => { event.preventDefault(); event.returnValue = 'not shown'; globalThis.beforeunloadMutation = 'seen'; }); addEventListener('pagehide', () => globalThis.pagehideMutation = 'yes'); addEventListener('unload', () => globalThis.unloadMutation = 'yes');</script><title>Second</title><button id='activate'>Activate</button>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://sync-history-first");
+        let mut engine = NativeEngine::new(config).unwrap();
+        engine.initialize().unwrap();
+        engine.navigate("fixture://sync-history-second").unwrap();
+        engine
+            .action(NativeAction::Click {
+                target: "id=activate".into(),
+            })
+            .unwrap();
+
+        let current_history_index = engine.history().current_index();
+        let error = engine.go_back().unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("synchronous navigation cannot wait")
+        );
+        assert_eq!(
+            engine.snapshot().unwrap().url,
+            "fixture://sync-history-second"
+        );
+        assert_eq!(engine.snapshot().unwrap().title, "Second");
+        assert_eq!(engine.history().current_index(), current_history_index);
+        assert_eq!(engine.history().len(), 2);
+        assert_eq!(
+            engine
+                .evaluate_async(
+                    "[globalThis.beforeunloadMutation || null, globalThis.pagehideMutation || null, globalThis.unloadMutation || null]",
+                )
+                .await
+                .unwrap(),
+            serde_json::json!(["seen", null, null])
+        );
+        engine.close_async().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn synchronous_local_history_beforeunload_without_activation_commits_target() {
+        let config = NativeEngineConfig::default()
+            .with_fixture("fixture://sync-history-no-activation-first", "<title>First</title>")
+            .unwrap()
+            .with_fixture(
+                "fixture://sync-history-no-activation-second",
+                "<script>addEventListener('beforeunload', event => { event.preventDefault(); globalThis.beforeunloadRan = true; }); addEventListener('pagehide', () => globalThis.pagehideRan = true); addEventListener('unload', () => globalThis.unloadRan = true);</script><title>Second</title>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://sync-history-no-activation-first");
+        let mut engine = NativeEngine::new(config).unwrap();
+        engine.initialize().unwrap();
+        engine
+            .navigate("fixture://sync-history-no-activation-second")
+            .unwrap();
+        let outgoing_window = NativeNodeId::from_parts(engine.document.generation(), u32::MAX);
+
+        let snapshot = engine.go_back().unwrap().unwrap();
+
+        assert_eq!(snapshot.url, "fixture://sync-history-no-activation-first");
+        assert_eq!(engine.history().current_index(), Some(0));
+        let lifecycle = engine
+            .effects
+            .iter()
+            .filter(|effect| effect.node_id == outgoing_window)
+            .map(|effect| effect.kind)
+            .filter(|kind| {
+                matches!(
+                    kind,
+                    NativeEventKind::BeforeUnload
+                        | NativeEventKind::PageHide
+                        | NativeEventKind::Unload
+                )
+            })
+            .collect::<Vec<_>>();
+        let beforeunload = lifecycle
+            .iter()
+            .position(|kind| *kind == NativeEventKind::BeforeUnload)
+            .unwrap();
+        let pagehide = lifecycle
+            .iter()
+            .position(|kind| *kind == NativeEventKind::PageHide)
+            .unwrap();
+        let unload = lifecycle
+            .iter()
+            .position(|kind| *kind == NativeEventKind::Unload)
+            .unwrap();
+        assert!(beforeunload < pagehide && pagehide < unload);
+        engine.close_async().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn synchronous_and_async_history_reentry_fails_closed_during_outgoing_dispatch() {
+        let config = NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://sync-history-reentry-first",
+                "<title>First</title>",
+            )
+            .unwrap()
+            .with_fixture(
+                "fixture://sync-history-reentry-second",
+                "<title>Second</title>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://sync-history-reentry-first");
+        let mut engine = NativeEngine::new(config).unwrap();
+        engine.initialize().unwrap();
+        engine
+            .navigate("fixture://sync-history-reentry-second")
+            .unwrap();
+        let current_history_index = engine.history().current_index();
+        engine.outgoing_lifecycle_dispatch_depth = 1;
+
+        let synchronous_error = engine.go_back().unwrap_err();
+        let asynchronous_error = engine.go_back_async().await.unwrap_err();
+        engine.outgoing_lifecycle_dispatch_depth = 0;
+
+        assert!(
+            synchronous_error
+                .to_string()
+                .contains("cannot re-enter an outgoing lifecycle callback")
+        );
+        assert!(
+            asynchronous_error
+                .to_string()
+                .contains("cannot re-enter an outgoing lifecycle callback")
+        );
+        assert_eq!(
+            engine.snapshot().unwrap().url,
+            "fixture://sync-history-reentry-second"
+        );
+        assert_eq!(engine.history().current_index(), current_history_index);
+        assert_eq!(engine.snapshot().unwrap().title, "Second");
+        engine.close_async().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn synchronous_same_document_history_remains_in_place() {
+        let config = NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://sync-same-document-history",
+                "<script>globalThis.beforeunloadCount = 0; addEventListener('beforeunload', () => { globalThis.beforeunloadCount += 1; });</script><title>History</title>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://sync-same-document-history#first");
+        let mut engine = NativeEngine::new(config).unwrap();
+        engine.initialize().unwrap();
+        engine
+            .navigate("fixture://sync-same-document-history#second")
+            .unwrap();
+
+        assert_eq!(
+            engine.go_back().unwrap().unwrap().url,
+            "fixture://sync-same-document-history#first"
+        );
+        assert_eq!(
+            engine.go_forward().unwrap().unwrap().url,
+            "fixture://sync-same-document-history#second"
+        );
+        assert_eq!(engine.history().len(), 2);
+        assert_eq!(
+            engine
+                .evaluate_async("globalThis.beforeunloadCount")
+                .await
+                .unwrap(),
+            serde_json::json!(0)
         );
         engine.close_async().await.unwrap();
     }

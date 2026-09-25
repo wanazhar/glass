@@ -153,11 +153,13 @@ navigation fails explicitly and leaves the outgoing Document active; it must
 not silently accept, cancel, or strand the owner. The browser-level prompt is
 shown at most once for one navigation attempt. The canonical asynchronous
 `BrowserSession` history route applies this decision before loading a
-cross-document target; same-document traversal remains in-place. Direct
-synchronous `NativeEngine` history helpers do not yet run this cross-document
-lifecycle and are not Core Web Profile-compliant; closing that API gap remains
-an issue #40 gate. Complete descendant-frame unload traversal and
-sandbox-modal propagation also remain separate `GCWP-0.1` implementation gates
+cross-document target; same-document traversal remains in-place. Synchronous
+`NativeEngine` history helpers must not bypass this lifecycle: local documents
+run the outgoing events synchronously, failing explicitly if an activated
+canceled event needs a user decision; a process-backed document must use the
+asynchronous history API. Both error paths preserve the active history entry
+and avoid loading a replacement. Complete descendant-frame unload traversal
+and sandbox-modal propagation remain separate `GCWP-0.1` implementation gates
 until their owning browsing-context slice is complete.
 
 The firing conditions and user-activation rule follow the [HTML Standard's

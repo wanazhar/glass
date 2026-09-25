@@ -52,19 +52,25 @@ Linux end-to-end test passes. Remote CI and cross-platform certification remain
 pending. Slice 741 adds sticky-activation-gated, user-visible top-level
 `beforeunload` confirmation through native CLI, TUI, and MCP hosts, with generic
 browser copy and exact-ID accept/dismiss. Focused Linux tests cover the
-canonical cross-document asynchronous history-traversal gate; direct
-synchronous engine-history lifecycle parity, descendant-frame unload
-traversal, sandbox-modal propagation, remote CI, cross-platform certification,
-and all other profile
-gates remain open. See the
+canonical cross-document asynchronous history-traversal gate. Slice 742
+closes the direct synchronous-engine history lifecycle bypass; descendant-
+frame unload traversal, sandbox-modal propagation, remote CI, cross-platform
+certification, and all other profile gates remain open. See the
 [slice 741 task](../plan/tasks/native-engine-browser-741.md),
 [slice 740 task](../plan/tasks/native-engine-browser-740.md),
 [slice 738 task](../plan/tasks/native-engine-browser-738.md),
 [slice 737 task](../plan/tasks/native-engine-browser-737.md),
 [slice 736 task](../plan/tasks/native-engine-browser-736.md),
 [slice 735 task](../plan/tasks/native-engine-browser-735.md), and the
-[slice 734 task](../plan/tasks/native-engine-browser-734.md). Earlier
-completed slices include
+[slice 734 task](../plan/tasks/native-engine-browser-734.md).
+Completed slice 742 closes the synchronous history lifecycle bypass:
+same-document history stays synchronous; local cross-document traversal runs
+outgoing lifecycle callbacks and fails explicitly when a user decision is
+needed; process-backed traversal requires the async API. History commits flush
+deferred outgoing lifecycle effects. Focused Linux evidence is recorded;
+remote CI and cross-platform certification remain open. See
+[slice 742](../plan/tasks/native-engine-browser-742.md).
+Earlier completed slices include
 `native-engine-browser-696` through
 `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
@@ -9774,13 +9780,17 @@ surface to one-shot native CLI commands. Slices 739–740 add standalone and
 persistent native MCP elicitation hosts. Slice 741 adds sticky-activation-
 gated, top-level `beforeunload` confirmation through those hosts and the local
 navigation owner, including asynchronous cross-document history traversal,
-without exposing page-authored warning text. Default
-constructors without a live controller retain nonblocking JavaScript dialog
-events; an eligible `beforeunload` navigation instead fails closed with an
-explicit error. In-process JavaScript modal page realms, descendant-frame
-unload traversal, sandbox-modal propagation, and cross-platform certification
-remain part of the issue #40 gate. Direct synchronous `NativeEngine` history
-helpers still do not run the cross-document lifecycle.
+without exposing page-authored warning text. Slice 742 also closes the
+synchronous local-history bypass: same-document traversal stays in place,
+local cross-document traversal runs the outgoing lifecycle and fails closed
+when an activated cancellation needs a user decision, and process-backed
+synchronous traversal requires the async history API. History commits flush
+queued outgoing lifecycle effects. Default constructors without a live
+controller retain nonblocking JavaScript dialog events; an eligible
+`beforeunload` navigation instead fails closed with an explicit error.
+In-process JavaScript modal page realms, descendant-frame unload traversal,
+sandbox-modal propagation, and cross-platform certification remain part of
+the issue #40 gate.
 
 ### MCP dialog host contract
 

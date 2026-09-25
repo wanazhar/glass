@@ -133,8 +133,9 @@ closed with a typed error rather than silently dropping the prompt.
 
 These checks are local Linux evidence only. They do not certify Windows,
 macOS, remote CI, descendant-frame traversal, or sandbox-modal propagation.
-Direct synchronous `NativeEngine` history helpers still do not run the
-cross-document lifecycle and remain an issue #40 gate, as do Windows/macOS,
-remote CI, descendant-frame traversal, and sandbox-modal propagation.
+At this slice's completion, direct synchronous `NativeEngine` history helpers
+still lacked cross-document lifecycle handling; slice 742 supersedes that
+specific gap. Windows/macOS, remote CI, descendant-frame traversal, and
+sandbox-modal propagation remain issue #40 gates.
 
 [unloading documents]: https://html.spec.whatwg.org/multipage/browsing-the-web.html#unloading-documents

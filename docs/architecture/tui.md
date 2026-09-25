@@ -105,7 +105,7 @@ The prompt accepts the following commands without requiring raw JSON:
 | Area | Commands |
 |---|---|
 | Lifecycle | `launch auto`, `launch PORT`, `reconnect`, `stop`; `attach PORT` is available only for explicit Chromium/CDP mode |
-| Navigation | `navigate URL`; Back/Forward/Reload/Stop-loading are guarded keyboard intents |
+| Navigation | `navigate URL`; Back/Forward/Reload/Stop-loading are guarded keyboard intents (`Alt+S` stops a load) |
 | Observation | `observe`, `semantic`, `screenshot`, `state` |
 | Selection | `targets`, `select ID` |
 | Interaction | `type TEXT`, `scroll PIXELS` |
@@ -133,10 +133,14 @@ standalone command strings.
   operation in the header/footer.
 - **Empty/detached:** show the selected runtime's START HERE routes. Native
   shows launch, navigate, and help; explicit Chromium also shows attach.
-- **Busy:** the event loop is awaiting the selected browser operation; status
-  remains visible, but standalone commands do not provide a universal
-  cancellation-token action. Use the browser's explicit stop/reconnect command
-  after control returns.
+- **Busy:** the selected browser operation is in progress; status
+  remains visible. Stop-loading requests cancellation of in-flight
+  process-backed HTTP(S) navigation in the in-process native session (`Alt+S`)
+  and uses the existing Chromium control. The TUI polls native navigation
+  alongside key handling; after a stop request, it continues polling until the
+  partial load is discarded and the content worker is reaped. A native TUI
+  attached to the serialized persistent owner reports stop-loading unsupported
+  until that owner can accept concurrent controls.
 - **Error/disconnected:** preserve semantic state where safe, expose the error,
   and guide reconnect, launch-auto, or explicit-port recovery.
 - **Help:** replace content with the bounded command reference; Esc restores

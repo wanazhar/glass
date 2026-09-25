@@ -670,43 +670,45 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                             )
                             .into());
                         }
-                        let outcome = match request.action.as_str() {
-                            "back" => session
-                                .native_navigate_history(NativeHistoryDirection::Back)
-                                .await?,
-                            "forward" => session
-                                .native_navigate_history(NativeHistoryDirection::Forward)
-                                .await?,
-                            "reload" => {
-                                session.script("location.reload()").await?;
-                                let revision = session
-                                    .evidence(crate::browser_backend::EvidenceLevel::Compact)
-                                    .await?
-                                    .revision;
-                                crate::browser::session::NavigationControlOutcome {
-                                    action: "reload".into(),
-                                    previous_revision: request.expected_revision,
-                                    current_revision: revision,
+                        if request.action == "stopLoading" {
+                            json!({
+                                "ok": false,
+                                "error": "native persistent stop-loading is unsupported until the owner can process controls concurrently"
+                            })
+                        } else {
+                            let outcome = match request.action.as_str() {
+                                "back" => session
+                                    .native_navigate_history(NativeHistoryDirection::Back)
+                                    .await?,
+                                "forward" => session
+                                    .native_navigate_history(NativeHistoryDirection::Forward)
+                                    .await?,
+                                "reload" => {
+                                    session.script("location.reload()").await?;
+                                    let revision = session
+                                        .evidence(crate::browser_backend::EvidenceLevel::Compact)
+                                        .await?
+                                        .revision;
+                                    crate::browser::session::NavigationControlOutcome {
+                                        action: "reload".into(),
+                                        previous_revision: request.expected_revision,
+                                        current_revision: revision,
+                                    }
                                 }
-                            }
-                            "stopLoading" => crate::browser::session::NavigationControlOutcome {
-                                action: "stopLoading".into(),
-                                previous_revision: request.expected_revision,
-                                current_revision: actual_revision,
-                            },
-                            _ => {
-                                return Err(format!(
-                                    "unsupported native session control `{}`",
-                                    request.action
-                                )
-                                .into());
-                            }
-                        };
-                        json!({
-                            "ok": true,
-                            "action": outcome.action,
-                            "currentRevision": outcome.current_revision,
-                        })
+                                _ => {
+                                    return Err(format!(
+                                        "unsupported native session control `{}`",
+                                        request.action
+                                    )
+                                    .into());
+                                }
+                            };
+                            json!({
+                                "ok": true,
+                                "action": outcome.action,
+                                "currentRevision": outcome.current_revision,
+                            })
+                        }
                     }
                     "mcp" => {
                         let params = request
@@ -807,7 +809,7 @@ pub async fn execute_native(name: &str, argv: Vec<String>) -> BrowserResult<serd
         return Err(format!("persistent session `{name}` is stale; restart it first").into());
     }
     let argv = with_owner_profile(argv, &record.profile);
-    send_request_payload(
+    let response = send_request_payload(
         &record.socket,
         &SessionRequest {
             op: "execute".into(),
@@ -817,7 +819,16 @@ pub async fn execute_native(name: &str, argv: Vec<String>) -> BrowserResult<serd
             workflow: None,
         },
     )
-    .await
+    .await?;
+    if response.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+        return Err(response
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("native persistent request was rejected")
+            .to_owned()
+            .into());
+    }
+    Ok(response)
 }
 
 #[cfg(feature = "native-engine")]
@@ -838,7 +849,7 @@ pub async fn control_native(
     if !process_is_alive(record.pid) {
         return Err(format!("persistent session `{name}` is stale; restart it first").into());
     }
-    send_request_payload(
+    let response = send_request_payload(
         &record.socket,
         &SessionRequest {
             op: "control".into(),
@@ -851,7 +862,16 @@ pub async fn control_native(
             workflow: None,
         },
     )
-    .await
+    .await?;
+    if response.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+        return Err(response
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("native persistent control was rejected")
+            .to_owned()
+            .into());
+    }
+    Ok(response)
 }
 
 #[cfg(feature = "native-engine")]
@@ -1203,8 +1223,13 @@ mod tests {
                         workflow: None,
                     };
                     let control_result = send_request_payload(&socket, &control).await.unwrap();
-                    assert_eq!(control_result["ok"], true);
-                    assert_eq!(control_result["currentRevision"], revision);
+                    assert_eq!(control_result["ok"], false);
+                    assert!(
+                        control_result["error"]
+                            .as_str()
+                            .unwrap()
+                            .contains("unsupported")
+                    );
                     let mcp_request = SessionRequest {
                         op: "mcp".into(),
                         argv: Vec::new(),

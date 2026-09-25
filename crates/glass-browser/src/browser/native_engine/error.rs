@@ -42,6 +42,7 @@ pub enum NativeEngineError {
         kind: NativeWorkerFailureKind,
         reason: String,
     },
+    NavigationCancelled,
     StorageProfileLocked {
         path: String,
     },
@@ -130,6 +131,9 @@ impl fmt::Display for NativeEngineError {
                 formatter,
                 "native content worker {kind:?} failure during {operation}: {reason}"
             ),
+            Self::NavigationCancelled => {
+                formatter.write_str("native navigation cancelled by stop-loading")
+            }
             Self::StorageProfileLocked { path } => {
                 write!(
                     formatter,

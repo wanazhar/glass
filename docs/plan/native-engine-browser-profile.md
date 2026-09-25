@@ -48,11 +48,18 @@ When the native backend is selected, it must:
    content when representing the parent browsing context. The canonical
    session also exposes native history traversal (`go_back()` and
    `go_forward()` with revision-checked counterparts), `reload_with_revision()`,
-   and owner recovery (`recover()` and `recover_with_revision()`). Guarded
-   calls reject stale observations; non-native sessions receive a typed
-   unsupported-operation error without switching transports. Native
-   stop-loading is not considered implemented until it can interrupt an
-   in-flight navigation rather than return the current no-op control result;
+   owner recovery (`recover()` and `recover_with_revision()`), and guarded
+   `stop_loading_with_revision()`. Stop-loading requests cancellation of
+   process-backed HTTP(S) navigation without committing the pending document;
+   callers continue polling the navigation future until its content worker is
+   reaped. The committed document, history, and revision remain unchanged, but
+   transient worker-only state is discarded. If navigation already claimed
+   its commit phase, stop returns a typed lifecycle error. Idle calls validate
+   the revision and preserve it. Non-native sessions receive typed
+   unsupported-operation errors without switching transports. The persistent
+   owner currently rejects stop-loading because its serialized socket loop
+   cannot interrupt an executing command; persistent-owner cancellation and
+   other navigation sources remain open profile work;
 4. return typed, versioned unsupported errors only for capabilities explicitly
    outside this profile; and
 5. run untrusted content behind the production process/sandbox boundary before

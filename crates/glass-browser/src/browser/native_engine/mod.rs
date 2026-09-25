@@ -7,6 +7,7 @@
 //! gates are tracked by issue #40.
 
 mod browsing_context;
+mod cancellation;
 mod config;
 mod content_process;
 mod css;
@@ -35,6 +36,7 @@ mod service_worker;
 mod worker;
 
 pub use browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};
+pub(crate) use cancellation::NativeNavigationCancellation;
 pub use config::{
     MAX_NATIVE_DOCUMENT_BYTES, MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_FILE_ROOT_BYTES,
     MAX_NATIVE_FILE_ROOTS, MAX_NATIVE_FIXTURES, MAX_NATIVE_HISTORY_ENTRIES, MAX_NATIVE_NODES,

@@ -728,10 +728,20 @@ stale observation. Each operation returns `NavigationControlOutcome` with its
 action and previous/current revisions. Firefox and Safari sessions return a
 typed unsupported-operation error rather than switching transports.
 
-The native `stop_loading_with_revision` implementation currently cannot
-interrupt an in-flight navigation and returns an unchanged-revision no-op; it
-is not documented as a completed standard `BrowserSession` control. Real
-navigation cancellation remains an issue #40 requirement.
+`stop_loading_with_revision(revision)` is a standard native `BrowserSession`
+control. During process-backed HTTP(S) navigation it requests cancellation
+only when the supplied revision matches the navigation's starting revision
+and returns once that request is accepted; if commit already won the race, the
+method returns a typed lifecycle error rather than claiming cancellation.
+Keep polling the in-flight `navigate` future until it returns: the partial
+response is discarded and its content worker is reaped before then. The prior
+committed document, history, and revision remain unchanged, but transient
+state held only by that worker is not preserved. When idle, the method
+validates the current revision and returns it unchanged. Firefox and Safari
+reject the native-only control with typed unsupported errors. The separate
+persistent-owner socket currently reports this control as unsupported because
+its serialized request loop cannot interrupt a running command; that owner
+path remains issue #40 work.
 
 ## Evidence extraction and Web IR
 

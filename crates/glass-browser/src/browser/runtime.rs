@@ -8,7 +8,7 @@
 use super::backend_factory::{BackendFactory, BackendStartup};
 use super::bidi_backend::BidiBackendConfig;
 #[cfg(feature = "native-engine")]
-use super::native_backend::NativeFrameInspectionSnapshot;
+use super::native_backend::{NativeEngineBackend, NativeFrameInspectionSnapshot};
 #[cfg(feature = "native-engine")]
 use super::native_engine::{
     NativeEngineConfig, NativeFile, NativePreflightAction, NativeTargetPreflight, Viewport,
@@ -53,6 +53,8 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Mutex;
+#[cfg(feature = "native-engine")]
+use tokio::sync::Notify;
 
 #[cfg(feature = "native-engine")]
 const NATIVE_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -112,6 +114,8 @@ pub struct BrowserRuntimeSession {
     /// document revision and state transition.
     operation_lock: Mutex<()>,
     #[cfg(feature = "native-engine")]
+    native_navigation_changed: Notify,
+    #[cfg(feature = "native-engine")]
     next_execution_id: AtomicU64,
     #[cfg(feature = "native-engine")]
     native_observation_cache: Mutex<Option<SemanticObservation>>,
@@ -123,6 +127,21 @@ pub struct BrowserRuntimeSession {
 /// its `start` constructors select the native backend directly and never
 /// fall back to Chromium/CDP.
 pub type BrowserSession = BrowserRuntimeSession;
+
+#[cfg(feature = "native-engine")]
+struct NativeNavigationControlGuard<'a> {
+    backend: &'a NativeEngineBackend,
+    id: u64,
+    changed: &'a Notify,
+}
+
+#[cfg(feature = "native-engine")]
+impl Drop for NativeNavigationControlGuard<'_> {
+    fn drop(&mut self) {
+        self.backend.finish_navigation_control(self.id);
+        self.changed.notify_waiters();
+    }
+}
 
 impl BrowserRuntimeSession {
     /// Connect and initialize one alternative runtime session.
@@ -150,6 +169,8 @@ impl BrowserRuntimeSession {
             runtime,
             backend,
             operation_lock: Mutex::new(()),
+            #[cfg(feature = "native-engine")]
+            native_navigation_changed: Notify::new(),
             #[cfg(feature = "native-engine")]
             next_execution_id: AtomicU64::new(1),
             #[cfg(feature = "native-engine")]
@@ -186,6 +207,7 @@ impl BrowserRuntimeSession {
             runtime: BrowserRuntime::Native,
             backend,
             operation_lock: Mutex::new(()),
+            native_navigation_changed: Notify::new(),
             next_execution_id: AtomicU64::new(1),
             native_observation_cache: Mutex::new(None),
             native_clipboard: Mutex::new(String::new()),
@@ -224,6 +246,20 @@ impl BrowserRuntimeSession {
     }
 
     async fn navigate_unlocked(&self, url: String) -> BrowserResult<NavigationResult> {
+        #[cfg(feature = "native-engine")]
+        let _navigation_control = match &self.backend {
+            BackendStartup::Native(backend) if is_http_navigation_url(&url) => {
+                let starting_revision = backend.current_revision()?;
+                let id = backend.begin_navigation_control(starting_revision)?;
+                self.native_navigation_changed.notify_waiters();
+                Some(NativeNavigationControlGuard {
+                    backend,
+                    id,
+                    changed: &self.native_navigation_changed,
+                })
+            }
+            _ => None,
+        };
         Ok(BrowserBackendDispatcher::new(&self.backend)
             .navigate(NavigationRequest { url })
             .await?)
@@ -537,22 +573,98 @@ impl BrowserRuntimeSession {
         }
     }
 
-    /// Stop-loading is a revision-checked no-op for the current native owner.
-    /// Native navigation is completed before its command returns, so there is
-    /// no detached load task to cancel; preserving the control result keeps
-    /// the resident protocol deterministic and honest.
+    /// Request cancellation of an active process-backed native HTTP(S)
+    /// navigation, or validate the current revision and return unchanged when
+    /// no navigation is active. An accepted request returns before the
+    /// in-flight navigation future reaps its content process; callers that own
+    /// that future should continue polling it to completion. If the navigation
+    /// has already claimed the commit phase, stop fails instead of reporting a
+    /// cancellation that can no longer be honored.
+    #[cfg(feature = "native-engine")]
+    pub async fn stop_loading_with_revision(
+        &self,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        self.require_native_operation("stop_loading_with_revision")?;
+        let BackendStartup::Native(backend) = &self.backend else {
+            unreachable!("native operation check rejected a non-native runtime")
+        };
+
+        loop {
+            let changed = self.native_navigation_changed.notified();
+            tokio::pin!(changed);
+            let _ = changed.as_mut().enable();
+
+            if let Some(active_revision) = backend.active_navigation_revision()? {
+                if active_revision != expected_revision {
+                    return Err(Box::new(ActionContractError::stale_revision(
+                        expected_revision,
+                        active_revision,
+                    )));
+                }
+                if backend
+                    .cancel_active_navigation(expected_revision)?
+                    .is_some()
+                {
+                    return Ok(NavigationControlOutcome {
+                        action: "stopLoading".into(),
+                        previous_revision: expected_revision,
+                        current_revision: expected_revision,
+                    });
+                }
+                return Err(Box::new(BrowserBackendError::Lifecycle {
+                    operation: "stop_loading".into(),
+                    state: "committing".into(),
+                    reason: "native navigation has entered its commit phase and can no longer be stopped"
+                        .into(),
+                }));
+            }
+
+            tokio::select! {
+                _ = &mut changed => continue,
+                _operation = self.operation_lock.lock() => {
+                    if let Some(active_revision) = backend.active_navigation_revision()? {
+                        if active_revision != expected_revision {
+                            return Err(Box::new(ActionContractError::stale_revision(
+                                expected_revision,
+                                active_revision,
+                            )));
+                        }
+                        if backend
+                            .cancel_active_navigation(expected_revision)?
+                            .is_some()
+                        {
+                            return Ok(NavigationControlOutcome {
+                                action: "stopLoading".into(),
+                                previous_revision: expected_revision,
+                                current_revision: expected_revision,
+                            });
+                        }
+                        return Err(Box::new(BrowserBackendError::Lifecycle {
+                            operation: "stop_loading".into(),
+                            state: "committing".into(),
+                            reason: "native navigation has entered its commit phase and can no longer be stopped"
+                                .into(),
+                        }));
+                    }
+                    self.require_current_revision(expected_revision).await?;
+                    return Ok(NavigationControlOutcome {
+                        action: "stopLoading".into(),
+                        previous_revision: expected_revision,
+                        current_revision: expected_revision,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Compatibility spelling retained for native-only callers.
     #[cfg(feature = "native-engine")]
     pub async fn native_stop_loading_with_revision(
         &self,
         expected_revision: u64,
     ) -> BrowserResult<NavigationControlOutcome> {
-        let _operation = self.operation_lock.lock().await;
-        self.require_current_revision(expected_revision).await?;
-        Ok(NavigationControlOutcome {
-            action: "stopLoading".into(),
-            previous_revision: expected_revision,
-            current_revision: expected_revision,
-        })
+        self.stop_loading_with_revision(expected_revision).await
     }
 
     /// Validate one native target for the resident highlight command.
@@ -2781,6 +2893,11 @@ impl BrowserRuntimeSession {
 }
 
 #[cfg(feature = "native-engine")]
+fn is_http_navigation_url(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+}
+
+#[cfg(feature = "native-engine")]
 fn native_observation_incomplete(
     observation: &SemanticObservation,
 ) -> Vec<ObservationIncompleteReason> {
@@ -3204,6 +3321,7 @@ mod public_session_tests {
                     .expect("proof backend should construct"),
             )),
             operation_lock: tokio::sync::Mutex::new(()),
+            native_navigation_changed: tokio::sync::Notify::new(),
             next_execution_id: std::sync::atomic::AtomicU64::new(1),
             native_observation_cache: tokio::sync::Mutex::new(None),
             native_clipboard: tokio::sync::Mutex::new(String::new()),
@@ -3253,6 +3371,7 @@ mod public_session_tests {
                     .expect("proof backend should construct"),
             )),
             operation_lock: tokio::sync::Mutex::new(()),
+            native_navigation_changed: tokio::sync::Notify::new(),
             next_execution_id: std::sync::atomic::AtomicU64::new(1),
             native_observation_cache: tokio::sync::Mutex::new(None),
             native_clipboard: tokio::sync::Mutex::new(String::new()),
@@ -3289,6 +3408,7 @@ mod public_session_tests {
                     .expect("proof backend should construct"),
             )),
             operation_lock: tokio::sync::Mutex::new(()),
+            native_navigation_changed: tokio::sync::Notify::new(),
             next_execution_id: std::sync::atomic::AtomicU64::new(1),
             native_observation_cache: tokio::sync::Mutex::new(None),
             native_clipboard: tokio::sync::Mutex::new(String::new()),
@@ -3326,6 +3446,10 @@ mod public_session_tests {
         assert_typed_unsupported!(
             "recover_with_revision",
             session.recover_with_revision(0).await
+        );
+        assert_typed_unsupported!(
+            "stop_loading_with_revision",
+            session.stop_loading_with_revision(0).await
         );
     }
 }

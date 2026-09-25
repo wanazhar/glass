@@ -5,6 +5,7 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 
 use super::browsing_context::NATIVE_CONTEXT_ID;
+use super::cancellation::NativeNavigationCancellation;
 use super::config::{
     MAX_NATIVE_NODES, NativeEngineLimits, Viewport, is_file_url, is_network_url,
     validate_context_id, validate_url_text, validate_window_name, without_fragment,
@@ -1431,44 +1432,55 @@ impl NativeContentProcess {
         referrer: Option<&str>,
         client_id: &str,
         service_worker_clients: &[NativeServiceWorkerClientState],
+        cancellation: Option<&NativeNavigationCancellation>,
     ) -> Result<NativeContentLoadResult, NativeEngineError> {
         let id = self.next_id();
-        let response = match timeout(
-            CONTENT_PROCESS_LOAD_TIMEOUT,
-            self.exchange(json!({
-                "kind": "load",
-                "id": id,
-                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
-                "url": navigation.url,
-                "method": navigation.method.as_str(),
-                "body": navigation.body.as_ref().and_then(|body| match body {
-                    NativeRequestBody::Text(body) => Some(body),
-                    NativeRequestBody::Bytes(_) => None,
-                }),
-                "body_base64": navigation.body.as_ref().and_then(|body| match body {
-                    NativeRequestBody::Text(_) => None,
-                    NativeRequestBody::Bytes(body) => Some(
-                        base64::engine::general_purpose::STANDARD.encode(body),
-                    ),
-                }),
-                "content_type": navigation.body_content_type,
-                "object_url": navigation.object_url,
-                "referrer": referrer,
-                "max_document_bytes": limits.max_document_bytes,
-                "max_nodes": limits.max_nodes,
-                "max_dom_depth": limits.max_dom_depth,
-                "max_text_bytes": limits.max_text_bytes,
-                "viewport_width": viewport.width,
-                "viewport_height": viewport.height,
-                "viewport_device_scale_factor_milli": viewport.device_scale_factor_milli,
-                "client_id": client_id,
-                "service_worker_clients": service_worker_clients,
-            })),
-        )
-        .await
-        {
-            Ok(response) => response?,
-            Err(_) => {
+        let request = json!({
+            "kind": "load",
+            "id": id,
+            "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+            "url": navigation.url,
+            "method": navigation.method.as_str(),
+            "body": navigation.body.as_ref().and_then(|body| match body {
+                NativeRequestBody::Text(body) => Some(body),
+                NativeRequestBody::Bytes(_) => None,
+            }),
+            "body_base64": navigation.body.as_ref().and_then(|body| match body {
+                NativeRequestBody::Text(_) => None,
+                NativeRequestBody::Bytes(body) => Some(
+                    base64::engine::general_purpose::STANDARD.encode(body),
+                ),
+            }),
+            "content_type": navigation.body_content_type,
+            "object_url": navigation.object_url,
+            "referrer": referrer,
+            "max_document_bytes": limits.max_document_bytes,
+            "max_nodes": limits.max_nodes,
+            "max_dom_depth": limits.max_dom_depth,
+            "max_text_bytes": limits.max_text_bytes,
+            "viewport_width": viewport.width,
+            "viewport_height": viewport.height,
+            "viewport_device_scale_factor_milli": viewport.device_scale_factor_milli,
+            "client_id": client_id,
+            "service_worker_clients": service_worker_clients,
+        });
+        if cancellation.is_some_and(NativeNavigationCancellation::is_cancelled) {
+            return Err(NativeEngineError::NavigationCancelled);
+        }
+        let response_result = if let Some(cancellation) = cancellation {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => None,
+                response = timeout(CONTENT_PROCESS_LOAD_TIMEOUT, self.exchange(request)) => {
+                    Some(response)
+                }
+            }
+        } else {
+            Some(timeout(CONTENT_PROCESS_LOAD_TIMEOUT, self.exchange(request)).await)
+        };
+        let response = match response_result {
+            Some(Ok(response)) => response?,
+            Some(Err(_)) => {
                 self.mark_failed(NativeWorkerFailureKind::Timeout);
                 let _ = self.child.start_kill();
                 return Err(NativeEngineError::worker_failure(
@@ -1476,6 +1488,11 @@ impl NativeContentProcess {
                     NativeWorkerFailureKind::Timeout,
                     "content process load exceeded its deadline",
                 ));
+            }
+            None => {
+                self.terminate_and_reap("cancel content process load")
+                    .await?;
+                return Err(NativeEngineError::NavigationCancelled);
             }
         };
         if response.get("kind").and_then(Value::as_str) == Some("error") {
@@ -1489,6 +1506,11 @@ impl NativeContentProcess {
             });
         }
         let result = decode_load_response(&response, id);
+        if cancellation.is_some_and(NativeNavigationCancellation::is_cancelled) {
+            self.terminate_and_reap("cancel content process load")
+                .await?;
+            return Err(NativeEngineError::NavigationCancelled);
+        }
         if let Ok(NativeContentLoadResult::Loaded(content)) = &result {
             self.current_document_url = Some(content.url.clone());
         }
@@ -2348,6 +2370,27 @@ impl NativeContentProcess {
 
     pub(crate) fn failure_kind(&self) -> Option<NativeWorkerFailureKind> {
         self.failure_kind
+    }
+
+    pub(crate) async fn terminate_and_reap(
+        &mut self,
+        operation: &str,
+    ) -> Result<(), NativeEngineError> {
+        self.mark_failed(NativeWorkerFailureKind::Exited);
+        let _ = self.child.start_kill();
+        match timeout(Duration::from_secs(2), self.child.wait()).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(_)) => Err(NativeEngineError::worker_failure(
+                operation,
+                NativeWorkerFailureKind::Exited,
+                "content process could not be reaped after cancellation",
+            )),
+            Err(_) => Err(NativeEngineError::worker_failure(
+                operation,
+                NativeWorkerFailureKind::Exited,
+                "content process did not exit within the cancellation deadline",
+            )),
+        }
     }
 
     pub(crate) async fn close(mut self) -> Result<(), NativeEngineError> {

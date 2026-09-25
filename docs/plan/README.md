@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-740`.
+browser expansion slices are complete through `native-engine-browser-742`.
 The public Rust `BrowserSession` now starts the native runtime directly;
 `native-engine-browser-728` preserves the former Chromium API under the
 explicit `CdpBrowserSession` name. Issue #40 remains open; browser completion,
@@ -72,10 +72,9 @@ Slice 741 adds sticky-activation-gated, user-visible top-level
 `beforeunload` confirmation through the native CLI, TUI, and MCP hosts. Its
 current extension gates cross-document asynchronous Back/Forward before the
 history target request, with local Linux evidence recorded in the task.
-Descendant-frame unload traversal, sandbox-modal propagation, direct
-synchronous engine-history lifecycle parity, remote CI, cross-platform
-certification, and other Core Web
-Profile parity remain open. See the
+Descendant-frame unload traversal, sandbox-modal propagation, remote CI,
+cross-platform certification, and other Core Web Profile parity remain open.
+See the
 [slice 741 task](tasks/native-engine-browser-741.md),
 [slice 740 task](tasks/native-engine-browser-740.md),
 [slice 739 task](tasks/native-engine-browser-739.md),
@@ -96,10 +95,17 @@ remains a separate gate. Slice 741 locally verifies top-level `beforeunload`
 confirmation and the cross-document async history gate. Dismissal preserves
 the outgoing document and avoids loading the target; acceptance continues the
 exact traversal without exposing page-controlled `returnValue` text.
-Descendant-frame unload traversal, sandbox-modal propagation, direct
-synchronous engine-history lifecycle parity, remote CI, and cross-platform
-certification remain separate issue gates. See the
+Descendant-frame unload traversal, sandbox-modal propagation, remote CI, and
+cross-platform certification remain separate issue gates. See the
 [slice 741 task](tasks/native-engine-browser-741.md).
+Slice 742 completes the direct synchronous-history lifecycle gate:
+same-document traversal stays synchronous; local cross-document traversal
+runs lifecycle callbacks before resource restoration, fails explicitly when
+an activated canceled event needs a modal decision, and flushes deferred
+outgoing lifecycle effects on commit. Process-backed cross-document history
+requires the async API. Focused Linux checks pass; remote CI and cross-platform
+certification remain open. See
+[slice 742](tasks/native-engine-browser-742.md).
 Slice 727 enforces rooted-file frame CSP. Slice 726 enforces rooted-file image,
 font, and media CSP.
 Slice 725 enforces runtime CSP meta policies before same-turn inline script

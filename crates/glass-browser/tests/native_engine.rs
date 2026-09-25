@@ -11445,6 +11445,100 @@ async fn native_content_process_history_beforeunload_waits_before_loading_target
 }
 
 #[tokio::test]
+async fn synchronous_process_history_beforeunload_requires_async_api() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (unexpected_request_tx, mut unexpected_request_rx) = oneshot::channel();
+    let (server_stop_tx, mut server_stop_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut unexpected_request_tx = Some(unexpected_request_tx);
+        for (expected_path, body) in [
+            (
+                "/first",
+                "<title>First</title><button id='activate'>Activate</button>",
+            ),
+            (
+                "/second",
+                "<script>addEventListener('beforeunload', event => { event.preventDefault(); event.returnValue = 'not shown'; globalThis.beforeunloadMutation = 'seen'; }); addEventListener('pagehide', () => globalThis.pagehideRan = true); addEventListener('unload', () => globalThis.unloadRan = true);</script><title>Second</title><button id='activate'>Activate</button>",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (mut stream, _) = accepted.unwrap();
+                let request = read_http_request(&mut stream).await;
+                if let Some(sender) = unexpected_request_tx.take() {
+                    let path = request.split_whitespace().nth(1).unwrap_or_default().to_owned();
+                    let _ = sender.send(path);
+                }
+                let body = "<title>Unexpected traversal</title>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+            _ = &mut server_stop_rx => {}
+        }
+    });
+
+    let first_url = format!("http://{address}/first");
+    let second_url = format!("http://{address}/second");
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(first_url)).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine.navigate_async(second_url.clone()).await.unwrap();
+    engine
+        .action_async(NativeAction::Click {
+            target: "id=activate".into(),
+        })
+        .await
+        .unwrap();
+    assert!(engine.history().can_go_back());
+    assert!(!engine.history().can_go_forward());
+    let revision_before_sync_attempt = engine.revision();
+
+    let synchronous_error = engine.go_back().unwrap_err();
+
+    assert!(
+        synchronous_error
+            .to_string()
+            .contains("requires the asynchronous native history API")
+    );
+    assert_eq!(engine.snapshot().unwrap().url, second_url);
+    assert!(engine.history().can_go_back());
+    assert!(!engine.history().can_go_forward());
+    assert_eq!(engine.revision(), revision_before_sync_attempt);
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.beforeunloadMutation || null")
+            .await
+            .unwrap(),
+        serde_json::Value::Null
+    );
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut unexpected_request_rx)
+            .await
+            .is_err()
+    );
+
+    engine.close_async().await.unwrap();
+    let _ = server_stop_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_forwards_page_dialogs_without_chromium() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

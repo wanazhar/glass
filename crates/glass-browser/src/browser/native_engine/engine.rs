@@ -2128,10 +2128,8 @@ impl NativeEngine {
             .as_mut()
             .is_some_and(NativeContentProcess::refresh_health)
         {
-            self.outgoing_lifecycle_dispatch_depth += 1;
-            let event_result = self.dispatch_content_events_async(&events).await;
-            self.outgoing_lifecycle_dispatch_depth -= 1;
-            if let Some(next_navigation) = event_result? {
+            if let Some(next_navigation) = self.dispatch_content_events_async(&events, true).await?
+            {
                 if navigation.is_some() {
                     return Err(NativeEngineError::TargetNotActionable {
                         reason: "multiple outgoing lifecycle navigations are not supported".into(),
@@ -2166,15 +2164,6 @@ impl NativeEngine {
     async fn dispatch_content_before_unload_async(
         &mut self,
     ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
-        self.outgoing_lifecycle_dispatch_depth += 1;
-        let result = self.dispatch_content_before_unload_inner_async().await;
-        self.outgoing_lifecycle_dispatch_depth -= 1;
-        result
-    }
-
-    async fn dispatch_content_before_unload_inner_async(
-        &mut self,
-    ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
         let mutation = {
             let Some(process) = self.content_process.as_mut() else {
                 return Ok((true, None));
@@ -2191,7 +2180,7 @@ impl NativeEngine {
             .transpose()?;
         let allowed = mutation.allowed;
         let next_revision = self.next_revision()?;
-        self.apply_content_process_mutation_async_at(next_revision, mutation)
+        self.apply_content_process_lifecycle_mutation_async_at(next_revision, mutation)
             .await?;
         Ok((allowed, navigation))
     }
@@ -2199,6 +2188,7 @@ impl NativeEngine {
     async fn dispatch_content_events_async(
         &mut self,
         events: &[NativeEventKind],
+        outgoing_lifecycle: bool,
     ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         let mutation = {
             let Some(process) = self.content_process.as_mut() else {
@@ -2215,8 +2205,13 @@ impl NativeEngine {
             .map(|navigation| self.content_navigation_request(navigation))
             .transpose()?;
         let next_revision = self.next_revision()?;
-        self.apply_content_process_mutation_async_at(next_revision, mutation)
-            .await?;
+        if outgoing_lifecycle {
+            self.apply_content_process_lifecycle_mutation_async_at(next_revision, mutation)
+                .await?;
+        } else {
+            self.apply_content_process_mutation_async_at(next_revision, mutation)
+                .await?;
+        }
         Ok(navigation)
     }
 
@@ -6752,7 +6747,26 @@ impl NativeEngine {
     async fn apply_content_process_mutation_async_at(
         &mut self,
         next_revision: u64,
+        mutation: NativeContentMutation,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        self.apply_content_process_mutation_async_at_with_lifecycle(next_revision, mutation, false)
+            .await
+    }
+
+    async fn apply_content_process_lifecycle_mutation_async_at(
+        &mut self,
+        next_revision: u64,
+        mutation: NativeContentMutation,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        self.apply_content_process_mutation_async_at_with_lifecycle(next_revision, mutation, true)
+            .await
+    }
+
+    async fn apply_content_process_mutation_async_at_with_lifecycle(
+        &mut self,
+        next_revision: u64,
         mut mutation: NativeContentMutation,
+        outgoing_lifecycle: bool,
     ) -> Result<NativeActionResult, NativeEngineError> {
         let csp_violations = std::mem::take(&mut mutation.csp_violations);
         let history = std::mem::take(&mut mutation.history);
@@ -6771,6 +6785,14 @@ impl NativeEngine {
         self.dispatch_content_csp_violations_async(csp_violations)
             .await?;
         let history_traversal = self.apply_content_history_commands(&history)?;
+        if outgoing_lifecycle
+            && history_traversal.is_some_and(|delta| self.history_delta_crosses_document(delta))
+        {
+            return Err(NativeEngineError::invalid(
+                "native history traversal",
+                "cross-document traversal cannot re-enter an outgoing lifecycle callback",
+            ));
+        }
         if !history.is_empty() {
             self.sync_content_history_async().await?;
         }
@@ -6780,6 +6802,43 @@ impl NativeEngine {
             Box::pin(self.traverse_history_delta_async(delta)).await?;
         }
         Ok(outcome)
+    }
+
+    fn history_delta_crosses_document(&self, delta: i32) -> bool {
+        if delta == 0 || delta.unsigned_abs() as usize > MAX_NATIVE_HISTORY_DELTA as usize {
+            return false;
+        }
+        let Some(current_index) = self.history.current_index() else {
+            return false;
+        };
+        let Some(current_document_id) = self
+            .history
+            .entry(current_index)
+            .map(|entry| entry.document_id)
+        else {
+            return false;
+        };
+        let mut index = current_index;
+        for _ in 0..(delta.unsigned_abs() as usize).min(self.history.len()) {
+            index = if delta < 0 {
+                let Some(previous) = index.checked_sub(1) else {
+                    break;
+                };
+                previous
+            } else {
+                let Some(next) = index.checked_add(1) else {
+                    break;
+                };
+                next
+            };
+            let Some(entry) = self.history.entry(index) else {
+                break;
+            };
+            if entry.document_id != current_document_id {
+                return true;
+            }
+        }
+        false
     }
 
     fn apply_content_history_commands(
@@ -8060,7 +8119,7 @@ impl NativeEngine {
         self.sync_content_scroll_offsets_async().await?;
         self.sync_content_history_async().await?;
         let mut navigation = if traversing_history {
-            self.dispatch_content_events_async(&[NativeEventKind::PopState])
+            self.dispatch_content_events_async(&[NativeEventKind::PopState], false)
                 .await?
         } else {
             None

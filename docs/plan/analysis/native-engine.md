@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-731`. Issue #40
+completed browser expansion slice is `native-engine-browser-732`. Issue #40
 remains open. Slice 728
 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API
@@ -11,9 +11,15 @@ page inspection/bootstrap, and region expansion into the canonical Rust API.
 Slice 730 promotes native target/frame topology into the canonical Rust API
 and corrects iframe fallback text in the parent visible-text projection. These
 are incremental API-surface changes, not profile completion. Slice 731
-promotes native history traversal, revision-checked reload, and owner recovery;
-actual in-flight stop-loading cancellation remains open. This remains
-incremental API-surface work, not profile completion. It follows
+promotes native history traversal, revision-checked reload, and owner recovery.
+Slice 732 adds revision-guarded cancellation requests for in-flight
+process-backed HTTP(S) navigation through the canonical Rust session and
+in-process native TUI. The navigation future must continue to be polled until
+it discards the partial response and reaps its worker; committed parent-owned
+document/history/revision remain intact, while transient worker-only state is
+discarded. The serialized persistent-owner path now rejects stop-loading
+instead of returning fake success; concurrent owner controls remain open. This
+remains incremental API-surface work, not profile completion. It follows
 locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,

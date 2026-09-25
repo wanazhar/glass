@@ -17,6 +17,12 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Exposed native back/forward history, revision-checked reload, and owner
   recovery through standard Rust `BrowserSession` methods; stale guarded
   controls fail without switching transports.
+- Added real revision-guarded stop-loading for in-flight native HTTP(S)
+  navigation through `BrowserSession` and the in-process native TUI. Cancelled
+  loads preserve the committed document; the navigation future discards the
+  partial response and reaps its content worker after the stop request is
+  accepted. The serialized persistent-owner path reports unsupported instead
+  of fake success.
 - Added bounded bitmap-font glyph decoding for native text rendering. PNG,
   premultiplied BGRA32, monochrome, and grayscale strikes retain selected-face
   offsets and embedded alpha under finite raster budgets; unsupported or

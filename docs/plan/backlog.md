@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed browser expansion is `native-engine-browser-731`;
+The latest locally completed browser expansion is `native-engine-browser-732`;
 issue #40 remains open.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
@@ -180,10 +180,20 @@ See `tasks/native-engine-browser-730.md`.
 
 Slice 731 adds standard `BrowserSession` names for native back/forward history,
 revision-checked reload, and owner recovery while preserving the existing
-native owner and rejecting non-native sessions with typed errors. It does not
-promote the native stop-loading no-op: interrupting an in-flight native
-navigation remains required for full browser parity. See
+native owner and rejecting non-native sessions with typed errors. At that
+checkpoint, native stop-loading was still a no-op. See
 `tasks/native-engine-browser-731.md`.
+
+### Completed slice 732: revision-guarded native stop-loading
+
+Slice 732 makes the standard native `BrowserSession` stop control request
+cancellation of an active process-backed HTTP(S) navigation before commit.
+Callers continue polling the navigation future until it terminates/reaps the
+content worker; the committed URL/history/revision remain unchanged and a
+subsequent navigation starts a fresh worker. Direct native TUI uses that API.
+The serialized persistent-owner path reports unsupported instead of fake
+success; concurrent owner controls remain open. See
+`tasks/native-engine-browser-732.md`.
 
 ### Follow-up observed during slice 722
 

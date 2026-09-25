@@ -19,7 +19,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::collections::BTreeMap;
+#[cfg(feature = "native-engine")]
+use std::future::Future;
 use std::io::{self, IsTerminal, Write};
+#[cfg(feature = "native-engine")]
+use std::pin::Pin;
+#[cfg(feature = "native-engine")]
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -35,7 +41,7 @@ use crate::browser::session::{
 #[cfg(feature = "native-engine")]
 use crate::browser::{BrowserRuntimeSession, NativeHistoryDirection};
 #[cfg(feature = "native-engine")]
-use crate::browser_backend::{EvidenceLevel, SemanticAction};
+use crate::browser_backend::{BrowserBackendError, EvidenceLevel, SemanticAction};
 use crate::browser_workspace::{
     BrowserConnectionPhase, BrowserWorkspaceAdapterKind, BrowserWorkspaceController,
     BrowserWorkspaceEntity, BrowserWorkspaceIntent, BrowserWorkspaceLayout,
@@ -93,10 +99,34 @@ struct BrowserTui {
     workflow_checkpoint: Option<WorkflowCheckpoint>,
 }
 
+#[cfg(feature = "native-engine")]
+#[derive(Debug)]
+enum NativeTuiNavigationError {
+    Cancelled,
+    Failed(String),
+}
+
+#[cfg(feature = "native-engine")]
+type NativeTuiNavigation = Pin<Box<dyn Future<Output = Result<(), NativeTuiNavigationError>>>>;
+
+#[cfg(feature = "native-engine")]
+fn classify_native_navigation_error(error: Box<dyn std::error::Error>) -> NativeTuiNavigationError {
+    if error
+        .downcast_ref::<BrowserBackendError>()
+        .is_some_and(|error| {
+            matches!(error, BrowserBackendError::Lifecycle { state, .. } if state == "cancelled")
+        })
+    {
+        NativeTuiNavigationError::Cancelled
+    } else {
+        NativeTuiNavigationError::Failed(error.to_string())
+    }
+}
+
 enum BrowserTuiSession {
     Chromium(Box<CdpBrowserSession>),
     #[cfg(feature = "native-engine")]
-    Native(Box<BrowserRuntimeSession>),
+    Native(Arc<BrowserRuntimeSession>),
     #[cfg(feature = "native-engine")]
     NativePersistent(NativePersistentSession),
 }
@@ -277,7 +307,12 @@ impl BrowserTuiSession {
         match self {
             Self::Chromium(session) => session.close().await,
             #[cfg(feature = "native-engine")]
-            Self::Native(session) => session.close().await,
+            Self::Native(session) => {
+                Arc::try_unwrap(session)
+                    .map_err(|_| "native navigation is still using the browser session")?
+                    .close()
+                    .await
+            }
             #[cfg(feature = "native-engine")]
             Self::NativePersistent(_) => Ok(()),
         }
@@ -577,10 +612,12 @@ impl BrowserTuiSession {
             }
             #[cfg(feature = "native-engine")]
             Self::Native(session) => {
-                let current_revision = require_native_revision(session, expected_revision).await?;
+                let outcome = session
+                    .stop_loading_with_revision(expected_revision)
+                    .await?;
                 Ok(TuiControlOutcome {
-                    action: "stopLoading".into(),
-                    current_revision,
+                    action: outcome.action,
+                    current_revision: outcome.current_revision,
                 })
             }
             #[cfg(feature = "native-engine")]
@@ -1153,6 +1190,55 @@ impl BrowserTui {
         Ok(())
     }
 
+    #[cfg(feature = "native-engine")]
+    async fn start_native_navigation_task(
+        &mut self,
+        cli: &Cli,
+        url: &str,
+    ) -> BrowserResult<Option<NativeTuiNavigation>> {
+        if !cli.browser_runtime.is_native() {
+            return Ok(None);
+        }
+        let url = url.trim();
+        if url.is_empty() {
+            return Err("navigate requires a URL".into());
+        }
+        let url = crate::browser::session::normalize_url(url);
+        self.ensure_session(cli).await?;
+        let session = self.session.as_ref().ok_or("browser is detached")?;
+        let observation = session.observe().await?;
+        self.apply_observation(observation);
+
+        let task: NativeTuiNavigation = match self.session.as_ref().ok_or("browser is detached")? {
+            BrowserTuiSession::Native(session) => {
+                let session = Arc::clone(session);
+                let url = url.clone();
+                Box::pin(async move {
+                    session
+                        .navigate(url)
+                        .await
+                        .map(|_| ())
+                        .map_err(classify_native_navigation_error)
+                })
+            }
+            BrowserTuiSession::NativePersistent(session) => {
+                let session = session.clone();
+                let url = url.clone();
+                Box::pin(async move {
+                    session
+                        .execute(vec!["navigate".into(), url])
+                        .await
+                        .map(|_| ())
+                        .map_err(classify_native_navigation_error)
+                })
+            }
+            BrowserTuiSession::Chromium(_) => return Ok(None),
+        };
+        self.command.clear();
+        self.status = "Navigation in progress · Alt+S stops direct native loads".into();
+        Ok(Some(task))
+    }
+
     async fn start_at(&mut self, cli: &Cli, port: u16, attach: bool) -> BrowserResult<()> {
         if self.session.is_none() {
             #[cfg(feature = "native-engine")]
@@ -1181,7 +1267,7 @@ impl BrowserTui {
                     return Ok(());
                 }
                 let config = crate::cli::runner::native_config_from_cli(cli)?;
-                self.session = Some(BrowserTuiSession::Native(Box::new(
+                self.session = Some(BrowserTuiSession::Native(Arc::new(
                     BrowserRuntimeSession::connect_native(config).await?,
                 )));
                 self.workspace.connected(true, Some("native".into()), None);
@@ -1369,8 +1455,13 @@ impl BrowserTui {
             _ => return Ok(()),
         };
         self.workspace.state_mut().browser_revision = Some(outcome.current_revision);
+        let completion = if outcome.action == "stopLoading" {
+            "requested"
+        } else {
+            "complete"
+        };
         self.status = format!(
-            "{} complete · observe revision {}",
+            "{} {completion} · observe revision {}",
             outcome.action, outcome.current_revision
         );
         Ok(())
@@ -1581,13 +1672,43 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
             app.visual.label()
         )
     } else if cli.browser_runtime.is_native() {
-        "Ready · native engine · n enters an address · help lists all".into()
+        "Ready · native engine · n address · Alt+S stops a native load".into()
     } else {
         "Ready · n enters an address · `navigate URL` starts a browser · `attach PORT` reuses one · help lists all"
             .into()
     };
     let mut last_visual = Instant::now();
+    #[cfg(feature = "native-engine")]
+    let mut pending_navigation: Option<NativeTuiNavigation> = None;
     let result: BrowserResult<()> = loop {
+        #[cfg(feature = "native-engine")]
+        if let Some(task) = pending_navigation.as_mut() {
+            let completed = tokio::select! {
+                result = task.as_mut() => Some(result),
+                _ = tokio::time::sleep(Duration::from_millis(25)) => None,
+            };
+            if let Some(result) = completed {
+                pending_navigation.take();
+                let mut status = match result {
+                    Ok(()) => "Navigation complete · run `observe` for structured evidence".into(),
+                    Err(NativeTuiNavigationError::Cancelled) => {
+                        "Navigation stopped · the pending document was not committed".into()
+                    }
+                    Err(NativeTuiNavigationError::Failed(error)) => {
+                        format!("Navigation failed: {error}")
+                    }
+                };
+                if let Some(session) = app.session.as_ref() {
+                    match session.observe().await {
+                        Ok(observation) => app.apply_observation(observation),
+                        Err(error) => {
+                            status = format!("{status} · post-navigation observe failed: {error}")
+                        }
+                    }
+                }
+                app.status = status;
+            }
+        }
         app.poll_graphics();
         let size = terminal.terminal.size()?;
         let kitty_pane = (app.mode == WorkspaceMode::Browser && app.visual.live)
@@ -1597,6 +1718,47 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
         terminal.terminal.draw(|frame| draw(frame, &app))?;
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
+                #[cfg(feature = "native-engine")]
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press && pending_navigation.is_some() =>
+                {
+                    let quit = (key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL))
+                        || key.code == KeyCode::Char('q');
+                    if quit {
+                        let direct_native =
+                            matches!(app.session.as_ref(), Some(BrowserTuiSession::Native(_)));
+                        if direct_native {
+                            let _ = app
+                                .execute_control(BrowserWorkspaceIntent::StopLoading)
+                                .await;
+                            if let Some(task) = pending_navigation.take() {
+                                let _ = tokio::time::timeout(Duration::from_secs(4), task).await;
+                            }
+                        }
+                        break Ok(());
+                    }
+                    if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::ALT) {
+                        let direct_native =
+                            matches!(app.session.as_ref(), Some(BrowserTuiSession::Native(_)));
+                        let persistent_native = matches!(
+                            app.session.as_ref(),
+                            Some(BrowserTuiSession::NativePersistent(_))
+                        );
+                        if direct_native {
+                            if let Err(error) = app
+                                .execute_control(BrowserWorkspaceIntent::StopLoading)
+                                .await
+                            {
+                                app.status = format!("Stop-loading failed: {error}");
+                            }
+                        } else if persistent_native {
+                            app.status = "Stop-loading is unsupported while attached to the serialized native owner".into();
+                        } else {
+                            app.status = "Native navigation is still in progress".into();
+                        }
+                    }
+                }
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('c')
                         if key
@@ -1624,6 +1786,14 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                             app.execute_control(BrowserWorkspaceIntent::Reload).await
                         {
                             app.status = format!("Reload failed: {error}");
+                        }
+                    }
+                    KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::ALT) => {
+                        if let Err(error) = app
+                            .execute_control(BrowserWorkspaceIntent::StopLoading)
+                            .await
+                        {
+                            app.status = format!("Stop-loading failed: {error}");
                         }
                     }
                     KeyCode::Esc => {
@@ -1675,16 +1845,38 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                             app.status = format!("Action failed: {error}");
                         }
                     }
-                    KeyCode::Enter => match app.submit(cli).await {
-                        Ok(true) => break Ok(()),
-                        Ok(false) => {}
-                        Err(error) => {
-                            app.workspace.disconnected(error.to_string(), true);
-                            app.status = format!(
-                                "Command failed: {error} · reconnect, launch auto, or launch PORT"
-                            );
+                    KeyCode::Enter => {
+                        #[cfg(feature = "native-engine")]
+                        if let Some(url) = app
+                            .command
+                            .trim()
+                            .strip_prefix("navigate ")
+                            .map(str::to_owned)
+                        {
+                            match app.start_native_navigation_task(cli, &url).await {
+                                Ok(Some(task)) => {
+                                    pending_navigation = Some(task);
+                                    continue;
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    app.command.clear();
+                                    app.status = format!("Navigation failed: {error}");
+                                    continue;
+                                }
+                            }
                         }
-                    },
+                        match app.submit(cli).await {
+                            Ok(true) => break Ok(()),
+                            Ok(false) => {}
+                            Err(error) => {
+                                app.workspace.disconnected(error.to_string(), true);
+                                app.status = format!(
+                                    "Command failed: {error} · reconnect, launch auto, or launch PORT"
+                                );
+                            }
+                        }
+                    }
                     KeyCode::Backspace => {
                         app.command.pop();
                     }
@@ -1755,6 +1947,16 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
             }
         }
         if app.visual.live
+            && {
+                #[cfg(feature = "native-engine")]
+                {
+                    pending_navigation.is_none()
+                }
+                #[cfg(not(feature = "native-engine"))]
+                {
+                    true
+                }
+            }
             && last_visual.elapsed() >= Duration::from_millis(frame_interval_ms(app.visual.quality))
         {
             match app
@@ -1830,7 +2032,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &BrowserTui) {
         rows[0],
     );
     let content = if app.mode == WorkspaceMode::Help {
-        "START HERE\n[l] launch auto · [a] attach PORT · [n] navigate URL · [t] type text\n[j/k] select semantic target · Enter activate · Esc return\n\nCOMMANDS\nnavigate URL  start/navigate browser\nobserve       structured accessibility evidence\nsemantic      structured semantic view\ntargets       bounded page targets\nselect ID     change target and invalidate evidence\nstate         connection/revision status\nreconnect     recover in place\nattach PORT   attach verified DevTools\nlaunch auto   recover on a free port\nlaunch PORT   recover on an explicit port\nstop          stop browser, keep workspace\nscreenshot    explicit frame capture\nlive on|off   continuous pixels (Herdr or ANSI per policy)\nworkflow list|run FILE|pause|resume FILE|cancel|verify\nquit          close owned browser and exit"
+        "START HERE\n[l] launch auto · [a] attach PORT · [n] navigate URL · [t] type text\n[j/k] select semantic target · Enter activate · Alt+S stop load · Esc return\n\nCOMMANDS\nnavigate URL  start/navigate browser\nobserve       structured accessibility evidence\nsemantic      structured semantic view\ntargets       bounded page targets\nselect ID     change target and invalidate evidence\nstate         connection/revision status\nreconnect     recover in place\nattach PORT   attach verified DevTools\nlaunch auto   recover on a free port\nlaunch PORT   recover on an explicit port\nstop          stop browser, keep workspace\nscreenshot    explicit frame capture\nlive on|off   continuous pixels (Herdr or ANSI per policy)\nworkflow list|run FILE|pause|resume FILE|cancel|verify\nquit          close owned browser and exit"
     } else {
         app.page.as_str()
     };

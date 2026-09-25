@@ -22,9 +22,10 @@ use glass_browser::browser::session::{
 };
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
-    BrowserBackendDispatcher, BrowserCapability, CaptureFormat, CaptureRequest, CertificationLevel,
-    EffectsRequest, EvidenceLevel, EvidenceRequest, NavigationRequest, PromptDecision,
-    ScriptRequest, SemanticAction, StorageOperation, StorageRequest, StorageScope, SupportLevel,
+    BrowserBackendDispatcher, BrowserBackendError, BrowserCapability, CaptureFormat,
+    CaptureRequest, CertificationLevel, EffectsRequest, EvidenceLevel, EvidenceRequest,
+    NavigationRequest, PromptDecision, ScriptRequest, SemanticAction, StorageOperation,
+    StorageRequest, StorageScope, SupportLevel,
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
 use glass_browser::{
@@ -14148,6 +14149,112 @@ async fn canonical_browser_session_exposes_guarded_and_unguarded_recovery() {
         "fixture://canonical-recovery"
     );
 
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn canonical_browser_session_stop_loading_cancels_and_restarts_worker() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (request_seen_tx, request_seen_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let slow_server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/slow"));
+        let _ = request_seen_tx.send(());
+        let _ = release_rx.await;
+        let body = "<title>Must not commit</title><p>late response</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+    });
+
+    let session = BrowserSession::start_default().await.unwrap();
+    let initial = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    let idle = session
+        .stop_loading_with_revision(initial.revision)
+        .await
+        .unwrap();
+    assert_eq!(idle.current_revision, initial.revision);
+
+    {
+        let navigation = session.navigate(format!("http://{address}/slow"));
+        tokio::pin!(navigation);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                result = &mut navigation => match result {
+                    Ok(_) => panic!("delayed navigation completed before its response was released"),
+                    Err(error) => panic!("delayed navigation failed before stop-loading: {error}"),
+                },
+                request_seen = request_seen_rx => request_seen.unwrap(),
+            }
+        })
+        .await
+        .expect("native navigation did not reach the delayed response");
+
+        assert!(
+            session
+                .stop_loading_with_revision(initial.revision.saturating_add(1))
+                .await
+                .is_err(),
+            "a stale stop request must not cancel the active navigation"
+        );
+        let stopped = tokio::time::timeout(
+            Duration::from_secs(5),
+            session.stop_loading_with_revision(initial.revision),
+        )
+        .await
+        .expect("stop-loading did not settle promptly")
+        .unwrap();
+        assert_eq!(stopped.action, "stopLoading");
+        assert_eq!(stopped.current_revision, initial.revision);
+
+        let navigation_error = tokio::time::timeout(Duration::from_secs(5), &mut navigation)
+            .await
+            .expect("cancelled navigation did not return")
+            .expect_err("the cancelled navigation must not report success");
+        assert!(matches!(
+            navigation_error.downcast_ref::<BrowserBackendError>(),
+            Some(BrowserBackendError::Lifecycle { state, .. }) if state == "cancelled"
+        ));
+    }
+    let _ = release_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), slow_server)
+        .await
+        .expect("delayed fixture server did not stop")
+        .unwrap();
+
+    let after_stop = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    assert_eq!(after_stop.url, initial.url);
+    assert_eq!(after_stop.revision, initial.revision);
+
+    let next_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let next_address = next_listener.local_addr().unwrap();
+    let next_server = tokio::spawn(async move {
+        let (mut stream, _) = next_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/after-stop"));
+        let body = "<title>Worker restarted</title><p>ready</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let next = session
+        .navigate(format!("http://{next_address}/after-stop"))
+        .await
+        .expect("native content worker should restart after cancellation");
+    assert_eq!(next.url, format!("http://{next_address}/after-stop"));
+    assert!(next.revision > initial.revision);
+    tokio::time::timeout(Duration::from_secs(5), next_server)
+        .await
+        .expect("post-cancellation fixture server did not stop")
+        .unwrap();
     session.close().await.unwrap();
 }
 

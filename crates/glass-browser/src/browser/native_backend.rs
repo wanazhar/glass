@@ -14,11 +14,12 @@ use super::native_engine::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeAction, NativeEffect, NativeEngine,
     NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFile, NativeFrameScriptBinding,
     NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
-    NativeHistoryDirection, NativeInspectionSnapshot, NativeLayoutSnapshot, NativeNavigationMethod,
-    NativeNavigationRequest, NativeOrigin, NativePageMessagePortCommand, NativePoint,
-    NativePopupRequest, NativePostMessageRequest, NativePreflightAction, NativeRequestBody,
-    NativeScriptCommand, NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
-    NativeSurface, NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeHistoryDirection, NativeInspectionSnapshot, NativeLayoutSnapshot,
+    NativeNavigationCancellation, NativeNavigationMethod, NativeNavigationRequest, NativeOrigin,
+    NativePageMessagePortCommand, NativePoint, NativePopupRequest, NativePostMessageRequest,
+    NativePreflightAction, NativeRequestBody, NativeScriptCommand,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest, NativeSurface,
+    NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, Viewport, parse_point_target,
     synchronize_service_worker_client_leases, validate_message_port_transfers,
     validate_page_message_port_command, validate_target_navigation_payload,
@@ -74,6 +75,17 @@ enum NativeFrameRoute {
 struct NativePageMessagePortRoute {
     context_id: String,
     frame_id: String,
+}
+
+struct ActiveNativeNavigation {
+    id: u64,
+    starting_revision: u64,
+    cancellation: NativeNavigationCancellation,
+}
+
+struct NativeNavigationControlState {
+    next_id: u64,
+    active: Option<ActiveNativeNavigation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -297,6 +309,7 @@ pub struct NativeEngineBackend {
     targets: Mutex<NativeTargetState>,
     browser_effect_cursor: Mutex<NativeBrowserEffectSource>,
     page_message_port_routes: Mutex<BTreeMap<String, NativePageMessagePortRoute>>,
+    navigation_control: Mutex<NativeNavigationControlState>,
 }
 
 /// One atomic semantic/layout snapshot together with the frame that owns it.
@@ -321,7 +334,103 @@ impl NativeEngineBackend {
             targets: Mutex::new(NativeTargetState::new(active_target_id, active_name)),
             browser_effect_cursor: Mutex::new(NativeBrowserEffectSource::Popup),
             page_message_port_routes: Mutex::new(BTreeMap::new()),
+            navigation_control: Mutex::new(NativeNavigationControlState {
+                next_id: 1,
+                active: None,
+            }),
         })
+    }
+
+    pub(crate) fn current_revision(&self) -> Result<u64, BrowserBackendError> {
+        Ok(self.lock_engine(BackendOperation::Evidence)?.revision())
+    }
+
+    pub(crate) fn begin_navigation_control(
+        &self,
+        starting_revision: u64,
+    ) -> Result<u64, BrowserBackendError> {
+        let mut control = self
+            .navigation_control
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Navigate, "navigation control"))?;
+        if control.active.is_some() {
+            return Err(BrowserBackendError::Lifecycle {
+                operation: "navigate".into(),
+                state: "busy".into(),
+                reason: "another native navigation control is already active".into(),
+            });
+        }
+        let id = control.next_id;
+        control.next_id =
+            control
+                .next_id
+                .checked_add(1)
+                .ok_or_else(|| BrowserBackendError::Lifecycle {
+                    operation: "navigate".into(),
+                    state: "exhausted".into(),
+                    reason: "native navigation control identifiers are exhausted".into(),
+                })?;
+        let cancellation = NativeNavigationCancellation::new();
+        control.active = Some(ActiveNativeNavigation {
+            id,
+            starting_revision,
+            cancellation: cancellation.clone(),
+        });
+        Ok(id)
+    }
+
+    pub(crate) fn active_navigation_revision(&self) -> Result<Option<u64>, BrowserBackendError> {
+        let control = self
+            .navigation_control
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Navigate, "navigation control"))?;
+        Ok(control
+            .active
+            .as_ref()
+            .map(|active| active.starting_revision))
+    }
+
+    pub(crate) fn cancel_active_navigation(
+        &self,
+        expected_revision: u64,
+    ) -> Result<Option<NativeNavigationCancellation>, BrowserBackendError> {
+        let control = self
+            .navigation_control
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Navigate, "navigation control"))?;
+        let Some(active) = control.active.as_ref() else {
+            return Ok(None);
+        };
+        if active.starting_revision != expected_revision
+            || (!active.cancellation.request_cancel() && !active.cancellation.is_cancelled())
+        {
+            return Ok(None);
+        }
+        Ok(Some(active.cancellation.clone()))
+    }
+
+    pub(crate) fn finish_navigation_control(&self, id: u64) {
+        if let Ok(mut control) = self.navigation_control.lock()
+            && control
+                .active
+                .as_ref()
+                .is_some_and(|active| active.id == id)
+        {
+            control.active = None;
+        }
+    }
+
+    fn active_navigation_cancellation(
+        &self,
+    ) -> Result<Option<NativeNavigationCancellation>, BrowserBackendError> {
+        let control = self
+            .navigation_control
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Navigate, "navigation control"))?;
+        Ok(control
+            .active
+            .as_ref()
+            .map(|active| active.cancellation.clone()))
     }
 
     pub fn profile(&self) -> &BackendProfile {
@@ -4564,10 +4673,17 @@ impl BrowserBackend for NativeEngineBackend {
                 }
                 (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {
                     let previous_revision = engine.revision();
-                    engine
-                        .navigate_async(request.url)
-                        .await
-                        .map_err(native_error)?;
+                    if let Some(cancellation) = self.active_navigation_cancellation()? {
+                        engine
+                            .navigate_async_with_cancellation(request.url, cancellation)
+                            .await
+                            .map_err(native_error)?;
+                    } else {
+                        engine
+                            .navigate_async(request.url)
+                            .await
+                            .map_err(native_error)?;
+                    }
                     let event_effects = engine
                         .effects_since(previous_revision)
                         .map_err(native_error)?
@@ -5883,6 +5999,11 @@ fn native_error(error: NativeEngineError) -> BrowserBackendError {
         } => BrowserBackendError::Connection {
             operation,
             reason: format!("{kind:?}: {reason}"),
+        },
+        NativeEngineError::NavigationCancelled => BrowserBackendError::Lifecycle {
+            operation: "navigate".into(),
+            state: "cancelled".into(),
+            reason: "navigation was stopped before its document committed".into(),
         },
         NativeEngineError::StorageProfileLocked { path } => BrowserBackendError::Connection {
             operation: "storage".into(),

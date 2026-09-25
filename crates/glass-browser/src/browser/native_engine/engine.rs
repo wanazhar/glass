@@ -1,4 +1,5 @@
 use super::browsing_context::NativeBrowsingContext;
+use super::cancellation::NativeNavigationCancellation;
 use super::config::{
     NativeEngineConfig, Viewport, decode_percent_encoded_fragment, decode_text_fragment_terms,
     is_file_url, is_network_url, resolve_fixture_relative_url, validate_context_id,
@@ -1254,6 +1255,7 @@ impl NativeEngine {
                     None,
                     HistoryCommit::Push,
                     0,
+                    None,
                 )
                 .await?
             else {
@@ -1415,6 +1417,19 @@ impl NativeEngine {
             .await
     }
 
+    pub(crate) async fn navigate_async_with_cancellation(
+        &mut self,
+        url: impl Into<String>,
+        cancellation: NativeNavigationCancellation,
+    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        self.navigate_request_async_with_cancellation(
+            NativeNavigationRequest::get(url),
+            0,
+            Some(cancellation),
+        )
+        .await
+    }
+
     /// Rebuild the current document owner and reload the active URL without
     /// replaying the operation that may have killed the content worker.
     ///
@@ -1434,14 +1449,24 @@ impl NativeEngine {
         }
         let mut navigation = NativeNavigationRequest::get(self.url.clone());
         navigation.replace_history = true;
-        self.navigate_request_async_with_lifecycle(navigation, 0, false)
+        self.navigate_request_async_with_lifecycle(navigation, 0, false, None)
             .await
     }
 
     pub(crate) async fn navigate_request_async(
         &mut self,
+        navigation: NativeNavigationRequest,
+        page_navigation_handoffs: usize,
+    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        self.navigate_request_async_with_cancellation(navigation, page_navigation_handoffs, None)
+            .await
+    }
+
+    async fn navigate_request_async_with_cancellation(
+        &mut self,
         mut navigation: NativeNavigationRequest,
         page_navigation_handoffs: usize,
+        cancellation: Option<NativeNavigationCancellation>,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         if let Some(target) = navigation.target.take() {
             let target_kind = target.to_ascii_lowercase();
@@ -1461,8 +1486,13 @@ impl NativeEngine {
                 }
             }
         }
-        self.navigate_request_async_with_lifecycle(navigation, page_navigation_handoffs, true)
-            .await
+        self.navigate_request_async_with_lifecycle(
+            navigation,
+            page_navigation_handoffs,
+            true,
+            cancellation,
+        )
+        .await
     }
 
     async fn navigate_request_async_with_lifecycle(
@@ -1470,6 +1500,7 @@ impl NativeEngine {
         navigation: NativeNavigationRequest,
         page_navigation_handoffs: usize,
         dispatch_lifecycle: bool,
+        cancellation: Option<NativeNavigationCancellation>,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
         let same_document = self.is_same_document_navigation(&navigation.url);
@@ -1478,6 +1509,12 @@ impl NativeEngine {
             .await?;
         if !allowed {
             return Ok(self.snapshot_unchecked());
+        }
+        if cancellation
+            .as_ref()
+            .is_some_and(NativeNavigationCancellation::is_cancelled)
+        {
+            return Err(NativeEngineError::NavigationCancelled);
         }
         if dispatch_lifecycle {
             self.pending_lifecycle_effects.clear();
@@ -1512,12 +1549,19 @@ impl NativeEngine {
                     lifecycle_navigation,
                     page_navigation_handoffs + 1,
                     false,
+                    cancellation,
                 ))
                 .await;
             }
         }
         if same_document && navigation.method == NativeNavigationMethod::Get {
             validate_url_text("navigation URL", url)?;
+            if cancellation
+                .as_ref()
+                .is_some_and(|cancellation| !cancellation.begin_commit())
+            {
+                return Err(NativeEngineError::NavigationCancelled);
+            }
             if let Some(worker) = self.runtime_worker.clone() {
                 self.commit_same_document_navigation_async(
                     navigation.url,
@@ -1544,15 +1588,40 @@ impl NativeEngine {
                     referrer,
                     history_commit,
                     page_navigation_handoffs,
+                    cancellation.clone(),
                 )
                 .await?
             else {
+                if cancellation
+                    .as_ref()
+                    .is_some_and(NativeNavigationCancellation::is_cancelled)
+                {
+                    self.terminate_content_process_after_navigation_cancel()
+                        .await?;
+                    return Err(NativeEngineError::NavigationCancelled);
+                }
                 return Ok(self.snapshot_unchecked());
             };
+            if cancellation
+                .as_ref()
+                .is_some_and(NativeNavigationCancellation::is_cancelled)
+            {
+                self.terminate_content_process_after_navigation_cancel()
+                    .await?;
+                return Err(NativeEngineError::NavigationCancelled);
+            }
             if !self.is_same_document_navigation(&content.url)
                 && !self.allows_frame_navigation_after_redirect(&initial_url, &content.url)?
             {
                 return Ok(self.snapshot_unchecked());
+            }
+            if cancellation
+                .as_ref()
+                .is_some_and(|cancellation| !cancellation.begin_commit())
+            {
+                self.terminate_content_process_after_navigation_cancel()
+                    .await?;
+                return Err(NativeEngineError::NavigationCancelled);
             }
             self.commit_content_process().await?;
             if let Some(worker) = self.runtime_worker.clone() {
@@ -1649,6 +1718,7 @@ impl NativeEngine {
         mut referrer: Option<String>,
         mut history_commit: HistoryCommit,
         mut page_navigation_handoffs: usize,
+        cancellation: Option<NativeNavigationCancellation>,
     ) -> Result<Option<(NativeContentLoad, HistoryCommit, usize, String)>, NativeEngineError> {
         if page_navigation_handoffs > MAX_NATIVE_PAGE_NAVIGATION_HANDOFFS {
             return Err(NativeEngineError::limit(
@@ -1661,6 +1731,12 @@ impl NativeEngine {
         let mut policy_sources = self.document_navigate_to_sources.clone();
         let mut first_content_load = true;
         loop {
+            if cancellation
+                .as_ref()
+                .is_some_and(NativeNavigationCancellation::is_cancelled)
+            {
+                return Err(NativeEngineError::NavigationCancelled);
+            }
             let initial_url = navigation.url.clone();
             let report = !first_content_load;
             if !self
@@ -1688,6 +1764,7 @@ impl NativeEngine {
                             referrer.as_deref(),
                             &client_id,
                             &service_worker_clients,
+                            cancellation.as_ref(),
                         )
                         .await
                 }
@@ -1697,9 +1774,9 @@ impl NativeEngine {
                 }),
             };
             self.request_ledger.finish();
-            let mut content = match content_result? {
-                NativeContentLoadResult::Loaded(content) => content,
-                NativeContentLoadResult::Suspended(open_windows) => {
+            let mut content = match content_result {
+                Ok(NativeContentLoadResult::Loaded(content)) => content,
+                Ok(NativeContentLoadResult::Suspended(open_windows)) => {
                     if self.pending_service_worker_navigation.is_some() {
                         return Err(NativeEngineError::Worker {
                             operation: "native service worker navigation".into(),
@@ -1715,7 +1792,24 @@ impl NativeEngine {
                         });
                     return Ok(None);
                 }
+                Err(NativeEngineError::NavigationCancelled) => {
+                    // `NativeContentProcess::load` has already killed and
+                    // reaped the worker while settling its IPC exchange.
+                    // Remove that dead handle so the next navigation starts a
+                    // fresh content process instead of writing to a closed pipe.
+                    self.content_process.take();
+                    return Err(NativeEngineError::NavigationCancelled);
+                }
+                Err(error) => return Err(error),
             };
+            if cancellation
+                .as_ref()
+                .is_some_and(NativeNavigationCancellation::is_cancelled)
+            {
+                self.terminate_content_process_after_navigation_cancel()
+                    .await?;
+                return Err(NativeEngineError::NavigationCancelled);
+            }
             self.apply_content_load_effects(&mut content)?;
             if !self.allows_top_level_navigation_for_owner(
                 &policy_owner_url,
@@ -1755,6 +1849,17 @@ impl NativeEngine {
             };
             referrer = referrer_for_navigation(&content.url, &target_url)?;
         }
+    }
+
+    async fn terminate_content_process_after_navigation_cancel(
+        &mut self,
+    ) -> Result<(), NativeEngineError> {
+        if let Some(mut process) = self.content_process.take() {
+            process
+                .terminate_and_reap("cancel native navigation")
+                .await?;
+        }
+        Ok(())
     }
 
     fn apply_content_load_effects(
@@ -8142,6 +8247,7 @@ impl NativeEngine {
                     referrer,
                     history_commit,
                     0,
+                    None,
                 )
                 .await?
             else {

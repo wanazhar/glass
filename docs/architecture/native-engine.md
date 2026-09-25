@@ -46,8 +46,10 @@ commands when stdin is a terminal. CLI prompt input is bounded to 256 UTF-8
 bytes and page-controlled text is escaped before terminal output. Non-terminal
 CLI use remains non-modal. Slice 739 adds standalone native MCP dialog
 presentation; its local Linux behavior is verified while remote CI and
-cross-platform certification remain pending. Persistent-session dialogs,
-`beforeunload` support, and all other profile gates remain open. See the
+cross-platform certification remain pending. Slice 740 extends this host
+through the persistent native owner's status/control channel; its process-backed
+Linux end-to-end test passes. Remote CI and cross-platform certification remain
+pending. `beforeunload` support and all other profile gates remain open. See the
 [slice 738 task](../plan/tasks/native-engine-browser-738.md),
 [slice 737 task](../plan/tasks/native-engine-browser-737.md),
 [slice 736 task](../plan/tasks/native-engine-browser-736.md),
@@ -9780,6 +9782,13 @@ dismisses its pending page dialog through the live operation, allowing the
 content-process IPC exchange to finish in order. If that exchange does not
 drain within two seconds, Glass drops the owned native session instead of
 reusing a potentially desynchronized process.
+
+Slice 740 extends this contract to a named persistent native session using the
+owner's existing out-of-band status and exact-ID dialog-control channel. The
+MCP caller, not the persistent owner, owns elicitation. A client without form
+elicitation receives an explicit tool error after its encountered dialog is
+dismissed, so the owner cannot remain stranded. Parent cancellation also stops
+an interruptible active navigation before returning.
 
 Clients that negotiate only MCP `2024-11-05`, omit form-mode elicitation, or
 select an explicit non-native runtime retain the non-modal behavior. Glass

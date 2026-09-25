@@ -337,6 +337,7 @@ pub fn run(
     let mut pointer = pointer::PointerState::default();
     loop {
         let size = guard.terminal.size()?;
+        render_requested |= state.poll_native_browser_dialog();
         let overlay_mask = terminal_overlay_mask(&state);
         if overlay_mask != previous_overlay_mask {
             guard
@@ -360,6 +361,7 @@ pub fn run(
             || state.menu_open
             || state.help_open
             || state.quit_confirmation
+            || state.browser_dialog.is_some()
             || state.pending_confirmation.is_some()
             || state.pending_agent_approval.is_some()
             || state.running_tool_job.is_some()
@@ -397,6 +399,8 @@ pub fn run(
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         state.request_quit();
+                    } else if state.browser_dialog.is_some() {
+                        state.handle_native_browser_dialog_key(key.code, key.modifiers);
                     } else if state.help_open {
                         match key.code {
                             KeyCode::Esc | KeyCode::Char('?') => state.toggle_help(),
@@ -1057,6 +1061,11 @@ pub fn run(
                         }
                     }
                 }
+                Event::Paste(text) if state.browser_dialog.is_some() => {
+                    for character in text.chars() {
+                        state.insert_native_dialog_char(character);
+                    }
+                }
                 Event::Paste(text) if state.command_mode => state.insert_palette_text(&text),
                 Event::Paste(text) if state.pi_command_mode => {
                     for character in text.chars() {
@@ -1065,7 +1074,9 @@ pub fn run(
                 }
                 Event::Paste(text) if state.composer_mode => state.insert_composer_text(&text),
                 Event::Mouse(mouse) => {
-                    if !state.quit_confirmation
+                    if state.browser_dialog.is_some() {
+                        // The page dialog owns input until it is resolved.
+                    } else if !state.quit_confirmation
                         && state.editor_exit_prompt.is_none()
                         && state.pending_confirmation.is_none()
                         && state.pending_agent_approval.is_none()
@@ -1091,7 +1102,11 @@ pub fn run(
             }
         }
         let menu_was_open = state.menu_open;
-        pointer.poll(&mut state, Instant::now());
+        if state.browser_dialog.is_some() {
+            pointer = pointer::PointerState::default();
+        } else {
+            pointer.poll(&mut state, Instant::now());
+        }
         render_requested |= menu_was_open != state.menu_open;
         if state.agent_login_requested {
             state.agent_login_requested = false;
@@ -1350,6 +1365,9 @@ fn terminal_overlay_mask(state: &DevTuiState) -> u16 {
     }
     if state.pi_command_mode {
         mask |= 1 << 12;
+    }
+    if state.browser_dialog.is_some() {
+        mask |= 1 << 13;
     }
     mask
 }

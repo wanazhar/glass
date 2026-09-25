@@ -7,6 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
+/// Maximum UTF-8 byte length accepted for native JavaScript dialog text.
+pub const NATIVE_DIALOG_TEXT_LIMIT_BYTES: usize = MAX_NATIVE_DIALOG_TEXT_BYTES;
+
 /// A process-backed modal JavaScript dialog awaiting a host decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

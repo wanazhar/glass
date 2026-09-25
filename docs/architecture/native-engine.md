@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-735`; issue #40 remains open. The public Rust
+`native-engine-browser-738`; issue #40 remains open. The public Rust
 `BrowserSession` entrypoint now constructs the native backend directly, and
 the former Chrome/CDP API is named `CdpBrowserSession`. This does not claim
 operation parity or production certification. The canonical Rust session now
@@ -36,13 +36,22 @@ active HTTP(S) navigation and closes its owning target after the operation
 releases its state lock. Tests cover accepted/dismissed page-load outcomes,
 multi-dialog explicit evaluation, target identity/revision guards, navigation
 cancellation, owner shutdown, worker exit, deadline suspension, and reuse of a
-parked sibling target. User-facing CLI/MCP/TUI prompt presentation remains
-issue #40 work. Slice 735 exposes this existing out-of-band rendezvous to Rust
+parked sibling target. Slice 735 exposes the out-of-band rendezvous to Rust
 embedders through an explicit modal-enabled constructor and a cloneable,
-identity-bound `NativeDialogController`. The ordinary constructor remains
-nonblocking; the API does not itself complete cross-surface dialog routing.
-See the
-[slice 735 task](../plan/tasks/native-engine-browser-735.md) and the
+identity-bound `NativeDialogController`. Slice 736 exposes the same controller
+from the resident development `BrowserService`; slice 737 presents it in the
+Glass Dev TUI without taking the workspace lock; slice 738 presents
+process-backed `alert`, `confirm`, and `prompt` dialogs for one-shot native CLI
+commands when stdin is a terminal. CLI prompt input is bounded to 256 UTF-8
+bytes and page-controlled text is escaped before terminal output. Non-terminal
+CLI use remains non-modal. Slice 739 adds standalone native MCP dialog
+presentation; its local Linux behavior is verified while remote CI and
+cross-platform certification remain pending. Persistent-session dialogs,
+`beforeunload` support, and all other profile gates remain open. See the
+[slice 738 task](../plan/tasks/native-engine-browser-738.md),
+[slice 737 task](../plan/tasks/native-engine-browser-737.md),
+[slice 736 task](../plan/tasks/native-engine-browser-736.md),
+[slice 735 task](../plan/tasks/native-engine-browser-735.md), and the
 [slice 734 task](../plan/tasks/native-engine-browser-734.md). Earlier
 completed slices include
 `native-engine-browser-696` through
@@ -9723,8 +9732,13 @@ Rust path covers process-backed realms only. Slice 736 extends the same
 out-of-band controller to the resident development `BrowserService` when
 `modalDialogs` is explicitly enabled; the controller is independent of the
 serialized command worker. Default service sessions remain non-modal until an
-interactive host opts in. CLI/MCP/TUI prompt presentation and in-process modal
-execution remain open issue #40 gates.
+interactive host opts in. Slice 737 connects the Glass Dev TUI to that handle:
+native TUI starts opt into modal dialogs, the modal owns prompt/confirm/alert
+input while the page operation remains suspended, and confirmed quit resolves
+the exact pending dialog before worker cleanup. Explicit TUI `--attach` stays
+on Chromium/CDP without native modal control. Standalone CLI/MCP dialog
+surfaces, in-process modal execution, and full cross-surface parity remain open
+issue #40 gates.
 `GCWP-0.1` requires the invoking page script to suspend at the dialog call,
 publish a target/frame-owned pending prompt to the Glass control plane, and
 resume at the same call site with the chosen result. The accept path for
@@ -9734,13 +9748,50 @@ status and dialog controls remain serviceable. The execution must not be
 replayed after resolution, and cancellation or owner failure must release the
 suspended operation without committing partial navigation state.
 
-Slices 734 and 735 implement this contract for process-backed HTTP(S) page
+Slices 734 through 737 implement this contract for process-backed HTTP(S) page
 scripts and explicit evaluation, first through the persistent-owner control
-path and then through the explicit standalone Rust controller. Default
-standalone constructors without a live controller retain the nonblocking
-event path. In-process page realms, CLI/MCP integration, direct TUI prompt
-presentation, and full cross-surface prompt parity remain part of the issue
-#40 gate until independently verified.
+path, then the standalone Rust controller and resident service, and finally
+the TUI's responsive dialog surface. Slice 738 adds a terminal-hosted dialog
+surface to one-shot native CLI commands. Default constructors without a live
+controller retain the nonblocking event path. Standalone native MCP dialog
+integration is implemented in slice 739; in-process page realms,
+persistent-session dialogs, `beforeunload`, and cross-platform certification
+remain part of the issue #40 gate.
+
+### MCP dialog host contract
+
+The standalone native MCP server may enable modal dialogs only when its client
+negotiates MCP `2025-11-25` and declares form-mode `elicitation` support. While
+a browser tool is suspended at a page-owned dialog, Glass sends
+`elicitation/create` as a request nested in that active tool operation, keeps
+the original operation alive, validates the client response, and resolves the
+same target/frame/dialog identity. The page operation resumes once and the
+tool returns its ordinary final result. Alerts request acknowledgement,
+confirms request a boolean choice, and prompts request bounded response text;
+prompt values are validated against a 256-byte UTF-8 limit and are never
+written to logs or included in the elicitation message. Page text is untrusted
+and must be presented as page-originated. Control and bidirectional-format
+characters are escaped, URL-like page text is omitted, and the user is warned
+not to enter credentials, payment data, or other secrets. The source URL is not
+sent to the client.
+
+Parent-request cancellation or stdio EOF cancels any nested elicitation and
+dismisses its pending page dialog through the live operation, allowing the
+content-process IPC exchange to finish in order. If that exchange does not
+drain within two seconds, Glass drops the owned native session instead of
+reusing a potentially desynchronized process.
+
+Clients that negotiate only MCP `2024-11-05`, omit form-mode elicitation, or
+select an explicit non-native runtime retain the non-modal behavior. Glass
+must not block those clients waiting for input and must never start or fall
+back to Chromium/CDP to resolve a native dialog. Elicitation is issued only
+while processing a client request, and decline/cancel responses map to the
+HTML dialog's dismiss semantics (`confirm` returns false; `prompt` returns
+null; `alert` is acknowledged). This uses the MCP
+[2025-11-25 elicitation contract]; migration to the 2026-07-28 multi-round-trip
+protocol is a separate compatibility gate, not implied by this host surface.
+
+[2025-11-25 elicitation contract]: https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation
 
 `NativeEngineError` distinguishes invalid configuration, lifecycle misuse,
 unsupported resources, bounded network failures, parser failures, resource

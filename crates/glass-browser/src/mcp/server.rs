@@ -1,6 +1,6 @@
 //! MCP JSON-RPC 2.0 stdio server.
 //!
-//! Implements the Model Context Protocol (2024-11-05) over stdin/stdout,
+//! Implements MCP (2024-11-05 and 2025-11-25) over stdin/stdout,
 //! providing browser automation tools with policy-gated execution, bounded
 //! response sizes, and concurrent request handling.
 
@@ -15,18 +15,24 @@ use std::{
     io,
     path::Path,
     pin::Pin,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::Duration,
 };
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
-use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
+use tokio::sync::{Mutex, Notify, Semaphore, mpsc, oneshot};
 use tracing::{debug, info};
 
 use crate::browser::cdp::CdpError;
 #[cfg(feature = "native-engine")]
-use crate::browser::native_engine::{NativeEngineConfig, NativeFile, Viewport};
+use crate::browser::native_engine::{
+    NativeDialogController, NativeDialogResolution, NativeEngineConfig, NativeFile,
+    NativePendingDialog, Viewport,
+};
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::profile::ProfileManager;
 use crate::browser::runtime::BrowserRuntimeSession;
@@ -60,6 +66,7 @@ use crate::task_compiler::TaskCompilationError;
 use crate::workspace::{WorkspaceId, WorkspaceStore};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+const MCP_PROTOCOL_VERSION_ELICITATION: &str = "2025-11-25";
 const MAX_HEADER_BYTES: usize = 8 * 1024;
 const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
@@ -68,6 +75,9 @@ const MAX_ERROR_MESSAGE_BYTES: usize = 512;
 const MAX_CONCURRENT_REQUESTS: usize = 8;
 const MAX_QUEUED_RESPONSES: usize = 16;
 const FRAME_BODY_TIMEOUT: Duration = Duration::from_secs(10);
+const MCP_DIALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const MCP_CANCELLATION_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const MCP_DIALOG_PROMPT_MAX_BYTES: usize = 256;
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -168,7 +178,7 @@ pub trait HostMcpToolBackend: Send + Sync {
     fn call(&self, name: &str, arguments: Value) -> Result<Value, String>;
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FrameFormat {
     ContentLength,
     Newline,
@@ -500,11 +510,158 @@ enum ToolInvocation<'a> {
 }
 
 struct Outbound {
-    response: JsonRpcResponse,
+    payload: OutboundPayload,
     format: FrameFormat,
 }
 
-type CancellationMap = Arc<StdMutex<HashMap<String, oneshot::Sender<()>>>>;
+enum OutboundPayload {
+    Response(JsonRpcResponse),
+    Json(Value),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum CancellationKey {
+    Request(String),
+    Internal(u64),
+}
+
+type CancellationMap = Arc<StdMutex<HashMap<CancellationKey, oneshot::Sender<()>>>>;
+type PendingServerResponses = Arc<StdMutex<HashMap<String, oneshot::Sender<Value>>>>;
+
+#[derive(Clone)]
+struct McpServerTransport {
+    outbound: mpsc::Sender<Outbound>,
+    pending_responses: PendingServerResponses,
+    active_server_request_cancellations: CancellationMap,
+    next_request_id: Arc<AtomicU64>,
+}
+
+#[derive(Clone)]
+struct McpElicitationClient {
+    transport: McpServerTransport,
+    format: FrameFormat,
+    parent_cancellation: Arc<Notify>,
+}
+
+struct PendingServerResponseCleanup {
+    key: String,
+    pending_responses: PendingServerResponses,
+    request_id: String,
+    cancellations: CancellationMap,
+    outbound: mpsc::Sender<Outbound>,
+    format: FrameFormat,
+    request_sent: bool,
+    cancel_on_drop: bool,
+}
+
+impl Drop for PendingServerResponseCleanup {
+    fn drop(&mut self) {
+        self.pending_responses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.key);
+        self.cancellations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&CancellationKey::Request(self.key.clone()));
+        if self.request_sent && self.cancel_on_drop {
+            let _ = self.outbound.try_send(Outbound {
+                payload: OutboundPayload::Json(json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/cancelled",
+                    "params": {"requestId": self.request_id}
+                })),
+                format: self.format,
+            });
+        }
+    }
+}
+
+impl McpServerTransport {
+    async fn request(
+        &self,
+        method: &str,
+        params: Value,
+        format: FrameFormat,
+    ) -> Result<Value, String> {
+        let sequence = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        let id = format!("glass-server-{sequence}");
+        let key = serde_json::to_string(&Value::String(id.clone()))
+            .map_err(|error| format!("could not encode MCP server request ID: {error}"))?;
+        let (response_tx, response_rx) = oneshot::channel();
+        {
+            let mut pending = self
+                .pending_responses
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if pending.contains_key(&key) {
+                return Err("duplicate MCP server request ID".into());
+            }
+            pending.insert(key.clone(), response_tx);
+        }
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let duplicate_cancellation_id = {
+            let mut cancellations = self
+                .active_server_request_cancellations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let cancellation_key = CancellationKey::Request(key.clone());
+            if cancellations.contains_key(&cancellation_key) {
+                true
+            } else {
+                cancellations.insert(cancellation_key, cancel_tx);
+                false
+            }
+        };
+        if duplicate_cancellation_id {
+            self.pending_responses
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&key);
+            return Err("duplicate MCP server request cancellation ID".into());
+        }
+        let mut cleanup = PendingServerResponseCleanup {
+            key,
+            pending_responses: Arc::clone(&self.pending_responses),
+            request_id: id.clone(),
+            cancellations: Arc::clone(&self.active_server_request_cancellations),
+            outbound: self.outbound.clone(),
+            format,
+            request_sent: false,
+            cancel_on_drop: true,
+        };
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        send_json(&self.outbound, request, format)
+            .await
+            .map_err(|error| format!("could not send MCP server request: {error}"))?;
+        cleanup.request_sent = true;
+        let response = tokio::select! {
+            response = tokio::time::timeout(MCP_DIALOG_REQUEST_TIMEOUT, response_rx) => {
+                let response = response
+                    .map_err(|_| "MCP client input request timed out".to_string())?
+                    .map_err(|_| "MCP client disconnected during input request".to_string())?;
+                cleanup.cancel_on_drop = false;
+                response
+            },
+            _ = cancel_rx => {
+                cleanup.cancel_on_drop = false;
+                return Err("MCP client disconnected during input request".into());
+            },
+        };
+        if response.get("error").is_some() {
+            return Err("MCP client rejected the native dialog input request".into());
+        }
+        response
+            .get("result")
+            .cloned()
+            .ok_or_else(|| "MCP client response omitted `result`".into())
+    }
+}
 /// Retained source alias for daemon callers predating the product split.
 /// Browser MCP no longer owns development sessions.
 pub type DevelopmentSessionStore = ();
@@ -632,6 +789,7 @@ where
     let policy = crate::cli::runner::policy_from_cli(cli)?;
     let mut reader = reader;
     let cancellations: CancellationMap = Arc::new(StdMutex::new(HashMap::new()));
+    let server_request_cancellations: CancellationMap = Arc::new(StdMutex::new(HashMap::new()));
     let permits = lease_context
         .as_ref()
         .map(|context| Arc::clone(&context.request_permits))
@@ -640,14 +798,30 @@ where
         .as_ref()
         .map(|context| Arc::clone(&context.client_request_permits));
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Outbound>(MAX_QUEUED_RESPONSES);
+    let pending_server_responses: PendingServerResponses = Arc::new(StdMutex::new(HashMap::new()));
+    let server_transport = McpServerTransport {
+        outbound: outbound_tx.clone(),
+        pending_responses: Arc::clone(&pending_server_responses),
+        active_server_request_cancellations: Arc::clone(&server_request_cancellations),
+        next_request_id: Arc::new(AtomicU64::new(1)),
+    };
     let writer = tokio::task::spawn_local(async move {
         let mut writer = writer;
         while let Some(outbound) = outbound_rx.recv().await {
-            write_response(&mut writer, &outbound.response, outbound.format).await?;
+            match outbound.payload {
+                OutboundPayload::Response(response) => {
+                    write_response(&mut writer, &response, outbound.format).await?;
+                }
+                OutboundPayload::Json(message) => {
+                    write_json_message(&mut writer, &message, outbound.format).await?;
+                }
+            }
         }
         Ok::<(), io::Error>(())
     });
+    let mut next_internal_cancellation_id = 1_u64;
     let mut lifecycle = Lifecycle::Uninitialized;
+    let mut client_supports_form_elicitation = false;
     let native_session = Arc::new(Mutex::new(None));
     let persistent_native_session = if native_runtime {
         cli.session.clone()
@@ -657,12 +831,33 @@ where
 
     while let Some((body, format)) = read_message(&mut reader).await? {
         let body_bytes = body.len();
-        let request: JsonRpcRequest = match serde_json::from_str(&body) {
-            Ok(request) => request,
+        let message: Value = match serde_json::from_str(&body) {
+            Ok(message) => message,
             Err(error) => {
                 debug!(body_bytes, "MCP request rejected: invalid JSON");
                 let response =
                     error_response(Some(Value::Null), -32700, format!("parse error: {error}"));
+                send_response(&outbound_tx, response, format).await?;
+                continue;
+            }
+        };
+        if message.get("method").is_none()
+            && (message.get("result").is_some() || message.get("error").is_some())
+        {
+            if !route_server_response(&message, &pending_server_responses) {
+                debug!(body_bytes, "MCP server-request response was not correlated");
+            }
+            continue;
+        }
+        let request: JsonRpcRequest = match serde_json::from_value(message) {
+            Ok(request) => request,
+            Err(error) => {
+                debug!(body_bytes, "MCP request rejected: invalid request object");
+                let response = error_response(
+                    Some(Value::Null),
+                    -32600,
+                    format!("invalid JSON-RPC request: {error}"),
+                );
                 send_response(&outbound_tx, response, format).await?;
                 continue;
             }
@@ -725,6 +920,12 @@ where
             );
             if response.error.is_none() {
                 lifecycle = Lifecycle::Negotiated;
+                client_supports_form_elicitation = request
+                    .params
+                    .get("protocolVersion")
+                    .and_then(Value::as_str)
+                    == Some(MCP_PROTOCOL_VERSION_ELICITATION)
+                    && client_declares_form_elicitation(&request);
             }
             send_response(&outbound_tx, response, format).await?;
             continue;
@@ -850,32 +1051,39 @@ where
             }
             None => None,
         };
-        let cancellation_key = request.id.cancellation_key();
+        let cancellation_key = request
+            .id
+            .cancellation_key()
+            .map(CancellationKey::Request)
+            .unwrap_or_else(|| {
+                let key = CancellationKey::Internal(next_internal_cancellation_id);
+                next_internal_cancellation_id = next_internal_cancellation_id
+                    .checked_add(1)
+                    .expect("internal MCP cancellation ID exhausted");
+                key
+            });
         let (cancel_tx, cancel_rx) = oneshot::channel();
-        let mut cancel_guard = Some(cancel_tx);
-        if let Some(key) = cancellation_key.as_ref() {
-            let duplicate = {
-                let mut active = cancellations.lock().expect("cancellation map poisoned");
-                if active.contains_key(key) {
-                    true
-                } else {
-                    active.insert(key.clone(), cancel_guard.take().expect("sender available"));
-                    false
-                }
-            };
-            if duplicate {
-                send_response(
-                    &outbound_tx,
-                    error_response(
-                        request.id.response_value(),
-                        -32600,
-                        "duplicate active request id",
-                    ),
-                    format,
-                )
-                .await?;
-                continue;
+        let duplicate = {
+            let mut active = cancellations.lock().expect("cancellation map poisoned");
+            if active.contains_key(&cancellation_key) {
+                true
+            } else {
+                active.insert(cancellation_key.clone(), cancel_tx);
+                false
             }
+        };
+        if duplicate {
+            send_response(
+                &outbound_tx,
+                error_response(
+                    request.id.response_value(),
+                    -32600,
+                    "duplicate active request id",
+                ),
+                format,
+            )
+            .await?;
+            continue;
         }
         let active_workflow_request = if local_daemon {
             workflow_request_id(&request)
@@ -901,9 +1109,7 @@ where
             )
             .await
         {
-            if let Some(key) = cancellation_key.as_ref() {
-                task_cancellations_remove(&cancellations, key);
-            }
+            task_cancellations_remove(&cancellations, &cancellation_key);
             if !request.id.is_notification() {
                 send_response(
                     &outbound_tx,
@@ -929,15 +1135,28 @@ where
         let task_persistent_native_session = persistent_native_session.clone();
         let task_outbound = outbound_tx.clone();
         let task_cancellations = Arc::clone(&cancellations);
+        let task_elicitation_cancellation = (native_runtime
+            && client_supports_form_elicitation
+            && task_persistent_native_session.is_none())
+        .then(|| Arc::new(Notify::new()));
+        let task_elicitation = task_elicitation_cancellation
+            .as_ref()
+            .map(|parent_cancellation| McpElicitationClient {
+                transport: server_transport.clone(),
+                format,
+                parent_cancellation: Arc::clone(parent_cancellation),
+            });
+        let native_session_owned = Arc::new(AtomicBool::new(false));
+        let task_native_session_owned = Arc::clone(&native_session_owned);
         tokio::task::spawn_local(async move {
             let _permit = permit;
             let _client_permit = client_permit;
-            let _cancel_guard = cancel_guard;
             let is_notification = request.id.is_notification();
             let id = request.id.response_value();
             let operation = async {
                 let mut session = task_session.lock().await;
                 let mut native_session = task_native_session.lock().await;
+                task_native_session_owned.store(true, Ordering::Release);
                 handle_request_with_viewport(
                     &request,
                     &mut session,
@@ -950,22 +1169,41 @@ where
                     task_knowledge_store.as_deref(),
                     &task_development_sessions,
                     task_host_backend.as_deref(),
+                    task_elicitation.as_ref(),
                 )
                 .await
             };
+            let mut operation = Box::pin(operation);
             let mut response = tokio::select! {
-                response = operation => response,
-                _ = cancel_rx => Some(error_response(id, -32800, "request cancelled")),
+                response = &mut operation => response,
+                _ = cancel_rx => {
+                    #[cfg(feature = "native-engine")]
+                    if native_runtime && native_session_owned.load(Ordering::Acquire) {
+                        if let Some(cancellation) = &task_elicitation_cancellation {
+                            cancellation.notify_one();
+                        }
+                        if tokio::time::timeout(
+                            MCP_CANCELLATION_DRAIN_TIMEOUT,
+                            &mut operation,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            drop(operation);
+                            discard_native_mcp_session(&task_native_session).await;
+                        }
+                    } else {
+                        drop(operation);
+                    }
+                    #[cfg(not(feature = "native-engine"))]
+                    drop(operation);
+                    Some(error_response(id, -32800, "request cancelled"))
+                }
             };
             if is_notification {
                 response = None;
             }
-            if let Some(key) = cancellation_key {
-                task_cancellations
-                    .lock()
-                    .expect("cancellation map poisoned")
-                    .remove(&key);
-            }
+            task_cancellations_remove(&task_cancellations, &cancellation_key);
             if let (Some(request_id), Some(owner_id), Some(status)) = (
                 active_workflow_request.as_deref(),
                 active_workflow_owner.as_deref(),
@@ -980,8 +1218,11 @@ where
         });
     }
 
-    // EOF is a graceful client shutdown: allow already accepted requests to
-    // finish and flush their responses before closing the owned browser.
+    // EOF cancels in-flight client and server requests so a modal browser
+    // operation cannot strand the stdio writer or owned browser session.
+    drop(server_transport);
+    cancel_active_requests(&cancellations);
+    cancel_active_requests(&server_request_cancellations);
     drop(outbound_tx);
     writer.await??;
     if close_session_on_eof {
@@ -1093,7 +1334,7 @@ fn canonical_tool_request(request: &JsonRpcRequest) -> Result<GlassRequest, Stri
     Ok(canonical)
 }
 
-fn task_cancellations_remove(cancellations: &CancellationMap, key: &str) {
+fn task_cancellations_remove(cancellations: &CancellationMap, key: &CancellationKey) {
     cancellations
         .lock()
         .expect("cancellation map poisoned")
@@ -1354,7 +1595,24 @@ async fn send_response(
     format: FrameFormat,
 ) -> io::Result<()> {
     sender
-        .send(Outbound { response, format })
+        .send(Outbound {
+            payload: OutboundPayload::Response(response),
+            format,
+        })
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "MCP output task stopped"))
+}
+
+async fn send_json(
+    sender: &mpsc::Sender<Outbound>,
+    message: Value,
+    format: FrameFormat,
+) -> io::Result<()> {
+    sender
+        .send(Outbound {
+            payload: OutboundPayload::Json(message),
+            format,
+        })
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "MCP output task stopped"))
 }
@@ -1379,6 +1637,34 @@ fn request_id_key(id: &Value) -> Option<String> {
     matches!(id, Value::String(_) | Value::Number(_)).then(|| id.to_string())
 }
 
+fn route_server_response(message: &Value, pending_responses: &PendingServerResponses) -> bool {
+    if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+        || message.get("result").is_some() == message.get("error").is_some()
+    {
+        return false;
+    }
+    let Some(key) = message.get("id").and_then(request_id_key) else {
+        return false;
+    };
+    let response = pending_responses
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&key);
+    response.is_some_and(|response| response.send(message.clone()).is_ok())
+}
+
+fn cancel_active_requests(cancellations: &CancellationMap) {
+    let active = {
+        let mut cancellations = cancellations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *cancellations)
+    };
+    for cancellation in active.into_values() {
+        let _ = cancellation.send(());
+    }
+}
+
 fn cancel_request(request: &JsonRpcRequest, cancellations: &CancellationMap) {
     let Some(key) = request.params.get("requestId").and_then(request_id_key) else {
         return;
@@ -1386,7 +1672,7 @@ fn cancel_request(request: &JsonRpcRequest, cancellations: &CancellationMap) {
     if let Some(cancellation) = cancellations
         .lock()
         .expect("cancellation map poisoned")
-        .remove(&key)
+        .remove(&CancellationKey::Request(key))
     {
         let _ = cancellation.send(());
     }
@@ -1416,7 +1702,10 @@ fn initialize_response_in_mode(
             "protocolVersion must be a supported string",
         );
     };
-    if version != MCP_PROTOCOL_VERSION {
+    if !matches!(
+        version,
+        MCP_PROTOCOL_VERSION | MCP_PROTOCOL_VERSION_ELICITATION
+    ) {
         return error_response(
             request.id.response_value(),
             -32602,
@@ -1444,7 +1733,7 @@ fn initialize_response_in_mode(
     success_response(
         request.id.response_value(),
         json!({
-            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "protocolVersion": version,
             "capabilities": {
                 "tools": {"listChanged": false},
                 "prompts": {"listChanged": false},
@@ -1455,6 +1744,18 @@ fn initialize_response_in_mode(
             "serverInfo": {"name": "glass", "version": env!("CARGO_PKG_VERSION")}
         }),
     )
+}
+
+fn client_declares_form_elicitation(request: &JsonRpcRequest) -> bool {
+    let Some(capabilities) = request
+        .params
+        .get("capabilities")
+        .and_then(|capabilities| capabilities.get("elicitation"))
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    capabilities.is_empty() || capabilities.get("form").is_some_and(Value::is_object)
 }
 
 #[cfg(test)]
@@ -1479,6 +1780,7 @@ async fn handle_request(
         knowledge_store_path,
         &development_sessions,
         None,
+        None,
     )
     .await
 }
@@ -1496,6 +1798,7 @@ async fn handle_request_with_viewport(
     knowledge_store_path: Option<&Path>,
     _development_sessions: &DevelopmentSessionStore,
     host_backend: Option<&dyn HostMcpToolBackend>,
+    elicitation: Option<&McpElicitationClient>,
 ) -> Option<JsonRpcResponse> {
     if request.id.is_notification() && request.method == "notifications/initialized" {
         return None;
@@ -1625,6 +1928,7 @@ async fn handle_request_with_viewport(
             viewport,
             knowledge_store_path,
             _development_sessions,
+            elicitation,
         ))
         .await
         {
@@ -1853,6 +2157,7 @@ async fn call_tool(
     viewport: Option<(i64, i64)>,
     knowledge_store_path: Option<&Path>,
     _development_sessions: &DevelopmentSessionStore,
+    elicitation: Option<&McpElicitationClient>,
 ) -> BrowserResult<Value> {
     let response_mode = response_mode_from_params(&request.params)?;
     let invocation = parse_tool_invocation(&request.params)?;
@@ -1998,6 +2303,7 @@ async fn call_tool(
                 options.incognito,
                 policy,
                 response_mode,
+                elicitation,
             ))
             .await;
         }
@@ -3416,9 +3722,274 @@ async fn call_native_tool(
     incognito: bool,
     policy: &BrowserPolicy,
     response_mode: ResponseMode,
+    elicitation: Option<&McpElicitationClient>,
 ) -> BrowserResult<Value> {
-    let session = ensure_native_session(native_session, viewport, profile, incognito).await?;
-    call_native_tool_on_session(invocation, session, profile, policy, response_mode).await
+    let modal_dialogs = elicitation.is_some();
+    let navigation_timeout_ms = match &invocation {
+        ToolInvocation::Navigate { timeout_ms, .. } if modal_dialogs => Some(*timeout_ms),
+        _ => None,
+    };
+    let session =
+        ensure_native_session(native_session, viewport, profile, incognito, modal_dialogs).await?;
+    let operation = call_native_tool_on_session(
+        invocation,
+        session,
+        profile,
+        policy,
+        response_mode,
+        modal_dialogs,
+    );
+    let (result, discard_session) = match elicitation {
+        Some(elicitation) => {
+            let (result, discard_session) = run_native_mcp_dialog_host(
+                session.native_dialog_controller()?,
+                elicitation,
+                operation,
+                navigation_timeout_ms,
+            )
+            .await;
+            (result, discard_session)
+        }
+        None => (operation.await, false),
+    };
+    if discard_session {
+        native_session.take();
+        tracing::warn!(
+            "discarded native MCP browser session after a cancelled operation failed to drain"
+        );
+    }
+    result
+}
+
+#[cfg(feature = "native-engine")]
+async fn run_native_mcp_dialog_host<F>(
+    controller: NativeDialogController,
+    client: &McpElicitationClient,
+    operation: F,
+    navigation_timeout_ms: Option<u64>,
+) -> (BrowserResult<Value>, bool)
+where
+    F: Future<Output = BrowserResult<Value>>,
+{
+    let mut remaining = navigation_timeout_ms.map(Duration::from_millis);
+    tokio::pin!(operation);
+    loop {
+        let pending_dialog = match controller.pending_dialog() {
+            Ok(pending_dialog) => pending_dialog,
+            Err(error) => return (Err(error.into()), true),
+        };
+        if let Some(pending) = pending_dialog {
+            let resolution = match mcp_dialog_resolution(client, &pending).await {
+                Ok(resolution) => resolution,
+                Err(error) => {
+                    if controller
+                        .resolve_dialog(
+                            &pending.id,
+                            NativeDialogResolution {
+                                accepted: false,
+                                prompt_value: None,
+                            },
+                        )
+                        .is_err()
+                    {
+                        return (Err(error.into()), true);
+                    }
+                    let drain_result =
+                        tokio::time::timeout(MCP_CANCELLATION_DRAIN_TIMEOUT, &mut operation).await;
+                    return (Err(error.into()), drain_result.is_err());
+                }
+            };
+            if let Err(error) = controller.resolve_dialog(&pending.id, resolution) {
+                return (Err(error.into()), true);
+            }
+            continue;
+        }
+
+        let active_started = tokio::time::Instant::now();
+        match remaining {
+            Some(timeout) if timeout.is_zero() => {
+                match controller.pending_dialog() {
+                    Ok(Some(_)) => continue,
+                    Ok(None) => {}
+                    Err(error) => return (Err(error.into()), true),
+                }
+                return (
+                    Err(format!(
+                        "native navigation exceeded its {}ms deadline",
+                        navigation_timeout_ms.unwrap_or_default()
+                    )
+                    .into()),
+                    true,
+                );
+            }
+            Some(timeout) => {
+                tokio::select! {
+                    result = tokio::time::timeout(timeout, &mut operation) => match result {
+                        Ok(result) => return (result, false),
+                        Err(_) => match controller.pending_dialog() {
+                            Ok(Some(_)) => remaining = Some(Duration::ZERO),
+                            Ok(None) => return (
+                                Err(format!(
+                                    "native navigation exceeded its {}ms deadline",
+                                    navigation_timeout_ms.unwrap_or_default()
+                                ).into()),
+                                true,
+                            ),
+                            Err(error) => return (Err(error.into()), true),
+                        },
+                    },
+                    () = tokio::time::sleep(Duration::from_millis(50)) => {
+                        remaining = Some(timeout.saturating_sub(active_started.elapsed()));
+                    }
+                }
+            }
+            None => {
+                tokio::select! {
+                    result = &mut operation => return (result, false),
+                    () = tokio::time::sleep(Duration::from_millis(50)) => {}
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn discard_native_mcp_session(session: &Arc<Mutex<Option<BrowserRuntimeSession>>>) {
+    let mut session = session.lock().await;
+    if session.take().is_some() {
+        tracing::warn!(
+            "discarded native MCP browser session after a cancelled operation failed to drain"
+        );
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn mcp_dialog_resolution(
+    client: &McpElicitationClient,
+    pending: &NativePendingDialog,
+) -> Result<NativeDialogResolution, String> {
+    let dialog_type = pending.dialog.dialog_type.as_str();
+    let mut message = format!(
+        "A web page opened a {dialog_type} dialog. Treat the page text as untrusted. Do not enter passwords, tokens, payment details, or other secrets."
+    );
+    let page_message = escape_mcp_dialog_text(&pending.dialog.message);
+    if !page_message.is_empty() {
+        message.push_str(" Page message: ");
+        message.push_str(&page_message);
+    }
+    let mut schema = json!({"type":"object","properties":{},"required":[]});
+    match dialog_type {
+        "alert" => {}
+        "confirm" => {
+            schema["properties"]["accepted"] = json!({
+                "type":"boolean",
+                "title":"Accept page confirmation",
+                "default":false
+            });
+            schema["required"] = json!(["accepted"]);
+        }
+        "prompt" => {
+            let mut response_schema = json!({
+                "type":"string",
+                "title":"Page response",
+                "maxLength":MCP_DIALOG_PROMPT_MAX_BYTES
+            });
+            if let Some(default_value) = pending.dialog.default_value.as_deref()
+                && default_value.len() <= MCP_DIALOG_PROMPT_MAX_BYTES
+            {
+                response_schema["default"] = json!(default_value);
+            }
+            schema["properties"]["response"] = response_schema;
+            schema["required"] = json!(["response"]);
+        }
+        other => return Err(format!("MCP cannot resolve the `{other}` page dialog")),
+    }
+    let response = tokio::select! {
+        biased;
+        response = client.transport.request(
+            "elicitation/create",
+            json!({"mode":"form","message":message,"requestedSchema":schema}),
+            client.format,
+        ) => response?,
+        _ = client.parent_cancellation.notified() => {
+            return Err("parent MCP browser request was cancelled".into());
+        }
+    };
+    let action = response
+        .get("action")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "MCP elicitation response omitted its action".to_string())?;
+    if !matches!(action, "accept" | "decline" | "cancel") {
+        return Err("MCP elicitation response used an unknown action".into());
+    }
+    if action != "accept" {
+        return Ok(NativeDialogResolution {
+            accepted: dialog_type == "alert",
+            prompt_value: None,
+        });
+    }
+    let content = response.get("content").cloned().unwrap_or(Value::Null);
+    let resolution = match dialog_type {
+        "alert" => NativeDialogResolution {
+            accepted: true,
+            prompt_value: None,
+        },
+        "confirm" => NativeDialogResolution {
+            accepted: content
+                .get("accepted")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| {
+                    "MCP confirm response must contain a boolean `accepted`".to_string()
+                })?,
+            prompt_value: None,
+        },
+        "prompt" => {
+            let value = content
+                .get("response")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    "MCP prompt response must contain a string `response`".to_string()
+                })?;
+            if value.len() > MCP_DIALOG_PROMPT_MAX_BYTES {
+                return Err(format!(
+                    "MCP prompt response exceeds the {MCP_DIALOG_PROMPT_MAX_BYTES}-byte UTF-8 limit"
+                ));
+            }
+            NativeDialogResolution {
+                accepted: true,
+                prompt_value: Some(value.to_owned()),
+            }
+        }
+        _ => unreachable!("dialog kind was validated before elicitation"),
+    };
+    Ok(resolution)
+}
+
+#[cfg(feature = "native-engine")]
+fn escape_mcp_dialog_text(value: &str) -> String {
+    let mut output = String::new();
+    let bounded = value.chars().take(512).collect::<String>();
+    for token in bounded.split_whitespace() {
+        if !output.is_empty() {
+            output.push(' ');
+        }
+        let lowered = token.to_ascii_lowercase();
+        if lowered.contains("://") || lowered.starts_with("www.") {
+            output.push_str("[page link omitted]");
+            continue;
+        }
+        for character in token.chars() {
+            if character.is_control()
+                || matches!(character, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            {
+                use std::fmt::Write as _;
+                let _ = write!(output, "\\u{{{:04x}}}", character as u32);
+            } else {
+                output.push(character);
+            }
+        }
+    }
+    output
 }
 
 #[cfg(feature = "native-engine")]
@@ -3428,6 +3999,7 @@ fn call_native_tool_on_session<'a>(
     profile: &'a str,
     policy: &'a BrowserPolicy,
     response_mode: ResponseMode,
+    pause_navigation_timeout_for_dialog: bool,
 ) -> Pin<Box<dyn Future<Output = BrowserResult<Value>> + 'a>> {
     match invocation {
         ToolInvocation::Navigate {
@@ -3441,6 +4013,7 @@ fn call_native_tool_on_session<'a>(
             timeout_ms,
             expected_revision,
             response_mode,
+            pause_navigation_timeout_for_dialog,
         )),
         invocation @ (ToolInvocation::InspectPage
         | ToolInvocation::ObserveBootstrap
@@ -3601,6 +4174,7 @@ async fn native_mcp_navigate(
     timeout_ms: u64,
     expected_revision: Option<u64>,
     response_mode: ResponseMode,
+    pause_deadline_for_dialog: bool,
 ) -> BrowserResult<Value> {
     let url = crate::browser::session::normalize_url(url);
     policy.require_url(&url).await?;
@@ -3610,9 +4184,13 @@ async fn native_mcp_navigate(
             None => session.navigate(url).await,
         }
     };
-    let navigation = tokio::time::timeout(Duration::from_millis(timeout_ms), navigation)
-        .await
-        .map_err(|_| format!("native navigation exceeded its {timeout_ms}ms deadline"))??;
+    let navigation = if pause_deadline_for_dialog {
+        navigation.await?
+    } else {
+        tokio::time::timeout(Duration::from_millis(timeout_ms), navigation)
+            .await
+            .map_err(|_| format!("native navigation exceeded its {timeout_ms}ms deadline"))??
+    };
     serialized_result_mode(&navigation, response_mode)
 }
 
@@ -5237,7 +5815,7 @@ pub(crate) async fn run_native_persistent_tool(
 ) -> BrowserResult<Value> {
     let response_mode = response_mode_from_params(&params)?;
     let invocation = parse_tool_invocation(&params)?;
-    call_native_tool_on_session(invocation, session, profile, policy, response_mode).await
+    call_native_tool_on_session(invocation, session, profile, policy, response_mode, false).await
 }
 
 #[cfg(feature = "native-engine")]
@@ -5287,6 +5865,7 @@ async fn ensure_native_session<'a>(
     viewport: Option<(i64, i64)>,
     profile: &str,
     incognito: bool,
+    modal_dialogs: bool,
 ) -> BrowserResult<&'a mut BrowserRuntimeSession> {
     if session.is_none() {
         let viewport = viewport
@@ -5308,7 +5887,11 @@ async fn ensure_native_session<'a>(
             config =
                 config.with_storage_path(crate::cli::runner::native_profile_storage_path(profile)?);
         }
-        *session = Some(BrowserRuntimeSession::connect_native(config).await?);
+        *session = Some(if modal_dialogs {
+            BrowserRuntimeSession::connect_native_with_modal_dialogs(config).await?
+        } else {
+            BrowserRuntimeSession::connect_native(config).await?
+        });
     }
     Ok(session.as_mut().expect("native session initialized"))
 }
@@ -6738,6 +7321,26 @@ async fn write_response<W: AsyncWrite + Unpin>(
     format: FrameFormat,
 ) -> io::Result<()> {
     let body = encode_response(response, MAX_RESPONSE_BYTES)?;
+    write_framed_message(writer, &body, format).await
+}
+
+async fn write_json_message<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    message: &Value,
+    format: FrameFormat,
+) -> io::Result<()> {
+    let body = serde_json::to_string(message).map_err(io::Error::other)?;
+    if body.len() > MAX_RESPONSE_BYTES {
+        return Err(invalid_data("MCP server request exceeds the size limit"));
+    }
+    write_framed_message(writer, &body, format).await
+}
+
+async fn write_framed_message<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    body: &str,
+    format: FrameFormat,
+) -> io::Result<()> {
     match format {
         FrameFormat::ContentLength => {
             writer
@@ -7420,14 +8023,32 @@ mod tests {
             None,
             &development_sessions,
             None,
+            None,
         )
         .await
         .expect("native MCP tool should return a response")
     }
 
     #[cfg(feature = "native-engine")]
-    #[tokio::test]
-    async fn native_mcp_routes_core_browser_tools_without_chromium() {
+    #[test]
+    fn native_mcp_routes_core_browser_tools_without_chromium() {
+        std::thread::Builder::new()
+            .name("glass-native-mcp-core-test".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("native MCP test runtime should build");
+                runtime.block_on(native_mcp_routes_core_browser_tools_without_chromium_inner());
+            })
+            .expect("native MCP test thread should spawn")
+            .join()
+            .expect("native MCP test thread should not panic");
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn native_mcp_routes_core_browser_tools_without_chromium_inner() {
         let mut session = None;
         let mut native_session = None;
         let options = SessionOptions::default();
@@ -7818,8 +8439,26 @@ mod tests {
     }
 
     #[cfg(feature = "native-engine")]
-    #[tokio::test]
-    async fn native_mcp_routes_shared_semantic_contracts_without_chromium() {
+    #[test]
+    fn native_mcp_routes_shared_semantic_contracts_without_chromium() {
+        std::thread::Builder::new()
+            .name("glass-native-mcp-semantic-test".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("native MCP test runtime should build");
+                runtime
+                    .block_on(native_mcp_routes_shared_semantic_contracts_without_chromium_inner());
+            })
+            .expect("native MCP test thread should spawn")
+            .join()
+            .expect("native MCP test thread should not panic");
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn native_mcp_routes_shared_semantic_contracts_without_chromium_inner() {
         let mut session = None;
         let mut native_session = None;
         let options = SessionOptions::default();
@@ -8001,8 +8640,25 @@ mod tests {
     }
 
     #[cfg(feature = "native-engine")]
-    #[tokio::test]
-    async fn native_mcp_routes_target_lifecycle_without_chromium() {
+    #[test]
+    fn native_mcp_routes_target_lifecycle_without_chromium() {
+        std::thread::Builder::new()
+            .name("glass-native-mcp-target-test".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("native MCP test runtime should build");
+                runtime.block_on(native_mcp_routes_target_lifecycle_without_chromium_inner());
+            })
+            .expect("native MCP test thread should spawn")
+            .join()
+            .expect("native MCP test thread should not panic");
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn native_mcp_routes_target_lifecycle_without_chromium_inner() {
         let mut session = None;
         let mut native_session = None;
         let options = SessionOptions::default();
@@ -8211,6 +8867,380 @@ mod tests {
         assert!(closed.error.is_none());
 
         native_session.take().unwrap().close().await.unwrap();
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_mcp_stdio_elicitation_resumes_process_page_dialogs() {
+        std::thread::Builder::new()
+            .name("glass-mcp-dialog-test".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("native MCP test runtime should build");
+                let local = tokio::task::LocalSet::new();
+                runtime.block_on(local.run_until(native_mcp_stdio_elicitation_inner()));
+            })
+            .expect("native MCP test thread should spawn")
+            .join()
+            .expect("native MCP test thread should not panic");
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn native_mcp_stdio_elicitation_inner() {
+        use clap::Parser as _;
+
+        let html = "<!doctype html><title>Dialog</title><body><script>var name=prompt('Name','Ada');var accepted=confirm('Save?');document.title='Saved '+name+' '+accepted;document.body.textContent=document.title;alert('Saved '+name);</script></body>";
+        let single_dialog_html = "<!doctype html><title>Single dialog</title><body><script>var answer=prompt('Single prompt','');document.body.textContent='Prompt dismissed '+(answer===null);</script></body>";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let page = html.to_owned();
+        let page_server = tokio::task::spawn_local(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let read = stream.read(&mut request).await.unwrap_or_default();
+                let request_line = String::from_utf8_lossy(&request[..read]);
+                let (status, body) = if request_line.starts_with("GET /single HTTP/") {
+                    ("200 OK", single_dialog_html)
+                } else if request_line.starts_with("GET / HTTP/") {
+                    ("200 OK", page.as_str())
+                } else {
+                    ("404 Not Found", "")
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let cli = Cli::try_parse_from(["glass", "--mcp"]).unwrap();
+        assert_eq!(
+            cli.browser_runtime,
+            crate::browser::runtime::BrowserRuntime::Native
+        );
+        let (mut client_to_server, server_reader) = tokio::io::duplex(1024 * 1024);
+        let (server_writer, client_from_server) = tokio::io::duplex(1024 * 1024);
+        let server = tokio::task::spawn_local(async move {
+            run_mcp_stream_inner(
+                BufReader::new(server_reader),
+                server_writer,
+                &cli,
+                Arc::new(Mutex::new(None)),
+                true,
+                true,
+                false,
+                None,
+                None,
+            )
+            .await
+        });
+        let mut client_from_server = BufReader::new(client_from_server);
+        let initialize = json!({
+            "jsonrpc":"2.0","id":"initialize","method":"initialize",
+            "params":{
+                "protocolVersion":MCP_PROTOCOL_VERSION_ELICITATION,
+                "capabilities":{"elicitation":{"form":{}}},
+                "clientInfo":{"name":"glass-mcp-test","version":"1"}
+            }
+        });
+        write_test_mcp_message(&mut client_to_server, &initialize).await;
+        let initialized = read_test_mcp_message(&mut client_from_server).await;
+        assert_eq!(
+            initialized["result"]["protocolVersion"],
+            MCP_PROTOCOL_VERSION_ELICITATION
+        );
+        write_test_mcp_message(
+            &mut client_to_server,
+            &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+        write_test_mcp_message(
+            &mut client_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"navigate","method":"tools/call",
+                "params":{"name":"navigate","arguments":{
+                    "url":format!("http://{address}/"),"timeoutMs":30_000,"includeTrace":true
+                }}
+            }),
+        )
+        .await;
+
+        let response = tokio::time::timeout(Duration::from_secs(30), async {
+            let mut observed_dialogs = Vec::new();
+            let mut delayed_human_reply = false;
+            loop {
+                let message = read_test_mcp_message(&mut client_from_server).await;
+                if message.get("method").and_then(Value::as_str) == Some("elicitation/create") {
+                    let prompt = message["params"]["message"].as_str().unwrap();
+                    let result = if prompt.contains("prompt dialog") {
+                        observed_dialogs.push("prompt");
+                        if !delayed_human_reply {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            delayed_human_reply = true;
+                        }
+                        json!({"action":"accept","content":{"response":"Grace"}})
+                    } else if prompt.contains("confirm dialog") {
+                        observed_dialogs.push("confirm");
+                        json!({"action":"accept","content":{"accepted":true}})
+                    } else {
+                        observed_dialogs.push("alert");
+                        json!({"action":"accept","content":{}})
+                    };
+                    write_test_mcp_message(
+                        &mut client_to_server,
+                        &json!({"jsonrpc":"2.0","id":message["id"],"result":result}),
+                    )
+                    .await;
+                    continue;
+                }
+                assert_eq!(message["id"], "navigate");
+                assert!(message.get("error").is_none(), "{message}");
+                assert_ne!(message["result"]["isError"], true, "{message}");
+                assert_eq!(
+                    observed_dialogs,
+                    ["prompt", "confirm", "alert"],
+                    "unexpected MCP response: {message}"
+                );
+                assert_ne!(message["result"]["isError"], true, "{message}");
+                break;
+            }
+        })
+        .await
+        .expect("native MCP dialog sequence should finish");
+        let _ = response;
+        write_test_mcp_message(
+            &mut client_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"page-text","method":"tools/call",
+                "params":{"name":"getText","arguments":{}}
+            }),
+        )
+        .await;
+        let page_text = read_test_mcp_message(&mut client_from_server).await;
+        assert_eq!(page_text["id"], "page-text");
+        assert!(
+            page_text["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Saved Grace true")
+        );
+
+        write_test_mcp_message(
+            &mut client_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"deadline","method":"tools/call",
+                "params":{"name":"navigate","arguments":{
+                    "url":format!("http://{address}/single"),
+                    "timeoutMs":5_000
+                }}
+            }),
+        )
+        .await;
+        let deadline_elicitation = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let message = read_test_mcp_message(&mut client_from_server).await;
+                if message.get("method").and_then(Value::as_str) == Some("elicitation/create") {
+                    break message;
+                }
+                assert_ne!(
+                    message["id"], "deadline",
+                    "navigation finished before elicitation: {message}"
+                );
+            }
+        })
+        .await
+        .expect("navigation deadline test should reach its page prompt");
+        assert!(
+            deadline_elicitation["params"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("prompt dialog")
+        );
+        tokio::time::sleep(Duration::from_millis(5_100)).await;
+        write_test_mcp_message(
+            &mut client_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":deadline_elicitation["id"],
+                "result":{"action":"accept","content":{"response":"still alive"}}
+            }),
+        )
+        .await;
+        let resumed = read_test_mcp_message(&mut client_from_server).await;
+        assert_eq!(resumed["id"], "deadline");
+        assert!(resumed.get("error").is_none(), "{resumed}");
+        assert_ne!(resumed["result"]["isError"], true, "{resumed}");
+
+        client_to_server.shutdown().await.unwrap();
+        server.await.unwrap().unwrap();
+
+        let cli = Cli::try_parse_from(["glass", "--mcp"]).unwrap();
+        let (mut client_to_server, mut client_from_server, server) =
+            start_native_test_mcp_connection(cli);
+        initialize_native_test_mcp_connection(&mut client_to_server, &mut client_from_server).await;
+        write_test_mcp_message(
+            &mut client_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"cancel-me","method":"tools/call",
+                "params":{"name":"navigate","arguments":{
+                    "url":format!("http://{address}/single"),"timeoutMs":10_000
+                }}
+            }),
+        )
+        .await;
+        let elicitation = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let message = read_test_mcp_message(&mut client_from_server).await;
+                if message.get("method").and_then(Value::as_str) == Some("elicitation/create") {
+                    break message;
+                }
+            }
+        })
+        .await
+        .expect("native MCP prompt should be elicited before cancellation");
+        write_test_mcp_message(
+            &mut client_to_server,
+            &json!({
+                "jsonrpc":"2.0","method":"notifications/cancelled",
+                "params":{"requestId":"cancel-me"}
+            }),
+        )
+        .await;
+        let cancellation = read_test_mcp_message(&mut client_from_server).await;
+        assert_eq!(cancellation["method"], "notifications/cancelled");
+        assert_eq!(cancellation["params"]["requestId"], elicitation["id"]);
+        let cancelled = read_test_mcp_message(&mut client_from_server).await;
+        assert_eq!(cancelled["id"], "cancel-me");
+        assert_eq!(cancelled["error"]["code"], -32800);
+        write_test_mcp_message(
+            &mut client_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"after-cancel","method":"tools/call",
+                "params":{"name":"getText","arguments":{}}
+            }),
+        )
+        .await;
+        let after_cancel = read_test_mcp_message(&mut client_from_server).await;
+        assert_eq!(after_cancel["id"], "after-cancel");
+        assert_ne!(after_cancel["result"]["isError"], true, "{after_cancel}");
+        assert!(
+            after_cancel["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Prompt dismissed true")
+        );
+        client_to_server.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("cancelled native MCP session should shut down")
+            .unwrap()
+            .unwrap();
+
+        let cli = Cli::try_parse_from(["glass", "--mcp"]).unwrap();
+        let (mut client_to_server, mut client_from_server, server) =
+            start_native_test_mcp_connection(cli);
+        initialize_native_test_mcp_connection(&mut client_to_server, &mut client_from_server).await;
+        write_test_mcp_message(
+            &mut client_to_server,
+            &json!({
+                "jsonrpc":"2.0","id":"eof-me","method":"tools/call",
+                "params":{"name":"navigate","arguments":{
+                    "url":format!("http://{address}/single"),"timeoutMs":10_000
+                }}
+            }),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let message = read_test_mcp_message(&mut client_from_server).await;
+                if message.get("method").and_then(Value::as_str) == Some("elicitation/create") {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("native MCP prompt should be elicited before stdio EOF");
+        client_to_server.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("stdio EOF should release the modal native browser call")
+            .unwrap()
+            .unwrap();
+        page_server.abort();
+    }
+
+    #[cfg(feature = "native-engine")]
+    fn start_native_test_mcp_connection(
+        cli: Cli,
+    ) -> (
+        tokio::io::DuplexStream,
+        BufReader<tokio::io::DuplexStream>,
+        tokio::task::JoinHandle<BrowserResult<()>>,
+    ) {
+        let (client_to_server, server_reader) = tokio::io::duplex(1024 * 1024);
+        let (server_writer, client_from_server) = tokio::io::duplex(1024 * 1024);
+        let server = tokio::task::spawn_local(async move {
+            run_mcp_stream_inner(
+                BufReader::new(server_reader),
+                server_writer,
+                &cli,
+                Arc::new(Mutex::new(None)),
+                true,
+                true,
+                false,
+                None,
+                None,
+            )
+            .await
+        });
+        (client_to_server, BufReader::new(client_from_server), server)
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn initialize_native_test_mcp_connection(
+        client_to_server: &mut tokio::io::DuplexStream,
+        client_from_server: &mut BufReader<tokio::io::DuplexStream>,
+    ) {
+        let initialize = json!({
+            "jsonrpc":"2.0","id":"initialize","method":"initialize",
+            "params":{
+                "protocolVersion":MCP_PROTOCOL_VERSION_ELICITATION,
+                "capabilities":{"elicitation":{"form":{}}},
+                "clientInfo":{"name":"glass-mcp-test","version":"1"}
+            }
+        });
+        write_test_mcp_message(client_to_server, &initialize).await;
+        let initialized = read_test_mcp_message(client_from_server).await;
+        assert_eq!(
+            initialized["result"]["protocolVersion"],
+            MCP_PROTOCOL_VERSION_ELICITATION
+        );
+        write_test_mcp_message(
+            client_to_server,
+            &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+    }
+
+    #[cfg(test)]
+    async fn write_test_mcp_message<W: AsyncWrite + Unpin>(writer: &mut W, message: &Value) {
+        writer
+            .write_all(serde_json::to_string(message).unwrap().as_bytes())
+            .await
+            .unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.flush().await.unwrap();
+    }
+
+    #[cfg(test)]
+    async fn read_test_mcp_message<R: AsyncBufRead + Unpin>(reader: &mut R) -> Value {
+        let (body, format) = read_message(reader).await.unwrap().unwrap();
+        assert_eq!(format, FrameFormat::Newline);
+        serde_json::from_str(&body).unwrap()
     }
 
     #[tokio::test]
@@ -8752,10 +9782,10 @@ mod tests {
         for request_id in [json!(7), json!("task-7")] {
             let cancellations: CancellationMap = Arc::new(StdMutex::new(HashMap::new()));
             let (sender, mut receiver) = oneshot::channel();
-            cancellations
-                .lock()
-                .unwrap()
-                .insert(request_id_key(&request_id).unwrap(), sender);
+            cancellations.lock().unwrap().insert(
+                CancellationKey::Request(request_id_key(&request_id).unwrap()),
+                sender,
+            );
             let request: JsonRpcRequest = serde_json::from_value(json!({
                 "jsonrpc": "2.0",
                 "method": "notifications/cancelled",
@@ -9449,6 +10479,289 @@ mod tests {
 
         assert!(encoded.starts_with("Content-Length: "));
         assert!(encoded.ends_with(r#"{"jsonrpc":"2.0","result":{"ok":true},"id":1}"#));
+    }
+
+    #[test]
+    fn negotiates_legacy_and_elicitation_mcp_versions() {
+        let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
+        for version in [MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_ELICITATION] {
+            let request: JsonRpcRequest = serde_json::from_value(json!({
+                "jsonrpc":"2.0",
+                "id":1,
+                "method":"initialize",
+                "params": {
+                    "protocolVersion":version,
+                    "capabilities":{"elicitation":{"form":{}}},
+                    "clientInfo":{"name":"fixture","version":"1"}
+                }
+            }))
+            .unwrap();
+            let response = initialize_response(&request, &policy);
+            assert!(response.error.is_none());
+            assert_eq!(response.result.unwrap()["protocolVersion"], version);
+        }
+
+        let supports_form: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"protocolVersion":MCP_PROTOCOL_VERSION_ELICITATION,
+                "capabilities":{"elicitation":{"form":{}}}}
+        }))
+        .unwrap();
+        assert!(client_declares_form_elicitation(&supports_form));
+
+        let legacy_form_alias: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"protocolVersion":MCP_PROTOCOL_VERSION_ELICITATION,
+                "capabilities":{"elicitation":{}}}
+        }))
+        .unwrap();
+        assert!(client_declares_form_elicitation(&legacy_form_alias));
+
+        let url_only: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"protocolVersion":MCP_PROTOCOL_VERSION_ELICITATION,
+                "capabilities":{"elicitation":{"url":{}}}}
+        }))
+        .unwrap();
+        assert!(!client_declares_form_elicitation(&url_only));
+    }
+
+    #[tokio::test]
+    async fn routes_mcp_server_request_responses_by_id() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (outbound, mut outbound_rx) = mpsc::channel(2);
+                let pending_responses: PendingServerResponses =
+                    Arc::new(StdMutex::new(HashMap::new()));
+                let transport = McpServerTransport {
+                    outbound,
+                    pending_responses: Arc::clone(&pending_responses),
+                    active_server_request_cancellations: Arc::new(StdMutex::new(HashMap::new())),
+                    next_request_id: Arc::new(AtomicU64::new(1)),
+                };
+                let request = tokio::task::spawn_local(async move {
+                    transport
+                        .request(
+                            "elicitation/create",
+                            json!({"mode":"form","message":"answer"}),
+                            FrameFormat::Newline,
+                        )
+                        .await
+                });
+                let outbound = outbound_rx.recv().await.unwrap();
+                let OutboundPayload::Json(message) = outbound.payload else {
+                    panic!("expected outbound server request");
+                };
+                assert_eq!(message["method"], "elicitation/create");
+                let wrong_id = json!({
+                    "jsonrpc":"2.0","id":"not-the-request","result":{"action":"cancel"}
+                });
+                assert!(!route_server_response(&wrong_id, &pending_responses));
+                let response = json!({
+                    "jsonrpc":"2.0","id":message["id"],
+                    "result":{"action":"accept","content":{"value":"human"}}
+                });
+                assert!(route_server_response(&response, &pending_responses));
+                assert_eq!(request.await.unwrap().unwrap(), response["result"]);
+
+                let client_cancellations: CancellationMap = Arc::new(StdMutex::new(HashMap::new()));
+                let server_cancellations: CancellationMap = Arc::new(StdMutex::new(HashMap::new()));
+                let server_pending_responses: PendingServerResponses =
+                    Arc::new(StdMutex::new(HashMap::new()));
+                let (outbound, mut outbound_rx) = mpsc::channel(2);
+                let transport = McpServerTransport {
+                    outbound,
+                    pending_responses: Arc::clone(&server_pending_responses),
+                    active_server_request_cancellations: Arc::clone(&server_cancellations),
+                    next_request_id: Arc::new(AtomicU64::new(2)),
+                };
+                let request = tokio::task::spawn_local(async move {
+                    transport
+                        .request(
+                            "elicitation/create",
+                            json!({"mode":"form","message":"cancel me"}),
+                            FrameFormat::Newline,
+                        )
+                        .await
+                });
+                let outbound = outbound_rx.recv().await.unwrap();
+                let OutboundPayload::Json(message) = outbound.payload else {
+                    panic!("expected outbound server request");
+                };
+                let cancel: JsonRpcRequest = serde_json::from_value(json!({
+                    "jsonrpc":"2.0","method":"notifications/cancelled",
+                    "params":{"requestId":message["id"]}
+                }))
+                .unwrap();
+                cancel_request(&cancel, &client_cancellations);
+                assert!(!request.is_finished());
+                let response = json!({
+                    "jsonrpc":"2.0","id":message["id"],
+                    "result":{"action":"accept"}
+                });
+                assert!(route_server_response(&response, &server_pending_responses));
+                assert_eq!(request.await.unwrap().unwrap(), response["result"]);
+                assert!(client_cancellations.lock().unwrap().is_empty());
+                assert!(server_cancellations.lock().unwrap().is_empty());
+
+                let (outbound, mut outbound_rx) = mpsc::channel(2);
+                let transport = McpServerTransport {
+                    outbound,
+                    pending_responses: Arc::new(StdMutex::new(HashMap::new())),
+                    active_server_request_cancellations: Arc::new(StdMutex::new(HashMap::new())),
+                    next_request_id: Arc::new(AtomicU64::new(3)),
+                };
+                let request = tokio::task::spawn_local(async move {
+                    transport
+                        .request(
+                            "elicitation/create",
+                            json!({"mode":"form","message":"cancel me"}),
+                            FrameFormat::Newline,
+                        )
+                        .await
+                });
+                let outbound = outbound_rx.recv().await.unwrap();
+                let OutboundPayload::Json(message) = outbound.payload else {
+                    panic!("expected outbound server request");
+                };
+                request.abort();
+                assert!(request.await.unwrap_err().is_cancelled());
+                let outbound = outbound_rx.recv().await.unwrap();
+                let OutboundPayload::Json(cancellation) = outbound.payload else {
+                    panic!("expected outbound cancellation notification");
+                };
+                assert_eq!(cancellation["method"], "notifications/cancelled");
+                assert_eq!(cancellation["params"]["requestId"], message["id"]);
+            })
+            .await;
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn simulated_mcp_dialog_response(
+        pending: NativePendingDialog,
+        response: Value,
+    ) -> (Result<NativeDialogResolution, String>, Value) {
+        let (outbound, mut outbound_rx) = mpsc::channel(2);
+        let pending_responses: PendingServerResponses = Arc::new(StdMutex::new(HashMap::new()));
+        let client = McpElicitationClient {
+            transport: McpServerTransport {
+                outbound,
+                pending_responses: Arc::clone(&pending_responses),
+                active_server_request_cancellations: Arc::new(StdMutex::new(HashMap::new())),
+                next_request_id: Arc::new(AtomicU64::new(1)),
+            },
+            format: FrameFormat::Newline,
+            parent_cancellation: Arc::new(Notify::new()),
+        };
+        let dialog =
+            tokio::task::spawn_local(async move { mcp_dialog_resolution(&client, &pending).await });
+        let outbound = outbound_rx.recv().await.unwrap();
+        let OutboundPayload::Json(message) = outbound.payload else {
+            panic!("expected outbound elicitation request");
+        };
+        let response_message = json!({
+            "jsonrpc":"2.0","id":message["id"],"result":response
+        });
+        assert!(route_server_response(&response_message, &pending_responses));
+        (dialog.await.unwrap(), message)
+    }
+
+    #[cfg(feature = "native-engine")]
+    fn test_pending_mcp_dialog(dialog_type: &str, message: &str) -> NativePendingDialog {
+        NativePendingDialog {
+            id: "dialog-1".into(),
+            context_id: "context-1".into(),
+            frame_id: "frame-1".into(),
+            dialog: crate::browser::session::PendingDialog {
+                dialog_type: dialog_type.into(),
+                message: message.into(),
+                default_value: (dialog_type == "prompt").then(|| "Ada".into()),
+                url: "https://user:secret@example.test/".into(),
+            },
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[tokio::test]
+    async fn mcp_elicitation_resolves_dialog_semantics_and_bounds_prompt_bytes() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let prompt = test_pending_mcp_dialog(
+                    "prompt",
+                    "Name\u{001b}[31m https://example.test/path \u{202e}",
+                );
+                let value = format!("{}a", "€".repeat(85));
+                let (resolution, request) = simulated_mcp_dialog_response(
+                    prompt,
+                    json!({"action":"accept","content":{"response":value}}),
+                )
+                .await;
+                let resolution = resolution.unwrap();
+                assert!(resolution.accepted);
+                assert_eq!(resolution.prompt_value.as_deref().unwrap().len(), 256);
+                assert_eq!(request["params"]["mode"], "form");
+                assert_eq!(
+                    request["params"]["requestedSchema"]["properties"]["response"]["maxLength"],
+                    MCP_DIALOG_PROMPT_MAX_BYTES
+                );
+                assert!(
+                    request["params"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("\\u{001b}")
+                );
+                assert!(
+                    request["params"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("\\u{202e}")
+                );
+                assert!(
+                    request["params"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Do not enter passwords, tokens")
+                );
+                assert!(
+                    !request["params"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("example.test")
+                );
+                assert!(request["params"].get("url").is_none());
+
+                let too_long = "€".repeat(86);
+                let (resolution, _) = simulated_mcp_dialog_response(
+                    test_pending_mcp_dialog("prompt", "secret"),
+                    json!({"action":"accept","content":{"response":too_long}}),
+                )
+                .await;
+                assert!(resolution.unwrap_err().contains("256-byte UTF-8 limit"));
+
+                let (resolution, _) = simulated_mcp_dialog_response(
+                    test_pending_mcp_dialog("confirm", "Continue?"),
+                    json!({"action":"accept","content":{"accepted":false}}),
+                )
+                .await;
+                assert!(!resolution.unwrap().accepted);
+
+                let (resolution, _) = simulated_mcp_dialog_response(
+                    test_pending_mcp_dialog("prompt", "Name"),
+                    json!({"action":"cancel"}),
+                )
+                .await;
+                let resolution = resolution.unwrap();
+                assert!(!resolution.accepted);
+                assert!(resolution.prompt_value.is_none());
+
+                let (resolution, _) = simulated_mcp_dialog_response(
+                    test_pending_mcp_dialog("alert", "Done"),
+                    json!({"action":"decline"}),
+                )
+                .await;
+                assert!(resolution.unwrap().accepted);
+            })
+            .await;
     }
 
     #[tokio::test]

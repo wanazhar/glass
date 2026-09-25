@@ -125,7 +125,7 @@ a second keybinding or state owner.
 ## Navigation and modal routing
 
 The event loop routes the strongest guard first: quit confirmation, editor exit
-prompt, Ctrl-C, help, command-center menu, browser target picker/recovery,
+prompt, Ctrl-C, native browser JavaScript dialog, help, command-center menu, browser target picker/recovery,
 agent approval, mutation confirmation, full-screen editor, file/session
 pickers, Pi slash-command modal, composer dock, Glass command palette, then
 ordinary surface input including Git workbench keys. `Esc` closes the active
@@ -155,6 +155,10 @@ a diff is open, but they do not trap confirm or palette input.
 | `T` on App | queue browser target picker; App Enter activates selected semantic entity |
 | `Alt-Left` / `Alt-Right` on App | guarded browser Back/Forward |
 | `Ctrl-R` on App | guarded browser reload |
+| `Enter` on a JavaScript alert | acknowledge and resume the suspended page script |
+| `Y` / Enter on confirm; `N` / Esc | accept or dismiss the pending JavaScript confirm |
+| Enter / Esc on prompt | submit the edited response or dismiss with `null` |
+| printable keys, arrows, Backspace on prompt | edit the focused prompt response |
 | `d` / Git enter | queue selected/full diff in the worker; opening Git loads the selected file |
 | Space on Git | stage or unstage the selected file |
 | `c` on Git | open `git commit` in the palette |
@@ -170,6 +174,60 @@ Quit. Search accepts a typed route, including expert commands such as
 `help`/`quit`; action placeholders are prefilled without `NAME`, `PATH`, or
 other argument tokens. Browser action commands are delegated to the embedded
 browser workspace and preserve its revision checks.
+
+### Native browser JavaScript dialog overlay
+
+The App surface starts the native browser with modal dialogs enabled; explicit
+`browser start --attach` remains a Chromium/CDP session without native dialog
+control. Native starts omit Chromium-only `headed` and `chromePath` settings. A
+cloneable `BrowserService` control handle is retained by the TUI separately
+from the shared workspace lock and polls the exact pending dialog while the
+page operation remains suspended. This keeps the TUI responsive while the
+`SnapshotWorker` is waiting for navigation; resolving a prompt does not replay
+the page script or issue a second navigation.
+
+```text
+┌──────────────── Glass Dev · App ──────────────────┐
+│ Browser page / semantic view (temporarily covered) │
+│                                                    │
+│       ┌──────── JavaScript confirm ─────────┐      │
+│       │ Continue to the next step?           │      │
+│       │ https://example.test/checkout        │      │
+│       │                                      │      │
+│       │ [Y / Enter] Continue   [N / Esc] No  │      │
+│       └──────────────────────────────────────┘      │
+│                                                    │
+├────────────────────────────────────────────────────┤
+│ Page script paused · browser operation in progress │
+└────────────────────────────────────────────────────┘
+```
+
+The overlay is centered over the current Glass Dev frame, clears any live
+Kitty browser pixels beneath it, takes exclusive key focus, and ignores mouse
+actions until resolved. Desktop and
+Compact layouts show the dialog kind, message, redacted source URL, and both
+choices in one card. Phone/narrow layouts use the available width, wrap message
+and URL, and put key hints on separate lines. URL query strings and fragments
+are omitted. The underlying page and navigation status remain intact behind
+the overlay.
+
+| Input | Dialog | Behavior |
+|---|---|---|
+| `Enter` | alert | acknowledge the alert and resume its page script |
+| `Enter` or `Y` | confirm | accept; page `confirm()` returns `true` |
+| `Esc` or `N` | confirm | dismiss; page `confirm()` returns `false` |
+| `Enter` | prompt | accept the visible response text |
+| `Esc` | prompt | dismiss; page `prompt()` returns `null` |
+| printable key / Backspace / Delete / Left / Right / Home / End | prompt | edit the response; initial value is the page's default text and is limited to 256 UTF-8 bytes |
+| `Ctrl-C` | any dialog | enter Glass quit confirmation; confirming quit dismisses an open dialog before cleanup |
+| mouse | any dialog | ignored; it cannot activate or mutate the covered page |
+
+Opening a dialog transfers focus to its controls. A new dialog identity resets
+the prompt editor to that prompt's default value; repeated polling of the same
+identity preserves edits and errors. A stale response is rejected and shown
+in the card without releasing a different dialog. When the page or session
+closes the dialog externally, the overlay disappears on the next poll. A
+resize or focus-loss event does not silently dismiss the page dialog.
 
 ### Native Pi slash-command modal
 

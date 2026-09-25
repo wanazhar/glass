@@ -7,11 +7,14 @@ use super::editor::{
     split_ghost_word, textobject_from_key, textobject_selection,
 };
 use super::parse::IncrementalSyntax;
+use crate::browser::BrowserService;
 use crate::development::TextSelection;
 use crate::{ExperimentComparison, SharedDevelopmentWorkspace};
-use glass_browser::browser::WorkflowRecorder;
 use glass_browser::browser::policy::PolicyPreset;
 use glass_browser::browser::session::VerificationPredicate;
+use glass_browser::browser::{
+    NATIVE_DIALOG_TEXT_LIMIT_BYTES, NativeDialogResolution, NativePendingDialog, WorkflowRecorder,
+};
 use glass_browser::browser_workspace::{
     BrowserConnectionPhase, BrowserWorkspaceAction, BrowserWorkspaceAdapterKind,
     BrowserWorkspaceController, BrowserWorkspaceEntity, BrowserWorkspaceIntent,
@@ -30,6 +33,19 @@ pub struct PendingConfirmation {
     pub call: crate::development::ToolCall,
     pub context: crate::tools::DevelopmentToolContext,
     pub summary: String,
+}
+
+/// Focused TUI editor for one exact native JavaScript dialog identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserDialogPrompt {
+    /// Pending page dialog, including its target/frame owner and stable ID.
+    pub pending: NativePendingDialog,
+    /// Editable text for a `prompt()` call.
+    pub prompt_input: String,
+    /// Character index of the prompt cursor.
+    pub prompt_cursor: usize,
+    /// A stale/invalid response error shown without discarding the pending ID.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -338,6 +354,8 @@ impl ProductMode {
 
 pub struct DevTuiState {
     pub workspace: SharedDevelopmentWorkspace,
+    /// Cloned directly so modal status/control never needs the workspace lock.
+    pub browser_service: BrowserService,
     pub surface: DevSurface,
     pub layout: TuiLayout,
     /// Process-scoped unrestricted development mode from `glass --yolo`.
@@ -403,6 +421,8 @@ pub struct DevTuiState {
     pub pending_confirmation: Option<PendingConfirmation>,
     /// URL retained while the TUI launches a detached browser before navigation.
     pub pending_browser_navigation: Option<String>,
+    /// Native page dialog currently presented above all App/surface content.
+    pub browser_dialog: Option<BrowserDialogPrompt>,
     pub pending_page_entity: Option<String>,
     pub process_urls: Vec<String>,
     pub pending_agent_approval: Option<PendingAgentApproval>,
@@ -623,6 +643,7 @@ impl DevTuiState {
             workspace.agents().set_default_unrestricted(true);
         }
         let locked = workspace.lock()?;
+        let browser_service = locked.browser().clone();
         let trust = locked.trust();
         let trust_inspection = locked.trust_inspection();
         let snapshot_root = locked.root().display().to_string();
@@ -648,6 +669,7 @@ impl DevTuiState {
         };
         let mut state = Self {
             workspace,
+            browser_service,
             surface: if trust_prompt {
                 DevSurface::Trust
             } else {
@@ -716,6 +738,7 @@ impl DevTuiState {
             editor_exit_prompt: None,
             pending_agent_approval: None,
             pending_browser_navigation: None,
+            browser_dialog: None,
             pending_page_entity: None,
             process_urls: Vec::new(),
             queued_tool_request: None,
@@ -862,6 +885,14 @@ impl DevTuiState {
     }
 
     pub fn confirm_quit(&mut self) {
+        if let Err(error) = self.dismiss_native_browser_dialog_for_quit() {
+            self.quit_confirmation = false;
+            if let Some(dialog) = self.browser_dialog.as_mut() {
+                dialog.error = Some(error.clone());
+            }
+            self.status = format!("Could not resolve the page dialog before quitting · {error}");
+            return;
+        }
         self.quit_confirmation = false;
         self.quit = true;
         self.status = "Closing Glass Dev".into();
@@ -4122,8 +4153,11 @@ impl DevTuiState {
             self.surface = DevSurface::App;
             return Ok("Browser connected · refreshing page before navigation".into());
         }
-        let (call, context) =
-            self.tool_request("glass.browser.start", serde_json::json!({}), true)?;
+        let (call, context) = self.tool_request(
+            "glass.browser.start",
+            serde_json::json!({"modalDialogs": true}),
+            true,
+        )?;
         self.pending_browser_navigation = Some(url.to_string());
         let queued = self.queue_or_confirm(
             call,
@@ -8330,6 +8364,279 @@ impl DevTuiState {
         self.browser = self.browser_workspace_summary();
     }
 
+    /// Poll the native dialog control plane without taking the shared
+    /// workspace lock. Returns true when the visible pending dialog identity
+    /// changes and the overlay should be redrawn.
+    pub fn poll_native_browser_dialog(&mut self) -> bool {
+        let previous_id = self
+            .browser_dialog
+            .as_ref()
+            .map(|dialog| dialog.pending.id.clone());
+        let enabled = match self.browser_service.native_dialog_control_enabled() {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                if let Some(dialog) = self.browser_dialog.as_mut() {
+                    dialog.error = Some(error.to_string());
+                }
+                return false;
+            }
+        };
+        if !enabled {
+            self.browser_dialog = None;
+            return previous_id.is_some();
+        }
+
+        match self.browser_service.pending_native_dialog() {
+            Ok(Some(pending)) => {
+                if let Some(dialog) = self
+                    .browser_dialog
+                    .as_mut()
+                    .filter(|dialog| dialog.pending.id == pending.id)
+                {
+                    dialog.pending = pending;
+                } else {
+                    let prompt_input = if pending.dialog.dialog_type == "prompt" {
+                        pending.dialog.default_value.clone().unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    let prompt_cursor = prompt_input.chars().count();
+                    self.status = format!(
+                        "JavaScript {} dialog · page operation paused",
+                        pending.dialog.dialog_type
+                    );
+                    self.browser_dialog = Some(BrowserDialogPrompt {
+                        pending,
+                        prompt_input,
+                        prompt_cursor,
+                        error: None,
+                    });
+                }
+            }
+            Ok(None) => {
+                if self.browser_dialog.take().is_some() {
+                    self.status = "JavaScript dialog resolved · page resuming".into();
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                if let Some(dialog) = self.browser_dialog.as_mut() {
+                    dialog.error = Some(message.clone());
+                }
+                self.status = format!("Native browser dialog control failed · {message}");
+            }
+        }
+
+        previous_id
+            != self
+                .browser_dialog
+                .as_ref()
+                .map(|dialog| dialog.pending.id.clone())
+    }
+
+    /// Accept the current native dialog and continue its original page call.
+    pub fn accept_native_browser_dialog(&mut self) {
+        self.resolve_native_browser_dialog(true);
+    }
+
+    /// Dismiss confirm/prompt dialogs. An alert has no cancel result, so Esc
+    /// acknowledges it just like Enter.
+    pub fn dismiss_native_browser_dialog(&mut self) {
+        let is_alert = self
+            .browser_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.pending.dialog.dialog_type == "alert");
+        self.resolve_native_browser_dialog(is_alert);
+    }
+
+    fn resolve_native_browser_dialog(&mut self, accepted: bool) {
+        let Some(dialog) = self.browser_dialog.as_ref() else {
+            return;
+        };
+        let id = dialog.pending.id.clone();
+        let dialog_type = dialog.pending.dialog.dialog_type.clone();
+        let prompt_value =
+            (accepted && dialog_type == "prompt").then(|| dialog.prompt_input.clone());
+        let resolution = NativeDialogResolution {
+            accepted,
+            prompt_value,
+        };
+        match self.browser_service.resolve_native_dialog(&id, resolution) {
+            Ok(()) => {
+                self.browser_dialog = None;
+                self.status = format!("JavaScript {dialog_type} resolved · page resuming");
+            }
+            Err(error) => {
+                let message = error.to_string();
+                if let Some(dialog) = self.browser_dialog.as_mut() {
+                    dialog.error = Some(message.clone());
+                }
+                self.status = format!("Dialog remains open · {message}");
+            }
+        }
+    }
+
+    pub fn insert_native_dialog_char(&mut self, character: char) {
+        if character.is_control() {
+            return;
+        }
+        let Some(dialog) = self.browser_dialog.as_mut() else {
+            return;
+        };
+        if dialog.pending.dialog.dialog_type != "prompt" {
+            return;
+        }
+        if dialog
+            .prompt_input
+            .len()
+            .saturating_add(character.len_utf8())
+            > NATIVE_DIALOG_TEXT_LIMIT_BYTES
+        {
+            dialog.error = Some(format!(
+                "Prompt response is limited to {NATIVE_DIALOG_TEXT_LIMIT_BYTES} UTF-8 bytes"
+            ));
+            return;
+        }
+        let byte_offset = text_char_index_to_byte(&dialog.prompt_input, dialog.prompt_cursor);
+        dialog.prompt_input.insert(byte_offset, character);
+        dialog.prompt_cursor = dialog.prompt_cursor.saturating_add(1);
+        dialog.error = None;
+    }
+
+    pub fn backspace_native_dialog_char(&mut self) {
+        let Some(dialog) = self.browser_dialog.as_mut() else {
+            return;
+        };
+        if dialog.pending.dialog.dialog_type != "prompt" || dialog.prompt_cursor == 0 {
+            return;
+        }
+        let start = text_char_index_to_byte(&dialog.prompt_input, dialog.prompt_cursor - 1);
+        let end = text_char_index_to_byte(&dialog.prompt_input, dialog.prompt_cursor);
+        dialog.prompt_input.replace_range(start..end, "");
+        dialog.prompt_cursor -= 1;
+        dialog.error = None;
+    }
+
+    pub fn delete_native_dialog_char(&mut self) {
+        let Some(dialog) = self.browser_dialog.as_mut() else {
+            return;
+        };
+        if dialog.pending.dialog.dialog_type != "prompt"
+            || dialog.prompt_cursor >= dialog.prompt_input.chars().count()
+        {
+            return;
+        }
+        let start = text_char_index_to_byte(&dialog.prompt_input, dialog.prompt_cursor);
+        let end = text_char_index_to_byte(&dialog.prompt_input, dialog.prompt_cursor + 1);
+        dialog.prompt_input.replace_range(start..end, "");
+        dialog.error = None;
+    }
+
+    pub fn move_native_dialog_cursor_left(&mut self) {
+        if let Some(dialog) = self.browser_dialog.as_mut()
+            && dialog.pending.dialog.dialog_type == "prompt"
+        {
+            dialog.prompt_cursor = dialog.prompt_cursor.saturating_sub(1);
+        }
+    }
+
+    pub fn move_native_dialog_cursor_right(&mut self) {
+        if let Some(dialog) = self.browser_dialog.as_mut()
+            && dialog.pending.dialog.dialog_type == "prompt"
+        {
+            dialog.prompt_cursor =
+                (dialog.prompt_cursor + 1).min(dialog.prompt_input.chars().count());
+        }
+    }
+
+    pub fn move_native_dialog_cursor_home(&mut self) {
+        if let Some(dialog) = self.browser_dialog.as_mut()
+            && dialog.pending.dialog.dialog_type == "prompt"
+        {
+            dialog.prompt_cursor = 0;
+        }
+    }
+
+    pub fn move_native_dialog_cursor_end(&mut self) {
+        if let Some(dialog) = self.browser_dialog.as_mut()
+            && dialog.pending.dialog.dialog_type == "prompt"
+        {
+            dialog.prompt_cursor = dialog.prompt_input.chars().count();
+        }
+    }
+
+    /// Route one key exclusively to the current native page dialog.
+    pub fn handle_native_browser_dialog_key(
+        &mut self,
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) {
+        let Some(dialog_type) = self
+            .browser_dialog
+            .as_ref()
+            .map(|dialog| dialog.pending.dialog.dialog_type.clone())
+        else {
+            return;
+        };
+        use crossterm::event::KeyCode;
+
+        match code {
+            KeyCode::Esc => self.dismiss_native_browser_dialog(),
+            KeyCode::Enter => self.accept_native_browser_dialog(),
+            KeyCode::Char('y' | 'Y') if dialog_type == "confirm" => {
+                self.accept_native_browser_dialog()
+            }
+            KeyCode::Char('n' | 'N') if dialog_type == "confirm" => {
+                self.dismiss_native_browser_dialog()
+            }
+            KeyCode::Backspace => self.backspace_native_dialog_char(),
+            KeyCode::Delete => self.delete_native_dialog_char(),
+            KeyCode::Left => self.move_native_dialog_cursor_left(),
+            KeyCode::Right => self.move_native_dialog_cursor_right(),
+            KeyCode::Home => self.move_native_dialog_cursor_home(),
+            KeyCode::End => self.move_native_dialog_cursor_end(),
+            KeyCode::Char(character)
+                if dialog_type == "prompt"
+                    && !modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                    && !modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+            {
+                self.insert_native_dialog_char(character)
+            }
+            _ => {}
+        }
+    }
+
+    /// Resolve any open native page prompt before the TUI tears down its
+    /// browser worker after confirmed quit.
+    fn dismiss_native_browser_dialog_for_quit(&mut self) -> Result<(), String> {
+        let enabled = self
+            .browser_service
+            .native_dialog_control_enabled()
+            .map_err(|error| error.to_string())?;
+        if !enabled {
+            self.browser_dialog = None;
+            return Ok(());
+        }
+        let pending = self
+            .browser_service
+            .pending_native_dialog()
+            .map_err(|error| error.to_string())?;
+        if let Some(pending) = pending {
+            let accepted = pending.dialog.dialog_type == "alert";
+            self.browser_service
+                .resolve_native_dialog(
+                    &pending.id,
+                    NativeDialogResolution {
+                        accepted,
+                        prompt_value: None,
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        self.browser_dialog = None;
+        Ok(())
+    }
+
     pub fn browser_workspace_summary(&self) -> String {
         let browser = self.browser_workspace.state();
         let entities = if browser.entities.is_empty() {
@@ -9218,7 +9525,7 @@ fn component_label(component: &crate::pi_runtime::PiReadinessComponent) -> Strin
     }
 }
 
-fn safe_browser_url(url: &str) -> Option<String> {
+pub(super) fn safe_browser_url(url: &str) -> Option<String> {
     let url = url.trim();
     if url.is_empty() {
         return None;
@@ -9325,7 +9632,14 @@ fn browser_recovery_arguments(port: u16, attach: bool) -> serde_json::Value {
         "port": port,
         "attach": attach,
         "incognito": !attach,
+        "modalDialogs": !attach,
     })
+}
+
+fn text_char_index_to_byte(text: &str, character_index: usize) -> usize {
+    text.char_indices()
+        .nth(character_index)
+        .map_or(text.len(), |(byte_index, _)| byte_index)
 }
 
 /// Bind an ephemeral localhost port to discover a free one.
@@ -9552,6 +9866,100 @@ mod tests {
 
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
+
+    fn test_native_dialog(dialog_type: &str, value: &str) -> BrowserDialogPrompt {
+        BrowserDialogPrompt {
+            pending: NativePendingDialog {
+                id: "native-dialog-test-1".into(),
+                context_id: "native-context-test".into(),
+                frame_id: "native-frame-test".into(),
+                dialog: glass_browser::browser::session::PendingDialog {
+                    dialog_type: dialog_type.into(),
+                    message: "Continue with this page operation?".into(),
+                    default_value: (dialog_type == "prompt").then(|| value.to_string()),
+                    url: "https://example.test/checkout".into(),
+                },
+            },
+            prompt_input: value.into(),
+            prompt_cursor: value.chars().count(),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn native_dialog_prompt_keys_edit_unicode_and_enforce_utf8_limit() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-native-dialog-prompt-{}-{}",
+            std::process::id(),
+            NEXT_BROWSER_TOOL.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open TUI state");
+        state.browser_dialog = Some(test_native_dialog("prompt", "A🙂B"));
+        state.browser_dialog.as_mut().unwrap().prompt_cursor = 2;
+
+        state.handle_native_browser_dialog_key(
+            crossterm::event::KeyCode::Left,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        state.handle_native_browser_dialog_key(
+            crossterm::event::KeyCode::Char('é'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert_eq!(state.browser_dialog.as_ref().unwrap().prompt_input, "Aé🙂B");
+        state.handle_native_browser_dialog_key(
+            crossterm::event::KeyCode::Backspace,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert_eq!(state.browser_dialog.as_ref().unwrap().prompt_input, "A🙂B");
+        state.handle_native_browser_dialog_key(
+            crossterm::event::KeyCode::Delete,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert_eq!(state.browser_dialog.as_ref().unwrap().prompt_input, "AB");
+
+        let dialog = state.browser_dialog.as_mut().unwrap();
+        dialog.prompt_input = "x".repeat(NATIVE_DIALOG_TEXT_LIMIT_BYTES);
+        dialog.prompt_cursor = dialog.prompt_input.chars().count();
+        state.handle_native_browser_dialog_key(
+            crossterm::event::KeyCode::Char('é'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let dialog = state.browser_dialog.as_ref().unwrap();
+        assert_eq!(dialog.prompt_input.len(), NATIVE_DIALOG_TEXT_LIMIT_BYTES);
+        assert!(dialog.error.as_deref().unwrap().contains("UTF-8 bytes"));
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn native_dialog_resolution_failure_keeps_the_exact_overlay_open() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-native-dialog-stale-{}-{}",
+            std::process::id(),
+            NEXT_BROWSER_TOOL.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open TUI state");
+        state.browser_dialog = Some(test_native_dialog("confirm", ""));
+
+        state.handle_native_browser_dialog_key(
+            crossterm::event::KeyCode::Char('n'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let dialog = state.browser_dialog.as_ref().expect("dialog remains open");
+        assert_eq!(dialog.pending.id, "native-dialog-test-1");
+        assert!(
+            dialog
+                .error
+                .as_deref()
+                .is_some_and(|error| !error.is_empty())
+        );
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
     #[test]
     fn trust_action_menu_dispatches_keyboard_hints() {
         let root = std::env::temp_dir().join(format!("glass-trust-menu-{}", std::process::id()));
@@ -9618,6 +10026,7 @@ mod tests {
                 "port": 9222,
                 "attach": true,
                 "incognito": false,
+                "modalDialogs": false,
             })
         );
         assert_eq!(
@@ -9626,6 +10035,7 @@ mod tests {
                 "port": 42123,
                 "attach": false,
                 "incognito": true,
+                "modalDialogs": true,
             })
         );
     }

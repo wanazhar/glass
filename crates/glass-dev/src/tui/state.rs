@@ -8401,10 +8401,14 @@ impl DevTuiState {
                         String::new()
                     };
                     let prompt_cursor = prompt_input.chars().count();
-                    self.status = format!(
-                        "JavaScript {} dialog · page operation paused",
-                        pending.dialog.dialog_type
-                    );
+                    self.status = if pending.dialog.dialog_type == "beforeunload" {
+                        "Page navigation confirmation · page operation paused".into()
+                    } else {
+                        format!(
+                            "JavaScript {} dialog · page operation paused",
+                            pending.dialog.dialog_type
+                        )
+                    };
                     self.browser_dialog = Some(BrowserDialogPrompt {
                         pending,
                         prompt_input,
@@ -8414,8 +8418,12 @@ impl DevTuiState {
                 }
             }
             Ok(None) => {
-                if self.browser_dialog.take().is_some() {
-                    self.status = "JavaScript dialog resolved · page resuming".into();
+                if let Some(dialog) = self.browser_dialog.take() {
+                    self.status = if dialog.pending.dialog.dialog_type == "beforeunload" {
+                        "Page navigation decision resolved · page resuming".into()
+                    } else {
+                        "JavaScript dialog resolved · page resuming".into()
+                    };
                 }
             }
             Err(error) => {
@@ -8464,7 +8472,7 @@ impl DevTuiState {
         match self.browser_service.resolve_native_dialog(&id, resolution) {
             Ok(()) => {
                 self.browser_dialog = None;
-                self.status = format!("JavaScript {dialog_type} resolved · page resuming");
+                self.status = native_browser_dialog_resolution_status(&dialog_type, accepted);
             }
             Err(error) => {
                 let message = error.to_string();
@@ -8583,10 +8591,14 @@ impl DevTuiState {
         match code {
             KeyCode::Esc => self.dismiss_native_browser_dialog(),
             KeyCode::Enter => self.accept_native_browser_dialog(),
-            KeyCode::Char('y' | 'Y') if dialog_type == "confirm" => {
+            KeyCode::Char('y' | 'Y')
+                if matches!(dialog_type.as_str(), "confirm" | "beforeunload") =>
+            {
                 self.accept_native_browser_dialog()
             }
-            KeyCode::Char('n' | 'N') if dialog_type == "confirm" => {
+            KeyCode::Char('n' | 'N')
+                if matches!(dialog_type.as_str(), "confirm" | "beforeunload") =>
+            {
                 self.dismiss_native_browser_dialog()
             }
             KeyCode::Backspace => self.backspace_native_dialog_char(),
@@ -8622,7 +8634,10 @@ impl DevTuiState {
             .pending_native_dialog()
             .map_err(|error| error.to_string())?;
         if let Some(pending) = pending {
-            let accepted = pending.dialog.dialog_type == "alert";
+            let accepted = matches!(
+                pending.dialog.dialog_type.as_str(),
+                "alert" | "beforeunload"
+            );
             self.browser_service
                 .resolve_native_dialog(
                     &pending.id,
@@ -9540,6 +9555,18 @@ pub(super) fn safe_browser_url(url: &str) -> Option<String> {
     (!sanitized.is_empty()).then_some(sanitized)
 }
 
+fn native_browser_dialog_resolution_status(dialog_type: &str, accepted: bool) -> String {
+    if dialog_type == "beforeunload" {
+        if accepted {
+            "Page navigation confirmed · page resuming".into()
+        } else {
+            "Navigation dismissed · staying on page".into()
+        }
+    } else {
+        format!("JavaScript {dialog_type} resolved · page resuming")
+    }
+}
+
 fn page_origin(url: &str) -> Option<String> {
     let url = safe_browser_url(url)?;
     let scheme_end = url.find("://")?;
@@ -9865,6 +9892,18 @@ mod tests {
         assert_eq!(state.status, "Closing Glass Dev");
 
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn beforeunload_status_reflects_the_user_decision() {
+        assert_eq!(
+            native_browser_dialog_resolution_status("beforeunload", true),
+            "Page navigation confirmed · page resuming"
+        );
+        assert_eq!(
+            native_browser_dialog_resolution_status("beforeunload", false),
+            "Navigation dismissed · staying on page"
+        );
     }
 
     fn test_native_dialog(dialog_type: &str, value: &str) -> BrowserDialogPrompt {

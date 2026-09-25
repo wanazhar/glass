@@ -1048,12 +1048,18 @@ where
                                         accepted,
                                         control.prompt_value,
                                     ) {
-                                        Ok(child_dialog_id) => json!({
-                                            "ok": true,
-                                            "action": control.action,
-                                            "dialogId": dialog_id,
-                                            "childDialogId": child_dialog_id,
-                                        }),
+                                        Ok(child_dialog_id) => {
+                                            let mut response = json!({
+                                                "ok": true,
+                                                "action": control.action,
+                                                "dialogId": dialog_id,
+                                            });
+                                            if let Some(child_dialog_id) = child_dialog_id {
+                                                response["childDialogId"] =
+                                                    json!(child_dialog_id);
+                                            }
+                                            response
+                                        }
                                         Err(error) => json!({"ok": false, "error": error.to_string()}),
                                     }
                                 } else {

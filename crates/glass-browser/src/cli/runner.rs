@@ -12,8 +12,8 @@ use super::args::{
 };
 #[cfg(feature = "native-engine")]
 use crate::browser::native_engine::{
-    NATIVE_DIALOG_TEXT_LIMIT_BYTES, NativeDialogResolution, NativeEngineConfig, NativeFile,
-    NativePendingDialog,
+    NATIVE_BEFOREUNLOAD_MESSAGE, NATIVE_DIALOG_TEXT_LIMIT_BYTES, NativeDialogResolution,
+    NativeEngineConfig, NativeFile, NativePendingDialog,
 };
 use crate::browser::policy::{BrowserPolicy, PolicyCapability, PolicyPreset};
 use crate::browser::profile::ProfileManager;
@@ -564,6 +564,11 @@ async fn prompt_native_cli_dialog(
                     eprint!("Value (or :cancel): ");
                 }
             }
+            "beforeunload" => {
+                eprintln!("\nPage navigation confirmation");
+                eprintln!("{NATIVE_BEFOREUNLOAD_MESSAGE}");
+                eprint!("Leave this page? [y/N] ");
+            }
             other => {
                 return Err(format!(
                     "the native CLI cannot present the `{other}` JavaScript dialog yet"
@@ -599,7 +604,12 @@ async fn prompt_native_cli_dialog(
         {
             return Ok(resolution);
         }
-        eprintln!("Enter `y` or `n` to resolve the confirm dialog.");
+        let choice = if pending.dialog.dialog_type == "beforeunload" {
+            "leave or stay"
+        } else {
+            "resolve the confirm dialog"
+        };
+        eprintln!("Enter `y` or `n` to {choice}.");
     }
 }
 
@@ -664,7 +674,7 @@ fn parse_native_cli_dialog_response(
     input: Option<&str>,
 ) -> BrowserResult<Option<NativeDialogResolution>> {
     let resolution = match dialog_type {
-        "confirm" => match input
+        "confirm" | "beforeunload" => match input
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
@@ -4549,6 +4559,18 @@ mod tests {
             parse_native_cli_dialog_response("confirm", Some("maybe"))
                 .unwrap()
                 .is_none()
+        );
+        assert!(
+            parse_native_cli_dialog_response("beforeunload", Some("yes"))
+                .unwrap()
+                .unwrap()
+                .accepted
+        );
+        assert!(
+            !parse_native_cli_dialog_response("beforeunload", None)
+                .unwrap()
+                .unwrap()
+                .accepted
         );
         assert_eq!(
             parse_native_cli_dialog_response("prompt", Some("Ada"))

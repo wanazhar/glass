@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-738`; issue #40 remains open. The public Rust
+`native-engine-browser-741`; issue #40 remains open. The public Rust
 `BrowserSession` entrypoint now constructs the native backend directly, and
 the former Chrome/CDP API is named `CdpBrowserSession`. This does not claim
 operation parity or production certification. The canonical Rust session now
@@ -49,7 +49,16 @@ presentation; its local Linux behavior is verified while remote CI and
 cross-platform certification remain pending. Slice 740 extends this host
 through the persistent native owner's status/control channel; its process-backed
 Linux end-to-end test passes. Remote CI and cross-platform certification remain
-pending. `beforeunload` support and all other profile gates remain open. See the
+pending. Slice 741 adds sticky-activation-gated, user-visible top-level
+`beforeunload` confirmation through native CLI, TUI, and MCP hosts, with generic
+browser copy and exact-ID accept/dismiss. Focused Linux tests cover the
+canonical cross-document asynchronous history-traversal gate; direct
+synchronous engine-history lifecycle parity, descendant-frame unload
+traversal, sandbox-modal propagation, remote CI, cross-platform certification,
+and all other profile
+gates remain open. See the
+[slice 741 task](../plan/tasks/native-engine-browser-741.md),
+[slice 740 task](../plan/tasks/native-engine-browser-740.md),
 [slice 738 task](../plan/tasks/native-engine-browser-738.md),
 [slice 737 task](../plan/tasks/native-engine-browser-737.md),
 [slice 736 task](../plan/tasks/native-engine-browser-736.md),
@@ -5293,16 +5302,20 @@ navigation lifecycle boundary. Full replacement navigations now deliver
 resource replacement, and `pageshow` to the newly published window after its
 accepted ready/load schedule; initial publication also delivers `pageshow`.
 Transition effects and callback mutations use the existing typed owner paths,
-while same-document fragments remain in-place. Cancelable `beforeunload`,
-bfcache/history-traversal parity, popup/opener contexts,
-visibility state, and the full HTML navigation task model remain open.
+while same-document fragments remain in-place. Top-level `beforeunload`
+confirmation, including the canonical asynchronous cross-document history
+target-request gate, is covered by slice 741; descendant-frame traversal,
+sandbox-modal propagation, bfcache/session-history restoration, popup/opener
+contexts, visibility state, and the full HTML navigation task model remain open.
 
 The completed native-engine-browser-043 batch makes same-document fragment
 navigation observable. GET fragment changes now retain the document and realm,
 avoid a network reload, update the child URL owner when process-backed, and
 dispatch a non-bubbling, non-cancelable window `hashchange` with `oldURL` and
-`newURL`; callback mutations remain typed and bounded. `beforeunload`,
-`popstate`, bfcache/history traversal lifecycle parity, and the full HTML
+`newURL`; callback mutations remain typed and bounded. Top-level
+`beforeunload` confirmation and the async cross-document history target-request
+gate are covered by slice 741; `popstate`, bfcache/session-history restoration,
+descendant-frame traversal, sandbox-modal propagation, and the full HTML
 navigation task model remain open.
 
 The completed native-engine-browser-044 batch adds bounded external form
@@ -5324,12 +5337,14 @@ browser-context primitives remain open.
 
 The completed native-engine-browser-046 batch adds bounded navigation
 cancellation and history events. Replacement navigation dispatches cancelable
-window `beforeunload` before `pagehide`/`unload` and resource loading, honors
-`preventDefault()` and non-empty `returnValue`, and leaves the current page
-intact when canceled. Same-document history traversal dispatches window
+window `beforeunload` before `pagehide`/`unload` and resource loading. Slice
+741 adds sticky-activation-gated user confirmation when that event is canceled;
+dismissing the prompt leaves the current page intact. Same-document history traversal dispatches window
 `popstate` before `hashchange` through the local/child typed owner paths.
-Prompts, bfcache/session-history parity, cross-document restoration, popup/
-opener contexts, and full HTML task-source semantics remain open.
+In-process JavaScript modal realms, descendant-frame beforeunload traversal,
+sandbox-modal propagation, bfcache/session-history parity, cross-document
+restoration, popup/opener contexts, and full HTML task-source semantics remain
+open.
 
 The completed native-engine-browser-047 batch makes timer turns honor due
 times. Local and child realms normalize bounded `setTimeout` delays, drain only
@@ -9672,7 +9687,7 @@ behaviors beyond bounded Document import-map registration.
 | script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs and invocation-driven dynamic imports with JSON options/type identity across page, dedicated/shared Worker, classic importScripts dependencies, and rooted-file owners, bounded due-time `setTimeout`/`setInterval` turns, policy-owned bounded GET, same-origin string-body POST, and bounded cross-origin simple/preflighted POST `fetch()` promises with independent text/json/blob/UTF-8 arrayBuffer/bytes response reads and bounded demand-driven transport-backed incremental `ReadableStream` response bodies split into 8 KiB chunks with one-part reader demand, reader lock/release/cancel, transport cancellation, and bounded per-branch clone queues, bounded response bodyUsed and clone ownership, bounded Request bodyUsed, clone ownership, static ReadableStream bodies, and text/json/blob/arrayBuffer/bytes/formData consumers for bounded URL-encoded and multipart bodies, and bounded underlying-source ReadableStream start/pull/cancel controllers with queue backpressure, bounded byte-source strategies and BYOB readers/controllers with partial-buffer delivery through Fetch and tee owners, a bounded read-only response Headers view with validated response names, duplicate-name combination, deterministic sorted iteration, same-origin/CORS-exposed filtering, and script-unreadable `Set-Cookie`, plus canonical HTTP `statusText` propagation, and raw bounded byte-preserving response payloads for response body variants and binary Blob slicing, bounded Blob/File construction from ArrayBuffer and typed-array parts, bounded raw-byte-backed Blob/File request bodies for Fetch and synchronous/asynchronous XHR, bounded mutable Fetch Headers records with live owner-backed iterators plus plain-object custom request headers with JavaScript/Rust validation, forbidden/internal-header protection, same-origin transfer, and sorted multi-header CORS preflight authorization with bounded positive-`Access-Control-Max-Age` caching, bounded Fetch `cors`/`no-cors`/`same-origin` mode policy with fail-closed same-origin and no-cors request checks plus opaque cross-origin no-cors response projection, bounded Fetch `follow`/`error`/`manual` redirect policy with `redirected` and filtered `opaqueredirect` response projection, direct text-backed Blob/File request bodies with normalized MIME propagation and bounded observable fetch AbortController/AbortSignal cancellation with static abort/timeout/any composition, bounded text-only `FormData(form)` construction, text-backed and raw-byte-backed Blob/File parts, and multipart bodies with Rust-owned form association plus bounded live owner-backed `entries()`/`keys()`/`values()`/`[Symbol.iterator]()` iterators, and bounded URLSearchParams construction from strings, records, pair arrays, and pair iterables, mutation, sorting, live entries/keys/values iteration, and URL-encoded bodies, plus bounded GET/POST `XMLHttpRequest` with string, text-backed, and raw-byte-backed Blob/File request bodies, bounded `arraybuffer`/`blob`/`json` response types, page XML MIME `responseXML`/`document` responses, and page and worker buffered upload `ProgressEvent` lifecycle, canonical case-insensitive response-type selection with state-gated mutation, bounded non-zero timeout with zero disabling the extra deadline, request-local abort/reset state, bounded `readystatechange`/`abort`/`timeout` callbacks, response-header validation/filtering/sorting, and stale-continuation suppression, bounded synchronous XHR for fixture and HTTP(S) page/worker owners with the existing loader policy and terminal lifecycle, bounded persistent WebSocket text/binary/Ping-Pong transport and EventSource/SSE stream transport with serialized open/message/error/close delivery, bounded classic/module service-worker registration, install/activate lifecycle, longest-scope navigation/Fetch interception, validated worker-generated responses, and page registration/controller state, from explicit evaluations and initial page scripts, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded common constraint validation for required/email/URL/length/numeric/date/month/time/datetime-local/pattern controls, bounded `validity`/`validationMessage`/`willValidate` snapshots with `checkValidity()`/`reportValidity()` and custom validity, submitter event metadata and successful-control serialization, bounded external form ownership, bounded multipart/text/plain form encodings and validated `formaction`/`formmethod`/`formenctype` overrides, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, complete child-frame lifecycle/resource parity, beforeinput/composition, full JavaScript RegExp `v`-flag/Unicode-set and file constraint validation or picker/UI parity, full live `ValidityState` identity, private-network access, streaming FormData body parity, complete XHR/Streams Web IDL semantics, complete Fetch Streams/Web IDL semantics, invalid raw response-header bytes, response trailers, full WebSocket/EventSource Web IDL identity, bounded requestAnimationFrame/cancelAnimationFrame and requestIdleCallback/cancelIdleCallback delivery with scheduled-callback error isolation, autonomous rendering opportunities, task-source fairness, background page scheduling, module types other than JavaScript/JSON, complete module scheduling, dynamic registration beyond bounded Document import maps, or browser-wide complete page-loading parity |
 | capture | available | bounded PNG, JPEG, WebP, or PDF of the current logical page surface with viewport, clip, scale, full-page, and semantic element options; screenshot-containing evidence remains a separate image-bearing capture surface |
 | storage | partial | process-owned cookies with bounded `document.cookie` synchronization and semantic current-origin writes, bounded document cache, origin-keyed page local/session storage with opt-in revisioned localStorage/cookie/IndexedDB profiles, stale-snapshot key-level merge for Web Storage and cookies, profile-journal local/session events across live local and process-backed documents, bounded reader-lease retention, acknowledged-prefix compaction, profile-snapshot recovery, a bounded StorageManager estimate against the fixed 4 MiB profile quota, and a bounded tagged JSON/structured-clone IndexedDB subset with text-backed Blob/File values plus byte-vector ArrayBuffer/typed-array/DataView values, bounded Blob/File `arrayBuffer()`/`bytes()` reads, version upgrades, same-realm version-change/deletion coordination, serialized atomic ordinary transactions, object stores, indexes, key ranges, cursors, and CRUD; no full cookie policy or IndexedDB parity |
-| prompts | partial | bounded alert/confirm/prompt metadata, FIFO pending state, `dialogOpen`, and process-backed exact-ID modal continuation through opt-in Rust/resident-service controllers, terminal CLI/TUI, and standalone/persistent MCP; in-process modal realms and user-visible `beforeunload` prompts remain open |
+| prompts | partial | bounded alert/confirm/prompt metadata, FIFO pending state, `dialogOpen`, process-backed exact-ID modal continuation through opt-in Rust/resident-service controllers, terminal CLI/TUI, and standalone/persistent MCP, plus sticky-activation-gated top-level `beforeunload` confirmation with generic browser copy; in-process JavaScript modal realms, descendant-frame unload traversal, sandbox-modal propagation, and cross-platform certification remain open |
 | downloads | available | bounded HTTP(S) anchor `download` attributes queue a parent-owned transfer; runtime, CLI, and MCP complete the oldest queued download for the selected target into an existing directory with sanitized collision-free file creation, SHA-256 evidence, stable completion IDs, and bounded cancellation/listing; chooser UI, programmatic/object-URL downloads, streaming/progress, service-worker interception, and cross-target/frame parity remain open |
 
 The page XHR document branch also recognizes `text/html` alongside XML MIME
@@ -9756,10 +9771,16 @@ scripts and explicit evaluation, first through the persistent-owner control
 path, then the standalone Rust controller and resident service, and finally
 the TUI's responsive dialog surface. Slice 738 adds a terminal-hosted dialog
 surface to one-shot native CLI commands. Slices 739–740 add standalone and
-persistent native MCP elicitation hosts. Default constructors without a live
-controller retain the nonblocking event path. In-process modal page realms,
-user-visible `beforeunload` prompts, and cross-platform certification remain
-part of the issue #40 gate.
+persistent native MCP elicitation hosts. Slice 741 adds sticky-activation-
+gated, top-level `beforeunload` confirmation through those hosts and the local
+navigation owner, including asynchronous cross-document history traversal,
+without exposing page-authored warning text. Default
+constructors without a live controller retain nonblocking JavaScript dialog
+events; an eligible `beforeunload` navigation instead fails closed with an
+explicit error. In-process JavaScript modal page realms, descendant-frame
+unload traversal, sandbox-modal propagation, and cross-platform certification
+remain part of the issue #40 gate. Direct synchronous `NativeEngine` history
+helpers still do not run the cross-document lifecycle.
 
 ### MCP dialog host contract
 

@@ -772,7 +772,7 @@ impl BrowserRuntimeSession {
         dialog_id: &str,
         accepted: bool,
         prompt_value: Option<String>,
-    ) -> BrowserResult<u64> {
+    ) -> BrowserResult<Option<u64>> {
         match &self.backend {
             BackendStartup::Native(backend) => {
                 Ok(backend.resolve_dialog_control(dialog_id, accepted, prompt_value)?)

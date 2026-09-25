@@ -130,6 +130,41 @@ caller selected the native backend.
 
 [HTML Standard's simple-dialog algorithms]: https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#simple-dialogs
 
+### Before-unload confirmation contract
+
+Cross-document navigation, including asynchronous `BrowserSession` Back and
+Forward traversal, dispatches `beforeunload` on the outgoing active Document
+before `pagehide`, `unload`, replacement-resource requests, or history commit.
+A canceled event (`preventDefault()` or a non-empty `returnValue`)
+does not itself cancel navigation: Glass asks the user only when that Document
+has sticky activation and the modal prompt is permitted. Script-created events
+and `HTMLElement.click()` do not grant activation; trusted input delivered by
+Glass's browser action path does. A successful document replacement resets the
+new Document's activation state; a same-document navigation or dismissed
+confirmation preserves the existing Document and its state.
+
+The prompt is a `beforeunload` pending dialog with no page-controlled message
+or response text. Glass presents user-agent-controlled generic copy, ignores
+the page's `returnValue` text, and binds the decision to the exact dialog ID.
+Accepting continues the original navigation exactly once. Dismissing leaves
+the current Document active and prevents `pagehide`, `unload`, replacement
+requests, and history commit. If an eligible prompt has no responsive host,
+navigation fails explicitly and leaves the outgoing Document active; it must
+not silently accept, cancel, or strand the owner. The browser-level prompt is
+shown at most once for one navigation attempt. The canonical asynchronous
+`BrowserSession` history route applies this decision before loading a
+cross-document target; same-document traversal remains in-place. Direct
+synchronous `NativeEngine` history helpers do not yet run this cross-document
+lifecycle and are not Core Web Profile-compliant; closing that API gap remains
+an issue #40 gate. Complete descendant-frame unload traversal and
+sandbox-modal propagation also remain separate `GCWP-0.1` implementation gates
+until their owning browsing-context slice is complete.
+
+The firing conditions and user-activation rule follow the [HTML Standard's
+unloading-document algorithm].
+
+[HTML Standard's unloading-document algorithm]: https://html.spec.whatwg.org/multipage/browsing-the-web.html#unloading-documents
+
 ### Dynamic module loading contract
 
 - Every `ImportCall`, including a literal specifier, resolves only when the

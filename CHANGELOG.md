@@ -21,8 +21,13 @@ and intends to use [Semantic Versioning](https://semver.org/).
   navigation through `BrowserSession` and the in-process native TUI. Cancelled
   loads preserve the committed document; the navigation future discards the
   partial response and reaps its content worker after the stop request is
-  accepted. The serialized persistent-owner path reports unsupported instead
-  of fake success.
+  accepted.
+- Added concurrent stop-loading controls to the native persistent owner. It
+  continues polling one active browser command while servicing revision-checked
+  stop requests, and returns explicit busy errors for other concurrent browser
+  operations. The attached native TUI now routes `Alt+S` through the owner and
+  accepts the owner’s deep-DOM observation shape when no load-completion field
+  is present.
 - Added bounded bitmap-font glyph decoding for native text rendering. PNG,
   premultiplied BGRA32, monochrome, and grayscale strikes retain selected-face
   offsets and embedded alpha under finite raster budgets; unsupported or

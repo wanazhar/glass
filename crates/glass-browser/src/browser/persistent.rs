@@ -15,6 +15,8 @@ use super::{BrowserRuntimeSession, NativeEngineConfig, NativeHistoryDirection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
+#[cfg(all(unix, feature = "native-engine"))]
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -620,15 +622,25 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                         let session = session
                             .as_ref()
                             .ok_or("native persistent session is stopping")?;
-                        match crate::cli::runner::run_native_persistent_request(
+                        let operation = async {
+                            let output = crate::cli::runner::run_native_persistent_request(
+                                session,
+                                request.argv,
+                                &record.profile,
+                                &policy,
+                            )
+                            .await?;
+                            Ok(json!({"ok": true, "output": output}))
+                        };
+                        match run_native_operation_with_controls(
+                            &listener,
                             session,
-                            request.argv,
-                            &record.profile,
-                            &policy,
+                            &record,
+                            operation,
                         )
                         .await
                         {
-                            Ok(output) => json!({"ok": true, "output": output}),
+                            Ok(response) => response,
                             Err(error) => json!({"ok": false, "error": error.to_string()}),
                         }
                     }
@@ -638,9 +650,21 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                                 let session = session
                                     .as_ref()
                                     .ok_or("native persistent session is stopping")?;
-                                match run_native_workflow_request(session, &policy, request).await
+                                let operation = async {
+                                    let result =
+                                        run_native_workflow_request(session, &policy, request)
+                                            .await?;
+                                    Ok(json!({"ok": true, "result": result}))
+                                };
+                                match run_native_operation_with_controls(
+                                    &listener,
+                                    session,
+                                    &record,
+                                    operation,
+                                )
+                                .await
                                 {
-                                    Ok(result) => json!({"ok": true, "result": result}),
+                                    Ok(response) => response,
                                     Err(error) => {
                                         json!({"ok": false, "error": error.to_string()})
                                     }
@@ -659,55 +683,37 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                         let session = session
                             .as_ref()
                             .ok_or("native persistent session is stopping")?;
-                        let actual_revision = session
-                            .evidence(crate::browser_backend::EvidenceLevel::Compact)
-                            .await?
-                            .revision;
-                        if actual_revision != request.expected_revision {
-                            return Err(format!(
-                                "stale browser revision: expected {}, observed {actual_revision}",
-                                request.expected_revision
-                            )
-                            .into());
-                        }
                         if request.action == "stopLoading" {
-                            json!({
-                                "ok": false,
-                                "error": "native persistent stop-loading is unsupported until the owner can process controls concurrently"
-                            })
+                            match session
+                                .stop_loading_with_revision(request.expected_revision)
+                                .await
+                            {
+                                Ok(outcome) => json!({
+                                    "ok": true,
+                                    "action": outcome.action,
+                                    "currentRevision": outcome.current_revision,
+                                }),
+                                Err(error) => {
+                                    json!({"ok": false, "error": error.to_string()})
+                                }
+                            }
                         } else {
-                            let outcome = match request.action.as_str() {
-                                "back" => session
-                                    .native_navigate_history(NativeHistoryDirection::Back)
-                                    .await?,
-                                "forward" => session
-                                    .native_navigate_history(NativeHistoryDirection::Forward)
-                                    .await?,
-                                "reload" => {
-                                    session.script("location.reload()").await?;
-                                    let revision = session
-                                        .evidence(crate::browser_backend::EvidenceLevel::Compact)
-                                        .await?
-                                        .revision;
-                                    crate::browser::session::NavigationControlOutcome {
-                                        action: "reload".into(),
-                                        previous_revision: request.expected_revision,
-                                        current_revision: revision,
-                                    }
-                                }
-                                _ => {
-                                    return Err(format!(
-                                        "unsupported native session control `{}`",
-                                        request.action
-                                    )
-                                    .into());
-                                }
+                            let operation = async {
+                                execute_native_control(session, request).await
                             };
-                            json!({
-                                "ok": true,
-                                "action": outcome.action,
-                                "currentRevision": outcome.current_revision,
-                            })
+                            match run_native_operation_with_controls(
+                                &listener,
+                                session,
+                                &record,
+                                operation,
+                            )
+                            .await
+                            {
+                                Ok(response) => response,
+                                Err(error) => {
+                                    json!({"ok": false, "error": error.to_string()})
+                                }
+                            }
                         }
                     }
                     "mcp" => {
@@ -717,15 +723,25 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                         let session = session
                             .as_ref()
                             .ok_or("native persistent session is stopping")?;
-                        match crate::mcp::server::run_native_persistent_tool(
-                            params,
+                        let operation = async {
+                            let result = crate::mcp::server::run_native_persistent_tool(
+                                params,
+                                session,
+                                &record.profile,
+                                &policy,
+                            )
+                            .await?;
+                            Ok(json!({"ok": true, "result": result}))
+                        };
+                        match run_native_operation_with_controls(
+                            &listener,
                             session,
-                            &record.profile,
-                            &policy,
+                            &record,
+                            operation,
                         )
                         .await
                         {
-                            Ok(result) => json!({"ok": true, "result": result}),
+                            Ok(response) => response,
                             Err(error) => json!({"ok": false, "error": error.to_string()}),
                         }
                     }
@@ -745,6 +761,203 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
     let _ = std::fs::remove_file(status_path);
     remove_socket_if_safe(&socket)?;
     Ok(())
+}
+
+#[cfg(all(unix, feature = "native-engine"))]
+async fn execute_native_control(
+    session: &BrowserRuntimeSession,
+    request: NativeControlRequest,
+) -> BrowserResult<serde_json::Value> {
+    if request.action == "stopLoading" {
+        let outcome = session
+            .stop_loading_with_revision(request.expected_revision)
+            .await?;
+        return Ok(json!({
+            "ok": true,
+            "action": outcome.action,
+            "currentRevision": outcome.current_revision,
+        }));
+    }
+
+    let actual_revision = session
+        .evidence(crate::browser_backend::EvidenceLevel::Compact)
+        .await?
+        .revision;
+    if actual_revision != request.expected_revision {
+        return Err(format!(
+            "stale browser revision: expected {}, observed {actual_revision}",
+            request.expected_revision
+        )
+        .into());
+    }
+    let outcome = match request.action.as_str() {
+        "back" => {
+            session
+                .native_navigate_history(NativeHistoryDirection::Back)
+                .await?
+        }
+        "forward" => {
+            session
+                .native_navigate_history(NativeHistoryDirection::Forward)
+                .await?
+        }
+        "reload" => {
+            session.script("location.reload()").await?;
+            let revision = session
+                .evidence(crate::browser_backend::EvidenceLevel::Compact)
+                .await?
+                .revision;
+            crate::browser::session::NavigationControlOutcome {
+                action: "reload".into(),
+                previous_revision: request.expected_revision,
+                current_revision: revision,
+            }
+        }
+        _ => {
+            return Err(format!("unsupported native session control `{}`", request.action).into());
+        }
+    };
+    Ok(json!({
+        "ok": true,
+        "action": outcome.action,
+        "currentRevision": outcome.current_revision,
+    }))
+}
+
+#[cfg(all(unix, feature = "native-engine"))]
+async fn accept_native_owner_request(
+    listener: &tokio::net::UnixListener,
+) -> BrowserResult<(
+    tokio::net::unix::OwnedWriteHalf,
+    Result<SessionRequest, String>,
+)> {
+    let (stream, _) = listener.accept().await?;
+    let (read, write) = stream.into_split();
+    let mut reader = BufReader::new(read);
+    let line = match tokio::time::timeout(
+        Duration::from_secs(2),
+        read_bounded_native_request_line(&mut reader),
+    )
+    .await
+    {
+        Err(_) => Err("persistent session request timed out".to_owned()),
+        Ok(Err(error)) => Err(error),
+        Ok(Ok(line)) => serde_json::from_str::<SessionRequest>(line.trim())
+            .map_err(|error| format!("invalid session request: {error}")),
+    };
+    Ok((write, line))
+}
+
+#[cfg(all(unix, feature = "native-engine"))]
+async fn read_bounded_native_request_line(
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+) -> Result<String, String> {
+    use tokio::io::AsyncReadExt;
+
+    let mut bytes = Vec::with_capacity(1024);
+    let mut buffer = [0; 4096];
+    loop {
+        let remaining = MAX_SESSION_REQUEST_BYTES + 1 - bytes.len();
+        let read_limit = remaining.min(buffer.len());
+        let read = reader
+            .read(&mut buffer[..read_limit])
+            .await
+            .map_err(|error| error.to_string())?;
+        if read == 0 {
+            if bytes.is_empty() {
+                return Err("persistent session request closed before sending a line".into());
+            }
+            break;
+        }
+        let newline = buffer[..read].iter().position(|byte| *byte == b'\n');
+        let count = newline.unwrap_or(read);
+        bytes.extend_from_slice(&buffer[..count]);
+        if bytes.len() > MAX_SESSION_REQUEST_BYTES {
+            return Err(format!(
+                "persistent session request exceeds its {MAX_SESSION_REQUEST_BYTES}-byte size bound"
+            ));
+        }
+        if newline.is_some() {
+            break;
+        }
+    }
+    String::from_utf8(bytes).map_err(|error| format!("persistent request is not UTF-8: {error}"))
+}
+
+#[cfg(all(unix, feature = "native-engine"))]
+async fn write_native_owner_response(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    response: &serde_json::Value,
+) -> BrowserResult<()> {
+    writer.write_all(&serde_json::to_vec(response)?).await?;
+    writer.write_all(b"\n").await?;
+    Ok(())
+}
+
+#[cfg(all(unix, feature = "native-engine"))]
+async fn run_native_operation_with_controls<F>(
+    listener: &tokio::net::UnixListener,
+    session: &BrowserRuntimeSession,
+    record: &PersistentSessionRecord,
+    operation: F,
+) -> BrowserResult<serde_json::Value>
+where
+    F: Future<Output = BrowserResult<serde_json::Value>>,
+{
+    tokio::pin!(operation);
+    loop {
+        tokio::select! {
+            result = &mut operation => return result,
+            accepted = accept_native_owner_request(listener) => {
+                let (mut writer, request) = accepted?;
+                let response = match request {
+                    Err(error) => json!({"ok": false, "error": error}),
+                    Ok(request) if request.op == "status" => json!(record),
+                    Ok(request) if request.op == "control" => {
+                        match request.control {
+                            Some(control) if control.action == "stopLoading" => {
+                                match session.active_native_navigation_revision() {
+                                    Ok(Some(_)) => match session
+                                        .stop_loading_with_revision(control.expected_revision)
+                                        .await
+                                    {
+                                        Ok(outcome) => json!({
+                                            "ok": true,
+                                            "action": outcome.action,
+                                            "currentRevision": outcome.current_revision,
+                                        }),
+                                        Err(error) => json!({
+                                            "ok": false,
+                                            "error": error.to_string(),
+                                        }),
+                                    },
+                                    Ok(None) => json!({
+                                        "ok": false,
+                                        "error": "native persistent owner is busy; no interruptible HTTP(S) navigation is active",
+                                    }),
+                                    Err(error) => json!({
+                                        "ok": false,
+                                        "error": error.to_string(),
+                                    }),
+                                }
+                            }
+                            _ => json!({
+                                "ok": false,
+                                "error": "native persistent owner is busy; only status and stopLoading are accepted during an active operation",
+                            }),
+                        }
+                    }
+                    Ok(_) => json!({
+                        "ok": false,
+                        "error": "native persistent owner is busy; only status and stopLoading are accepted during an active operation",
+                    }),
+                };
+                // A disconnected control client must not drop the active
+                // browser command future and thereby change navigation state.
+                let _ = write_native_owner_response(&mut writer, &response).await;
+            }
+        }
+    }
 }
 
 #[cfg(all(unix, feature = "native-engine"))]
@@ -1156,6 +1369,54 @@ mod tests {
                         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
                     ));
                     std::fs::create_dir_all(&root).unwrap();
+                    let fixture_listener =
+                        tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let fixture_address = fixture_listener.local_addr().unwrap();
+                    let (slow_request_tx, slow_request_rx) = tokio::sync::oneshot::channel();
+                    let (release_slow_tx, release_slow_rx) = tokio::sync::oneshot::channel();
+                    let (fast_request_tx, fast_request_rx) = tokio::sync::oneshot::channel();
+                    let fixture_server = tokio::task::spawn_local(async move {
+                        use tokio::io::AsyncWriteExt;
+
+                        let (slow_stream, _) = fixture_listener.accept().await.unwrap();
+                        let mut slow_reader = BufReader::new(slow_stream);
+                        loop {
+                            let mut line = String::new();
+                            if slow_reader.read_line(&mut line).await.unwrap() == 0
+                                || line == "\r\n"
+                            {
+                                break;
+                            }
+                        }
+                        let _ = slow_request_tx.send(());
+                        let mut slow_stream = slow_reader.into_inner();
+                        let _ = release_slow_rx.await;
+                        let _ = slow_stream
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nslow!",
+                            )
+                            .await;
+
+                        let (fast_stream, _) = fixture_listener.accept().await.unwrap();
+                        let mut fast_reader = BufReader::new(fast_stream);
+                        loop {
+                            let mut line = String::new();
+                            if fast_reader.read_line(&mut line).await.unwrap() == 0
+                                || line == "\r\n"
+                            {
+                                break;
+                            }
+                        }
+                        let _ = fast_request_tx.send(());
+                        let mut fast_stream = fast_reader.into_inner();
+                        let body = b"<!doctype html><title>owner-follow-up</title><p>ok</p>";
+                        let headers = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        fast_stream.write_all(headers.as_bytes()).await.unwrap();
+                        fast_stream.write_all(body).await.unwrap();
+                    });
                     let socket = root.join("session.sock");
                     let status_path = root.join("session.json");
                     let policy =
@@ -1223,13 +1484,143 @@ mod tests {
                         workflow: None,
                     };
                     let control_result = send_request_payload(&socket, &control).await.unwrap();
-                    assert_eq!(control_result["ok"], false);
+                    assert_eq!(control_result["ok"], true);
+                    assert_eq!(control_result["action"], "stopLoading");
+                    assert_eq!(control_result["currentRevision"], revision);
+
+                    let navigate_request = SessionRequest {
+                        op: "execute".into(),
+                        argv: vec![
+                            "--browser-runtime".into(),
+                            "native".into(),
+                            "--profile".into(),
+                            "native-test".into(),
+                            "navigate".into(),
+                            format!("http://{fixture_address}/slow"),
+                        ],
+                        control: None,
+                        mcp_params: None,
+                        workflow: None,
+                    };
+                    let navigate_socket = socket.clone();
+                    let pending_navigation = tokio::task::spawn_local(async move {
+                        send_request_payload(&navigate_socket, &navigate_request).await
+                    });
+                    tokio::time::timeout(Duration::from_secs(5), slow_request_rx)
+                        .await
+                        .expect("slow HTTP fixture was never reached")
+                        .expect("slow HTTP fixture notification was dropped");
+
+                    let status = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        send_request(&socket, "status"),
+                    )
+                    .await
+                    .expect("status was blocked behind active navigation")
+                    .unwrap();
+                    assert_eq!(status["state"], "running");
+
+                    let busy = send_request_payload(&socket, &request)
+                        .await
+                        .expect_err("a second browser command ran concurrently");
+                    assert!(busy.to_string().contains("busy"));
+
+                    let stale_stop = send_request_payload(
+                        &socket,
+                        &SessionRequest {
+                            op: "control".into(),
+                            argv: Vec::new(),
+                            control: Some(NativeControlRequest {
+                                action: "stopLoading".into(),
+                                expected_revision: revision.saturating_add(1),
+                            }),
+                            mcp_params: None,
+                            workflow: None,
+                        },
+                    )
+                    .await
+                    .expect_err("stop-loading accepted a stale revision");
                     assert!(
-                        control_result["error"]
-                            .as_str()
-                            .unwrap()
-                            .contains("unsupported")
+                        stale_stop.to_string().contains("stale page revision"),
+                        "unexpected stale stop error: {stale_stop}"
                     );
+
+                    let stopped = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        send_request_payload(
+                            &socket,
+                            &SessionRequest {
+                                op: "control".into(),
+                                argv: Vec::new(),
+                                control: Some(NativeControlRequest {
+                                    action: "stopLoading".into(),
+                                    expected_revision: revision,
+                                }),
+                                mcp_params: None,
+                                workflow: None,
+                            },
+                        ),
+                    )
+                    .await
+                    .expect("stop-loading did not respond promptly")
+                    .unwrap();
+                    assert_eq!(stopped["action"], "stopLoading");
+                    assert_eq!(stopped["currentRevision"], revision);
+                    let _ = release_slow_tx.send(());
+
+                    let cancelled = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        pending_navigation,
+                    )
+                    .await
+                    .expect("cancelled owner command did not settle")
+                    .expect("navigation client task panicked")
+                    .expect_err("cancelled navigation reported success");
+                    assert!(cancelled.to_string().to_lowercase().contains("cancel"));
+
+                    let after_cancel = send_request_payload(&socket, &request).await.unwrap();
+                    assert_eq!(after_cancel["output"]["value"]["revision"], revision);
+
+                    let follow_up = SessionRequest {
+                        op: "execute".into(),
+                        argv: vec![
+                            "--browser-runtime".into(),
+                            "native".into(),
+                            "--profile".into(),
+                            "native-test".into(),
+                            "navigate".into(),
+                            format!("http://{fixture_address}/fast"),
+                        ],
+                        control: None,
+                        mcp_params: None,
+                        workflow: None,
+                    };
+                    let follow_up_socket = socket.clone();
+                    let follow_up_client = tokio::task::spawn_local(async move {
+                        send_request_payload(&follow_up_socket, &follow_up).await
+                    });
+                    tokio::time::timeout(Duration::from_secs(5), fast_request_rx)
+                        .await
+                        .expect("follow-up navigation never reached the HTTP fixture")
+                        .expect("HTTP fixture follow-up notification was dropped");
+                    let follow_up = tokio::time::timeout(Duration::from_secs(10), follow_up_client)
+                    .await
+                    .expect("follow-up navigation was blocked by cancelled operation")
+                    .expect("follow-up navigation client task panicked")
+                    .unwrap();
+                    assert_eq!(follow_up["ok"], true);
+                    let after_follow_up = send_request_payload(&socket, &request).await.unwrap();
+                    assert!(
+                        after_follow_up["output"]["value"]["revision"]
+                            .as_u64()
+                            .expect("follow-up observation should expose a revision")
+                            > revision
+                    );
+                    tokio::time::timeout(Duration::from_secs(2), fixture_server)
+                        .await
+                        .expect("HTTP fixture did not complete both requests")
+                        .expect("HTTP fixture task panicked");
+
                     let mcp_request = SessionRequest {
                         op: "mcp".into(),
                         argv: Vec::new(),
@@ -1259,7 +1650,9 @@ mod tests {
                             "id": "observe",
                             "action": "observe"
                         }],
-                        "terminalCondition": {"urlEquals": "about:blank"},
+                        "terminalCondition": {
+                            "urlEquals": format!("http://{fixture_address}/fast")
+                        },
                         "outputs": {}
                     }))
                     .unwrap();

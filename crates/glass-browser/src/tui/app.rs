@@ -145,7 +145,8 @@ struct PersistentEvidence {
     url: String,
     visible_text: String,
     revision: u64,
-    complete: bool,
+    #[serde(default)]
+    complete: Option<bool>,
 }
 
 #[cfg(feature = "native-engine")]
@@ -265,7 +266,7 @@ fn parse_persistent_observation(value: serde_json::Value) -> BrowserResult<TuiOb
     Ok(TuiObservation {
         title: evidence.title,
         url: evidence.url,
-        loading: !evidence.complete,
+        loading: evidence.complete == Some(false),
         revision,
         visible_text: evidence.visible_text,
         entities: nodes
@@ -1745,15 +1746,13 @@ pub async fn run_tui_for_product(cli: &Cli, development_enabled: bool) -> Browse
                             app.session.as_ref(),
                             Some(BrowserTuiSession::NativePersistent(_))
                         );
-                        if direct_native {
+                        if direct_native || persistent_native {
                             if let Err(error) = app
                                 .execute_control(BrowserWorkspaceIntent::StopLoading)
                                 .await
                             {
                                 app.status = format!("Stop-loading failed: {error}");
                             }
-                        } else if persistent_native {
-                            app.status = "Stop-loading is unsupported while attached to the serialized native owner".into();
                         } else {
                             app.status = "Native navigation is still in progress".into();
                         }
@@ -2279,6 +2278,21 @@ mod tests {
         assert_eq!(observation.entities.len(), 1);
         assert_eq!(observation.entities[0].reference, "r11:b3");
         assert!(observation.entities[0].actionable);
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_persistent_deep_dom_observation_without_complete_is_not_loading() {
+        let observation = parse_persistent_observation(serde_json::json!({
+            "title": "",
+            "url": "about:blank",
+            "visibleText": "",
+            "revision": 1,
+            "nodes": [],
+        }))
+        .expect("deep-DOM persistent observation should decode without a completion field");
+        assert!(!observation.loading);
+        assert_eq!(observation.revision, 1);
     }
 
     #[cfg(feature = "native-engine")]

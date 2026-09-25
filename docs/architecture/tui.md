@@ -139,8 +139,10 @@ standalone command strings.
   and uses the existing Chromium control. The TUI polls native navigation
   alongside key handling; after a stop request, it continues polling until the
   partial load is discarded and the content worker is reaped. A native TUI
-  attached to the serialized persistent owner reports stop-loading unsupported
-  until that owner can accept concurrent controls.
+  attached to the persistent owner sends the same revision-checked control over
+  the owner socket. The owner services it while polling its active command;
+  during other active work it rejects stop promptly if there is no interruptible
+  HTTP(S) navigation. Other concurrent browser operations are reported busy.
 - **Error/disconnected:** preserve semantic state where safe, expose the error,
   and guide reconnect, launch-auto, or explicit-port recovery.
 - **Help:** replace content with the bounded command reference; Esc restores

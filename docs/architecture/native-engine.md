@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-732`; issue #40 remains open. The public Rust
+`native-engine-browser-733`; issue #40 remains open. The public Rust
 `BrowserSession` entrypoint now constructs the native backend directly, and
 the former Chrome/CDP API is named `CdpBrowserSession`. This does not claim
 operation parity or production certification. The canonical Rust session now
@@ -19,9 +19,13 @@ navigation future finishes; callers must keep polling that future so it can
 discard the partial response and reap its content worker. The next navigation
 starts a fresh worker, so transient state held only by that worker is not
 preserved. A navigation that has already claimed its commit phase rejects the
-stop request instead of reporting a false cancellation. Persistent-owner stop
-remains explicitly unsupported until its serialized socket loop can process
-controls concurrently. These slices do not claim full operation parity or
+stop request instead of reporting a false cancellation. Slice 733 carries the
+same behavior through the persistent native owner: its single active command
+continues to be polled while the owner services status and stop-loading
+requests. Only an actually active process-backed HTTP(S) navigation can be
+interrupted; concurrent state-changing commands are rejected as busy, and a
+stop during non-navigation work fails promptly. The original request continues
+until its worker is reaped. These slices do not claim full operation parity or
 profile certification. Earlier completed slices include
 `native-engine-browser-696` through
 `native-engine-browser-687`,
@@ -4225,14 +4229,20 @@ itself; no CDP port or Chrome child is invented.
 Slice 322 extends that owner across the remaining first-class persistent
 surfaces. The browser TUI attaches through a non-owning proxy, forwards native
 navigation/actions/observation/targets/screenshots over the owner socket, and
-uses revision-checked owner controls for history and reload. Its original
-stop-loading handler returned an unchanged-revision no-op. Slice 732 replaces
-that false success with an explicit unsupported response while the serialized
-owner loop is unable to accept a concurrent control. In-process native TUI
-stop-loading now requests cancellation of process-backed HTTP(S) navigation
-through the canonical session API; it keeps polling the navigation future
-until the worker is reaped and the stop is observed. Persistent-owner
-interruption remains issue #40 work.
+uses revision-checked owner controls for history and reload. Slice 732 replaces
+the former stop-loading no-op with real cancellation for in-process native
+navigation. Slice 733 adds concurrent stop-loading to the persistent owner:
+while one owner command is pending, its single state writer continues polling
+that command and accepts status/stop requests. The TUI `Alt+S` control now uses
+that path when attached. The cancelled command remains active until its worker
+is reaped; other concurrent browser commands receive a busy response. A stop
+without an active HTTP(S) navigation does not block behind unrelated owner
+work. Exiting or stopping the attached TUI detaches the client without closing
+the owner. A native MCP process with `--session` forwards browser tool
+parameters to the owner, which invokes the same native MCP dispatcher against
+its live session; browser-free protocol tools remain local. This prevents
+duplicate engines and preserves the owner's profile, storage, viewport,
+policy, and revision authority.
 Exiting or stopping the attached TUI detaches the client without closing the
 owner. A native MCP process with `--session` forwards browser tool parameters
 to the owner, which invokes the same native MCP dispatcher against its live

@@ -191,9 +191,21 @@ cancellation of an active process-backed HTTP(S) navigation before commit.
 Callers continue polling the navigation future until it terminates/reaps the
 content worker; the committed URL/history/revision remain unchanged and a
 subsequent navigation starts a fresh worker. Direct native TUI uses that API.
-The serialized persistent-owner path reports unsupported instead of fake
-success; concurrent owner controls remain open. See
-`tasks/native-engine-browser-732.md`.
+At the slice-732 checkpoint, the serialized persistent-owner path still
+reported stop-loading as unsupported rather than fake success. Slice 733
+closes that specific gap; see `tasks/native-engine-browser-732.md` and
+`tasks/native-engine-browser-733.md`.
+
+### Completed slice 733: persistent-owner stop-loading
+
+The native persistent owner now polls its active browser command and socket
+controls together. It accepts status and revision-checked stop-loading while
+an HTTP(S) navigation is active, while rejecting other concurrent browser
+operations as busy. Stop requests during non-navigation work fail promptly,
+avoiding a wait on the owner operation lock. The attached native TUI routes
+`Alt+S` through this owner control. The active command continues until its
+cancelled content worker is reaped. See
+`tasks/native-engine-browser-733.md`.
 
 ### Follow-up observed during slice 722
 

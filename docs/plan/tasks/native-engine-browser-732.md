@@ -47,10 +47,10 @@ the content-worker boundary safe for the next operation.
   and Safari return typed unsupported-operation errors; there is no CDP or
   other-runtime fallback.
 - The direct, in-process native TUI polls navigation alongside input and routes
-  `Alt+S` Stop-loading through the canonical session method. The
-  separate persistent-owner socket currently processes
-  requests serially; until its command loop can accept a stop concurrently, it
-  must report stop-loading as unsupported rather than return fake success.
+  `Alt+S` Stop-loading through the canonical session method. At this slice
+  checkpoint, the separate persistent-owner socket still processed requests
+  serially and reported stop-loading as unsupported; slice 733 closes that
+  gap.
 - This slice does not claim complete network-stream cancellation, cancellation
   of every navigation source, persistent-owner interruption, or profile
   conformance.
@@ -86,9 +86,10 @@ the content-worker boundary safe for the next operation.
   worker recovery rather than merely checking the cancellation error.
 - Cover idle stop and stale-revision rejection in the focused native integration
   test; exercise `Alt+S` against a delayed loopback response in the direct TUI.
-- Keep the persistent-owner stop response explicitly unsupported. Its unit
-  assertion compiles under the all-target check, but the library unit-test
-  harness was not run in this slice.
+- The persistent-owner stop response was explicitly unsupported at this
+  checkpoint. Its assertion compiled under the all-target check, but the
+  library unit-test harness was not run in this slice; slice 733 implements and
+  exercises the concurrent control path.
 - After the coherent code/docs batch, run one locked package-scoped
   `glass-browser` all-target check, then focused cancellation/control tests.
   Run formatting, whitespace, release-truth, documentation-depth, and shortcut
@@ -103,5 +104,5 @@ the content-worker boundary safe for the next operation.
 - The test verifies idle stop, stale-revision rejection, prompt cancellation acceptance, unchanged committed URL/revision, content-worker reaping, and successful navigation after worker restart.
 - `cargo build --locked --quiet -p glass-browser --bin glass-browser` passed. A PTY smoke with a delayed loopback server showed the native TUI accepting `Alt+S`, reporting `Navigation stopped · the pending document was not committed`, and exiting cleanly.
 - Release-documentation truth passed for 1,360 Markdown documents with zero current-claim failures; documentation depth passed (93 guides, 19 contracts); TUI shortcut inventory passed (15 implementation keys, 63 documentation markers); `git diff --check` passed.
-- Persistent-owner stop remains an explicit unsupported response until its serialized command loop can process concurrent controls.
+- At this checkpoint, persistent-owner stop still returned an explicit unsupported response; slice 733 implements concurrent controls.
 - The package-wide test suite, persistent-owner unit test, and remote CI were not run; no full-workspace test or clean was performed.

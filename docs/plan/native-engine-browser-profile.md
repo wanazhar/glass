@@ -56,10 +56,15 @@ When the native backend is selected, it must:
    transient worker-only state is discarded. If navigation already claimed
    its commit phase, stop returns a typed lifecycle error. Idle calls validate
    the revision and preserve it. Non-native sessions receive typed
-   unsupported-operation errors without switching transports. The persistent
-   owner currently rejects stop-loading because its serialized socket loop
-   cannot interrupt an executing command; persistent-owner cancellation and
-   other navigation sources remain open profile work;
+   unsupported-operation errors without switching transports. The native
+   persistent owner keeps one browser operation as the state writer while
+   polling that future alongside its local socket. During an active operation,
+   it services status and revision-checked `stopLoading` only when a
+   process-backed HTTP(S) navigation is actually active; other operations are
+   explicitly rejected as busy, and stop during non-navigation work fails
+   promptly rather than waiting on the owner. The original command continues
+   polling until cancellation settles and its content worker is reaped. Other
+   navigation sources remain open profile work;
 4. return typed, versioned unsupported errors only for capabilities explicitly
    outside this profile; and
 5. run untrusted content behind the production process/sandbox boundary before

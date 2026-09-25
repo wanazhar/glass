@@ -4035,16 +4035,18 @@ impl NativeDocument {
     /// Return the embedded browsing-context sources in document order. The
     /// frame owner resolves these references against the current document;
     /// an omitted or empty `src` is the standard initial blank document.
-    pub(crate) fn embedded_frame_sources(&self) -> Vec<(NativeNodeId, String)> {
+    pub(crate) fn embedded_frame_sources(&self) -> Vec<(NativeNodeId, String, Option<String>)> {
         self.nodes
             .iter()
             .filter(|node| self.is_attached(node.id()))
             .filter(|node| matches!(node.element_name(), Some("iframe" | "frame")))
             .map(|node| {
+                let sandbox = node.attribute("sandbox").map(str::to_owned);
                 if let Some(srcdoc) = node.attribute("srcdoc") {
                     return (
                         node.id(),
                         format!("data:text/html,{}", encode_data_url_payload(srcdoc)),
+                        sandbox,
                     );
                 }
                 (
@@ -4054,6 +4056,7 @@ impl NativeDocument {
                         .filter(|source| !source.is_empty())
                         .unwrap_or("about:blank")
                         .to_owned(),
+                    sandbox,
                 )
             })
             .collect()

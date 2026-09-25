@@ -11,8 +11,8 @@ use super::bidi_backend::BidiBackendConfig;
 use super::native_backend::{NativeEngineBackend, NativeFrameInspectionSnapshot};
 #[cfg(feature = "native-engine")]
 use super::native_engine::{
-    NativeDialogControlPlane, NativeEngineConfig, NativeFile, NativePendingDialog,
-    NativePreflightAction, NativeTargetPreflight, Viewport,
+    NativeDialogControlPlane, NativeDialogController, NativeEngineConfig, NativeFile,
+    NativePendingDialog, NativePreflightAction, NativeTargetPreflight, Viewport,
 };
 #[cfg(feature = "native-engine")]
 use super::policy::BrowserPolicy;
@@ -207,10 +207,13 @@ impl BrowserRuntimeSession {
         Self::initialize_native_backend(backend).await
     }
 
-    /// Construct a native runtime whose persistent owner can resolve modal
-    /// dialogs through its independent request-control loop.
+    /// Construct a native runtime with blocking, process-backed modal dialogs.
+    ///
+    /// Keep a [`NativeDialogController`] and use it from an independent task
+    /// while navigation or script evaluation is suspended. The ordinary
+    /// native constructors retain their nonblocking dialog-event behavior.
     #[cfg(feature = "native-engine")]
-    pub(crate) async fn connect_native_with_modal_dialogs(
+    pub async fn connect_native_with_modal_dialogs(
         config: NativeEngineConfig,
     ) -> BrowserResult<Self> {
         let backend = BackendFactory::native_with_dialog_control(
@@ -218,6 +221,19 @@ impl BrowserRuntimeSession {
             NativeDialogControlPlane::for_modal_owner(),
         )?;
         Self::initialize_native_backend(backend).await
+    }
+
+    /// Return an out-of-band controller for this session's exact pending
+    /// process-backed dialog. This succeeds only when the session was created
+    /// with [`connect_native_with_modal_dialogs`](Self::connect_native_with_modal_dialogs).
+    #[cfg(feature = "native-engine")]
+    pub fn native_dialog_controller(&self) -> BrowserResult<NativeDialogController> {
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.native_dialog_controller()?),
+            _ => Err(
+                "native dialog control is only available on a modal-enabled native runtime".into(),
+            ),
+        }
     }
 
     #[cfg(feature = "native-engine")]

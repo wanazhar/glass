@@ -8,6 +8,7 @@ interfaces does not transfer lifecycle or mutation authority between layers.
 | --- | --- | --- |
 | CDP transport and Chrome lifecycle | `src/browser/cdp.rs`, `chrome.rs` | typed transport errors and bounded deadlines |
 | Browser state and guarded actions | `src/browser/session/` | revision-scoped references and policy gates |
+| Native modal JavaScript dialog control | `src/browser/native_engine/dialog.rs`, `src/browser/runtime.rs` | explicit modal-enabled construction and exact-ID out-of-band resolution; no page-operation lock acquisition |
 | Agent operations | `src/browser/session/agent.rs` | inspect, target, act-and-verify, extraction, recovery |
 | Extraction engine | `src/extraction.rs`, `src/browser/session/observe.rs` | strict request scopes, live source acquisition, explicit omissions, and resource budgets |
 | Glass Web IR v1 | `src/web_ir.rs` | deterministic evidence reconciliation, bounded entity metadata, and graph invariants |

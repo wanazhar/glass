@@ -20,6 +20,7 @@ use glass_browser::browser::session::{
     SemanticObservationLevel, SemanticResolutionPolicy, StructuredExtractionRequest,
     VerificationPredicate, VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition,
 };
+use glass_browser::browser::{NativeDialogController, NativeDialogResolution, NativePendingDialog};
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
     BrowserBackendDispatcher, BrowserBackendError, BrowserCapability, CaptureFormat,
@@ -49,6 +50,26 @@ use url::Url;
 fn native_content_process_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+async fn wait_for_modal_dialog(
+    controller: &NativeDialogController,
+    expected_type: &str,
+) -> NativePendingDialog {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(dialog) = controller
+                .pending_dialog()
+                .expect("dialog control state must remain available")
+                && dialog.dialog.dialog_type == expected_type
+            {
+                break dialog;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("native modal controller did not expose {expected_type}"))
 }
 
 async fn read_http_request_bytes(stream: &mut TcpStream) -> Vec<u8> {
@@ -10978,6 +10999,7 @@ async fn native_dialogs_are_owned_by_the_page_realm_and_prompt_backend() {
         .await
         .unwrap();
 
+    assert!(session.native_dialog_controller().is_err());
     assert!(session.native_pending_dialog().await.unwrap().is_none());
     assert_eq!(
         session
@@ -11043,6 +11065,118 @@ async fn native_dialogs_are_owned_by_the_page_realm_and_prompt_backend() {
             .handled
     );
     session.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn standalone_native_dialog_controller_resumes_the_original_page_script() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/modal-controller"));
+        let body = "<script>window.dialogTrace=['before'];window.dialogTrace.push(confirm('continue?')?'accepted':'dismissed');window.dialogTrace.push(prompt('name?','seed'));alert('finished');window.dialogTrace.push('after');</script><p>ready</p>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = Arc::new(
+        BrowserRuntimeSession::connect_native_with_modal_dialogs(NativeEngineConfig::default())
+            .await
+            .unwrap(),
+    );
+    let controller = session.native_dialog_controller().unwrap();
+    let navigation_session = Arc::clone(&session);
+    let url = format!("http://{address}/modal-controller");
+    let navigation_url = url.clone();
+    let navigation = tokio::task::spawn_local(async move {
+        navigation_session.navigate(navigation_url).await
+    });
+
+    let confirm = wait_for_modal_dialog(&controller, "confirm").await;
+    assert!(!confirm.context_id.is_empty());
+    assert!(!confirm.frame_id.is_empty());
+    assert_eq!(confirm.dialog.message, "continue?");
+    assert!(!navigation.is_finished());
+    assert!(
+        controller
+            .resolve_dialog(
+                "native-dialog-stale",
+                NativeDialogResolution {
+                    accepted: true,
+                    prompt_value: None,
+                },
+            )
+            .is_err()
+    );
+    assert_eq!(
+        controller.pending_dialog().unwrap().as_ref(),
+        Some(&confirm)
+    );
+    controller
+        .resolve_dialog(
+            &confirm.id,
+            NativeDialogResolution {
+                accepted: true,
+                prompt_value: None,
+            },
+        )
+        .unwrap();
+
+    let prompt = wait_for_modal_dialog(&controller, "prompt").await;
+    assert_eq!(prompt.dialog.default_value.as_deref(), Some("seed"));
+    assert!(!navigation.is_finished());
+    controller
+        .resolve_dialog(
+            &prompt.id,
+            NativeDialogResolution {
+                accepted: true,
+                prompt_value: Some("Ada".into()),
+            },
+        )
+        .unwrap();
+
+    let alert = wait_for_modal_dialog(&controller, "alert").await;
+    assert_eq!(alert.dialog.message, "finished");
+    assert!(!navigation.is_finished());
+    controller
+        .resolve_dialog(
+            &alert.id,
+            NativeDialogResolution {
+                accepted: true,
+                prompt_value: None,
+            },
+        )
+        .unwrap();
+
+    let outcome = tokio::time::timeout(Duration::from_secs(15), navigation)
+        .await
+        .expect("navigation remained suspended after the dialog decisions")
+        .expect("native navigation task panicked")
+        .unwrap();
+    assert_eq!(outcome.url, url);
+    assert!(controller.pending_dialog().unwrap().is_none());
+    assert_eq!(
+        session
+            .script("window.dialogTrace.join('|')")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("before|accepted|Ada|after")
+    );
+
+    let session = Arc::try_unwrap(session)
+        .unwrap_or_else(|_| panic!("standalone modal session still has unexpected owners"));
+    session.close().await.unwrap();
+    server.await.unwrap();
+        })
+        .await;
 }
 
 #[tokio::test]

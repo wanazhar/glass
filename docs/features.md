@@ -589,6 +589,12 @@ check, uncheck, select, key/down/up, shortcuts, bounded form fill, upload,
 coordinate click, scroll, dialog accept/dismiss, recognized consent dismissal,
 and popup-expecting click.
 
+Rust embedders can opt into process-backed, script-blocking native JavaScript
+dialogs through `BrowserSession::connect_native_with_modal_dialogs` and the
+out-of-band `NativeDialogController`. The default native constructors remain
+nonblocking. CLI/MCP/TUI modal-prompt presentation is not yet wired to this
+controller and remains issue #40 work.
+
 `--interaction human` sends bounded smooth pointer movement; `fast` sends
 direct pointer events. Both modes produce browser-side evidence and preserve
 the same targeting and revision contract.

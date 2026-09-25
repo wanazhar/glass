@@ -113,6 +113,21 @@ session.close().await?;
 # }
 ```
 
+### Modal JavaScript dialogs
+
+Process-backed native dialogs are opt-in so a caller without an independent
+controller cannot deadlock inside synchronous page JavaScript. Embedders that
+can run a navigation/evaluation future alongside a host prompt may construct
+with `BrowserSession::connect_native_with_modal_dialogs(config)`, then obtain
+`session.native_dialog_controller()`. The cloneable controller's
+`pending_dialog()` reads the exact dialog without taking the page-operation
+lock; `resolve_dialog(id, NativeDialogResolution { accepted, prompt_value })`
+accepts or dismisses only that identity. For an accepted prompt,
+`prompt_value: None` submits its default value. Ordinary `start`,
+`start_default`, and `connect_native` constructors retain the nonblocking
+event-queue behavior. CLI/MCP/TUI host presentation remains a separate issue
+#40 integration gate.
+
 The backend profile declares lifecycle, navigation, up to 32 independent page
 targets with one explicitly selected active context, bounded evidence, semantic
 input actions, native point hit-testing, and revision effects. Rust callers can

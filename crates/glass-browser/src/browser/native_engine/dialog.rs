@@ -7,19 +7,27 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
+/// A process-backed modal JavaScript dialog awaiting a host decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct NativePendingDialog {
+pub struct NativePendingDialog {
+    /// Stable identity for resolving this exact pending dialog.
     pub id: String,
+    /// Owning browsing context (the target identity for this native session).
     pub context_id: String,
+    /// Frame whose script is suspended at the dialog call.
     pub frame_id: String,
+    /// Bounded dialog kind, message, default prompt value, and source URL.
     pub dialog: PendingDialog,
 }
 
+/// The selected host response for a native JavaScript dialog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct NativeDialogResolution {
+pub struct NativeDialogResolution {
+    /// Accept the dialog; `false` dismisses it.
     pub accepted: bool,
+    /// Response text for an accepted `prompt`, if overriding its default.
     #[serde(default)]
     pub prompt_value: Option<String>,
 }
@@ -58,6 +66,44 @@ struct NativeDialogControlInner {
 /// is held while a content-process script is suspended in a modal dialog.
 #[derive(Clone)]
 pub(crate) struct NativeDialogControlPlane(Arc<NativeDialogControlInner>);
+
+/// Out-of-band control for modal dialogs in an explicitly configured native
+/// session. Clones refer to the same pending-dialog state and can be used
+/// while a navigation or evaluation future is suspended.
+#[derive(Clone)]
+pub struct NativeDialogController {
+    control: NativeDialogControlPlane,
+}
+
+impl NativeDialogController {
+    pub(crate) fn new(control: NativeDialogControlPlane) -> Result<Self, NativeEngineError> {
+        if !control.modal_dialogs_enabled() {
+            return Err(NativeEngineError::invalid(
+                "native dialog controller",
+                "modal dialogs were not enabled for this session",
+            ));
+        }
+        Ok(Self { control })
+    }
+
+    /// Return the active process-backed modal dialog without waiting for the
+    /// session's serialized page-operation lock.
+    pub fn pending_dialog(&self) -> Result<Option<NativePendingDialog>, NativeEngineError> {
+        self.control.pending()
+    }
+
+    /// Resolve exactly `dialog_id`. A stale, duplicate, or mismatched ID is
+    /// rejected and leaves the active dialog unchanged.
+    pub fn resolve_dialog(
+        &self,
+        dialog_id: &str,
+        resolution: NativeDialogResolution,
+    ) -> Result<(), NativeEngineError> {
+        self.control
+            .resolve(dialog_id, resolution.accepted, resolution.prompt_value)
+            .map(|_| ())
+    }
+}
 
 impl Default for NativeDialogControlPlane {
     fn default() -> Self {
@@ -318,6 +364,78 @@ mod tests {
             message: "message".into(),
             default_value: default_value.map(str::to_owned),
         }
+    }
+
+    #[tokio::test]
+    async fn public_controller_resolves_only_the_current_modal_identity() {
+        let control = NativeDialogControlPlane::for_modal_owner();
+        let controller = NativeDialogController::new(control.clone()).unwrap();
+        let waiting_control = control.clone();
+        let waiting = tokio::spawn(async move {
+            waiting_control
+                .wait_for_resolution(
+                    "target-a",
+                    "frame-a",
+                    "https://example.test/",
+                    7,
+                    dialog("prompt", Some("seed")),
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        let pending = controller
+            .pending_dialog()
+            .unwrap()
+            .expect("public controller should observe the modal prompt");
+        assert_eq!(pending.context_id, "target-a");
+        assert_eq!(pending.frame_id, "frame-a");
+        assert_eq!(pending.dialog.default_value.as_deref(), Some("seed"));
+        assert!(
+            controller
+                .resolve_dialog(
+                    "stale-dialog",
+                    NativeDialogResolution {
+                        accepted: true,
+                        prompt_value: Some("wrong".into()),
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(
+            controller.pending_dialog().unwrap().as_ref(),
+            Some(&pending)
+        );
+
+        controller
+            .resolve_dialog(
+                &pending.id,
+                NativeDialogResolution {
+                    accepted: true,
+                    prompt_value: Some("answer".into()),
+                },
+            )
+            .unwrap();
+        assert!(
+            controller
+                .resolve_dialog(
+                    &pending.id,
+                    NativeDialogResolution {
+                        accepted: true,
+                        prompt_value: Some("late".into()),
+                    },
+                )
+                .is_err()
+        );
+        let resolved = waiting.await.unwrap().unwrap();
+        assert_eq!(resolved.resolution.prompt_value.as_deref(), Some("answer"));
+        resolved.finish();
+        assert!(controller.pending_dialog().unwrap().is_none());
+    }
+
+    #[test]
+    fn public_controller_rejects_a_non_modal_control_plane() {
+        assert!(NativeDialogController::new(NativeDialogControlPlane::default()).is_err());
     }
 
     #[tokio::test]

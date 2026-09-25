@@ -108,6 +108,12 @@ behavior for `alert()`, `confirm()`, and `prompt()`:
   operation remains pending. The script resumes once, in place; replaying it
   from the beginning or returning placeholder `false`/`null` values is not
   equivalent.
+- Rust embedders opt into this blocking path with an explicit modal-enabled
+  native-session constructor and a cloneable dialog controller. The controller
+  reads and resolves a target/frame-owned dialog by its exact identity without
+  acquiring the serialized page-operation lock. Ordinary native constructors
+  retain the nonblocking dialog-event path when no responsive controller is
+  installed; they must not strand a caller at a synchronous host callback.
 - Resolution is tied to the owning page target, frame, and current dialog
   identity. Navigation, target closure, worker failure, timeout, and explicit
   cancellation must release the suspended operation without applying a stale

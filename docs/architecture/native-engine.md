@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-730`; issue #40 remains open. The public Rust
+`native-engine-browser-731`; issue #40 remains open. The public Rust
 `BrowserSession` entrypoint now constructs the native backend directly, and
 the former Chrome/CDP API is named `CdpBrowserSession`. This does not claim
 operation parity or production certification. The canonical Rust session now
@@ -9,8 +9,11 @@ exposes revisioned native semantic observation, selected observation levels,
 page inspection/bootstrap, and stale-revision-checked region expansion under
 standard method names. Slice 730 also exposes native target/frame lifecycle
 under canonical names and excludes iframe fallback content from the parent's
-visible-text projection without mutating the DOM. Earlier
-completed slices include `native-engine-browser-696` through
+visible-text projection without mutating the DOM.
+Slice 731 exposes native history traversal, revision-checked reload, and
+owner recovery through standard Rust names; actual in-flight stop-loading
+cancellation remains unimplemented. Earlier completed slices include
+`native-engine-browser-696` through
 `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
 following completed `native-engine-browser-685`, following completed
@@ -4213,6 +4216,8 @@ Slice 322 extends that owner across the remaining first-class persistent
 surfaces. The browser TUI attaches through a non-owning proxy, forwards native
 navigation/actions/observation/targets/screenshots over the owner socket, and
 uses revision-checked owner controls for history, reload, and stop-loading.
+Native stop-loading currently returns an unchanged-revision no-op and does not
+interrupt an in-flight native navigation; cancellation remains issue #40 work.
 Exiting or stopping the attached TUI detaches the client without closing the
 owner. A native MCP process with `--session` forwards browser tool parameters
 to the owner, which invokes the same native MCP dispatcher against its live

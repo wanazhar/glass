@@ -9,8 +9,8 @@ use glass_browser::browser::native_engine::{
     MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES, MAX_NATIVE_DIAGNOSTICS, NativeAction, NativeBorderRadius,
     NativeBorderStyle, NativeColor, NativeDiagnosticCode, NativeDiagnosticSource,
     NativeDisplayCommand, NativeDocument, NativeEngine, NativeEngineConfig, NativeEngineError,
-    NativeEngineLimits, NativeEventKind, NativeFile, NativeHistoryDirection, NativeLifecycleState,
-    NativeNodeId, NativeOrigin, NativePoint, NativePreflightAction, NativeRect, NativeRuntimeState,
+    NativeEngineLimits, NativeEventKind, NativeFile, NativeLifecycleState, NativeNodeId,
+    NativeOrigin, NativePoint, NativePreflightAction, NativeRect, NativeRuntimeState,
     NativeRuntimeTraceKind, NativeSurface, NativeSvgStrokeShape, NativeTextDecorationSkipInk,
     NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, NativeWorkerFailureKind, Viewport,
 };
@@ -686,8 +686,25 @@ async fn native_runtime_reconciles_references_and_applies_environment_overrides(
     session.close().await.unwrap();
 }
 
-#[tokio::test]
-async fn native_runtime_supports_form_pdf_clipboard_and_consent_surfaces() {
+#[test]
+fn native_runtime_supports_form_pdf_clipboard_and_consent_surfaces() {
+    std::thread::Builder::new()
+        .name("native-form-pdf-recovery-test".to_owned())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("native test runtime should build");
+            runtime
+                .block_on(native_runtime_supports_form_pdf_clipboard_and_consent_surfaces_inner())
+        })
+        .expect("native form/PDF test thread should start")
+        .join()
+        .expect("native form/PDF test thread should finish");
+}
+
+async fn native_runtime_supports_form_pdf_clipboard_and_consent_surfaces_inner() {
     let session = BrowserRuntimeSession::connect_native(
         NativeEngineConfig::default()
             .with_fixture(
@@ -14007,8 +14024,8 @@ async fn native_async_history_traversal_uses_the_runtime_owner() {
 }
 
 #[tokio::test]
-async fn native_runtime_session_exposes_revisioned_history_controls() {
-    let session = BrowserRuntimeSession::connect_native(
+async fn canonical_browser_session_exposes_history_controls() {
+    let session = BrowserSession::start(
         NativeEngineConfig::default()
             .with_fixture("fixture://runtime-history-first", "<p>First</p>")
             .unwrap()
@@ -14018,19 +14035,28 @@ async fn native_runtime_session_exposes_revisioned_history_controls() {
     )
     .await
     .unwrap();
-    let initial = session.evidence(EvidenceLevel::Compact).await.unwrap();
     session
         .navigate("fixture://runtime-history-second")
         .await
         .unwrap();
+    let second = session.observe().await.unwrap();
 
     let back = session
-        .native_navigate_history(NativeHistoryDirection::Back)
+        .go_back_with_revision(second.revision)
         .await
         .unwrap();
     assert_eq!(back.action, "back");
-    assert_eq!(back.previous_revision, initial.revision + 1);
+    assert_eq!(back.previous_revision, second.revision);
     assert!(back.current_revision > back.previous_revision);
+    assert!(
+        session
+            .go_forward_with_revision(second.revision)
+            .await
+            .is_err(),
+        "history traversal must reject a stale observation"
+    );
+    let first = session.observe().await.unwrap();
+    assert_eq!(first.revision, back.current_revision);
     assert_eq!(
         session
             .evidence(EvidenceLevel::Compact)
@@ -14040,11 +14066,10 @@ async fn native_runtime_session_exposes_revisioned_history_controls() {
         "First"
     );
 
-    let forward = session
-        .native_navigate_history(NativeHistoryDirection::Forward)
-        .await
-        .unwrap();
+    let forward = session.go_forward().await.unwrap();
     assert_eq!(forward.action, "forward");
+    assert_eq!(forward.previous_revision, first.revision);
+    assert!(forward.current_revision > forward.previous_revision);
     assert_eq!(
         session
             .evidence(EvidenceLevel::Compact)
@@ -14053,6 +14078,76 @@ async fn native_runtime_session_exposes_revisioned_history_controls() {
             .visible_text,
         "Second"
     );
+
+    let back = session.go_back().await.unwrap();
+    assert_eq!(back.action, "back");
+    assert_eq!(back.previous_revision, forward.current_revision);
+    assert!(back.current_revision > back.previous_revision);
+    let first_again = session.observe().await.unwrap();
+    let forward = session
+        .go_forward_with_revision(first_again.revision)
+        .await
+        .unwrap();
+    assert_eq!(forward.action, "forward");
+    assert_eq!(forward.previous_revision, first_again.revision);
+    assert!(forward.current_revision > forward.previous_revision);
+
+    let reload = session
+        .reload_with_revision(forward.current_revision)
+        .await
+        .unwrap();
+    assert_eq!(reload.action, "reload");
+    assert_eq!(reload.previous_revision, forward.current_revision);
+    assert!(reload.current_revision > reload.previous_revision);
+    assert!(
+        session
+            .reload_with_revision(forward.current_revision)
+            .await
+            .is_err(),
+        "reload must reject a stale observation"
+    );
+    let after_reload = session.observe().await.unwrap();
+    assert_eq!(after_reload.revision, reload.current_revision);
+    assert_eq!(
+        session
+            .evidence(EvidenceLevel::Compact)
+            .await
+            .unwrap()
+            .visible_text,
+        "Second"
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn canonical_browser_session_exposes_guarded_and_unguarded_recovery() {
+    let session = BrowserSession::start(
+        NativeEngineConfig::default()
+            .with_fixture("fixture://canonical-recovery", "<p>Recovery target</p>")
+            .unwrap()
+            .with_initial_url("fixture://canonical-recovery"),
+    )
+    .await
+    .unwrap();
+
+    let revision = session.observe().await.unwrap().revision;
+    assert!(session.recover_with_revision(revision + 1).await.is_err());
+    assert_eq!(session.observe().await.unwrap().revision, revision);
+
+    let guarded = session.recover_with_revision(revision).await.unwrap();
+    assert_eq!(guarded.action, "recover");
+    assert_eq!(guarded.previous_revision, revision);
+    assert!(guarded.current_revision > guarded.previous_revision);
+
+    let unguarded = session.recover().await.unwrap();
+    assert_eq!(unguarded.action, "recover");
+    assert_eq!(unguarded.previous_revision, guarded.current_revision);
+    assert!(unguarded.current_revision > unguarded.previous_revision);
+    assert_eq!(
+        session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+        "fixture://canonical-recovery"
+    );
+
     session.close().await.unwrap();
 }
 

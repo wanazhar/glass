@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed browser expansion is `native-engine-browser-729`;
+The latest locally completed browser expansion is `native-engine-browser-731`;
 issue #40 remains open.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
@@ -175,6 +175,15 @@ Live documentation coverage was skipped because `target/debug/glass` is
 absent. Remote CI and native-only platform certification were not run; full
 browser parity remains open.
 See `tasks/native-engine-browser-730.md`.
+
+### Completed slice 731: canonical native history and recovery
+
+Slice 731 adds standard `BrowserSession` names for native back/forward history,
+revision-checked reload, and owner recovery while preserving the existing
+native owner and rejecting non-native sessions with typed errors. It does not
+promote the native stop-loading no-op: interrupting an in-flight native
+navigation remains required for full browser parity. See
+`tasks/native-engine-browser-731.md`.
 
 ### Follow-up observed during slice 722
 

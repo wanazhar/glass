@@ -7,6 +7,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Exposed structured native semantic observation, selectable observation
+  levels, page inspection/bootstrap, and revision-checked region expansion through
+  the canonical Rust `BrowserSession` API.
 - Added bounded bitmap-font glyph decoding for native text rendering. PNG,
   premultiplied BGRA32, monochrome, and grayscale strikes retain selected-face
   offsets and embedded alpha under finite raster budgets; unsupported or

@@ -655,25 +655,46 @@ multiple page targets.
 
 ## Structured observation and guarded actions
 
-Compact observation is the low-cost operational context. Semantic observation
-adds page/region/target types and explicit levels.
+`BrowserSession::observe()` returns the bounded structured native semantic
+observation. Use `semantic_observe(level)` for an explicit projection, plus
+`inspect_page()` and `observe_bootstrap()` for their corresponding revisioned
+inspection envelopes. Region expansion is revision-checked. The explicit
+`CdpBrowserSession` migration API retains its separate compact and semantic
+observation methods. These semantic APIs return a typed unsupported-operation
+error for an externally connected non-native runtime; they never switch to
+CDP.
 
 ```rust,no_run
 use glass_browser::browser::session::SemanticObservationLevel;
-use glass_browser::{CdpBrowserSession, SessionOptions};
+use glass_browser::browser_backend::SemanticAction;
+use glass_browser::BrowserSession;
 
 # async fn run() -> glass_browser::BrowserResult<()> {
-let session = CdpBrowserSession::start(&SessionOptions::builder().build()?).await?;
+let session = BrowserSession::start_default().await?;
+session
+    .navigate("data:text/html,%3Cmain%3E%3Cbutton%3ESave%3C%2Fbutton%3E%3C%2Fmain%3E")
+    .await?;
+let structured = session.observe().await?;
+println!("structured revision={}", structured.revision);
 let semantic = session
     .semantic_observe(SemanticObservationLevel::Interactive)
     .await?;
 println!("revision={} regions={}", semantic.revision, semantic.regions.len());
 
-let compact = session.observe().await?;
-let outcome = session
-    .click_with_revision("role=button[name=Save]", compact.accessibility.revision)
+let target = semantic
+    .regions
+    .iter()
+    .flat_map(|region| region.targets.iter())
+    .find(|target| target.role == "button")
+    .expect("the fixture contains one button");
+session
+    .action_with_revision(
+        SemanticAction::Click {
+            target: target.reference.clone(),
+        },
+        semantic.revision,
+    )
     .await?;
-println!("status={:?}", outcome.status);
 session.close().await
 # }
 ```

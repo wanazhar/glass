@@ -1,10 +1,13 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-728`; issue #40 remains open. The public Rust
+`native-engine-browser-729`; issue #40 remains open. The public Rust
 `BrowserSession` entrypoint now constructs the native backend directly, and
 the former Chrome/CDP API is named `CdpBrowserSession`. This does not claim
-operation parity or production certification. Earlier
+operation parity or production certification. The canonical Rust session now
+exposes revisioned native semantic observation, selected observation levels,
+page inspection/bootstrap, and stale-revision-checked region expansion under
+standard method names. Earlier
 completed slices include `native-engine-browser-696` through
 `native-engine-browser-687`,
 following completed `native-engine-browser-686`,

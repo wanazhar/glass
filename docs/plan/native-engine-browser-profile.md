@@ -37,6 +37,10 @@ When the native backend is selected, it must:
    the public Rust `glass_browser::BrowserSession` constructor must create the
    native backend directly; the Chrome/CDP migration API is explicitly named
    `CdpBrowserSession` and cannot be selected by fallback or backend probing;
+   the native Rust session exposes the versioned semantic surface through
+   `observe()`, `semantic_observe(level)`, and revision-checked region
+   expansion, rather than requiring callers to use a native-internal method
+   name;
 4. return typed, versioned unsupported errors only for capabilities explicitly
    outside this profile; and
 5. run untrusted content behind the production process/sandbox boundary before

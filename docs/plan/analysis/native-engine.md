@@ -1,11 +1,13 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-728`. Issue #40
+completed browser expansion slice is `native-engine-browser-729`. Issue #40
 remains open. Slice 728 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API
 `CdpBrowserSession`. This source-level migration is not a Core Web Profile
-completion claim. It follows
+completion claim. Slice 729 promotes native revisioned semantic observation,
+page inspection/bootstrap, and region expansion into the canonical Rust API.
+This remains an incremental API-surface change, not profile completion. It follows
 locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,

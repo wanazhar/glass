@@ -658,6 +658,19 @@ impl BrowserRuntimeSession {
         }
     }
 
+    /// Return the revision that owns an active process-backed native HTTP(S)
+    /// navigation, if any. Persistent owners use this synchronous probe before
+    /// servicing an out-of-band stop so an idle stop cannot wait behind the
+    /// active command whose future the owner must continue polling.
+    #[cfg(feature = "native-engine")]
+    pub(crate) fn active_native_navigation_revision(&self) -> BrowserResult<Option<u64>> {
+        self.require_native_operation("active_native_navigation_revision")?;
+        let BackendStartup::Native(backend) = &self.backend else {
+            unreachable!("native operation check rejected a non-native runtime")
+        };
+        Ok(backend.active_navigation_revision()?)
+    }
+
     /// Compatibility spelling retained for native-only callers.
     #[cfg(feature = "native-engine")]
     pub async fn native_stop_loading_with_revision(

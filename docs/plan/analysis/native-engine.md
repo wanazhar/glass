@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-732`. Issue #40
+completed browser expansion slice is `native-engine-browser-733`. Issue #40
 remains open. Slice 728
 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API
@@ -17,9 +17,14 @@ process-backed HTTP(S) navigation through the canonical Rust session and
 in-process native TUI. The navigation future must continue to be polled until
 it discards the partial response and reaps its worker; committed parent-owned
 document/history/revision remain intact, while transient worker-only state is
-discarded. The serialized persistent-owner path now rejects stop-loading
-instead of returning fake success; concurrent owner controls remain open. This
-remains incremental API-surface work, not profile completion. It follows
+discarded. At the slice-732 checkpoint, the serialized persistent-owner path
+rejected stop-loading rather than returning fake success. Slice 733 now
+services revision-checked
+stop-loading while polling the owner’s single active command, rejects other
+concurrent browser operations as busy, and routes attached native TUI `Alt+S`
+through the owner socket. The TUI also accepts the owner’s deep-DOM observation
+shape without a completion field. This remains incremental API-surface work,
+not profile completion. It follows
 locally completed `native-engine-browser-696`,
 `native-engine-browser-695`,
 `native-engine-browser-694`,

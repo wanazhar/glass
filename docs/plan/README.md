@@ -27,7 +27,11 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-742`.
+browser expansion slices are complete through `native-engine-browser-743`.
+Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
+prompt decision, child-first unload events, ancestor-selection restoration,
+and inherited sandboxed-modals eligibility. Remote CI and cross-platform
+certification remain open; this is not browser-completion evidence.
 The public Rust `BrowserSession` now starts the native runtime directly;
 `native-engine-browser-728` preserves the former Chromium API under the
 explicit `CdpBrowserSession` name. Issue #40 remains open; browser completion,
@@ -71,10 +75,12 @@ Remote CI and cross-platform certification remain issue-level gates.
 Slice 741 adds sticky-activation-gated, user-visible top-level
 `beforeunload` confirmation through the native CLI, TUI, and MCP hosts. Its
 current extension gates cross-document asynchronous Back/Forward before the
-history target request, with local Linux evidence recorded in the task.
-Descendant-frame unload traversal, sandbox-modal propagation, remote CI,
+history target request, with local Linux evidence recorded in the task. Slice
+743 locally covers descendant-frame unload traversal and sandbox-modal
+propagation for its specified native navigation routes. Remote CI,
 cross-platform certification, and other Core Web Profile parity remain open.
 See the
+[slice 743 task](tasks/native-engine-browser-743.md),
 [slice 741 task](tasks/native-engine-browser-741.md),
 [slice 740 task](tasks/native-engine-browser-740.md),
 [slice 739 task](tasks/native-engine-browser-739.md),
@@ -95,9 +101,10 @@ remains a separate gate. Slice 741 locally verifies top-level `beforeunload`
 confirmation and the cross-document async history gate. Dismissal preserves
 the outgoing document and avoids loading the target; acceptance continues the
 exact traversal without exposing page-controlled `returnValue` text.
-Descendant-frame unload traversal, sandbox-modal propagation, remote CI, and
-cross-platform certification remain separate issue gates. See the
-[slice 741 task](tasks/native-engine-browser-741.md).
+Slice 743 locally verifies descendant-frame unload traversal and sandbox-modal
+propagation across the covered navigation routes. Remote CI and cross-platform
+certification remain separate issue gates. See the
+[slice 743 task](tasks/native-engine-browser-743.md).
 Slice 742 completes the direct synchronous-history lifecycle gate:
 same-document traversal stays synchronous; local cross-document traversal
 runs lifecycle callbacks before resource restoration, fails explicitly when
@@ -109,6 +116,8 @@ or history-selection mutation. The async guard context is explicit and remains
 cancellation-safe. Focused Linux checks pass; remote CI and cross-platform
 certification remain open. See
 [slice 742](tasks/native-engine-browser-742.md).
+See the completed [slice 743 task](tasks/native-engine-browser-743.md) for the
+cross-frame lifecycle contract and local verification evidence.
 Slice 727 enforces rooted-file frame CSP. Slice 726 enforces rooted-file image,
 font, and media CSP.
 Slice 725 enforces runtime CSP meta policies before same-turn inline script
@@ -5099,16 +5108,18 @@ replacement navigations now deliver window `pagehide` then `unload` before
 resource replacement and `pageshow` after the new page is published; local and
 child owners expose the same order through bounded effects and typed callback
 mutation. Top-level `beforeunload` confirmation is covered by slice 741;
-descendant-frame traversal, sandbox-modal propagation, bfcache/history-
-traversal parity, and full HTML navigation task ordering remain open.
+descendant-frame traversal and sandbox-modal propagation are now covered by
+slice 743. Bfcache/history-traversal parity and full HTML navigation task
+ordering remain open.
 
 The completed bounded same-document navigation slice is
 [native-engine-browser-043](tasks/native-engine-browser-043.md). GET fragment
 changes retain the current document/realm, avoid a reload, update the URL owner,
 and dispatch window `hashchange` with `oldURL`/`newURL` in both local and child
 paths. Top-level `beforeunload` confirmation is covered by slice 741;
-`popstate`, bfcache/history lifecycle parity, descendant-frame traversal,
-sandbox-modal propagation, and full HTML navigation task ordering remain open.
+`popstate`, bfcache/history lifecycle parity, and full HTML navigation task
+ordering remain open. Slice 743 covers descendant-frame traversal and
+sandbox-modal propagation for the implemented cross-document routes.
 
 The completed bounded external form-ownership slice is
 [native-engine-browser-044](tasks/native-engine-browser-044.md). Controls with
@@ -5136,9 +5147,10 @@ activation-gated user confirmation when that event is canceled; dismissing the
 prompt leaves the page intact and avoids replacement loading. Same-document
 history traversal now
 dispatches window `popstate` before `hashchange` in local and child owners.
-In-process JavaScript modal realms, descendant-frame beforeunload traversal,
-sandbox-modal propagation, bfcache/session-history parity, cross-document
-traversal restoration, and full task-source semantics remain open.
+In-process JavaScript modal realms, bfcache/session-history parity,
+cross-document traversal restoration, and full task-source semantics remain
+open. Slice 743 adds the bounded descendant-frame beforeunload and
+sandbox-modal behavior described above.
 
 The completed bounded due-time timer-turn slice is
 [native-engine-browser-047](tasks/native-engine-browser-047.md). Local and

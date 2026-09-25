@@ -147,11 +147,16 @@ The prompt is a `beforeunload` pending dialog with no page-controlled message
 or response text. Glass presents user-agent-controlled generic copy, ignores
 the page's `returnValue` text, and binds the decision to the exact dialog ID.
 Accepting continues the original navigation exactly once. Dismissing leaves
-the current Document active and prevents `pagehide`, `unload`, replacement
-requests, and history commit. If an eligible prompt has no responsive host,
-navigation fails explicitly and leaves the outgoing Document active; it must
-not silently accept, cancel, or strand the owner. The browser-level prompt is
-shown at most once for one navigation attempt. The canonical asynchronous
+the outgoing browsing-context subtree active and prevents any affected
+Document's `pagehide`/`unload`, replacement requests, and history commit. If
+an eligible prompt has no responsive host, navigation fails explicitly and
+leaves the outgoing documents active; it must not silently accept, cancel, or
+strand the owner. One navigation shares a single prompt budget across the
+outgoing frame and its active descendants. A canceled event with no sticky
+activation, with sandboxed modals, or after a prompt has already been shown
+does not open another prompt and does not by itself cancel navigation. Every
+affected `beforeunload` still runs before any affected `pagehide`/`unload`;
+unload events run child-before-parent. The canonical asynchronous
 `BrowserSession` history route applies this decision before loading a
 cross-document target; same-document traversal remains in-place. Synchronous
 `NativeEngine` history helpers must not bypass this lifecycle: local documents
@@ -162,14 +167,26 @@ an outgoing process-backed lifecycle callback is active is rejected with a
 typed re-entry error before nested traversal or history-selection mutation;
 page History API commands outside outgoing lifecycle dispatch retain their
 queued handling. Both history-API requirement paths preserve the active entry
-and avoid loading a replacement. Complete descendant-frame unload traversal
-and sandbox-modal propagation remain separate `GCWP-0.1` implementation gates
-until their owning browsing-context slice is complete.
+and avoid loading a replacement.
+
+For native iframe children, a `sandbox` attribute without the
+ASCII-case-insensitive `allow-modals` token adds the sandboxed-modals
+restriction to a newly active child Document. Changing the iframe's attribute
+does not retroactively change the current Document; its next cross-document
+navigation computes the replacement's restriction from the current token set
+and inherited ancestor restrictions. A nested `allow-modals` token cannot
+clear an inherited restriction. [Slice 743](tasks/native-engine-browser-743.md)
+implements and locally verifies the shared-tree behavior for its specified
+native navigation routes. Remote CI and cross-platform certification remain
+open. This modal contract does not imply promotion of the rest of iframe
+sandbox security.
 
 The firing conditions and user-activation rule follow the [HTML Standard's
-unloading-document algorithm].
+unloading-document algorithm]; the sandbox restriction follows the [iframe
+sandbox token contract].
 
 [HTML Standard's unloading-document algorithm]: https://html.spec.whatwg.org/multipage/browsing-the-web.html#unloading-documents
+[iframe sandbox token contract]: https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-sandbox
 
 ### Dynamic module loading contract
 

@@ -11296,6 +11296,354 @@ async fn native_content_process_beforeunload_waits_for_exact_user_decision() {
         .await;
 }
 
+/// Match the 8 MiB thread-stack contract used by Glass's resident browser worker.
+fn run_native_browser_worker_test(test: impl FnOnce(tokio::runtime::Runtime) + Send + 'static) {
+    std::thread::Builder::new()
+        .name("native-browser-worker-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("native browser test runtime should build");
+            test(runtime);
+        })
+        .expect("native browser test thread should start")
+        .join()
+        .expect("native browser test thread should not panic");
+}
+
+#[test]
+fn native_selected_grandchild_beforeunload_gates_parked_ancestor_navigation() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+            let config = NativeEngineConfig::default()
+                .with_fixture(
+                    "fixture://frame-unload.test/parent",
+                    "<title>Parent</title><iframe src='/child'></iframe>",
+                )
+                .unwrap()
+                .with_fixture(
+                    "fixture://frame-unload.test/child",
+                    "<title>Child</title><script>globalThis.beforeCount = 0; addEventListener('beforeunload', event => { globalThis.beforeCount++; event.preventDefault(); event.returnValue = 'secret'; }); addEventListener('pagehide', () => globalThis.pagehideSeen = true); addEventListener('unload', () => globalThis.unloadSeen = true);</script><iframe src='/grand'></iframe><button id='activate-child'>Activate child</button>",
+                )
+                .unwrap()
+                .with_fixture(
+                    "fixture://frame-unload.test/grand",
+                    "<title>Grandchild</title><script>globalThis.beforeCount = 0; addEventListener('beforeunload', event => { globalThis.beforeCount++; event.preventDefault(); event.returnValue = 'secret'; }); addEventListener('pagehide', () => globalThis.pagehideSeen = true); addEventListener('unload', () => globalThis.unloadSeen = true);</script><button id='activate-grandchild'>Activate grandchild</button>",
+                )
+                .unwrap()
+                .with_fixture(
+                    "fixture://frame-unload.test/next",
+                    "<title>Next</title><p>New parent document</p>",
+                )
+                .unwrap()
+                .with_initial_url("fixture://frame-unload.test/parent");
+            let session = Arc::new(
+                BrowserRuntimeSession::connect_native_with_modal_dialogs(config)
+                    .await
+                    .unwrap(),
+            );
+            let controller = session.native_dialog_controller().unwrap();
+            let frames = session.list_frames().await.unwrap();
+            let root_id = frames[0].id.clone();
+            let child_id = frames
+                .iter()
+                .find(|frame| frame.parent_id.as_deref() == Some(root_id.as_str()))
+                .unwrap()
+                .id
+                .clone();
+            let grandchild_id = frames
+                .iter()
+                .find(|frame| frame.parent_id.as_deref() == Some(child_id.as_str()))
+                .unwrap()
+                .id
+                .clone();
+
+            session.select_frame(&child_id).await.unwrap();
+            session
+                .action(SemanticAction::Click {
+                    target: "id=activate-child".into(),
+                })
+                .await
+                .unwrap();
+            session.select_frame(&grandchild_id).await.unwrap();
+            session
+                .action(SemanticAction::Click {
+                    target: "id=activate-grandchild".into(),
+                })
+                .await
+                .unwrap();
+
+            let first_session = Arc::clone(&session);
+            let mut first_navigation = tokio::task::spawn_local(async move {
+                first_session
+                    .script("window.top.location.assign('fixture://frame-unload.test/next'); true")
+                    .await
+            });
+            let first_prompt = tokio::select! {
+                prompt = wait_for_modal_dialog(&controller, "beforeunload") => prompt,
+                result = &mut first_navigation => panic!("ancestor navigation bypassed an activated descendant prompt: {result:?}"),
+            };
+            assert_eq!(first_prompt.frame_id, child_id);
+            controller
+                .resolve_dialog(
+                    &first_prompt.id,
+                    NativeDialogResolution {
+                        accepted: false,
+                        prompt_value: None,
+                    },
+                )
+                .unwrap();
+            first_navigation.await.unwrap().unwrap();
+
+            let retained_frames = session.list_frames().await.unwrap();
+            assert_eq!(retained_frames.len(), 3);
+            assert!(retained_frames.iter().any(|frame| {
+                frame.id == root_id && frame.url == "fixture://frame-unload.test/parent"
+            }));
+            assert!(retained_frames
+                .iter()
+                .any(|frame| frame.id == grandchild_id && frame.active));
+            session.select_frame(&child_id).await.unwrap();
+            assert_eq!(
+                session
+                    .script("[beforeCount, globalThis.pagehideSeen || null, globalThis.unloadSeen || null]")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!([1, null, null])
+            );
+            session.select_frame(&grandchild_id).await.unwrap();
+            assert_eq!(
+                session
+                    .script("[beforeCount, globalThis.pagehideSeen || null, globalThis.unloadSeen || null]")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!([1, null, null])
+            );
+
+            session.select_frame(&root_id).await.unwrap();
+            let reload_revision = session
+                .evidence(EvidenceLevel::Compact)
+                .await
+                .unwrap()
+                .revision;
+            let reload_session = Arc::clone(&session);
+            let mut reload = tokio::task::spawn_local(async move {
+                reload_session
+                    .native_reload_with_revision(reload_revision)
+                    .await
+            });
+            let reload_prompt = tokio::select! {
+                prompt = wait_for_modal_dialog(&controller, "beforeunload") => prompt,
+                result = &mut reload => panic!("reload bypassed an activated descendant beforeunload: {result:?}"),
+            };
+            assert_ne!(first_prompt.id, reload_prompt.id);
+            assert_eq!(reload_prompt.frame_id, child_id);
+            controller
+                .resolve_dialog(
+                    &reload_prompt.id,
+                    NativeDialogResolution {
+                        accepted: false,
+                        prompt_value: None,
+                    },
+                )
+                .unwrap();
+            let reload_outcome = reload.await.unwrap().unwrap();
+            assert_eq!(reload_outcome.action, "reload");
+            let retained_frames = session.list_frames().await.unwrap();
+            assert_eq!(retained_frames.len(), 3);
+            assert!(retained_frames.iter().any(|frame| {
+                frame.id == root_id && frame.url == "fixture://frame-unload.test/parent"
+            }));
+            assert!(retained_frames
+                .iter()
+                .any(|frame| frame.id == root_id && frame.active));
+            session.select_frame(&child_id).await.unwrap();
+            assert_eq!(
+                session
+                    .script("[beforeCount, globalThis.pagehideSeen || null, globalThis.unloadSeen || null]")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!([2, null, null])
+            );
+            session.select_frame(&grandchild_id).await.unwrap();
+            assert_eq!(
+                session
+                    .script("[beforeCount, globalThis.pagehideSeen || null, globalThis.unloadSeen || null]")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!([2, null, null])
+            );
+
+            let second_session = Arc::clone(&session);
+            let mut second_navigation = tokio::task::spawn_local(async move {
+                second_session
+                    .script("window.top.location.assign('fixture://frame-unload.test/next'); true")
+                    .await
+            });
+            let second_prompt = tokio::select! {
+                prompt = wait_for_modal_dialog(&controller, "beforeunload") => prompt,
+                result = &mut second_navigation => panic!("accepted ancestor navigation never paused for beforeunload: {result:?}"),
+            };
+            assert_ne!(first_prompt.id, second_prompt.id);
+            assert_eq!(second_prompt.frame_id, child_id);
+            controller
+                .resolve_dialog(
+                    &second_prompt.id,
+                    NativeDialogResolution {
+                        accepted: true,
+                        prompt_value: None,
+                    },
+                )
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), second_navigation)
+                .await
+                .expect("accepted ancestor navigation did not complete")
+                .unwrap()
+                .unwrap();
+            let final_frames = session.list_frames().await.unwrap();
+            assert_eq!(final_frames.len(), 1);
+            assert_eq!(final_frames[0].id, root_id);
+            assert_eq!(final_frames[0].url, "fixture://frame-unload.test/next");
+
+            Arc::try_unwrap(session)
+                .unwrap_or_else(|_| panic!("native session still has unexpected owners"))
+                .close()
+                .await
+                .unwrap();
+        }));
+    });
+}
+
+#[test]
+fn native_frame_sandbox_modals_refresh_for_replacement_document() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+            let child = "<title>Child</title><script>globalThis.beforeCount = 0; addEventListener('beforeunload', event => { globalThis.beforeCount++; event.preventDefault(); event.returnValue = 'secret'; });</script><iframe sandbox='allow-scripts allow-modals' src='/grand'></iframe><button id='activate-child'>Activate child</button>";
+            let grandchild = "<title>Grandchild</title><script>addEventListener('beforeunload', event => { event.preventDefault(); event.returnValue = 'secret'; });</script><button id='activate-grandchild'>Activate grandchild</button>";
+            let config = NativeEngineConfig::default()
+                .with_fixture(
+                    "fixture://sandbox-refresh.test/parent",
+                    "<title>Parent</title><iframe id='child' sandbox='allow-scripts' src='/child'></iframe>",
+                )
+                .unwrap()
+                .with_fixture("fixture://sandbox-refresh.test/child", child)
+                .unwrap()
+                .with_fixture("fixture://sandbox-refresh.test/grand", grandchild)
+                .unwrap()
+                .with_fixture("fixture://sandbox-refresh.test/grand-next", "<title>Grandchild next</title>")
+                .unwrap()
+                .with_fixture("fixture://sandbox-refresh.test/next", child)
+                .unwrap()
+                .with_fixture("fixture://sandbox-refresh.test/third", "<title>Third</title>")
+                .unwrap()
+                .with_initial_url("fixture://sandbox-refresh.test/parent");
+            let session = Arc::new(
+                BrowserRuntimeSession::connect_native_with_modal_dialogs(config)
+                    .await
+                    .unwrap(),
+            );
+            let controller = session.native_dialog_controller().unwrap();
+            let frames = session.list_frames().await.unwrap();
+            let root_id = frames[0].id.clone();
+            let child_id = frames
+                .iter()
+                .find(|frame| frame.parent_id.as_deref() == Some(root_id.as_str()))
+                .unwrap()
+                .id
+                .clone();
+            let grandchild_id = frames
+                .iter()
+                .find(|frame| frame.parent_id.as_deref() == Some(child_id.as_str()))
+                .unwrap()
+                .id
+                .clone();
+            session.select_frame(&child_id).await.unwrap();
+            session
+                .action(SemanticAction::Click {
+                    target: "id=activate-child".into(),
+                })
+                .await
+                .unwrap();
+            session.select_frame(&grandchild_id).await.unwrap();
+            session
+                .action(SemanticAction::Click {
+                    target: "id=activate-grandchild".into(),
+                })
+                .await
+                .unwrap();
+
+            let inherited_navigation_session = Arc::clone(&session);
+            let mut inherited_navigation = tokio::task::spawn_local(async move {
+                inherited_navigation_session
+                    .navigate("fixture://sandbox-refresh.test/grand-next")
+                    .await
+            });
+            let inherited_result = tokio::select! {
+                result = &mut inherited_navigation => result.unwrap().unwrap(),
+                prompt = wait_for_modal_dialog(&controller, "beforeunload") => panic!("nested allow-modals token cleared inherited restriction: {prompt:?}"),
+            };
+            assert_eq!(inherited_result.url, "fixture://sandbox-refresh.test/grand-next");
+            assert!(controller.pending_dialog().unwrap().is_none());
+
+            session.select_frame(&root_id).await.unwrap();
+            session
+                .script("document.getElementById('child').setAttribute('sandbox', 'allow-scripts allow-modals'); true")
+                .await
+                .unwrap();
+            session.select_frame(&child_id).await.unwrap();
+            session
+                .navigate("fixture://sandbox-refresh.test/next")
+                .await
+                .unwrap();
+            assert!(controller.pending_dialog().unwrap().is_none());
+
+            session
+                .action(SemanticAction::Click {
+                    target: "id=activate-child".into(),
+                })
+                .await
+                .unwrap();
+            let next_session = Arc::clone(&session);
+            let mut next_navigation = tokio::task::spawn_local(async move {
+                next_session
+                    .navigate("fixture://sandbox-refresh.test/third")
+                    .await
+            });
+            let prompt = tokio::select! {
+                prompt = wait_for_modal_dialog(&controller, "beforeunload") => prompt,
+                result = &mut next_navigation => panic!("replacement document retained stale sandboxed-modals state: {result:?}"),
+            };
+            assert_eq!(prompt.frame_id, child_id);
+            controller
+                .resolve_dialog(
+                    &prompt.id,
+                    NativeDialogResolution {
+                        accepted: true,
+                        prompt_value: None,
+                    },
+                )
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), next_navigation)
+                .await
+                .expect("replacement navigation did not complete")
+                .unwrap()
+                .unwrap();
+            assert_eq!(session.evidence(EvidenceLevel::Compact).await.unwrap().url, "fixture://sandbox-refresh.test/third");
+            Arc::try_unwrap(session)
+                .unwrap_or_else(|_| panic!("native session still has unexpected owners"))
+                .close()
+                .await
+                .unwrap();
+        }));
+    });
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn native_content_process_history_beforeunload_waits_before_loading_target() {
     tokio::task::LocalSet::new()

@@ -902,13 +902,19 @@ impl NativeEngine {
         Ok(self.document.generation())
     }
 
-    pub(crate) fn embedded_frame_sources(&self) -> Result<Vec<(u32, String)>, NativeEngineError> {
+    pub(crate) fn navigation_requires_document_lifecycle(&self, target_url: &str) -> bool {
+        !self.is_same_document_navigation(target_url)
+    }
+
+    pub(crate) fn embedded_frame_sources(
+        &self,
+    ) -> Result<Vec<(u32, String, Option<String>)>, NativeEngineError> {
         self.require_running("frame discovery")?;
         Ok(self
             .document
             .embedded_frame_sources()
             .into_iter()
-            .map(|(node_id, source)| (node_id.index(), source))
+            .map(|(node_id, source, sandbox)| (node_id.index(), source, sandbox))
             .collect())
     }
 
@@ -1436,19 +1442,6 @@ impl NativeEngine {
             .await
     }
 
-    pub(crate) async fn navigate_async_with_cancellation(
-        &mut self,
-        url: impl Into<String>,
-        cancellation: NativeNavigationCancellation,
-    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
-        self.navigate_request_async_with_cancellation(
-            NativeNavigationRequest::get(url),
-            0,
-            Some(cancellation),
-        )
-        .await
-    }
-
     /// Rebuild the current document owner and reload the active URL without
     /// replaying the operation that may have killed the content worker.
     ///
@@ -1483,8 +1476,39 @@ impl NativeEngine {
 
     async fn navigate_request_async_with_cancellation(
         &mut self,
+        navigation: NativeNavigationRequest,
+        page_navigation_handoffs: usize,
+        cancellation: Option<NativeNavigationCancellation>,
+    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        self.navigate_request_async_with_policy(
+            navigation,
+            page_navigation_handoffs,
+            true,
+            cancellation,
+        )
+        .await
+    }
+
+    pub(crate) async fn navigate_request_async_after_lifecycle(
+        &mut self,
+        navigation: NativeNavigationRequest,
+        page_navigation_handoffs: usize,
+        cancellation: Option<NativeNavigationCancellation>,
+    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        self.navigate_request_async_with_policy(
+            navigation,
+            page_navigation_handoffs,
+            false,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn navigate_request_async_with_policy(
+        &mut self,
         mut navigation: NativeNavigationRequest,
         page_navigation_handoffs: usize,
+        dispatch_lifecycle: bool,
         cancellation: Option<NativeNavigationCancellation>,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         if let Some(target) = navigation.target.take() {
@@ -1508,7 +1532,7 @@ impl NativeEngine {
         self.navigate_request_async_with_lifecycle(
             navigation,
             page_navigation_handoffs,
-            true,
+            dispatch_lifecycle,
             cancellation,
         )
         .await
@@ -2103,7 +2127,31 @@ impl NativeEngine {
     async fn dispatch_navigation_lifecycle_async(
         &mut self,
     ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
-        let (event_allowed, mut navigation) = if self
+        let (canceled, sticky_activation, mut navigation) =
+            self.dispatch_before_unload_for_navigation().await?;
+        let allowed = if !canceled || !sticky_activation {
+            true
+        } else {
+            self.confirm_beforeunload_for_navigation().await?
+        };
+        if !allowed {
+            return Ok((false, None));
+        }
+        if let Some(next_navigation) = self.dispatch_unload_for_navigation().await? {
+            if navigation.is_some() {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "multiple outgoing lifecycle navigations are not supported".into(),
+                });
+            }
+            navigation = Some(next_navigation);
+        }
+        Ok((true, navigation))
+    }
+
+    pub(crate) async fn dispatch_before_unload_for_navigation(
+        &mut self,
+    ) -> Result<(bool, bool, Option<NativeNavigationRequest>), NativeEngineError> {
+        let (event_allowed, navigation) = if self
             .content_process
             .as_mut()
             .is_some_and(NativeContentProcess::refresh_health)
@@ -2114,41 +2162,36 @@ impl NativeEngine {
         } else {
             (true, None)
         };
-        let allowed = if event_allowed || !self.document_has_sticky_activation {
-            true
-        } else {
-            self.wait_for_beforeunload_confirmation_async().await?
-        };
-        if !allowed {
-            return Ok((false, None));
-        }
+        Ok((
+            !event_allowed,
+            self.document_has_sticky_activation,
+            navigation,
+        ))
+    }
+
+    pub(crate) async fn confirm_beforeunload_for_navigation(
+        &self,
+    ) -> Result<bool, NativeEngineError> {
+        self.wait_for_beforeunload_confirmation_async().await
+    }
+
+    pub(crate) async fn dispatch_unload_for_navigation(
+        &mut self,
+    ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         let events = [NativeEventKind::PageHide, NativeEventKind::Unload];
-        if self
+        let navigation = if self
             .content_process
             .as_mut()
             .is_some_and(NativeContentProcess::refresh_health)
         {
-            if let Some(next_navigation) = self.dispatch_content_events_async(&events, true).await?
-            {
-                if navigation.is_some() {
-                    return Err(NativeEngineError::TargetNotActionable {
-                        reason: "multiple outgoing lifecycle navigations are not supported".into(),
-                    });
-                }
-                navigation = Some(next_navigation);
-            }
-        } else if self.javascript.is_some()
-            && let Some(next_navigation) = self.dispatch_local_navigation_lifecycle()?
-        {
-            if navigation.is_some() {
-                return Err(NativeEngineError::TargetNotActionable {
-                    reason: "multiple outgoing lifecycle navigations are not supported".into(),
-                });
-            }
-            navigation = Some(next_navigation);
-        }
+            self.dispatch_content_events_async(&events, true).await?
+        } else if self.javascript.is_some() {
+            self.dispatch_local_navigation_lifecycle()?
+        } else {
+            None
+        };
         self.persist_local_web_storage()?;
-        Ok((true, navigation))
+        Ok(navigation)
     }
 
     async fn wait_for_beforeunload_confirmation_async(&self) -> Result<bool, NativeEngineError> {
@@ -2279,7 +2322,7 @@ impl NativeEngine {
     pub async fn go_back_async(
         &mut self,
     ) -> Result<Option<NativeEngineSnapshot>, NativeEngineError> {
-        self.traverse_history_async(NativeHistoryDirection::Back, "go back")
+        self.traverse_history_async(NativeHistoryDirection::Back, "go back", true)
             .await
     }
 
@@ -2289,7 +2332,31 @@ impl NativeEngine {
     pub async fn go_forward_async(
         &mut self,
     ) -> Result<Option<NativeEngineSnapshot>, NativeEngineError> {
-        self.traverse_history_async(NativeHistoryDirection::Forward, "go forward")
+        self.traverse_history_async(NativeHistoryDirection::Forward, "go forward", true)
+            .await
+    }
+
+    pub(crate) fn history_target_is_cross_document(
+        &self,
+        direction: NativeHistoryDirection,
+    ) -> Option<bool> {
+        let history_index = self.history.target_index(direction)?;
+        let target_url = &self.history.entry(history_index)?.url;
+        Some(
+            !self.history.is_same_document(history_index)
+                && !self.is_same_document_navigation(target_url),
+        )
+    }
+
+    pub(crate) async fn traverse_history_async_after_lifecycle(
+        &mut self,
+        direction: NativeHistoryDirection,
+    ) -> Result<Option<NativeEngineSnapshot>, NativeEngineError> {
+        let operation = match direction {
+            NativeHistoryDirection::Back => "go back",
+            NativeHistoryDirection::Forward => "go forward",
+        };
+        self.traverse_history_async(direction, operation, false)
             .await
     }
 
@@ -8413,6 +8480,7 @@ impl NativeEngine {
         &mut self,
         direction: NativeHistoryDirection,
         operation: &str,
+        dispatch_lifecycle: bool,
     ) -> Result<Option<NativeEngineSnapshot>, NativeEngineError> {
         self.require_running(operation)?;
         let Some(history_index) = self.history.target_index(direction) else {
@@ -8472,8 +8540,11 @@ impl NativeEngine {
             return Ok(Some(self.snapshot_unchecked()));
         }
         let current_history_index = self.history.current_index();
-        let (lifecycle_allowed, lifecycle_navigation) =
-            self.dispatch_navigation_lifecycle_async().await?;
+        let (lifecycle_allowed, lifecycle_navigation) = if dispatch_lifecycle {
+            self.dispatch_navigation_lifecycle_async().await?
+        } else {
+            (true, None)
+        };
         if !lifecycle_allowed {
             return Ok(Some(self.snapshot_unchecked()));
         }
@@ -8557,7 +8628,7 @@ impl NativeEngine {
         };
         for _ in 0..steps {
             if self
-                .traverse_history_async(direction, "history traversal")
+                .traverse_history_async(direction, "history traversal", true)
                 .await?
                 .is_none()
             {

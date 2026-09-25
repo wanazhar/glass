@@ -63,8 +63,10 @@ struct NativeParkedFrame {
     engine: NativeEngine,
     parent_id: Option<String>,
     owner_node_index: Option<u32>,
+    sandboxed_modals: bool,
 }
 
+#[derive(Clone)]
 enum NativeFrameRoute {
     ActiveSelected,
     ActiveParked,
@@ -149,6 +151,7 @@ struct NativeFrameState {
     active_frame_id: String,
     active_parent_id: Option<String>,
     active_owner_node_index: Option<u32>,
+    active_sandboxed_modals: bool,
     focused_frame_id: Option<String>,
     parked: BTreeMap<String, NativeParkedFrame>,
     next_frame_number: u64,
@@ -161,6 +164,7 @@ impl NativeFrameState {
             active_frame_id: native_main_frame_id(target_id),
             active_parent_id: None,
             active_owner_node_index: None,
+            active_sandboxed_modals: false,
             focused_frame_id: None,
             parked: BTreeMap::new(),
             next_frame_number: 1,
@@ -173,6 +177,7 @@ impl NativeFrameState {
             active_frame_id: String::new(),
             active_parent_id: None,
             active_owner_node_index: None,
+            active_sandboxed_modals: false,
             focused_frame_id: None,
             parked: BTreeMap::new(),
             next_frame_number: 1,
@@ -2227,6 +2232,22 @@ impl NativeEngineBackend {
         Ok(())
     }
 
+    async fn process_native_frame_lifecycle_effects(
+        &self,
+        owner_id: &str,
+        effects: Vec<NativeFrameLifecycleEffects>,
+    ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
+        let mut browser = NativeQueuedBrowserEffects::default();
+        for effect in effects {
+            self.sync_target_name(owner_id, &effect.runtime.window_name)?;
+            self.process_frame_event_effects(&effect.frame_id, effect.runtime.events)
+                .await?;
+            Box::pin(self.process_pending_frame_scripts(effect.runtime.frame_scripts)).await?;
+            append_native_queued_browser_effects(&mut browser, effect.runtime.browser);
+        }
+        Ok(browser)
+    }
+
     async fn process_selected_frame_events(
         &self,
         frame_id: &str,
@@ -3729,6 +3750,126 @@ impl NativeEngineBackend {
         Ok(runtime_effects.browser)
     }
 
+    async fn navigate_active_frame_request(
+        &self,
+        url: &str,
+        proxy_updates: &[NativeWindowProxyUpdate],
+    ) -> Result<BackendResponse, BrowserBackendError> {
+        let cancellation = self.active_navigation_cancellation()?;
+        let (owner_id, frame_id, lifecycle, runtime, document_replaced) = {
+            let mut targets = self.lock_targets(BackendOperation::Navigate)?;
+            let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+            let owner_id =
+                targets
+                    .active_target_id
+                    .clone()
+                    .ok_or_else(|| BrowserBackendError::Lifecycle {
+                        operation: "navigate".into(),
+                        state: "no-target-selected".into(),
+                        reason: "select an available native page target before navigating".into(),
+                    })?;
+            let frame_id = targets.active_frames.active_frame_id.clone();
+            engine
+                .sync_window_proxies(proxy_updates)
+                .await
+                .map_err(native_error)?;
+            if cancellation
+                .as_ref()
+                .is_some_and(NativeNavigationCancellation::is_cancelled)
+            {
+                return Err(native_error(NativeEngineError::NavigationCancelled));
+            }
+            let initial_generation = engine.document_generation().map_err(native_error)?;
+            let requires_document_lifecycle = engine.navigation_requires_document_lifecycle(url);
+            let replacement_sandboxed_modals = if requires_document_lifecycle {
+                native_frame_sandboxed_modals_for_replacement(
+                    &targets.active_frames,
+                    &engine,
+                    &frame_id,
+                )?
+            } else {
+                targets.active_frames.active_sandboxed_modals
+            };
+            let lifecycle = if requires_document_lifecycle {
+                let sandboxed_modals = targets.active_frames.active_sandboxed_modals;
+                dispatch_native_frame_tree_lifecycle(
+                    &mut engine,
+                    &mut targets.active_frames,
+                    &frame_id,
+                    sandboxed_modals,
+                    cancellation.as_ref(),
+                )
+                .await?
+            } else {
+                NativeFrameLifecycleResult {
+                    allowed: true,
+                    cancelled: false,
+                    navigation: None,
+                    effects: Vec::new(),
+                }
+            };
+            let mut runtime = NativeFrameRuntimeEffects {
+                browser: NativeQueuedBrowserEffects::default(),
+                frame_scripts: Vec::new(),
+                events: Vec::new(),
+                window_name: engine.config().window_name.clone(),
+            };
+            let mut document_replaced = false;
+            if lifecycle.allowed {
+                let previous_revision = engine.revision();
+                let navigation = lifecycle
+                    .navigation
+                    .clone()
+                    .unwrap_or_else(|| NativeNavigationRequest::get(url));
+                engine
+                    .navigate_request_async_after_lifecycle(navigation, 0, cancellation)
+                    .await
+                    .map_err(native_error)?;
+                runtime = take_native_frame_runtime_effects(&mut engine, previous_revision)?;
+                document_replaced =
+                    engine.document_generation().map_err(native_error)? != initial_generation;
+                if document_replaced {
+                    targets.active_frames.active_sandboxed_modals = replacement_sandboxed_modals;
+                }
+            }
+            (owner_id, frame_id, lifecycle, runtime, document_replaced)
+        };
+
+        let mut browser = self
+            .process_native_frame_lifecycle_effects(&owner_id, lifecycle.effects)
+            .await?;
+        let lifecycle_cancelled = lifecycle.cancelled;
+        self.sync_target_name(&owner_id, &runtime.window_name)?;
+        self.process_frame_event_effects(&frame_id, runtime.events)
+            .await?;
+        Box::pin(self.process_pending_frame_scripts(runtime.frame_scripts)).await?;
+        append_native_queued_browser_effects(&mut browser, runtime.browser);
+
+        self.process_pending_browser_effects(
+            browser.0, browser.1, browser.2, browser.3, browser.4, browser.5, browser.6,
+        )
+        .await?;
+        if document_replaced {
+            self.clear_page_message_port_routes_for_frame(&frame_id)?;
+            self.prune_page_message_port_routes()?;
+            let mut targets = self.lock_targets(BackendOperation::Navigate)?;
+            close_native_frame_descendants(&mut targets.active_frames, &frame_id).await?;
+            targets.active_frames.discovered_generation = None;
+        }
+        self.synchronize_native_service_worker_clients().await?;
+        if lifecycle_cancelled {
+            return Err(native_error(NativeEngineError::NavigationCancelled));
+        }
+        let snapshot = self
+            .lock_engine(BackendOperation::Navigate)?
+            .snapshot()
+            .map_err(native_error)?;
+        Ok(BackendResponse::Navigation(NavigationResult {
+            url: snapshot.url,
+            revision: snapshot.revision,
+        }))
+    }
+
     async fn navigate_frame_target(
         &self,
         route: NativeFrameRoute,
@@ -3737,12 +3878,36 @@ impl NativeEngineBackend {
         navigation: &NativeNavigationRequest,
     ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
         let proxy_updates = self.window_proxy_updates(source_context_id)?;
-        let (runtime_effects, owner_id) = match route {
+        let cleanup_route = route.clone();
+        let (navigation_result, owner_id) = match route {
             NativeFrameRoute::ActiveSelected => {
                 let mut targets = self.lock_targets(BackendOperation::Navigate)?;
                 let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
-                let result = navigate_native_frame(&mut engine, navigation, &proxy_updates).await?;
-                close_native_frame_descendants(&mut targets.active_frames, frame_id).await?;
+                let sandboxed_modals = targets.active_frames.active_sandboxed_modals;
+                let replacement_sandboxed_modals =
+                    if engine.navigation_requires_document_lifecycle(&navigation.url) {
+                        native_frame_sandboxed_modals_for_replacement(
+                            &targets.active_frames,
+                            &engine,
+                            frame_id,
+                        )?
+                    } else {
+                        sandboxed_modals
+                    };
+                let result = navigate_native_frame(
+                    &mut engine,
+                    navigation,
+                    &proxy_updates,
+                    &mut targets.active_frames,
+                    frame_id,
+                    sandboxed_modals,
+                    replacement_sandboxed_modals,
+                )
+                .await?;
+                if result.document_replaced {
+                    targets.active_frames.active_sandboxed_modals =
+                        result.replacement_sandboxed_modals;
+                }
                 let owner_id = engine.config().context_id.clone();
                 (result, owner_id)
             }
@@ -3753,23 +3918,89 @@ impl NativeEngineBackend {
                         reason: "native frame owner target disappeared during navigation".into(),
                     }
                 })?;
-                let frame = targets
+                let mut active_engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+                let replacement_sandboxed_modals =
+                    if active_engine.navigation_requires_document_lifecycle(&navigation.url) {
+                        native_frame_sandboxed_modals_for_replacement(
+                            &targets.active_frames,
+                            &active_engine,
+                            frame_id,
+                        )?
+                    } else {
+                        targets
+                            .active_frames
+                            .parked
+                            .get(frame_id)
+                            .map(|frame| frame.sandboxed_modals)
+                            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                                reason: "native frame disappeared during navigation".into(),
+                            })?
+                    };
+                if targets
                     .active_frames
-                    .parked
-                    .get_mut(frame_id)
-                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                        reason: "native frame disappeared during navigation".into(),
-                    })?;
-                let result =
-                    navigate_native_frame(&mut frame.engine, navigation, &proxy_updates).await?;
-                let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
-                activate_navigated_frame_if_ancestor(
-                    &mut targets.active_frames,
-                    &mut engine,
-                    frame_id,
-                )
-                .await?;
-                (result, owner_id)
+                    .is_descendant(&targets.active_frames.active_frame_id, frame_id)
+                {
+                    let previous_selection = activate_parked_frame_for_navigation(
+                        &mut targets.active_frames,
+                        &mut active_engine,
+                        frame_id,
+                    )?;
+                    let sandboxed_modals = targets.active_frames.active_sandboxed_modals;
+                    let result = navigate_native_frame(
+                        &mut active_engine,
+                        navigation,
+                        &proxy_updates,
+                        &mut targets.active_frames,
+                        frame_id,
+                        sandboxed_modals,
+                        replacement_sandboxed_modals,
+                    )
+                    .await;
+                    let restore_selection = match &result {
+                        Ok(result) => !result.document_replaced,
+                        Err(_) => true,
+                    };
+                    if restore_selection {
+                        restore_previous_frame_selection(
+                            &mut targets.active_frames,
+                            &mut active_engine,
+                            previous_selection,
+                        )?;
+                    } else {
+                        targets.active_frames.active_sandboxed_modals =
+                            replacement_sandboxed_modals;
+                    }
+                    (result?, owner_id)
+                } else {
+                    let mut frame =
+                        targets
+                            .active_frames
+                            .parked
+                            .remove(frame_id)
+                            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                                reason: "native frame disappeared during navigation".into(),
+                            })?;
+                    let result = navigate_native_frame(
+                        &mut frame.engine,
+                        navigation,
+                        &proxy_updates,
+                        &mut targets.active_frames,
+                        frame_id,
+                        frame.sandboxed_modals,
+                        replacement_sandboxed_modals,
+                    )
+                    .await;
+                    if let Ok(result) = &result
+                        && result.document_replaced
+                    {
+                        frame.sandboxed_modals = result.replacement_sandboxed_modals;
+                    }
+                    targets
+                        .active_frames
+                        .parked
+                        .insert(frame_id.to_owned(), frame);
+                    (result?, owner_id)
+                }
             }
             NativeFrameRoute::ParkedSelected { target_id } => {
                 let mut targets = self.lock_targets(BackendOperation::Navigate)?;
@@ -3778,9 +4009,32 @@ impl NativeEngineBackend {
                         reason: "native frame owner target disappeared during navigation".into(),
                     }
                 })?;
-                let result =
-                    navigate_native_frame(&mut target.engine, navigation, &proxy_updates).await?;
-                close_native_frame_descendants(&mut target.frames, frame_id).await?;
+                let sandboxed_modals = target.frames.active_sandboxed_modals;
+                let replacement_sandboxed_modals = if target
+                    .engine
+                    .navigation_requires_document_lifecycle(&navigation.url)
+                {
+                    native_frame_sandboxed_modals_for_replacement(
+                        &target.frames,
+                        &target.engine,
+                        frame_id,
+                    )?
+                } else {
+                    sandboxed_modals
+                };
+                let result = navigate_native_frame(
+                    &mut target.engine,
+                    navigation,
+                    &proxy_updates,
+                    &mut target.frames,
+                    frame_id,
+                    sandboxed_modals,
+                    replacement_sandboxed_modals,
+                )
+                .await?;
+                if result.document_replaced {
+                    target.frames.active_sandboxed_modals = result.replacement_sandboxed_modals;
+                }
                 (result, target_id)
             }
             NativeFrameRoute::ParkedParked { target_id } => {
@@ -3790,29 +4044,157 @@ impl NativeEngineBackend {
                         reason: "native frame owner target disappeared during navigation".into(),
                     }
                 })?;
-                let frame = target.frames.parked.get_mut(frame_id).ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
-                        reason: "native frame disappeared during navigation".into(),
+                let replacement_sandboxed_modals = if target
+                    .engine
+                    .navigation_requires_document_lifecycle(&navigation.url)
+                {
+                    native_frame_sandboxed_modals_for_replacement(
+                        &target.frames,
+                        &target.engine,
+                        frame_id,
+                    )?
+                } else {
+                    target
+                        .frames
+                        .parked
+                        .get(frame_id)
+                        .map(|frame| frame.sandboxed_modals)
+                        .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                            reason: "native frame disappeared during navigation".into(),
+                        })?
+                };
+                let result = if target
+                    .frames
+                    .is_descendant(&target.frames.active_frame_id, frame_id)
+                {
+                    let previous_selection = activate_parked_frame_for_navigation(
+                        &mut target.frames,
+                        &mut target.engine,
+                        frame_id,
+                    )?;
+                    let sandboxed_modals = target.frames.active_sandboxed_modals;
+                    let result = navigate_native_frame(
+                        &mut target.engine,
+                        navigation,
+                        &proxy_updates,
+                        &mut target.frames,
+                        frame_id,
+                        sandboxed_modals,
+                        replacement_sandboxed_modals,
+                    )
+                    .await;
+                    let restore_selection = match &result {
+                        Ok(result) => !result.document_replaced,
+                        Err(_) => true,
+                    };
+                    if restore_selection {
+                        restore_previous_frame_selection(
+                            &mut target.frames,
+                            &mut target.engine,
+                            previous_selection,
+                        )?;
+                    } else {
+                        target.frames.active_sandboxed_modals = replacement_sandboxed_modals;
                     }
-                })?;
-                let result =
-                    navigate_native_frame(&mut frame.engine, navigation, &proxy_updates).await?;
-                activate_navigated_frame_if_ancestor(
-                    &mut target.frames,
-                    &mut target.engine,
-                    frame_id,
-                )
-                .await?;
+                    result?
+                } else {
+                    let mut frame = target.frames.parked.remove(frame_id).ok_or_else(|| {
+                        BrowserBackendError::SelectionFailed {
+                            reason: "native frame disappeared during navigation".into(),
+                        }
+                    })?;
+                    let result = navigate_native_frame(
+                        &mut frame.engine,
+                        navigation,
+                        &proxy_updates,
+                        &mut target.frames,
+                        frame_id,
+                        frame.sandboxed_modals,
+                        replacement_sandboxed_modals,
+                    )
+                    .await;
+                    if let Ok(result) = &result
+                        && result.document_replaced
+                    {
+                        frame.sandboxed_modals = result.replacement_sandboxed_modals;
+                    }
+                    target.frames.parked.insert(frame_id.to_owned(), frame);
+                    result?
+                };
                 (result, target_id)
             }
         };
-        self.clear_page_message_port_routes_for_frame(frame_id)?;
-        self.prune_page_message_port_routes()?;
-        self.sync_target_name(&owner_id, &runtime_effects.window_name)?;
-        self.process_frame_event_effects(frame_id, runtime_effects.events)
+        let mut browser = self
+            .process_native_frame_lifecycle_effects(&owner_id, navigation_result.lifecycle.effects)
             .await?;
-        Box::pin(self.process_pending_frame_scripts(runtime_effects.frame_scripts)).await?;
-        Ok(runtime_effects.browser)
+        self.sync_target_name(&owner_id, &navigation_result.runtime.window_name)?;
+        self.process_frame_event_effects(frame_id, navigation_result.runtime.events)
+            .await?;
+        Box::pin(self.process_pending_frame_scripts(navigation_result.runtime.frame_scripts))
+            .await?;
+        append_native_queued_browser_effects(&mut browser, navigation_result.runtime.browser);
+
+        if navigation_result.document_replaced {
+            self.clear_page_message_port_routes_for_frame(frame_id)?;
+            self.prune_page_message_port_routes()?;
+            match cleanup_route {
+                NativeFrameRoute::ActiveSelected => {
+                    let mut targets = self.lock_targets(BackendOperation::Navigate)?;
+                    close_native_frame_descendants(&mut targets.active_frames, frame_id).await?;
+                    targets.active_frames.discovered_generation = None;
+                }
+                NativeFrameRoute::ActiveParked => {
+                    let mut targets = self.lock_targets(BackendOperation::Navigate)?;
+                    if targets
+                        .active_frames
+                        .is_descendant(&targets.active_frames.active_frame_id, frame_id)
+                    {
+                        let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+                        activate_navigated_frame_if_ancestor(
+                            &mut targets.active_frames,
+                            &mut engine,
+                            frame_id,
+                        )
+                        .await?;
+                    } else {
+                        close_native_frame_descendants(&mut targets.active_frames, frame_id)
+                            .await?;
+                    }
+                }
+                NativeFrameRoute::ParkedSelected { target_id } => {
+                    let mut targets = self.lock_targets(BackendOperation::Navigate)?;
+                    let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
+                        BrowserBackendError::SelectionFailed {
+                            reason: "native frame owner target disappeared after navigation".into(),
+                        }
+                    })?;
+                    close_native_frame_descendants(&mut target.frames, frame_id).await?;
+                    target.frames.discovered_generation = None;
+                }
+                NativeFrameRoute::ParkedParked { target_id } => {
+                    let mut targets = self.lock_targets(BackendOperation::Navigate)?;
+                    let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
+                        BrowserBackendError::SelectionFailed {
+                            reason: "native frame owner target disappeared after navigation".into(),
+                        }
+                    })?;
+                    if target
+                        .frames
+                        .is_descendant(&target.frames.active_frame_id, frame_id)
+                    {
+                        activate_navigated_frame_if_ancestor(
+                            &mut target.frames,
+                            &mut target.engine,
+                            frame_id,
+                        )
+                        .await?;
+                    } else {
+                        close_native_frame_descendants(&mut target.frames, frame_id).await?;
+                    }
+                }
+            }
+        }
+        Ok(browser)
     }
 
     async fn navigate_named_target(
@@ -3835,134 +4217,152 @@ impl NativeEngineBackend {
     > {
         let proxy_updates = self.window_proxy_updates(target_id)?;
         if active {
-            let opener_id = self
-                .lock_targets(BackendOperation::Contexts)?
-                .active_opener_id
-                .clone();
-            let (
-                target,
-                nested,
-                nested_messages,
-                nested_window_closes,
-                nested_window_navigations,
-                nested_service_worker_open_windows,
-                nested_service_worker_client_messages,
-                nested_page_message_port_commands,
-                window_name,
-            ) = {
+            let (target, owner_id, frame_id, navigation_result) = {
+                let mut targets = self.lock_targets(BackendOperation::Navigate)?;
+                let opener_id = targets.active_opener_id.clone();
                 let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
-                engine
-                    .sync_window_proxies(&proxy_updates)
-                    .await
-                    .map_err(native_error)?;
-                engine
-                    .navigate_request_async(navigation.clone(), 0)
-                    .await
-                    .map_err(native_error)?;
-                let nested = engine.take_pending_popups();
-                let nested_messages = engine.take_pending_post_messages();
-                let nested_window_closes = engine.take_pending_window_closes();
-                let nested_window_navigations = engine.take_pending_window_navigations();
-                let nested_service_worker_open_windows =
-                    engine.take_pending_service_worker_open_windows();
-                let nested_service_worker_client_messages =
-                    engine.take_pending_service_worker_client_messages();
-                let nested_page_message_port_commands =
-                    engine.take_pending_page_message_port_commands();
-                let window_name = engine.config().window_name.clone();
-                let target = project_native_target(&engine, target_id, opener_id, true)?;
-                (
-                    target,
-                    nested,
-                    nested_messages,
-                    nested_window_closes,
-                    nested_window_navigations,
-                    nested_service_worker_open_windows,
-                    nested_service_worker_client_messages,
-                    nested_page_message_port_commands,
-                    window_name,
+                let frame_id = targets.active_frames.active_frame_id.clone();
+                let sandboxed_modals = targets.active_frames.active_sandboxed_modals;
+                let replacement_sandboxed_modals =
+                    if engine.navigation_requires_document_lifecycle(&navigation.url) {
+                        native_frame_sandboxed_modals_for_replacement(
+                            &targets.active_frames,
+                            &engine,
+                            &frame_id,
+                        )?
+                    } else {
+                        sandboxed_modals
+                    };
+                let navigation_result = navigate_native_frame(
+                    &mut engine,
+                    navigation,
+                    &proxy_updates,
+                    &mut targets.active_frames,
+                    &frame_id,
+                    sandboxed_modals,
+                    replacement_sandboxed_modals,
                 )
+                .await?;
+                if navigation_result.document_replaced {
+                    targets.active_frames.active_sandboxed_modals =
+                        navigation_result.replacement_sandboxed_modals;
+                }
+                let target = project_native_target(&engine, target_id, opener_id, true)?;
+                (target, target_id.to_owned(), frame_id, navigation_result)
             };
-            let mut targets = self.lock_targets(BackendOperation::Contexts)?;
-            targets.active_frames = NativeFrameState::new(target_id);
-            targets.active_name = native_window_name(&window_name);
-            drop(targets);
-            self.clear_page_message_port_routes_for_context(target_id)?;
+            let mut browser = self
+                .process_native_frame_lifecycle_effects(
+                    &owner_id,
+                    navigation_result.lifecycle.effects,
+                )
+                .await?;
+            self.sync_target_name(&owner_id, &navigation_result.runtime.window_name)?;
+            self.process_frame_event_effects(&frame_id, navigation_result.runtime.events)
+                .await?;
+            Box::pin(self.process_pending_frame_scripts(navigation_result.runtime.frame_scripts))
+                .await?;
+            append_native_queued_browser_effects(&mut browser, navigation_result.runtime.browser);
+            if navigation_result.document_replaced {
+                self.clear_page_message_port_routes_for_context(&owner_id)?;
+                let mut targets = self.lock_targets(BackendOperation::Navigate)?;
+                close_parked_frames(&mut targets.active_frames).await?;
+                targets.active_frames = NativeFrameState::new(target_id);
+                targets.active_name = native_window_name(&navigation_result.runtime.window_name);
+            }
             Ok((
-                target,
-                nested,
-                nested_messages,
-                nested_window_closes,
-                nested_window_navigations,
-                nested_service_worker_open_windows,
-                nested_service_worker_client_messages,
-                nested_page_message_port_commands,
+                target, browser.0, browser.1, browser.2, browser.3, browser.4, browser.5, browser.6,
             ))
         } else {
-            let parked = {
+            let (target, frame_id, navigation_result) = {
                 let mut targets = self.lock_targets(BackendOperation::Navigate)?;
-                targets.parked.remove(target_id)
-            }
-            .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                reason: "named native popup target disappeared before navigation".into(),
-            })?;
-            let NativeParkedTarget {
-                mut engine,
-                opener_id,
-                name,
-                frames,
-            } = parked;
-            engine
-                .sync_window_proxies(&proxy_updates)
-                .await
-                .map_err(native_error)?;
-            let result = engine.navigate_request_async(navigation.clone(), 0).await;
-            let nested = engine.take_pending_popups();
-            let nested_messages = engine.take_pending_post_messages();
-            let nested_window_closes = engine.take_pending_window_closes();
-            let nested_window_navigations = engine.take_pending_window_navigations();
-            let nested_service_worker_open_windows =
-                engine.take_pending_service_worker_open_windows();
-            let nested_service_worker_client_messages =
-                engine.take_pending_service_worker_client_messages();
-            let nested_page_message_port_commands =
-                engine.take_pending_page_message_port_commands();
-            let window_name = engine.config().window_name.clone();
-            let mut targets = self.lock_targets(BackendOperation::Contexts)?;
-            if let Err(error) = result {
+                let parked = targets.parked.remove(target_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "named native popup target disappeared before navigation".into(),
+                    }
+                })?;
+                let NativeParkedTarget {
+                    mut engine,
+                    opener_id,
+                    name: _previous_name,
+                    mut frames,
+                } = parked;
+                let frame_id = frames.active_frame_id.clone();
+                let sandboxed_modals = frames.active_sandboxed_modals;
+                let replacement_sandboxed_modals =
+                    if engine.navigation_requires_document_lifecycle(&navigation.url) {
+                        native_frame_sandboxed_modals_for_replacement(&frames, &engine, &frame_id)?
+                    } else {
+                        sandboxed_modals
+                    };
+                let navigation_result = navigate_native_frame(
+                    &mut engine,
+                    navigation,
+                    &proxy_updates,
+                    &mut frames,
+                    &frame_id,
+                    sandboxed_modals,
+                    replacement_sandboxed_modals,
+                )
+                .await;
+                let navigation_result = match navigation_result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        targets.parked.insert(
+                            target_id.to_owned(),
+                            NativeParkedTarget {
+                                name: native_window_name(&engine.config().window_name),
+                                engine,
+                                opener_id,
+                                frames,
+                            },
+                        );
+                        return Err(error);
+                    }
+                };
+                if navigation_result.document_replaced {
+                    frames.active_sandboxed_modals = navigation_result.replacement_sandboxed_modals;
+                }
+                let target = project_native_target(&engine, target_id, opener_id.clone(), false)?;
+                let window_name = engine.config().window_name.clone();
                 targets.parked.insert(
                     target_id.to_owned(),
                     NativeParkedTarget {
                         engine,
                         opener_id,
                         frames,
-                        name,
+                        name: native_window_name(&window_name),
                     },
                 );
-                return Err(native_error(error));
+                (target, frame_id, navigation_result)
+            };
+            let mut browser = self
+                .process_native_frame_lifecycle_effects(
+                    target_id,
+                    navigation_result.lifecycle.effects,
+                )
+                .await?;
+            self.sync_target_name(target_id, &navigation_result.runtime.window_name)?;
+            self.process_frame_event_effects(&frame_id, navigation_result.runtime.events)
+                .await?;
+            Box::pin(self.process_pending_frame_scripts(navigation_result.runtime.frame_scripts))
+                .await?;
+            append_native_queued_browser_effects(&mut browser, navigation_result.runtime.browser);
+            if navigation_result.document_replaced {
+                let mut targets = self.lock_targets(BackendOperation::Navigate)?;
+                let mut parked = targets.parked.remove(target_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "named native popup target disappeared after navigation".into(),
+                    }
+                })?;
+                close_parked_frames(&mut parked.frames).await?;
+                parked.frames = NativeFrameState::new(target_id);
+                parked.name = native_window_name(&navigation_result.runtime.window_name);
+                targets.parked.insert(target_id.to_owned(), parked);
+                drop(targets);
+                self.clear_page_message_port_routes_for_context(target_id)?;
             }
-            let frames = NativeFrameState::new(target_id);
-            let target = project_native_target(&engine, target_id, opener_id.clone(), false)?;
-            targets.parked.insert(
-                target_id.to_owned(),
-                NativeParkedTarget {
-                    engine,
-                    opener_id,
-                    frames,
-                    name: native_window_name(&window_name),
-                },
-            );
-            drop(targets);
-            self.clear_page_message_port_routes_for_context(target_id)?;
             Ok((
-                target,
-                nested,
-                nested_messages,
-                nested_window_closes,
-                nested_window_navigations,
-                nested_service_worker_open_windows,
-                nested_service_worker_client_messages,
-                nested_page_message_port_commands,
+                target, browser.0, browser.1, browser.2, browser.3, browser.4, browser.5, browser.6,
             ))
         }
     }
@@ -4080,6 +4480,7 @@ impl NativeEngineBackend {
             engine: parked_engine,
             parent_id,
             owner_node_index,
+            sandboxed_modals,
         } = parked;
         let mut active_engine = self.lock_engine_raw(BackendOperation::Contexts)?;
         let old_engine = std::mem::replace(&mut *active_engine, parked_engine);
@@ -4093,6 +4494,10 @@ impl NativeEngineBackend {
             &mut targets.active_frames.active_owner_node_index,
             owner_node_index,
         );
+        let old_sandboxed_modals = std::mem::replace(
+            &mut targets.active_frames.active_sandboxed_modals,
+            sandboxed_modals,
+        );
         targets.active_frames.focused_frame_id = Some(frame_id.to_owned());
         targets.active_frames.discovered_generation =
             Some(active_engine.document_generation().map_err(native_error)?);
@@ -4102,6 +4507,7 @@ impl NativeEngineBackend {
                 engine: old_engine,
                 parent_id: old_parent_id,
                 owner_node_index: old_owner_node_index,
+                sandboxed_modals: old_sandboxed_modals,
             },
         );
         project_native_frame(
@@ -4116,14 +4522,90 @@ impl NativeEngineBackend {
         &self,
         direction: NativeHistoryDirection,
     ) -> Result<NavigationControlOutcome, BrowserBackendError> {
-        let mut engine = self.lock_engine(BackendOperation::Navigate)?;
-        let previous_revision = engine.revision();
-        let snapshot = match direction {
-            NativeHistoryDirection::Back => engine.go_back_async().await,
-            NativeHistoryDirection::Forward => engine.go_forward_async().await,
-        }
-        .map_err(native_error)?
-        .ok_or_else(|| BrowserBackendError::UnsupportedOperation {
+        let (
+            previous_revision,
+            owner_id,
+            frame_id,
+            lifecycle,
+            runtime,
+            document_replaced,
+            snapshot,
+        ) = {
+            let mut targets = self.lock_targets(BackendOperation::Navigate)?;
+            let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+            let previous_revision = engine.revision();
+            let initial_generation = engine.document_generation().map_err(native_error)?;
+            let frame_id = targets.active_frames.active_frame_id.clone();
+            let cross_document = engine.history_target_is_cross_document(direction) == Some(true);
+            let replacement_sandboxed_modals = if cross_document {
+                native_frame_sandboxed_modals_for_replacement(
+                    &targets.active_frames,
+                    &engine,
+                    &frame_id,
+                )?
+            } else {
+                targets.active_frames.active_sandboxed_modals
+            };
+            let lifecycle = if cross_document {
+                let sandboxed_modals = targets.active_frames.active_sandboxed_modals;
+                dispatch_native_frame_tree_lifecycle(
+                    &mut engine,
+                    &mut targets.active_frames,
+                    &frame_id,
+                    sandboxed_modals,
+                    None,
+                )
+                .await?
+            } else {
+                NativeFrameLifecycleResult {
+                    allowed: true,
+                    cancelled: false,
+                    navigation: None,
+                    effects: Vec::new(),
+                }
+            };
+            let mut runtime = NativeFrameRuntimeEffects {
+                browser: NativeQueuedBrowserEffects::default(),
+                frame_scripts: Vec::new(),
+                events: Vec::new(),
+                window_name: engine.config().window_name.clone(),
+            };
+            let snapshot = if lifecycle.allowed {
+                let navigation_revision = engine.revision();
+                let snapshot = if let Some(navigation) = lifecycle.navigation.clone() {
+                    Some(
+                        engine
+                            .navigate_request_async_after_lifecycle(navigation, 0, None)
+                            .await
+                            .map_err(native_error)?,
+                    )
+                } else {
+                    engine
+                        .traverse_history_async_after_lifecycle(direction)
+                        .await
+                        .map_err(native_error)?
+                };
+                runtime = take_native_frame_runtime_effects(&mut engine, navigation_revision)?;
+                snapshot
+            } else {
+                Some(engine.snapshot().map_err(native_error)?)
+            };
+            let document_replaced =
+                engine.document_generation().map_err(native_error)? != initial_generation;
+            if document_replaced {
+                targets.active_frames.active_sandboxed_modals = replacement_sandboxed_modals;
+            }
+            (
+                previous_revision,
+                engine.config().context_id.clone(),
+                frame_id,
+                lifecycle,
+                runtime,
+                document_replaced,
+                snapshot,
+            )
+        };
+        let snapshot = snapshot.ok_or_else(|| BrowserBackendError::UnsupportedOperation {
             operation: match direction {
                 NativeHistoryDirection::Back => "back",
                 NativeHistoryDirection::Forward => "forward",
@@ -4135,6 +4617,26 @@ impl NativeEngineBackend {
             }
             .into(),
         })?;
+        let mut browser = self
+            .process_native_frame_lifecycle_effects(&owner_id, lifecycle.effects)
+            .await?;
+        self.sync_target_name(&owner_id, &runtime.window_name)?;
+        self.process_frame_event_effects(&frame_id, runtime.events)
+            .await?;
+        Box::pin(self.process_pending_frame_scripts(runtime.frame_scripts)).await?;
+        append_native_queued_browser_effects(&mut browser, runtime.browser);
+        if document_replaced {
+            self.clear_page_message_port_routes_for_frame(&frame_id)?;
+            self.prune_page_message_port_routes()?;
+            let mut targets = self.lock_targets(BackendOperation::Navigate)?;
+            close_native_frame_descendants(&mut targets.active_frames, &frame_id).await?;
+            targets.active_frames.discovered_generation = None;
+        }
+        self.process_pending_browser_effects(
+            browser.0, browser.1, browser.2, browser.3, browser.4, browser.5, browser.6,
+        )
+        .await?;
+        self.synchronize_native_service_worker_clients().await?;
         Ok(NavigationControlOutcome {
             action: match direction {
                 NativeHistoryDirection::Back => "back",
@@ -4661,6 +5163,16 @@ impl BrowserBackend for NativeEngineBackend {
                     return Ok(response);
                 }
             }
+            if let (BackendOperation::Navigate, BackendRequest::Navigate(navigation)) =
+                (&operation, &request)
+            {
+                return self
+                    .navigate_active_frame_request(
+                        &navigation.url,
+                        proxy_updates.as_deref().unwrap_or_default(),
+                    )
+                    .await;
+            }
             let mut engine = self.lock_engine(operation)?;
             if let Some(proxy_updates) = proxy_updates.as_deref() {
                 engine
@@ -4705,58 +5217,12 @@ impl BrowserBackend for NativeEngineBackend {
                     Ok(BackendResponse::Unit)
                 }
                 (BackendOperation::Navigate, BackendRequest::Navigate(request)) => {
-                    let previous_revision = engine.revision();
-                    if let Some(cancellation) = self.active_navigation_cancellation()? {
-                        engine
-                            .navigate_async_with_cancellation(request.url, cancellation)
-                            .await
-                            .map_err(native_error)?;
-                    } else {
-                        engine
-                            .navigate_async(request.url)
-                            .await
-                            .map_err(native_error)?;
-                    }
-                    let event_effects = engine
-                        .effects_since(previous_revision)
-                        .map_err(native_error)?
-                        .effects;
-                    let popup_requests = engine.take_pending_popups();
-                    let post_messages = engine.take_pending_post_messages();
-                    let window_closes = engine.take_pending_window_closes();
-                    let window_navigations = engine.take_pending_window_navigations();
-                    let service_worker_open_windows =
-                        engine.take_pending_service_worker_open_windows();
-                    let service_worker_client_messages =
-                        engine.take_pending_service_worker_client_messages();
-                    let page_message_port_commands =
-                        engine.take_pending_page_message_port_commands();
-                    let window_name = engine.config().window_name.clone();
-                    drop(engine);
-                    self.clear_page_message_port_routes_for_context(&active_context_id)?;
-                    self.sync_target_name(&active_context_id, &window_name)?;
-                    if let Some(frame_id) = selected_frame_id.as_deref() {
-                        self.process_selected_frame_events(frame_id, event_effects)
-                            .await?;
-                    }
-                    self.process_pending_browser_effects(
-                        popup_requests,
-                        post_messages,
-                        window_closes,
-                        window_navigations,
-                        service_worker_open_windows,
-                        service_worker_client_messages,
-                        page_message_port_commands,
-                    )
-                    .await?;
-                    let snapshot = self
-                        .lock_engine(BackendOperation::Navigate)?
-                        .snapshot()
-                        .map_err(native_error)?;
-                    Ok(BackendResponse::Navigation(NavigationResult {
-                        url: snapshot.url,
-                        revision: snapshot.revision,
-                    }))
+                    let _ = request;
+                    Err(BrowserBackendError::Lifecycle {
+                        operation: "navigate".into(),
+                        state: "dispatch-bypass".into(),
+                        reason: "native navigation must pass the frame-tree lifecycle gate".into(),
+                    })
                 }
                 (BackendOperation::Contexts, BackendRequest::Contexts(_request)) => {
                     let context = engine.context().map_err(native_error)?;
@@ -5386,6 +5852,35 @@ struct NativeFrameRuntimeEffects {
     window_name: String,
 }
 
+struct NativeFrameLifecycleEffects {
+    frame_id: String,
+    runtime: NativeFrameRuntimeEffects,
+}
+
+struct NativeFrameLifecycleResult {
+    allowed: bool,
+    cancelled: bool,
+    navigation: Option<NativeNavigationRequest>,
+    effects: Vec<NativeFrameLifecycleEffects>,
+}
+
+struct NativeFrameNavigationResult {
+    runtime: NativeFrameRuntimeEffects,
+    lifecycle: NativeFrameLifecycleResult,
+    document_replaced: bool,
+    replacement_sandboxed_modals: bool,
+}
+
+#[derive(Clone)]
+struct NativeFrameSelectionState {
+    frame_id: String,
+    parent_id: Option<String>,
+    owner_node_index: Option<u32>,
+    sandboxed_modals: bool,
+    focused_frame_id: Option<String>,
+    discovered_generation: Option<u32>,
+}
+
 fn parent_projected_event_kinds(command: &NativeScriptCommand) -> &'static [NativeEventKind] {
     match command {
         NativeScriptCommand::Focus { .. } => &[NativeEventKind::Focus],
@@ -5434,6 +5929,7 @@ async fn activate_navigated_frame_if_ancestor(
         engine: navigated_engine,
         parent_id,
         owner_node_index,
+        sandboxed_modals,
     } = parked;
     let mut old_active_engine = std::mem::replace(active_engine, navigated_engine);
     let mut first_error = old_active_engine
@@ -5452,6 +5948,7 @@ async fn activate_navigated_frame_if_ancestor(
     frames.active_frame_id = frame_id.to_owned();
     frames.active_parent_id = parent_id;
     frames.active_owner_node_index = owner_node_index;
+    frames.active_sandboxed_modals = sandboxed_modals;
     frames.focused_frame_id = Some(frame_id.to_owned());
     frames.discovered_generation = None;
     first_error.map_or(Ok(()), Err)
@@ -5478,6 +5975,19 @@ fn take_native_browser_effects(engine: &mut NativeEngine) -> (NativeQueuedBrowse
         ),
         window_name,
     )
+}
+
+fn append_native_queued_browser_effects(
+    target: &mut NativeQueuedBrowserEffects,
+    mut source: NativeQueuedBrowserEffects,
+) {
+    target.0.append(&mut source.0);
+    target.1.append(&mut source.1);
+    target.2.append(&mut source.2);
+    target.3.append(&mut source.3);
+    target.4.append(&mut source.4);
+    target.5.append(&mut source.5);
+    target.6.append(&mut source.6);
 }
 
 fn take_native_frame_runtime_effects(
@@ -5581,17 +6091,408 @@ async fn navigate_native_frame(
     engine: &mut NativeEngine,
     navigation: &NativeNavigationRequest,
     proxy_updates: &[NativeWindowProxyUpdate],
-) -> Result<NativeFrameRuntimeEffects, BrowserBackendError> {
-    let previous_revision = engine.revision();
+    frames: &mut NativeFrameState,
+    frame_id: &str,
+    sandboxed_modals: bool,
+    replacement_sandboxed_modals: bool,
+) -> Result<NativeFrameNavigationResult, BrowserBackendError> {
     engine
         .sync_window_proxies(proxy_updates)
         .await
         .map_err(native_error)?;
-    engine
-        .navigate_request_async(navigation.clone(), 0)
-        .await
+    let initial_generation = engine.document_generation().map_err(native_error)?;
+    let lifecycle = if engine.navigation_requires_document_lifecycle(&navigation.url) {
+        dispatch_native_frame_tree_lifecycle(engine, frames, frame_id, sandboxed_modals, None)
+            .await?
+    } else {
+        NativeFrameLifecycleResult {
+            allowed: true,
+            cancelled: false,
+            navigation: None,
+            effects: Vec::new(),
+        }
+    };
+    let mut runtime = NativeFrameRuntimeEffects {
+        browser: NativeQueuedBrowserEffects::default(),
+        frame_scripts: Vec::new(),
+        events: Vec::new(),
+        window_name: engine.config().window_name.clone(),
+    };
+    let mut document_replaced = false;
+    if lifecycle.allowed {
+        let previous_revision = engine.revision();
+        let request = lifecycle
+            .navigation
+            .clone()
+            .unwrap_or_else(|| navigation.clone());
+        engine
+            .navigate_request_async_after_lifecycle(request, 0, None)
+            .await
+            .map_err(native_error)?;
+        runtime = take_native_frame_runtime_effects(engine, previous_revision)?;
+        document_replaced =
+            engine.document_generation().map_err(native_error)? != initial_generation;
+    }
+    Ok(NativeFrameNavigationResult {
+        runtime,
+        lifecycle,
+        document_replaced,
+        replacement_sandboxed_modals,
+    })
+}
+
+fn native_frame_sandboxed_modals_for_replacement(
+    frames: &NativeFrameState,
+    active_engine: &NativeEngine,
+    frame_id: &str,
+) -> Result<bool, BrowserBackendError> {
+    let (parent_id, owner_node_index) =
+        if frames.active_frame_id == frame_id {
+            (
+                frames.active_parent_id.as_deref(),
+                frames.active_owner_node_index,
+            )
+        } else {
+            let frame = frames.parked.get(frame_id).ok_or_else(|| {
+                BrowserBackendError::SelectionFailed {
+                    reason: "native frame disappeared while resolving replacement sandbox flags"
+                        .into(),
+                }
+            })?;
+            (frame.parent_id.as_deref(), frame.owner_node_index)
+        };
+    let Some(parent_id) = parent_id else {
+        return Ok(false);
+    };
+    let owner_node_index =
+        owner_node_index.ok_or_else(|| BrowserBackendError::SelectionFailed {
+            reason: "native child frame is missing its owning iframe node".into(),
+        })?;
+    let parent_sandboxed_modals = if parent_id == frames.active_frame_id {
+        frames.active_sandboxed_modals
+    } else {
+        frames
+            .parked
+            .get(parent_id)
+            .map(|parent| parent.sandboxed_modals)
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "native frame parent disappeared while resolving sandbox flags".into(),
+            })?
+    };
+    let parent_engine = native_frame_engine(frames, active_engine, parent_id).ok_or_else(|| {
+        BrowserBackendError::SelectionFailed {
+            reason: "native frame parent has no live document owner".into(),
+        }
+    })?;
+    let sandbox = parent_engine
+        .embedded_frame_sources()
+        .map_err(native_error)?
+        .into_iter()
+        .find(|(node_index, _, _)| *node_index == owner_node_index)
+        .map(|(_, _, sandbox)| sandbox)
+        .ok_or_else(|| BrowserBackendError::SelectionFailed {
+            reason: "native child frame owner is no longer present in its parent document".into(),
+        })?;
+    Ok(iframe_sandboxed_modals(
+        parent_sandboxed_modals,
+        sandbox.as_deref(),
+    ))
+}
+
+fn activate_parked_frame_for_navigation(
+    frames: &mut NativeFrameState,
+    active_engine: &mut NativeEngine,
+    frame_id: &str,
+) -> Result<NativeFrameSelectionState, BrowserBackendError> {
+    let target_generation = frames
+        .parked
+        .get(frame_id)
+        .ok_or_else(|| BrowserBackendError::SelectionFailed {
+            reason: "native ancestor frame disappeared before navigation".into(),
+        })?
+        .engine
+        .document_generation()
         .map_err(native_error)?;
-    take_native_frame_runtime_effects(engine, previous_revision)
+    let target =
+        frames
+            .parked
+            .remove(frame_id)
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "native ancestor frame disappeared before navigation".into(),
+            })?;
+    let previous = NativeFrameSelectionState {
+        frame_id: frames.active_frame_id.clone(),
+        parent_id: frames.active_parent_id.clone(),
+        owner_node_index: frames.active_owner_node_index,
+        sandboxed_modals: frames.active_sandboxed_modals,
+        focused_frame_id: frames.focused_frame_id.clone(),
+        discovered_generation: frames.discovered_generation,
+    };
+    let old_active_engine = std::mem::replace(active_engine, target.engine);
+    frames.parked.insert(
+        previous.frame_id.clone(),
+        NativeParkedFrame {
+            engine: old_active_engine,
+            parent_id: previous.parent_id.clone(),
+            owner_node_index: previous.owner_node_index,
+            sandboxed_modals: previous.sandboxed_modals,
+        },
+    );
+    frames.active_frame_id = frame_id.to_owned();
+    frames.active_parent_id = target.parent_id;
+    frames.active_owner_node_index = target.owner_node_index;
+    frames.active_sandboxed_modals = target.sandboxed_modals;
+    frames.focused_frame_id = Some(frame_id.to_owned());
+    frames.discovered_generation = Some(target_generation);
+    Ok(previous)
+}
+
+fn restore_previous_frame_selection(
+    frames: &mut NativeFrameState,
+    active_engine: &mut NativeEngine,
+    previous: NativeFrameSelectionState,
+) -> Result<(), BrowserBackendError> {
+    let current_frame_id = frames.active_frame_id.clone();
+    let previous_active = frames.parked.remove(&previous.frame_id).ok_or_else(|| {
+        BrowserBackendError::SelectionFailed {
+            reason: "previously selected native frame disappeared during navigation".into(),
+        }
+    })?;
+    let current_engine = std::mem::replace(active_engine, previous_active.engine);
+    frames.parked.insert(
+        current_frame_id,
+        NativeParkedFrame {
+            engine: current_engine,
+            parent_id: frames.active_parent_id.clone(),
+            owner_node_index: frames.active_owner_node_index,
+            sandboxed_modals: frames.active_sandboxed_modals,
+        },
+    );
+    frames.active_frame_id = previous.frame_id;
+    frames.active_parent_id = previous.parent_id;
+    frames.active_owner_node_index = previous.owner_node_index;
+    frames.active_sandboxed_modals = previous.sandboxed_modals;
+    frames.focused_frame_id = previous.focused_frame_id;
+    frames.discovered_generation = previous.discovered_generation;
+    Ok(())
+}
+
+fn native_frame_descendants_preorder(frames: &NativeFrameState, root_id: &str) -> Vec<String> {
+    fn visit(frames: &NativeFrameState, parent_id: &str, ordered: &mut Vec<String>) {
+        let mut children = frames
+            .parked
+            .iter()
+            .filter(|(_, frame)| frame.parent_id.as_deref() == Some(parent_id))
+            .map(|(id, frame)| (frame.owner_node_index.unwrap_or(u32::MAX), id.clone()))
+            .collect::<Vec<_>>();
+        children.sort();
+        for (_, child_id) in children {
+            ordered.push(child_id.clone());
+            visit(frames, &child_id, ordered);
+        }
+    }
+
+    let mut ordered = Vec::new();
+    visit(frames, root_id, &mut ordered);
+    ordered
+}
+
+fn native_frame_descendants_postorder(frames: &NativeFrameState, root_id: &str) -> Vec<String> {
+    fn visit(frames: &NativeFrameState, parent_id: &str, ordered: &mut Vec<String>) {
+        let mut children = frames
+            .parked
+            .iter()
+            .filter(|(_, frame)| frame.parent_id.as_deref() == Some(parent_id))
+            .map(|(id, frame)| (frame.owner_node_index.unwrap_or(u32::MAX), id.clone()))
+            .collect::<Vec<_>>();
+        children.sort();
+        for (_, child_id) in children {
+            visit(frames, &child_id, ordered);
+            ordered.push(child_id);
+        }
+    }
+
+    let mut ordered = Vec::new();
+    visit(frames, root_id, &mut ordered);
+    ordered
+}
+
+async fn dispatch_native_frame_tree_lifecycle(
+    root_engine: &mut NativeEngine,
+    frames: &mut NativeFrameState,
+    root_frame_id: &str,
+    root_sandboxed_modals: bool,
+    cancellation: Option<&NativeNavigationCancellation>,
+) -> Result<NativeFrameLifecycleResult, BrowserBackendError> {
+    let descendants = native_frame_descendants_preorder(frames, root_frame_id);
+    let mut prompt_shown = false;
+    let mut allowed = true;
+    let mut navigation = None;
+    let mut effects = Vec::with_capacity(descendants.len().saturating_add(1) * 2);
+
+    for frame_id in std::iter::once(root_frame_id.to_owned()).chain(descendants.iter().cloned()) {
+        let sandboxed_modals = if frame_id == root_frame_id {
+            root_sandboxed_modals
+        } else {
+            let frame = frames.parked.get(&frame_id).ok_or_else(|| {
+                BrowserBackendError::SelectionFailed {
+                    reason: "native descendant frame disappeared during beforeunload".into(),
+                }
+            })?;
+            frame.sandboxed_modals
+        };
+        let previous_revision = if frame_id == root_frame_id {
+            root_engine.revision()
+        } else {
+            frames
+                .parked
+                .get(&frame_id)
+                .map(|frame| frame.engine.revision())
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native descendant frame disappeared during beforeunload".into(),
+                })?
+        };
+        let (canceled, sticky_activation, next_navigation) = if frame_id == root_frame_id {
+            root_engine
+                .dispatch_before_unload_for_navigation()
+                .await
+                .map_err(native_error)?
+        } else {
+            frames
+                .parked
+                .get_mut(&frame_id)
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native descendant frame disappeared during beforeunload".into(),
+                })?
+                .engine
+                .dispatch_before_unload_for_navigation()
+                .await
+                .map_err(native_error)?
+        };
+        let runtime = if frame_id == root_frame_id {
+            take_native_frame_runtime_effects(root_engine, previous_revision)?
+        } else {
+            let frame = frames.parked.get_mut(&frame_id).ok_or_else(|| {
+                BrowserBackendError::SelectionFailed {
+                    reason: "native descendant frame disappeared after beforeunload".into(),
+                }
+            })?;
+            take_native_frame_runtime_effects(&mut frame.engine, previous_revision)?
+        };
+        effects.push(NativeFrameLifecycleEffects {
+            frame_id: frame_id.clone(),
+            runtime,
+        });
+        if let Some(next_navigation) = next_navigation {
+            if navigation.is_some() {
+                return Err(native_error(NativeEngineError::TargetNotActionable {
+                    reason: "multiple outgoing lifecycle navigations are not supported".into(),
+                }));
+            }
+            navigation = Some(next_navigation);
+        }
+        if canceled && sticky_activation && !sandboxed_modals && !prompt_shown {
+            prompt_shown = true;
+            let confirmation = if frame_id == root_frame_id {
+                wait_for_native_frame_beforeunload(root_engine, cancellation).await
+            } else {
+                let frame = frames.parked.get(&frame_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native descendant frame disappeared before its prompt".into(),
+                    }
+                })?;
+                wait_for_native_frame_beforeunload(&frame.engine, cancellation).await
+            };
+            match confirmation {
+                Ok(true) => {}
+                Ok(false) | Err(NativeEngineError::NavigationCancelled) => allowed = false,
+                Err(error) => return Err(native_error(error)),
+            }
+        }
+    }
+
+    let cancelled = cancellation.is_some_and(NativeNavigationCancellation::is_cancelled);
+    if cancelled {
+        allowed = false;
+    }
+
+    if allowed {
+        let mut unload_order = native_frame_descendants_postorder(frames, root_frame_id);
+        unload_order.push(root_frame_id.to_owned());
+        for frame_id in unload_order {
+            let previous_revision = if frame_id == root_frame_id {
+                root_engine.revision()
+            } else {
+                frames
+                    .parked
+                    .get(&frame_id)
+                    .map(|frame| frame.engine.revision())
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "native descendant frame disappeared during unload".into(),
+                    })?
+            };
+            let next_navigation = if frame_id == root_frame_id {
+                root_engine
+                    .dispatch_unload_for_navigation()
+                    .await
+                    .map_err(native_error)?
+            } else {
+                frames
+                    .parked
+                    .get_mut(&frame_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "native descendant frame disappeared during unload".into(),
+                    })?
+                    .engine
+                    .dispatch_unload_for_navigation()
+                    .await
+                    .map_err(native_error)?
+            };
+            let runtime = if frame_id == root_frame_id {
+                take_native_frame_runtime_effects(root_engine, previous_revision)?
+            } else {
+                let frame = frames.parked.get_mut(&frame_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native descendant frame disappeared after unload".into(),
+                    }
+                })?;
+                take_native_frame_runtime_effects(&mut frame.engine, previous_revision)?
+            };
+            effects.push(NativeFrameLifecycleEffects {
+                frame_id: frame_id.clone(),
+                runtime,
+            });
+            if let Some(next_navigation) = next_navigation {
+                if navigation.is_some() {
+                    return Err(native_error(NativeEngineError::TargetNotActionable {
+                        reason: "multiple outgoing lifecycle navigations are not supported".into(),
+                    }));
+                }
+                navigation = Some(next_navigation);
+            }
+        }
+    }
+
+    Ok(NativeFrameLifecycleResult {
+        allowed,
+        cancelled,
+        navigation,
+        effects,
+    })
+}
+
+async fn wait_for_native_frame_beforeunload(
+    engine: &NativeEngine,
+    cancellation: Option<&NativeNavigationCancellation>,
+) -> Result<bool, NativeEngineError> {
+    if let Some(cancellation) = cancellation {
+        tokio::select! {
+            result = engine.confirm_beforeunload_for_navigation() => result,
+            _ = cancellation.cancelled() => Err(NativeEngineError::NavigationCancelled),
+        }
+    } else {
+        engine.confirm_beforeunload_for_navigation().await
+    }
 }
 
 fn native_navigation_request_from_parts(
@@ -5808,6 +6709,15 @@ fn native_frame_viewport(
     }))
 }
 
+fn iframe_sandboxed_modals(inherited: bool, sandbox: Option<&str>) -> bool {
+    inherited
+        || sandbox.is_some_and(|tokens| {
+            !tokens
+                .split_ascii_whitespace()
+                .any(|token| token.eq_ignore_ascii_case("allow-modals"))
+        })
+}
+
 async fn reconcile_native_frames(
     frames: &mut NativeFrameState,
     engine: &NativeEngine,
@@ -5828,10 +6738,11 @@ async fn reconcile_native_frames(
     let mut created: BTreeMap<String, NativeParkedFrame> = BTreeMap::new();
     let mut pending_parents = VecDeque::from([active_frame_id.clone()]);
     while let Some(parent_id) = pending_parents.pop_front() {
-        let (sources, base_config) = if parent_id == active_frame_id {
+        let (sources, base_config, parent_sandboxed_modals) = if parent_id == active_frame_id {
             (
                 engine.embedded_frame_sources().map_err(native_error)?,
                 engine.config().clone(),
+                frames.active_sandboxed_modals,
             )
         } else {
             let parent =
@@ -5846,9 +6757,10 @@ async fn reconcile_native_frames(
                     .embedded_frame_sources()
                     .map_err(native_error)?,
                 parent.engine.config().clone(),
+                parent.sandboxed_modals,
             )
         };
-        for (node_index, source) in sources {
+        for (node_index, source, sandbox) in sources {
             if frames.frame_count().saturating_add(created.len()) >= NATIVE_MAX_FRAMES {
                 return Err(BrowserBackendError::SelectionFailed {
                     reason: format!("native frame limit reached ({NATIVE_MAX_FRAMES})"),
@@ -5877,6 +6789,8 @@ async fn reconcile_native_frames(
                 "about:blank".to_owned()
             };
             let frame_viewport = native_frame_viewport(parent_engine, node_index)?;
+            let sandboxed_modals =
+                iframe_sandboxed_modals(parent_sandboxed_modals, sandbox.as_deref());
             let (embedding_document_url, embedding_frame_sources) =
                 parent_engine.frame_navigation_policy();
             let child_config = base_config.clone().with_initial_url(frame_url);
@@ -5902,6 +6816,7 @@ async fn reconcile_native_frames(
                     engine: child,
                     parent_id: Some(parent_id.clone()),
                     owner_node_index: Some(node_index),
+                    sandboxed_modals,
                 },
             );
         }
@@ -6112,7 +7027,223 @@ fn operation_name(operation: BackendOperation) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{NativeBrowserEffectSource, next_ready_native_browser_effect_source};
+    use super::{
+        NativeBrowserEffectSource, NativeFrameState, NativeParkedFrame,
+        activate_parked_frame_for_navigation, dispatch_native_frame_tree_lifecycle,
+        iframe_sandboxed_modals, next_ready_native_browser_effect_source,
+    };
+    use crate::browser::native_engine::{
+        NativeDialogControlPlane, NativeEngine, NativeEngineConfig,
+    };
+
+    async fn lifecycle_test_engine(
+        config: NativeEngineConfig,
+        url: &str,
+        frame_id: &str,
+    ) -> NativeEngine {
+        let mut engine = NativeEngine::new_with_dialog_control(
+            config.with_initial_url(url),
+            NativeDialogControlPlane::default(),
+        )
+        .unwrap();
+        engine.set_frame_id(frame_id.to_owned());
+        engine.initialize_async().await.unwrap();
+        engine
+    }
+
+    #[test]
+    fn iframe_sandboxed_modals_uses_ascii_tokens_and_preserves_inheritance() {
+        assert!(!iframe_sandboxed_modals(false, None));
+        assert!(iframe_sandboxed_modals(false, Some("allow-scripts")));
+        assert!(!iframe_sandboxed_modals(
+            false,
+            Some("allow-scripts\tALLOW-MODALS")
+        ));
+        assert!(iframe_sandboxed_modals(true, Some("allow-modals")));
+    }
+
+    #[tokio::test]
+    async fn native_frame_tree_lifecycle_checks_preorder_and_unloads_postorder() {
+        let config = NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://lifecycle-tree.test/root",
+                "<script>globalThis.trace = []; addEventListener('beforeunload', event => { trace.push('before'); event.preventDefault(); event.returnValue = 'ignored'; }); addEventListener('pagehide', () => trace.push('pagehide')); addEventListener('unload', () => trace.push('unload'));</script><title>Root</title>",
+            )
+            .unwrap()
+            .with_fixture(
+                "fixture://lifecycle-tree.test/child",
+                "<script>globalThis.trace = []; addEventListener('beforeunload', event => { trace.push('before'); event.preventDefault(); event.returnValue = 'ignored'; }); addEventListener('pagehide', () => trace.push('pagehide')); addEventListener('unload', () => trace.push('unload'));</script><title>Child</title>",
+            )
+            .unwrap()
+            .with_fixture(
+                "fixture://lifecycle-tree.test/grandchild",
+                "<script>globalThis.trace = []; addEventListener('beforeunload', event => { trace.push('before'); event.preventDefault(); event.returnValue = 'ignored'; }); addEventListener('pagehide', () => trace.push('pagehide')); addEventListener('unload', () => trace.push('unload'));</script><title>Grandchild</title>",
+            )
+            .unwrap();
+        let root_id = "native-context:main";
+        let child_id = "native-context:frame-1";
+        let grandchild_id = "native-context:frame-2";
+        let mut root = lifecycle_test_engine(
+            config.clone(),
+            "fixture://lifecycle-tree.test/root",
+            root_id,
+        )
+        .await;
+        let child = lifecycle_test_engine(
+            config.clone(),
+            "fixture://lifecycle-tree.test/child",
+            child_id,
+        )
+        .await;
+        let grandchild = lifecycle_test_engine(
+            config,
+            "fixture://lifecycle-tree.test/grandchild",
+            grandchild_id,
+        )
+        .await;
+        let mut frames = NativeFrameState::new("native-context");
+        frames.parked.insert(
+            child_id.into(),
+            NativeParkedFrame {
+                engine: child,
+                parent_id: Some(root_id.into()),
+                owner_node_index: Some(1),
+                sandboxed_modals: false,
+            },
+        );
+        frames.parked.insert(
+            grandchild_id.into(),
+            NativeParkedFrame {
+                engine: grandchild,
+                parent_id: Some(child_id.into()),
+                owner_node_index: Some(2),
+                sandboxed_modals: false,
+            },
+        );
+
+        let result =
+            dispatch_native_frame_tree_lifecycle(&mut root, &mut frames, root_id, false, None)
+                .await
+                .unwrap();
+        assert!(result.allowed);
+        let observed = result
+            .effects
+            .iter()
+            .map(|frame_effects| frame_effects.frame_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed,
+            vec![
+                root_id,
+                child_id,
+                grandchild_id,
+                grandchild_id,
+                child_id,
+                root_id,
+            ]
+        );
+
+        assert_eq!(
+            root.evaluate_async("trace").await.unwrap(),
+            serde_json::json!(["before", "pagehide", "unload"])
+        );
+        assert_eq!(
+            frames
+                .parked
+                .get_mut(child_id)
+                .unwrap()
+                .engine
+                .evaluate_async("trace")
+                .await
+                .unwrap(),
+            serde_json::json!(["before", "pagehide", "unload"])
+        );
+        assert_eq!(
+            frames
+                .parked
+                .get_mut(grandchild_id)
+                .unwrap()
+                .engine
+                .evaluate_async("trace")
+                .await
+                .unwrap(),
+            serde_json::json!(["before", "pagehide", "unload"])
+        );
+
+        root.close_async().await.unwrap();
+        for (_, mut frame) in frames.parked {
+            frame.engine.close_async().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn native_frame_lifecycle_includes_the_selected_descendant_of_parked_ancestor() {
+        let config = NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://selected-descendant.test/root",
+                "<title>Root</title>",
+            )
+            .unwrap()
+            .with_fixture(
+                "fixture://selected-descendant.test/child",
+                "<script>globalThis.trace = []; addEventListener('beforeunload', event => { trace.push('before'); event.preventDefault(); event.returnValue = 'ignored'; }); addEventListener('pagehide', () => trace.push('pagehide')); addEventListener('unload', () => trace.push('unload'));</script><title>Child</title>",
+            )
+            .unwrap();
+        let root_id = "native-context:main";
+        let child_id = "native-context:frame-1";
+        let root = lifecycle_test_engine(
+            config.clone(),
+            "fixture://selected-descendant.test/root",
+            root_id,
+        )
+        .await;
+        let child =
+            lifecycle_test_engine(config, "fixture://selected-descendant.test/child", child_id)
+                .await;
+        let mut frames = NativeFrameState::new("native-context");
+        frames.parked.insert(
+            root_id.into(),
+            NativeParkedFrame {
+                engine: root,
+                parent_id: None,
+                owner_node_index: None,
+                sandboxed_modals: false,
+            },
+        );
+        frames.active_frame_id = child_id.into();
+        frames.active_parent_id = Some(root_id.into());
+        frames.active_owner_node_index = Some(1);
+        let mut active_engine = child;
+        activate_parked_frame_for_navigation(&mut frames, &mut active_engine, root_id).unwrap();
+
+        let root_sandboxed_modals = frames.active_sandboxed_modals;
+        let result = dispatch_native_frame_tree_lifecycle(
+            &mut active_engine,
+            &mut frames,
+            root_id,
+            root_sandboxed_modals,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(result.allowed);
+        assert_eq!(
+            frames
+                .parked
+                .get_mut(child_id)
+                .unwrap()
+                .engine
+                .evaluate_async("trace")
+                .await
+                .unwrap(),
+            serde_json::json!(["before", "pagehide", "unload"])
+        );
+        assert_eq!(frames.active_frame_id, root_id);
+        assert!(frames.parked.contains_key(child_id));
+        let mut parked_child = frames.parked.remove(child_id).unwrap();
+        parked_child.engine.close_async().await.unwrap();
+        active_engine.close_async().await.unwrap();
+    }
 
     #[test]
     fn native_browser_effect_sources_round_robin_without_starvation() {

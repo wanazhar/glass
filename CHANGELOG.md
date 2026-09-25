@@ -14,6 +14,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
   through standard Rust `BrowserSession` methods backed by the native topology
   registry; parent visible-text observations exclude HTML frame fallback text
   without rewriting fallback content in the DOM.
+- Exposed native back/forward history, revision-checked reload, and owner
+  recovery through standard Rust `BrowserSession` methods; stale guarded
+  controls fail without switching transports.
 - Added bounded bitmap-font glyph decoding for native text rendering. PNG,
   premultiplied BGRA32, monochrome, and grayscale strikes retain selected-face
   offsets and embedded alpha under finite raster budgets; unsupported or

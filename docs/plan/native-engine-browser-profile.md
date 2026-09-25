@@ -45,7 +45,14 @@ When the native backend is selected, it must:
    `list_frames()`, and `select_frame(id)`. These methods use the native
    registry directly and do not trigger backend probing or fallback. The
    parent visible-text projection excludes HTML `iframe`/`frame` fallback
-   content when representing the parent browsing context;
+   content when representing the parent browsing context. The canonical
+   session also exposes native history traversal (`go_back()` and
+   `go_forward()` with revision-checked counterparts), `reload_with_revision()`,
+   and owner recovery (`recover()` and `recover_with_revision()`). Guarded
+   calls reject stale observations; non-native sessions receive a typed
+   unsupported-operation error without switching transports. Native
+   stop-loading is not considered implemented until it can interrupt an
+   in-flight navigation rather than return the current no-op control result;
 4. return typed, versioned unsupported errors only for capabilities explicitly
    outside this profile; and
 5. run untrusted content behind the production process/sandbox boundary before

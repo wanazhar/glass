@@ -279,6 +279,77 @@ impl BrowserRuntimeSession {
         self.native_select_frame(frame_id).await
     }
 
+    /// Traverse to the previous entry in native session history.
+    #[cfg(feature = "native-engine")]
+    pub async fn go_back(&self) -> BrowserResult<NavigationControlOutcome> {
+        self.require_native_operation("go_back")?;
+        self.native_navigate_history(super::native_engine::NativeHistoryDirection::Back)
+            .await
+    }
+
+    /// Traverse backward only when the caller's observation is still current.
+    #[cfg(feature = "native-engine")]
+    pub async fn go_back_with_revision(
+        &self,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        self.require_native_operation("go_back_with_revision")?;
+        self.native_navigate_history_with_revision(
+            super::native_engine::NativeHistoryDirection::Back,
+            expected_revision,
+        )
+        .await
+    }
+
+    /// Traverse to the next entry in native session history.
+    #[cfg(feature = "native-engine")]
+    pub async fn go_forward(&self) -> BrowserResult<NavigationControlOutcome> {
+        self.require_native_operation("go_forward")?;
+        self.native_navigate_history(super::native_engine::NativeHistoryDirection::Forward)
+            .await
+    }
+
+    /// Traverse forward only when the caller's observation is still current.
+    #[cfg(feature = "native-engine")]
+    pub async fn go_forward_with_revision(
+        &self,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        self.require_native_operation("go_forward_with_revision")?;
+        self.native_navigate_history_with_revision(
+            super::native_engine::NativeHistoryDirection::Forward,
+            expected_revision,
+        )
+        .await
+    }
+
+    /// Reload the active native history entry only when its observation is current.
+    #[cfg(feature = "native-engine")]
+    pub async fn reload_with_revision(
+        &self,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        self.require_native_operation("reload_with_revision")?;
+        self.native_reload_with_revision(expected_revision).await
+    }
+
+    /// Rebuild the native document owner and reload the active URL.
+    #[cfg(feature = "native-engine")]
+    pub async fn recover(&self) -> BrowserResult<NavigationControlOutcome> {
+        self.require_native_operation("recover")?;
+        self.native_recover(None).await
+    }
+
+    /// Recover the native document only when the caller's observation is current.
+    #[cfg(feature = "native-engine")]
+    pub async fn recover_with_revision(
+        &self,
+        expected_revision: u64,
+    ) -> BrowserResult<NavigationControlOutcome> {
+        self.require_native_operation("recover_with_revision")?;
+        self.native_recover(Some(expected_revision)).await
+    }
+
     /// Return the native runtime's standard page-target projection.
     #[cfg(feature = "native-engine")]
     pub async fn native_list_targets(&self) -> BrowserResult<Vec<PageTargetInfo>> {
@@ -3207,5 +3278,54 @@ mod public_session_tests {
         assert_typed_unsupported!("close_target", session.close_target("target-1").await);
         assert_typed_unsupported!("list_frames", session.list_frames().await);
         assert_typed_unsupported!("select_frame", session.select_frame("frame-1").await);
+    }
+
+    #[tokio::test]
+    async fn standard_history_and_recovery_reject_non_native_backend_typed() {
+        let session = BrowserRuntimeSession {
+            runtime: BrowserRuntime::Firefox,
+            backend: BackendStartup::Proof(Box::new(
+                crate::browser::proof_backend::ProofBackend::new()
+                    .expect("proof backend should construct"),
+            )),
+            operation_lock: tokio::sync::Mutex::new(()),
+            next_execution_id: std::sync::atomic::AtomicU64::new(1),
+            native_observation_cache: tokio::sync::Mutex::new(None),
+            native_clipboard: tokio::sync::Mutex::new(String::new()),
+        };
+
+        macro_rules! assert_typed_unsupported {
+            ($operation:literal, $result:expr) => {{
+                let error = $result
+                    .expect_err("non-native sessions must not run native navigation controls");
+                assert!(matches!(
+                    error.downcast_ref::<BrowserBackendError>(),
+                    Some(BrowserBackendError::UnsupportedOperation {
+                        operation,
+                        reason
+                    }) if operation == $operation && reason.contains("firefox")
+                ));
+            }};
+        }
+
+        assert_typed_unsupported!("go_back", session.go_back().await);
+        assert_typed_unsupported!(
+            "go_back_with_revision",
+            session.go_back_with_revision(0).await
+        );
+        assert_typed_unsupported!("go_forward", session.go_forward().await);
+        assert_typed_unsupported!(
+            "go_forward_with_revision",
+            session.go_forward_with_revision(0).await
+        );
+        assert_typed_unsupported!(
+            "reload_with_revision",
+            session.reload_with_revision(0).await
+        );
+        assert_typed_unsupported!("recover", session.recover().await);
+        assert_typed_unsupported!(
+            "recover_with_revision",
+            session.recover_with_revision(0).await
+        );
     }
 }

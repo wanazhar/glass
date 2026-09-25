@@ -716,6 +716,23 @@ session returns a typed unsupported-operation error; it never switches to
 another transport. Existing `native_*` method spellings remain available for
 source compatibility.
 
+## Navigation history and recovery
+
+The canonical native `BrowserSession` exposes `go_back()` and `go_forward()`
+for direct traversal, plus `go_back_with_revision(revision)` and
+`go_forward_with_revision(revision)` for observation-guarded traversal.
+`reload_with_revision(revision)` reloads the selected entry only when the
+observation is current. `recover()` rebuilds the native document owner and
+reloads its current URL; `recover_with_revision(revision)` first rejects a
+stale observation. Each operation returns `NavigationControlOutcome` with its
+action and previous/current revisions. Firefox and Safari sessions return a
+typed unsupported-operation error rather than switching transports.
+
+The native `stop_loading_with_revision` implementation currently cannot
+interrupt an in-flight navigation and returns an unchanged-revision no-op; it
+is not documented as a completed standard `BrowserSession` control. Real
+navigation cancellation remains an issue #40 requirement.
+
 ## Evidence extraction and Web IR
 
 `ExtractionRequest` is strict and non-mutating. The caller selects sources and

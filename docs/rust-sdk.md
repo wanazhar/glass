@@ -704,6 +704,18 @@ page drift. Re-observe and resolve again. Unique resolution, actionable state,
 policy, and expected revision are preconditions; failure occurs before input
 when those preconditions cannot be proven.
 
+## Target and frame topology
+
+The canonical native `BrowserSession` lists page targets and the selected
+target's frames through `list_targets()` and `list_frames()`. `create_target()`
+opens a parked page without changing selection; use `select_target()` to route
+subsequent operations, and `close_target()` for explicit cleanup. Use
+`select_frame()` only with an ID returned by `list_frames()`. These methods
+operate on the native target/frame registry. A Firefox or Safari endpoint
+session returns a typed unsupported-operation error; it never switches to
+another transport. Existing `native_*` method spellings remain available for
+source compatibility.
+
 ## Evidence extraction and Web IR
 
 `ExtractionRequest` is strict and non-mutating. The caller selects sources and

@@ -40,7 +40,12 @@ When the native backend is selected, it must:
    the native Rust session exposes the versioned semantic surface through
    `observe()`, `semantic_observe(level)`, and revision-checked region
    expansion, rather than requiring callers to use a native-internal method
-   name;
+   name. It also exposes page and frame topology through `list_targets()`,
+   `create_target(url)`, `select_target(id)`, `close_target(id)`,
+   `list_frames()`, and `select_frame(id)`. These methods use the native
+   registry directly and do not trigger backend probing or fallback. The
+   parent visible-text projection excludes HTML `iframe`/`frame` fallback
+   content when representing the parent browsing context;
 4. return typed, versioned unsupported errors only for capabilities explicitly
    outside this profile; and
 5. run untrusted content behind the production process/sandbox boundary before

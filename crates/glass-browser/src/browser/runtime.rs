@@ -237,6 +237,48 @@ impl BrowserRuntimeSession {
             .await?)
     }
 
+    /// List page targets owned by the native browser session.
+    #[cfg(feature = "native-engine")]
+    pub async fn list_targets(&self) -> BrowserResult<Vec<PageTargetInfo>> {
+        self.require_native_operation("list_targets")?;
+        self.native_list_targets().await
+    }
+
+    /// Create a parked native page target without changing active selection.
+    #[cfg(feature = "native-engine")]
+    pub async fn create_target(&self, url: &str) -> BrowserResult<PageTargetInfo> {
+        self.require_native_operation("create_target")?;
+        self.native_create_target(url).await
+    }
+
+    /// Explicitly select one native page target for subsequent operations.
+    #[cfg(feature = "native-engine")]
+    pub async fn select_target(&self, target_id: &str) -> BrowserResult<PageTargetInfo> {
+        self.require_native_operation("select_target")?;
+        self.native_select_target(target_id).await
+    }
+
+    /// Close one native page target. Closing the active target clears selection.
+    #[cfg(feature = "native-engine")]
+    pub async fn close_target(&self, target_id: &str) -> BrowserResult<()> {
+        self.require_native_operation("close_target")?;
+        self.native_close_target(target_id).await
+    }
+
+    /// List frames in the currently selected native page target.
+    #[cfg(feature = "native-engine")]
+    pub async fn list_frames(&self) -> BrowserResult<Vec<FrameInfo>> {
+        self.require_native_operation("list_frames")?;
+        self.native_list_frames().await
+    }
+
+    /// Explicitly select one frame returned by [`Self::list_frames`].
+    #[cfg(feature = "native-engine")]
+    pub async fn select_frame(&self, frame_id: &str) -> BrowserResult<FrameInfo> {
+        self.require_native_operation("select_frame")?;
+        self.native_select_frame(frame_id).await
+    }
+
     /// Return the native runtime's standard page-target projection.
     #[cfg(feature = "native-engine")]
     pub async fn native_list_targets(&self) -> BrowserResult<Vec<PageTargetInfo>> {
@@ -847,7 +889,7 @@ impl BrowserRuntimeSession {
     /// or falls back to another browser runtime.
     #[cfg(feature = "native-engine")]
     pub async fn observe(&self) -> BrowserResult<super::session::SemanticObservation> {
-        self.require_native_observation("observe")?;
+        self.require_native_operation("observe")?;
         self.native_semantic_observe(super::session::SemanticObservationLevel::Structured)
             .await
     }
@@ -859,21 +901,21 @@ impl BrowserRuntimeSession {
         &self,
         level: super::session::SemanticObservationLevel,
     ) -> BrowserResult<super::session::SemanticObservation> {
-        self.require_native_observation("semantic_observe")?;
+        self.require_native_operation("semantic_observe")?;
         self.native_semantic_observe(level).await
     }
 
     /// Return the standard native inspection envelope for the active page.
     #[cfg(feature = "native-engine")]
     pub async fn inspect_page(&self) -> BrowserResult<InspectPageResult> {
-        self.require_native_observation("inspect_page")?;
+        self.require_native_operation("inspect_page")?;
         self.native_inspect_page().await
     }
 
     /// Return page-state bootstrap evidence without publishing action targets.
     #[cfg(feature = "native-engine")]
     pub async fn observe_bootstrap(&self) -> BrowserResult<BootstrapObservation> {
-        self.require_native_observation("observe_bootstrap")?;
+        self.require_native_operation("observe_bootstrap")?;
         self.native_observe_bootstrap().await
     }
 
@@ -885,20 +927,20 @@ impl BrowserRuntimeSession {
         expected_revision: u64,
         level: super::session::SemanticObservationLevel,
     ) -> BrowserResult<super::session::SemanticObservation> {
-        self.require_native_observation("semantic_expand_region")?;
+        self.require_native_operation("semantic_expand_region")?;
         self.native_semantic_expand_region(region_id, expected_revision, level)
             .await
     }
 
     #[cfg(feature = "native-engine")]
-    fn require_native_observation(&self, operation: &str) -> BrowserResult<()> {
+    fn require_native_operation(&self, operation: &str) -> BrowserResult<()> {
         if matches!(&self.backend, BackendStartup::Native(_)) {
             return Ok(());
         }
         Err(Box::new(BrowserBackendError::UnsupportedOperation {
             operation: operation.to_owned(),
             reason: format!(
-                "native semantic observation is unavailable for the {} runtime",
+                "native {operation} is unavailable for the {} runtime",
                 self.runtime.browser_family()
             ),
         }))
@@ -3129,5 +3171,41 @@ mod public_session_tests {
                 )
                 .await
         );
+    }
+
+    #[tokio::test]
+    async fn standard_topology_rejects_non_native_backend_typed() {
+        let session = BrowserRuntimeSession {
+            runtime: BrowserRuntime::Firefox,
+            backend: BackendStartup::Proof(Box::new(
+                crate::browser::proof_backend::ProofBackend::new()
+                    .expect("proof backend should construct"),
+            )),
+            operation_lock: tokio::sync::Mutex::new(()),
+            next_execution_id: std::sync::atomic::AtomicU64::new(1),
+            native_observation_cache: tokio::sync::Mutex::new(None),
+            native_clipboard: tokio::sync::Mutex::new(String::new()),
+        };
+
+        macro_rules! assert_typed_unsupported {
+            ($operation:literal, $result:expr) => {{
+                let error = $result
+                    .expect_err("non-native sessions must not access native topology");
+                assert!(matches!(
+                    error.downcast_ref::<BrowserBackendError>(),
+                    Some(BrowserBackendError::UnsupportedOperation {
+                        operation,
+                        reason
+                    }) if operation == $operation && reason.contains("firefox")
+                ));
+            }};
+        }
+
+        assert_typed_unsupported!("list_targets", session.list_targets().await);
+        assert_typed_unsupported!("create_target", session.create_target("about:blank").await);
+        assert_typed_unsupported!("select_target", session.select_target("target-1").await);
+        assert_typed_unsupported!("close_target", session.close_target("target-1").await);
+        assert_typed_unsupported!("list_frames", session.list_frames().await);
+        assert_typed_unsupported!("select_frame", session.select_frame("frame-1").await);
     }
 }

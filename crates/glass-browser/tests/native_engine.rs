@@ -11258,31 +11258,29 @@ async fn native_runtime_session_preserves_independent_target_state_and_lifecycle
     let second_url =
         "data:text/html,%3Ctitle%3ESecond%3C%2Ftitle%3E%3Cp%3Esecond%20target%3C%2Fp%3E";
     let third_url = "data:text/html,%3Ctitle%3EThird%3C%2Ftitle%3E%3Cp%3Ethird%20target%3C%2Fp%3E";
-    let session = BrowserRuntimeSession::connect_native(
-        NativeEngineConfig::default().with_initial_url(first_url),
-    )
-    .await
-    .unwrap();
+    let session = BrowserSession::start(NativeEngineConfig::default().with_initial_url(first_url))
+        .await
+        .unwrap();
 
-    let initial_targets = session.native_list_targets().await.unwrap();
+    let initial_targets = session.list_targets().await.unwrap();
     assert_eq!(initial_targets.len(), 1);
     assert_eq!(initial_targets[0].id, "native-context");
     assert!(initial_targets[0].active);
 
-    let second = session.native_create_target(second_url).await.unwrap();
+    let second = session.create_target(second_url).await.unwrap();
     assert_eq!(second.id, "native-target-1");
     assert!(!second.active);
     assert_eq!(second.opener_id.as_deref(), Some("native-context"));
     assert_eq!(second.title, "Second");
 
-    let targets = session.native_list_targets().await.unwrap();
+    let targets = session.list_targets().await.unwrap();
     assert_eq!(targets.len(), 2);
     assert_eq!(targets[0].id, "native-context");
     assert!(targets[0].active);
     assert_eq!(targets[1].id, "native-target-1");
     assert!(!targets[1].active);
 
-    let selected = session.native_select_target(&second.id).await.unwrap();
+    let selected = session.select_target(&second.id).await.unwrap();
     assert_eq!(selected.id, second.id);
     assert!(selected.active);
     assert_eq!(
@@ -11298,10 +11296,7 @@ async fn native_runtime_session_preserves_independent_target_state_and_lifecycle
         "Second"
     );
 
-    session
-        .native_select_target("native-context")
-        .await
-        .unwrap();
+    session.select_target("native-context").await.unwrap();
     assert_eq!(
         session
             .evidence(EvidenceLevel::Compact)
@@ -11311,20 +11306,20 @@ async fn native_runtime_session_preserves_independent_target_state_and_lifecycle
         "First"
     );
 
-    let third = session.native_create_target(third_url).await.unwrap();
-    session.native_close_target(&third.id).await.unwrap();
-    assert_eq!(session.native_list_targets().await.unwrap().len(), 2);
+    let third = session.create_target(third_url).await.unwrap();
+    session.close_target(&third.id).await.unwrap();
+    assert_eq!(session.list_targets().await.unwrap().len(), 2);
 
-    session.native_close_target(&second.id).await.unwrap();
-    let remaining = session.native_list_targets().await.unwrap();
+    session.close_target(&second.id).await.unwrap();
+    let remaining = session.list_targets().await.unwrap();
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].id, "native-context");
     assert!(remaining[0].active);
 
-    session.native_close_target("native-context").await.unwrap();
-    assert!(session.native_list_targets().await.unwrap().is_empty());
+    session.close_target("native-context").await.unwrap();
+    assert!(session.list_targets().await.unwrap().is_empty());
     assert!(session.contexts().await.is_err());
-    assert!(session.native_list_frames().await.is_err());
+    assert!(session.list_frames().await.is_err());
 
     session.close().await.unwrap();
 }
@@ -11333,12 +11328,17 @@ async fn native_runtime_session_preserves_independent_target_state_and_lifecycle
 async fn native_runtime_session_owns_and_routes_child_frames() {
     let parent_url = "data:text/html,%3Ctitle%3EParent%3C%2Ftitle%3E%3Ciframe%20src%3D%22about%3Ablank%22%3Efallback%3C%2Fiframe%3E%3Cp%3Eparent%3C%2Fp%3E";
     let child_url = "data:text/html,%3Ctitle%3EChild%3C%2Ftitle%3E%3Ciframe%20srcdoc%3D%22%3Cp%3Egrandchild%3C%2Fp%3E%22%3E%3C%2Fiframe%3E%3Cbutton%20id%3D%22child-button%22%3EChild%20button%3C%2Fbutton%3E%3Cp%3Echild%20content%3C%2Fp%3E";
-    let session = BrowserRuntimeSession::connect_native(
-        NativeEngineConfig::default().with_initial_url(parent_url),
-    )
-    .await
-    .unwrap();
+    let session = BrowserSession::start(NativeEngineConfig::default().with_initial_url(parent_url))
+        .await
+        .unwrap();
 
+    let frames = session.list_frames().await.unwrap();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0].id, "native-context:main");
+    assert!(frames[0].active);
+    assert_eq!(frames[1].id, "native-context:frame-1");
+    assert_eq!(frames[1].parent_id.as_deref(), Some("native-context:main"));
+    assert!(!frames[1].active);
     assert_eq!(
         session
             .evidence(EvidenceLevel::Compact)
@@ -11347,21 +11347,14 @@ async fn native_runtime_session_owns_and_routes_child_frames() {
             .visible_text,
         "parent"
     );
-    let frames = session.native_list_frames().await.unwrap();
-    assert_eq!(frames.len(), 2);
-    assert_eq!(frames[0].id, "native-context:main");
-    assert!(frames[0].active);
-    assert_eq!(frames[1].id, "native-context:frame-1");
-    assert_eq!(frames[1].parent_id.as_deref(), Some("native-context:main"));
-    assert!(!frames[1].active);
 
-    session.native_select_frame(&frames[1].id).await.unwrap();
+    session.select_frame(&frames[1].id).await.unwrap();
     session.navigate(child_url).await.unwrap();
     let child_evidence = session.evidence(EvidenceLevel::Compact).await.unwrap();
     assert_eq!(child_evidence.title, "Child");
     assert_eq!(child_evidence.visible_text, "Child button child content");
     assert_eq!(
-        session.native_inspect_page().await.unwrap().page.frame_id,
+        session.inspect_page().await.unwrap().page.frame_id,
         "native-context:frame-1"
     );
     assert_eq!(
@@ -11376,14 +11369,14 @@ async fn native_runtime_session_owns_and_routes_child_frames() {
         .unwrap();
     assert!(action.accepted);
     let child_viewport = session
-        .native_inspect_page()
+        .inspect_page()
         .await
         .unwrap()
         .limits
         .viewport
         .unwrap();
     assert!(child_viewport.scroll_y > 0.0);
-    let child_frames = session.native_list_frames().await.unwrap();
+    let child_frames = session.list_frames().await.unwrap();
     assert_eq!(child_frames.len(), 3);
     assert!(child_frames.iter().any(|frame| {
         frame.id == "native-context:frame-1" && frame.active && frame.url == child_url
@@ -11401,7 +11394,7 @@ async fn native_runtime_session_owns_and_routes_child_frames() {
     );
 
     session
-        .native_select_frame("native-context:frame-2")
+        .select_frame("native-context:frame-2")
         .await
         .unwrap();
     assert_eq!(
@@ -11409,7 +11402,7 @@ async fn native_runtime_session_owns_and_routes_child_frames() {
         "data:text/html,%3Cp%3Egrandchild%3C%2Fp%3E"
     );
     session
-        .native_select_frame("native-context:frame-1")
+        .select_frame("native-context:frame-1")
         .await
         .unwrap();
     assert_eq!(
@@ -11417,10 +11410,7 @@ async fn native_runtime_session_owns_and_routes_child_frames() {
         serde_json::json!("Child")
     );
 
-    session
-        .native_select_frame("native-context:main")
-        .await
-        .unwrap();
+    session.select_frame("native-context:main").await.unwrap();
     let parent_evidence = session.evidence(EvidenceLevel::Compact).await.unwrap();
     assert_eq!(parent_evidence.title, "Parent");
     assert_eq!(parent_evidence.visible_text, "parent");

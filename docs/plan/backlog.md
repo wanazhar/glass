@@ -159,6 +159,23 @@ inventory were not run. Issue #40 remains open; full operation parity and
 production certification are not claimed.
 See `tasks/native-engine-browser-729.md`.
 
+### Completed slice 730: canonical topology and iframe text projection
+
+The native-first `BrowserSession` exposed target/frame registry operations
+only through `native_*` method names. This slice adds standard
+`list_targets`, `create_target`, `select_target`, `close_target`,
+`list_frames`, and `select_frame` methods backed by the existing native
+registry, preserves the old spellings, and returns typed unsupported-operation
+errors for non-native sessions without switching transports. Its frame
+observation path also excludes iframe fallback text from the parent document's
+visible-text projection without mutating the fallback content in the DOM.
+The canonical target-lifecycle and nested-frame integration tests, six typed
+non-native rejection paths, and the focused DOM fallback regression passed.
+Live documentation coverage was skipped because `target/debug/glass` is
+absent. Remote CI and native-only platform certification were not run; full
+browser parity remains open.
+See `tasks/native-engine-browser-730.md`.
+
 ### Follow-up observed during slice 722
 
 `native_content_process_delivers_report_only_csp_report_uri_network_reports`

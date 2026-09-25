@@ -2,7 +2,7 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed browser expansion is `native-engine-browser-728`;
+The latest locally completed browser expansion is `native-engine-browser-729`;
 issue #40 remains open.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
@@ -144,6 +144,20 @@ live documentation inventory was not run because `target/debug/glass` is not
 present; remote CI was not run. Native operation parity and production
 certification remain issue #40 requirements.
 See `tasks/native-engine-browser-728.md`.
+
+### Completed slice 729: canonical native semantic observation API
+
+The canonical `BrowserSession` exposes structured and level-selected native
+semantic observation, page inspection/bootstrap, and revision-checked region
+expansion under standard Rust method names. The integration test starts via
+`BrowserSession`, obtains a revisioned button reference, clicks it through the
+guarded action API, and verifies stale region expansion fails. Five typed
+non-native rejection paths, the package-scoped all-target check, both focused
+integration tests, formatting, whitespace, release-truth, documentation-depth,
+and shortcut gates passed locally. Remote CI and live CLI documentation
+inventory were not run. Issue #40 remains open; full operation parity and
+production certification are not claimed.
+See `tasks/native-engine-browser-729.md`.
 
 ### Follow-up observed during slice 722
 

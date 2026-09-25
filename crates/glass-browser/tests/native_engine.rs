@@ -28,8 +28,8 @@ use glass_browser::browser_backend::{
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
 use glass_browser::{
-    EvidenceSource, ExtractionRequest, GlassTask, TaskAmbiguityPolicy, TaskKind, TaskLimits,
-    TaskRevisionPolicy, TaskRiskClass, TaskScope, WebIrAction, WebIrEntityKind,
+    BrowserSession, EvidenceSource, ExtractionRequest, GlassTask, TaskAmbiguityPolicy, TaskKind,
+    TaskLimits, TaskRevisionPolicy, TaskRiskClass, TaskScope, WebIrAction, WebIrEntityKind,
 };
 use sha2::{Digest, Sha256, Sha384};
 use std::borrow::Cow;
@@ -405,7 +405,7 @@ async fn native_runtime_session_uses_explicit_local_constructor() {
 
 #[tokio::test]
 async fn native_semantic_levels_and_region_expansion_are_revision_scoped() {
-    let session = BrowserRuntimeSession::connect_native(
+    let session = BrowserSession::start(
         NativeEngineConfig::default().with_initial_url(
             "data:text/html,%3Ctitle%3ESemantic%3C%2Ftitle%3E%3Cmain%3E%3Clabel%20for%3D%22email%22%3EEmail%3C%2Flabel%3E%3Cinput%20id%3D%22email%22%20type%3D%22email%22%3E%3Cbutton%3ESend%3C%2Fbutton%3E%3C%2Fmain%3E",
         ),
@@ -413,8 +413,15 @@ async fn native_semantic_levels_and_region_expansion_are_revision_scoped() {
     .await
     .unwrap();
 
+    let default_observation = session.observe().await.unwrap();
+    assert_eq!(
+        default_observation.level,
+        SemanticObservationLevel::Structured
+    );
+    assert!(default_observation.revision > 0);
+
     let summary = session
-        .native_semantic_observe(SemanticObservationLevel::Summary)
+        .semantic_observe(SemanticObservationLevel::Summary)
         .await
         .unwrap();
     assert_eq!(summary.level, SemanticObservationLevel::Summary);
@@ -427,18 +434,27 @@ async fn native_semantic_levels_and_region_expansion_are_revision_scoped() {
     );
 
     let interactive = session
-        .native_semantic_observe(SemanticObservationLevel::Interactive)
+        .semantic_observe(SemanticObservationLevel::Interactive)
         .await
         .unwrap();
     assert_eq!(interactive.level, SemanticObservationLevel::Interactive);
     assert!(interactive.text.is_none());
-    assert!(
-        interactive
-            .regions
-            .iter()
-            .flat_map(|region| region.targets.iter())
-            .any(|target| target.role == "button")
-    );
+    let button = interactive
+        .regions
+        .iter()
+        .flat_map(|region| region.targets.iter())
+        .find(|target| target.role == "button")
+        .expect("interactive observation should expose the button target");
+    let action = session
+        .action_with_revision(
+            SemanticAction::Click {
+                target: button.reference.clone(),
+            },
+            interactive.revision,
+        )
+        .await
+        .unwrap();
+    assert!(action.accepted);
 
     let detailed = session
         .native_semantic_observe(SemanticObservationLevel::Detailed)
@@ -456,7 +472,7 @@ async fn native_semantic_levels_and_region_expansion_are_revision_scoped() {
     assert!(raw.raw_accessibility.is_some());
 
     let expanded = session
-        .native_semantic_expand_region(
+        .semantic_expand_region(
             "region_main",
             detailed.revision,
             SemanticObservationLevel::Detailed,
@@ -468,7 +484,7 @@ async fn native_semantic_levels_and_region_expansion_are_revision_scoped() {
     assert_eq!(expanded.revision, detailed.revision);
 
     let stale = session
-        .native_semantic_expand_region(
+        .semantic_expand_region(
             "region_main",
             detailed.revision.saturating_add(1),
             SemanticObservationLevel::Detailed,
@@ -492,11 +508,15 @@ async fn native_runtime_exposes_shared_semantic_session_contracts() {
     .await
     .unwrap();
 
-    let bootstrap = session.native_observe_bootstrap().await.unwrap();
+    let bootstrap = session.observe_bootstrap().await.unwrap();
     assert!(bootstrap.ready);
     assert!(bootstrap.complete);
     assert_eq!(bootstrap.context_id, 0);
     assert_eq!(bootstrap.page.title, "Contracts");
+
+    let inspected = session.inspect_page().await.unwrap();
+    assert_eq!(inspected.page.title, "Contracts");
+    assert!(inspected.revision > 0);
 
     let observation = session
         .native_semantic_observe(SemanticObservationLevel::Structured)

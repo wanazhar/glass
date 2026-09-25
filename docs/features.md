@@ -22,7 +22,7 @@ source-behavior reference.
 | Install/update and browser launch/attach | `update`, global options, `doctor`, `install-chromium` | startup | session configuration | native `BrowserSession`; explicit `CdpBrowserSession` + `SessionOptions` for Chromium | [Installation](installation.md) |
 | Navigation and targets | `navigate`, `targets`, `new-target`, `select-target`, `close-target` | `navigate` | navigation and target tools | native `BrowserSession` navigation; `CdpBrowserSession` migration surface | [CLI](cli.md) |
 | Frames and topology | `frames`, `select-frame`, `verify` | current frame state | frame tools and predicates | session frame/topology APIs | [Actions](actions.md) |
-| Structured observation | `observe`, `inspect-page`, `observe-delta` | semantic page pane | `observe`, `inspectPage`, `observeDelta` | `observe`, `semantic_observe` | [Semantic observation](semantic-observation.md) |
+| Structured observation | `observe`, `inspect-page`, `observe-delta` | semantic page pane | `observe`, `inspectPage`, `observeDelta` | `BrowserSession::observe`, `semantic_observe`, `inspect_page`, `observe_bootstrap`, `semantic_expand_region` | [Semantic observation](semantic-observation.md) |
 | Deep/visual evidence | `dom`, `screenshot`, `pdf`, `diagnostics` | explicit screenshot/live view | `getDOM`, `screenshot`, `printToPdf`, `diagnostics` | observation, visual, diagnostic APIs | [Feature details](#observation-and-evidence) |
 | Pointer/keyboard/forms | click/type/key/form commands | common action commands | action tools | guarded session methods | [Actions](actions.md) |
 | Wait and verification | `wait`, `verify`, `act-and-verify`, `preflight` | verified activity state | corresponding tools | wait/predicate/action APIs | [Action contract](action-contract.md) |
@@ -540,11 +540,12 @@ named-layer rollback and mixed/unsupported forms remain bounded,
   bounded PNG capture, bounded local fragment navigation with bounded
   percent-decoded exact visible-id or legacy `<a name>` root scrolling and
   simple `#:~:text=start[,end]` matching against the first visible,
-  non-truncated text run plus exact same-run prefix/suffix affixes, per-entry Rust history scroll restoration, bounded local
-  anchor activation for fragment-only, fixture-relative, and absolute local
-  hrefs, and bounded revisioned Rust diagnostics for unsupported
-  CSS; these are not screenshot-containing evidence or stable transport
-  diagnostics.
+  non-truncated text run plus exact same-run prefix/suffix affixes, per-entry
+  Rust history scroll restoration, bounded
+  anchor activation for fragment-only, registered fixture-relative, and
+  validated external HTTP(S) hrefs, and bounded revisioned Rust diagnostics
+  for unsupported CSS; these are not screenshot-containing evidence or stable
+  transport diagnostics.
 - Attach mode connects to an existing CDP endpoint. It does not own Chrome,
   its profile, launch flags, or shutdown.
 - Incognito uses a disposable profile. Named profiles retain browser-managed

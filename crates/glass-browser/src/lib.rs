@@ -59,28 +59,41 @@
 //!
 //! # Structured observation and guarded action
 //!
-//! Compact observation is the default low-cost context. Semantic observation
-//! exposes typed page, region, target, record, route, and revision state:
+//! The native [`BrowserSession::observe`] method returns a bounded structured
+//! semantic observation; `semantic_observe` selects another declared level.
+//! Revisioned target references are executed through the standard action
+//! boundary:
 //!
 //! ```rust,no_run
 //! use glass_browser::browser::session::SemanticObservationLevel;
-//! use glass_browser::{CdpBrowserSession, SessionOptions};
+//! use glass_browser::browser_backend::SemanticAction;
+//! use glass_browser::BrowserSession;
 //!
 //! # async fn run() -> glass_browser::BrowserResult<()> {
-//! let session = CdpBrowserSession::start(&SessionOptions::builder().build()?).await?;
+//! let session = BrowserSession::start_default().await?;
+//! session
+//!     .navigate("data:text/html,%3Cmain%3E%3Cbutton%3ESave%3C%2Fbutton%3E%3C%2Fmain%3E")
+//!     .await?;
 //! let semantic = session
 //!     .semantic_observe(SemanticObservationLevel::Interactive)
 //!     .await?;
 //! println!("regions={}", semantic.regions.len());
 //!
-//! let current = session.observe().await?;
+//! let target = semantic
+//!     .regions
+//!     .iter()
+//!     .flat_map(|region| region.targets.iter())
+//!     .find(|target| target.role == "button")
+//!     .expect("the fixture contains one button");
 //! let outcome = session
-//!     .click_with_revision(
-//!         "role=button[name=Save]",
-//!         current.accessibility.revision,
+//!     .action_with_revision(
+//!         SemanticAction::Click {
+//!             target: target.reference.clone(),
+//!         },
+//!         semantic.revision,
 //!     )
 //!     .await?;
-//! println!("status={:?}", outcome.status);
+//! println!("accepted={}", outcome.accepted);
 //! session.close().await
 //! # }
 //! ```

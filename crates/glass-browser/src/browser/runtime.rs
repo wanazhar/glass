@@ -16,10 +16,10 @@ use super::native_engine::{
 #[cfg(feature = "native-engine")]
 use super::policy::BrowserPolicy;
 use crate::browser_backend::{
-    ActionRequest, ActionResult, BackendProfile, BrowserBackendDispatcher, BrowsingContext,
-    CaptureFormat, CaptureRequest, CaptureResult, ContextRequest, EffectsRequest, EffectsResult,
-    EvidenceLevel, EvidenceRequest, EvidenceResult, NavigationRequest, NavigationResult,
-    ScriptRequest, ScriptResult, SemanticAction, StorageRequest, StorageResult,
+    ActionRequest, ActionResult, BackendProfile, BrowserBackendDispatcher, BrowserBackendError,
+    BrowsingContext, CaptureFormat, CaptureRequest, CaptureResult, ContextRequest, EffectsRequest,
+    EffectsResult, EvidenceLevel, EvidenceRequest, EvidenceResult, NavigationRequest,
+    NavigationResult, ScriptRequest, ScriptResult, SemanticAction, StorageRequest, StorageResult,
 };
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -839,6 +839,69 @@ impl BrowserRuntimeSession {
     #[cfg(feature = "native-engine")]
     pub async fn native_observe(&self) -> BrowserResult<super::session::SemanticObservation> {
         self.native_semantic_observation().await
+    }
+
+    /// Return the canonical structured native semantic observation.
+    ///
+    /// This standard Rust API reads one native frame snapshot and never probes
+    /// or falls back to another browser runtime.
+    #[cfg(feature = "native-engine")]
+    pub async fn observe(&self) -> BrowserResult<super::session::SemanticObservation> {
+        self.require_native_observation("observe")?;
+        self.native_semantic_observe(super::session::SemanticObservationLevel::Structured)
+            .await
+    }
+
+    /// Return one native semantic observation at the requested bounded level.
+    /// Non-native runtime adapters return a typed unsupported-operation error.
+    #[cfg(feature = "native-engine")]
+    pub async fn semantic_observe(
+        &self,
+        level: super::session::SemanticObservationLevel,
+    ) -> BrowserResult<super::session::SemanticObservation> {
+        self.require_native_observation("semantic_observe")?;
+        self.native_semantic_observe(level).await
+    }
+
+    /// Return the standard native inspection envelope for the active page.
+    #[cfg(feature = "native-engine")]
+    pub async fn inspect_page(&self) -> BrowserResult<InspectPageResult> {
+        self.require_native_observation("inspect_page")?;
+        self.native_inspect_page().await
+    }
+
+    /// Return page-state bootstrap evidence without publishing action targets.
+    #[cfg(feature = "native-engine")]
+    pub async fn observe_bootstrap(&self) -> BrowserResult<BootstrapObservation> {
+        self.require_native_observation("observe_bootstrap")?;
+        self.native_observe_bootstrap().await
+    }
+
+    /// Expand one region only if the observation revision is still current.
+    #[cfg(feature = "native-engine")]
+    pub async fn semantic_expand_region(
+        &self,
+        region_id: &str,
+        expected_revision: u64,
+        level: super::session::SemanticObservationLevel,
+    ) -> BrowserResult<super::session::SemanticObservation> {
+        self.require_native_observation("semantic_expand_region")?;
+        self.native_semantic_expand_region(region_id, expected_revision, level)
+            .await
+    }
+
+    #[cfg(feature = "native-engine")]
+    fn require_native_observation(&self, operation: &str) -> BrowserResult<()> {
+        if matches!(&self.backend, BackendStartup::Native(_)) {
+            return Ok(());
+        }
+        Err(Box::new(BrowserBackendError::UnsupportedOperation {
+            operation: operation.to_owned(),
+            reason: format!(
+                "native semantic observation is unavailable for the {} runtime",
+                self.runtime.browser_family()
+            ),
+        }))
     }
 
     /// Return native page-state evidence through the same bootstrap contract
@@ -3002,7 +3065,8 @@ fn bounded_native_semantic_text(frames: &[NativeFrameInspectionSnapshot]) -> (St
 
 #[cfg(all(test, feature = "native-engine"))]
 mod public_session_tests {
-    use super::{BackendStartup, BrowserRuntime, BrowserSession};
+    use super::{BackendStartup, BrowserRuntime, BrowserRuntimeSession, BrowserSession};
+    use crate::browser_backend::BrowserBackendError;
 
     #[tokio::test]
     async fn canonical_browser_session_starts_native_without_cdp_fallback() {
@@ -3016,5 +3080,54 @@ mod public_session_tests {
             .close()
             .await
             .expect("native BrowserSession should close cleanly");
+    }
+
+    #[tokio::test]
+    async fn standard_semantic_observation_rejects_non_native_backend_typed() {
+        let session = BrowserRuntimeSession {
+            runtime: BrowserRuntime::Firefox,
+            backend: BackendStartup::Proof(Box::new(
+                crate::browser::proof_backend::ProofBackend::new()
+                    .expect("proof backend should construct"),
+            )),
+            operation_lock: tokio::sync::Mutex::new(()),
+            next_execution_id: std::sync::atomic::AtomicU64::new(1),
+            native_observation_cache: tokio::sync::Mutex::new(None),
+            native_clipboard: tokio::sync::Mutex::new(String::new()),
+        };
+
+        macro_rules! assert_typed_unsupported {
+            ($operation:literal, $result:expr) => {{
+                let error = $result
+                    .expect_err("non-native sessions must not run native semantic inspection");
+                assert!(matches!(
+                    error.downcast_ref::<BrowserBackendError>(),
+                    Some(BrowserBackendError::UnsupportedOperation {
+                        operation,
+                        reason
+                    }) if operation == $operation && reason.contains("firefox")
+                ));
+            }};
+        }
+
+        assert_typed_unsupported!("observe", session.observe().await);
+        assert_typed_unsupported!(
+            "semantic_observe",
+            session
+                .semantic_observe(super::super::session::SemanticObservationLevel::Structured)
+                .await
+        );
+        assert_typed_unsupported!("inspect_page", session.inspect_page().await);
+        assert_typed_unsupported!("observe_bootstrap", session.observe_bootstrap().await);
+        assert_typed_unsupported!(
+            "semantic_expand_region",
+            session
+                .semantic_expand_region(
+                    "region_main",
+                    0,
+                    super::super::session::SemanticObservationLevel::Structured,
+                )
+                .await
+        );
     }
 }

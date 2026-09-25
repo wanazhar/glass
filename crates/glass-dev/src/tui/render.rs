@@ -3,7 +3,7 @@ use super::editor::EditorMode;
 use super::file_view;
 use super::pi_commands;
 use super::state::{DevSurface, DevTuiState, ResponsiveClass, safe_browser_url};
-use glass_browser::browser::NATIVE_DIALOG_TEXT_LIMIT_BYTES;
+use glass_browser::browser::{NATIVE_BEFOREUNLOAD_MESSAGE, NATIVE_DIALOG_TEXT_LIMIT_BYTES};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -247,6 +247,7 @@ fn render_native_browser_dialog(frame: &mut Frame<'_>, state: &DevTuiState, area
         return;
     };
     let is_prompt = dialog.pending.dialog.dialog_type == "prompt";
+    let is_beforeunload = dialog.pending.dialog.dialog_type == "beforeunload";
     let compact = matches!(
         state.responsive_class(area.width, area.height),
         ResponsiveClass::Phone
@@ -255,6 +256,7 @@ fn render_native_browser_dialog(frame: &mut Frame<'_>, state: &DevTuiState, area
         "alert" => ("ALERT", WARNING),
         "confirm" => ("CONFIRM", ACCENT_BRIGHT),
         "prompt" => ("PROMPT", ACCENT_BRIGHT),
+        "beforeunload" => ("LEAVE PAGE?", WARNING),
         _ => ("DIALOG", WARNING),
     };
     let width = area.width.min(82);
@@ -265,8 +267,13 @@ fn render_native_browser_dialog(frame: &mut Frame<'_>, state: &DevTuiState, area
         width,
         height,
     };
+    let title = if is_beforeunload {
+        format!(" {kind} · page paused ")
+    } else {
+        format!(" JAVASCRIPT {kind} · page paused ")
+    };
     let block = Block::default()
-        .title(format!(" JAVASCRIPT {kind} · page paused "))
+        .title(title)
         .title_style(Style::default().fg(accent).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -297,9 +304,13 @@ fn render_native_browser_dialog(frame: &mut Frame<'_>, state: &DevTuiState, area
         .split(inner);
     let mut row = 0;
     frame.render_widget(
-        Paragraph::new(dialog.pending.dialog.message.as_str())
-            .style(Style::default().fg(TEXT))
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(if is_beforeunload {
+            NATIVE_BEFOREUNLOAD_MESSAGE
+        } else {
+            dialog.pending.dialog.message.as_str()
+        })
+        .style(Style::default().fg(TEXT))
+        .wrap(Wrap { trim: false }),
         rows[row],
     );
     row += 1;
@@ -367,6 +378,11 @@ fn render_native_browser_dialog(frame: &mut Frame<'_>, state: &DevTuiState, area
         ("prompt", false) => (
             "Enter submit · Esc dismiss",
             "Type to edit · ←/→ · Home/End · Ctrl-C quit",
+        ),
+        ("beforeunload", true) => ("Enter/Y leave · Esc/N stay", "Ctrl-C quit"),
+        ("beforeunload", false) => (
+            "Enter/Y leave · Esc/N stay",
+            "Ctrl-C opens quit confirmation",
         ),
         _ => (
             "Enter continue · Esc dismiss",
@@ -4387,6 +4403,19 @@ mod tests {
         assert!(output.contains("A▏da"));
         assert!(output.contains("stale dialog identity"));
         assert!(output.contains("UTF-8 bytes"));
+    }
+
+    #[test]
+    fn native_beforeunload_overlay_uses_browser_copy_not_page_text() {
+        let mut state = state(TuiLayout::Desktop);
+        install_native_dialog(&mut state, "beforeunload");
+
+        let output = rendered(&state, 120, 32);
+        assert!(output.contains("LEAVE PAGE?"));
+        assert!(output.contains(NATIVE_BEFOREUNLOAD_MESSAGE));
+        assert!(output.contains("Enter/Y leave"));
+        assert!(output.contains("Esc/N stay"));
+        assert!(!output.contains("Confirm the checkout details"));
     }
 
     #[test]

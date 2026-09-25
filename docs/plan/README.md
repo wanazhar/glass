@@ -68,7 +68,15 @@ its local Linux checks pass, while remote CI and cross-platform certification
 remain pending. Slice 740 extends dialog presentation to the persistent native
 owner; its process-backed Linux end-to-end flow and scoped crate check pass.
 Remote CI and cross-platform certification remain issue-level gates.
-`beforeunload` and other Core Web Profile parity remain open. See the
+Slice 741 adds sticky-activation-gated, user-visible top-level
+`beforeunload` confirmation through the native CLI, TUI, and MCP hosts. Its
+current extension gates cross-document asynchronous Back/Forward before the
+history target request, with local Linux evidence recorded in the task.
+Descendant-frame unload traversal, sandbox-modal propagation, direct
+synchronous engine-history lifecycle parity, remote CI, cross-platform
+certification, and other Core Web
+Profile parity remain open. See the
+[slice 741 task](tasks/native-engine-browser-741.md),
 [slice 740 task](tasks/native-engine-browser-740.md),
 [slice 739 task](tasks/native-engine-browser-739.md),
 [slice 738 task](tasks/native-engine-browser-738.md),
@@ -84,7 +92,14 @@ gates. Slice 740 completes persistent native MCP dialog presentation through
 out-of-band owner status/control, including bounded navigation-deadline pause,
 legacy-client dismissal, parent cancellation, and stdio-EOF recovery. Its
 local process-backed test passes; the newer multi-round-trip MCP protocol
-remains a separate gate.
+remains a separate gate. Slice 741 locally verifies top-level `beforeunload`
+confirmation and the cross-document async history gate. Dismissal preserves
+the outgoing document and avoids loading the target; acceptance continues the
+exact traversal without exposing page-controlled `returnValue` text.
+Descendant-frame unload traversal, sandbox-modal propagation, direct
+synchronous engine-history lifecycle parity, remote CI, and cross-platform
+certification remain separate issue gates. See the
+[slice 741 task](tasks/native-engine-browser-741.md).
 Slice 727 enforces rooted-file frame CSP. Slice 726 enforces rooted-file image,
 font, and media CSP.
 Slice 725 enforces runtime CSP meta policies before same-turn inline script
@@ -5074,15 +5089,17 @@ The completed bounded replacement-navigation lifecycle slice is
 replacement navigations now deliver window `pagehide` then `unload` before
 resource replacement and `pageshow` after the new page is published; local and
 child owners expose the same order through bounded effects and typed callback
-mutation. Cancelable `beforeunload`, bfcache/history-traversal parity, and full
-HTML navigation task ordering remain open.
+mutation. Top-level `beforeunload` confirmation is covered by slice 741;
+descendant-frame traversal, sandbox-modal propagation, bfcache/history-
+traversal parity, and full HTML navigation task ordering remain open.
 
 The completed bounded same-document navigation slice is
 [native-engine-browser-043](tasks/native-engine-browser-043.md). GET fragment
 changes retain the current document/realm, avoid a reload, update the URL owner,
 and dispatch window `hashchange` with `oldURL`/`newURL` in both local and child
-paths. `beforeunload`, `popstate`, bfcache/history lifecycle parity, and full
-HTML navigation task ordering remain open.
+paths. Top-level `beforeunload` confirmation is covered by slice 741;
+`popstate`, bfcache/history lifecycle parity, descendant-frame traversal,
+sandbox-modal propagation, and full HTML navigation task ordering remain open.
 
 The completed bounded external form-ownership slice is
 [native-engine-browser-044](tasks/native-engine-browser-044.md). Controls with
@@ -5104,12 +5121,15 @@ primitives remain open.
 
 The completed bounded navigation-cancellation/history-event slice is
 [native-engine-browser-046](tasks/native-engine-browser-046.md). Replacement
-navigations now dispatch cancelable window `beforeunload` before
-`pagehide`/`unload`, honor `preventDefault()` and non-empty `returnValue`, and
-avoid resource loading when canceled. Same-document history traversal now
+navigations dispatch cancelable window `beforeunload` before
+`pagehide`/`unload` and replacement-resource loading. Slice 741 adds sticky-
+activation-gated user confirmation when that event is canceled; dismissing the
+prompt leaves the page intact and avoids replacement loading. Same-document
+history traversal now
 dispatches window `popstate` before `hashchange` in local and child owners.
-Prompts, bfcache/session-history parity, cross-document traversal restoration,
-and full task-source semantics remain open.
+In-process JavaScript modal realms, descendant-frame beforeunload traversal,
+sandbox-modal propagation, bfcache/session-history parity, cross-document
+traversal restoration, and full task-source semantics remain open.
 
 The completed bounded due-time timer-turn slice is
 [native-engine-browser-047](tasks/native-engine-browser-047.md). Local and

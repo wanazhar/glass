@@ -57,8 +57,8 @@ pub use diagnostics::{
 };
 pub(crate) use dialog::NativeDialogControlPlane;
 pub use dialog::{
-    NATIVE_DIALOG_TEXT_LIMIT_BYTES, NativeDialogController, NativeDialogResolution,
-    NativePendingDialog,
+    NATIVE_BEFOREUNLOAD_MESSAGE, NATIVE_DIALOG_TEXT_LIMIT_BYTES, NativeDialogController,
+    NativeDialogResolution, NativePendingDialog,
 };
 pub use dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind, NativeSemanticNode};
 pub(crate) use engine::parse_point_target;

@@ -420,6 +420,7 @@ pub struct NativeEngine {
     effects: VecDeque<NativeEffect>,
     pending_lifecycle_effects: Vec<(NativeNodeId, NativeEventKind)>,
     skip_next_navigation_lifecycle: bool,
+    document_has_sticky_activation: bool,
 }
 
 impl Drop for NativeEngine {
@@ -538,6 +539,7 @@ impl NativeEngine {
             effects: VecDeque::new(),
             pending_lifecycle_effects: Vec::new(),
             skip_next_navigation_lifecycle: false,
+            document_has_sticky_activation: false,
         })
     }
 
@@ -2099,21 +2101,21 @@ impl NativeEngine {
     async fn dispatch_navigation_lifecycle_async(
         &mut self,
     ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
-        let mut navigation = None;
-        let allowed = if self
+        let (event_allowed, mut navigation) = if self
             .content_process
             .as_mut()
             .is_some_and(NativeContentProcess::refresh_health)
         {
-            let (allowed, next_navigation) = self.dispatch_content_before_unload_async().await?;
-            navigation = next_navigation;
-            allowed
+            self.dispatch_content_before_unload_async().await?
         } else if self.javascript.is_some() {
-            let (allowed, next_navigation) = self.dispatch_local_before_unload()?;
-            navigation = next_navigation;
-            allowed
+            self.dispatch_local_before_unload()?
         } else {
+            (true, None)
+        };
+        let allowed = if event_allowed || !self.document_has_sticky_activation {
             true
+        } else {
+            self.wait_for_beforeunload_confirmation_async().await?
         };
         if !allowed {
             return Ok((false, None));
@@ -2146,6 +2148,16 @@ impl NativeEngine {
         Ok((true, navigation))
     }
 
+    async fn wait_for_beforeunload_confirmation_async(&self) -> Result<bool, NativeEngineError> {
+        let pending = self
+            .dialog_control
+            .wait_for_beforeunload(&self.config.context_id, &self.frame_id, &self.url)
+            .await?;
+        let accepted = pending.resolution.accepted;
+        pending.finish();
+        Ok(accepted)
+    }
+
     async fn dispatch_content_before_unload_async(
         &mut self,
     ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
@@ -2167,7 +2179,7 @@ impl NativeEngine {
         let next_revision = self.next_revision()?;
         self.apply_content_process_mutation_async_at(next_revision, mutation)
             .await?;
-        Ok((allowed, navigation.filter(|_| allowed)))
+        Ok((allowed, navigation))
     }
 
     async fn dispatch_content_events_async(
@@ -3827,6 +3839,7 @@ impl NativeEngine {
             NativeAction::Click { target } => {
                 let id = self.resolve_click_target(&target)?;
                 self.require_layout_actionable(id)?;
+                self.document_has_sticky_activation = true;
                 if let Some(href) = self.document.link_href(id).map(str::to_owned)
                     && !href.is_empty()
                 {
@@ -3865,6 +3878,7 @@ impl NativeEngine {
                 let destination_id = self.document.resolve_target(&destination)?;
                 self.require_layout_actionable(source_id)?;
                 self.require_layout_actionable(destination_id)?;
+                self.document_has_sticky_activation = true;
                 if self.javascript.is_some() {
                     return self.action_local_form_with_event_transaction(
                         |document| document.apply_drag(source_id, destination_id),
@@ -3875,6 +3889,7 @@ impl NativeEngine {
             }
             NativeAction::Upload { target, files } => {
                 let id = self.document.resolve_target(&target)?;
+                self.document_has_sticky_activation = true;
                 if self.javascript.is_some() {
                     return self.action_local_form_with_event_transaction(
                         |document| document.apply_upload(id, &files),
@@ -3890,6 +3905,7 @@ impl NativeEngine {
                     self.document.resolve_target(&target)?
                 };
                 self.require_layout_actionable(id)?;
+                self.document_has_sticky_activation = true;
                 if self.javascript.is_some() {
                     return self.action_local_type_with_event_transaction(id, &text);
                 }
@@ -3915,6 +3931,7 @@ impl NativeEngine {
             NativeAction::Select { target, value } => {
                 let id = self.document.resolve_target(&target)?;
                 self.require_layout_actionable(id)?;
+                self.document_has_sticky_activation = true;
                 if self.javascript.is_some() {
                     return self.action_local_form_with_event_transaction(
                         |document| document.apply_select(id, &value),
@@ -3924,6 +3941,8 @@ impl NativeEngine {
                 (self.document.apply_select(id, &value)?, true)
             }
             NativeAction::KeyDown { key } => {
+                validate_native_key(&key)?;
+                self.document_has_sticky_activation = true;
                 let id = self.document.focused_node();
                 return self.action_local_key_event(id, &key, NativeEventKind::KeyDown, 0);
             }
@@ -3933,12 +3952,14 @@ impl NativeEngine {
             }
             NativeAction::Shortcut { shortcut } => {
                 let (modifiers, key) = parse_native_shortcut(&shortcut)?;
+                self.document_has_sticky_activation = true;
                 let id = self.document.focused_node();
                 return self.action_local_key_sequence(id, &key, modifiers, true);
             }
             NativeAction::KeyPress { key } => {
                 validate_native_edit_key(&key)?;
                 let id = self.document.focused_text_control()?;
+                self.document_has_sticky_activation = true;
                 return self.action_local_key_sequence(id, &key, 0, true);
             }
             NativeAction::Scroll { delta_x, delta_y } => {
@@ -4048,6 +4069,7 @@ impl NativeEngine {
                 }
                 let mut preview = self.document.clone();
                 preview.apply_click(id)?;
+                self.document_has_sticky_activation = true;
                 let mutation = {
                     let process =
                         self.content_process
@@ -4158,6 +4180,7 @@ impl NativeEngine {
                 self.require_layout_actionable(destination_id)?;
                 let preview = self.document.clone();
                 preview.apply_drag(source_id, destination_id)?;
+                self.document_has_sticky_activation = true;
                 let mutation = {
                     let process =
                         self.content_process
@@ -4182,6 +4205,7 @@ impl NativeEngine {
                 let id = self.document.resolve_target(&target)?;
                 let mut preview = self.document.clone();
                 preview.apply_upload(id, &files)?;
+                self.document_has_sticky_activation = true;
                 let mutation = {
                     let process =
                         self.content_process
@@ -4211,6 +4235,7 @@ impl NativeEngine {
                 self.require_layout_actionable(id)?;
                 let mut preview = self.document.clone();
                 preview.apply_type(id, &text)?;
+                self.document_has_sticky_activation = true;
                 let mutation = {
                     let process =
                         self.content_process
@@ -4256,6 +4281,7 @@ impl NativeEngine {
                 self.require_layout_actionable(id)?;
                 let mut preview = self.document.clone();
                 preview.apply_select(id, &value)?;
+                self.document_has_sticky_activation = true;
                 let mutation = {
                     let process =
                         self.content_process
@@ -4277,6 +4303,8 @@ impl NativeEngine {
                     .await
             }
             NativeAction::KeyDown { key } => {
+                validate_native_key(&key)?;
+                self.document_has_sticky_activation = true;
                 let node_index = self.document.focused_node().index();
                 let mutation = {
                     let process =
@@ -4324,6 +4352,7 @@ impl NativeEngine {
             }
             NativeAction::Shortcut { shortcut } => {
                 let (modifiers, key) = parse_native_shortcut(&shortcut)?;
+                self.document_has_sticky_activation = true;
                 let node_index = self.document.focused_node().index();
                 let default_allowed = should_apply_native_key_default(&key, modifiers);
                 let apply_default = default_allowed
@@ -4358,6 +4387,7 @@ impl NativeEngine {
                 let id = self.document.focused_text_control()?;
                 let mut preview = self.document.clone();
                 preview.apply_key_press(id, &key)?;
+                self.document_has_sticky_activation = true;
                 let mutation = {
                     let process =
                         self.content_process
@@ -5944,7 +5974,7 @@ impl NativeEngine {
         effects.push((window, NativeEventKind::BeforeUnload));
         if evaluation.commands.is_empty() {
             self.record_effects(effects);
-            return Ok((allowed, navigation.filter(|_| allowed)));
+            return Ok((allowed, navigation));
         }
         let next_revision = self.next_revision()?;
         document.set_revision(next_revision);
@@ -5965,7 +5995,7 @@ impl NativeEngine {
             }
             self.traverse_history_delta(delta)?;
         }
-        Ok((allowed, navigation.filter(|_| allowed)))
+        Ok((allowed, navigation))
     }
 
     fn dispatch_local_page_show(
@@ -7035,6 +7065,7 @@ impl NativeEngine {
             let _events = self.document.apply_click(id)?;
         }
         self.document = prepared.document;
+        self.document_has_sticky_activation = false;
         self.javascript = None;
         self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;
@@ -7427,8 +7458,11 @@ impl NativeEngine {
         let mut initial_scroll_commands = std::mem::take(&mut prepared.initial_scroll_commands);
         if !skip_lifecycle && self.javascript.is_some() {
             let (allowed, before_navigation) = self.dispatch_local_before_unload()?;
-            if !allowed {
-                return Ok(None);
+            if !allowed && self.document_has_sticky_activation {
+                return Err(NativeEngineError::invalid(
+                    "native beforeunload prompt",
+                    "synchronous navigation cannot wait for a user decision; use an async native session with a responsive dialog controller",
+                ));
             }
             let lifecycle_navigation = self.dispatch_local_navigation_lifecycle()?;
             if before_navigation.is_some() && lifecycle_navigation.is_some() {
@@ -7536,6 +7570,7 @@ impl NativeEngine {
         self.run_commit_task(NativeTask::CommitNavigation, "navigation")?;
         let revision = prepared.document.revision();
         self.document = prepared.document;
+        self.document_has_sticky_activation = false;
         self.workers.clear();
         self.pending_message_port_messages.clear();
         self.pending_page_message_port_commands.clear();
@@ -7718,6 +7753,7 @@ impl NativeEngine {
             .await?;
         let revision = prepared.document.revision();
         self.document = prepared.document;
+        self.document_has_sticky_activation = false;
         self.workers.clear();
         self.pending_message_port_messages.clear();
         self.pending_page_message_port_commands.clear();
@@ -8061,6 +8097,7 @@ impl NativeEngine {
         self.run_commit_task(NativeTask::TraverseHistory, "history traversal")?;
         let revision = prepared.document.revision();
         self.document = prepared.document;
+        self.document_has_sticky_activation = false;
         self.javascript = None;
         self.nested_scroll_offsets = nested_scroll_offsets;
         self.url = prepared.resource.url;
@@ -8111,6 +8148,7 @@ impl NativeEngine {
             .await?;
         let revision = prepared.document.revision();
         self.document = prepared.document;
+        self.document_has_sticky_activation = false;
         self.javascript = None;
         self.nested_scroll_offsets = nested_scroll_offsets;
         self.url = prepared.resource.url;
@@ -8222,6 +8260,13 @@ impl NativeEngine {
             })?
             .url
             .clone();
+        let target_document_id = self
+            .history
+            .entry(history_index)
+            .map(|entry| entry.document_id)
+            .ok_or_else(|| NativeEngineError::Scheduler {
+                reason: "history target is no longer available".into(),
+            })?;
         let same_document_target = self.history.is_same_document(history_index)
             || self.is_same_document_navigation(&target_url);
         let allowed = self
@@ -8252,6 +8297,25 @@ impl NativeEngine {
 
         let history_commit = HistoryCommit::Activate(history_index);
         if !self.allows_frame_navigation(&target_url)? {
+            return Ok(Some(self.snapshot_unchecked()));
+        }
+        let current_history_index = self.history.current_index();
+        let (lifecycle_allowed, lifecycle_navigation) =
+            self.dispatch_navigation_lifecycle_async().await?;
+        if !lifecycle_allowed {
+            return Ok(Some(self.snapshot_unchecked()));
+        }
+        if let Some(navigation) = lifecycle_navigation {
+            return self
+                .navigate_request_async_with_lifecycle(navigation, 0, false, None)
+                .await
+                .map(Some);
+        }
+        if self.history.current_index() != current_history_index
+            || self.history.entry(history_index).is_none_or(|entry| {
+                entry.document_id != target_document_id || entry.url != target_url
+            })
+        {
             return Ok(Some(self.snapshot_unchecked()));
         }
         if is_network_url(&target_url) {
@@ -9820,6 +9884,7 @@ pub(crate) fn parse_point_target(target: &str) -> Result<Option<(i64, i64)>, Nat
 
 #[cfg(test)]
 mod tests {
+    use super::super::dialog::{NativeDialogController, NativeDialogResolution};
     use super::*;
 
     fn initialized_engine() -> NativeEngine {
@@ -9840,6 +9905,238 @@ mod tests {
         let mut engine = NativeEngine::new(config).expect("native engine must construct");
         engine.initialize().expect("native engine must initialize");
         engine
+    }
+
+    #[tokio::test]
+    async fn beforeunload_prompt_holds_navigation_until_exact_user_decision() {
+        let config = NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://beforeunload-modal-start",
+                "<script>globalThis.lifecycle = []; addEventListener('beforeunload', event => { lifecycle.push(event.type); event.preventDefault(); event.returnValue = 'must not be shown'; globalThis.beforeunloadMutation = 'seen'; }); addEventListener('pagehide', () => lifecycle.push('pagehide')); addEventListener('unload', () => lifecycle.push('unload'));</script><button id='activate'>Activate</button><title>Start</title>",
+            )
+            .unwrap()
+            .with_fixture(
+                "fixture://beforeunload-modal-next",
+                "<title>Next</title>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://beforeunload-modal-start");
+        let control = NativeDialogControlPlane::for_modal_owner();
+        let controller = NativeDialogController::new(control.clone()).unwrap();
+        let mut engine = NativeEngine::new_with_dialog_control(config, control).unwrap();
+        engine.initialize_async().await.unwrap();
+        engine
+            .action_async(NativeAction::Click {
+                target: "id=activate".into(),
+            })
+            .await
+            .unwrap();
+
+        let mut navigation = Box::pin(engine.navigate_async("fixture://beforeunload-modal-next"));
+        let first_pending = loop {
+            if let Some(pending) = controller.pending_dialog().unwrap() {
+                break pending;
+            }
+            tokio::select! {
+                result = &mut navigation => panic!("navigation completed before its prompt: {}", result.is_ok()),
+                () = tokio::time::sleep(Duration::from_millis(1)) => {}
+            }
+        };
+        assert_eq!(first_pending.dialog.dialog_type, "beforeunload");
+        assert!(first_pending.dialog.message.is_empty());
+        assert!(first_pending.dialog.default_value.is_none());
+        assert!(
+            controller
+                .resolve_dialog(
+                    "stale-beforeunload-id",
+                    NativeDialogResolution {
+                        accepted: true,
+                        prompt_value: None,
+                    },
+                )
+                .is_err()
+        );
+        controller
+            .resolve_dialog(
+                &first_pending.id,
+                NativeDialogResolution {
+                    accepted: false,
+                    prompt_value: None,
+                },
+            )
+            .unwrap();
+        let snapshot = navigation.await.unwrap();
+        assert_eq!(snapshot.url, "fixture://beforeunload-modal-start");
+        assert_eq!(snapshot.title, "Start");
+        assert_eq!(
+            engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
+            serde_json::json!(["beforeunload"])
+        );
+        assert_eq!(
+            engine
+                .evaluate_async("globalThis.beforeunloadMutation")
+                .await
+                .unwrap(),
+            serde_json::json!("seen")
+        );
+
+        let mut navigation = Box::pin(engine.navigate_async("fixture://beforeunload-modal-next"));
+        let second_pending = loop {
+            if let Some(pending) = controller.pending_dialog().unwrap() {
+                break pending;
+            }
+            tokio::select! {
+                result = &mut navigation => panic!("navigation completed before its prompt: {}", result.is_ok()),
+                () = tokio::time::sleep(Duration::from_millis(1)) => {}
+            }
+        };
+        assert_ne!(first_pending.id, second_pending.id);
+        controller
+            .resolve_dialog(
+                &second_pending.id,
+                NativeDialogResolution {
+                    accepted: true,
+                    prompt_value: None,
+                },
+            )
+            .unwrap();
+        let snapshot = navigation.await.unwrap();
+        assert_eq!(snapshot.url, "fixture://beforeunload-modal-next");
+        assert_eq!(snapshot.title, "Next");
+        assert!(controller.pending_dialog().unwrap().is_none());
+        engine.close_async().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_history_beforeunload_waits_for_exact_confirmation() {
+        let config = NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://beforeunload-history-first",
+                "<title>First</title><p>First history document</p>",
+            )
+            .unwrap()
+            .with_fixture(
+                "fixture://beforeunload-history-second",
+                "<script>addEventListener('beforeunload', event => { event.preventDefault(); event.returnValue = 'not shown'; globalThis.beforeunloadRan = 'yes'; }); addEventListener('pagehide', () => globalThis.pagehideRan = 'yes'); addEventListener('unload', () => globalThis.unloadRan = 'yes');</script><title>Second</title><button id='activate'>Activate</button>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://beforeunload-history-first");
+        let control = NativeDialogControlPlane::for_modal_owner();
+        let controller = NativeDialogController::new(control.clone()).unwrap();
+        let mut engine = NativeEngine::new_with_dialog_control(config, control).unwrap();
+        engine.initialize_async().await.unwrap();
+        engine
+            .navigate_async("fixture://beforeunload-history-second")
+            .await
+            .unwrap();
+        engine
+            .action_async(NativeAction::Click {
+                target: "id=activate".into(),
+            })
+            .await
+            .unwrap();
+
+        let mut back = Box::pin(engine.go_back_async());
+        let first_pending = loop {
+            if let Some(pending) = controller.pending_dialog().unwrap() {
+                break pending;
+            }
+            tokio::select! {
+                result = &mut back => panic!("history traversal completed before confirmation: {}", result.is_ok()),
+                () = tokio::time::sleep(Duration::from_millis(1)) => {}
+            }
+        };
+        assert_eq!(first_pending.dialog.dialog_type, "beforeunload");
+        assert_eq!(
+            first_pending.dialog.url,
+            "fixture://beforeunload-history-second"
+        );
+        controller
+            .resolve_dialog(
+                &first_pending.id,
+                NativeDialogResolution {
+                    accepted: false,
+                    prompt_value: None,
+                },
+            )
+            .unwrap();
+        let dismissed = back.await.unwrap().unwrap();
+        assert_eq!(dismissed.url, "fixture://beforeunload-history-second");
+        assert_eq!(
+            engine
+                .evaluate_async("[globalThis.beforeunloadRan || null, globalThis.pagehideRan || null, globalThis.unloadRan || null]")
+                .await
+                .unwrap(),
+            serde_json::json!(["yes", null, null])
+        );
+
+        let mut back = Box::pin(engine.go_back_async());
+        let second_pending = loop {
+            if let Some(pending) = controller.pending_dialog().unwrap() {
+                break pending;
+            }
+            tokio::select! {
+                result = &mut back => panic!("retry history traversal completed before confirmation: {}", result.is_ok()),
+                () = tokio::time::sleep(Duration::from_millis(1)) => {}
+            }
+        };
+        assert_ne!(first_pending.id, second_pending.id);
+        controller
+            .resolve_dialog(
+                &second_pending.id,
+                NativeDialogResolution {
+                    accepted: true,
+                    prompt_value: None,
+                },
+            )
+            .unwrap();
+        let accepted = back.await.unwrap().unwrap();
+        assert_eq!(accepted.url, "fixture://beforeunload-history-first");
+        engine.close_async().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn synchronous_navigation_fails_closed_when_beforeunload_needs_confirmation() {
+        let config = NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://beforeunload-sync-start",
+                "<script>addEventListener('beforeunload', event => { event.preventDefault(); globalThis.beforeunloadMutation = 'seen'; }); addEventListener('pagehide', () => globalThis.pagehideMutation = 'yes'); addEventListener('unload', () => globalThis.unloadMutation = 'yes');</script><button id='activate'>Activate</button><title>Start</title>",
+            )
+            .unwrap()
+            .with_fixture(
+                "fixture://beforeunload-sync-next",
+                "<title>Next</title>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://beforeunload-sync-start");
+        let mut engine = NativeEngine::new(config).unwrap();
+        engine.initialize().unwrap();
+        engine
+            .action(NativeAction::Click {
+                target: "id=activate".into(),
+            })
+            .unwrap();
+
+        let error = engine
+            .navigate("fixture://beforeunload-sync-next")
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("synchronous navigation cannot wait")
+        );
+        assert_eq!(
+            engine.snapshot().unwrap().url,
+            "fixture://beforeunload-sync-start"
+        );
+        assert_eq!(
+            engine
+                .evaluate_async("[globalThis.beforeunloadMutation || null, globalThis.pagehideMutation || null, globalThis.unloadMutation || null]")
+                .await
+                .unwrap(),
+            serde_json::json!(["seen", null, null])
+        );
+        engine.close_async().await.unwrap();
     }
 
     #[test]

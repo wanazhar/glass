@@ -10,7 +10,12 @@ use tokio::sync::oneshot;
 /// Maximum UTF-8 byte length accepted for native JavaScript dialog text.
 pub const NATIVE_DIALOG_TEXT_LIMIT_BYTES: usize = MAX_NATIVE_DIALOG_TEXT_BYTES;
 
-/// A process-backed modal JavaScript dialog awaiting a host decision.
+/// Generic, browser-controlled copy for native `beforeunload` confirmation.
+/// Page-provided `BeforeUnloadEvent.returnValue` text is never displayed.
+pub const NATIVE_BEFOREUNLOAD_MESSAGE: &str =
+    "This page may have unsaved changes. Do you want to leave?";
+
+/// A process-backed modal JavaScript dialog or browser prompt awaiting a host decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativePendingDialog {
@@ -24,7 +29,7 @@ pub struct NativePendingDialog {
     pub dialog: PendingDialog,
 }
 
-/// The selected host response for a native JavaScript dialog.
+/// The selected host response for a native page dialog or browser prompt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeDialogResolution {
@@ -49,7 +54,7 @@ impl NativeDialogWait {
 
 struct ActiveDialog {
     pending: NativePendingDialog,
-    child_dialog_id: u64,
+    child_dialog_id: Option<u64>,
     response: Option<oneshot::Sender<NativeDialogResolution>>,
 }
 
@@ -157,15 +162,54 @@ impl NativeDialogControlPlane {
         dialog: NativeDialog,
     ) -> Result<NativeDialogWait, NativeEngineError> {
         validate_dialog(&dialog)?;
-        validate_context_id(context_id)?;
-        validate_context_id(frame_id)?;
-        validate_url_text("native dialog URL", url)?;
         if child_dialog_id == 0 {
             return Err(NativeEngineError::invalid(
                 "native dialog ID",
                 "child identifier must be positive",
             ));
         }
+        self.wait_for_dialog(context_id, frame_id, url, Some(child_dialog_id), dialog)
+            .await
+    }
+
+    pub(crate) async fn wait_for_beforeunload(
+        &self,
+        context_id: &str,
+        frame_id: &str,
+        url: &str,
+    ) -> Result<NativeDialogWait, NativeEngineError> {
+        if !self.modal_dialogs_enabled() {
+            return Err(NativeEngineError::invalid(
+                "native beforeunload prompt",
+                "requires a responsive native dialog controller",
+            ));
+        }
+        self.wait_for_dialog(
+            context_id,
+            frame_id,
+            url,
+            None,
+            NativeDialog {
+                dialog_type: "beforeunload".into(),
+                message: String::new(),
+                default_value: None,
+            },
+        )
+        .await
+    }
+
+    async fn wait_for_dialog(
+        &self,
+        context_id: &str,
+        frame_id: &str,
+        url: &str,
+        child_dialog_id: Option<u64>,
+        dialog: NativeDialog,
+    ) -> Result<NativeDialogWait, NativeEngineError> {
+        validate_dialog(&dialog)?;
+        validate_context_id(context_id)?;
+        validate_context_id(frame_id)?;
+        validate_url_text("native dialog URL", url)?;
         let id = self
             .0
             .next_id
@@ -223,7 +267,7 @@ impl NativeDialogControlPlane {
         id: &str,
         accepted: bool,
         prompt_value: Option<String>,
-    ) -> Result<u64, NativeEngineError> {
+    ) -> Result<Option<u64>, NativeEngineError> {
         let mut state = self.0.state.lock().map_err(|_| NativeEngineError::Worker {
             operation: "resolve native dialog".into(),
             reason: "native dialog control state is unavailable".into(),
@@ -248,8 +292,8 @@ impl NativeDialogControlPlane {
         }
         let dialog_type = active.pending.dialog.dialog_type.as_str();
         let prompt_value = match (dialog_type, accepted, prompt_value) {
-            ("alert" | "confirm", _, None) => None,
-            ("alert" | "confirm", _, Some(_)) => {
+            ("alert" | "confirm" | "beforeunload", _, None) => None,
+            ("alert" | "confirm" | "beforeunload", _, Some(_)) => {
                 return Err(NativeEngineError::invalid(
                     "native prompt response",
                     "only prompt dialogs accept response text",
@@ -270,7 +314,7 @@ impl NativeDialogControlPlane {
             (_, _, _) => {
                 return Err(NativeEngineError::invalid(
                     "native dialog type",
-                    "must be alert, confirm, or prompt",
+                    "must be alert, confirm, prompt, or beforeunload",
                 ));
             }
         };
@@ -331,10 +375,21 @@ impl Drop for PendingDialogCleanup {
 }
 
 fn validate_dialog(dialog: &NativeDialog) -> Result<(), NativeEngineError> {
-    if !matches!(dialog.dialog_type.as_str(), "alert" | "confirm" | "prompt") {
+    if !matches!(
+        dialog.dialog_type.as_str(),
+        "alert" | "confirm" | "prompt" | "beforeunload"
+    ) {
         return Err(NativeEngineError::invalid(
             "native dialog type",
-            "must be alert, confirm, or prompt",
+            "must be alert, confirm, prompt, or beforeunload",
+        ));
+    }
+    if dialog.dialog_type == "beforeunload"
+        && (!dialog.message.is_empty() || dialog.default_value.is_some())
+    {
+        return Err(NativeEngineError::invalid(
+            "native beforeunload prompt",
+            "must not carry page-controlled message or response text",
         ));
     }
     if dialog.message.len() > MAX_NATIVE_DIALOG_TEXT_BYTES
@@ -471,7 +526,7 @@ mod tests {
             control
                 .resolve(&pending.id, true, Some("answer".into()))
                 .unwrap(),
-            7
+            Some(7)
         );
         assert!(control.pending().unwrap().is_none());
         assert!(
@@ -489,6 +544,62 @@ mod tests {
         );
         resolved.finish();
         assert!(control.pending().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn beforeunload_confirmation_is_browser_controlled_and_has_no_child_id() {
+        let control = NativeDialogControlPlane::for_modal_owner();
+        let controller = NativeDialogController::new(control.clone()).unwrap();
+        let waiting_control = control.clone();
+        let waiting = tokio::spawn(async move {
+            waiting_control
+                .wait_for_beforeunload("target-a", "frame-a", "https://example.test/")
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        let pending = controller.pending_dialog().unwrap().unwrap();
+        assert_eq!(pending.dialog.dialog_type, "beforeunload");
+        assert!(pending.dialog.message.is_empty());
+        assert!(pending.dialog.default_value.is_none());
+        assert!(
+            controller
+                .resolve_dialog(
+                    "stale-dialog",
+                    NativeDialogResolution {
+                        accepted: true,
+                        prompt_value: None,
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(control.resolve(&pending.id, true, None).unwrap(), None);
+
+        let resolved = waiting.await.unwrap().unwrap();
+        assert!(resolved.resolution.accepted);
+        assert!(resolved.resolution.prompt_value.is_none());
+        resolved.finish();
+        assert!(controller.pending_dialog().unwrap().is_none());
+    }
+
+    #[test]
+    fn beforeunload_dialog_rejects_page_controlled_copy() {
+        assert!(
+            validate_dialog(&NativeDialog {
+                dialog_type: "beforeunload".into(),
+                message: "site-authored warning".into(),
+                default_value: None,
+            })
+            .is_err()
+        );
+        assert!(
+            validate_dialog(&NativeDialog {
+                dialog_type: "beforeunload".into(),
+                message: String::new(),
+                default_value: Some("site-authored response".into()),
+            })
+            .is_err()
+        );
     }
 
     #[tokio::test]

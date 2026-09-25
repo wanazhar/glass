@@ -199,6 +199,10 @@ impl NativeHistory {
         }
     }
 
+    pub(crate) const fn current_index(&self) -> Option<usize> {
+        self.current
+    }
+
     pub(crate) fn entry(&self, index: usize) -> Option<&NativeHistoryEntry> {
         self.entries.get(index)
     }

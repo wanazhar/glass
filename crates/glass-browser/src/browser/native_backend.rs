@@ -371,7 +371,7 @@ impl NativeEngineBackend {
         id: &str,
         accepted: bool,
         prompt_value: Option<String>,
-    ) -> Result<u64, BrowserBackendError> {
+    ) -> Result<Option<u64>, BrowserBackendError> {
         self.dialog_control
             .resolve(id, accepted, prompt_value)
             .map_err(native_error)

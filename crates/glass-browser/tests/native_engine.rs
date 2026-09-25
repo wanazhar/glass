@@ -11179,6 +11179,271 @@ async fn standalone_native_dialog_controller_resumes_the_original_page_script() 
         .await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn native_content_process_beforeunload_waits_for_exact_user_decision() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (next_request_tx, mut next_request_rx) = oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                assert_eq!(request.split_whitespace().nth(1), Some("/start"));
+                let body = "<script>addEventListener('beforeunload', event => { event.preventDefault(); event.returnValue = 'site-authored warning'; globalThis.warningRan = 'yes'; }); addEventListener('pagehide', () => globalThis.pagehideRan = 'yes'); addEventListener('unload', () => globalThis.unloadRan = 'yes');</script><button id='activate'>Activate</button><title>Start</title>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let _ = next_request_tx.send(());
+                let request = read_http_request(&mut stream).await;
+                assert_eq!(request.split_whitespace().nth(1), Some("/next"));
+                let body = "<title>Next</title>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            });
+
+            let session = Arc::new(
+                BrowserRuntimeSession::connect_native_with_modal_dialogs(
+                    NativeEngineConfig::default(),
+                )
+                .await
+                .unwrap(),
+            );
+            let controller = session.native_dialog_controller().unwrap();
+            let start_url = format!("http://{address}/start");
+            session.navigate(start_url.clone()).await.unwrap();
+            session
+                .action(SemanticAction::Click {
+                    target: "id=activate".into(),
+                })
+                .await
+                .unwrap();
+
+            let first_navigation_session = Arc::clone(&session);
+            let first_navigation_url = format!("http://{address}/next");
+            let first_navigation = tokio::task::spawn_local(async move {
+                first_navigation_session
+                    .navigate(first_navigation_url)
+                    .await
+            });
+            let first_prompt = tokio::select! {
+                prompt = wait_for_modal_dialog(&controller, "beforeunload") => prompt,
+                request = &mut next_request_rx => panic!("replacement resource requested before the user decision: {request:?}"),
+            };
+            assert!(first_prompt.dialog.message.is_empty());
+            assert!(first_prompt.dialog.default_value.is_none());
+            assert!(!first_navigation.is_finished());
+            controller
+                .resolve_dialog(
+                    &first_prompt.id,
+                    NativeDialogResolution {
+                        accepted: false,
+                        prompt_value: None,
+                    },
+                )
+                .unwrap();
+            let outcome = first_navigation.await.unwrap().unwrap();
+            assert_eq!(outcome.url, start_url);
+            assert_eq!(
+                session
+                    .script("[globalThis.warningRan || null, globalThis.pagehideRan || null, globalThis.unloadRan || null]")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!(["yes", null, null])
+            );
+            assert!(tokio::time::timeout(Duration::from_millis(50), &mut next_request_rx)
+                .await
+                .is_err());
+
+            let second_navigation_session = Arc::clone(&session);
+            let second_navigation_url = format!("http://{address}/next");
+            let second_navigation = tokio::task::spawn_local(async move {
+                second_navigation_session
+                    .navigate(second_navigation_url)
+                    .await
+            });
+            let second_prompt = wait_for_modal_dialog(&controller, "beforeunload").await;
+            assert_ne!(first_prompt.id, second_prompt.id);
+            controller
+                .resolve_dialog(
+                    &second_prompt.id,
+                    NativeDialogResolution {
+                        accepted: true,
+                        prompt_value: None,
+                    },
+                )
+                .unwrap();
+            let outcome = second_navigation.await.unwrap().unwrap();
+            assert_eq!(outcome.url, format!("http://{address}/next"));
+            next_request_rx.await.unwrap();
+            assert!(controller.pending_dialog().unwrap().is_none());
+            Arc::try_unwrap(session)
+                .unwrap_or_else(|_| panic!("native session still has unexpected owners"))
+                .close()
+                .await
+                .unwrap();
+            server.await.unwrap();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_content_process_history_beforeunload_waits_before_loading_target() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (additional_request_tx, mut additional_request_rx) = oneshot::channel();
+            let (server_stop_tx, mut server_stop_rx) = oneshot::channel();
+            let server = tokio::spawn(async move {
+                let mut additional_request_tx = Some(additional_request_tx);
+                for expected_path in ["/first", "/second"] {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    let requested_path = request.split_whitespace().nth(1).unwrap_or_default();
+                    assert_eq!(requested_path, expected_path);
+                    let body = if expected_path == "/first" {
+                        "<title>First</title><button id='activate'>Activate</button>"
+                    } else {
+                        "<script>addEventListener('beforeunload', event => { event.preventDefault(); event.returnValue = 'must not be shown'; globalThis.beforeunloadRan = 'yes'; }); addEventListener('pagehide', () => globalThis.pagehideRan = 'yes'); addEventListener('unload', () => globalThis.unloadRan = 'yes');</script><title>Second</title><button id='activate'>Activate</button>"
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let (mut stream, _) = accepted.unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        let requested_path = request.split_whitespace().nth(1).unwrap_or_default();
+                        if let Some(sender) = additional_request_tx.take() {
+                            let _ = sender.send(requested_path.to_owned());
+                        }
+                        let body = "<title>First</title><button id='activate'>Activate</button>";
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                    }
+                    _ = &mut server_stop_rx => {}
+                }
+            });
+
+            let session = Arc::new(
+                BrowserRuntimeSession::connect_native_with_modal_dialogs(
+                    NativeEngineConfig::default(),
+                )
+                .await
+                .unwrap(),
+            );
+            let controller = session.native_dialog_controller().unwrap();
+            let first_url = format!("http://{address}/first");
+            let second_url = format!("http://{address}/second");
+            session.navigate(first_url.clone()).await.unwrap();
+            session.navigate(second_url.clone()).await.unwrap();
+            session
+                .action(SemanticAction::Click {
+                    target: "id=activate".into(),
+                })
+                .await
+                .unwrap();
+
+            let first_back_session = Arc::clone(&session);
+            let first_back = tokio::task::spawn_local(async move { first_back_session.go_back().await });
+            let first_prompt = tokio::select! {
+                prompt = wait_for_modal_dialog(&controller, "beforeunload") => prompt,
+                request = &mut additional_request_rx => panic!("history target was requested before the user decision: {request:?}"),
+            };
+            assert!(first_prompt.dialog.message.is_empty());
+            assert!(!first_back.is_finished());
+            controller
+                .resolve_dialog(
+                    &first_prompt.id,
+                    NativeDialogResolution {
+                        accepted: false,
+                        prompt_value: None,
+                    },
+                )
+                .unwrap();
+            let dismissed = first_back.await.unwrap().unwrap();
+            assert_eq!(dismissed.action, "back");
+            assert_eq!(
+                session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+                second_url
+            );
+            assert_eq!(
+                session
+                    .script("[globalThis.beforeunloadRan || null, globalThis.pagehideRan || null, globalThis.unloadRan || null]")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!(["yes", null, null])
+            );
+            assert!(tokio::time::timeout(Duration::from_millis(50), &mut additional_request_rx)
+                .await
+                .is_err());
+
+            let second_back_session = Arc::clone(&session);
+            let second_back = tokio::task::spawn_local(async move { second_back_session.go_back().await });
+            let second_prompt = tokio::select! {
+                prompt = wait_for_modal_dialog(&controller, "beforeunload") => prompt,
+                request = &mut additional_request_rx => panic!("history target was requested before the user decision: {request:?}"),
+            };
+            assert_ne!(first_prompt.id, second_prompt.id);
+            controller
+                .resolve_dialog(
+                    &second_prompt.id,
+                    NativeDialogResolution {
+                        accepted: true,
+                        prompt_value: None,
+                    },
+                )
+                .unwrap();
+            let traversed = tokio::time::timeout(Duration::from_secs(10), second_back)
+                .await
+                .expect("accepted history traversal did not finish")
+                .unwrap()
+                .unwrap();
+            assert_eq!(traversed.action, "back");
+            assert_eq!(
+                session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+                first_url,
+                "accepted history traversal returned without activating its target"
+            );
+            if let Ok(Ok(requested_path)) = tokio::time::timeout(
+                Duration::from_millis(50),
+                &mut additional_request_rx,
+            )
+            .await
+            {
+                assert_eq!(requested_path, "/first");
+            }
+
+            let _ = server_stop_tx.send(());
+            Arc::try_unwrap(session)
+                .unwrap_or_else(|_| panic!("native session still has unexpected owners"))
+                .close()
+                .await
+                .unwrap();
+            server.await.unwrap();
+        })
+        .await;
+}
+
 #[tokio::test]
 async fn native_content_process_forwards_page_dialogs_without_chromium() {
     let _guard = native_content_process_test_lock().lock().await;
@@ -14811,11 +15076,11 @@ async fn native_local_full_navigation_orders_page_lifecycle_events() {
 }
 
 #[tokio::test]
-async fn native_local_beforeunload_can_cancel_replacement_navigation() {
+async fn native_local_beforeunload_without_activation_does_not_block_navigation() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://beforeunload-start",
-            "<script>globalThis.lifecycle = []; globalThis.guard = event => { lifecycle.push(event.type); event.preventDefault(); }; addEventListener('beforeunload', globalThis.guard);</script><title>Start</title>",
+            "<script>addEventListener('beforeunload', event => { event.preventDefault(); event.returnValue = 'page-authored warning'; });</script><button id='activate' onclick='globalThis.clicked = true'>Activate</button><title>Start</title>",
         )
         .unwrap()
         .with_fixture("fixture://beforeunload-next", "<title>Next</title>")
@@ -14824,21 +15089,7 @@ async fn native_local_beforeunload_can_cancel_replacement_navigation() {
     let mut engine = NativeEngine::new(config).unwrap();
     engine.initialize_async().await.unwrap();
     engine
-        .navigate_async("fixture://beforeunload-next")
-        .await
-        .unwrap();
-    assert_eq!(
-        engine.snapshot().unwrap().url,
-        "fixture://beforeunload-start"
-    );
-    assert_eq!(engine.snapshot().unwrap().title, "Start");
-    assert_eq!(
-        engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
-        serde_json::json!(["beforeunload"])
-    );
-
-    engine
-        .evaluate_async("removeEventListener('beforeunload', globalThis.guard)")
+        .evaluate_async("document.getElementById('activate').click()")
         .await
         .unwrap();
     engine
@@ -20292,20 +20543,27 @@ async fn native_content_process_orders_navigation_lifecycle_events() {
 }
 
 #[tokio::test]
-async fn native_content_process_beforeunload_can_cancel_replacement_navigation() {
+async fn native_content_process_beforeunload_without_activation_does_not_block_navigation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let request = read_http_request(&mut stream).await;
-        assert_eq!(request.split_whitespace().nth(1), Some("/start"));
-        let body = "<script>globalThis.lifecycle = []; addEventListener('beforeunload', event => { lifecycle.push(event.type); event.preventDefault(); });</script><title>Start</title>";
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        stream.write_all(response.as_bytes()).await.unwrap();
+        for (path, body) in [
+            (
+                "/start",
+                "<script>addEventListener('beforeunload', event => { event.preventDefault(); event.returnValue = 'page-authored warning'; });</script><button id='activate'>Activate</button><title>Start</title>",
+            ),
+            ("/next", "<title>Next</title>"),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
     });
 
     let mut engine = NativeEngine::new(
@@ -20314,18 +20572,18 @@ async fn native_content_process_beforeunload_can_cancel_replacement_navigation()
     .unwrap();
     engine.initialize_async().await.unwrap();
     engine
+        .evaluate_async("document.getElementById('activate').click()")
+        .await
+        .unwrap();
+    engine
         .navigate_async(format!("http://{address}/next"))
         .await
         .unwrap();
     assert_eq!(
         engine.snapshot().unwrap().url,
-        format!("http://{address}/start")
+        format!("http://{address}/next")
     );
-    assert_eq!(engine.snapshot().unwrap().title, "Start");
-    assert_eq!(
-        engine.evaluate_async("globalThis.lifecycle").await.unwrap(),
-        serde_json::json!(["beforeunload"])
-    );
+    assert_eq!(engine.snapshot().unwrap().title, "Next");
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

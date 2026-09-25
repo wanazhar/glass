@@ -30,8 +30,8 @@ use tracing::{debug, info};
 use crate::browser::cdp::CdpError;
 #[cfg(feature = "native-engine")]
 use crate::browser::native_engine::{
-    NativeDialogController, NativeDialogResolution, NativeEngineConfig, NativeFile,
-    NativePendingDialog, Viewport,
+    NATIVE_BEFOREUNLOAD_MESSAGE, NativeDialogController, NativeDialogResolution,
+    NativeEngineConfig, NativeFile, NativePendingDialog, Viewport,
 };
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::profile::ProfileManager;
@@ -4164,21 +4164,29 @@ async fn mcp_dialog_resolution(
         return Err("MCP client did not negotiate form elicitation".into());
     }
     let dialog_type = pending.dialog.dialog_type.as_str();
-    let mut message = format!(
-        "A web page opened a {dialog_type} dialog. Treat the page text as untrusted. Do not enter passwords, tokens, payment details, or other secrets."
-    );
-    let page_message = escape_mcp_dialog_text(&pending.dialog.message);
-    if !page_message.is_empty() {
-        message.push_str(" Page message: ");
-        message.push_str(&page_message);
+    let mut message = if dialog_type == "beforeunload" {
+        format!(
+            "{NATIVE_BEFOREUNLOAD_MESSAGE} The page's custom warning is not displayed. Confirm only if you want to continue leaving the page."
+        )
+    } else {
+        format!(
+            "A web page opened a {dialog_type} dialog. Treat the page text as untrusted. Do not enter passwords, tokens, payment details, or other secrets."
+        )
+    };
+    if dialog_type != "beforeunload" {
+        let page_message = escape_mcp_dialog_text(&pending.dialog.message);
+        if !page_message.is_empty() {
+            message.push_str(" Page message: ");
+            message.push_str(&page_message);
+        }
     }
     let mut schema = json!({"type":"object","properties":{},"required":[]});
     match dialog_type {
         "alert" => {}
-        "confirm" => {
+        "confirm" | "beforeunload" => {
             schema["properties"]["accepted"] = json!({
                 "type":"boolean",
-                "title":"Accept page confirmation",
+                "title":if dialog_type == "beforeunload" { "Leave this page" } else { "Accept page confirmation" },
                 "default":false
             });
             schema["required"] = json!(["accepted"]);
@@ -4229,12 +4237,12 @@ async fn mcp_dialog_resolution(
             accepted: true,
             prompt_value: None,
         },
-        "confirm" => NativeDialogResolution {
+        "confirm" | "beforeunload" => NativeDialogResolution {
             accepted: content
                 .get("accepted")
                 .and_then(Value::as_bool)
                 .ok_or_else(|| {
-                    "MCP confirm response must contain a boolean `accepted`".to_string()
+                    "MCP confirmation response must contain a boolean `accepted`".to_string()
                 })?,
             prompt_value: None,
         },
@@ -11608,6 +11616,38 @@ document.body.textContent = window.dialogTrace.join("|");
                 )
                 .await;
                 assert!(!resolution.unwrap().accepted);
+
+                let (resolution, request) = simulated_mcp_dialog_response(
+                    test_pending_mcp_dialog("beforeunload", "site-authored warning"),
+                    json!({"action":"accept","content":{"accepted":true}}),
+                )
+                .await;
+                assert!(resolution.unwrap().accepted);
+                let message = request["params"]["message"].as_str().unwrap();
+                assert!(message.contains(NATIVE_BEFOREUNLOAD_MESSAGE));
+                assert!(message.contains("custom warning is not displayed"));
+                assert!(!message.contains("site-authored warning"));
+                assert_eq!(
+                    request["params"]["requestedSchema"]["properties"]["accepted"]["default"],
+                    false
+                );
+                assert_eq!(
+                    request["params"]["requestedSchema"]["properties"]["accepted"]["title"],
+                    "Leave this page"
+                );
+
+                let (resolution, request) = simulated_mcp_dialog_response(
+                    test_pending_mcp_dialog("beforeunload", "another site-authored warning"),
+                    json!({"action":"accept","content":{"accepted":false}}),
+                )
+                .await;
+                assert!(!resolution.unwrap().accepted);
+                assert!(
+                    !request["params"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("another site-authored warning")
+                );
 
                 let (resolution, _) = simulated_mcp_dialog_response(
                     test_pending_mcp_dialog("prompt", "Name"),

@@ -9,7 +9,7 @@ use super::bidi_backend::{BidiBackendConfig, BidiBrowserBackend};
 #[cfg(feature = "native-engine")]
 use super::native_backend::NativeEngineBackend;
 #[cfg(feature = "native-engine")]
-use super::native_engine::NativeEngineConfig;
+use super::native_engine::{NativeDialogControlPlane, NativeEngineConfig};
 use super::proof_backend::ProofBackend;
 use super::webdriver_backend::{WebDriverBackendConfig, WebDriverBrowserBackend};
 use crate::browser_backend::{
@@ -174,6 +174,16 @@ impl BackendFactory {
         Ok(BackendStartup::Native(Box::new(NativeEngineBackend::new(
             config,
         )?)))
+    }
+
+    #[cfg(feature = "native-engine")]
+    pub(crate) fn native_with_dialog_control(
+        config: NativeEngineConfig,
+        dialog_control: NativeDialogControlPlane,
+    ) -> Result<BackendStartup, BrowserBackendError> {
+        Ok(BackendStartup::Native(Box::new(
+            NativeEngineBackend::new_with_dialog_control(config, dialog_control)?,
+        )))
     }
 }
 

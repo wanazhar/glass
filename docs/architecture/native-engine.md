@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-733`; issue #40 remains open. The public Rust
+`native-engine-browser-734`; issue #40 remains open. The public Rust
 `BrowserSession` entrypoint now constructs the native backend directly, and
 the former Chrome/CDP API is named `CdpBrowserSession`. This does not claim
 operation parity or production certification. The canonical Rust session now
@@ -26,7 +26,20 @@ requests. Only an actually active process-backed HTTP(S) navigation can be
 interrupted; concurrent state-changing commands are rejected as busy, and a
 stop during non-navigation work fails promptly. The original request continues
 until its worker is reaped. These slices do not claim full operation parity or
-profile certification. Earlier completed slices include
+profile certification. Slice 734 adds synchronous modal continuation for
+process-backed page-load scripts and explicit `evaluate()` calls in the
+persistent owner. `alert`, `confirm`, and `prompt` resume at the original call
+with the selected result; the owner keeps servicing status and exact dialog
+controls while rejecting competing state writers. Modal waiting pauses the
+worker-operation deadline. A revision-checked `closeDialogTarget` cancels the
+active HTTP(S) navigation and closes its owning target after the operation
+releases its state lock. Tests cover accepted/dismissed page-load outcomes,
+multi-dialog explicit evaluation, target identity/revision guards, navigation
+cancellation, owner shutdown, worker exit, deadline suspension, and reuse of a
+parked sibling target. Standalone-session resolution and user-facing TUI
+prompt presentation remain issue #40 work. See the
+[slice 734 task](../plan/tasks/native-engine-browser-734.md). Earlier
+completed slices include
 `native-engine-browser-696` through
 `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
@@ -9688,6 +9701,32 @@ PDF bytes. No operation silently falls back to CDP, the proof backend, or
 another resource loader.
 
 ## Errors and recovery
+
+### Modal JavaScript dialog continuation
+
+The native dialog queue currently preserves bounded `alert`, `confirm`, and
+`prompt` metadata, but the page shim returns immediately (`false` for
+`confirm`, `null` for `prompt`). That is not the declared browser contract.
+Blocking host callbacks are enabled only when the persistent native owner has
+installed its independent status/dialog control loop. A standalone runtime
+without that control loop keeps the nonblocking event-queue path; blocking it
+would deadlock its sequential CLI/MCP caller. Such a standalone session is not
+yet conformant to the profile's modal contract and must be promoted only with
+its own live out-of-band controller.
+`GCWP-0.1` requires the invoking page script to suspend at the dialog call,
+publish a target/frame-owned pending prompt to the Glass control plane, and
+resume at the same call site with the chosen result. The accept path for
+`prompt` carries the user's response text; dismiss returns `null`. The page's
+task and microtask progress remains paused while the prompt is open, while
+status and dialog controls remain serviceable. The execution must not be
+replayed after resolution, and cancellation or owner failure must release the
+suspended operation without committing partial navigation state.
+
+Slice 734 implements this contract for process-backed HTTP(S) page scripts and
+explicit evaluation through the native persistent-owner control path.
+Standalone sessions without a concurrent controller, in-process page realms,
+direct TUI presentation, and full cross-surface prompt parity remain part of
+the issue #40 gate until independently verified.
 
 `NativeEngineError` distinguishes invalid configuration, lifecycle misuse,
 unsupported resources, bounded network failures, parser failures, resource

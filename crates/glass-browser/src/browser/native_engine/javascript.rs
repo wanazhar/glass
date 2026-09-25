@@ -11,6 +11,7 @@ use super::config::{
 use super::css::{
     FontStyleValue, FontWeightValue, parse_font_stretch_range, parse_font_weight_range,
 };
+use super::dialog::NativeDialogResolution;
 use super::dom::{
     NativeDocument, NativeNodeId, NativePageImportMapSource, NativePageScriptSource,
     NativePageScriptTiming, NativeScriptDocumentSnapshot, NativeScriptElementSnapshot,
@@ -4181,6 +4182,69 @@ pub(crate) struct NativeDialog {
     pub(crate) message: String,
     #[serde(default)]
     pub(crate) default_value: Option<String>,
+}
+
+pub(crate) type NativeDialogHandler = Arc<
+    dyn Fn(NativeDialog, String) -> Result<Option<NativeDialogResolution>, String> + Send + Sync,
+>;
+
+fn install_native_dialog_host_call(
+    ctx: rquickjs::Ctx<'_>,
+    dialog_handler_slot: Arc<Mutex<Option<NativeDialogHandler>>>,
+    dialog_url_slot: Arc<Mutex<String>>,
+) -> Result<(), Error> {
+    let native_dialog_call = Function::new(
+        ctx.clone(),
+        move |dialog_type: String,
+              message: String,
+              default_value: Option<String>|
+              -> Option<String> {
+            let error_json = |reason: &str| {
+                serde_json::to_string(&serde_json::json!({"error": reason}))
+                    .unwrap_or_else(|_| r#"{"error":"native dialog host failed"}"#.into())
+            };
+            if !matches!(dialog_type.as_str(), "alert" | "confirm" | "prompt") {
+                return Some(error_json("native dialog type is invalid"));
+            }
+            if message.len() > MAX_NATIVE_DIALOG_TEXT_BYTES
+                || default_value
+                    .as_ref()
+                    .is_some_and(|value| value.len() > MAX_NATIVE_DIALOG_TEXT_BYTES)
+            {
+                return Some(error_json("native dialog text exceeds its byte limit"));
+            }
+            let handler = match dialog_handler_slot.lock() {
+                Ok(handler) => handler.clone(),
+                Err(_) => return Some(error_json("native dialog handler state is unavailable")),
+            };
+            let Some(handler) = handler else {
+                return None;
+            };
+            let url = match dialog_url_slot.lock() {
+                Ok(url) => url.clone(),
+                Err(_) => return Some(error_json("native dialog URL is unavailable")),
+            };
+            let dialog = NativeDialog {
+                dialog_type,
+                message,
+                default_value,
+            };
+            let resolution = match handler(dialog, url) {
+                Ok(Some(resolution)) => resolution,
+                Ok(None) => return None,
+                Err(reason) => return Some(error_json(&reason)),
+            };
+            let response = serde_json::json!({
+                "accepted": resolution.accepted,
+                "promptValue": resolution.prompt_value,
+            });
+            Some(serde_json::to_string(&response).unwrap_or_else(|_| {
+                r#"{"error":"native dialog response could not be encoded"}"#.into()
+            }))
+        },
+    )?;
+    ctx.globals()
+        .set("__glassNativeDialogCall", native_dialog_call)
 }
 
 /// Origin-keyed page storage retained by the native runtime owner.
@@ -11899,6 +11963,8 @@ pub(crate) struct NativeJavaScriptRuntime {
     cookie_updates: Arc<Mutex<Vec<String>>>,
     unhandled_promise_rejections: Arc<Mutex<NativeUnhandledPromiseRejections>>,
     dialog_events: Arc<Mutex<Vec<NativeDialog>>>,
+    dialog_handler: Arc<Mutex<Option<NativeDialogHandler>>>,
+    dialog_url: Arc<Mutex<String>>,
     popup_events: Arc<Mutex<Vec<NativePopupRequest>>>,
     post_message_events: Arc<Mutex<Vec<NativePostMessageRequest>>>,
     window_close_events: Arc<Mutex<Vec<NativeWindowCloseRequest>>>,
@@ -12040,6 +12106,8 @@ impl NativeJavaScriptRuntime {
             operation: "create JavaScript context".into(),
             reason: "native JavaScript context could not be created".into(),
         })?;
+        let dialog_handler = Arc::new(Mutex::new(None::<NativeDialogHandler>));
+        let dialog_url = Arc::new(Mutex::new(String::new()));
         context
             .with(|ctx| {
                 ctx.eval::<(), _>(
@@ -12049,11 +12117,12 @@ impl NativeJavaScriptRuntime {
                       configurable: false,
                       enumerable: false,
                     });"#,
-                )
+                )?;
+                Ok::<(), Error>(())
             })
             .map_err(|_| NativeEngineError::Worker {
-                operation: "initialize JavaScript module intrinsics".into(),
-                reason: "the JSON module parser intrinsic could not be captured".into(),
+                operation: "initialize native JavaScript host functions".into(),
+                reason: "native JavaScript host functions could not be installed".into(),
             })?;
         Ok(Self {
             runtime,
@@ -12077,6 +12146,8 @@ impl NativeJavaScriptRuntime {
             cookie_updates: Arc::new(Mutex::new(Vec::new())),
             unhandled_promise_rejections,
             dialog_events: Arc::new(Mutex::new(Vec::new())),
+            dialog_handler,
+            dialog_url,
             popup_events: Arc::new(Mutex::new(Vec::new())),
             post_message_events: Arc::new(Mutex::new(Vec::new())),
             window_close_events: Arc::new(Mutex::new(Vec::new())),
@@ -12105,6 +12176,51 @@ impl NativeJavaScriptRuntime {
             ready_state: "complete".into(),
             clock_origin: Instant::now(),
         })
+    }
+
+    pub(crate) fn new_with_context_metadata_and_dialog_handler(
+        context_id: impl Into<String>,
+        window_name: impl Into<String>,
+        opener_context_id: Option<&str>,
+        opener_window_name: impl Into<String>,
+        opener_url: impl Into<String>,
+        dialog_handler: NativeDialogHandler,
+    ) -> Result<Self, NativeEngineError> {
+        let runtime = Self::new_with_context_metadata(
+            context_id,
+            window_name,
+            opener_context_id,
+            opener_window_name,
+            opener_url,
+        )?;
+        runtime.set_dialog_handler(dialog_handler)?;
+        Ok(runtime)
+    }
+
+    pub(crate) fn set_dialog_handler(
+        &self,
+        handler: NativeDialogHandler,
+    ) -> Result<(), NativeEngineError> {
+        *self
+            .dialog_handler
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "install native dialog handler".into(),
+                reason: "native dialog handler state is unavailable".into(),
+            })? = Some(handler);
+        Ok(())
+    }
+
+    fn set_dialog_url(&self, url: &str) -> Result<(), NativeEngineError> {
+        validate_url_text("native dialog URL", url)?;
+        *self
+            .dialog_url
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "set native dialog URL".into(),
+                reason: "native dialog URL state is unavailable".into(),
+            })? = url.to_owned();
+        Ok(())
     }
 
     pub(crate) fn set_environment(&self, environment: NativeEnvironmentOverrides) {
@@ -14198,6 +14314,7 @@ impl NativeJavaScriptRuntime {
         page_events: &NativePageEventBatch,
         dispatch: Option<NativePageDispatch<'_>>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.set_dialog_url(document_url)?;
         if source.is_empty() {
             return Err(NativeEngineError::invalid(
                 "script source",
@@ -14267,6 +14384,15 @@ impl NativeJavaScriptRuntime {
                 Arc::clone(&self.processed_inline_csp_meta_nodes),
                 document_url,
             )?;
+            install_native_dialog_host_call(
+                ctx.clone(),
+                Arc::clone(&self.dialog_handler),
+                Arc::clone(&self.dialog_url),
+            )
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "install native dialog host callback".into(),
+                reason: "native JavaScript dialog host callback could not be installed".into(),
+            })?;
             ctx.eval::<(), _>(bootstrap.as_str())
                 .map_err(|error| NativeEngineError::Worker {
                     operation: "install JavaScript host view".into(),
@@ -19983,6 +20109,127 @@ mod native_timer_probe_tests {
             .next_worker_timer_delay_ms()
             .expect("worker timer delay must be inspectable");
         assert!(delay.is_some_and(|delay| delay <= 25));
+    }
+}
+
+#[cfg(test)]
+mod native_dialog_tests {
+    use super::super::config::NativeEngineLimits;
+    use super::*;
+
+    #[test]
+    fn modal_dialog_host_preserves_argument_conversion_and_injected_results() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("dialog-host-test")
+            .expect("native JavaScript runtime must construct");
+        let opened = Arc::new(Mutex::new(Vec::new()));
+        let opened_by_handler = Arc::clone(&opened);
+        runtime
+            .set_dialog_handler(Arc::new(move |dialog, url| {
+                opened_by_handler
+                    .lock()
+                    .map_err(|_| "dialog test state was poisoned".to_owned())?
+                    .push((
+                        dialog.dialog_type.clone(),
+                        dialog.message.clone(),
+                        dialog.default_value.clone(),
+                        url,
+                    ));
+                Ok(Some(NativeDialogResolution {
+                    accepted: true,
+                    prompt_value: (dialog.dialog_type == "prompt")
+                        .then(|| format!("reply:{}", dialog.default_value.unwrap_or_default())),
+                }))
+            }))
+            .expect("native dialog handler must install");
+        let document = NativeDocument::parse("<body></body>", &NativeEngineLimits::default())
+            .expect("dialog test document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r#"(() => {
+                    alert();
+                    alert(undefined);
+                    alert(null);
+                    return [
+                        typeof globalThis.__glassNativeDialogCall,
+                        confirm(undefined),
+                        confirm(null),
+                        prompt(undefined, undefined),
+                        prompt(null, null),
+                    ];
+                })()"#,
+                &document,
+                "https://example.test/dialog",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("native modal calls must resume with injected decisions");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["undefined", true, true, "reply:", "reply:null"])
+        );
+        assert_eq!(
+            *opened.lock().unwrap(),
+            vec![
+                (
+                    "alert".into(),
+                    "".into(),
+                    None,
+                    "https://example.test/dialog".into()
+                ),
+                (
+                    "alert".into(),
+                    "undefined".into(),
+                    None,
+                    "https://example.test/dialog".into()
+                ),
+                (
+                    "alert".into(),
+                    "null".into(),
+                    None,
+                    "https://example.test/dialog".into()
+                ),
+                (
+                    "confirm".into(),
+                    "".into(),
+                    None,
+                    "https://example.test/dialog".into()
+                ),
+                (
+                    "confirm".into(),
+                    "null".into(),
+                    None,
+                    "https://example.test/dialog".into()
+                ),
+                (
+                    "prompt".into(),
+                    "".into(),
+                    Some("".into()),
+                    "https://example.test/dialog".into()
+                ),
+                (
+                    "prompt".into(),
+                    "null".into(),
+                    Some("null".into()),
+                    "https://example.test/dialog".into()
+                ),
+            ]
+        );
+
+        let repeated_evaluation = runtime
+            .evaluate(
+                "confirm('second evaluation')",
+                &document,
+                "https://example.test/dialog",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("the native dialog bridge must be reinjected for later evaluations");
+        assert_eq!(repeated_evaluation.value, serde_json::json!(true));
+        assert_eq!(
+            opened.lock().unwrap().last().map(|entry| entry.1.as_str()),
+            Some("second evaluation")
+        );
     }
 }
 

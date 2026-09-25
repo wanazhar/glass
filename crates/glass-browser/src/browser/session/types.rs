@@ -945,7 +945,7 @@ pub(crate) struct TopologyRegistry {
 }
 
 /// JavaScript dialog content surfaced to agents before resolution.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PendingDialog {
     /// `alert`, `confirm`, `prompt`, or `beforeunload`.
     #[serde(rename = "type")]

@@ -7,7 +7,10 @@ use glass_browser::browser::session::{
     CdpBrowserSession, SemanticObservation, SemanticObservationLevel, SessionOptions,
     VerificationPredicate, WorkflowCheckpoint, WorkflowDefinition, WorkflowRunResult,
 };
-use glass_browser::browser::{BrowserRuntimeSession, NativeEngineConfig, NativeHistoryDirection};
+use glass_browser::browser::{
+    BrowserRuntimeSession, NativeDialogController, NativeDialogResolution, NativeEngineConfig,
+    NativeHistoryDirection, NativePendingDialog,
+};
 use glass_browser::browser_backend::{ActionResult, SemanticAction};
 use glass_browser::extraction::ExtractionRequest;
 use glass_browser::protocol::WebIrInspectionResult;
@@ -16,10 +19,12 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const COMMAND_QUEUE: usize = 32;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
+const BROWSER_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 /// Options used to create or attach the resident development browser session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +42,8 @@ pub struct BrowserStartConfig {
     pub profile: String,
     /// Optional explicit Chrome executable path.
     pub chrome_path: Option<PathBuf>,
+    /// Enable an out-of-band host controller for synchronous native page dialogs.
+    pub modal_dialogs: bool,
 }
 
 impl Default for BrowserStartConfig {
@@ -48,6 +55,7 @@ impl Default for BrowserStartConfig {
             headed: false,
             profile: default_profile(),
             chrome_path: None,
+            modal_dialogs: false,
         }
     }
 }
@@ -179,6 +187,7 @@ impl ResidentBrowserSession {
 #[derive(Clone)]
 pub struct BrowserService {
     commands: SyncSender<(BrowserCommand, Reply)>,
+    native_dialog_controller: Arc<Mutex<Option<NativeDialogController>>>,
 }
 
 impl BrowserService {
@@ -194,8 +203,11 @@ impl BrowserService {
     ) -> DevelopmentResult<Self> {
         let root = root.as_ref().to_path_buf();
         let (commands, receiver) = mpsc::sync_channel::<(BrowserCommand, Reply)>(COMMAND_QUEUE);
+        let native_dialog_controller = Arc::new(Mutex::new(None));
+        let worker_dialog_controller = Arc::clone(&native_dialog_controller);
         std::thread::Builder::new()
             .name("glass-browser-workspace".into())
+            .stack_size(BROWSER_WORKER_STACK_BYTES)
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -203,7 +215,7 @@ impl BrowserService {
                 let Ok(runtime) = runtime else {
                     return;
                 };
-                let mut worker = BrowserWorker::new(root, policy_preset);
+                let mut worker = BrowserWorker::new(root, policy_preset, worker_dialog_controller);
                 while let Ok((command, reply)) = receiver.recv() {
                     let result = runtime.block_on(worker.execute(command));
                     let _ = reply.send(result);
@@ -211,7 +223,10 @@ impl BrowserService {
                 runtime.block_on(worker.shutdown());
             })
             .map_err(|error| DevelopmentError::Process(error.to_string()))?;
-        Ok(Self { commands })
+        Ok(Self {
+            commands,
+            native_dialog_controller,
+        })
     }
 
     fn call(&self, command: BrowserCommand) -> DevelopmentResult<Value> {
@@ -291,6 +306,44 @@ impl BrowserService {
             expected_revision,
             timeout,
         })
+    }
+
+    /// Read the exact pending process-backed native dialog without waiting for
+    /// the serialized browser worker. This is available only after starting a
+    /// native session with `modal_dialogs: true`.
+    pub fn pending_native_dialog(&self) -> DevelopmentResult<Option<NativePendingDialog>> {
+        self.dialog_controller()?
+            .pending_dialog()
+            .map_err(|error| DevelopmentError::Process(error.to_string()))
+    }
+
+    /// Resolve the exact pending native dialog without waiting for the
+    /// serialized browser worker. A stale identity is rejected and leaves the
+    /// page operation suspended.
+    pub fn resolve_native_dialog(
+        &self,
+        dialog_id: &str,
+        resolution: NativeDialogResolution,
+    ) -> DevelopmentResult<()> {
+        self.dialog_controller()?
+            .resolve_dialog(dialog_id, resolution)
+            .map_err(|error| DevelopmentError::Process(error.to_string()))
+    }
+
+    fn dialog_controller(&self) -> DevelopmentResult<NativeDialogController> {
+        self.native_dialog_controller
+            .lock()
+            .map_err(|_| {
+                DevelopmentError::Process(
+                    "native browser dialog control state is unavailable".into(),
+                )
+            })?
+            .clone()
+            .ok_or_else(|| {
+                DevelopmentError::Conflict(
+                    "native modal dialog control is not enabled for the connected browser".into(),
+                )
+            })
     }
     /// Go back if the supplied observation revision is current.
     pub fn back(&self, expected_revision: u64) -> DevelopmentResult<Value> {
@@ -418,6 +471,7 @@ impl BrowserService {
 struct BrowserWorker {
     root: PathBuf,
     policy_preset: PolicyPreset,
+    native_dialog_controller: Arc<Mutex<Option<NativeDialogController>>>,
     session: Option<ResidentBrowserSession>,
     revision: Option<u64>,
     native_previous_observation: Option<SemanticObservation>,
@@ -429,10 +483,15 @@ struct BrowserWorker {
 }
 
 impl BrowserWorker {
-    fn new(root: PathBuf, policy_preset: PolicyPreset) -> Self {
+    fn new(
+        root: PathBuf,
+        policy_preset: PolicyPreset,
+        native_dialog_controller: Arc<Mutex<Option<NativeDialogController>>>,
+    ) -> Self {
         Self {
             root,
             policy_preset,
+            native_dialog_controller,
             session: None,
             revision: None,
             native_previous_observation: None,
@@ -472,6 +531,10 @@ impl BrowserWorker {
     }
 
     async fn shutdown(&mut self) {
+        match self.native_dialog_controller.lock() {
+            Ok(mut controller) => *controller = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
         if let Some(view) = self.remote_view.take() {
             view.revoke().await;
         }
@@ -489,6 +552,11 @@ impl BrowserWorker {
         if self.session.is_some() {
             return Err(DevelopmentError::Conflict(
                 "browser workspace already has a connected session".into(),
+            ));
+        }
+        if config.attach && config.modal_dialogs {
+            return Err(DevelopmentError::InvalidInput(
+                "modalDialogs is supported only by the native browser runtime".into(),
             ));
         }
         let session = if config.attach {
@@ -523,11 +591,23 @@ impl BrowserWorker {
             if !config.incognito {
                 native = native.with_storage_path(native_profile_storage_path(&config.profile)?);
             }
-            ResidentBrowserSession::Native(
+            let runtime = if config.modal_dialogs {
+                let runtime = BrowserRuntimeSession::connect_native_with_modal_dialogs(native)
+                    .await
+                    .map_err(browser_error)?;
+                let controller = runtime.native_dialog_controller().map_err(browser_error)?;
+                *self.native_dialog_controller.lock().map_err(|_| {
+                    DevelopmentError::Process(
+                        "native browser dialog control state is unavailable".into(),
+                    )
+                })? = Some(controller);
+                runtime
+            } else {
                 BrowserRuntimeSession::connect_native(native)
                     .await
-                    .map_err(browser_error)?,
-            )
+                    .map_err(browser_error)?
+            };
+            ResidentBrowserSession::Native(runtime)
         };
         self.revision = Some(1);
         self.session = Some(session);
@@ -1340,6 +1420,154 @@ mod tests {
 
         let stopped = service.stop().unwrap();
         assert_eq!(stopped["connected"], false);
+    }
+
+    #[test]
+    fn native_dialog_control_is_opt_in_and_rejects_chromium_sessions() {
+        let service = BrowserService::new(std::env::temp_dir()).unwrap();
+        assert!(!BrowserStartConfig::default().modal_dialogs);
+        assert!(service.pending_native_dialog().is_err());
+        assert!(
+            service
+                .resolve_native_dialog(
+                    "native-dialog-1",
+                    NativeDialogResolution {
+                        accepted: true,
+                        prompt_value: None,
+                    },
+                )
+                .is_err()
+        );
+
+        let error = service
+            .start(BrowserStartConfig {
+                attach: true,
+                modal_dialogs: true,
+                ..BrowserStartConfig::default()
+            })
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only by the native browser runtime")
+        );
+        assert_eq!(service.state().unwrap()["connected"], false);
+    }
+
+    #[test]
+    fn resident_native_dialog_controller_resolves_suspended_navigation_out_of_band() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let running = Arc::new(AtomicBool::new(true));
+        let server_running = Arc::clone(&running);
+        let server = std::thread::spawn(move || {
+            let html = br#"<!doctype html><title>Dialog service</title><script>
+                const accepted = confirm('Continue?');
+                const name = prompt('Your name?', 'Ada');
+                document.body.textContent = `${accepted}|${name}`;
+            </script>"#;
+            while server_running.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = [0; 4096];
+                        let _ = stream.read(&mut request);
+                        let header = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            html.len()
+                        );
+                        let _ = stream.write_all(header.as_bytes());
+                        let _ = stream.write_all(html);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let service = BrowserService::new(std::env::temp_dir()).unwrap();
+        let started = service
+            .start(BrowserStartConfig {
+                modal_dialogs: true,
+                ..BrowserStartConfig::default()
+            })
+            .unwrap();
+        let revision = started["browserRevision"].as_u64().unwrap();
+        let navigation_service = service.clone();
+        let navigation = std::thread::spawn(move || {
+            navigation_service.navigate(
+                format!("http://{address}/dialogs"),
+                revision,
+                Duration::from_secs(30),
+            )
+        });
+
+        let wait_for_dialog = |expected_type: &str| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            loop {
+                if let Some(dialog) = service.pending_native_dialog().unwrap() {
+                    assert_eq!(dialog.dialog.dialog_type, expected_type);
+                    return dialog;
+                }
+                assert!(
+                    !navigation.is_finished(),
+                    "navigation completed before the {expected_type} dialog was resolved"
+                );
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for the {expected_type} dialog"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+
+        let confirm = wait_for_dialog("confirm");
+        let stale = service.resolve_native_dialog(
+            "native-dialog-stale",
+            NativeDialogResolution {
+                accepted: true,
+                prompt_value: None,
+            },
+        );
+        assert!(stale.is_err());
+        assert_eq!(
+            service.pending_native_dialog().unwrap().unwrap().id,
+            confirm.id
+        );
+        service
+            .resolve_native_dialog(
+                &confirm.id,
+                NativeDialogResolution {
+                    accepted: true,
+                    prompt_value: None,
+                },
+            )
+            .unwrap();
+
+        let prompt = wait_for_dialog("prompt");
+        service
+            .resolve_native_dialog(
+                &prompt.id,
+                NativeDialogResolution {
+                    accepted: true,
+                    prompt_value: Some("Grace".into()),
+                },
+            )
+            .unwrap();
+
+        let navigation_result = navigation.join().unwrap().unwrap();
+        assert_eq!(navigation_result["backend"], "native");
+        assert_eq!(
+            navigation_result["url"],
+            format!("http://{address}/dialogs")
+        );
+        assert_eq!(service.stop().unwrap()["connected"], false);
+        assert!(service.pending_native_dialog().is_err());
+
+        running.store(false, Ordering::Relaxed);
+        server.join().unwrap();
     }
 
     #[test]

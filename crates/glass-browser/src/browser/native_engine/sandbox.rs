@@ -87,6 +87,8 @@ fn prepare_linux(
             "--unshare-pid",
             "--unshare-uts",
             "--unshare-ipc",
+            "--disable-userns",
+            "--assert-userns-disabled",
             "--proc",
             "/proc",
             "--dev",
@@ -281,6 +283,83 @@ fn find_executable(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&path)
         .map(|directory| directory.join(name))
         .find(|candidate| candidate.is_file())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::process::Command as StdCommand;
+
+    fn sandbox_command(disable_userns: bool, executable: &Path, arguments: &[&str]) -> StdCommand {
+        let bwrap = find_executable("bwrap").expect("Linux tests require Bubblewrap");
+        let mut command = StdCommand::new(bwrap);
+        command.args([
+            "--unshare-user",
+            "--unshare-pid",
+            "--proc",
+            "/proc",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+        ]);
+        command.args(["--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib"]);
+        if Path::new("/lib64").is_dir() {
+            command.args(["--ro-bind", "/lib64", "/lib64"]);
+        }
+        if disable_userns {
+            command.args(["--disable-userns", "--assert-userns-disabled"]);
+        }
+        command.arg("--").arg(executable).args(arguments);
+        command
+    }
+
+    #[test]
+    fn linux_content_sandbox_blocks_nested_user_namespaces() {
+        let unshare = Path::new("/usr/bin/unshare");
+        assert!(unshare.is_file(), "Linux tests require /usr/bin/unshare");
+
+        let true_program = Path::new("/usr/bin/true");
+        assert!(true_program.is_file(), "Linux tests require /usr/bin/true");
+
+        let mut restricted_control = sandbox_command(true, true_program, &[]);
+        let restricted_control = restricted_control
+            .output()
+            .expect("Bubblewrap deny-and-assert options should start");
+        assert!(
+            restricted_control.status.success(),
+            "the hardened sandbox control must launch: {}",
+            String::from_utf8_lossy(&restricted_control.stderr)
+        );
+
+        let mut unrestricted = sandbox_command(false, unshare, &["--user", "true"]);
+        let unrestricted = unrestricted
+            .output()
+            .expect("baseline nested-userns check should start");
+        assert!(
+            unrestricted.status.success(),
+            "the control must create a nested user namespace: {}",
+            String::from_utf8_lossy(&unrestricted.stderr)
+        );
+
+        let mut restricted = sandbox_command(true, unshare, &["--user", "true"]);
+        let restricted = restricted
+            .output()
+            .expect("restricted nested-userns check should start");
+        assert!(
+            !restricted.status.success(),
+            "Bubblewrap must deny nested user namespace creation"
+        );
+
+        let (worker_command, _) =
+            prepare_linux(Path::new("/usr/bin/true"), None, &[]).expect("sandbox args");
+        let worker_args = worker_command
+            .as_std()
+            .get_args()
+            .filter_map(|argument| argument.to_str())
+            .collect::<Vec<_>>();
+        assert!(worker_args.contains(&"--disable-userns"));
+        assert!(worker_args.contains(&"--assert-userns-disabled"));
+    }
 }
 
 #[cfg(target_os = "macos")]

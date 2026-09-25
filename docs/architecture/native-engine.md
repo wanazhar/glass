@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-743`; issue #40 remains open. The public Rust
+`native-engine-browser-744`; issue #40 remains open. The public Rust
 `BrowserSession` entrypoint now constructs the native backend directly, and
 the former Chrome/CDP API is named `CdpBrowserSession`. This does not claim
 operation parity or production certification. The canonical Rust session now
@@ -60,8 +60,11 @@ holding a mutable re-entry counter across an await, so cancellation cannot
 leave a stale guard behind. Slice 743 adds native descendant-frame
 `beforeunload` traversal, one shared prompt decision, child-first unload,
 selection restoration on dismissal, and inherited sandboxed-modals handling.
-Focused Linux checks pass; remote CI, cross-platform certification, and all
-other profile gates remain open. See the
+Slice 744 disables and asserts against nested Linux user namespaces in the
+Bubblewrap content-worker sandbox; focused security and process-backed page
+tests pass locally. Remote CI, Windows/macOS certification, and all other
+profile gates remain open. See the
+[slice 744 task](../plan/tasks/native-engine-browser-744.md),
 [slice 743 task](../plan/tasks/native-engine-browser-743.md),
 [slice 741 task](../plan/tasks/native-engine-browser-741.md),
 [slice 740 task](../plan/tasks/native-engine-browser-740.md),
@@ -8999,6 +9002,9 @@ Permissions, full HTTP cache freshness, durable service-worker caches, and
 cross-origin request classes outside the declared policy remain outside this
 boundary. Media, fonts, and browser-wide import/discovery parity remain
 separate resource work; the explicit request paths retain their own limits.
+Linux content workers require Bubblewrap 0.8 or later and disable/assert
+against nested user-namespace creation. This is defense in depth, not a claim
+of complete Linux isolation or a security certification.
 A raw fragment is
 removed for resource lookup and decoding but is retained in the successful navigation URL;
 percent-encoded fragment markers remain payload data. Local resources have an

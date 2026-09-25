@@ -27,7 +27,12 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-743`.
+browser expansion slices are complete through `native-engine-browser-744`.
+Slice 744 disables and asserts against nested Linux user namespaces in the
+Bubblewrap content worker. A control-versus-restricted namespace test and a
+process-backed page-loading regression pass locally. Remote CI and
+cross-platform certification remain open; this is not browser-completion
+evidence.
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,
 and inherited sandboxed-modals eligibility. Remote CI and cross-platform
@@ -80,6 +85,7 @@ history target request, with local Linux evidence recorded in the task. Slice
 propagation for its specified native navigation routes. Remote CI,
 cross-platform certification, and other Core Web Profile parity remain open.
 See the
+[slice 744 task](tasks/native-engine-browser-744.md),
 [slice 743 task](tasks/native-engine-browser-743.md),
 [slice 741 task](tasks/native-engine-browser-741.md),
 [slice 740 task](tasks/native-engine-browser-740.md),

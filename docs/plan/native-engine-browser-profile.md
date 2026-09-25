@@ -419,7 +419,9 @@ secrets, evaluated source, and downloaded content must not enter ordinary logs.
 
 The in-process local engine is retained for development and deterministic unit
 tests only. It cannot satisfy `runtime` or `network-origin` production gates by
-itself.
+itself. Linux content workers now require Bubblewrap 0.8 or later and disable
+and assert against nested user-namespace creation; this is defense in depth,
+not complete OS sandboxing or a production security certification.
 
 ## Revision policy
 

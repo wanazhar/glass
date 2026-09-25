@@ -33,6 +33,13 @@ Bubblewrap content worker. A control-versus-restricted namespace test and a
 process-backed page-loading regression pass locally. Remote CI and
 cross-platform certification remain open; this is not browser-completion
 evidence.
+Slice 745 is active: it adds OS-enforced content-worker memory ceilings on
+Linux and Windows while preserving stricter inherited Linux limits. Its
+Linux address-space and process-backed page checks pass. The Windows target
+check stops in the `ring` dependency because this host has no MSVC-compatible
+C compiler. The Job Object API snippet type-checks, but full Windows crate and
+runtime/CI evidence remain pending. See the
+[slice 745 task](tasks/native-engine-browser-745.md).
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,
 and inherited sandboxed-modals eligibility. Remote CI and cross-platform

@@ -3,6 +3,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use tokio::process::{Child, Command};
 
+pub(crate) const MAX_NATIVE_CONTENT_ADDRESS_SPACE_BYTES: u64 = 1024 * 1024 * 1024;
+
 pub(crate) struct NativeContentSandbox {
     #[cfg(windows)]
     job: Option<WindowsJob>,
@@ -153,6 +155,7 @@ fn prepare_linux(
         .arg("--native-content-worker");
     unsafe {
         command.pre_exec(|| {
+            apply_linux_address_space_limit()?;
             if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -227,17 +230,19 @@ impl WindowsJob {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::JobObjects::{
             CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-            SetInformationJobObject,
+            JOB_OBJECT_LIMIT_PROCESS_MEMORY, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JobObjectExtendedLimitInformation, SetInformationJobObject,
         };
         let handle = unsafe { CreateJobObjectW(null_mut(), std::ptr::null()) };
         if handle.is_null() {
             return Err(sandbox_error("Windows content job could not be created"));
         }
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags =
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+            | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
         limits.BasicLimitInformation.ActiveProcessLimit = 1;
+        limits.ProcessMemoryLimit = MAX_NATIVE_CONTENT_ADDRESS_SPACE_BYTES as usize;
         let configured = unsafe {
             SetInformationJobObject(
                 handle,
@@ -278,6 +283,26 @@ fn sandbox_error(reason: impl Into<String>) -> NativeEngineError {
 }
 
 #[cfg(target_os = "linux")]
+fn apply_linux_address_space_limit() -> std::io::Result<()> {
+    let mut inherited = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_AS, &mut inherited) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let ceiling = MAX_NATIVE_CONTENT_ADDRESS_SPACE_BYTES as libc::rlim_t;
+    let limit = libc::rlimit {
+        rlim_cur: inherited.rlim_cur.min(ceiling),
+        rlim_max: inherited.rlim_max.min(ceiling),
+    };
+    if unsafe { libc::setrlimit(libc::RLIMIT_AS, &limit) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 fn find_executable(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
@@ -288,6 +313,7 @@ fn find_executable(name: &str) -> Option<PathBuf> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use std::os::unix::process::CommandExt;
     use std::process::Command as StdCommand;
 
     fn sandbox_command(disable_userns: bool, executable: &Path, arguments: &[&str]) -> StdCommand {
@@ -359,6 +385,51 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(worker_args.contains(&"--disable-userns"));
         assert!(worker_args.contains(&"--assert-userns-disabled"));
+    }
+
+    #[test]
+    fn linux_content_worker_inherits_a_bounded_address_space() {
+        let limit_kib = address_space_limit_kib(None);
+        assert!(
+            limit_kib > 0 && limit_kib <= MAX_NATIVE_CONTENT_ADDRESS_SPACE_BYTES / 1024,
+            "address-space limit exceeded the Glass worker ceiling: {limit_kib} KiB"
+        );
+
+        const STRICTER_PARENT_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+        assert_eq!(
+            address_space_limit_kib(Some(STRICTER_PARENT_LIMIT_BYTES)),
+            STRICTER_PARENT_LIMIT_BYTES / 1024,
+            "the worker must retain a stricter inherited limit"
+        );
+    }
+
+    fn address_space_limit_kib(parent_limit: Option<u64>) -> u64 {
+        let mut command = StdCommand::new("/bin/sh");
+        command.args(["-c", "ulimit -v"]);
+        unsafe {
+            command.pre_exec(move || {
+                if let Some(bytes) = parent_limit {
+                    let limit = libc::rlimit {
+                        rlim_cur: bytes as libc::rlim_t,
+                        rlim_max: bytes as libc::rlim_t,
+                    };
+                    if libc::setrlimit(libc::RLIMIT_AS, &limit) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                apply_linux_address_space_limit()
+            });
+        }
+        let output = command.output().expect("limited shell should start");
+        assert!(
+            output.status.success(),
+            "limited shell failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<u64>()
+            .expect("ulimit should report a finite KiB limit")
     }
 }
 

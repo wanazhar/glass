@@ -11,7 +11,10 @@ use super::args::{
     WorkflowAuthoringCommand, WorkspaceCommand,
 };
 #[cfg(feature = "native-engine")]
-use crate::browser::native_engine::{NativeEngineConfig, NativeFile};
+use crate::browser::native_engine::{
+    NATIVE_DIALOG_TEXT_LIMIT_BYTES, NativeDialogResolution, NativeEngineConfig, NativeFile,
+    NativePendingDialog,
+};
 use crate::browser::policy::{BrowserPolicy, PolicyCapability, PolicyPreset};
 use crate::browser::profile::ProfileManager;
 use crate::browser::runtime::{BrowserRuntime, BrowserRuntimeSession};
@@ -55,6 +58,8 @@ use clap::ValueEnum;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
+#[cfg(feature = "native-engine")]
+use std::future::Future;
 use std::io::{IsTerminal, Read};
 use std::path::Path;
 use std::process::Stdio;
@@ -449,7 +454,12 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
     }
 
     #[cfg(feature = "native-engine")]
-    let session = if native {
+    let interactive_native_dialogs = native && std::io::stdin().is_terminal();
+    #[cfg(feature = "native-engine")]
+    let session = if interactive_native_dialogs {
+        BrowserRuntimeSession::connect_native_with_modal_dialogs(native_config_from_cli(cli)?)
+            .await?
+    } else if native {
         BrowserRuntimeSession::connect_native(native_config_from_cli(cli)?).await?
     } else {
         let endpoint = cli.browser_endpoint.as_deref().ok_or_else(|| {
@@ -477,21 +487,232 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
     };
     let result = match context_result {
         Ok(()) => {
-            let output = run_alternative_runtime_command(
+            let operation = run_alternative_runtime_command(
                 &session,
                 command,
                 policy,
                 &cli.profile,
                 cli.response_mode,
-            )
-            .await?;
-            print_alternative_runtime_output(output)
+            );
+            #[cfg(feature = "native-engine")]
+            let output = if interactive_native_dialogs {
+                run_native_cli_dialog_host(&session, operation).await
+            } else {
+                operation.await
+            };
+            #[cfg(not(feature = "native-engine"))]
+            let output = operation.await;
+            output.and_then(print_alternative_runtime_output)
         }
         Err(error) => Err(error),
     };
     let close_result = session.close().await;
     result?;
     close_result
+}
+
+#[cfg(feature = "native-engine")]
+async fn run_native_cli_dialog_host<T, F>(
+    session: &BrowserRuntimeSession,
+    operation: F,
+) -> BrowserResult<T>
+where
+    F: Future<Output = BrowserResult<T>>,
+{
+    let controller = session.native_dialog_controller()?;
+    let mut input = BufReader::new(tokio::io::stdin());
+    tokio::pin!(operation);
+
+    loop {
+        if let Some(pending) = controller.pending_dialog()? {
+            let resolution = prompt_native_cli_dialog(&pending, &mut input).await?;
+            controller.resolve_dialog(&pending.id, resolution)?;
+            continue;
+        }
+
+        tokio::select! {
+            result = &mut operation => return result,
+            () = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+    }
+}
+
+#[cfg(feature = "native-engine")]
+async fn prompt_native_cli_dialog(
+    pending: &NativePendingDialog,
+    input: &mut BufReader<tokio::io::Stdin>,
+) -> BrowserResult<NativeDialogResolution> {
+    loop {
+        let message = escape_cli_dialog_text(&pending.dialog.message);
+        match pending.dialog.dialog_type.as_str() {
+            "alert" => {
+                eprintln!("\nJavaScript alert: {message}");
+                eprint!("Press Enter to continue: ");
+            }
+            "confirm" => {
+                eprintln!("\nJavaScript confirm: {message}");
+                eprint!("Accept? [y/N] ");
+            }
+            "prompt" => {
+                eprintln!("\nJavaScript prompt: {message}");
+                if let Some(default_value) = pending.dialog.default_value.as_deref() {
+                    eprint!(
+                        "Value [{}] (or :cancel): ",
+                        escape_cli_dialog_text(default_value)
+                    );
+                } else {
+                    eprint!("Value (or :cancel): ");
+                }
+            }
+            other => {
+                return Err(format!(
+                    "the native CLI cannot present the `{other}` JavaScript dialog yet"
+                )
+                .into());
+            }
+        }
+
+        let max_bytes = if pending.dialog.dialog_type == "prompt" {
+            NATIVE_DIALOG_TEXT_LIMIT_BYTES
+        } else {
+            4096
+        };
+        let line = match read_native_cli_dialog_line(input, max_bytes).await? {
+            NativeCliDialogLine::EndOfInput => None,
+            NativeCliDialogLine::Text(value) => Some(value),
+            NativeCliDialogLine::TooLong => {
+                eprintln!(
+                    "Input exceeds the {}-byte dialog limit; try again.",
+                    max_bytes
+                );
+                continue;
+            }
+        };
+        if pending.dialog.dialog_type == "alert" {
+            return Ok(NativeDialogResolution {
+                accepted: true,
+                prompt_value: None,
+            });
+        }
+        if let Some(resolution) =
+            parse_native_cli_dialog_response(&pending.dialog.dialog_type, line.as_deref())?
+        {
+            return Ok(resolution);
+        }
+        eprintln!("Enter `y` or `n` to resolve the confirm dialog.");
+    }
+}
+
+#[cfg(feature = "native-engine")]
+enum NativeCliDialogLine {
+    EndOfInput,
+    Text(String),
+    TooLong,
+}
+
+#[cfg(feature = "native-engine")]
+async fn read_native_cli_dialog_line(
+    input: &mut (impl tokio::io::AsyncBufRead + Unpin),
+    max_bytes: usize,
+) -> BrowserResult<NativeCliDialogLine> {
+    let storage_limit = max_bytes.saturating_add(2);
+    let mut bytes = Vec::with_capacity(storage_limit.min(1024));
+    let mut overflow = false;
+
+    loop {
+        let (consumed, finished, is_eof) = {
+            let available = input.fill_buf().await?;
+            if available.is_empty() {
+                (0, true, true)
+            } else {
+                let newline = available.iter().position(|byte| *byte == b'\n');
+                let consumed = newline.map_or(available.len(), |index| index + 1);
+                let content_len = newline.unwrap_or(consumed);
+                let remaining = storage_limit.saturating_sub(bytes.len());
+                let retained = content_len.min(remaining);
+                bytes.extend_from_slice(&available[..retained]);
+                overflow |= retained < content_len;
+                (consumed, newline.is_some(), false)
+            }
+        };
+        input.consume(consumed);
+        if finished {
+            if is_eof && bytes.is_empty() && !overflow {
+                return Ok(NativeCliDialogLine::EndOfInput);
+            }
+            break;
+        }
+    }
+
+    if overflow {
+        return Ok(NativeCliDialogLine::TooLong);
+    }
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    if bytes.len() > max_bytes {
+        return Ok(NativeCliDialogLine::TooLong);
+    }
+    String::from_utf8(bytes)
+        .map(NativeCliDialogLine::Text)
+        .map_err(|error| format!("dialog input is not valid UTF-8: {error}").into())
+}
+
+#[cfg(feature = "native-engine")]
+fn parse_native_cli_dialog_response(
+    dialog_type: &str,
+    input: Option<&str>,
+) -> BrowserResult<Option<NativeDialogResolution>> {
+    let resolution = match dialog_type {
+        "confirm" => match input
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "y" | "yes" => NativeDialogResolution {
+                accepted: true,
+                prompt_value: None,
+            },
+            "" | "n" | "no" => NativeDialogResolution {
+                accepted: false,
+                prompt_value: None,
+            },
+            _ => return Ok(None),
+        },
+        "prompt" => match input {
+            None | Some(":cancel") => NativeDialogResolution {
+                accepted: false,
+                prompt_value: None,
+            },
+            Some(value) if value.len() > NATIVE_DIALOG_TEXT_LIMIT_BYTES => {
+                return Err(format!(
+                    "prompt response exceeds the {NATIVE_DIALOG_TEXT_LIMIT_BYTES}-byte limit"
+                )
+                .into());
+            }
+            Some(value) => NativeDialogResolution {
+                accepted: true,
+                prompt_value: (!value.is_empty()).then(|| value.to_owned()),
+            },
+        },
+        other => return Err(format!("unsupported native CLI dialog type `{other}`").into()),
+    };
+    Ok(Some(resolution))
+}
+
+#[cfg(feature = "native-engine")]
+fn escape_cli_dialog_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                character.escape_default().to_string()
+            } else {
+                character.to_string()
+            }
+        })
+        .collect()
 }
 
 fn validate_alternative_runtime_flags(cli: &Cli, runtime: BrowserRuntime) -> BrowserResult<()> {
@@ -4303,6 +4524,102 @@ mod tests {
         assert!(!should_run_tui(false, true));
         assert!(!should_run_tui(true, false));
         assert!(!should_run_tui(false, false));
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_cli_dialog_responses_preserve_web_dialog_semantics() {
+        assert_eq!(
+            parse_native_cli_dialog_response("confirm", Some(" YES "))
+                .unwrap()
+                .unwrap(),
+            NativeDialogResolution {
+                accepted: true,
+                prompt_value: None,
+            }
+        );
+        assert_eq!(
+            parse_native_cli_dialog_response("confirm", Some("n"))
+                .unwrap()
+                .unwrap()
+                .accepted,
+            false
+        );
+        assert!(
+            parse_native_cli_dialog_response("confirm", Some("maybe"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            parse_native_cli_dialog_response("prompt", Some("Ada"))
+                .unwrap()
+                .unwrap()
+                .prompt_value
+                .as_deref(),
+            Some("Ada")
+        );
+        assert_eq!(
+            parse_native_cli_dialog_response("prompt", Some(""))
+                .unwrap()
+                .unwrap()
+                .prompt_value,
+            None
+        );
+        assert_eq!(
+            parse_native_cli_dialog_response("prompt", None)
+                .unwrap()
+                .unwrap()
+                .accepted,
+            false
+        );
+        assert!(
+            parse_native_cli_dialog_response(
+                "prompt",
+                Some(&"é".repeat(NATIVE_DIALOG_TEXT_LIMIT_BYTES / 2 + 1))
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[tokio::test]
+    async fn native_cli_dialog_input_is_utf8_and_byte_bounded() {
+        let mut input = BufReader::new(std::io::Cursor::new("é\r\n".as_bytes().to_vec()));
+        assert!(matches!(
+            read_native_cli_dialog_line(&mut input, 2).await.unwrap(),
+            NativeCliDialogLine::Text(value) if value == "é"
+        ));
+
+        let mut input = BufReader::new(std::io::Cursor::new("éx\n".as_bytes().to_vec()));
+        assert!(matches!(
+            read_native_cli_dialog_line(&mut input, 2).await.unwrap(),
+            NativeCliDialogLine::TooLong
+        ));
+
+        let mut input = BufReader::new(std::io::Cursor::new("é\r\nnext\n".as_bytes().to_vec()));
+        assert!(matches!(
+            read_native_cli_dialog_line(&mut input, 2).await.unwrap(),
+            NativeCliDialogLine::Text(value) if value == "é"
+        ));
+        assert!(matches!(
+            read_native_cli_dialog_line(&mut input, 4).await.unwrap(),
+            NativeCliDialogLine::Text(value) if value == "next"
+        ));
+
+        let mut input = BufReader::new(std::io::Cursor::new(Vec::<u8>::new()));
+        assert!(matches!(
+            read_native_cli_dialog_line(&mut input, 2).await.unwrap(),
+            NativeCliDialogLine::EndOfInput
+        ));
+    }
+
+    #[cfg(feature = "native-engine")]
+    #[test]
+    fn native_cli_dialog_terminal_text_cannot_inject_control_sequences() {
+        assert_eq!(
+            escape_cli_dialog_text("alert\n\u{1b}[31m"),
+            "alert\\n\\u{1b}[31m"
+        );
     }
 
     #[test]

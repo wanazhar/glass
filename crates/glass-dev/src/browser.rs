@@ -317,6 +317,20 @@ impl BrowserService {
             .map_err(|error| DevelopmentError::Process(error.to_string()))
     }
 
+    /// Whether this service currently exposes an out-of-band native dialog
+    /// controller. This is a nonblocking capability check for interactive
+    /// hosts that poll while a browser operation is suspended.
+    pub fn native_dialog_control_enabled(&self) -> DevelopmentResult<bool> {
+        self.native_dialog_controller
+            .lock()
+            .map(|controller| controller.is_some())
+            .map_err(|_| {
+                DevelopmentError::Process(
+                    "native browser dialog control state is unavailable".into(),
+                )
+            })
+    }
+
     /// Resolve the exact pending native dialog without waiting for the
     /// serialized browser worker. A stale identity is rejected and leaves the
     /// page operation suspended.
@@ -1426,6 +1440,7 @@ mod tests {
     fn native_dialog_control_is_opt_in_and_rejects_chromium_sessions() {
         let service = BrowserService::new(std::env::temp_dir()).unwrap();
         assert!(!BrowserStartConfig::default().modal_dialogs);
+        assert!(!service.native_dialog_control_enabled().unwrap());
         assert!(service.pending_native_dialog().is_err());
         assert!(
             service
@@ -1462,16 +1477,34 @@ mod tests {
         let running = Arc::new(AtomicBool::new(true));
         let server_running = Arc::clone(&running);
         let server = std::thread::spawn(move || {
-            let html = br#"<!doctype html><title>Dialog service</title><script>
+            let baseline_html: &[u8] =
+                br#"<!doctype html><title>Baseline service</title><body>Initial</body><script>
+                document.body.textContent = 'baseline mutation';
+            </script>"#;
+            let dialog_html: &[u8] =
+                br#"<!doctype html><title>Dialog service</title><body></body><script>
                 const accepted = confirm('Continue?');
                 const name = prompt('Your name?', 'Ada');
                 document.body.textContent = `${accepted}|${name}`;
+            </script>"#;
+            let alert_html: &[u8] = br#"<!doctype html><title>Alert service</title><script>
+                alert('Dialog flow complete');
             </script>"#;
             while server_running.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let mut request = [0; 4096];
-                        let _ = stream.read(&mut request);
+                        let received = stream.read(&mut request).unwrap_or_default();
+                        let request = String::from_utf8_lossy(&request[..received]);
+                        let path = request
+                            .lines()
+                            .next()
+                            .and_then(|line| line.split_whitespace().nth(1));
+                        let html = match path {
+                            Some("/baseline") => baseline_html,
+                            Some("/alert") => alert_html,
+                            _ => dialog_html,
+                        };
                         let header = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                             html.len()
@@ -1487,14 +1520,45 @@ mod tests {
             }
         });
 
-        let service = BrowserService::new(std::env::temp_dir()).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "glass-native-dialog-tui-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut tui = crate::tui::DevTuiState::open_for_tui(
+            &root,
+            glass_browser::cli::args::TuiLayout::Desktop,
+        )
+        .unwrap();
+        let service = tui.browser_service.clone();
         let started = service
             .start(BrowserStartConfig {
                 modal_dialogs: true,
                 ..BrowserStartConfig::default()
             })
             .unwrap();
+        assert!(service.native_dialog_control_enabled().unwrap());
         let revision = started["browserRevision"].as_u64().unwrap();
+        let baseline_result = service
+            .navigate(
+                format!("http://{address}/baseline"),
+                revision,
+                Duration::from_secs(30),
+            )
+            .unwrap();
+        assert_eq!(baseline_result["backend"], "native");
+        assert_eq!(
+            service.observe().unwrap()["text"],
+            "baseline mutation",
+            "the non-modal control flow must publish its DOM mutation"
+        );
+        let revision = service.state().unwrap()["browserRevision"]
+            .as_u64()
+            .unwrap();
         let navigation_service = service.clone();
         let navigation = std::thread::spawn(move || {
             navigation_service.navigate(
@@ -1536,26 +1600,31 @@ mod tests {
             service.pending_native_dialog().unwrap().unwrap().id,
             confirm.id
         );
-        service
-            .resolve_native_dialog(
-                &confirm.id,
-                NativeDialogResolution {
-                    accepted: true,
-                    prompt_value: None,
-                },
-            )
-            .unwrap();
+        let shared_workspace = tui.workspace.clone();
+        let workspace_guard = shared_workspace.lock().unwrap();
+        assert!(tui.poll_native_browser_dialog());
+        assert_eq!(tui.browser_dialog.as_ref().unwrap().pending.id, confirm.id);
+        tui.handle_native_browser_dialog_key(
+            crossterm::event::KeyCode::Char('Y'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        drop(workspace_guard);
+        assert!(tui.browser_dialog.is_none());
 
         let prompt = wait_for_dialog("prompt");
-        service
-            .resolve_native_dialog(
-                &prompt.id,
-                NativeDialogResolution {
-                    accepted: true,
-                    prompt_value: Some("Grace".into()),
-                },
-            )
-            .unwrap();
+        assert!(tui.poll_native_browser_dialog());
+        assert_eq!(tui.browser_dialog.as_ref().unwrap().pending.id, prompt.id);
+        assert_eq!(tui.browser_dialog.as_ref().unwrap().prompt_input, "Ada");
+        tui.handle_native_browser_dialog_key(
+            crossterm::event::KeyCode::Char('G'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert_eq!(tui.browser_dialog.as_ref().unwrap().prompt_input, "AdaG");
+        tui.handle_native_browser_dialog_key(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(tui.browser_dialog.is_none());
 
         let navigation_result = navigation.join().unwrap().unwrap();
         assert_eq!(navigation_result["backend"], "native");
@@ -1563,11 +1632,52 @@ mod tests {
             navigation_result["url"],
             format!("http://{address}/dialogs")
         );
+        assert_eq!(service.observe().unwrap()["text"], "true|AdaG");
+
+        let revision = service.state().unwrap()["browserRevision"]
+            .as_u64()
+            .unwrap();
+        let alert_service = service.clone();
+        let alert_navigation = std::thread::spawn(move || {
+            alert_service.navigate(
+                format!("http://{address}/alert"),
+                revision,
+                Duration::from_secs(30),
+            )
+        });
+        let alert_deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let alert = loop {
+            if let Some(dialog) = service.pending_native_dialog().unwrap() {
+                break dialog;
+            }
+            assert!(
+                !alert_navigation.is_finished(),
+                "alert navigation completed before the alert dialog was resolved"
+            );
+            assert!(
+                std::time::Instant::now() < alert_deadline,
+                "timed out waiting for the alert dialog"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(alert.dialog.dialog_type, "alert");
+        assert!(tui.poll_native_browser_dialog());
+        assert_eq!(tui.browser_dialog.as_ref().unwrap().pending.id, alert.id);
+        tui.request_quit();
+        tui.confirm_quit();
+        assert!(tui.quit);
+        assert!(tui.browser_dialog.is_none());
+        let alert_result = alert_navigation.join().unwrap().unwrap();
+        assert_eq!(alert_result["backend"], "native");
+        assert_eq!(alert_result["url"], format!("http://{address}/alert"));
+
         assert_eq!(service.stop().unwrap()["connected"], false);
+        assert!(!service.native_dialog_control_enabled().unwrap());
         assert!(service.pending_native_dialog().is_err());
 
         running.store(false, Ordering::Relaxed);
         server.join().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

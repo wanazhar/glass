@@ -2557,8 +2557,9 @@ fn execute_browser(
                         "port": port,
                         "attach": attach,
                         "incognito": incognito,
-                        "headed": headed,
-                        "chromePath": chrome_path
+                        "headed": attach && headed,
+                        "chromePath": if attach { chrome_path } else { None },
+                        "modalDialogs": !attach
                     }),
                     true,
                 )
@@ -3074,9 +3075,36 @@ mod tests {
             .as_ref()
             .expect("browser startup confirmation");
         assert_eq!(pending.call.name, "glass.browser.start");
+        assert_eq!(pending.call.arguments["modalDialogs"], true);
         state.deny_confirmation();
         assert!(state.pending_browser_navigation.is_none());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn browser_start_uses_native_dialogs_and_attach_keeps_chromium_options() {
+        let (mut native, native_root) = test_state("native-browser-start");
+        execute(&mut native, "browser start").expect("queue native browser start");
+        let native_start = native
+            .pending_confirmation
+            .take()
+            .expect("native startup confirmation");
+        assert_eq!(native_start.call.arguments["attach"], false);
+        assert_eq!(native_start.call.arguments["modalDialogs"], true);
+        assert_eq!(native_start.call.arguments["headed"], false);
+        assert!(native_start.call.arguments["chromePath"].is_null());
+        let _ = fs::remove_dir_all(native_root);
+
+        let (mut attached, attached_root) = test_state("attached-browser-start");
+        execute(&mut attached, "browser start --attach").expect("queue Chromium attach");
+        let attached_start = attached
+            .pending_confirmation
+            .take()
+            .expect("attach confirmation");
+        assert_eq!(attached_start.call.arguments["attach"], true);
+        assert_eq!(attached_start.call.arguments["modalDialogs"], false);
+        assert_eq!(attached_start.call.arguments["headed"], true);
+        let _ = fs::remove_dir_all(attached_root);
     }
 
     #[test]

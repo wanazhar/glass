@@ -2,7 +2,8 @@ use super::command;
 use super::editor::EditorMode;
 use super::file_view;
 use super::pi_commands;
-use super::state::{DevSurface, DevTuiState, ResponsiveClass};
+use super::state::{DevSurface, DevTuiState, ResponsiveClass, safe_browser_url};
+use glass_browser::browser::NATIVE_DIALOG_TEXT_LIMIT_BYTES;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -210,6 +211,7 @@ pub fn browser_visual_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
         || state.browser_target_picker
         || state.browser_recovery.is_some()
         || state.code_edit_mode
+        || state.browser_dialog.is_some()
     {
         return None;
     }
@@ -240,10 +242,168 @@ pub fn browser_visual_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
     (inner.width > 0 && inner.height > 0).then_some(inner)
 }
 
+fn render_native_browser_dialog(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let Some(dialog) = state.browser_dialog.as_ref() else {
+        return;
+    };
+    let is_prompt = dialog.pending.dialog.dialog_type == "prompt";
+    let compact = matches!(
+        state.responsive_class(area.width, area.height),
+        ResponsiveClass::Phone
+    );
+    let (kind, accent) = match dialog.pending.dialog.dialog_type.as_str() {
+        "alert" => ("ALERT", WARNING),
+        "confirm" => ("CONFIRM", ACCENT_BRIGHT),
+        "prompt" => ("PROMPT", ACCENT_BRIGHT),
+        _ => ("DIALOG", WARNING),
+    };
+    let width = area.width.min(82);
+    let height = area.height.min(16);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .title(format!(" JAVASCRIPT {kind} · page paused "))
+        .title_style(Style::default().fg(accent).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent))
+        .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(modal);
+    frame.render_widget(Clear, modal);
+    frame.render_widget(block, modal);
+
+    let mut constraints = vec![
+        Constraint::Min(1),
+        Constraint::Length(if compact { 2 } else { 1 }),
+    ];
+    if is_prompt {
+        constraints.push(Constraint::Length(1));
+    }
+    if dialog.error.is_some() {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.extend([Constraint::Length(1), Constraint::Length(1)]);
+    if is_prompt {
+        constraints.push(Constraint::Length(1));
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner);
+    let mut row = 0;
+    frame.render_widget(
+        Paragraph::new(dialog.pending.dialog.message.as_str())
+            .style(Style::default().fg(TEXT))
+            .wrap(Wrap { trim: false }),
+        rows[row],
+    );
+    row += 1;
+    let page_url = safe_browser_url(&dialog.pending.dialog.url)
+        .unwrap_or_else(|| "local or unavailable page".into());
+    let page = if compact {
+        format!("Page: {page_url}")
+    } else {
+        compact_line(&format!("Page: {page_url}"), inner.width)
+    };
+    frame.render_widget(
+        Paragraph::new(page)
+            .style(Style::default().fg(MUTED))
+            .wrap(Wrap { trim: false }),
+        rows[row],
+    );
+    row += 1;
+    if is_prompt {
+        let cursor = dialog
+            .prompt_cursor
+            .min(dialog.prompt_input.chars().count());
+        let before = dialog.prompt_input.chars().take(cursor).collect::<String>();
+        let after = dialog.prompt_input.chars().skip(cursor).collect::<String>();
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("› ", Style::default().fg(ACCENT_BRIGHT)),
+                Span::raw(before),
+                Span::styled(
+                    "▏",
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(ACCENT_BRIGHT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(after),
+            ]))
+            .style(Style::default().fg(TEXT).bg(PANEL_INSET)),
+            rows[row],
+        );
+        row += 1;
+    }
+    if let Some(error) = dialog.error.as_deref() {
+        frame.render_widget(
+            Paragraph::new(compact_line(&format!("Error: {error}"), inner.width))
+                .style(Style::default().fg(ERROR)),
+            rows[row],
+        );
+        row += 1;
+    }
+    let (first_hint, second_hint) = match (dialog.pending.dialog.dialog_type.as_str(), compact) {
+        ("alert", true) => ("Enter/Esc acknowledge", "Ctrl-C quit"),
+        ("alert", false) => (
+            "Enter acknowledge · Esc acknowledge",
+            "Ctrl-C opens quit confirmation",
+        ),
+        ("confirm", true) => ("Y/Enter yes · N/Esc no", "Ctrl-C quit"),
+        ("confirm", false) => (
+            "Y/Enter accept · N/Esc dismiss",
+            "Ctrl-C opens quit confirmation",
+        ),
+        ("prompt", true) => (
+            "Enter submit · Esc cancel",
+            "←/→ edit · Home/End · Ctrl-C quit",
+        ),
+        ("prompt", false) => (
+            "Enter submit · Esc dismiss",
+            "Type to edit · ←/→ · Home/End · Ctrl-C quit",
+        ),
+        _ => (
+            "Enter continue · Esc dismiss",
+            "Ctrl-C opens quit confirmation",
+        ),
+    };
+    frame.render_widget(
+        Paragraph::new(first_hint).style(Style::default().fg(MUTED)),
+        rows[row],
+    );
+    row += 1;
+    frame.render_widget(
+        Paragraph::new(second_hint).style(Style::default().fg(MUTED)),
+        rows[row],
+    );
+    if is_prompt {
+        row += 1;
+        frame.render_widget(
+            Paragraph::new(format!(
+                "Response: {}/{} UTF-8 bytes",
+                dialog.prompt_input.len(),
+                NATIVE_DIALOG_TEXT_LIMIT_BYTES
+            ))
+            .style(Style::default().fg(MUTED)),
+            rows[row],
+        );
+    }
+}
+
 pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     let area = frame.area();
     if state.quit_confirmation {
         render_quit_confirmation(frame, area);
+        return;
+    }
+    if state.browser_dialog.is_some() {
+        render_native_browser_dialog(frame, state, area);
         return;
     }
     if state.help_open {
@@ -4128,6 +4288,7 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::state::BrowserDialogPrompt;
     use glass_browser::browser_workspace::BrowserWorkspaceIntent;
     use glass_browser::cli::args::TuiLayout;
     use ratatui::Terminal;
@@ -4170,6 +4331,62 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| render(frame, state)).unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    fn install_native_dialog(state: &mut DevTuiState, dialog_type: &str) {
+        let prompt = dialog_type == "prompt";
+        let prompt_input = if prompt { "Ada" } else { "" };
+        state.browser_dialog = Some(BrowserDialogPrompt {
+            pending: glass_browser::browser::NativePendingDialog {
+                id: "native-dialog-render-test".into(),
+                context_id: "native-context-render-test".into(),
+                frame_id: "native-frame-render-test".into(),
+                dialog: glass_browser::browser::session::PendingDialog {
+                    dialog_type: dialog_type.into(),
+                    message: "Confirm the checkout details before continuing".into(),
+                    default_value: prompt.then(|| prompt_input.to_string()),
+                    url: "https://example.test/checkout?token=secret#receipt".into(),
+                },
+            },
+            prompt_input: prompt_input.into(),
+            prompt_cursor: prompt_input.chars().count(),
+            error: None,
+        });
+    }
+
+    #[test]
+    fn native_browser_dialog_overlay_covers_live_view_at_desktop_and_phone_sizes() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::App;
+        state.browser_visual_live = true;
+        install_native_dialog(&mut state, "confirm");
+
+        let desktop = rendered(&state, 120, 32);
+        assert!(desktop.contains("JAVASCRIPT CONFIRM"));
+        assert!(desktop.contains("Confirm the checkout details"));
+        assert!(desktop.contains("https://example.test/checkout"));
+        assert!(!desktop.contains("secret"));
+        assert!(browser_visual_area(&state, Rect::new(0, 0, 120, 32)).is_none());
+
+        let phone = rendered(&state, 48, 18);
+        assert!(phone.contains("JAVASCRIPT CONFIRM"));
+        assert!(phone.contains("Confirm"));
+        assert!(phone.contains("https://example.test/checkout"));
+    }
+
+    #[test]
+    fn native_browser_prompt_renders_default_text_cursor_and_resolution_error() {
+        let mut state = state(TuiLayout::Mobile);
+        install_native_dialog(&mut state, "prompt");
+        let dialog = state.browser_dialog.as_mut().unwrap();
+        dialog.prompt_cursor = 1;
+        dialog.error = Some("stale dialog identity".into());
+
+        let output = rendered(&state, 48, 18);
+        assert!(output.contains("JAVASCRIPT PROMPT"));
+        assert!(output.contains("A▏da"));
+        assert!(output.contains("stale dialog identity"));
+        assert!(output.contains("UTF-8 bytes"));
     }
 
     #[test]

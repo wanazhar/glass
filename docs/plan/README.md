@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-736`.
+browser expansion slices are complete through `native-engine-browser-738`.
 The public Rust `BrowserSession` now starts the native runtime directly;
 `native-engine-browser-728` preserves the former Chromium API under the
 explicit `CdpBrowserSession` name. Issue #40 remains open; browser completion,
@@ -55,14 +55,28 @@ native constructors remain nonblocking. Slice 736 adds the same opt-in,
 out-of-band controller to the resident development `BrowserService`, so it can
 resolve a modal while the serialized browser worker is awaiting navigation.
 An 8 MiB worker stack is required for the process-backed navigation path and
-is covered by the focused real-HTTP test. The default service remains
-non-modal until its calling host can present and resolve dialogs. CLI/MCP/TUI
-prompt presentation and other Core Web Profile parity remain open. See the
+is covered by the focused real-HTTP test. Slice 737 connects the controller to
+the Glass Dev TUI: native TUI starts enable dialogs, modal keys resolve exact
+IDs without the workspace lock, prompt edits are limited to 256 UTF-8 bytes,
+and confirmed quit releases a pending dialog. Explicit `browser start
+--attach` retains Chromium/CDP options without native modal control. The
+default service remains non-modal for hosts that have not opted into a
+responsive surface. Slice 738 adds terminal-hosted `alert`, `confirm`, and
+`prompt` handling for one-shot native CLI commands; non-terminal calls remain
+non-modal. Slice 739 implements standalone native MCP dialog presentation;
+its local Linux checks pass, while remote CI and cross-platform certification
+remain pending. Persistent-session dialog presentation, `beforeunload`, and
+other Core Web Profile parity remain open. See the [slice 739 task](tasks/native-engine-browser-739.md),
+[slice 738 task](tasks/native-engine-browser-738.md),
+[slice 737 task](tasks/native-engine-browser-737.md),
 [slice 736 task](tasks/native-engine-browser-736.md), [slice 735
 task](tasks/native-engine-browser-735.md), and [slice 734
 task](tasks/native-engine-browser-734.md). Issue #40 remains open; no
 browser-completion, operation-parity, or production-certification claim is
-made.
+made. Slice 739 remains in progress pending remote CI and cross-platform
+certification. It connects process-backed native MCP dialogs through
+negotiated client elicitation; persistent MCP sessions and the newer
+multi-round-trip MCP protocol remain distinct gates.
 Slice 727 enforces rooted-file frame CSP. Slice 726 enforces rooted-file image,
 font, and media CSP.
 Slice 725 enforces runtime CSP meta policies before same-turn inline script

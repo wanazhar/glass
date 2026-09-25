@@ -159,6 +159,14 @@ observations fail before mutation. External HTTP(S) documents use the native
 content worker. Native is selected explicitly or by default and never silently
 falls back to Chromium.
 
+For one-shot native commands launched with a terminal on stdin, Glass presents
+process-backed `alert`, `confirm`, and `prompt` dialogs in the terminal and
+resumes the original page operation after the response. Prompt input is
+limited to 256 UTF-8 bytes; `:cancel` dismisses a prompt, and confirm defaults
+to dismissal. Page-provided text is escaped before display. Non-interactive
+native commands retain non-modal behavior and do not wait for terminal input.
+This host path does not yet cover persistent-session commands or MCP clients.
+
 Native `wait` supports `lifecycle=`, `url=`, `url-prefix=`, `text=`,
 `semantic-region=`, `js=` boolean, and target-state conditions. Native
 `verify` accepts the same JSON predicate forms used by the full session for

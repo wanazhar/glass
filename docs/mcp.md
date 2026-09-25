@@ -10,9 +10,25 @@ client-conformance inventory by domain. Treat the server's negotiated
 `tools/list` response as authoritative for exact input schemas in the installed
 version; the catalog explains purpose, authority, and privacy boundaries.
 
-Glass negotiates MCP protocol version `2024-11-05`. The client must send
-`notifications/initialized` after `initialize`. Glass rejects normal
-requests before that notification. A second `initialize` request is invalid.
+Glass accepts MCP `2025-11-25` and the compatible legacy version
+`2024-11-05`, and echoes the selected version in the initialization result.
+The client must send `notifications/initialized` after `initialize`. Glass
+rejects normal requests before that notification. A second `initialize`
+request is invalid.
+
+For `2025-11-25`, clients may declare form-mode `elicitation` support during
+initialization. In that case, process-backed native `alert`, `confirm`, and
+`prompt` dialogs are presented to the client during the active browser tool
+call; Glass waits for the human response and resumes that same page operation.
+The source URL is not included in the elicitation. Prompt responses are
+UTF-8-byte bounded and are not logged or separately echoed in the elicitation
+message. Page text is marked untrusted; control/bidirectional formatting and
+URL-like page text are escaped or omitted, and the client is warned not to
+submit credentials or other secrets in response to a page prompt. Clients that
+select `2024-11-05` or do not declare form elicitation
+retain the non-modal dialog-event behavior. Named persistent MCP sessions do
+not yet opt into this modal host surface. MCP `2026-07-28` multi-round-trip
+negotiation is not implemented by this server.
 
 The initialization result contains a discovery manifest in `glass` and an
 immutable effective agreement in `glassAgreement`. The manifest reports the
@@ -120,9 +136,12 @@ without treating the connection as a partial frame.
 Cancel a request with `notifications/cancelled` and the original request ID.
 Glass returns error code `-32800`.
 
-Cancellation drops local waits and pending native or CDP response state. It
-cannot undo browser input or JavaScript already accepted by the selected
-runtime.
+Cancellation drops local CDP waits and pending response state. For an owned
+process-backed native session, Glass also cancels any nested elicitation and
+lets the active IPC operation drain for up to two seconds; if it cannot drain,
+Glass discards that session rather than reusing a potentially desynchronized
+content process. Cancellation cannot undo browser input or JavaScript already
+accepted by the selected runtime.
 
 Glass handles requests concurrently. It serializes browser operations through
 one session. Requests above the active limit receive an overload error.
@@ -225,6 +244,18 @@ remain browser-free and do not start a browser runtime.
 | `knowledgeList`, `knowledgeShow`, `knowledgeStats` | Read knowledge records. |
 | `knowledgeInvalidate`, `knowledgePurge` | Change knowledge lifecycle state. |
 | `lease/acquire`, `lease/renew`, `lease/release` | Manage daemon mutation leases. |
+
+### Native JavaScript dialogs
+
+With the standalone native runtime and negotiated form-mode elicitation,
+`alert`, `confirm`, and `prompt` are handled as human input nested in the
+active MCP browser-tool call. The same page operation resumes after the user
+responds; Glass does not replay the script. Prompt input is limited to 256
+UTF-8 bytes. Declining or cancelling maps to the browser's dismissal behavior:
+`confirm()` returns `false` and `prompt()` returns `null`. The elicitation
+message marks page text as untrusted and omits the source URL. Clients without
+that capability retain non-modal behavior; named persistent MCP sessions do
+not yet present native modal dialogs.
 
 `extractStructured` fields are bounded semantic projections. Each field has a
 `name`, a semantic `path`, and a `kind`. Supported explicit kinds are

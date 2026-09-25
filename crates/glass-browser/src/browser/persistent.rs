@@ -1,13 +1,13 @@
 //! Persistent local browser sessions for CLI and terminal clients.
 //!
-//! A session owner process keeps the [`BrowserSession`] and Chrome child alive
+//! A session owner process keeps the [`CdpBrowserSession`] and Chrome child alive
 //! between CLI invocations. Clients attach through the verified loopback CDP
 //! port; the owner is the only process allowed to close the owned browser.
 
 use super::policy::BrowserPolicy;
 use super::runtime::BrowserRuntime;
 use super::session::{
-    BrowserResult, BrowserSession, SessionOptions, WorkflowCheckpoint, WorkflowDefinition,
+    BrowserResult, CdpBrowserSession, SessionOptions, WorkflowCheckpoint, WorkflowDefinition,
     WorkflowRunResult,
 };
 #[cfg(feature = "native-engine")]
@@ -447,7 +447,7 @@ async fn serve_chromium_unix(config: PersistentSessionServeConfig) -> BrowserRes
         ..SessionOptions::default()
     };
 
-    let session = match BrowserSession::start(&options).await {
+    let session = match CdpBrowserSession::start(&options).await {
         Ok(session) => session,
         Err(error) => {
             let failed = PersistentSessionRecord {

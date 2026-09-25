@@ -55,8 +55,8 @@ on Unix is useful source evidence but is never reported as native proof.
 ## Reuse one live MCP session
 
 Keep one MCP process and transport connection open for a sequence of related
-operations. The MCP bridge starts its `BrowserSession` lazily on the first
-browser tool call and retains it in the connection's session store; later
+operations. The MCP bridge starts its browser runtime session lazily on the
+first browser tool call and retains it in the connection's session store; later
 calls on that connection reuse the same owned browser process and active target.
 The stdio server closes that owned session when its input reaches EOF.
 

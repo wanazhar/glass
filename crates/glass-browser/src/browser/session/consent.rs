@@ -41,7 +41,7 @@ const CONSENT_DISMISS_FUNCTION: &str = r#"function() {
     return JSON.stringify({framework:null, dismissed:false});
 }"#;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Dismiss a visible OneTrust/Cookiebot consent control, if recognized.
     /// This only clicks documented consent controls; it does not bypass bot
     /// protection or search arbitrary page buttons.

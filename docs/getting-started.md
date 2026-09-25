@@ -336,9 +336,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 The crate name is `glass_browser` unless Cargo renames it. The embedding
-application owns `BrowserSession` lifecycle. Call `close().await` for owned
-sessions so Chrome can flush profile state; dropping an attached session must
-not close the external browser.
+application owns the native `BrowserSession` lifecycle and should call
+`close().await` to release its context. The explicit `CdpBrowserSession`
+migration API owns or attaches to Chrome; close owned sessions so Chrome can
+flush profile state, and never close an attached external browser.
 
 Read the [Rust SDK guide](rust-sdk.md) for launch/attach, policy, observations,
 actions, semantic execution, workflows, knowledge, backends, presentation,

@@ -1,7 +1,7 @@
 //! Browser emulation controls via CDP.
 //!
 //! This module exposes page PDF generation and environment overrides
-//! (geolocation, timezone) through the [`BrowserSession`](super::BrowserSession)
+//! (geolocation, timezone) through the [`CdpBrowserSession`](super::CdpBrowserSession)
 //! extension methods.
 
 use super::*;
@@ -56,7 +56,7 @@ impl PdfOptions {
 
 /// Geolocation coordinates for CDP emulation.
 ///
-/// Pass to [`BrowserSession::set_geolocation`] to override the
+/// Pass to [`CdpBrowserSession::set_geolocation`] to override the
 /// browser's reported position.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GeoLocation {
@@ -109,7 +109,7 @@ impl NetworkConditions {
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Apply session-scoped network throttling. Call with `None` to reset.
     pub async fn set_network_conditions(
         &self,

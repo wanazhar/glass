@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Click a target that is expected to open a popup window.
     ///
     /// Monitors target creation events during the click, identifies the new

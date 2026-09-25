@@ -29,7 +29,7 @@ use super::live_view::{
 };
 use crate::browser::policy::BrowserPolicy;
 use crate::browser::session::{
-    BrowserResult, BrowserSession, PageTargetInfo, SessionOptions, WorkflowCheckpoint,
+    BrowserResult, CdpBrowserSession, PageTargetInfo, SessionOptions, WorkflowCheckpoint,
     WorkflowDefinition, WorkflowRunResult,
 };
 #[cfg(feature = "native-engine")]
@@ -94,7 +94,7 @@ struct BrowserTui {
 }
 
 enum BrowserTuiSession {
-    Chromium(Box<BrowserSession>),
+    Chromium(Box<CdpBrowserSession>),
     #[cfg(feature = "native-engine")]
     Native(Box<BrowserRuntimeSession>),
     #[cfg(feature = "native-engine")]
@@ -1201,7 +1201,7 @@ impl BrowserTui {
                 policy: Some(crate::cli::runner::policy_from_cli(cli)?),
             };
             self.session = Some(BrowserTuiSession::Chromium(Box::new(
-                BrowserSession::start(&options).await?,
+                CdpBrowserSession::start(&options).await?,
             )));
             self.workspace
                 .connected(!attach, Some(format!("127.0.0.1:{port}")), None);

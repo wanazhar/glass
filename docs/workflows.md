@@ -141,7 +141,7 @@ or step error strings.
 does not dispatch an action. It rejects route changes, definition changes, and
 a next state that could represent an already dispatched effect.
 
-`BrowserSession::resume_workflow` reconciles the state and runs only the safe
+`CdpBrowserSession::resume_workflow` reconciles the state and runs only the safe
 pending suffix. It does not replay the committed prefix. It refuses an
 already-complete checkpoint.
 

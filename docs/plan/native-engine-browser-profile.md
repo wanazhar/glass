@@ -34,6 +34,9 @@ When the native backend is selected, it must:
    accessibility model;
 3. implement every normal Glass operation mapped to this profile, including
    CLI, `BrowserSession`, MCP, and TUI paths;
+   the public Rust `glass_browser::BrowserSession` constructor must create the
+   native backend directly; the Chrome/CDP migration API is explicitly named
+   `CdpBrowserSession` and cannot be selected by fallback or backend probing;
 4. return typed, versioned unsupported errors only for capabilities explicitly
    outside this profile; and
 5. run untrusted content behind the production process/sandbox boundary before

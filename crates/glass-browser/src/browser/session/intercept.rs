@@ -1,7 +1,7 @@
 //! CDP Fetch domain request interception.
 //!
 //! Provides scoped network request interception via the CDP `Fetch`
-//! domain. Use [`BrowserSession::intercept_request`] to enable
+//! domain. Use [`CdpBrowserSession::intercept_request`] to enable
 //! interception with a [`RequestPattern`] and obtain an
 //! [`InterceptGuard`] that disables interception on drop.
 //!
@@ -96,7 +96,7 @@ fn fetch_request_pattern(pattern: &RequestPattern) -> serde_json::Value {
     value
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Enable CDP Fetch domain interception for the active page session.
     ///
     /// Returns a scoped guard that disables interception on drop.

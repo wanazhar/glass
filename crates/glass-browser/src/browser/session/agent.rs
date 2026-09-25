@@ -178,7 +178,7 @@ pub struct RecoverRunResult {
     pub retry: RetryGuidance,
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Capture one bounded semantic observation without changing browser state.
     pub async fn inspect_page(&self) -> BrowserResult<InspectPageResult> {
         let observation = self
@@ -306,7 +306,7 @@ impl BrowserSession {
 }
 
 /// Extract a bounded structured result from an already captured semantic
-/// observation. BrowserSession and the Glass-owned native runtime both use
+/// observation. CdpBrowserSession and the Glass-owned native runtime both use
 /// this function so sensitive-field handling, continuation validation, and
 /// output limits cannot drift between backends.
 pub(crate) fn extract_structured_from_observation(

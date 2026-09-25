@@ -16,7 +16,7 @@ use crate::browser::policy::{BrowserPolicy, PolicyCapability, PolicyPreset};
 use crate::browser::profile::ProfileManager;
 use crate::browser::runtime::{BrowserRuntime, BrowserRuntimeSession};
 use crate::browser::session::{
-    ActionKind, BatchStep, BrowserResult, BrowserSession, CheckpointV1, Cookie, InteractionMode,
+    ActionKind, BatchStep, BrowserResult, CdpBrowserSession, CheckpointV1, Cookie, InteractionMode,
     KnowledgeConfidence, KnowledgeStore, Locator, PdfOptions, ReconciliationOptions,
     SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticObservationLevel,
     SessionOptions, SessionSnapshotStore, StructuredExtractionRequest, VerificationPredicate,
@@ -340,7 +340,7 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
         policy: None,
     };
     let session =
-        BrowserSession::start_with_policy_and_viewport(&options, policy, viewport).await?;
+        CdpBrowserSession::start_with_policy_and_viewport(&options, policy, viewport).await?;
     let result = if let Some(prompt) = &cli.prompt {
         run_prompt(&session, prompt, cli.response_mode).await
     } else if let Some(command) = &cli.command {
@@ -2561,7 +2561,7 @@ fn dispatch_certify(action: &CertifyCommand) -> BrowserResult<()> {
 }
 
 async fn dispatch_certify_run(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     scenario_path: &std::path::Path,
     fixture_path: &std::path::Path,
     url: &str,
@@ -3417,7 +3417,7 @@ fn workflow_template(name: &str) -> Option<&'static str> {
     })
 }
 async fn run_command(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     command: &Commands,
     response_mode: ResponseMode,
 ) -> BrowserResult<()> {
@@ -4180,7 +4180,7 @@ pub(crate) fn policy_from_cli(cli: &Cli) -> BrowserResult<BrowserPolicy> {
 }
 
 async fn run_prompt(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     prompt: &str,
     response_mode: ResponseMode,
 ) -> BrowserResult<()> {

@@ -1,7 +1,7 @@
 //! High-level form filling.
 //!
 //! Provides atomically-resolved multi-field form fill via
-//! [`BrowserSession::fill_form`]. Each field is resolved, then
+//! [`CdpBrowserSession::fill_form`]. Each field is resolved, then
 //! the appropriate action (type, check, uncheck, select, click) is
 //! applied based on the element's accessibility role.
 
@@ -9,7 +9,7 @@ use super::*;
 
 /// Outcome of a high-level form fill operation.
 ///
-/// Returned by [`BrowserSession::fill_form`].
+/// Returned by [`CdpBrowserSession::fill_form`].
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FillFormOutcome {
     pub status: ActionStatus,
@@ -46,10 +46,10 @@ pub struct FillFieldResult {
     pub error: Option<String>,
 }
 
-/// Maximum fields accepted in a single [`BrowserSession::fill_form`] call.
+/// Maximum fields accepted in a single [`CdpBrowserSession::fill_form`] call.
 const FILL_FORM_MAX_FIELDS: usize = 16;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Fill multiple form fields atomically.
     ///
     /// First resolves all locators (failing atomically on any resolution

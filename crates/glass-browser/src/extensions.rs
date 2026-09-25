@@ -201,7 +201,7 @@ pub struct ExtensionInvocation {
 /// Extensions do not receive browser handles and cannot call CDP. The only
 /// way for an extension result to cause a browser mutation is to return this
 /// shape to [`ExtensionHost::invoke_guarded`], which requires a current
-/// observation revision and routes the operation through `BrowserSession`.
+/// observation revision and routes the operation through `CdpBrowserSession`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExtensionGuardedAction {
@@ -495,10 +495,10 @@ impl ExtensionHost {
     /// The extension may suggest only `click`, `type`, `clear`, `check`,
     /// `uncheck`, or `select`. The returned request must include the current
     /// observation revision. Policy checks, target resolution, verification,
-    /// and effect recording remain owned by `BrowserSession`.
+    /// and effect recording remain owned by `CdpBrowserSession`.
     pub async fn invoke_guarded(
         &self,
-        session: &crate::browser::BrowserSession,
+        session: &crate::browser::CdpBrowserSession,
         extension_id: &str,
         capability: ExtensionCapability,
         host: &str,

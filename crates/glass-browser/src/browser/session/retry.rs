@@ -91,7 +91,7 @@ fn should_retry(policy: &RetryPolicy, error: &(dyn std::error::Error + 'static))
             .is_none_or(|predicate| predicate(error))
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Click one element. Retries are limited to typed, pre-dispatch
     /// failures that explicitly opt into safe recovery.
     /// Targeting ambiguity and uncertain dispatch status always fail.

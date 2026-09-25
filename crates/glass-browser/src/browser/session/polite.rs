@@ -158,7 +158,7 @@ pub(crate) fn classify_polite_navigation_error(
     PoliteNavigationClassification::Unknown
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Run the bounded runtime robots check and report its typed outcome.
     ///
     /// The URL policy preflight performed by [`BrowserPolicy::preflight_navigation`]

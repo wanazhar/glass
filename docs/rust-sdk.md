@@ -62,7 +62,7 @@ APIs.
 |---|---:|---|
 | `visual-compare` | no | PNG comparison helpers for explicit screenshot checks |
 | `fuzzing` | no | Fuzz-only hooks; do not enable in normal applications |
-| `native-engine` | yes | Glass-owned native browser runtime; enabled by default for the current CLI/session path and available through the explicit Rust API |
+| `native-engine` | yes | Glass-owned native runtime and canonical public `BrowserSession`; enabled by default |
 
 docs.rs builds all features. The native engine remains inside
 `glass-browser`; development runtime dependencies such as PTY integration are
@@ -70,53 +70,53 @@ in `glass-dev`, not optional browser features.
 
 ### Native engine
 
-The native engine is the default local backend inside `glass-browser` for
-feature-enabled builds. Chromium/CDP remains an explicit migration backend;
-there is no silent fallback between the two.
-It currently supports only local `about:blank`, bounded percent-decoded or
-standard padded-base64 `data:text/html`, registered `fixture://` documents, and
-bounded fragment navigation with UTF-8 percent-decoded exact-id or legacy
+The native engine is the default local backend inside `glass-browser` and the
+canonical public Rust session. `BrowserSession` is the `BrowserRuntimeSession`
+type under the standard API name. `BrowserSession::start(config)` and
+`BrowserSession::start_default()` construct the native backend directly through
+`BackendFactory::native`; they never probe for Chrome, connect to CDP, or fall
+back to another runtime. `BrowserRuntimeSession::connect_native` remains an
+equivalent explicit constructor.
+
+The native implementation supports `about:blank`, bounded percent-decoded or
+standard padded-base64 `data:text/html`, registered `fixture://` documents,
+configured-root `file:` documents, and external HTTP(S) navigation. This
+source behavior is not a browser-conformance or production-security
+certification claim; substantial Core Web Profile and public-operation parity
+gates remain tracked in issue #40. It also supports bounded fragment navigation
+with UTF-8 percent-decoded exact-id or legacy
 `<a name>` root scrolling, simple `#:~:text=start[,end]` matching against the
 first visible non-truncated text run with exact adjacent prefix/suffix affixes,
 per-entry scroll restoration, and explicit
 Rust history traversal. IDs take precedence and duplicate legacy names fail
 closed; cross-run text ranges, multiple directives, and browser text-fragment
-parity remain unsupported.
-Rust callers can also activate fragment-only, fixture-relative, and absolute local links through the
-existing semantic click path; empty hrefs remain click-only. Rust callers can
-construct it through the
-backend factory or `BrowserRuntimeSession::connect_native`; a feature-enabled
-binary also exposes the local one-shot `--browser-runtime native` path.
-`BrowserSession` remains the explicit Chromium/CDP migration API while the
-native implementation completes the versioned Glass Core Web Profile:
+parity remain unsupported. Rust callers can activate fragment-only,
+fixture-relative, and external HTTP(S) links through the native semantic
+action path; empty hrefs remain click-only. A feature-enabled binary also
+exposes the one-shot `--browser-runtime native` path.
+
+`CdpBrowserSession` is the explicit Chromium/CDP migration API. Its
+`SessionOptions` configure Chrome launch, attach, headed/headless mode, and
+persistent or disposable Chrome profiles. Choosing this type is explicit; the
+native `BrowserSession` never falls back to it:
 
 ```rust,no_run
-#[cfg(feature = "native-engine")]
-use glass_browser::browser::native_engine::NativeEngineConfig;
-#[cfg(feature = "native-engine")]
-use glass_browser::browser_backend::BrowserBackendDispatcher;
-#[cfg(feature = "native-engine")]
-use glass_browser::BackendFactory;
+use glass_browser::BrowserSession;
+use glass_browser::browser::NativeEngineConfig;
 
-#[cfg(feature = "native-engine")]
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-let backend = BackendFactory::native(NativeEngineConfig::default())?;
-let dispatcher = BrowserBackendDispatcher::new(&backend);
-dispatcher.initialize().await?;
-let page = dispatcher
-    .navigate(glass_browser::browser_backend::NavigationRequest {
-        url: "about:blank".into(),
-    })
-    .await?;
-assert_eq!(page.revision, 1);
-dispatcher.close().await?;
+let session = BrowserSession::start(NativeEngineConfig::default()).await?;
+let page = session.navigate("https://example.com").await?;
+println!("{}", page.url);
+session.close().await?;
 # Ok(())
 # }
 ```
 
-The backend profile declares lifecycle, navigation, one context, bounded
-evidence, semantic click/type actions, native point hit testing, and revision
-effects. Rust callers can additionally inspect the native layout's outer and
+The backend profile declares lifecycle, navigation, up to 32 independent page
+targets with one explicitly selected active context, bounded evidence, semantic
+input actions, native point hit-testing, and revision effects. Rust callers can
+additionally inspect the native layout's outer and
 content rectangles, bounded physical four-side padding/margin shorthands and
 longhands plus explicit box sizing and bounded physical min/max width/height
 constraints with bounded case-insensitive 15-layer/unlayered local
@@ -588,32 +588,47 @@ bounded non-inherited `flex-direction:row|row-reverse` physical placement of
 the order-sorted visual sequence with item-attached margins, existing
 gap/justification/alignment, shared subtree artifacts, bounded overflow
 translation, root horizontal scrolling, and unchanged semantic/source order,
-deterministic display list, bounded logical RGBA software surface, and bounded PNG capture
-through the native backend directly. Rust callers can also inspect bounded
-revisioned diagnostics for unsupported CSS; screenshot-containing evidence, JPEG/PDF,
-and physical-pixel capture remain unavailable. Scripts,
-storage, prompts, and downloads are omitted and fail through the dispatcher.
-The feature adds no dependency and is never included in automatic backend
-selection. Native action targets are semantic and local-only, with the bounded
+deterministic display list, bounded logical RGBA software surface, and bounded
+capture through the native backend directly. Native capture currently supports
+PNG, JPEG, WebP, and PDF of the logical page surface; generic
+screenshot-containing evidence and physical-pixel capture remain outside this
+contract. The runtime also exposes bounded script evaluation, storage and
+cookie operations, dialog resolution, and download completion. See the
+[native operation profile](experimental-capabilities.md#native-browser-engine)
+for current limits and evidence. The `native-engine` feature is enabled by
+default and backs the canonical `BrowserSession` directly. Native action
+targets are semantic, with the bounded
 `point=x,y` click extension; non-text fragment matching is exact and
 case-sensitive after bounded UTF-8 percent decoding for visible non-empty `id`
 attributes or the unique legacy `<a name>` fallback, while simple text
 fragments and their exact adjacent prefix/suffix affixes match only within the
 first visible non-truncated layout run.
 Unresolved ID/name targets preserve the current offset, as do missing, hidden,
-malformed, and unsupported text-fragment requests. Link activation is limited to fragment-only and
-absolute local hrefs plus fixture-relative hrefs from the current registered
-fixture host. Raw form values are not part of this API.
+malformed, and unsupported text-fragment requests. Link activation supports
+fragment-only, registered fixture-relative, and validated external HTTP(S)
+hrefs. Structured evidence omits raw form values by default.
 
 ## Session ownership
 
-`BrowserSession` is one owned or attached browser control session. Methods take
+`BrowserSession::start` and `start_default` create an independent Glass-owned
+native runtime directly. Call `close(self)` to end that runtime and release its
+owned work; dropping is not a substitute for an explicit lifecycle boundary.
+The native constructor never launches or attaches to Chrome. Firefox and
+Safari connections are explicit externally managed endpoints through
+`BrowserRuntimeSession::connect`. The separate `CdpBrowserSession` type owns a
+Chrome process and profile only when its `SessionOptions` launch one; attach
+mode controls an existing browser without owning its process. These session
+types do not silently switch backends or share an implicit browser context.
+
+## Explicit Chromium/CDP migration session
+
+`CdpBrowserSession` is one owned or attached Chrome/Chromium control session. Methods take
 `&self` because operation serialization and mutable browser state are internal.
 The session owns target/frame selection, revision counters, bounded caches,
 policy interception, presentation state, and an optional Chrome child.
 
 ```rust,no_run
-use glass_browser::{BrowserSession, SessionOptions};
+use glass_browser::{CdpBrowserSession, SessionOptions};
 
 # async fn run() -> glass_browser::BrowserResult<()> {
 let options = SessionOptions::builder()
@@ -621,7 +636,7 @@ let options = SessionOptions::builder()
     .headed(false)
     .port(9222)
     .build()?;
-let session = BrowserSession::start(&options).await?;
+let session = CdpBrowserSession::start(&options).await?;
 let page = session.navigate("https://example.com").await?;
 println!("{}", page.url);
 session.close().await?;
@@ -645,10 +660,10 @@ adds page/region/target types and explicit levels.
 
 ```rust,no_run
 use glass_browser::browser::session::SemanticObservationLevel;
-use glass_browser::{BrowserSession, SessionOptions};
+use glass_browser::{CdpBrowserSession, SessionOptions};
 
 # async fn run() -> glass_browser::BrowserResult<()> {
-let session = BrowserSession::start(&SessionOptions::builder().build()?).await?;
+let session = CdpBrowserSession::start(&SessionOptions::builder().build()?).await?;
 let semantic = session
     .semantic_observe(SemanticObservationLevel::Interactive)
     .await?;
@@ -676,12 +691,12 @@ hard budgets. `extract_evidence` returns source-labelled facts;
 
 ```rust,no_run
 use glass_browser::{
-    BrowserSession, EvidenceSource, ExtractionBudgets, ExtractionRequest,
+    CdpBrowserSession, EvidenceSource, ExtractionBudgets, ExtractionRequest,
     ExtractionScope, SessionOptions, EXTRACTION_CONTRACT_SCHEMA_VERSION,
 };
 
 # async fn run() -> glass_browser::BrowserResult<()> {
-let session = BrowserSession::start(&SessionOptions::builder().build()?).await?;
+let session = CdpBrowserSession::start(&SessionOptions::builder().build()?).await?;
 let request = ExtractionRequest {
     schema_version: EXTRACTION_CONTRACT_SCHEMA_VERSION,
     scope: ExtractionScope::Document,
@@ -725,7 +740,9 @@ fn compile(task_json: &str, ir_json: &str) -> Result<String, Box<dyn std::error:
 advisory memory provenance. Executable entity selection, preconditions, and
 postconditions still derive only from current IR.
 
-For live execution, prefer `BrowserSession::execute_task`. It validates,
+For live execution, the complete migration API currently exposes
+`CdpBrowserSession::execute_task`. The canonical native `BrowserSession`
+continues to gain the operation parity required by issue #40. The CDP method validates,
 extracts current evidence, compiles, binds semantic keys to exactly one current
 revisioned target, enforces confirmation/lease rules, performs the operation,
 and verifies postconditions. Receipts exclude authored values and live browser

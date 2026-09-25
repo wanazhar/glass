@@ -1,6 +1,6 @@
 //! Browser session management.
 //!
-//! The [`BrowserSession`] struct orchestrates a single browser session:
+//! The [`CdpBrowserSession`] struct orchestrates a single browser session:
 //! launching or attaching to Chrome, managing CDP connections, routing
 //! operations to the active page target and frame, and providing the
 //! high-level API for navigation, interaction, observation, and more.
@@ -201,7 +201,7 @@ pub use workflow::{
     WorkflowValueType,
 };
 #[allow(private_interfaces)]
-pub struct BrowserSession {
+pub struct CdpBrowserSession {
     pub(crate) cdp: CdpClient,
     pub(crate) chrome: Option<ChromeProcess>,
     pub(crate) disposable_profile: Option<DisposableProfileDir>,
@@ -518,7 +518,7 @@ impl Drop for DisposableProfileDir {
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// PID of Chrome launched by this session, absent for attached sessions.
     pub fn owned_chrome_pid(&self) -> Option<u32> {
         self.chrome.as_ref().map(|chrome| chrome.pid)

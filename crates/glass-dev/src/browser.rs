@@ -4,7 +4,7 @@ use crate::development::{DevelopmentError, DevelopmentResult};
 use crate::development::{RemoteFrame, RemoteInput, RemoteView};
 use glass_browser::browser::policy::{BrowserPolicy, PolicyPreset};
 use glass_browser::browser::session::{
-    BrowserSession, SemanticObservation, SemanticObservationLevel, SessionOptions,
+    CdpBrowserSession, SemanticObservation, SemanticObservationLevel, SessionOptions,
     VerificationPredicate, WorkflowCheckpoint, WorkflowDefinition, WorkflowRunResult,
 };
 use glass_browser::browser::{BrowserRuntimeSession, NativeEngineConfig, NativeHistoryDirection};
@@ -149,7 +149,7 @@ type Reply = SyncSender<DevelopmentResult<Value>>;
 /// Chromium is retained only behind the explicit attach/migration command.
 enum ResidentBrowserSession {
     Native(BrowserRuntimeSession),
-    Chromium(Box<BrowserSession>),
+    Chromium(Box<CdpBrowserSession>),
 }
 
 impl ResidentBrowserSession {
@@ -508,7 +508,7 @@ impl BrowserWorker {
                 .build()
                 .map_err(|error| DevelopmentError::InvalidInput(error.to_string()))?;
             ResidentBrowserSession::Chromium(Box::new(
-                BrowserSession::start(&options)
+                CdpBrowserSession::start(&options)
                     .await
                     .map_err(|error| DevelopmentError::Process(error.to_string()))?,
             ))

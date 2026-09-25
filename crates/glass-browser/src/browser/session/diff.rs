@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 /// Diff between two compact accessibility observations.
 ///
-/// Returned by [`diff_accessibility`] and [`BrowserSession::diff_observation`].
+/// Returned by [`diff_accessibility`] and [`CdpBrowserSession::diff_observation`].
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AccessibilityDiff {
     /// Revision of the "before" snapshot.
@@ -151,7 +151,7 @@ pub fn diff_accessibility(
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Observe the current page and diff against a prior snapshot.
     ///
     /// Takes a fresh observation and computes an `AccessibilityDiff`

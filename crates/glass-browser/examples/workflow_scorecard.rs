@@ -1,7 +1,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use glass_browser::browser::chrome::detect_chrome;
 use glass_browser::browser::session::{
-    BrowserResult, BrowserSession, InteractionMode, SessionOptions, WorkflowDefinition,
+    BrowserResult, CdpBrowserSession, InteractionMode, SessionOptions, WorkflowDefinition,
     WorkflowRunStatus, WorkflowStepState,
 };
 use serde::Deserialize;
@@ -60,7 +60,7 @@ async fn main() -> BrowserResult<()> {
     drop(listener);
     let fixture = include_str!("../tests/fixtures/scorecard.html");
     let url = format!("data:text/html;base64,{}", STANDARD.encode(fixture));
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path),
         profile: "workflow-scorecard".into(),
@@ -127,7 +127,7 @@ async fn main() -> BrowserResult<()> {
     Ok(())
 }
 
-async fn reset(session: &BrowserSession) -> BrowserResult<()> {
+async fn reset(session: &CdpBrowserSession) -> BrowserResult<()> {
     session
         .evaluate("window.resetFixture(); document.querySelector('#name').value=''")
         .await?;

@@ -1,6 +1,6 @@
 //! Multi-target (parallel page) operations.
 //!
-//! Provides [`BrowserSession::with_targets`] for opening multiple
+//! Provides [`CdpBrowserSession::with_targets`] for opening multiple
 //! page targets, executing a closure with concurrent access, and
 //! automatically cleaning up. The active target before the call is
 //! restored afterward.
@@ -10,7 +10,7 @@ use super::*;
 /// Maximum number of concurrent targets for parallel operations.
 const MAX_CONCURRENT_TARGETS: usize = 4;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Open `n` page targets, execute an async closure with concurrent
     /// access, then close all opened targets.
     ///
@@ -77,7 +77,7 @@ impl BrowserSession {
 }
 
 async fn cleanup_targets(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     targets: &[PageTargetInfo],
 ) -> BrowserResult<()> {
     for target in targets {

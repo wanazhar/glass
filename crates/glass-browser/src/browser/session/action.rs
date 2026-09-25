@@ -1,7 +1,7 @@
 //! Action primitives: clicks, typing, keyboard, scroll, drag.
 //!
 //! Implementation of individual browser interaction actions on
-//! [`BrowserSession`]: click, double-click, hover, drag, key press,
+//! [`CdpBrowserSession`]: click, double-click, hover, drag, key press,
 //! scroll, clear, check, uncheck, select, and file upload.
 
 use super::*;
@@ -25,7 +25,7 @@ pub(crate) fn media_control_intent(target: &str) -> BrowserResult<Option<bool>> 
     )
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Click exact frame-local viewport coordinates. This is an explicit,
     /// policy-gated escape hatch for canvas and map surfaces where no DOM
     /// control can be published. Coordinates are validated against the live
@@ -137,7 +137,7 @@ impl BrowserSession {
     /// Capture the full accessibility tree snapshot for the current page.
     ///
     /// Returns the page info, accessibility roots, and all interactive elements.
-    /// Prefer [`observe`](BrowserSession::observe) for compact observations in
+    /// Prefer [`observe`](CdpBrowserSession::observe) for compact observations in
     /// agent workflows.
     pub async fn snapshot(&self) -> BrowserResult<AccessibilitySnapshot> {
         self.cdp

@@ -1,7 +1,10 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-727`; issue #40 remains open. Earlier
+`native-engine-browser-728`; issue #40 remains open. The public Rust
+`BrowserSession` entrypoint now constructs the native backend directly, and
+the former Chrome/CDP API is named `CdpBrowserSession`. This does not claim
+operation parity or production certification. Earlier
 completed slices include `native-engine-browser-696` through
 `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
@@ -5940,7 +5943,7 @@ and default/native production promotion remain subsequent issue #40 gates.
 
 The completed native-engine-browser-128 batch extends the stable semantic
 action boundary with clear, check, uncheck, and exact select operations. The
-Chromium adapter maps those intents to `BrowserSession`'s existing form
+Chromium adapter maps those intents to `CdpBrowserSession`'s existing form
 actions. Native local documents and external HTTP(S) documents use dedicated
 clear/select mutations and the existing click owner for check/uncheck; the
 content worker returns one validated snapshot and bounded event list while

@@ -2,7 +2,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::Utc;
 use glass_browser::browser::chrome::detect_chrome;
 use glass_browser::browser::session::{
-    BrowserResult, BrowserSession, InteractionMode, SessionOptions, StartupDiagnostics,
+    BrowserResult, CdpBrowserSession, InteractionMode, SessionOptions, StartupDiagnostics,
     VerificationPredicate, WaitCondition,
 };
 use serde_json::{Value, json};
@@ -126,7 +126,7 @@ async fn chrome_identity(path: &Path) -> Value {
 }
 
 /// Capture only bounded viewport dimensions from the local benchmark page.
-async fn viewport_provenance(session: &BrowserSession) -> Value {
+async fn viewport_provenance(session: &CdpBrowserSession) -> Value {
     let value = session
         .evaluate("[window.innerWidth, window.innerHeight]")
         .await
@@ -254,7 +254,7 @@ async fn main() -> BrowserResult<()> {
     let rss_before_start = process_rss_bytes();
     let fast_port = available_port().await?;
     let startup_started = Instant::now();
-    let fast_session = BrowserSession::start(
+    let fast_session = CdpBrowserSession::start(
         &SessionOptions::builder()
             .port(fast_port)
             .chrome_path(chrome_path.clone())
@@ -268,7 +268,7 @@ async fn main() -> BrowserResult<()> {
     let rss_after_fast_start = process_rss_bytes();
 
     let human_port = available_port().await?;
-    let human_session = BrowserSession::start(
+    let human_session = CdpBrowserSession::start(
         &SessionOptions::builder()
             .port(human_port)
             .chrome_path(chrome_path)
@@ -592,7 +592,7 @@ async fn bench_attach_existing_startup(
     let mut startup_diagnostics = Vec::with_capacity(iterations);
     for _ in 0..iterations {
         let started = Instant::now();
-        let attached = BrowserSession::start_attached_to_browser_ws_url(
+        let attached = CdpBrowserSession::start_attached_to_browser_ws_url(
             &SessionOptions::builder()
                 .port(port)
                 .attach(true)
@@ -628,13 +628,13 @@ async fn available_port() -> BrowserResult<u16> {
     Ok(port)
 }
 
-async fn warm_click_targets(session: &BrowserSession) -> BrowserResult<()> {
+async fn warm_click_targets(session: &CdpBrowserSession) -> BrowserResult<()> {
     let _ = session.click("Name").await?;
     let _ = session.click("Save").await?;
     Ok(())
 }
 
-async fn collect_payload_bytes(session: &BrowserSession) -> BrowserResult<Value> {
+async fn collect_payload_bytes(session: &CdpBrowserSession) -> BrowserResult<Value> {
     let compact = session.observe_fresh().await?;
     let with_deep_dom = session.observe_fresh_with_dom().await?;
     let with_screenshot = session.observe_fresh_with_screenshot().await?;
@@ -652,7 +652,7 @@ async fn collect_payload_bytes(session: &BrowserSession) -> BrowserResult<Value>
 
 async fn measure_alternating_clicks(
     name: &str,
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     iterations: usize,
 ) -> BrowserResult<Value> {
     let mut samples = Vec::with_capacity(iterations);
@@ -735,7 +735,7 @@ fn summarize_samples(
 /// from action dispatch. The fixture is local and the predicate is bounded;
 /// this never contacts a public website or evaluates caller-provided input.
 async fn bench_post_verification(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     iterations: usize,
 ) -> BrowserResult<Value> {
     let mut samples = Vec::with_capacity(iterations);
@@ -760,7 +760,7 @@ async fn bench_post_verification(
 /// observation. The result is intentionally discarded: bootstrap evidence is
 /// only a readiness hint and must not resolve or authorize an action.
 async fn bench_semantic_bootstrap(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     iterations: usize,
 ) -> BrowserResult<Value> {
     measure("semantic_bootstrap_warm", iterations, || async {
@@ -775,7 +775,7 @@ async fn bench_semantic_bootstrap(
 /// Uses `session.observe()` (which may hit the compact-context cache when
 /// the page hasn't mutated). Reports mean, p50, p95, min, max in ms.
 async fn bench_compact_observe(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     iterations: usize,
 ) -> BrowserResult<Value> {
     let mut samples = Vec::with_capacity(iterations);
@@ -791,7 +791,7 @@ async fn bench_compact_observe(
 /// authoritative inspection for navigation. The fixture URLs are data URLs, so
 /// public-network latency is deliberately outside this matrix.
 async fn bench_page_class_latencies(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     fixtures: &[PageClassFixture],
     iterations: usize,
 ) -> BrowserResult<Value> {
@@ -849,7 +849,7 @@ async fn bench_page_class_latencies(
 }
 
 /// Measure owned-session startup separately from the first post-navigation
-/// compact observation. Startup timing ends when `BrowserSession::start`
+/// compact observation. Startup timing ends when `CdpBrowserSession::start`
 /// establishes CDP; navigation is awaited before the observe timer starts.
 ///
 /// The scalar `chrome_launch_ms` and `cold_first_observe_ms` fields retain the
@@ -867,11 +867,11 @@ async fn bench_cold_start(
     let mut post_verification_samples = Vec::with_capacity(iterations);
     let mut startup_diagnostics = Vec::with_capacity(iterations);
     for _ in 0..iterations {
-        // The startup sample ends after BrowserSession::start establishes CDP.
+        // The startup sample ends after CdpBrowserSession::start establishes CDP.
         // Navigation and all evidence checkpoints are timed independently.
         let port = available_port().await?;
         let launch_started = Instant::now();
-        let session = BrowserSession::start(
+        let session = CdpBrowserSession::start(
             &SessionOptions::builder()
                 .port(port)
                 .chrome_path(chrome_path.to_path_buf())
@@ -1002,7 +1002,7 @@ fn summarize_startup_diagnostics(samples: &[StartupDiagnostics]) -> BrowserResul
 /// Returns a JSON object with per-sample breakdowns and aggregated
 /// statistics.
 async fn bench_client_overhead(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     iterations: usize,
 ) -> BrowserResult<Value> {
     let mut total_samples = Vec::with_capacity(iterations);

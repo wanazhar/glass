@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// List all frames in the active target's frame tree.
     ///
     /// Discovers iframe/out-of-process frames and marks the currently active

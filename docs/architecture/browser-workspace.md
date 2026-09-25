@@ -16,7 +16,7 @@ The two products use different execution adapters:
 standalone glass-browser                         glass (Glass Dev)
 ┌──────────────────────────────┐                 ┌──────────────────────────┐
 │ BrowserTui                    │                 │ DevTuiState              │
-│  BrowserSession (owned here)  │                 │  DevelopmentWorkspace    │
+│  native runtime session      │                 │  DevelopmentWorkspace    │
 │  BrowserWorkspaceController  │                 │   ├─ BrowserService      │
 │  Browser-only pages           │                 │   │   └─ BrowserWorker    │
 └──────────────┬───────────────┘                 │   ├─ ProjectWorkspace    │
@@ -29,8 +29,9 @@ standalone glass-browser                         glass (Glass Dev)
 ```
 
 The embedded adapter is resident: `BrowserService` serializes commands on one
-worker and keeps one optional `BrowserSession`. The standalone TUI keeps its
-session directly. Neither path creates a second browser authority when the
+worker and keeps one optional native runtime session (or explicit
+`CdpBrowserSession` when Chromium is selected). The standalone TUI keeps its
+runtime session directly. Neither path creates a second browser authority when the
 surface changes. See [Glass Dev TUI](development-tui.md) for keyboard and
 surface behavior and [Development Runtime](../development-runtime.md) for
 resident workspace lifecycle.

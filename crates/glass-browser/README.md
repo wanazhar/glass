@@ -1,8 +1,9 @@
 # glass-browser
 
 `glass-browser` is Glass's standalone browser intelligence runtime and Rust
-library. Its full `BrowserSession` drives local Chrome or Chromium through CDP;
-its portable semantic session can connect to Firefox WebDriver BiDi or
+library. Its canonical `BrowserSession` starts the Glass-owned native runtime
+directly; `CdpBrowserSession` is the explicit full Chrome/Chromium CDP migration
+API. Its portable semantic session can connect to Firefox WebDriver BiDi or
 SafariDriver W3C WebDriver endpoints. It does not bundle a browser, host a
 remote browser service, or infer an autonomous action plan.
 
@@ -40,9 +41,10 @@ same Cargo home can make the last installation replace the shared
 `glass-browser` executable; use one package as the owner of that command.
 
 The Glass-owned native engine is the default feature-enabled runtime for the
-CLI, MCP, TUI, and resident development browser path; it does not require
-Chrome or a remote browser. Explicit `BrowserSession`/Chromium migration
-operations still require Chrome, Chromium, or Chrome for Testing. Firefox and
+CLI, MCP, TUI, resident development browser path, and root Rust `BrowserSession`;
+it does not require Chrome or a remote browser. Explicit
+`CdpBrowserSession`/Chromium migration operations still require Chrome,
+Chromium, or Chrome for Testing. Firefox and
 Safari require an externally started BiDi/WebDriver endpoint for their
 portable semantic command set. `doctor`, Task Protocol validation/compilation,
 Web IR operations, policy checks, and several scorecards are browser-free.
@@ -195,15 +197,14 @@ glass-browser --tui-live on --tui-live-backend ansi --tui-live-quality data tui
 ## Rust quick start
 
 ```rust,no_run
-use glass_browser::{BrowserSession, SessionOptions};
+use glass_browser::BrowserSession;
+use glass_browser::browser::NativeEngineConfig;
 
 #[tokio::main]
 async fn main() -> glass_browser::BrowserResult<()> {
-    let options = SessionOptions::builder().incognito(true).build()?;
-    let session = BrowserSession::start(&options).await?;
+    let session = BrowserSession::start(NativeEngineConfig::default()).await?;
     let page = session.navigate("https://example.com").await?;
-    let observation = session.observe().await?;
-    println!("{} revision={}", page.url, observation.accessibility.revision);
+    println!("{}", page.url);
     session.close().await
 }
 ```
@@ -215,7 +216,7 @@ does not own or close the external browser.
 
 | Contract | Rust entry point | Purpose |
 |---|---|---|
-| Browser session | `BrowserSession`, `SessionOptions` | Chrome lifecycle, targets, frames, interaction, storage, evidence |
+| Browser session | native `BrowserSession`; explicit `CdpBrowserSession`, `SessionOptions` | Native lifecycle and common semantic operations; legacy Chrome lifecycle/operation surface is explicit |
 | Semantic observation | `browser::session::SemanticObservation` | Bounded page, regions, targets, records, revision, route |
 | Evidence extraction | `ExtractionRequest`, `ExtractionEvidence` | Strict source-labelled non-mutating evidence |
 | Glass Web IR v1 | `GlassWebIrV1` | Stable reconciled entities, relationships, details, coverage |

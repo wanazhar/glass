@@ -211,7 +211,7 @@ pub(crate) fn navigation_identity(
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Return the active CSS viewport dimensions for revision-bound visual input.
     pub async fn viewport_size(&self) -> BrowserResult<(f64, f64)> {
         let value = self

@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Collect explicitly scoped, bounded, secret-redacted browser evidence.
     pub async fn diagnostics(&self, duration: Duration) -> BrowserResult<DiagnosticReport> {
         if duration.is_zero() || duration > MAX_DIAGNOSTIC_DURATION {

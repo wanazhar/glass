@@ -8,7 +8,7 @@ use super::*;
 /// Maximum bytes read or written in a single clipboard operation.
 const CLIPBOARD_MAX_BYTES: usize = 8192;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Read text from the system clipboard.
     ///
     /// Grants the `clipboardReadWrite` permission temporarily, then

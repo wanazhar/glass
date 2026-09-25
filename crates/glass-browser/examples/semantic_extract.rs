@@ -3,12 +3,12 @@
 use glass_browser::browser::session::{
     ExtractionField, ExtractionKind, StructuredExtractionRequest,
 };
-use glass_browser::{BrowserSession, SessionOptions};
+use glass_browser::{CdpBrowserSession, SessionOptions};
 
 #[tokio::main]
 async fn main() -> glass_browser::BrowserResult<()> {
     let options = SessionOptions::builder().build()?;
-    let session = BrowserSession::start(&options).await?;
+    let session = CdpBrowserSession::start(&options).await?;
     let request = StructuredExtractionRequest {
         fields: vec![ExtractionField {
             name: "title".into(),

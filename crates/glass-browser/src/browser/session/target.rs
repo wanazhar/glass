@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// List all open page targets in the browser.
     ///
     /// Returns the target ID, URL, title, opener relationship, and whether

@@ -1337,7 +1337,7 @@ impl WorkflowRunResult {
     }
 }
 
-impl super::BrowserSession {
+impl super::CdpBrowserSession {
     async fn execute_workflow_intent_step(
         &self,
         intent: &WorkflowIntentStep,
@@ -1900,7 +1900,7 @@ impl super::BrowserSession {
     }
 }
 
-impl super::BrowserSession {
+impl super::CdpBrowserSession {
     /// Export a deterministic, redacted workflow checkpoint bounded to 8 KiB.
     pub async fn export_workflow_checkpoint(
         &self,
@@ -2374,7 +2374,7 @@ fn resolve_input_template(
 }
 
 async fn extract_workflow_outputs(
-    session: &super::BrowserSession,
+    session: &super::CdpBrowserSession,
     workflow: &WorkflowDefinition,
 ) -> BrowserResult<BTreeMap<String, WorkflowOutput>> {
     let page = if workflow
@@ -2465,7 +2465,7 @@ fn typed_output_value(
     }
 }
 
-fn current_revision(session: &super::BrowserSession) -> u64 {
+fn current_revision(session: &super::CdpBrowserSession) -> u64 {
     session
         .page_revision
         .load(std::sync::atomic::Ordering::Relaxed)
@@ -3189,7 +3189,7 @@ mod tests {
         assert_eq!(first, second);
         assert!(!first.contains("password"));
         assert_eq!(
-            crate::BrowserSession::parse_workflow_checkpoint(&first)
+            crate::CdpBrowserSession::parse_workflow_checkpoint(&first)
                 .unwrap()
                 .next_step_index,
             1

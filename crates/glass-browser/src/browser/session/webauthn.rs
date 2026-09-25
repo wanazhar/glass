@@ -2,7 +2,7 @@
 //!
 //! Enables automated testing of WebAuthn / passkey flows by creating
 //! a virtual authenticator through the CDP `WebAuthn` domain. Use
-//! [`BrowserSession::enable_webauthn`] to start and obtain a
+//! [`CdpBrowserSession::enable_webauthn`] to start and obtain a
 //! [`WebAuthnGuard`] for credential management.
 
 use super::*;
@@ -39,7 +39,7 @@ impl Default for WebAuthnOptions {
 
 /// Scoped guard managing a virtual WebAuthn authenticator.
 ///
-/// Created by [`BrowserSession::enable_webauthn`]. While this guard is
+/// Created by [`CdpBrowserSession::enable_webauthn`]. While this guard is
 /// alive, a virtual authenticator is registered in the browser. Use
 /// [`add_credential`](Self::add_credential) to provision credentials
 /// for testing, and [`disable`](Self::disable) to remove it explicitly.
@@ -152,7 +152,7 @@ impl Drop for WebAuthnGuard {
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Enable a virtual WebAuthn authenticator for the session.
     ///
     /// Returns a `WebAuthnGuard` scoped to this session. Use

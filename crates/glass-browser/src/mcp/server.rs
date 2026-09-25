@@ -32,7 +32,7 @@ use crate::browser::profile::ProfileManager;
 use crate::browser::runtime::BrowserRuntimeSession;
 use crate::browser::session::{
     ActionContractError, ActionKind, ActionOutcome, ActionVerificationError, BatchMode, BatchStep,
-    BrowserResult, BrowserSession, CheckpointV1, DownloadError, KnowledgeConfidence,
+    BrowserResult, CdpBrowserSession, CheckpointV1, DownloadError, KnowledgeConfidence,
     KnowledgeLookupContext, KnowledgeLookupOptions, KnowledgeObservationMode,
     KnowledgeObservationReport, KnowledgeProfileScope, KnowledgeStore, Locator, PopupClickError,
     PreflightAction, ReconciliationOptions, SemanticIntentExecutionRequest, SemanticIntentRequest,
@@ -565,7 +565,7 @@ pub async fn run_mcp_stream<R, W>(
     reader: R,
     writer: W,
     cli: &Cli,
-    session: Arc<Mutex<Option<BrowserSession>>>,
+    session: Arc<Mutex<Option<CdpBrowserSession>>>,
     close_session_on_eof: bool,
     local_daemon: bool,
     lease_context: Option<Arc<DaemonLeaseContext>>,
@@ -593,7 +593,7 @@ async fn run_mcp_stream_inner<R, W>(
     reader: R,
     writer: W,
     cli: &Cli,
-    session: Arc<Mutex<Option<BrowserSession>>>,
+    session: Arc<Mutex<Option<CdpBrowserSession>>>,
     native_runtime: bool,
     close_session_on_eof: bool,
     local_daemon: bool,
@@ -1460,7 +1460,7 @@ fn initialize_response_in_mode(
 #[cfg(test)]
 async fn handle_request(
     request: &JsonRpcRequest,
-    session: &mut Option<BrowserSession>,
+    session: &mut Option<CdpBrowserSession>,
     options: &SessionOptions,
     policy: &BrowserPolicy,
     knowledge_store_path: Option<&Path>,
@@ -1486,7 +1486,7 @@ async fn handle_request(
 #[allow(clippy::too_many_arguments)]
 async fn handle_request_with_viewport(
     request: &JsonRpcRequest,
-    session: &mut Option<BrowserSession>,
+    session: &mut Option<CdpBrowserSession>,
     native_session: &mut Option<BrowserRuntimeSession>,
     native_runtime: bool,
     persistent_native_session: Option<&str>,
@@ -1844,7 +1844,7 @@ fn browser_free_session_snapshot(
 #[allow(clippy::too_many_arguments)]
 async fn call_tool(
     request: &JsonRpcRequest,
-    session: &mut Option<BrowserSession>,
+    session: &mut Option<CdpBrowserSession>,
     _native_session: &mut Option<BrowserRuntimeSession>,
     native_runtime: bool,
     _persistent_native_session: Option<&str>,
@@ -5361,14 +5361,14 @@ fn native_predicate_uses_javascript(predicate: &VerificationPredicate) -> bool {
 }
 
 async fn ensure_session<'a>(
-    session: &'a mut Option<BrowserSession>,
+    session: &'a mut Option<CdpBrowserSession>,
     options: &SessionOptions,
     policy: &BrowserPolicy,
     viewport: Option<(i64, i64)>,
-) -> BrowserResult<&'a mut BrowserSession> {
+) -> BrowserResult<&'a mut CdpBrowserSession> {
     if session.is_none() {
         *session = Some(
-            BrowserSession::start_with_policy_and_viewport(options, policy.clone(), viewport)
+            CdpBrowserSession::start_with_policy_and_viewport(options, policy.clone(), viewport)
                 .await?,
         );
     }
@@ -7395,7 +7395,7 @@ mod tests {
     async fn invoke_native_mcp_tool(
         name: &str,
         arguments: Value,
-        session: &mut Option<BrowserSession>,
+        session: &mut Option<CdpBrowserSession>,
         native_session: &mut Option<BrowserRuntimeSession>,
         options: &SessionOptions,
         policy: &BrowserPolicy,
@@ -8225,7 +8225,7 @@ mod tests {
 
     #[tokio::test]
     async fn preflight_navigation_is_browser_free_and_machine_readable() {
-        async fn invoke(policy: &BrowserPolicy, url: &str) -> (Value, Option<BrowserSession>) {
+        async fn invoke(policy: &BrowserPolicy, url: &str) -> (Value, Option<CdpBrowserSession>) {
             let request: JsonRpcRequest = serde_json::from_value(json!({
                 "jsonrpc": "2.0",
                 "id": "preflight",

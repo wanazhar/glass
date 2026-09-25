@@ -21,7 +21,7 @@ human / calling program
 CLI / MCP / TUI
       │ typed operation
       ▼
-BrowserSession ──► target/frame registry ──► CDP actor ──► Chrome
+CdpBrowserSession ─► target/frame registry ──► CDP actor ──► Chrome
       │                    │
       ├─ observation cache ├─ wait engine
       ├─ safety policy     └─ event-derived state
@@ -238,9 +238,11 @@ payload path for image ownership.
 
 ## Extension rule
 
-Frontends call `BrowserSession`; they do not issue raw CDP. CDP domain adapters
-may be added behind typed session APIs. A new adapter must declare domain
-enable/disable lifecycle, retained state, bounds, failure behavior, and tests.
+Normal frontends dispatch through `BrowserRuntimeSession` and the selected
+backend; they do not issue raw CDP. The explicit `CdpBrowserSession` migration
+path owns the CDP actor described here. CDP domain adapters may be added behind
+typed session APIs. A new adapter must declare domain enable/disable lifecycle,
+retained state, bounds, failure behavior, and tests.
 
 ## Required verification
 

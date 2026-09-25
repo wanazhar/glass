@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Evaluate arbitrary JavaScript in the active page context.
     ///
     /// Policy-gated: requires the `Evaluate` capability. Invalidates the

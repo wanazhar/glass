@@ -8,7 +8,7 @@ Define the lowest-cost correct browser contract shared by CLI, MCP, and TUI.
 Feature-enabled products route browser operations through the Glass-owned
 native runtime by default; its current semantic, layout, rendering, and
 resource contract is specified in [Native browser engine](native-engine.md).
-This document describes the full Chromium `BrowserSession`/CDP migration data
+This document describes the full Chromium `CdpBrowserSession`/CDP migration data
 plane, selected with `--browser-runtime chromium`. The bounded Firefox and
 Safari path is specified in the [Browser Host RFC](../browser-host-rfc.md#current-browser-runtime-mapping).
 
@@ -136,7 +136,7 @@ is not left with a stuck button.
 
 ## Wait contract
 
-`BrowserSession::wait` accepts one typed condition and an explicit deadline.
+`CdpBrowserSession::wait` accepts one typed condition and an explicit deadline.
 Public string forms are `lifecycle=<load|domcontentloaded|complete>`,
 `url=<exact URL>`, `url-prefix=<prefix>`, `target-attached=<locator>`,
 `target-visible=<locator>`, `target-hidden=<locator>`,
@@ -195,7 +195,7 @@ Chrome reports that owner box in target-page coordinates, so a grandchild frame
 does not accumulate already-absolute ancestor offsets; real nested and OOPIF
 click tests enforce this coordinate contract.
 
-Target/frame lifecycle tracking is activated once per BrowserSession. Registry
+Target/frame lifecycle tracking is activated once per CdpBrowserSession. Registry
 updates consume `Target.targetCreated`, `Target.targetDestroyed`,
 `Target.targetCrashed`, `Page.frameAttached`, `Page.frameNavigated`,
 `Page.frameDetached`, and popup opener metadata. Unknown, oversized, or
@@ -210,7 +210,7 @@ a bounded resynchronization through `Target.getTargets` and `Page.getFrameTree`.
 
 `profiles list`, create, and delete operate on profile directories. Deletion removes the profile directory and any legacy metadata together.
 
-Library callers must invoke `BrowserSession::close()` when they finish an
+Library callers must invoke `CdpBrowserSession::close()` when they finish an
 owned incognito session. That explicit asynchronous path stops Chrome before
 removing its disposable directory. Implicit `Drop` initiates process shutdown
 as a best effort only; on platforms that lock open browser files it can leave

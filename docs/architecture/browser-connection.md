@@ -6,10 +6,10 @@ interaction and the [Development Runtime guide](../development-runtime.md)
 covers resident lifecycle and shutdown; this document defines connection
 ownership and freshness boundaries.
 
-The ownership tables below describe the full Chromium BrowserSession path.
-Portable Firefox BiDi and Safari WebDriver sessions are externally managed
-one-shot adapters and do not participate in the TUI or resident-worker
-lifecycle; see the [Browser Host RFC](../browser-host-rfc.md#current-browser-runtime-mapping).
+The ownership tables distinguish the default native `BrowserRuntimeSession`
+from the full Chromium `CdpBrowserSession` migration path. Portable Firefox
+BiDi and Safari WebDriver sessions are externally managed one-shot adapters;
+see the [Browser Host RFC](../browser-host-rfc.md#current-browser-runtime-mapping).
 
 ## Ownership and lifecycle
 
@@ -19,21 +19,23 @@ owns the session:
 
 | Product path | Execution owner | Process ownership |
 |---|---|---|
-| Standalone `glass-browser` TUI | `BrowserTui.session: Option<BrowserSession>` | Owned launch owns Chrome; attach never owns the existing browser. |
-| Glass Dev embedded App | `BrowserService` → one `BrowserWorker` → optional `BrowserSession` | Same owned/attached distinction; the resident worker serializes commands. |
+| Standalone `glass-browser` TUI | native `BrowserRuntimeSession`; explicit `CdpBrowserSession` for Chromium | Native owns its Glass context; CDP owned launch owns Chrome and attach never owns the external browser. |
+| Glass Dev embedded App | `BrowserService` → one `BrowserWorker` → native runtime session by default | Explicit Chromium selection uses `CdpBrowserSession`; the resident worker serializes commands. |
 
 Project files, editor buffers, PTYs, tasks, Pi conversations, and development
-revisions outlive a browser session. A browser session owns target/frame route,
-CDP state, observation caches, policy, browser revision, and (for an owned
-launch) the Chrome child and profile lifecycle.
+revisions outlive a browser session. The native session owns its Glass
+context, observation state, and native resources. `CdpBrowserSession` owns the
+target/frame route, CDP state, observation caches, policy, browser revision,
+and (for an owned launch) the Chrome child and profile lifecycle.
 
 ```text
 DevelopmentWorkspace (survives browser loss)
 ├─ ProjectWorkspace / agents / processes / tasks
 └─ BrowserService (embedded) or BrowserTui session (standalone)
-   └─ BrowserSession generation
-      ├─ owned Chrome + profile, or attached existing Chrome
-      ├─ active target/frame route + browser revision
+   └─ Browser session generation
+      ├─ native BrowserRuntimeSession (default)
+      ├─ explicit CdpBrowserSession → owned/attached Chrome + profile
+      ├─ active context/target/frame route + browser revision
       └─ optional embedded-only RemoteView
 ```
 
@@ -123,11 +125,11 @@ have no Glass Dev project/agent authority layer.
 ## Remote View (embedded Glass Dev only)
 
 Remote View is an explicitly opened, same-session capability. It does not launch,
-attach to, or navigate another browser and does not own a `BrowserSession`.
+attach to, or navigate another browser and does not own a browser session.
 `glass-browser` standalone marks Remote View operations unavailable.
 
 ```text
-BrowserWorker / BrowserSession generation N
+BrowserWorker / browser session generation N
              ├─ App/terminal semantic + visual projections
              └─ RemoteView (only after remote-open)
                 127.0.0.1:ephemeral/{random-token}/

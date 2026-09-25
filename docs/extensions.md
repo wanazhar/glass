@@ -44,8 +44,9 @@ ExtensionHost::invoke_guarded
 ```
 
 accepts a bounded revision-pinned action result. Glass then performs supported
-click, type, clear, check, uncheck, and select actions through the core
-`BrowserSession` methods.
+click, type, clear, check, uncheck, and select actions through the explicit
+`CdpBrowserSession` methods. Native extension-action parity remains part of
+issue #40.
 
 Glass keeps policy checks, target resolution, revision checks, verification, and
 effect recording in the core runtime.

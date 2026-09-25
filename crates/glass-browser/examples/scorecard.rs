@@ -1,7 +1,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use glass_browser::browser::chrome::detect_chrome;
 use glass_browser::browser::session::{
-    BrowserResult, BrowserSession, InteractionMode, SessionOptions, WaitCondition,
+    BrowserResult, CdpBrowserSession, InteractionMode, SessionOptions, WaitCondition,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -58,7 +58,7 @@ async fn main() -> BrowserResult<()> {
     let url = format!("data:text/html;base64,{}", STANDARD.encode(fixture));
     let glass_rss_start = process_rss_bytes(std::process::id());
     let started = Instant::now();
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port: available_port().await?,
         chrome_path: Some(chrome_path.clone()),
         profile: "scorecard".to_string(),
@@ -213,7 +213,7 @@ fn classify_run(
     }
 }
 
-async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<ScenarioRun> {
+async fn run_scenario(session: &CdpBrowserSession, id: &str) -> BrowserResult<ScenarioRun> {
     match id {
         "duplicate-label" => {
             if std::env::var("GLASS_SCORECARD_TARGET_MODE").as_deref() == Ok("wrong") {
@@ -356,14 +356,14 @@ async fn run_scenario(session: &BrowserSession, id: &str) -> BrowserResult<Scena
     }
 }
 
-async fn reset(session: &BrowserSession) -> BrowserResult<()> {
+async fn reset(session: &CdpBrowserSession) -> BrowserResult<()> {
     session
         .evaluate("window.resetFixture(); document.querySelector('#name').value=''")
         .await?;
     Ok(())
 }
 
-async fn string_eval(session: &BrowserSession, expression: &str) -> BrowserResult<String> {
+async fn string_eval(session: &CdpBrowserSession, expression: &str) -> BrowserResult<String> {
     session
         .evaluate(expression)
         .await?

@@ -55,7 +55,8 @@ pub use diagnostics::{
     MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES, MAX_NATIVE_DIAGNOSTICS, NativeDiagnostic,
     NativeDiagnosticCode, NativeDiagnosticSource,
 };
-pub(crate) use dialog::{NativeDialogControlPlane, NativePendingDialog};
+pub(crate) use dialog::NativeDialogControlPlane;
+pub use dialog::{NativeDialogController, NativeDialogResolution, NativePendingDialog};
 pub use dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind, NativeSemanticNode};
 pub(crate) use engine::parse_point_target;
 pub use engine::{

@@ -287,13 +287,15 @@ pub use browser::{
     DeterministicClock, DeterministicScheduler, MAX_NATIVE_DISPLAY_COMMANDS,
     MAX_NATIVE_OPACITY_GROUP_DEPTH, MAX_NATIVE_OPACITY_LAYER_PIXELS, MAX_NATIVE_SURFACE_PIXELS,
     NATIVE_CONTEXT_ID, NativeBorderPaint, NativeBorderPaintSide, NativeBorderRadius,
-    NativeBorderStyle, NativeBrowsingContext, NativeColor, NativeDisplayCommand, NativeDisplayList,
-    NativeDocument, NativeEngine, NativeEngineBackend, NativeEngineConfig, NativeEngineError,
-    NativeEngineLimits, NativeEngineSnapshot, NativeFetchResponse, NativeFixture, NativeHistory,
+    NativeBorderStyle, NativeBrowsingContext, NativeColor, NativeDialogController,
+    NativeDialogResolution, NativeDisplayCommand, NativeDisplayList, NativeDocument, NativeEngine,
+    NativeEngineBackend, NativeEngineConfig, NativeEngineError, NativeEngineLimits,
+    NativeEngineSnapshot, NativeFetchResponse, NativeFixture, NativeHistory,
     NativeHistoryDirection, NativeHistoryEntry, NativeLayoutBox, NativeLayoutSnapshot,
-    NativeLifecycleState, NativeNode, NativeNodeId, NativeNodeKind, NativeOrigin, NativePoint,
-    NativeRect, NativeResource, NativeResourceLoader, NativeSurface, NativeTask,
-    NativeTextDecorationStyle, NativeWorkerFailureKind, ScheduledTask, Viewport,
+    NativeLifecycleState, NativeNode, NativeNodeId, NativeNodeKind, NativeOrigin,
+    NativePendingDialog, NativePoint, NativeRect, NativeResource, NativeResourceLoader,
+    NativeSurface, NativeTask, NativeTextDecorationStyle, NativeWorkerFailureKind, ScheduledTask,
+    Viewport,
 };
 
 pub use task_protocol::{

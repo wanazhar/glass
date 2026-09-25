@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-734`; issue #40 remains open. The public Rust
+`native-engine-browser-735`; issue #40 remains open. The public Rust
 `BrowserSession` entrypoint now constructs the native backend directly, and
 the former Chrome/CDP API is named `CdpBrowserSession`. This does not claim
 operation parity or production certification. The canonical Rust session now
@@ -36,8 +36,13 @@ active HTTP(S) navigation and closes its owning target after the operation
 releases its state lock. Tests cover accepted/dismissed page-load outcomes,
 multi-dialog explicit evaluation, target identity/revision guards, navigation
 cancellation, owner shutdown, worker exit, deadline suspension, and reuse of a
-parked sibling target. Standalone-session resolution and user-facing TUI
-prompt presentation remain issue #40 work. See the
+parked sibling target. User-facing CLI/MCP/TUI prompt presentation remains
+issue #40 work. Slice 735 exposes this existing out-of-band rendezvous to Rust
+embedders through an explicit modal-enabled constructor and a cloneable,
+identity-bound `NativeDialogController`. The ordinary constructor remains
+nonblocking; the API does not itself complete cross-surface dialog routing.
+See the
+[slice 735 task](../plan/tasks/native-engine-browser-735.md) and the
 [slice 734 task](../plan/tasks/native-engine-browser-734.md). Earlier
 completed slices include
 `native-engine-browser-696` through
@@ -9707,12 +9712,17 @@ another resource loader.
 The native dialog queue currently preserves bounded `alert`, `confirm`, and
 `prompt` metadata, but the page shim returns immediately (`false` for
 `confirm`, `null` for `prompt`). That is not the declared browser contract.
-Blocking host callbacks are enabled only when the persistent native owner has
-installed its independent status/dialog control loop. A standalone runtime
-without that control loop keeps the nonblocking event-queue path; blocking it
-would deadlock its sequential CLI/MCP caller. Such a standalone session is not
-yet conformant to the profile's modal contract and must be promoted only with
-its own live out-of-band controller.
+Blocking host callbacks are enabled only when a native session has an
+independent live controller. A standalone runtime without one keeps the
+nonblocking event-queue path; blocking it would deadlock its sequential
+CLI/MCP caller. Slice 735 adds the opt-in
+`BrowserRuntimeSession::connect_native_with_modal_dialogs` constructor and
+`NativeDialogController` API. The controller inspects and resolves an exact
+target/frame-owned prompt without taking the page-operation lock, allowing the
+original browser future to resume in place. Ordinary constructors remain
+nonblocking until their host has connected such a controller. This public
+Rust path covers process-backed realms only; it does not itself add CLI/MCP/TUI
+prompt presentation or in-process modal execution.
 `GCWP-0.1` requires the invoking page script to suspend at the dialog call,
 publish a target/frame-owned pending prompt to the Glass control plane, and
 resume at the same call site with the chosen result. The accept path for
@@ -9722,11 +9732,13 @@ status and dialog controls remain serviceable. The execution must not be
 replayed after resolution, and cancellation or owner failure must release the
 suspended operation without committing partial navigation state.
 
-Slice 734 implements this contract for process-backed HTTP(S) page scripts and
-explicit evaluation through the native persistent-owner control path.
-Standalone sessions without a concurrent controller, in-process page realms,
-direct TUI presentation, and full cross-surface prompt parity remain part of
-the issue #40 gate until independently verified.
+Slices 734 and 735 implement this contract for process-backed HTTP(S) page
+scripts and explicit evaluation, first through the persistent-owner control
+path and then through the explicit standalone Rust controller. Default
+standalone constructors without a live controller retain the nonblocking
+event path. In-process page realms, CLI/MCP integration, direct TUI prompt
+presentation, and full cross-surface prompt parity remain part of the issue
+#40 gate until independently verified.
 
 `NativeEngineError` distinguishes invalid configuration, lifecycle misuse,
 unsupported resources, bounded network failures, parser failures, resource

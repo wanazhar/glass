@@ -12,16 +12,17 @@
 
 use super::native_engine::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeAction, NativeDialogControlPlane,
-    NativeEffect, NativeEngine, NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFile,
-    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
-    NativeFrameScriptWindow, NativeHistoryDirection, NativeInspectionSnapshot,
-    NativeLayoutSnapshot, NativeNavigationCancellation, NativeNavigationMethod,
-    NativeNavigationRequest, NativeOrigin, NativePageMessagePortCommand, NativePendingDialog,
-    NativePoint, NativePopupRequest, NativePostMessageRequest, NativePreflightAction,
-    NativeRequestBody, NativeScriptCommand, NativeServiceWorkerClientMessage,
-    NativeServiceWorkerOpenWindowRequest, NativeSurface, NativeTargetPreflight,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate, Viewport,
-    parse_point_target, synchronize_service_worker_client_leases, validate_message_port_transfers,
+    NativeDialogController, NativeEffect, NativeEngine, NativeEngineConfig, NativeEngineError,
+    NativeEventKind, NativeFile, NativeFrameScriptBinding, NativeFrameScriptContext,
+    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHistoryDirection,
+    NativeInspectionSnapshot, NativeLayoutSnapshot, NativeNavigationCancellation,
+    NativeNavigationMethod, NativeNavigationRequest, NativeOrigin, NativePageMessagePortCommand,
+    NativePendingDialog, NativePoint, NativePopupRequest, NativePostMessageRequest,
+    NativePreflightAction, NativeRequestBody, NativeScriptCommand,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest, NativeSurface,
+    NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, Viewport, parse_point_target,
+    synchronize_service_worker_client_leases, validate_message_port_transfers,
     validate_page_message_port_command, validate_target_navigation_payload,
 };
 use crate::browser::session::{
@@ -359,6 +360,10 @@ impl NativeEngineBackend {
         &self,
     ) -> Result<Option<NativePendingDialog>, BrowserBackendError> {
         self.dialog_control.pending().map_err(native_error)
+    }
+
+    pub fn native_dialog_controller(&self) -> Result<NativeDialogController, BrowserBackendError> {
+        NativeDialogController::new(self.dialog_control.clone()).map_err(native_error)
     }
 
     pub(crate) fn resolve_dialog_control(

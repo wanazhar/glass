@@ -37,8 +37,10 @@ as the path for process-backed history and modal decisions.
   sticky activation, continue with the current lifecycle and commit the target
   exactly once. A native host call that re-enters cross-document history while
   outgoing lifecycle dispatch is active returns a typed error instead of
-  recursing or partially committing. Page-initiated History API commands keep
-  their existing queued semantics.
+  recursing or partially committing. A cross-document `HistoryGo` surfaced
+  inline from a process-backed outgoing lifecycle callback is rejected before
+  nested traversal or history-selection mutation. Page-initiated History API
+  commands outside outgoing lifecycle dispatch keep their queued semantics.
 - A process-backed outgoing document cannot be synchronously queried for
   lifecycle events or modal decisions. Return a typed error before issuing a
   child command, loading a target, or mutating the history selection. Direct
@@ -51,8 +53,12 @@ as the path for process-backed history and modal decisions.
 The synchronous API cannot present a responsive user decision. Activated
 canceled `beforeunload` therefore fails closed, while process-backed
 cross-document traversal requires the async API even when no modal is known to
-be pending. The re-entry guard covers native host-level recursion; it does not
-change the page History API's queued command semantics.
+be pending. The re-entry guard covers native host-level recursion and inline
+process-backed cross-document `HistoryGo` commands during outgoing lifecycle
+dispatch; ordinary page History API commands retain queued semantics outside
+that callback boundary. Async lifecycle context is passed explicitly through
+mutation handling instead of being stored in a mutable counter across `.await`,
+so dropping the future cannot leave a stale re-entry guard set.
 
 ## Path
 
@@ -76,6 +82,10 @@ change the page History API's queued command semantics.
 - Test process-backed synchronous traversal: typed error before history
   activation or another target request; confirm the async `BrowserSession`
   path remains usable.
+- Test process-backed `beforeunload` issuing `history.back()`: the async
+  traversal returns the typed re-entry error, retains the current URL/history
+  selection and callback mutation, and does not dispatch `pagehide`/`unload` or
+  request another target.
 - Test same-document Back/Forward remains in-place and existing async
   beforeunload history accept/dismiss tests remain green.
 - Run an affected-target `cargo check` before focused tests; run formatting,
@@ -92,7 +102,8 @@ change the page History API's queued command semantics.
   same-document Back/Forward, and sync/async host re-entry.
 - `cargo test -p glass-browser --test native_engine beforeunload --locked --quiet`
   passed five host/history tests, including the process-backed synchronous API
-  rejection and the existing async Back/Forward confirmation route.
+  rejection, inline `history.back()` re-entry rejection from process-backed
+  `beforeunload`, and the existing async Back/Forward confirmation route.
 - `rustfmt --edition 2024` on the two changed Rust files and `git diff --check`
   passed.
 - Documentation truth, depth, shortcut, and coverage gates passed after the

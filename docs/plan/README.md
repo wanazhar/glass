@@ -103,7 +103,10 @@ same-document traversal stays synchronous; local cross-document traversal
 runs lifecycle callbacks before resource restoration, fails explicitly when
 an activated canceled event needs a modal decision, and flushes deferred
 outgoing lifecycle effects on commit. Process-backed cross-document history
-requires the async API. Focused Linux checks pass; remote CI and cross-platform
+requires the async API; a cross-document HistoryGo surfaced inline during an
+outgoing process-backed lifecycle callback is rejected before nested traversal
+or history-selection mutation. The async guard context is explicit and remains
+cancellation-safe. Focused Linux checks pass; remote CI and cross-platform
 certification remain open. See
 [slice 742](tasks/native-engine-browser-742.md).
 Slice 727 enforces rooted-file frame CSP. Slice 726 enforces rooted-file image,

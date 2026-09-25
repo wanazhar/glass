@@ -11460,7 +11460,7 @@ async fn synchronous_process_history_beforeunload_requires_async_api() {
             ),
             (
                 "/second",
-                "<script>addEventListener('beforeunload', event => { event.preventDefault(); event.returnValue = 'not shown'; globalThis.beforeunloadMutation = 'seen'; }); addEventListener('pagehide', () => globalThis.pagehideRan = true); addEventListener('unload', () => globalThis.unloadRan = true);</script><title>Second</title><button id='activate'>Activate</button>",
+                "<script>addEventListener('beforeunload', event => { event.preventDefault(); event.returnValue = 'not shown'; globalThis.beforeunloadMutation = 'seen'; history.back(); }); addEventListener('pagehide', () => globalThis.pagehideRan = true); addEventListener('unload', () => globalThis.unloadRan = true);</script><title>Second</title><button id='activate'>Activate</button>",
             ),
         ] {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -11525,6 +11525,26 @@ async fn synchronous_process_history_beforeunload_requires_async_api() {
             .await
             .unwrap(),
         serde_json::Value::Null
+    );
+
+    let reentry_error = engine.go_back_async().await.unwrap_err();
+
+    assert!(
+        reentry_error
+            .to_string()
+            .contains("cannot re-enter an outgoing lifecycle callback")
+    );
+    assert_eq!(engine.snapshot().unwrap().url, second_url);
+    assert!(engine.history().can_go_back());
+    assert!(!engine.history().can_go_forward());
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[globalThis.beforeunloadMutation || null, globalThis.pagehideRan || null, globalThis.unloadRan || null]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["seen", null, null])
     );
 
     assert!(

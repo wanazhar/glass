@@ -157,7 +157,11 @@ cross-document target; same-document traversal remains in-place. Synchronous
 `NativeEngine` history helpers must not bypass this lifecycle: local documents
 run the outgoing events synchronously, failing explicitly if an activated
 canceled event needs a user decision; a process-backed document must use the
-asynchronous history API. Both error paths preserve the active history entry
+asynchronous history API. A cross-document `HistoryGo` surfaced inline while
+an outgoing process-backed lifecycle callback is active is rejected with a
+typed re-entry error before nested traversal or history-selection mutation;
+page History API commands outside outgoing lifecycle dispatch retain their
+queued handling. Both history-API requirement paths preserve the active entry
 and avoid loading a replacement. Complete descendant-frame unload traversal
 and sandbox-modal propagation remain separate `GCWP-0.1` implementation gates
 until their owning browsing-context slice is complete.

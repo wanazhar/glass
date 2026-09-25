@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-741`; issue #40 remains open. The public Rust
+`native-engine-browser-742`; issue #40 remains open. The public Rust
 `BrowserSession` entrypoint now constructs the native backend directly, and
 the former Chrome/CDP API is named `CdpBrowserSession`. This does not claim
 operation parity or production certification. The canonical Rust session now
@@ -52,10 +52,14 @@ Linux end-to-end test passes. Remote CI and cross-platform certification remain
 pending. Slice 741 adds sticky-activation-gated, user-visible top-level
 `beforeunload` confirmation through native CLI, TUI, and MCP hosts, with generic
 browser copy and exact-ID accept/dismiss. Focused Linux tests cover the
-canonical cross-document asynchronous history-traversal gate. Slice 742
-closes the direct synchronous-engine history lifecycle bypass; descendant-
-frame unload traversal, sandbox-modal propagation, remote CI, cross-platform
-certification, and all other profile gates remain open. See the
+canonical cross-document asynchronous history-traversal gate. Slice 742 closes
+the direct synchronous-engine history lifecycle bypass and rejects cross-
+document HistoryGo re-entry surfaced by an outgoing process-backed lifecycle
+callback. Its async mutation path carries this context explicitly rather than
+holding a mutable re-entry counter across an await, so cancellation cannot
+leave a stale guard behind. Descendant-frame unload traversal, sandbox-modal
+propagation, remote CI, cross-platform certification, and all other profile
+gates remain open. See the
 [slice 741 task](../plan/tasks/native-engine-browser-741.md),
 [slice 740 task](../plan/tasks/native-engine-browser-740.md),
 [slice 738 task](../plan/tasks/native-engine-browser-738.md),
@@ -9788,6 +9792,11 @@ synchronous traversal requires the async history API. History commits flush
 queued outgoing lifecycle effects. Default constructors without a live
 controller retain nonblocking JavaScript dialog events; an eligible
 `beforeunload` navigation instead fails closed with an explicit error.
+Cross-document `HistoryGo` surfaced inline from an outgoing process-backed
+lifecycle mutation fails with a typed re-entry error before moving the history
+selection; ordinary page History API commands outside outgoing lifecycle
+dispatch retain their queued handling. The async mutation path passes lifecycle
+context explicitly, avoiding mutable guard state across cancellation points.
 In-process JavaScript modal page realms, descendant-frame unload traversal,
 sandbox-modal propagation, and cross-platform certification remain part of
 the issue #40 gate.

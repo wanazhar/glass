@@ -1,13 +1,15 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-729`; issue #40 remains open. The public Rust
+`native-engine-browser-730`; issue #40 remains open. The public Rust
 `BrowserSession` entrypoint now constructs the native backend directly, and
 the former Chrome/CDP API is named `CdpBrowserSession`. This does not claim
 operation parity or production certification. The canonical Rust session now
 exposes revisioned native semantic observation, selected observation levels,
 page inspection/bootstrap, and stale-revision-checked region expansion under
-standard method names. Earlier
+standard method names. Slice 730 also exposes native target/frame lifecycle
+under canonical names and excludes iframe fallback content from the parent's
+visible-text projection without mutating the DOM. Earlier
 completed slices include `native-engine-browser-696` through
 `native-engine-browser-687`,
 following completed `native-engine-browser-686`,
@@ -4829,7 +4831,14 @@ less safe or less interoperable.
 The versioned implementation contract is
 [`GCWP-0.1`](../plan/native-engine-browser-profile.md). New work must name the
 profile capability family and milestone it advances; a bounded fixture slice
-cannot claim browser-complete status by itself.
+cannot claim browser-complete status by itself. The canonical Rust
+`BrowserSession` exposes native page/frame topology as `list_targets`,
+`create_target`, `select_target`, `close_target`, `list_frames`, and
+`select_frame`; these methods use the Glass-owned registry directly. A
+non-native endpoint cannot silently satisfy one by switching transports. The
+parent visible-text projection omits fallback descendants of HTML `iframe` and
+`frame` elements; the child document remains independently available through
+the frame registry.
 
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its

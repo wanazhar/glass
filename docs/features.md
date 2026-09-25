@@ -20,8 +20,8 @@ source-behavior reference.
 | Domain | CLI | TUI | MCP | Rust | Guide |
 |---|---|---|---|---|---|
 | Install/update and browser launch/attach | `update`, global options, `doctor`, `install-chromium` | startup | session configuration | native `BrowserSession`; explicit `CdpBrowserSession` + `SessionOptions` for Chromium | [Installation](installation.md) |
-| Navigation and targets | `navigate`, `targets`, `new-target`, `select-target`, `close-target` | `navigate` | navigation and target tools | native `BrowserSession` navigation; `CdpBrowserSession` migration surface | [CLI](cli.md) |
-| Frames and topology | `frames`, `select-frame`, `verify` | current frame state | frame tools and predicates | session frame/topology APIs | [Actions](actions.md) |
+| Navigation and targets | `navigate`, `targets`, `new-target`, `select-target`, `close-target` | `navigate` | navigation and target tools | `BrowserSession::navigate`, `list_targets`, `create_target`, `select_target`, `close_target`; explicit `CdpBrowserSession` migration surface | [CLI](cli.md) |
+| Frames and topology | `frames`, `select-frame`, `verify` | current frame state | frame tools and predicates | `BrowserSession::list_frames`, `select_frame`; explicit `CdpBrowserSession` frame APIs | [Actions](actions.md) |
 | Structured observation | `observe`, `inspect-page`, `observe-delta` | semantic page pane | `observe`, `inspectPage`, `observeDelta` | `BrowserSession::observe`, `semantic_observe`, `inspect_page`, `observe_bootstrap`, `semantic_expand_region` | [Semantic observation](semantic-observation.md) |
 | Deep/visual evidence | `dom`, `screenshot`, `pdf`, `diagnostics` | explicit screenshot/live view | `getDOM`, `screenshot`, `printToPdf`, `diagnostics` | observation, visual, diagnostic APIs | [Feature details](#observation-and-evidence) |
 | Pointer/keyboard/forms | click/type/key/form commands | common action commands | action tools | guarded session methods | [Actions](actions.md) |

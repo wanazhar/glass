@@ -9226,6 +9226,11 @@ impl NativeDocument {
                 }
             }
             NativeNodeKind::Element { name, .. } => {
+                if node.namespace_uri() == Some(HTML_NAMESPACE_URI)
+                    && matches!(name.as_str(), "iframe" | "frame")
+                {
+                    return;
+                }
                 let hidden = hidden_parent
                     || matches!(
                         name.as_str(),
@@ -13299,6 +13304,21 @@ mod tests {
         assert_eq!(document.title(1024), ("Example".into(), false));
         assert_eq!(document.visible_text(1024), ("Hello & Glass".into(), false));
         assert!(document.node_count() > 1);
+    }
+
+    #[test]
+    fn visible_text_excludes_html_iframe_fallback_descendants() {
+        let document = NativeDocument::parse(
+            "<main>before <iframe><strong>fallback content</strong></iframe> after</main>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        assert_eq!(document.visible_text(1024), ("before after".into(), false));
+        let frame = document.find_element(document.root(), "iframe").unwrap();
+        let mut fallback_dom_text = String::new();
+        document.collect_raw_text(frame, &mut fallback_dom_text);
+        assert_eq!(fallback_dom_text, "<strong>fallback content</strong>");
     }
 
     #[test]

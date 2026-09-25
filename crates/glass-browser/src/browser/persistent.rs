@@ -4,6 +4,8 @@
 //! between CLI invocations. Clients attach through the verified loopback CDP
 //! port; the owner is the only process allowed to close the owned browser.
 
+#[cfg(feature = "native-engine")]
+use super::native_engine::{MAX_NATIVE_DIALOG_TEXT_BYTES, NativePendingDialog};
 use super::policy::BrowserPolicy;
 use super::runtime::BrowserRuntime;
 use super::session::{
@@ -112,11 +114,16 @@ struct SessionRequest {
     workflow: Option<NativeWorkflowRequest>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeControlRequest {
     action: String,
-    expected_revision: u64,
+    #[serde(default)]
+    expected_revision: Option<u64>,
+    #[serde(default)]
+    dialog_id: Option<String>,
+    #[serde(default)]
+    prompt_value: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -558,28 +565,29 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
 
-    let session = match BrowserRuntimeSession::connect_native(native_config).await {
-        Ok(session) => session,
-        Err(error) => {
-            let failed = PersistentSessionRecord {
-                schema_version: SESSION_SCHEMA_VERSION,
-                name,
-                runtime,
-                state: "failed".into(),
-                pid: std::process::id(),
-                browser_pid: 0,
-                port,
-                profile: profile.clone(),
-                headed,
-                socket: socket.to_path_buf(),
-                status_path: status_path.to_path_buf(),
-                started_at: chrono::Utc::now().to_rfc3339(),
-                error: Some(error.to_string()),
-            };
-            write_record(&status_path, &failed)?;
-            return Err(error);
-        }
-    };
+    let session =
+        match BrowserRuntimeSession::connect_native_with_modal_dialogs(native_config).await {
+            Ok(session) => session,
+            Err(error) => {
+                let failed = PersistentSessionRecord {
+                    schema_version: SESSION_SCHEMA_VERSION,
+                    name,
+                    runtime,
+                    state: "failed".into(),
+                    pid: std::process::id(),
+                    browser_pid: 0,
+                    port,
+                    profile: profile.clone(),
+                    headed,
+                    socket: socket.to_path_buf(),
+                    status_path: status_path.to_path_buf(),
+                    started_at: chrono::Utc::now().to_rfc3339(),
+                    error: Some(error.to_string()),
+                };
+                write_record(&status_path, &failed)?;
+                return Err(error);
+            }
+        };
     let record = PersistentSessionRecord {
         schema_version: SESSION_SCHEMA_VERSION,
         name,
@@ -684,18 +692,26 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                             .as_ref()
                             .ok_or("native persistent session is stopping")?;
                         if request.action == "stopLoading" {
-                            match session
-                                .stop_loading_with_revision(request.expected_revision)
-                                .await
-                            {
-                                Ok(outcome) => json!({
-                                    "ok": true,
-                                    "action": outcome.action,
-                                    "currentRevision": outcome.current_revision,
-                                }),
-                                Err(error) => {
-                                    json!({"ok": false, "error": error.to_string()})
+                            match request.expected_revision {
+                                Some(expected_revision) => {
+                                    match session
+                                        .stop_loading_with_revision(expected_revision)
+                                        .await
+                                    {
+                                        Ok(outcome) => json!({
+                                            "ok": true,
+                                            "action": outcome.action,
+                                            "currentRevision": outcome.current_revision,
+                                        }),
+                                        Err(error) => {
+                                            json!({"ok": false, "error": error.to_string()})
+                                        }
+                                    }
                                 }
+                                None => json!({
+                                    "ok": false,
+                                    "error": "stopLoading requires expectedRevision"
+                                }),
                             }
                         } else {
                             let operation = async {
@@ -749,6 +765,11 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                 };
                 write.write_all(serde_json::to_string(&response)?.as_bytes()).await?;
                 write.write_all(b"\n").await?;
+                if response.get("state").and_then(serde_json::Value::as_str)
+                    == Some("stopping")
+                {
+                    shutdown = true;
+                }
             }
             _ = tokio::signal::ctrl_c() => {
                 shutdown = true;
@@ -769,8 +790,11 @@ async fn execute_native_control(
     request: NativeControlRequest,
 ) -> BrowserResult<serde_json::Value> {
     if request.action == "stopLoading" {
+        let expected_revision = request
+            .expected_revision
+            .ok_or("stopLoading requires expectedRevision")?;
         let outcome = session
-            .stop_loading_with_revision(request.expected_revision)
+            .stop_loading_with_revision(expected_revision)
             .await?;
         return Ok(json!({
             "ok": true,
@@ -783,10 +807,13 @@ async fn execute_native_control(
         .evidence(crate::browser_backend::EvidenceLevel::Compact)
         .await?
         .revision;
-    if actual_revision != request.expected_revision {
+    let expected_revision = request
+        .expected_revision
+        .ok_or("native session control requires expectedRevision")?;
+    if actual_revision != expected_revision {
         return Err(format!(
             "stale browser revision: expected {}, observed {actual_revision}",
-            request.expected_revision
+            expected_revision
         )
         .into());
     }
@@ -809,7 +836,7 @@ async fn execute_native_control(
                 .revision;
             crate::browser::session::NavigationControlOutcome {
                 action: "reload".into(),
-                previous_revision: request.expected_revision,
+                previous_revision: expected_revision,
                 current_revision: revision,
             }
         }
@@ -895,6 +922,22 @@ async fn write_native_owner_response(
 }
 
 #[cfg(all(unix, feature = "native-engine"))]
+fn native_owner_status(
+    record: &PersistentSessionRecord,
+    pending_dialog: Option<NativePendingDialog>,
+) -> BrowserResult<serde_json::Value> {
+    let mut status = serde_json::to_value(record)?;
+    let fields = status
+        .as_object_mut()
+        .ok_or("native persistent status record is not an object")?;
+    fields.insert(
+        "pendingDialog".into(),
+        serde_json::to_value(pending_dialog)?,
+    );
+    Ok(status)
+}
+
+#[cfg(all(unix, feature = "native-engine"))]
 async fn run_native_operation_with_controls<F>(
     listener: &tokio::net::UnixListener,
     session: &BrowserRuntimeSession,
@@ -904,21 +947,45 @@ async fn run_native_operation_with_controls<F>(
 where
     F: Future<Output = BrowserResult<serde_json::Value>>,
 {
-    tokio::pin!(operation);
-    loop {
-        tokio::select! {
-            result = &mut operation => return result,
-            accepted = accept_native_owner_request(listener) => {
+    let (operation_result, close_target_after_operation) = {
+        tokio::pin!(operation);
+        let mut close_target_after_operation = None;
+        loop {
+            tokio::select! {
+                result = &mut operation => {
+                    break (result, close_target_after_operation.take());
+                }
+                accepted = accept_native_owner_request(listener) => {
                 let (mut writer, request) = accepted?;
                 let response = match request {
                     Err(error) => json!({"ok": false, "error": error}),
-                    Ok(request) if request.op == "status" => json!(record),
+                    Ok(request) if request.op == "stop" => {
+                        let response = json!({"ok": true, "state": "stopping"});
+                        write_native_owner_response(&mut writer, &response).await?;
+                        return Ok(response);
+                    }
+                    Ok(request) if request.op == "status" => {
+                        match session.native_pending_dialog_control() {
+                            Ok(pending_dialog) => match native_owner_status(record, pending_dialog) {
+                                Ok(status) => status,
+                                Err(error) => json!({"ok": false, "error": error.to_string()}),
+                            },
+                            Err(error) => json!({"ok": false, "error": error.to_string()}),
+                        }
+                    }
                     Ok(request) if request.op == "control" => {
                         match request.control {
                             Some(control) if control.action == "stopLoading" => {
+                                let Some(expected_revision) = control.expected_revision else {
+                                    let _ = write_native_owner_response(
+                                        &mut writer,
+                                        &json!({"ok": false, "error": "stopLoading requires expectedRevision"}),
+                                    ).await;
+                                    continue;
+                                };
                                 match session.active_native_navigation_revision() {
                                     Ok(Some(_)) => match session
-                                        .stop_loading_with_revision(control.expected_revision)
+                                        .stop_loading_with_revision(expected_revision)
                                         .await
                                     {
                                         Ok(outcome) => json!({
@@ -941,9 +1008,112 @@ where
                                     }),
                                 }
                             }
+                            Some(control)
+                                if matches!(control.action.as_str(), "acceptDialog" | "dismissDialog") =>
+                            {
+                                if close_target_after_operation.is_some() {
+                                    json!({
+                                        "ok": false,
+                                        "error": "native dialog target is already closing",
+                                    })
+                                } else if let Some(dialog_id) = control.dialog_id.as_deref() {
+                                    let accepted = control.action == "acceptDialog";
+                                    match session.native_resolve_dialog_control(
+                                        dialog_id,
+                                        accepted,
+                                        control.prompt_value,
+                                    ) {
+                                        Ok(child_dialog_id) => json!({
+                                            "ok": true,
+                                            "action": control.action,
+                                            "dialogId": dialog_id,
+                                            "childDialogId": child_dialog_id,
+                                        }),
+                                        Err(error) => json!({"ok": false, "error": error.to_string()}),
+                                    }
+                                } else {
+                                    json!({"ok": false, "error": "dialog control requires dialogId"})
+                                }
+                            }
+                            Some(control) if control.action == "closeDialogTarget" => {
+                                if close_target_after_operation.is_some() {
+                                    json!({
+                                        "ok": false,
+                                        "error": "a native dialog target is already closing",
+                                    })
+                                } else if control.prompt_value.is_some() {
+                                    json!({
+                                        "ok": false,
+                                        "error": "closeDialogTarget does not accept promptValue",
+                                    })
+                                } else {
+                                    let Some(dialog_id) = control.dialog_id.as_deref() else {
+                                        let _ = write_native_owner_response(
+                                            &mut writer,
+                                            &json!({
+                                                "ok": false,
+                                                "error": "closeDialogTarget requires dialogId",
+                                            }),
+                                        ).await;
+                                        continue;
+                                    };
+                                    let Some(expected_revision) = control.expected_revision else {
+                                        let _ = write_native_owner_response(
+                                            &mut writer,
+                                            &json!({
+                                                "ok": false,
+                                                "error": "closeDialogTarget requires expectedRevision",
+                                            }),
+                                        ).await;
+                                        continue;
+                                    };
+                                    match session.native_pending_dialog_control() {
+                                        Ok(Some(pending)) if pending.id == dialog_id => {
+                                            match session.active_native_navigation_revision() {
+                                                Ok(Some(active_revision)) if active_revision == expected_revision => {
+                                                    match session.stop_loading_with_revision(expected_revision).await {
+                                                        Ok(_) => {
+                                                            let target_id = pending.context_id;
+                                                            close_target_after_operation = Some(target_id.clone());
+                                                            json!({
+                                                                "ok": true,
+                                                                "action": control.action,
+                                                                "dialogId": dialog_id,
+                                                                "targetId": target_id,
+                                                                "state": "closing",
+                                                            })
+                                                        }
+                                                        Err(error) => json!({"ok": false, "error": error.to_string()}),
+                                                    }
+                                                }
+                                                Ok(Some(active_revision)) => json!({
+                                                    "ok": false,
+                                                    "error": format!(
+                                                        "stale browser revision: expected {expected_revision}, active navigation began at {active_revision}"
+                                                    ),
+                                                }),
+                                                Ok(None) => json!({
+                                                    "ok": false,
+                                                    "error": "closeDialogTarget requires an active native HTTP(S) navigation",
+                                                }),
+                                                Err(error) => json!({"ok": false, "error": error.to_string()}),
+                                            }
+                                        }
+                                        Ok(Some(_)) => json!({
+                                            "ok": false,
+                                            "error": "closeDialogTarget dialogId does not match the pending dialog",
+                                        }),
+                                        Ok(None) => json!({
+                                            "ok": false,
+                                            "error": "closeDialogTarget requires a pending native dialog",
+                                        }),
+                                        Err(error) => json!({"ok": false, "error": error.to_string()}),
+                                    }
+                                }
+                            }
                             _ => json!({
                                 "ok": false,
-                                "error": "native persistent owner is busy; only status and stopLoading are accepted during an active operation",
+                                "error": "native persistent owner is busy; only status, stopLoading, exact pending-dialog controls, and closeDialogTarget are accepted during an active operation",
                             }),
                         }
                     }
@@ -956,8 +1126,20 @@ where
                 // browser command future and thereby change navigation state.
                 let _ = write_native_owner_response(&mut writer, &response).await;
             }
+                _ = tokio::signal::ctrl_c() => {
+                    return Ok(json!({
+                        "ok": false,
+                        "state": "stopping",
+                        "error": "persistent owner was interrupted while a browser operation was active",
+                    }));
+                }
+            }
         }
+    };
+    if let Some(target_id) = close_target_after_operation {
+        session.close_target(&target_id).await?;
     }
+    operation_result
 }
 
 #[cfg(all(unix, feature = "native-engine"))]
@@ -1069,7 +1251,9 @@ pub async fn control_native(
             argv: Vec::new(),
             control: Some(NativeControlRequest {
                 action: action.into(),
-                expected_revision,
+                expected_revision: Some(expected_revision),
+                dialog_id: None,
+                prompt_value: None,
             }),
             mcp_params: None,
             workflow: None,
@@ -1081,6 +1265,72 @@ pub async fn control_native(
             .get("error")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("native persistent control was rejected")
+            .to_owned()
+            .into());
+    }
+    Ok(response)
+}
+
+#[cfg(feature = "native-engine")]
+pub async fn control_native_dialog(
+    name: &str,
+    dialog_id: &str,
+    accepted: bool,
+    prompt_value: Option<String>,
+) -> BrowserResult<serde_json::Value> {
+    if dialog_id.is_empty()
+        || dialog_id.len() > 64
+        || !dialog_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err("native dialog control requires a valid dialogId".into());
+    }
+    if prompt_value
+        .as_ref()
+        .is_some_and(|value| value.len() > MAX_NATIVE_DIALOG_TEXT_BYTES)
+    {
+        return Err(
+            format!("native prompt response exceeds {MAX_NATIVE_DIALOG_TEXT_BYTES} bytes").into(),
+        );
+    }
+    if !accepted && prompt_value.is_some() {
+        return Err("a dismissed native dialog cannot carry promptValue".into());
+    }
+    let Some(record) = read_record(name)? else {
+        return Err(format!("persistent session `{name}` is not running; start it first").into());
+    };
+    if !record.runtime.is_native() {
+        return Err(format!("persistent session `{name}` is not a native session").into());
+    }
+    if !process_is_alive(record.pid) {
+        return Err(format!("persistent session `{name}` is stale; restart it first").into());
+    }
+    let response = send_request_payload(
+        &record.socket,
+        &SessionRequest {
+            op: "control".into(),
+            argv: Vec::new(),
+            control: Some(NativeControlRequest {
+                action: if accepted {
+                    "acceptDialog".into()
+                } else {
+                    "dismissDialog".into()
+                },
+                expected_revision: None,
+                dialog_id: Some(dialog_id.into()),
+                prompt_value,
+            }),
+            mcp_params: None,
+            workflow: None,
+        },
+    )
+    .await?;
+    if response.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+        return Err(response
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("native dialog control was rejected")
             .to_owned()
             .into());
     }
@@ -1352,6 +1602,26 @@ mod tests {
     }
 
     #[cfg(all(unix, feature = "native-engine"))]
+    async fn wait_for_native_pending_dialog(
+        socket: &Path,
+        expected_type: &str,
+    ) -> serde_json::Value {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = send_request(socket, "status")
+                    .await
+                    .expect("persistent owner status should remain available");
+                let pending = &status["pendingDialog"];
+                if pending["dialog"]["type"].as_str() == Some(expected_type) {
+                    return pending.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("native owner did not expose a pending {expected_type} dialog"))
+    }
+
     #[test]
     fn native_owner_keeps_one_engine_alive_for_multiple_ipc_commands() {
         std::thread::Builder::new()
@@ -1416,6 +1686,59 @@ mod tests {
                         );
                         fast_stream.write_all(headers.as_bytes()).await.unwrap();
                         fast_stream.write_all(body).await.unwrap();
+
+                        let modal_bodies: &[&[u8]] = &[
+                            br#"<!doctype html><body><script>
+                                    window.dialogTrace = ["before"];
+                                    window.dialogTrace.push("confirm:" + confirm("continue?"));
+                                    window.dialogTrace.push("prompt-default:" + prompt("default?", "seed"));
+                                    window.dialogTrace.push("prompt:" + prompt("name?", "ignored"));
+                                    alert("finish");
+                                    window.dialogTrace.push("after");
+                                    document.body.textContent = window.dialogTrace.join("|");
+                                </script></body>"#,
+                            br#"<!doctype html><body><script>
+                                window.dialogDismissTrace = ["before-dismissals"];
+                                window.dialogDismissTrace.push("confirm:" + confirm("dismiss confirm?"));
+                                window.dialogDismissTrace.push("prompt:" + prompt("dismiss prompt?", "fallback"));
+                                window.dialogDismissTrace.push("alert:" + alert("accept alert"));
+                                window.dialogDismissTrace.push("after-dismissals");
+                                document.body.textContent = window.dialogDismissTrace.join("|");
+                            </script></body>"#,
+                            br#"<!doctype html><body><script>
+                                window.dialogTrace = ["before-cancel"];
+                                alert("cancel navigation");
+                                window.dialogTrace.push("after-cancel");
+                            </script></body>"#,
+                            b"<!doctype html><title>worker-restarted</title><p>healthy</p>",
+                            br#"<!doctype html><body><script>
+                                alert("close target");
+                            </script></body>"#,
+                            br#"<!doctype html><body><script>
+                                window.stopTrace = ["before-stop"];
+                                alert("stop owner");
+                                window.stopTrace.push("after-stop");
+                            </script></body>"#,
+                        ];
+                        for body in modal_bodies {
+                            let (stream, _) = fixture_listener.accept().await.unwrap();
+                            let mut reader = BufReader::new(stream);
+                            loop {
+                                let mut line = String::new();
+                                if reader.read_line(&mut line).await.unwrap() == 0
+                                    || line == "\r\n"
+                                {
+                                    break;
+                                }
+                            }
+                            let mut stream = reader.into_inner();
+                            let headers = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            );
+                            stream.write_all(headers.as_bytes()).await.unwrap();
+                            stream.write_all(body).await.unwrap();
+                        }
                     });
                     let socket = root.join("session.sock");
                     let status_path = root.join("session.json");
@@ -1478,7 +1801,9 @@ mod tests {
                         argv: Vec::new(),
                         control: Some(NativeControlRequest {
                             action: "stopLoading".into(),
-                            expected_revision: revision,
+                            expected_revision: Some(revision),
+                            dialog_id: None,
+                            prompt_value: None,
                         }),
                         mcp_params: None,
                         workflow: None,
@@ -1532,7 +1857,9 @@ mod tests {
                             argv: Vec::new(),
                             control: Some(NativeControlRequest {
                                 action: "stopLoading".into(),
-                                expected_revision: revision.saturating_add(1),
+                                expected_revision: Some(revision.saturating_add(1)),
+                                dialog_id: None,
+                                prompt_value: None,
                             }),
                             mcp_params: None,
                             workflow: None,
@@ -1554,7 +1881,9 @@ mod tests {
                                 argv: Vec::new(),
                                 control: Some(NativeControlRequest {
                                     action: "stopLoading".into(),
-                                    expected_revision: revision,
+                                    expected_revision: Some(revision),
+                                    dialog_id: None,
+                                    prompt_value: None,
                                 }),
                                 mcp_params: None,
                                 workflow: None,
@@ -1616,11 +1945,6 @@ mod tests {
                             .expect("follow-up observation should expose a revision")
                             > revision
                     );
-                    tokio::time::timeout(Duration::from_secs(2), fixture_server)
-                        .await
-                        .expect("HTTP fixture did not complete both requests")
-                        .expect("HTTP fixture task panicked");
-
                     let mcp_request = SessionRequest {
                         op: "mcp".into(),
                         argv: Vec::new(),
@@ -1704,8 +2028,518 @@ mod tests {
                     assert_eq!(second["ok"], true);
                     assert_eq!(read_record_from_path(&status_path).unwrap().pid, owner_pid);
 
+                    let native_execute = |args: Vec<String>| {
+                        let mut argv = vec![
+                            "--browser-runtime".into(),
+                            "native".into(),
+                            "--profile".into(),
+                            "native-test".into(),
+                        ];
+                        argv.extend(args);
+                        SessionRequest {
+                            op: "execute".into(),
+                            argv,
+                            control: None,
+                            mcp_params: None,
+                            workflow: None,
+                        }
+                    };
+                    let dialog_control = |action: &str,
+                                          dialog_id: &str,
+                                          prompt_value: Option<String>| {
+                        SessionRequest {
+                            op: "control".into(),
+                            argv: Vec::new(),
+                            control: Some(NativeControlRequest {
+                                action: action.into(),
+                                expected_revision: None,
+                                dialog_id: Some(dialog_id.into()),
+                                prompt_value,
+                            }),
+                            mcp_params: None,
+                            workflow: None,
+                        }
+                    };
+                    let native_mcp = |name: &str, arguments: serde_json::Value| SessionRequest {
+                        op: "mcp".into(),
+                        argv: Vec::new(),
+                        control: None,
+                        mcp_params: Some(json!({"name": name, "arguments": arguments})),
+                        workflow: None,
+                    };
+                    let close_dialog_target = |dialog_id: &str, expected_revision| {
+                        SessionRequest {
+                            op: "control".into(),
+                            argv: Vec::new(),
+                            control: Some(NativeControlRequest {
+                                action: "closeDialogTarget".into(),
+                                expected_revision: Some(expected_revision),
+                                dialog_id: Some(dialog_id.into()),
+                                prompt_value: None,
+                            }),
+                            mcp_params: None,
+                            workflow: None,
+                        }
+                    };
+
+                    let dialog_navigation = native_execute(vec![
+                        "navigate".into(),
+                        format!("http://{fixture_address}/dialog-sequence"),
+                    ]);
+                    let dialog_socket = socket.clone();
+                    let pending_dialog_navigation = tokio::task::spawn_local(async move {
+                        send_request_payload(&dialog_socket, &dialog_navigation).await
+                    });
+                    let confirm = wait_for_native_pending_dialog(&socket, "confirm").await;
+                    assert_eq!(confirm["dialog"]["message"], "continue?");
+                    assert!(confirm["contextId"].as_str().is_some_and(|id| !id.is_empty()));
+                    assert!(confirm["frameId"].as_str().is_some_and(|id| !id.is_empty()));
+                    assert!(!pending_dialog_navigation.is_finished());
+
+                    let busy = send_request_payload(&socket, &request)
+                        .await
+                        .expect_err("a second browser command ran during a modal dialog");
+                    assert!(busy.to_string().contains("busy"));
+                    let stale_dialog = dialog_control(
+                        "acceptDialog",
+                        "native-dialog-stale",
+                        None,
+                    );
+                    send_request_payload(&socket, &stale_dialog)
+                        .await
+                        .expect_err("a stale dialog identity was accepted");
+                    assert_eq!(
+                        wait_for_native_pending_dialog(&socket, "confirm").await["id"],
+                        confirm["id"]
+                    );
+
+                    let accepted_confirm = send_request_payload(
+                        &socket,
+                        &dialog_control("acceptDialog", confirm["id"].as_str().unwrap(), None),
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(accepted_confirm["ok"], true);
+                    let default_prompt = wait_for_native_pending_dialog(&socket, "prompt").await;
+                    assert_eq!(default_prompt["dialog"]["default_value"], "seed");
+                    send_request_payload(
+                        &socket,
+                        &dialog_control(
+                            "acceptDialog",
+                            default_prompt["id"].as_str().unwrap(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    let explicit_prompt = wait_for_native_pending_dialog(&socket, "prompt").await;
+                    assert_eq!(explicit_prompt["dialog"]["default_value"], "ignored");
+                    send_request_payload(
+                        &socket,
+                        &dialog_control(
+                            "acceptDialog",
+                            explicit_prompt["id"].as_str().unwrap(),
+                            Some("Ada".into()),
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    let alert = wait_for_native_pending_dialog(&socket, "alert").await;
+                    send_request_payload(
+                        &socket,
+                        &dialog_control("dismissDialog", alert["id"].as_str().unwrap(), None),
+                    )
+                    .await
+                    .unwrap();
+                    let dialog_result = tokio::time::timeout(
+                        Duration::from_secs(15),
+                        pending_dialog_navigation,
+                    )
+                    .await
+                    .expect("dialog navigation did not resume after its decisions")
+                    .expect("dialog navigation task panicked")
+                    .unwrap();
+                    assert_eq!(dialog_result["ok"], true);
+                    let evaluate_trace = send_request_payload(
+                        &socket,
+                        &native_execute(vec![
+                            "evaluate".into(),
+                            "document.body.textContent".into(),
+                        ]),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(evaluate_trace.to_string().contains(
+                        "before|confirm:true|prompt-default:seed|prompt:Ada|after"
+                    ));
+
+                    let evaluate_with_dialogs = native_execute(vec![
+                        "evaluate".into(),
+                        "window.evaluateDialogTrace = ['before']; window.evaluateDialogTrace.push('confirm:' + confirm('evaluate confirm?')); window.evaluateDialogTrace.push('prompt:' + prompt('evaluate prompt?', 'fallback')); alert('evaluate alert'); window.evaluateDialogTrace.push('after'); window.evaluateDialogTrace.join('|')".into(),
+                    ]);
+                    let evaluate_socket = socket.clone();
+                    let mut pending_evaluate = tokio::task::spawn_local(async move {
+                        send_request_payload(&evaluate_socket, &evaluate_with_dialogs).await
+                    });
+                    let evaluate_confirm = tokio::time::timeout(Duration::from_secs(10), async {
+                        loop {
+                            if pending_evaluate.is_finished() {
+                                let result = (&mut pending_evaluate)
+                                    .await
+                                    .expect("explicit evaluate task should not panic");
+                                panic!(
+                                    "explicit evaluate completed before publishing its confirm dialog: {result:?}"
+                                );
+                            }
+                            let status = send_request(&socket, "status").await.unwrap();
+                            let pending = status["pendingDialog"].clone();
+                            if pending["dialog"]["type"].as_str() == Some("confirm") {
+                                break pending;
+                            }
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await
+                    .expect("native owner did not expose the explicit-evaluate confirm dialog");
+                    assert_eq!(evaluate_confirm["dialog"]["message"], "evaluate confirm?");
+                    assert!(
+                        !pending_evaluate.is_finished(),
+                        "evaluate completed before its confirm call was resolved"
+                    );
+                    send_request_payload(
+                        &socket,
+                        &dialog_control(
+                            "acceptDialog",
+                            evaluate_confirm["id"].as_str().unwrap(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    let evaluate_prompt = wait_for_native_pending_dialog(&socket, "prompt").await;
+                    assert_eq!(evaluate_prompt["dialog"]["default_value"], "fallback");
+                    assert!(!pending_evaluate.is_finished());
+                    send_request_payload(
+                        &socket,
+                        &dialog_control(
+                            "acceptDialog",
+                            evaluate_prompt["id"].as_str().unwrap(),
+                            Some("Grace".into()),
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    let evaluate_alert = wait_for_native_pending_dialog(&socket, "alert").await;
+                    assert_eq!(evaluate_alert["dialog"]["message"], "evaluate alert");
+                    assert!(!pending_evaluate.is_finished());
+                    send_request_payload(
+                        &socket,
+                        &dialog_control(
+                            "acceptDialog",
+                            evaluate_alert["id"].as_str().unwrap(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    let evaluate_result = tokio::time::timeout(
+                        Duration::from_secs(10),
+                        pending_evaluate,
+                    )
+                    .await
+                    .expect("explicit evaluate did not resume after dialog decisions")
+                    .expect("explicit evaluate client task panicked")
+                    .unwrap();
+                    assert_eq!(evaluate_result["ok"], true);
+                    assert!(evaluate_result.to_string().contains(
+                        "before|confirm:true|prompt:Grace|after"
+                    ));
+
+                    let dismiss_navigation = native_execute(vec![
+                        "navigate".into(),
+                        format!("http://{fixture_address}/dialog-dismiss-sequence"),
+                    ]);
+                    let dismiss_socket = socket.clone();
+                    let pending_dismiss_navigation = tokio::task::spawn_local(async move {
+                        send_request_payload(&dismiss_socket, &dismiss_navigation).await
+                    });
+                    let dismissed_confirm =
+                        wait_for_native_pending_dialog(&socket, "confirm").await;
+                    assert_eq!(dismissed_confirm["dialog"]["message"], "dismiss confirm?");
+                    assert!(!pending_dismiss_navigation.is_finished());
+                    send_request_payload(
+                        &socket,
+                        &dialog_control(
+                            "dismissDialog",
+                            dismissed_confirm["id"].as_str().unwrap(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    let dismissed_prompt = wait_for_native_pending_dialog(&socket, "prompt").await;
+                    assert_eq!(dismissed_prompt["dialog"]["default_value"], "fallback");
+                    assert!(!pending_dismiss_navigation.is_finished());
+                    send_request_payload(
+                        &socket,
+                        &dialog_control(
+                            "dismissDialog",
+                            dismissed_prompt["id"].as_str().unwrap(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    let accepted_alert = wait_for_native_pending_dialog(&socket, "alert").await;
+                    assert_eq!(accepted_alert["dialog"]["message"], "accept alert");
+                    assert!(!pending_dismiss_navigation.is_finished());
+                    send_request_payload(
+                        &socket,
+                        &dialog_control(
+                            "acceptDialog",
+                            accepted_alert["id"].as_str().unwrap(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    let dismiss_result = tokio::time::timeout(
+                        Duration::from_secs(15),
+                        pending_dismiss_navigation,
+                    )
+                    .await
+                    .expect("dismissed-dialog navigation did not resume")
+                    .expect("dismissed-dialog navigation task panicked")
+                    .unwrap();
+                    assert_eq!(dismiss_result["ok"], true);
+                    let dismiss_trace = send_request_payload(
+                        &socket,
+                        &native_execute(vec![
+                            "evaluate".into(),
+                            "document.body.textContent".into(),
+                        ]),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(dismiss_trace.to_string().contains(
+                        "before-dismissals|confirm:false|prompt:null|alert:undefined|after-dismissals"
+                    ));
+
+                    let dialog_revision = send_request_payload(&socket, &request)
+                        .await
+                        .unwrap()["output"]["value"]["revision"]
+                        .as_u64()
+                        .expect("dialog page observation should expose its revision");
+                    let cancel_navigation = native_execute(vec![
+                        "navigate".into(),
+                        format!("http://{fixture_address}/dialog-cancel"),
+                    ]);
+                    let cancel_socket = socket.clone();
+                    let pending_cancel_navigation = tokio::task::spawn_local(async move {
+                        send_request_payload(&cancel_socket, &cancel_navigation).await
+                    });
+                    let cancel_alert = wait_for_native_pending_dialog(&socket, "alert").await;
+                    assert_eq!(cancel_alert["dialog"]["message"], "cancel navigation");
+                    let stop_dialog_navigation = send_request_payload(
+                        &socket,
+                        &SessionRequest {
+                            op: "control".into(),
+                            argv: Vec::new(),
+                            control: Some(NativeControlRequest {
+                                action: "stopLoading".into(),
+                                expected_revision: Some(dialog_revision),
+                                dialog_id: None,
+                                prompt_value: None,
+                            }),
+                            mcp_params: None,
+                            workflow: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(stop_dialog_navigation["action"], "stopLoading");
+                    let cancelled_dialog_navigation = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        pending_cancel_navigation,
+                    )
+                    .await
+                    .expect("cancelled modal navigation did not settle")
+                    .expect("cancelled modal navigation task panicked")
+                    .expect_err("cancelled modal navigation committed");
+                    assert!(cancelled_dialog_navigation
+                        .to_string()
+                        .to_lowercase()
+                        .contains("cancel"));
+                    let after_dialog_cancel = send_request(&socket, "status").await.unwrap();
+                    assert!(after_dialog_cancel["pendingDialog"].is_null());
+                    let unchanged_revision = send_request_payload(&socket, &request)
+                        .await
+                        .unwrap()["output"]["value"]["revision"]
+                        .as_u64()
+                        .expect("cancelled dialog must preserve the committed document");
+                    assert_eq!(unchanged_revision, dialog_revision);
+
+                    let healthy_navigation = native_execute(vec![
+                        "navigate".into(),
+                        format!("http://{fixture_address}/healthy"),
+                    ]);
+                    let healthy = send_request_payload(&socket, &healthy_navigation)
+                        .await
+                        .unwrap();
+                    assert_eq!(healthy["ok"], true);
+                    let healthy_revision = send_request_payload(&socket, &request)
+                        .await
+                        .unwrap()["output"]["value"]["revision"]
+                        .as_u64()
+                        .expect("healthy follow-up page should expose a revision");
+
+                    let parked_target_response = send_request_payload(
+                        &socket,
+                        &native_mcp("createTarget", json!({"url": "about:blank"})),
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(parked_target_response["ok"], true);
+                    let parked_target: serde_json::Value = serde_json::from_str(
+                        parked_target_response["result"]["content"][0]["text"]
+                            .as_str()
+                            .expect("createTarget should return a serialized target"),
+                    )
+                    .unwrap();
+                    let parked_target_id = parked_target["id"].as_str().unwrap().to_owned();
+
+                    let close_navigation = native_execute(vec![
+                        "navigate".into(),
+                        format!("http://{fixture_address}/dialog-close"),
+                    ]);
+                    let close_socket = socket.clone();
+                    let pending_close_navigation = tokio::task::spawn_local(async move {
+                        send_request_payload(&close_socket, &close_navigation).await
+                    });
+                    let close_dialog = wait_for_native_pending_dialog(&socket, "alert").await;
+                    let close_target_id = close_dialog["contextId"].as_str().unwrap();
+                    let stale_target_close = send_request_payload(
+                        &socket,
+                        &close_dialog_target("native-dialog-stale", healthy_revision),
+                    )
+                    .await
+                    .expect_err("target close accepted a stale dialog identity");
+                    assert!(stale_target_close
+                        .to_string()
+                        .contains("does not match the pending dialog"));
+                    assert_eq!(
+                        wait_for_native_pending_dialog(&socket, "alert").await["id"],
+                        close_dialog["id"]
+                    );
+                    let stale_target_close_revision = send_request_payload(
+                        &socket,
+                        &close_dialog_target(
+                            close_dialog["id"].as_str().unwrap(),
+                            healthy_revision.saturating_add(1),
+                        ),
+                    )
+                    .await
+                    .expect_err("target close accepted a stale page revision");
+                    assert!(stale_target_close_revision
+                        .to_string()
+                        .contains("stale browser revision"));
+                    let close_result = send_request_payload(
+                        &socket,
+                        &close_dialog_target(
+                            close_dialog["id"].as_str().unwrap(),
+                            healthy_revision,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(close_result["ok"], true);
+                    assert_eq!(close_result["targetId"], close_target_id);
+                    let closed_navigation = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        pending_close_navigation,
+                    )
+                    .await
+                    .expect("target-close navigation did not settle")
+                    .expect("target-close navigation task panicked")
+                    .expect_err("navigation succeeded after its dialog target was closed");
+                    assert!(closed_navigation
+                        .to_string()
+                        .to_lowercase()
+                        .contains("cancel"));
+
+                    let listed_targets = send_request_payload(
+                        &socket,
+                        &native_mcp("listTargets", json!({})),
+                    )
+                    .await
+                    .unwrap();
+                    let listed_targets: serde_json::Value = serde_json::from_str(
+                        listed_targets["result"]["content"][0]["text"]
+                            .as_str()
+                            .expect("listTargets should return serialized targets"),
+                    )
+                    .unwrap();
+                    let listed_targets = listed_targets["result"]
+                        .as_array()
+                        .expect("listTargets result should contain a target array");
+                    assert!(!listed_targets
+                        .iter()
+                        .any(|target| target["id"] == close_target_id));
+                    assert!(listed_targets
+                        .iter()
+                        .any(|target| target["id"] == parked_target_id));
+                    send_request_payload(
+                        &socket,
+                        &native_mcp(
+                            "selectTarget",
+                            json!({"id": parked_target_id.clone()}),
+                        ),
+                    )
+                    .await
+                    .unwrap();
+
+                    let stop_navigation = native_execute(vec![
+                        "navigate".into(),
+                        format!("http://{fixture_address}/dialog-stop"),
+                    ]);
+                    let stop_socket = socket.clone();
+                    let mut pending_stop_navigation = tokio::task::spawn_local(async move {
+                        send_request_payload(&stop_socket, &stop_navigation).await
+                    });
+                    let stop_dialog = tokio::time::timeout(Duration::from_secs(10), async {
+                        loop {
+                            let status = send_request(&socket, "status").await.unwrap();
+                            if status["pendingDialog"].is_object() {
+                                break status["pendingDialog"].clone();
+                            }
+                            if pending_stop_navigation.is_finished() {
+                                let result = (&mut pending_stop_navigation).await;
+                                panic!(
+                                    "owner-stop navigation completed before opening a dialog: {result:?}"
+                                );
+                            }
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await
+                    .expect("owner-stop navigation did not publish a pending dialog");
+                    assert_eq!(stop_dialog["dialog"]["type"], "alert");
+                    assert_eq!(stop_dialog["dialog"]["message"], "stop owner");
                     let stopped = send_request(&socket, "stop").await.unwrap();
                     assert_eq!(stopped["state"], "stopping");
+                    let stopped_navigation = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        pending_stop_navigation,
+                    )
+                    .await
+                    .expect("owner stop did not release the active modal command")
+                    .expect("stopped modal command task panicked")
+                    .unwrap();
+                    assert_eq!(stopped_navigation["state"], "stopping");
+                    tokio::time::timeout(Duration::from_secs(5), fixture_server)
+                        .await
+                        .expect("HTTP modal fixtures did not complete")
+                        .expect("HTTP modal fixture task panicked");
                     tokio::time::timeout(Duration::from_secs(10), server)
                         .await
                         .expect("native persistent owner did not stop")

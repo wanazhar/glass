@@ -8113,8 +8113,25 @@ mod tests {
     }
 
     #[cfg(feature = "native-engine")]
-    #[tokio::test]
-    async fn native_mcp_routes_dialog_lifecycle_without_chromium() {
+    #[test]
+    fn native_mcp_routes_dialog_lifecycle_without_chromium() {
+        std::thread::Builder::new()
+            .name("glass-native-mcp-dialog-test".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("native MCP test runtime should build");
+                runtime.block_on(native_mcp_routes_dialog_lifecycle_without_chromium_inner());
+            })
+            .expect("native MCP test thread should spawn")
+            .join()
+            .expect("native MCP test thread should not panic");
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn native_mcp_routes_dialog_lifecycle_without_chromium_inner() {
         let mut session = None;
         let mut native_session = None;
         let options = SessionOptions::default();

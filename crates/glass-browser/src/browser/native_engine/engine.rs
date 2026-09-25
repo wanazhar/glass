@@ -14,6 +14,7 @@ use super::css::{
     decode_css_url_value, static_css_imports,
 };
 use super::diagnostics::NativeDiagnostic;
+use super::dialog::NativeDialogControlPlane;
 use super::dom::{
     NativeDocument, NativeNodeId, NativePageScriptSource, NativeScriptDocumentSnapshot,
 };
@@ -376,6 +377,7 @@ pub struct NativeEngine {
     runtime_worker: Option<NativeRuntimeWorker>,
     content_process: Option<NativeContentProcess>,
     javascript: Option<NativeJavaScriptRuntime>,
+    dialog_control: NativeDialogControlPlane,
     service_worker_clients: Vec<NativeServiceWorkerClientState>,
     workers: NativeWorkerRegistry,
     web_storage: NativeWebStorageState,
@@ -441,6 +443,13 @@ impl Drop for NativeEngine {
 
 impl NativeEngine {
     pub fn new(config: NativeEngineConfig) -> Result<Self, NativeEngineError> {
+        Self::new_with_dialog_control(config, NativeDialogControlPlane::default())
+    }
+
+    pub(crate) fn new_with_dialog_control(
+        config: NativeEngineConfig,
+        dialog_control: NativeDialogControlPlane,
+    ) -> Result<Self, NativeEngineError> {
         config.validate()?;
         let web_storage = load_web_storage_profile(config.storage_path.as_deref())?;
         let indexed_db = load_indexed_db_profile(config.storage_path.as_deref())?;
@@ -487,6 +496,7 @@ impl NativeEngine {
             runtime_worker: None,
             content_process: None,
             javascript: None,
+            dialog_control,
             service_worker_clients,
             workers: NativeWorkerRegistry::new_with_fetch_streams(),
             web_storage,
@@ -529,6 +539,10 @@ impl NativeEngine {
             pending_lifecycle_effects: Vec::new(),
             skip_next_navigation_lifecycle: false,
         })
+    }
+
+    pub(crate) fn dialog_control_plane(&self) -> NativeDialogControlPlane {
+        self.dialog_control.clone()
     }
 
     pub fn config(&self) -> &NativeEngineConfig {
@@ -1222,6 +1236,7 @@ impl NativeEngine {
                 NativeContentProcess::spawn(
                     self.config.storage_path.as_deref(),
                     self.loader.allowed_file_roots(),
+                    self.dialog_control.clone(),
                 )
                 .await?,
             )
@@ -1690,6 +1705,7 @@ impl NativeEngine {
             let mut process = NativeContentProcess::spawn(
                 self.config.storage_path.as_deref(),
                 self.loader.allowed_file_roots(),
+                self.dialog_control.clone(),
             )
             .await?;
             process

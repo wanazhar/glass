@@ -12,6 +12,7 @@ mod config;
 mod content_process;
 mod css;
 mod diagnostics;
+mod dialog;
 mod dom;
 mod engine;
 mod environment;
@@ -54,6 +55,7 @@ pub use diagnostics::{
     MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES, MAX_NATIVE_DIAGNOSTICS, NativeDiagnostic,
     NativeDiagnosticCode, NativeDiagnosticSource,
 };
+pub(crate) use dialog::{NativeDialogControlPlane, NativePendingDialog};
 pub use dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind, NativeSemanticNode};
 pub(crate) use engine::parse_point_target;
 pub use engine::{
@@ -69,10 +71,10 @@ pub use interaction::{
     NativeAction, NativeEffect, NativeEventKind, NativeFile,
 };
 pub(crate) use javascript::{
-    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
-    NativeFrameScriptWindow, NativeMessagePortTransfer, NativePageMessagePortCommand,
-    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
+    MAX_NATIVE_DIALOG_TEXT_BYTES, NativeFrameScriptBinding, NativeFrameScriptContext,
+    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeMessagePortTransfer,
+    NativePageMessagePortCommand, NativePopupRequest, NativePostMessageRequest,
+    NativeScriptCommand, NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
     NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
     synchronize_service_worker_client_leases, validate_message_port_transfers,
     validate_page_message_port_command,

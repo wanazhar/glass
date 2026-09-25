@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-733`.
+browser expansion slices are complete through `native-engine-browser-734`.
 The public Rust `BrowserSession` now starts the native runtime directly;
 `native-engine-browser-728` preserves the former Chromium API under the
 explicit `CdpBrowserSession` name. Issue #40 remains open; browser completion,
@@ -43,8 +43,16 @@ TUI, with content-worker termination/reaping and a clean subsequent navigation
 check. Slice 733 carries stop-loading through the persistent owner while
 preserving one active state writer: only status and a valid stop control are
 serviced concurrently, and other commands receive an explicit busy error.
-The attached native TUI now routes `Alt+S` to that control. Issue #40 remains
-open; no operation-parity or production-certification claim is made.
+The attached native TUI now routes `Alt+S` to that control. Slice 734 adds
+synchronous modal continuation for process-backed page-load scripts and
+explicit `evaluate()` calls in the persistent owner, with accept/dismiss return
+semantics, deadline suspension, navigation/owner/worker cancellation, and
+revision-checked closure of the target owning a pending navigation dialog.
+Standalone-session controllers, TUI prompt presentation, and other Core Web
+Profile parity remain open. See the [slice 734
+task](tasks/native-engine-browser-734.md). Issue #40 remains open; no
+browser-completion, operation-parity, or production-certification claim is
+made.
 Slice 727 enforces rooted-file frame CSP. Slice 726 enforces rooted-file image,
 font, and media CSP.
 Slice 725 enforces runtime CSP meta policies before same-turn inline script

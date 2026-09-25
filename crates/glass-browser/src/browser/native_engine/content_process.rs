@@ -14,6 +14,7 @@ use super::css::{
     FontWeightValue, NativeFontFaceSource, absolutize_stylesheet_urls, css_import_matches,
     decode_css_url_value, static_css_imports,
 };
+use super::dialog::{NativeDialogControlPlane, NativeDialogResolution, NativeDialogWait};
 use super::dom::{
     NativeDocument, NativeDocumentWire, NativeNodeId, NativePageImportMapSource,
     NativePageScriptSource, NativePageScriptTiming,
@@ -39,16 +40,16 @@ use super::javascript::{
     MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES, MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES,
     MAX_NATIVE_WEBSOCKET_PROTOCOLS, MAX_NATIVE_WORKER_MESSAGES, MAX_NATIVE_XHR_TIMEOUT_MS,
     NATIVE_JSON_MODULE_NAME_PREFIX, NativeCookieChange, NativeCookieProfileEntry, NativeDialog,
-    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
-    NativeFrameScriptWindow, NativeHashChangeEvent, NativeIndexedDbChange, NativeIndexedDbState,
-    NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativePageEventBatch,
-    NativePageMessagePortCommand, NativePageScript, NativePageScriptResult, NativePopupRequest,
-    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
-    NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
-    NativeServiceWorkerOpenWindowRequest, NativeStorageEvent, NativeWebStorageState,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    NativeWorkerEventSourceCommand, NativeWorkerMessage, NativeWorkerRegistry,
-    NativeWorkerWebSocketCommand, apply_document_commands_with_font_face_ack,
+    NativeDialogHandler, NativeFrameScriptBinding, NativeFrameScriptContext,
+    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHashChangeEvent,
+    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
+    NativeMessagePortPageMessage, NativePageEventBatch, NativePageMessagePortCommand,
+    NativePageScript, NativePageScriptResult, NativePopupRequest, NativePostMessageRequest,
+    NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerClientMessage,
+    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
+    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
+    NativeWorkerRegistry, NativeWorkerWebSocketCommand, apply_document_commands_with_font_face_ack,
     apply_page_script_evaluation, diff_indexed_db_changes, execute_dynamic_page_scripts,
     execute_page_scripts, host_event_batch, host_key_event_batch,
     host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
@@ -84,9 +85,12 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
@@ -1063,14 +1067,119 @@ pub(crate) struct NativeContentProcess {
     scroll_offset: NativePoint,
     nested_scroll_offsets: BTreeMap<u32, NativePoint>,
     current_document_url: Option<String>,
+    context_id: Option<String>,
+    frame_id: Option<String>,
+    dialog_control: NativeDialogControlPlane,
     #[cfg(windows)]
     sandbox: NativeContentSandbox,
+}
+
+struct NativeWorkerDialogRpc {
+    next_dialog_id: AtomicU64,
+    active_request_id: AtomicU64,
+    enabled: AtomicBool,
+}
+
+impl Default for NativeWorkerDialogRpc {
+    fn default() -> Self {
+        Self {
+            next_dialog_id: AtomicU64::new(1),
+            active_request_id: AtomicU64::new(0),
+            enabled: AtomicBool::new(false),
+        }
+    }
+}
+
+impl NativeWorkerDialogRpc {
+    fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Release);
+    }
+
+    fn begin_request(&self, request_id: u64) {
+        self.active_request_id.store(request_id, Ordering::Release);
+    }
+
+    fn request_dialog(
+        &self,
+        dialog: NativeDialog,
+        url: String,
+    ) -> Result<Option<NativeDialogResolution>, String> {
+        if !self.enabled.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let request_id = self.active_request_id.load(Ordering::Acquire);
+        if request_id == 0 {
+            return Err("native dialog has no active content request".into());
+        }
+        if !matches!(dialog.dialog_type.as_str(), "alert" | "confirm" | "prompt") {
+            return Err("native dialog type is invalid".into());
+        }
+        if dialog.message.len() > MAX_NATIVE_DIALOG_TEXT_BYTES
+            || dialog
+                .default_value
+                .as_ref()
+                .is_some_and(|value| value.len() > MAX_NATIVE_DIALOG_TEXT_BYTES)
+        {
+            return Err("native dialog text exceeds its byte limit".into());
+        }
+        validate_url_text("native dialog URL", &url).map_err(|error| error.to_string())?;
+        let dialog_id = self
+            .next_dialog_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                next.checked_add(1)
+            })
+            .map_err(|_| "native dialog identifier space is exhausted".to_owned())?;
+        let event = json!({
+            "kind": "dialog_open",
+            "request_id": request_id,
+            "dialog_id": dialog_id,
+            "url": url,
+            "dialog": dialog,
+        });
+        let encoded = serde_json::to_vec(&event)
+            .map_err(|_| "native dialog event could not be encoded".to_owned())?;
+        write_sync_frame(std::io::stdout(), &encoded)
+            .map_err(|_| "native dialog event could not be sent to its owner".to_owned())?;
+        let response = read_sync_frame(std::io::stdin())
+            .map_err(|_| "native dialog decision could not be read from its owner".to_owned())?;
+        let decision: NativeWorkerDialogDecision = serde_json::from_slice(&response)
+            .map_err(|_| "native dialog decision was malformed".to_owned())?;
+        if decision.kind != "dialog_decision"
+            || decision.request_id != request_id
+            || decision.dialog_id != dialog_id
+        {
+            return Err("native dialog decision did not match the active call".into());
+        }
+        if decision
+            .prompt_value
+            .as_ref()
+            .is_some_and(|value| value.len() > MAX_NATIVE_DIALOG_TEXT_BYTES)
+        {
+            return Err("native prompt response exceeds its byte limit".into());
+        }
+        Ok(Some(NativeDialogResolution {
+            accepted: decision.accepted,
+            prompt_value: decision.prompt_value,
+        }))
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeWorkerDialogDecision {
+    kind: String,
+    request_id: u64,
+    dialog_id: u64,
+    accepted: bool,
+    #[serde(default)]
+    prompt_value: Option<String>,
 }
 
 impl NativeContentProcess {
     pub(crate) async fn spawn(
         storage_path: Option<&Path>,
         allowed_file_roots: &[PathBuf],
+        dialog_control: NativeDialogControlPlane,
     ) -> Result<Self, NativeEngineError> {
         let path = worker_binary_path()?;
         if let Some(storage_path) = storage_path
@@ -1129,6 +1238,9 @@ impl NativeContentProcess {
             scroll_offset: NativePoint { x: 0, y: 0 },
             nested_scroll_offsets: BTreeMap::new(),
             current_document_url: None,
+            context_id: None,
+            frame_id: None,
+            dialog_control,
             #[cfg(windows)]
             sandbox,
         };
@@ -1191,12 +1303,15 @@ impl NativeContentProcess {
                 "frame_context": frame_context,
                 "environment": environment,
                 "service_worker_clients": service_worker_clients,
+                "modal_dialogs": self.dialog_control.modal_dialogs_enabled(),
             }))
             .await?;
         let result = require_response_kind(&response, "started", id, "content process start");
         if result.is_ok() {
             self.scroll_offset = NativePoint { x: 0, y: 0 };
             self.nested_scroll_offsets.clear();
+            self.context_id = Some(context_id.to_owned());
+            self.frame_id = Some(frame_id.to_owned());
         }
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::Protocol);
@@ -1434,6 +1549,30 @@ impl NativeContentProcess {
         service_worker_clients: &[NativeServiceWorkerClientState],
         cancellation: Option<&NativeNavigationCancellation>,
     ) -> Result<NativeContentLoadResult, NativeEngineError> {
+        self.load_with_deadline(
+            navigation,
+            limits,
+            viewport,
+            referrer,
+            client_id,
+            service_worker_clients,
+            cancellation,
+            CONTENT_PROCESS_LOAD_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn load_with_deadline(
+        &mut self,
+        navigation: &NativeNavigationRequest,
+        limits: &NativeEngineLimits,
+        viewport: Viewport,
+        referrer: Option<&str>,
+        client_id: &str,
+        service_worker_clients: &[NativeServiceWorkerClientState],
+        cancellation: Option<&NativeNavigationCancellation>,
+        deadline: Duration,
+    ) -> Result<NativeContentLoadResult, NativeEngineError> {
         let id = self.next_id();
         let request = json!({
             "kind": "load",
@@ -1471,24 +1610,22 @@ impl NativeContentProcess {
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => None,
-                response = timeout(CONTENT_PROCESS_LOAD_TIMEOUT, self.exchange(request)) => {
+                response = self.exchange_with_timeout(
+                    request,
+                    "content process load",
+                    deadline,
+                ) => {
                     Some(response)
                 }
             }
         } else {
-            Some(timeout(CONTENT_PROCESS_LOAD_TIMEOUT, self.exchange(request)).await)
+            Some(
+                self.exchange_with_timeout(request, "content process load", deadline)
+                    .await,
+            )
         };
         let response = match response_result {
-            Some(Ok(response)) => response?,
-            Some(Err(_)) => {
-                self.mark_failed(NativeWorkerFailureKind::Timeout);
-                let _ = self.child.start_kill();
-                return Err(NativeEngineError::worker_failure(
-                    "content process load",
-                    NativeWorkerFailureKind::Timeout,
-                    "content process load exceeded its deadline",
-                ));
-            }
+            Some(response) => response?,
             None => {
                 self.terminate_and_reap("cancel content process load")
                     .await?;
@@ -1810,28 +1947,22 @@ impl NativeContentProcess {
         page_events: &NativePageEventBatch,
     ) -> Result<NativeContentScriptResult, NativeEngineError> {
         let id = self.next_id();
-        let response = match timeout(
-            CONTENT_PROCESS_SCRIPT_TIMEOUT,
-            self.exchange(json!({
+        let response = match self
+            .exchange_with_timeout(
+                json!({
                 "kind": "script",
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "source": source,
                 "page_events": page_events,
-            })),
-        )
-        .await
+                }),
+                "content process script",
+                CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            )
+            .await
         {
-            Ok(response) => response?,
-            Err(_) => {
-                self.mark_failed(NativeWorkerFailureKind::Timeout);
-                let _ = self.child.start_kill();
-                return Err(NativeEngineError::worker_failure(
-                    "content process script",
-                    NativeWorkerFailureKind::Timeout,
-                    "content process script exceeded its deadline",
-                ));
-            }
+            Ok(response) => response,
+            Err(error) => return Err(error),
         };
         if response.get("kind").and_then(Value::as_str) == Some("error") {
             return Err(NativeEngineError::Worker {
@@ -2254,6 +2385,7 @@ impl NativeContentProcess {
                 "document_url": document_url,
                 }),
                 "content process cookies",
+                CONTENT_PROCESS_SCRIPT_TIMEOUT,
             )
             .await?;
         decode_cookie_profiles(&response, id, "content process cookies")
@@ -2273,6 +2405,7 @@ impl NativeContentProcess {
                 "cookies": cookies,
                 }),
                 "content process set cookies",
+                CONTENT_PROCESS_SCRIPT_TIMEOUT,
             )
             .await?;
         require_response_kind(&response, "cookies_set", id, "content process set cookies")
@@ -2288,6 +2421,7 @@ impl NativeContentProcess {
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 }),
                 "content process clear cookies",
+                CONTENT_PROCESS_SCRIPT_TIMEOUT,
             )
             .await?;
         require_response_kind(
@@ -2304,28 +2438,18 @@ impl NativeContentProcess {
         request_kind: &str,
         action: Value,
     ) -> Result<NativeContentMutation, NativeEngineError> {
-        let response = match timeout(
-            CONTENT_PROCESS_MUTATION_TIMEOUT,
-            self.exchange(json!({
+        let response = self
+            .exchange_with_timeout(
+                json!({
                 "kind": request_kind,
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "action": action,
-            })),
-        )
-        .await
-        {
-            Ok(response) => response?,
-            Err(_) => {
-                self.mark_failed(NativeWorkerFailureKind::Timeout);
-                let _ = self.child.start_kill();
-                return Err(NativeEngineError::worker_failure(
-                    "content process mutation",
-                    NativeWorkerFailureKind::Timeout,
-                    "content process mutation exceeded its deadline",
-                ));
-            }
-        };
+                }),
+                "content process mutation",
+                CONTENT_PROCESS_MUTATION_TIMEOUT,
+            )
+            .await?;
         if response.get("kind").and_then(Value::as_str) == Some("error") {
             self.mark_failed(NativeWorkerFailureKind::Rejected);
             let _ = self.child.start_kill();
@@ -2443,17 +2567,44 @@ impl NativeContentProcess {
         &mut self,
         request: Value,
         operation: &str,
+        deadline: Duration,
     ) -> Result<Value, NativeEngineError> {
-        match timeout(CONTENT_PROCESS_SCRIPT_TIMEOUT, self.exchange(request)).await {
-            Ok(response) => response,
-            Err(_) => {
-                self.mark_failed(NativeWorkerFailureKind::Timeout);
-                let _ = self.child.start_kill();
-                Err(NativeEngineError::worker_failure(
-                    operation,
-                    NativeWorkerFailureKind::Timeout,
-                    "content process cookie operation exceeded its deadline",
-                ))
+        let dialog_control = self.dialog_control.clone();
+        let context_id = self.context_id.clone();
+        let frame_id = self.frame_id.clone();
+        let mut exchange = Box::pin(self.exchange(request));
+        let mut timer = Box::pin(sleep(deadline));
+        loop {
+            tokio::select! {
+                biased;
+                response = &mut exchange => return response,
+                _ = &mut timer => {
+                    let pending = match dialog_control.pending() {
+                        Ok(pending) => pending,
+                        Err(error) => {
+                            drop(exchange);
+                            self.mark_failed(NativeWorkerFailureKind::Transport);
+                            let _ = self.child.start_kill();
+                            return Err(error);
+                        }
+                    };
+                    let dialog_is_suspending_this_request = pending.is_some_and(|pending| {
+                        Some(pending.context_id) == context_id
+                            && Some(pending.frame_id) == frame_id
+                    });
+                    if dialog_is_suspending_this_request {
+                        timer.as_mut().reset(tokio::time::Instant::now() + deadline);
+                        continue;
+                    }
+                    drop(exchange);
+                    self.mark_failed(NativeWorkerFailureKind::Timeout);
+                    let _ = self.child.start_kill();
+                    return Err(NativeEngineError::worker_failure(
+                        operation,
+                        NativeWorkerFailureKind::Timeout,
+                        "content process operation exceeded its deadline",
+                    ));
+                }
             }
         }
     }
@@ -2464,16 +2615,126 @@ impl NativeContentProcess {
     }
 
     async fn exchange_inner(&mut self, request: Value) -> Result<Value, NativeEngineError> {
+        let request_id = request.get("id").and_then(Value::as_u64).ok_or_else(|| {
+            NativeEngineError::invalid("content IPC request ID", "must be an unsigned integer")
+        })?;
         let payload = serde_json::to_vec(&request).map_err(|_| NativeEngineError::Worker {
             operation: "encode content IPC".into(),
             reason: "content process request could not be encoded".into(),
         })?;
         write_frame(&mut self.stdin, &payload).await?;
-        let response = read_frame(&mut self.stdout).await?;
-        serde_json::from_slice(&response).map_err(|_| NativeEngineError::Worker {
-            operation: "decode content IPC".into(),
-            reason: "content process returned an invalid response".into(),
-        })
+        let mut resumed_dialog: Option<NativeDialogWait> = None;
+        loop {
+            let response = read_frame(&mut self.stdout).await?;
+            let response: Value =
+                serde_json::from_slice(&response).map_err(|_| NativeEngineError::Worker {
+                    operation: "decode content IPC".into(),
+                    reason: "content process returned an invalid response".into(),
+                })?;
+            if response.get("kind").and_then(Value::as_str) != Some("dialog_open") {
+                if let Some(dialog) = resumed_dialog.take() {
+                    dialog.finish();
+                }
+                return Ok(response);
+            }
+            if let Some(dialog) = resumed_dialog.take() {
+                dialog.finish();
+            }
+            if response.get("request_id").and_then(Value::as_u64) != Some(request_id) {
+                return Err(NativeEngineError::Worker {
+                    operation: "route native dialog".into(),
+                    reason: "native dialog belongs to a different content request".into(),
+                });
+            }
+            let context_id = self
+                .context_id
+                .clone()
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "route native dialog".into(),
+                    reason: "content process has no bound browsing context".into(),
+                })?;
+            let frame_id = self
+                .frame_id
+                .clone()
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "route native dialog".into(),
+                    reason: "content process has no bound frame".into(),
+                })?;
+            let child_dialog_id = response
+                .get("dialog_id")
+                .and_then(Value::as_u64)
+                .filter(|id| *id > 0)
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "route native dialog".into(),
+                    reason: "content process dialog identifier is invalid".into(),
+                })?;
+            let dialog_url = response.get("url").and_then(Value::as_str).ok_or_else(|| {
+                NativeEngineError::Worker {
+                    operation: "route native dialog".into(),
+                    reason: "content process dialog URL is missing".into(),
+                }
+            })?;
+            let dialog = response
+                .get("dialog")
+                .cloned()
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "route native dialog".into(),
+                    reason: "content process dialog metadata is missing".into(),
+                })
+                .and_then(|dialog| {
+                    serde_json::from_value::<NativeDialog>(dialog).map_err(|_| {
+                        NativeEngineError::Worker {
+                            operation: "route native dialog".into(),
+                            reason: "content process dialog metadata is invalid".into(),
+                        }
+                    })
+                })?;
+            let dialog_control = self.dialog_control.clone();
+            let dialog_wait = dialog_control.wait_for_resolution(
+                &context_id,
+                &frame_id,
+                dialog_url,
+                child_dialog_id,
+                dialog,
+            );
+            tokio::pin!(dialog_wait);
+            let resolution = tokio::select! {
+                biased;
+                status = self.child.wait() => {
+                    let (kind, reason) = match status {
+                        Ok(_) => (
+                            NativeWorkerFailureKind::Exited,
+                            "content process exited while a modal dialog was pending",
+                        ),
+                        Err(_) => (
+                            NativeWorkerFailureKind::Transport,
+                            "content process status could not be observed while a modal dialog was pending",
+                        ),
+                    };
+                    self.mark_failed(kind);
+                    return Err(NativeEngineError::worker_failure(
+                        "content process modal dialog",
+                        kind,
+                        reason,
+                    ));
+                }
+                resolution = &mut dialog_wait => resolution?,
+            };
+            let response = resolution.resolution.clone();
+            let decision = serde_json::to_vec(&json!({
+                "kind": "dialog_decision",
+                "request_id": request_id,
+                "dialog_id": child_dialog_id,
+                "accepted": response.accepted,
+                "prompt_value": response.prompt_value,
+            }))
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "encode native dialog decision".into(),
+                reason: "native dialog decision could not be encoded".into(),
+            })?;
+            write_frame(&mut self.stdin, &decision).await?;
+            resumed_dialog = Some(resolution);
+        }
     }
 
     fn next_id(&mut self) -> u64 {
@@ -2548,6 +2809,39 @@ async fn read_frame(reader: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>, Na
             operation: "read content IPC".into(),
             reason: "content process returned a truncated frame".into(),
         })?;
+    Ok(payload)
+}
+
+fn write_sync_frame(mut writer: impl Write, payload: &[u8]) -> std::io::Result<()> {
+    if payload.len() > MAX_CONTENT_IPC_FRAME_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "content IPC frame exceeds its byte limit",
+        ));
+    }
+    let length = u32::try_from(payload.len()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "content IPC frame length exceeds its wire type",
+        )
+    })?;
+    writer.write_all(&length.to_be_bytes())?;
+    writer.write_all(payload)?;
+    writer.flush()
+}
+
+fn read_sync_frame(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
+    let mut length = [0_u8; 4];
+    reader.read_exact(&mut length)?;
+    let length = u32::from_be_bytes(length) as usize;
+    if length > MAX_CONTENT_IPC_FRAME_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "content IPC frame exceeds its byte limit",
+        ));
+    }
+    let mut payload = vec![0; length];
+    reader.read_exact(&mut payload)?;
     Ok(payload)
 }
 
@@ -4393,6 +4687,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut frame_script_context: Option<NativeFrameScriptContext> = None;
     let mut frame_script_bindings = Vec::new();
     let mut pending_service_worker_navigation: Option<Value> = None;
+    let dialog_rpc = Arc::new(NativeWorkerDialogRpc::default());
+    let dialog_rpc_for_handler = Arc::clone(&dialog_rpc);
+    let dialog_handler: NativeDialogHandler =
+        Arc::new(move |dialog, url| dialog_rpc_for_handler.request_dialog(dialog, url));
     loop {
         let payload = read_frame(&mut stdin).await?;
         let request: Value =
@@ -4401,6 +4699,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 reason: "content process received an invalid request".into(),
             })?;
         let id = request.get("id").cloned().unwrap_or(Value::Null);
+        let request_id = id.as_u64().ok_or_else(|| {
+            NativeEngineError::invalid("content-process request ID", "must be an unsigned integer")
+        })?;
+        dialog_rpc.begin_request(request_id);
         let kind = request
             .get("kind")
             .and_then(Value::as_str)
@@ -4438,6 +4740,16 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 json!({"kind":"pong","id":id,"protocol":CONTENT_WORKER_PROTOCOL_VERSION})
             }
             "start" if protocol_matches(&request) && !running => {
+                let modal_dialogs = request
+                    .get("modal_dialogs")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process modal dialog setting",
+                            "must be boolean",
+                        )
+                    })?;
+                dialog_rpc.set_enabled(modal_dialogs);
                 let requested_context_id = request
                     .get("context_id")
                     .and_then(Value::as_str)
@@ -5083,12 +5395,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             pending_service_worker_client_messages
                                 .extend(service_workers.take_client_messages());
                             let mut script_runtime =
-                                match NativeJavaScriptRuntime::new_with_context_metadata(
+                                match NativeJavaScriptRuntime::new_with_context_metadata_and_dialog_handler(
                                     &storage_context_id,
                                     &window_name,
                                     opener_context_id.as_deref(),
                                     &opener_window_name,
                                     &opener_url,
+                                    Arc::clone(&dialog_handler),
                                 ) {
                                     Ok(runtime) => Some(runtime),
                                     Err(error) => {
@@ -5644,12 +5957,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .transpose()?
                     .unwrap_or_default();
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new_with_context_metadata(
+                    match NativeJavaScriptRuntime::new_with_context_metadata_and_dialog_handler(
                         &storage_context_id,
                         &window_name,
                         opener_context_id.as_deref(),
                         &opener_window_name,
                         &opener_url,
+                        Arc::clone(&dialog_handler),
                     ) {
                         Ok(runtime) => {
                             runtime.set_environment(environment.clone());
@@ -6042,12 +6356,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new_with_context_metadata(
+                    match NativeJavaScriptRuntime::new_with_context_metadata_and_dialog_handler(
                         &storage_context_id,
                         &window_name,
                         opener_context_id.as_deref(),
                         &opener_window_name,
                         &opener_url,
+                        Arc::clone(&dialog_handler),
                     ) {
                         Ok(runtime) => {
                             runtime.set_environment(environment.clone());
@@ -6148,12 +6463,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new_with_context_metadata(
+                    match NativeJavaScriptRuntime::new_with_context_metadata_and_dialog_handler(
                         &storage_context_id,
                         &window_name,
                         opener_context_id.as_deref(),
                         &opener_window_name,
                         &opener_url,
+                        Arc::clone(&dialog_handler),
                     ) {
                         Ok(runtime) => {
                             runtime.set_environment(environment.clone());
@@ -6308,12 +6624,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new_with_context_metadata(
+                    match NativeJavaScriptRuntime::new_with_context_metadata_and_dialog_handler(
                         &storage_context_id,
                         &window_name,
                         opener_context_id.as_deref(),
                         &opener_window_name,
                         &opener_url,
+                        Arc::clone(&dialog_handler),
                     ) {
                         Ok(runtime) => {
                             runtime.set_environment(environment.clone());
@@ -6425,12 +6742,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     continue;
                 };
                 if javascript_runtime.is_none() {
-                    match NativeJavaScriptRuntime::new_with_context_metadata(
+                    match NativeJavaScriptRuntime::new_with_context_metadata_and_dialog_handler(
                         &storage_context_id,
                         &window_name,
                         opener_context_id.as_deref(),
                         &opener_window_name,
                         &opener_url,
+                        Arc::clone(&dialog_handler),
                     ) {
                         Ok(runtime) => {
                             runtime.set_environment(environment.clone());
@@ -14014,7 +14332,10 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_health_detects_an_exited_content_worker() {
-        let mut process = NativeContentProcess::spawn(None, &[]).await.unwrap();
+        let mut process =
+            NativeContentProcess::spawn(None, &[], NativeDialogControlPlane::default())
+                .await
+                .unwrap();
         process.child.start_kill().unwrap();
         process.child.wait().await.unwrap();
 
@@ -14023,6 +14344,267 @@ mod tests {
             process.failure_kind(),
             Some(NativeWorkerFailureKind::Exited)
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exited_content_worker_releases_a_suspended_modal_dialog() {
+        use tokio::io::AsyncBufReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let fixture = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = tokio::io::BufReader::new(stream);
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let mut stream = reader.into_inner();
+            let body = b"<!doctype html><body><script>alert('worker failure');</script></body>";
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+        });
+        let control = NativeDialogControlPlane::for_modal_owner();
+        let mut process = NativeContentProcess::spawn(None, &[], control.clone())
+            .await
+            .unwrap();
+        process
+            .start(
+                None,
+                &[],
+                super::super::browsing_context::NATIVE_CONTEXT_ID,
+                super::super::browsing_context::NATIVE_CONTEXT_ID,
+                "",
+                None,
+                "",
+                "",
+                None,
+                &NativeEnvironmentOverrides::default(),
+                &[],
+            )
+            .await
+            .unwrap();
+        let worker_pid = process
+            .child
+            .id()
+            .expect("content worker should have a PID");
+        let navigation = NativeNavigationRequest::get(format!("http://{address}/dialog"));
+        let pending_load = tokio::spawn(async move {
+            process
+                .load(
+                    &navigation,
+                    &NativeEngineLimits::default(),
+                    Viewport::default(),
+                    None,
+                    super::super::browsing_context::NATIVE_CONTEXT_ID,
+                    &[],
+                    None,
+                )
+                .await
+        });
+        let pending = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(pending) = control.pending().unwrap() {
+                    break pending;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("worker did not publish its modal dialog");
+        assert_eq!(pending.dialog.message, "worker failure");
+        assert_eq!(
+            unsafe { libc::kill(worker_pid as libc::pid_t, libc::SIGKILL) },
+            0
+        );
+        let load_result = tokio::time::timeout(Duration::from_secs(5), pending_load)
+            .await
+            .expect("worker exit did not release the suspended dialog")
+            .expect("content load task panicked");
+        let failure = match load_result {
+            Err(failure) => failure,
+            Ok(_) => panic!("navigation succeeded after its content worker exited"),
+        };
+        assert!(failure.to_string().contains("content process"));
+        assert!(control.pending().unwrap().is_none());
+        fixture.await.expect("HTTP dialog fixture task panicked");
+    }
+
+    #[tokio::test]
+    async fn modal_dialog_wait_pauses_the_content_operation_deadline() {
+        use tokio::io::AsyncBufReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let fixture = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+
+            let bodies: &[&[u8]] = &[
+                b"<!doctype html><title>warm</title><p>ready</p>",
+                br#"<!doctype html><title>modal-deadline</title><body><script>
+                    alert("deadline pause");
+                    window.dialogDeadlineResumed = true;
+                </script></body>"#,
+            ];
+            for body in bodies {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = tokio::io::BufReader::new(stream);
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut stream = reader.into_inner();
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(body).await.unwrap();
+            }
+        });
+        let control = NativeDialogControlPlane::for_modal_owner();
+        let mut process = NativeContentProcess::spawn(None, &[], control.clone())
+            .await
+            .unwrap();
+        process
+            .start(
+                None,
+                &[],
+                super::super::browsing_context::NATIVE_CONTEXT_ID,
+                super::super::browsing_context::NATIVE_CONTEXT_ID,
+                "",
+                None,
+                "",
+                "",
+                None,
+                &NativeEnvironmentOverrides::default(),
+                &[],
+            )
+            .await
+            .unwrap();
+        process
+            .load(
+                &NativeNavigationRequest::get(format!("http://{address}/warm")),
+                &NativeEngineLimits::default(),
+                Viewport::default(),
+                None,
+                super::super::browsing_context::NATIVE_CONTEXT_ID,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        process.commit().await.unwrap();
+        let page_events = NativePageEventBatch::default();
+        let mut pending_evaluation = tokio::spawn(async move {
+            let result = process
+                .evaluate_with_page_events("confirm('explicit evaluation')", &page_events)
+                .await;
+            (process, result)
+        });
+        let evaluation_dialog = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(pending) = control.pending().unwrap() {
+                    break pending;
+                }
+                if pending_evaluation.is_finished() {
+                    let (_process, result) = (&mut pending_evaluation)
+                        .await
+                        .expect("explicit content evaluation task should not panic");
+                    match result {
+                        Ok(result) => panic!(
+                            "explicit content evaluation completed without a modal dialog: {:?}",
+                            result.value
+                        ),
+                        Err(error) => panic!(
+                            "explicit content evaluation failed without a modal dialog: {error}"
+                        ),
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("explicit content evaluation did not publish its modal dialog");
+        assert_eq!(evaluation_dialog.dialog.message, "explicit evaluation");
+        control.resolve(&evaluation_dialog.id, true, None).unwrap();
+        let (mut process, evaluation) =
+            tokio::time::timeout(Duration::from_secs(5), &mut pending_evaluation)
+                .await
+                .expect("explicit content evaluation did not resume")
+                .expect("explicit content evaluation task panicked");
+        assert_eq!(evaluation.unwrap().value, serde_json::json!(true));
+        let navigation = NativeNavigationRequest::get(format!("http://{address}/dialog"));
+        let limits = NativeEngineLimits::default();
+        let mut pending_load = tokio::spawn(async move {
+            process
+                .load_with_deadline(
+                    &navigation,
+                    &limits,
+                    Viewport::default(),
+                    None,
+                    super::super::browsing_context::NATIVE_CONTEXT_ID,
+                    &[],
+                    None,
+                    Duration::from_secs(5),
+                )
+                .await
+        });
+        let pending_dialog = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(pending) = control.pending().unwrap() {
+                    break pending;
+                }
+                if pending_load.is_finished() {
+                    match (&mut pending_load).await {
+                        Ok(Ok(_)) => {
+                            panic!("page load completed successfully without publishing a modal")
+                        }
+                        Ok(Err(error)) => {
+                            panic!("page load failed without publishing a modal: {error}")
+                        }
+                        Err(error) => panic!("page load task panicked: {error}"),
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("page load did not publish its modal dialog");
+        assert_eq!(pending_dialog.dialog.message, "deadline pause");
+        tokio::time::sleep(Duration::from_millis(11_500)).await;
+        assert!(
+            !pending_load.is_finished(),
+            "operation deadline expired while a human decision was pending"
+        );
+        assert_eq!(
+            control
+                .pending()
+                .unwrap()
+                .as_ref()
+                .map(|pending| pending.id.as_str()),
+            Some(pending_dialog.id.as_str())
+        );
+        control.resolve(&pending_dialog.id, true, None).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), pending_load)
+            .await
+            .expect("page load did not resume after accepting its dialog")
+            .expect("script task panicked")
+            .expect("page load failed after its dialog was accepted");
+        assert!(matches!(result, NativeContentLoadResult::Loaded(_)));
+        fixture.await.expect("HTTP deadline fixture task panicked");
+        assert!(control.pending().unwrap().is_none());
     }
 
     #[tokio::test]

@@ -89,6 +89,36 @@ It is never an implicit fallback for a native request.
 | `accessibility` | semantic and assistive surface | roles, states, properties, name/description computation, focus, actions, and incremental updates for the declared DOM/layout surface | accessibility-tree differential fixtures and action/focus tests |
 | `glass-integration` | public Glass contract | stable backend capability profile, navigation, targets, DOM/AX/evidence, actions, key input, script/evaluate, waits/events, screenshots, contexts, storage, downloads/uploads, prompts, CLI, MCP, and TUI parity | all normal operations pass in native-only mode with no hidden CDP process/socket |
 
+### Synchronous JavaScript dialog contract
+
+The native page realm implements the HTML Standard's modal user-prompt
+behavior for `alert()`, `confirm()`, and `prompt()`:
+
+- `alert()` blocks the invoking script until accepted, then returns `undefined`;
+  its no-argument overload uses the empty message, while
+  `alert(undefined)` and `alert(null)` convert to `"undefined"` and `"null"`.
+  Dialog text normalizes line endings and is byte-bounded before IPC.
+- `confirm(message)` blocks the invoking script and returns `true` on accept
+  or `false` on dismiss.
+- `prompt(message, defaultValue)` blocks the invoking script and returns the
+  accepted response string (initially `defaultValue`) or `null` on dismiss.
+- A pending modal pauses subsequent page-script execution and task/microtask
+  progress for that page. It does not block the Glass control plane: callers
+  can inspect and resolve the exact pending dialog while the original browser
+  operation remains pending. The script resumes once, in place; replaying it
+  from the beginning or returning placeholder `false`/`null` values is not
+  equivalent.
+- Resolution is tied to the owning page target, frame, and current dialog
+  identity. Navigation, target closure, worker failure, timeout, and explicit
+  cancellation must release the suspended operation without applying a stale
+  answer or committing partial state.
+
+The method semantics follow the [HTML Standard's simple-dialog algorithms].
+The profile does not replace user prompts with no-op defaults merely because a
+caller selected the native backend.
+
+[HTML Standard's simple-dialog algorithms]: https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#simple-dialogs
+
 ### Dynamic module loading contract
 
 - Every `ImportCall`, including a literal specifier, resolves only when the

@@ -11,17 +11,17 @@
 #![allow(clippy::await_holding_lock)]
 
 use super::native_engine::{
-    MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeAction, NativeEffect, NativeEngine,
-    NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFile, NativeFrameScriptBinding,
-    NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
-    NativeHistoryDirection, NativeInspectionSnapshot, NativeLayoutSnapshot,
-    NativeNavigationCancellation, NativeNavigationMethod, NativeNavigationRequest, NativeOrigin,
-    NativePageMessagePortCommand, NativePoint, NativePopupRequest, NativePostMessageRequest,
-    NativePreflightAction, NativeRequestBody, NativeScriptCommand,
-    NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest, NativeSurface,
-    NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, Viewport, parse_point_target,
-    synchronize_service_worker_client_leases, validate_message_port_transfers,
+    MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeAction, NativeDialogControlPlane,
+    NativeEffect, NativeEngine, NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFile,
+    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
+    NativeFrameScriptWindow, NativeHistoryDirection, NativeInspectionSnapshot,
+    NativeLayoutSnapshot, NativeNavigationCancellation, NativeNavigationMethod,
+    NativeNavigationRequest, NativeOrigin, NativePageMessagePortCommand, NativePendingDialog,
+    NativePoint, NativePopupRequest, NativePostMessageRequest, NativePreflightAction,
+    NativeRequestBody, NativeScriptCommand, NativeServiceWorkerClientMessage,
+    NativeServiceWorkerOpenWindowRequest, NativeSurface, NativeTargetPreflight,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate, Viewport,
+    parse_point_target, synchronize_service_worker_client_leases, validate_message_port_transfers,
     validate_page_message_port_command, validate_target_navigation_payload,
 };
 use crate::browser::session::{
@@ -306,6 +306,7 @@ impl NativeTargetState {
 pub struct NativeEngineBackend {
     profile: BackendProfile,
     engine: Mutex<NativeEngine>,
+    dialog_control: NativeDialogControlPlane,
     targets: Mutex<NativeTargetState>,
     browser_effect_cursor: Mutex<NativeBrowserEffectSource>,
     page_message_port_routes: Mutex<BTreeMap<String, NativePageMessagePortRoute>>,
@@ -324,13 +325,22 @@ pub struct NativeFrameInspectionSnapshot {
 
 impl NativeEngineBackend {
     pub fn new(config: NativeEngineConfig) -> Result<Self, BrowserBackendError> {
+        Self::new_with_dialog_control(config, NativeDialogControlPlane::default())
+    }
+
+    pub(crate) fn new_with_dialog_control(
+        config: NativeEngineConfig,
+        dialog_control: NativeDialogControlPlane,
+    ) -> Result<Self, BrowserBackendError> {
         let profile = Self::profile_for(env!("CARGO_PKG_VERSION"))?;
         let active_target_id = config.context_id.clone();
-        let engine = NativeEngine::new(config).map_err(native_error)?;
+        let engine = NativeEngine::new_with_dialog_control(config, dialog_control.clone())
+            .map_err(native_error)?;
         let active_name = native_window_name(&engine.config().window_name);
         Ok(Self {
             profile,
             engine: Mutex::new(engine),
+            dialog_control,
             targets: Mutex::new(NativeTargetState::new(active_target_id, active_name)),
             browser_effect_cursor: Mutex::new(NativeBrowserEffectSource::Popup),
             page_message_port_routes: Mutex::new(BTreeMap::new()),
@@ -343,6 +353,23 @@ impl NativeEngineBackend {
 
     pub(crate) fn current_revision(&self) -> Result<u64, BrowserBackendError> {
         Ok(self.lock_engine(BackendOperation::Evidence)?.revision())
+    }
+
+    pub(crate) fn pending_dialog_control(
+        &self,
+    ) -> Result<Option<NativePendingDialog>, BrowserBackendError> {
+        self.dialog_control.pending().map_err(native_error)
+    }
+
+    pub(crate) fn resolve_dialog_control(
+        &self,
+        id: &str,
+        accepted: bool,
+        prompt_value: Option<String>,
+    ) -> Result<u64, BrowserBackendError> {
+        self.dialog_control
+            .resolve(id, accepted, prompt_value)
+            .map_err(native_error)
     }
 
     pub(crate) fn begin_navigation_control(
@@ -2361,7 +2388,8 @@ impl NativeEngineBackend {
         } else {
             config
         };
-        let mut engine = NativeEngine::new(config).map_err(native_error)?;
+        let mut engine = NativeEngine::new_with_dialog_control(config, self.dialog_control.clone())
+            .map_err(native_error)?;
         if let Err(error) = engine.initialize_async().await {
             let _ = engine.close_async().await;
             return Err(native_error(error));
@@ -5852,7 +5880,9 @@ async fn reconcile_native_frames(
             } else {
                 child_config
             };
-            let mut child = NativeEngine::new(child_config).map_err(native_error)?;
+            let mut child =
+                NativeEngine::new_with_dialog_control(child_config, engine.dialog_control_plane())
+                    .map_err(native_error)?;
             child.set_frame_id(frame_id.clone());
             child.inherit_service_worker_clients(&parent_engine.service_worker_clients());
             child.set_embedding_frame_policy(embedding_document_url, embedding_frame_sources);

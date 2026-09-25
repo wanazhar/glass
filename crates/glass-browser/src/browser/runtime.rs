@@ -11,7 +11,8 @@ use super::bidi_backend::BidiBackendConfig;
 use super::native_backend::{NativeEngineBackend, NativeFrameInspectionSnapshot};
 #[cfg(feature = "native-engine")]
 use super::native_engine::{
-    NativeEngineConfig, NativeFile, NativePreflightAction, NativeTargetPreflight, Viewport,
+    NativeDialogControlPlane, NativeEngineConfig, NativeFile, NativePendingDialog,
+    NativePreflightAction, NativeTargetPreflight, Viewport,
 };
 #[cfg(feature = "native-engine")]
 use super::policy::BrowserPolicy;
@@ -203,6 +204,24 @@ impl BrowserRuntimeSession {
     #[cfg(feature = "native-engine")]
     pub async fn connect_native(config: NativeEngineConfig) -> BrowserResult<Self> {
         let backend = BackendFactory::native(config)?;
+        Self::initialize_native_backend(backend).await
+    }
+
+    /// Construct a native runtime whose persistent owner can resolve modal
+    /// dialogs through its independent request-control loop.
+    #[cfg(feature = "native-engine")]
+    pub(crate) async fn connect_native_with_modal_dialogs(
+        config: NativeEngineConfig,
+    ) -> BrowserResult<Self> {
+        let backend = BackendFactory::native_with_dialog_control(
+            config,
+            NativeDialogControlPlane::for_modal_owner(),
+        )?;
+        Self::initialize_native_backend(backend).await
+    }
+
+    #[cfg(feature = "native-engine")]
+    async fn initialize_native_backend(backend: BackendStartup) -> BrowserResult<Self> {
         let session = Self {
             runtime: BrowserRuntime::Native,
             backend,
@@ -712,6 +731,37 @@ impl BrowserRuntimeSession {
         match &self.backend {
             BackendStartup::Native(backend) => Ok(backend.pending_dialog().await?),
             _ => Err("native dialog inspection is only available on the native runtime".into()),
+        }
+    }
+
+    /// Inspect a process-backed modal without waiting for the active page
+    /// operation lock. Persistent owners use this while the page is suspended
+    /// inside its synchronous JavaScript dialog call.
+    #[cfg(feature = "native-engine")]
+    pub(crate) fn native_pending_dialog_control(
+        &self,
+    ) -> BrowserResult<Option<NativePendingDialog>> {
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.pending_dialog_control()?),
+            _ => Err("native dialog inspection is only available on the native runtime".into()),
+        }
+    }
+
+    /// Resolve the exact process-backed pending dialog through its independent
+    /// control plane; this must remain callable while the page operation lock
+    /// is held by the suspended script.
+    #[cfg(feature = "native-engine")]
+    pub(crate) fn native_resolve_dialog_control(
+        &self,
+        dialog_id: &str,
+        accepted: bool,
+        prompt_value: Option<String>,
+    ) -> BrowserResult<u64> {
+        match &self.backend {
+            BackendStartup::Native(backend) => {
+                Ok(backend.resolve_dialog_control(dialog_id, accepted, prompt_value)?)
+            }
+            _ => Err("native dialog resolution is only available on the native runtime".into()),
         }
     }
 

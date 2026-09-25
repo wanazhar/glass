@@ -114,6 +114,11 @@ behavior for `alert()`, `confirm()`, and `prompt()`:
   acquiring the serialized page-operation lock. Ordinary native constructors
   retain the nonblocking dialog-event path when no responsive controller is
   installed; they must not strand a caller at a synchronous host callback.
+- The resident Glass `BrowserService` exposes the same process-backed control
+  out of band from its serialized browser command worker. `modalDialogs` is an
+  explicit opt-in and remains disabled until the calling host has a responsive
+  dialog surface; the default service session therefore retains nonblocking
+  dialog-event behavior.
 - Resolution is tied to the owning page target, frame, and current dialog
   identity. Navigation, target closure, worker failure, timeout, and explicit
   cancellation must release the suspended operation without applying a stale

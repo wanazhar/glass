@@ -9709,20 +9709,22 @@ another resource loader.
 
 ### Modal JavaScript dialog continuation
 
-The native dialog queue currently preserves bounded `alert`, `confirm`, and
-`prompt` metadata, but the page shim returns immediately (`false` for
-`confirm`, `null` for `prompt`). That is not the declared browser contract.
-Blocking host callbacks are enabled only when a native session has an
-independent live controller. A standalone runtime without one keeps the
-nonblocking event-queue path; blocking it would deadlock its sequential
-CLI/MCP caller. Slice 735 adds the opt-in
+The process-backed native page shim supports synchronous continuation for
+bounded `alert`, `confirm`, and `prompt` calls when a responsive host controller
+is enabled. Without one, the runtime keeps its nonblocking event-queue path so
+sequential callers are not stranded waiting for a response. Slice 734 added
+continuation through the persistent owner; slice 735 adds the opt-in
 `BrowserRuntimeSession::connect_native_with_modal_dialogs` constructor and
 `NativeDialogController` API. The controller inspects and resolves an exact
 target/frame-owned prompt without taking the page-operation lock, allowing the
 original browser future to resume in place. Ordinary constructors remain
 nonblocking until their host has connected such a controller. This public
-Rust path covers process-backed realms only; it does not itself add CLI/MCP/TUI
-prompt presentation or in-process modal execution.
+Rust path covers process-backed realms only. Slice 736 extends the same
+out-of-band controller to the resident development `BrowserService` when
+`modalDialogs` is explicitly enabled; the controller is independent of the
+serialized command worker. Default service sessions remain non-modal until an
+interactive host opts in. CLI/MCP/TUI prompt presentation and in-process modal
+execution remain open issue #40 gates.
 `GCWP-0.1` requires the invoking page script to suspend at the dialog call,
 publish a target/frame-owned pending prompt to the Glass control plane, and
 resume at the same call site with the chosen result. The accept path for

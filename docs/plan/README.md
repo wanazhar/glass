@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-735`.
+browser expansion slices are complete through `native-engine-browser-736`.
 The public Rust `BrowserSession` now starts the native runtime directly;
 `native-engine-browser-728` preserves the former Chromium API under the
 explicit `CdpBrowserSession` name. Issue #40 remains open; browser completion,
@@ -51,9 +51,15 @@ revision-checked closure of the target owning a pending navigation dialog.
 Slice 735 exposes the process-backed modal rendezvous through an opt-in typed
 Rust-session controller. It reads and resolves exact target/frame-owned
 dialog identities while navigation or evaluation is suspended; ordinary
-native constructors remain nonblocking. CLI/MCP/TUI prompt presentation and
-other Core Web Profile parity remain open. See the [slice 735
-task](tasks/native-engine-browser-735.md) and the [slice 734
+native constructors remain nonblocking. Slice 736 adds the same opt-in,
+out-of-band controller to the resident development `BrowserService`, so it can
+resolve a modal while the serialized browser worker is awaiting navigation.
+An 8 MiB worker stack is required for the process-backed navigation path and
+is covered by the focused real-HTTP test. The default service remains
+non-modal until its calling host can present and resolve dialogs. CLI/MCP/TUI
+prompt presentation and other Core Web Profile parity remain open. See the
+[slice 736 task](tasks/native-engine-browser-736.md), [slice 735
+task](tasks/native-engine-browser-735.md), and [slice 734
 task](tasks/native-engine-browser-734.md). Issue #40 remains open; no
 browser-completion, operation-parity, or production-certification claim is
 made.

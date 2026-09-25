@@ -636,7 +636,7 @@ pub struct SessionOptions {
     #[doc(hidden)]
     pub audit: bool,
     /// Optional policy override for the session. When `None`,
-    /// [`crate::browser::session::BrowserSession::start`] creates a development policy
+    /// [`crate::browser::session::CdpBrowserSession::start`] creates a development policy
     /// from the current directory.
     #[doc(hidden)]
     pub policy: Option<BrowserPolicy>,
@@ -833,9 +833,9 @@ impl SessionOptionsBuilder {
 
     /// Set an explicit [`BrowserPolicy`] for the session.
     ///
-    /// When set, [`crate::browser::session::BrowserSession::start`] will use this policy instead of
+    /// When set, [`crate::browser::session::CdpBrowserSession::start`] will use this policy instead of
     /// creating a development policy. Equivalent to calling
-    /// [`crate::browser::session::BrowserSession::start_with_policy`] directly.
+    /// [`crate::browser::session::CdpBrowserSession::start_with_policy`] directly.
     pub fn policy(mut self, policy: BrowserPolicy) -> Self {
         self.policy = Some(policy);
         self
@@ -1266,7 +1266,7 @@ pub struct AccessibilitySnapshot {
     pub interactive: Vec<InteractiveElement>,
 }
 
-/// A wait condition for `BrowserSession::wait`.
+/// A wait condition for `CdpBrowserSession::wait`.
 ///
 /// Variants mirror common browser automation patterns: lifecycle events,
 /// URL matching, element state (visibility, enabled, stable), text presence,
@@ -1288,7 +1288,7 @@ pub enum WaitCondition {
     NetworkQuiet(Duration),
 }
 
-/// Result of a successful `BrowserSession::wait` call.
+/// Result of a successful `CdpBrowserSession::wait` call.
 #[derive(Debug, Clone, Serialize)]
 pub struct WaitOutcome {
     pub condition: String,
@@ -1298,7 +1298,7 @@ pub struct WaitOutcome {
     pub frame_id: String,
 }
 
-/// Error returned when a `BrowserSession::wait` call exceeds its deadline.
+/// Error returned when a `CdpBrowserSession::wait` call exceeds its deadline.
 #[derive(Debug, Clone, Serialize)]
 pub struct WaitTimeout {
     pub condition: String,
@@ -1340,7 +1340,7 @@ pub struct CompactAccessibilitySnapshot {
 
 /// Compact, read-only page evidence used to decide what to inspect next.
 ///
-/// Bootstrap is deliberately distinct from [`observe`](crate::browser::session::BrowserSession::observe):
+/// Bootstrap is deliberately distinct from [`observe`](crate::browser::session::CdpBrowserSession::observe):
 /// it reports bounded page state and route identity, but never returns
 /// action references or authorizes an action. Callers must obtain an
 /// authoritative observation before resolving a target.
@@ -1718,7 +1718,7 @@ pub struct VisualClip {
     pub height: f64,
 }
 
-/// Options for `BrowserSession::capture_visual`.
+/// Options for `CdpBrowserSession::capture_visual`.
 #[derive(Debug, Clone)]
 pub struct VisualCaptureOptions {
     pub format: VisualFormat,
@@ -1865,7 +1865,7 @@ pub struct ScreencastStats {
 
 /// Scoped guard managing an active screencast session.
 ///
-/// Created by `BrowserSession::start_screencast`. Frames are received
+/// Created by `CdpBrowserSession::start_screencast`. Frames are received
 /// via [`next_frame`](Self::next_frame). On drop or explicit
 /// [`stop`](Self::stop), screencast is disabled for the session.
 pub struct ScreencastScope {
@@ -2433,7 +2433,7 @@ pub struct CoordinateHit {
     pub name: Option<String>,
 }
 
-/// Evidence returned by `BrowserSession::click_expect_popup`.
+/// Evidence returned by `CdpBrowserSession::click_expect_popup`.
 #[derive(Debug, Clone, Serialize)]
 pub struct PopupClickOutcome {
     pub action: ActionKind,
@@ -2611,7 +2611,7 @@ pub struct TopologyTrace {
 }
 
 /// A browser process, one CDP page connection, and its profile state.
-pub struct BrowserSession {
+pub struct CdpBrowserSession {
     pub(crate) cdp: CdpClient,
     pub(crate) chrome: Option<ChromeProcess>,
     pub(crate) disposable_profile: Option<DisposableProfileDir>,

@@ -33,7 +33,7 @@ pub(crate) fn render(
 
 /// Render a native engine snapshot directly for the transport-neutral capture
 /// contract.  The semantic observation path uses the base64 string form
-/// required by the existing `BrowserSession` API; backend capture returns the
+/// required by the existing `CdpBrowserSession` API; backend capture returns the
 /// same bytes without a needless encode/decode round trip.
 pub(crate) fn render_snapshot(
     snapshot: &NativeEngineSnapshot,

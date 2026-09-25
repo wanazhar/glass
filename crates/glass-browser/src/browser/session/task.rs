@@ -1,7 +1,7 @@
 //! Browser-backed execution for the bounded Task Protocol families.
 
 use super::{
-    BrowserResult, BrowserSession, ExtractionField, ExtractionKind, FillFormOutcome,
+    BrowserResult, CdpBrowserSession, ExtractionField, ExtractionKind, FillFormOutcome,
     InspectPageResult, PendingDialog, SemanticObservationLevel, SemanticRegion, SemanticRegionKind,
     StructuredExtractionLimits, StructuredExtractionProvenance, StructuredExtractionRecord,
     StructuredExtractionRequest, StructuredExtractionResult, parse_revisioned_reference,
@@ -259,7 +259,7 @@ fn live_task_evidence_sources() -> Vec<EvidenceSource> {
     ]
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     async fn compile_live_task(&self, task: &GlassTask) -> BrowserResult<TaskExecutionPlan> {
         self.compile_live_task_with_memory(task, None).await
     }
@@ -1643,7 +1643,7 @@ impl BrowserSession {
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Execute a bounded navigation task against one caller-observed revision.
     async fn execute_navigation_task_unchecked(
         &self,
@@ -1780,7 +1780,7 @@ impl BrowserSession {
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     async fn finalize_task_result(
         &self,
         task: &GlassTask,
@@ -1862,7 +1862,7 @@ impl BrowserSession {
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Execute a validated form task and enforce authored postconditions.
     pub async fn execute_form_task(
         &self,
@@ -1877,7 +1877,7 @@ impl BrowserSession {
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Execute any currently supported browser-backed Task Protocol family.
     pub async fn execute_task(
         &self,
@@ -1900,7 +1900,7 @@ impl BrowserSession {
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Execute a bounded navigation task and enforce authored postconditions.
     pub async fn execute_navigation_task(
         &self,
@@ -1915,7 +1915,7 @@ impl BrowserSession {
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Inspect or resolve one pending JavaScript dialog through the Task Protocol.
     async fn execute_dialog_task_unchecked(
         &self,
@@ -2055,7 +2055,7 @@ impl BrowserSession {
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Execute a dialog task and enforce authored postconditions.
     pub async fn execute_dialog_task(
         &self,
@@ -2124,7 +2124,7 @@ fn form_fill_failure_result(
         alerts: Vec::new(),
     }
 }
-async fn wait_for_dialog_closed(session: &BrowserSession, timeout_ms: u64) -> bool {
+async fn wait_for_dialog_closed(session: &CdpBrowserSession, timeout_ms: u64) -> bool {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         if session.pending_dialog().await.is_none() {
@@ -2192,7 +2192,7 @@ fn postcondition_failure_result(
 }
 
 async fn aria_boolean_state(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     reference: &str,
     attribute: &str,
 ) -> Option<bool> {
@@ -2237,7 +2237,7 @@ fn navigation_destination_matches(requested: &str, actual: &str) -> bool {
 }
 
 async fn native_control_validity(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     reference: &str,
 ) -> Option<(bool, bool, bool)> {
     let reference = parse_revisioned_reference(reference).ok().flatten()?;
@@ -2276,7 +2276,7 @@ async fn native_control_validity(
 }
 
 async fn wait_for_aria_true(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     reference: &str,
     attribute: &str,
     timeout_ms: u64,
@@ -2295,7 +2295,7 @@ async fn wait_for_aria_true(
 }
 
 async fn wait_for_semantic_page_change(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     before: &InspectPageResult,
     mut after: InspectPageResult,
     timeout_ms: u64,
@@ -2376,7 +2376,7 @@ fn preflight_result(
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     async fn execute_open_menu_task(
         &self,
         task: &GlassTask,

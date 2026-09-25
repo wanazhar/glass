@@ -20,7 +20,7 @@ DevelopmentWorkspace (resident authority)
 │  ├─ Git, source/runtime graph, timeline, LSP
 │  └─ ProcessManager / PTYs
 ├─ agent workers and pinned Pi runtime
-├─ BrowserService → one BrowserWorker → optional BrowserSession
+├─ BrowserService → one BrowserWorker → optional browser runtime session
 ├─ task/workflow, kernel, debugger, experiment, replay state
 └─ trust, policy, customization, GitHub configuration
              │
@@ -100,9 +100,8 @@ App navigation / Agent context
 BrowserWorkspaceController (selection, focus, ownership, bounded projection)
             │ governed glass.browser.* tool calls
             v
-BrowserService → BrowserWorker → BrowserSession
-                              ├─ owned Chrome + disposable/persistent profile
-                              └─ attached Chrome (process not owned by Glass)
+BrowserService → BrowserWorker → BrowserRuntimeSession (native by default)
+                              └─ explicit CdpBrowserSession migration if selected
 ```
 
 `browser navigate URL` may start a detached development browser, then performs

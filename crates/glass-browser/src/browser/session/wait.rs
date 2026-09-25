@@ -23,7 +23,7 @@ pub(crate) fn is_ignored_network_resource_type(resource_type: Option<&str>) -> b
     )
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     pub(crate) async fn evaluate_predicate_once(
         &self,
         predicate: &VerificationPredicate,

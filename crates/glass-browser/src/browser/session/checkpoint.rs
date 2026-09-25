@@ -6,7 +6,7 @@
 
 use super::*;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Return a bounded delta between the cached compact observation and a
     /// fresh observation on the same route. Historical snapshots are not
     /// retained beyond this request.

@@ -1,7 +1,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use glass_browser::browser::chrome::detect_chrome;
 use glass_browser::browser::session::{
-    BrowserResult, BrowserSession, InteractionMode, SessionOptions, VisualFormat,
+    BrowserResult, CdpBrowserSession, InteractionMode, SessionOptions, VisualFormat,
 };
 use serde_json::{Value, json};
 use std::collections::{HashSet, hash_map::DefaultHasher};
@@ -78,7 +78,7 @@ async fn main() -> BrowserResult<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
     drop(listener);
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path),
         profile: "screencast-benchmark".to_string(),
@@ -134,7 +134,7 @@ async fn main() -> BrowserResult<()> {
 }
 
 async fn benchmark_polling(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     format: &str,
     quality: u32,
     frames: usize,
@@ -164,7 +164,7 @@ async fn benchmark_polling(
 }
 
 async fn benchmark_screencast(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     format: &str,
     quality: u32,
     frames: usize,
@@ -243,7 +243,7 @@ async fn benchmark_screencast(
 }
 
 async fn capture_and_decode(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     params: Value,
 ) -> BrowserResult<DecodedFrame> {
     let response = session

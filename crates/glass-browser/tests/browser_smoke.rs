@@ -1,6 +1,6 @@
 use glass_browser::browser::chrome::resolve_chrome_path;
 use glass_browser::browser::session::{
-    ActionKind, BatchStep, BrowserSession, InteractionMode, SemanticObservationLevel,
+    ActionKind, BatchStep, CdpBrowserSession, InteractionMode, SemanticObservationLevel,
     SessionOptions, TargetError, TargetErrorKind, VerificationPredicate, WaitCondition,
     WaitTimeout, WorkflowBudgets, WorkflowDefinition, WorkflowOutputDeclaration,
     WorkflowOutputSource, WorkflowRunStatus, WorkflowStep, WorkflowStepState, WorkflowTrace,
@@ -85,7 +85,7 @@ async fn serve_fixture(mut stream: TcpStream, html: &'static str) {
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
-async fn reliability_snapshot(session: &BrowserSession) -> Value {
+async fn reliability_snapshot(session: &CdpBrowserSession) -> Value {
     session
         .evaluate("window.reliabilityLab.snapshot()")
         .await
@@ -591,8 +591,8 @@ async fn concurrent_owned_sessions_on_one_port_do_not_adopt_each_other() {
     };
 
     let (first, second) = tokio::join!(
-        BrowserSession::start(&first_options),
-        BrowserSession::start(&second_options),
+        CdpBrowserSession::start(&first_options),
+        CdpBrowserSession::start(&second_options),
     );
     match (first, second) {
         (Ok(session), Err(error)) | (Err(error), Ok(session)) => {
@@ -632,7 +632,7 @@ async fn cli_and_mcp_attach_to_a_fixture_with_compact_results() {
     drop(listener);
 
     let fixture_server = FixtureServer::start(include_str!("fixtures/basic.html")).await;
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path),
         profile: "e2e-frontends".to_string(),
@@ -956,7 +956,7 @@ async fn browser_session_drives_a_local_fixture() {
 
     let fixture_server = FixtureServer::start(include_str!("fixtures/basic.html")).await;
     let url = fixture_server.url.clone();
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path.clone()),
         profile: "e2e".to_string(),
@@ -974,7 +974,7 @@ async fn browser_session_drives_a_local_fixture() {
     assert!(session.owns_chrome());
     assert!(!session.is_attached());
 
-    let owned_error = BrowserSession::start(&SessionOptions {
+    let owned_error = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: None,
         profile: "e2e-conflict".to_string(),
@@ -1098,7 +1098,7 @@ async fn browser_session_drives_a_local_fixture() {
         .await
         .unwrap();
     let checkpoint_json = workflow_checkpoint.to_canonical_json().unwrap();
-    let parsed_checkpoint = BrowserSession::parse_workflow_checkpoint(&checkpoint_json).unwrap();
+    let parsed_checkpoint = CdpBrowserSession::parse_workflow_checkpoint(&checkpoint_json).unwrap();
     let resume_plan = session
         .reconcile_workflow_checkpoint(&workflow, &parsed_checkpoint)
         .await
@@ -1957,7 +1957,7 @@ async fn browser_session_drives_a_local_fixture() {
     assert!(screenshot.len() > 100);
     assert!(screenshot.starts_with(b"\x89PNG\r\n\x1a\n"));
 
-    let attached_session = BrowserSession::start(&SessionOptions {
+    let attached_session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: None,
         profile: "default".to_string(),
@@ -1985,7 +1985,7 @@ async fn browser_session_drives_a_local_fixture() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    let fast_session = BrowserSession::start(&SessionOptions {
+    let fast_session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path.clone()),
         profile: "e2e-fast".to_string(),
@@ -2052,7 +2052,7 @@ async fn reliability_lab_controls_produce_independent_oracle_state() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let fixture_server = FixtureServer::start(include_str!("fixtures/reliability-lab.html")).await;
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path),
         profile: "reliability-lab-e2e".to_string(),
@@ -2166,7 +2166,7 @@ async fn reliability_runner_generates_live_fixture_evidence() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let fixture_server = FixtureServer::start(include_str!("fixtures/reliability-lab.html")).await;
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path),
         profile: "reliability-runner-e2e".to_string(),
@@ -2239,7 +2239,7 @@ async fn reliability_capability_suite_generates_live_evidence() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let fixture_server = FixtureServer::start(include_str!("fixtures/reliability-lab.html")).await;
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path),
         profile: "reliability-capability-suite-e2e".to_string(),
@@ -2353,7 +2353,7 @@ async fn browser_session_routes_explicit_targets_and_frames() {
         cross_origin_url
     );
     let fixture = FixtureServer::start(Box::leak(html.into_boxed_str())).await;
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path),
         profile: "topology-e2e".to_string(),
@@ -2626,7 +2626,7 @@ async fn browser_session_extracts_live_page_into_stable_web_ir() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let fixture = FixtureServer::start(include_str!("fixtures/task-form.html")).await;
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path),
         profile: "web-ir-live-e2e".into(),
@@ -2759,7 +2759,7 @@ async fn browser_session_executes_the_versioned_web_ir_corpus() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path),
         profile: "web-ir-corpus-e2e".into(),
@@ -2873,7 +2873,7 @@ async fn browser_session_rejects_unverified_menu_open() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let fixture_server = FixtureServer::start(include_str!("fixtures/task-form.html")).await;
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path),
         profile: "menu-verification-e2e".into(),
@@ -2927,7 +2927,7 @@ async fn browser_session_rejects_unverified_tab_selection() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let fixture_server = FixtureServer::start(include_str!("fixtures/task-form.html")).await;
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path),
         profile: "tab-verification-e2e".into(),
@@ -2984,7 +2984,7 @@ async fn browser_session_rejects_unverified_pagination_next() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let fixture_server = FixtureServer::start(include_str!("fixtures/task-form.html")).await;
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path),
         profile: "pagination-verification-e2e".into(),
@@ -3041,7 +3041,7 @@ async fn browser_session_executes_scoped_form_tasks() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let fixture_server = FixtureServer::start(include_str!("fixtures/task-form.html")).await;
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path: Some(chrome_path),
         profile: "task-form-e2e".into(),

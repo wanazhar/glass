@@ -1787,7 +1787,7 @@ fn bounded_semantic_text(value: &str, maximum: usize) -> String {
     format!("{}…[truncated]", &value[..end])
 }
 
-impl super::BrowserSession {
+impl super::CdpBrowserSession {
     /// Collect fresh, bounded semantic page structure from browser evidence.
     pub async fn semantic_observe(
         &self,

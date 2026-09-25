@@ -150,7 +150,7 @@ before input.
 | CLI | one process-scoped session unless attached/resident | `glass COMMAND --help` |
 | TUI | one long-lived Browser Workspace with recovery | command palette and Browser view |
 | MCP | one session per initialized stdio/socket namespace | live `tools/list` |
-| Rust | caller owns `BrowserSession` and close behavior | docs.rs and `BrowserSession` methods |
+| Rust | caller owns native `BrowserSession` lifecycle; `CdpBrowserSession` is the explicit Chromium migration API | docs.rs and the corresponding session methods |
 
 All interfaces use the same target resolution, revision, policy, dispatch, and
 verification contracts. They may expose different convenience projections.

@@ -8,7 +8,7 @@ use super::*;
 use crate::extraction::{ExtractionEvidence, ExtractionRequest, extract_page_context};
 use crate::web_ir::{GlassWebIrV1, reconcile_evidence};
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Return the visible text content of the current page.
     ///
     /// Evaluates `document.body.innerText` and truncates the result to
@@ -50,7 +50,7 @@ impl BrowserSession {
     /// Collect bounded readiness evidence without resolving an action target.
     ///
     /// This page-state-only operation is intentionally distinct from
-    /// [`BrowserSession::observe`]. It does not request accessibility trees,
+    /// [`CdpBrowserSession::observe`]. It does not request accessibility trees,
     /// deep DOM, screenshots, form values, or shadow-root expansion. The
     /// result is advisory: callers must invoke authoritative `observe` before
     /// resolving or acting on any element.

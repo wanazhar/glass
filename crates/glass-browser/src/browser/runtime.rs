@@ -1,10 +1,9 @@
-//! User-facing alternative browser runtime sessions.
+//! Native-first runtime sessions and explicit alternative-runtime adapters.
 //!
-//! The existing [`crate::browser::session::BrowserSession`] remains the
-//! Chromium-compatible high-level API. This module exposes the portable
-//! semantic session used by the Glass-owned native runtime and external
-//! protocol adapters while the native engine's richer owners are promoted
-//! through the same session seam.
+//! `BrowserRuntimeSession` is the runtime-neutral semantic session used by
+//! the Glass-owned native runtime and external protocol adapters. The public
+//! `BrowserSession` name aliases it; the previous Chrome/CDP API is
+//! `crate::browser::session::CdpBrowserSession`.
 
 use super::backend_factory::{BackendFactory, BackendStartup};
 use super::bidi_backend::BidiBackendConfig;
@@ -120,6 +119,11 @@ pub struct BrowserRuntimeSession {
     native_clipboard: Mutex<String>,
 }
 
+/// Canonical Glass browser session. With the default `native-engine` feature,
+/// its `start` constructors select the native backend directly and never
+/// fall back to Chromium/CDP.
+pub type BrowserSession = BrowserRuntimeSession;
+
 impl BrowserRuntimeSession {
     /// Connect and initialize one alternative runtime session.
     pub async fn connect(
@@ -129,7 +133,7 @@ impl BrowserRuntimeSession {
         let endpoint = endpoint.into();
         let backend = match runtime {
             BrowserRuntime::Chromium => {
-                return Err("Chromium uses BrowserSession and its CDP lifecycle".into());
+                return Err("Chromium must be opened through CdpBrowserSession".into());
             }
             BrowserRuntime::Firefox => {
                 BackendFactory::bidi(BidiBackendConfig::for_firefox(endpoint)).await?
@@ -157,6 +161,21 @@ impl BrowserRuntimeSession {
             .initialize()
             .await?;
         Ok(session)
+    }
+
+    /// Start the canonical native browser session with explicit configuration.
+    ///
+    /// This calls the native backend factory directly. It never probes for
+    /// Chrome, connects to CDP, or switches to another runtime.
+    #[cfg(feature = "native-engine")]
+    pub async fn start(config: NativeEngineConfig) -> BrowserResult<Self> {
+        Self::connect_native(config).await
+    }
+
+    /// Start the canonical native browser session with default configuration.
+    #[cfg(feature = "native-engine")]
+    pub async fn start_default() -> BrowserResult<Self> {
+        Self::start(NativeEngineConfig::default()).await
     }
 
     /// Construct and initialize the native runtime.
@@ -2979,4 +2998,23 @@ fn bounded_native_semantic_text(frames: &[NativeFrameInspectionSnapshot]) -> (St
         break;
     }
     (output, truncated)
+}
+
+#[cfg(all(test, feature = "native-engine"))]
+mod public_session_tests {
+    use super::{BackendStartup, BrowserRuntime, BrowserSession};
+
+    #[tokio::test]
+    async fn canonical_browser_session_starts_native_without_cdp_fallback() {
+        let session = BrowserSession::start_default()
+            .await
+            .expect("default BrowserSession must initialize the native backend");
+
+        assert_eq!(session.runtime(), BrowserRuntime::Native);
+        assert!(matches!(&session.backend, BackendStartup::Native(_)));
+        session
+            .close()
+            .await
+            .expect("native BrowserSession should close cleanly");
+    }
 }

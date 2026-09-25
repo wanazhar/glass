@@ -63,7 +63,7 @@ bypass those checks.
 ## Current browser runtime mapping
 
 The Glass-owned native runtime is the primary browser path in feature-enabled
-products. `BrowserSession` remains the explicit Chromium/CDP migration path.
+products. `CdpBrowserSession` remains the explicit Chromium/CDP migration path.
 The public `BrowserRuntimeSession` also exposes the smaller portable endpoint
 path:
 
@@ -95,11 +95,15 @@ Protocol references:
 
 ## Native browser feasibility
 
-The native-engine program now has real Phase 2 semantic interaction and
-initial Phase 3 presentation/layout/display-list/software-surface slices
-behind the default-enabled `native-engine` feature in current products. It owns one deterministic
-in-process context, local `about:blank`, `data:text/html`, and registered
-`fixture://` resources, a small DOM/text projection, history, revisions,
+The native engine is the default local backend for feature-enabled products;
+the public Rust `BrowserSession` starts it directly and does not fall back to
+CDP. The in-process runtime owns a deterministic context and supports local
+`about:blank`, `data:text/html`, registered `fixture://` resources, configured
+rooted files, and validated external HTTP(S), alongside bounded script,
+storage, action, rendering, and lifecycle surfaces. This long inventory is a
+selected CSS/layout/presentation snapshot, not the total native capability
+list; see [Native browser engine](architecture/native-engine.md) for the
+versioned contract and current issue #40 status. It includes history, revisions,
 bounded CSS presentation, integer normal-flow rectangles, point hit testing,
 semantic click/type actions for local controls, a bounded effects signal,
 bounded inherited text color, `overflow:hidden` clips shared by paint, viewport
@@ -572,25 +576,21 @@ the order-sorted visual sequence with item-attached margins, existing
 gap/justification/alignment, shared subtree artifacts, bounded overflow
 translation, root horizontal scrolling, and unchanged semantic/source order,
 plus Rust-only display-list/software-surface artifacts and bounded revisioned
-Rust diagnostics for unsupported CSS. It does not yet provide
-general CSS/nested/horizontal/stacking layout, vertical writing modes and
-logical border-radius, negative/percentage/auto box-model values, positioned layout or general
-flex/grid layout beyond the bounded single-row `display:flex` subset,
-screen-shot-containing evidence, JPEG/PDF capture, or physical-pixel capture,
-font/image fidelity, JavaScript, network/security policy, cookies/storage,
-downloads, or platform windowing.
+Rust diagnostics for unsupported CSS. These CSS and rendering features remain
+bounded subsets, not browser-wide conformance. Separate native slices now
+provide external HTTP(S) navigation/resource loading, JavaScript execution,
+cookie and web storage, dialogs, downloads, rooted-file loading, PNG capture,
+and PDF generation. The feature reference and issue #40 record the remaining
+behavioral and platform gaps; unsupported capability claims must be checked
+against those current sources rather than this CSS snapshot.
 
 `BrowserRuntimeSession` remains the transport adapter for externally managed
-Firefox and Safari. With the `native-engine` feature, the native backend is
-also exposed through the explicit `BrowserRuntimeSession::connect_native` Rust
-constructor and the local one-shot `--browser-runtime native` path. The CLI
-default configuration accepts only `about:blank` and bounded `data:text/html`;
-Rust callers may register `fixture://` documents. Native never accepts an
-external endpoint, enters automatic selection, or falls back to another
-backend. The native backend remains a multi-year architecture project with
-its own standards conformance, security review, process isolation, and
-platform certification. The proof backend must never be presented as browser
-parity.
+Firefox and Safari. `BrowserSession::start` constructs the native backend
+directly, and feature-enabled CLI/MCP/TUI paths select it by default. The
+native runtime does not accept an external browser endpoint or fall back to
+CDP. The in-process runtime is not a production security boundary; issue #40
+still tracks standards conformance, sandbox isolation, and platform
+certification. The proof backend must never be presented as browser parity.
 
 The machine-readable dependency and omission matrix is
 [`backend-capability-matrix.json`](backend-capability-matrix.json).

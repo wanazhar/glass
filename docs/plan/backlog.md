@@ -2,8 +2,8 @@
 
 ## Issue #40: reconcile native-engine slice evidence
 
-The latest locally completed browser expansion is `native-engine-browser-727`.
-Issue #40 remains open.
+The latest locally completed browser expansion is `native-engine-browser-728`;
+issue #40 remains open.
 Slices 709–710 preserve request-URL module identity (including query and
 fragment) separately from response-URL base resolution across page, dedicated,
 shared, and service-worker module graphs. See the task records for scope and
@@ -131,6 +131,19 @@ policy regression passed. Static documentation gates passed; live CLI/link
 inventory and remote CI were not run. Other file-origin CSP classes,
 report-only file policies, and full CSP conformance remain open.
 See `tasks/native-engine-browser-727.md`.
+
+### Completed slice 728: native-first public Rust BrowserSession
+
+The public root `BrowserSession` now aliases the runtime-neutral native-first
+session; `start` and `start_default` construct `BackendStartup::Native`
+directly. The former Chrome/CDP API is exported as `CdpBrowserSession`, and
+CDP-backed internal callers use that explicit type. A contract test verifies
+native selection and clean close. The package-scoped all-target check, focused
+contract test, formatting, and static documentation gates passed locally. The
+live documentation inventory was not run because `target/debug/glass` is not
+present; remote CI was not run. Native operation parity and production
+certification remain issue #40 requirements.
+See `tasks/native-engine-browser-728.md`.
 
 ### Follow-up observed during slice 722
 

@@ -162,7 +162,7 @@ impl BackendFactory {
     }
 
     pub fn cdp(
-        session: super::session::BrowserSession,
+        session: super::session::CdpBrowserSession,
     ) -> Result<BackendStartup, BrowserBackendError> {
         Ok(BackendStartup::Cdp(Box::new(CdpBrowserBackend::new(
             session,

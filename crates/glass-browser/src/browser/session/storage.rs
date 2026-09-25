@@ -69,7 +69,7 @@ const STORAGE_MAX_ENTRIES: usize = 64;
 /// Maximum number of cookies read or written by one operation.
 const COOKIE_MAX_ENTRIES: usize = 256;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Read all browser cookies for the current page URL.
     ///
     /// Uses CDP `Network.getCookies`. Policy-gated: requires

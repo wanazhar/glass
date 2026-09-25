@@ -27,8 +27,11 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-727`.
-Issue #40 remains open; browser completion and conformance are not claimed.
+browser expansion slices are complete through `native-engine-browser-728`.
+The public Rust `BrowserSession` now starts the native runtime directly;
+`native-engine-browser-728` preserves the former Chromium API under the
+explicit `CdpBrowserSession` name. Issue #40 remains open; browser completion,
+operation parity, and conformance are not claimed.
 Slice 727 enforces rooted-file frame CSP. Slice 726 enforces rooted-file image,
 font, and media CSP.
 Slice 725 enforces runtime CSP meta policies before same-turn inline script

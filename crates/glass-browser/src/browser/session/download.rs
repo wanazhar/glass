@@ -6,7 +6,7 @@
 
 use super::*;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Wait for one explicitly authorized download lifecycle.
     pub async fn wait_for_download(
         &self,

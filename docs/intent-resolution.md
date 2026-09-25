@@ -108,8 +108,9 @@ an old target reference.
 
 ## Interfaces and limits
 
-- Rust provides `BrowserSession::resolve_intent` and
-  `BrowserSession::execute_intent`.
+- The explicit Chromium migration API provides
+  `CdpBrowserSession::resolve_intent` and `CdpBrowserSession::execute_intent`;
+  native intent-operation parity remains an issue #40 requirement.
 - CLI provides `resolve-intent` and `execute-intent`.
 - MCP provides `resolveIntent` and `executeIntent`.
 - TUI displays candidates and evidence and supports explicit selection.

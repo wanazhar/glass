@@ -8,7 +8,7 @@ use super::*;
 use crate::browser::policy::PolicyCapability;
 use std::time::Duration;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Execute an ordered batch of typed operations.
     /// Policy is pre-flighted for every step before any step executes.
     /// Fails fast on the first error; ambiguity always fails closed.
@@ -120,7 +120,7 @@ impl BrowserSession {
 }
 
 async fn check_batch_step_policy(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     step: &BatchStep,
 ) -> Result<(), PolicyError> {
     match step {
@@ -179,7 +179,7 @@ fn bounded_batch_text(value: &str, max_bytes: usize) -> String {
 }
 
 async fn execute_batch_step(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     step: &BatchStep,
     expected_revision: Option<u64>,
 ) -> BrowserResult<(Option<usize>, Option<u64>, Option<String>)> {

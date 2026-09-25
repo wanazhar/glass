@@ -27,7 +27,7 @@ const MAX_FALLBACK_SEGMENTS: usize = 8;
 /// Maximum UTF-8 byte length of a single locator segment.
 const MAX_SEGMENT_BYTES: usize = 1024;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     pub(crate) async fn resolve_element(&self, target: &str) -> BrowserResult<ResolvedElement> {
         // Fallback chain: split on " | " (pipe with surrounding spaces)
         if let Some(_pipe_pos) = target.find(" | ") {

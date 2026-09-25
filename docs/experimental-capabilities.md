@@ -606,22 +606,18 @@ bounded non-inherited `flex-direction:row|row-reverse` physical placement of
 the order-sorted visual sequence with item-attached margins, existing
 gap/justification/alignment, shared subtree artifacts, bounded overflow
 translation, root horizontal scrolling, and unchanged semantic/source order,
-and
-Rust-only
-display-list/software-surface artifacts;
-Rust callers can inspect bounded revisioned diagnostics for unsupported CSS
-without raw stylesheet echo;
-it does not
-provide network access,
-filesystem navigation, general CSS/nested/stacking layout, logical
-writing-mode sides, negative, percentage, or auto box-model values,
-positioned layout or general flex/grid layout beyond the bounded single-row
-`display:flex` subset,
-screen-shot-containing evidence, JPEG/PDF capture, physical pixels,
-font/image fidelity, JavaScript, storage,
-prompts, downloads, remote navigation or relative navigation from unsupported
-opaque bases, or raw form-value
-evidence. Fragment navigation percent-decodes bounded UTF-8 `%HH` sequences,
+and Rust-only display-list/software-surface artifacts. Rust callers can
+inspect bounded revisioned diagnostics for unsupported CSS without raw
+stylesheet echo. Separate native slices also implement external HTTP(S)
+navigation and resource loading, JavaScript, cookie/web storage, dialogs,
+downloads, configured-root file loading, PNG capture, and PDF generation.
+These are bounded implementations, not full browser parity. General
+CSS/nested/stacking layout, vertical writing modes, negative/percentage/auto
+box-model values, positioned or general flex/grid layout, complete
+ECMAScript/Web IDL and DOM behavior, full network/security and storage
+semantics, complete font/image fidelity, physical-pixel capture, and screenshot
+embedding in generic evidence remain issue #40 gates. File reads remain
+restricted to explicitly configured roots. Fragment navigation percent-decodes bounded UTF-8 `%HH` sequences,
 then uses one exact, case-sensitive visible non-empty `id` target or, when no
 `id` matches, one exact visible legacy `<a name>` target. It positions the
 root viewport at the selected target's clamped document-space top and stores
@@ -634,15 +630,12 @@ layout text run after independently decoding each term as bounded UTF-8;
 bounded exact prefix/suffix affixes are supported when directly adjacent in
 that same run; cross-run ranges, multiple directives, highlights, Unicode
 normalization, and browser text-fragment parity remain unsupported.
-Fragment-only, fixture-relative, and absolute local link activation uses the
-existing bounded navigation path; fixture-relative links retain the current
-registered fixture host. The
-backend is explicit-only and never silently falls
-back to Chromium or the semantic proof backend. A `native-engine` feature
-build also exposes the local one-shot `--browser-runtime native` path and the
-explicit Rust `BrowserRuntimeSession::connect_native` constructor. The CLI
-default configuration supports `about:blank`, bounded `data:text/html`, and
-validated external HTTP(S) navigation through the native content process;
-registered fixtures remain a Rust configuration path.
-Because it is in-process and incomplete, it is not a security boundary and
-must not be used to claim safe handling of hostile remote content.
+Fragment-only, fixture-relative, and validated external HTTP(S) link activation
+uses the existing bounded navigation path; fixture-relative links retain the
+current registered fixture host. The native backend is the default in
+feature-enabled products and `BrowserSession::start` constructs it directly;
+the lower-level `BrowserRuntimeSession::connect_native` constructor remains
+available. Neither constructor probes or falls back to Chromium or the
+semantic proof backend. Because the current runtime is in-process and
+incomplete, it is not a production security boundary and must not be presented
+as safe for hostile remote content.

@@ -14,6 +14,10 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Breaking: `BrowserSession::start` now accepts `NativeEngineConfig` and starts
+  the native backend directly. Existing Chrome/CDP callers must migrate to
+  `CdpBrowserSession::start` with `SessionOptions`; the native session never
+  falls back.
 - Updated the managed native Pi AgentSession SDK to `0.84.4`; the published
   `0.3.14` release remains documented with its shipped `0.84.3` pin.
 

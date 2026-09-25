@@ -60,7 +60,8 @@ not claim that a missing browser or partial backend has real-browser parity.
 ## Real versus partial gates
 
 The ProofBackend/reliability paths are deterministic, browser-free evidence
-and are not real browser performance or compatibility claims. CDP is the real
-browser transport currently exercised by `BrowserSession`; other backend
-profiles are declarations until their adapter and conformance evidence are
-present. Partial surface coverage is reported, never upgraded implicitly.
+and are not real browser performance or compatibility claims. Native has
+process-backed HTTP(S) and local-engine coverage; `CdpBrowserSession` has
+real-Chrome transport coverage. Neither test suite alone proves browser-wide
+compatibility or production security. Backend profiles and partial surface
+coverage are reported, never upgraded implicitly.

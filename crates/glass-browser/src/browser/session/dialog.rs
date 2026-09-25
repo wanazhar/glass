@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Return the currently pending JavaScript dialog content, if any.
     ///
     /// Agents should read this before calling `accept_dialog` or

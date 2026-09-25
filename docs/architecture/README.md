@@ -33,12 +33,12 @@ CLI ─────┐                                                          
 MCP ─────┼──> Native BrowserRuntimeSession ──> NativeEngineBackend
 TUI ─────┘                         │
                                   └──> bounded PageContext / software surface
-Explicit Chromium ────────────────> BrowserSession ──> CdpClient ──> Chrome
-Native Rust API ──────────────────> NativeEngineBackend
+Explicit Chromium ────────────────> CdpBrowserSession ──> CdpClient ──> Chrome
+Native Rust API ──────────────────> BrowserSession (= BrowserRuntimeSession) ──> NativeEngineBackend
 ```
 
-The native BrowserRuntimeSession is the default browser seam for
-feature-enabled CLI, MCP, and TUI entrypoints. `BrowserSession` owns the
+The native `BrowserSession` (an alias for `BrowserRuntimeSession`) is the default browser seam
+for feature-enabled CLI, MCP, and TUI entrypoints. `CdpBrowserSession` owns the
 explicit Chromium migration semantics. Frontends do not issue raw CDP
 commands. High-level tasks must pass through the browser-free Web IR compiler
 before the guarded executor dispatches an existing browser operation.

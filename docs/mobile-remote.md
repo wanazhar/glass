@@ -213,7 +213,7 @@ implemented surface contract is documented in
 ## Open the full application from a phone
 
 For the stable application-server iPhone workflow, use a private SSH local
-port forward. For the scoped current BrowserSession view, use the development
+port forward. For the scoped current browser-session view, use the development
 TUI `:browser remote-open`, `:browser remote-status`, and
 `:browser remote-revoke` routes. Remote View remains loopback-only and does not
 expose Chrome CDP.

@@ -1,7 +1,7 @@
 //! Network recording (HTTP Archive) capture.
 //!
 //! Provides bounded network event recording via CDP `Network` domain
-//! integration. Use [`BrowserSession::start_network_recording`] to
+//! integration. Use [`CdpBrowserSession::start_network_recording`] to
 //! begin capture and [`NetworkRecorder::stop`] to retrieve a
 //! [`NetworkRecording`] with collected entries.
 
@@ -43,7 +43,7 @@ pub struct NetworkRecording {
 
 /// Scoped lease for network recording.
 ///
-/// Created by [`BrowserSession::start_network_recording`]. While this
+/// Created by [`CdpBrowserSession::start_network_recording`]. While this
 /// guard is alive, `Network.requestWillBeSent`, `Network.responseReceived`,
 /// and `Network.loadingFailed` events are collected into an internal buffer
 /// (capped at 128 entries).
@@ -166,7 +166,7 @@ impl Drop for NetworkRecorder {
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Start recording network traffic for the active page session.
     ///
     /// Returns a `NetworkRecorder` guard. Call `NetworkRecorder::drain`

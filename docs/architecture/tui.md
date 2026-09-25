@@ -3,7 +3,7 @@
 Status: Current standalone Browser TUI reference (Glass 0.3.14 source behavior).
 
 This is the independently installable browser-only terminal product. It owns a
-`BrowserSession` and a `BrowserWorkspaceController` with the `Standalone`
+native runtime session by default and a `BrowserWorkspaceController` with the `Standalone`
 adapter. It does not own project files, editors, processes, tasks, agents,
 Git, or debugger state. The Glass Dev product has a separate event loop,
 `DevTuiState`, and `SnapshotWorker`; its contract is in
@@ -17,12 +17,12 @@ Crossterm event
       v
 BrowserTui (one async app object)
   command · mode · status · page
-  BrowserSession + Standalone workspace controller
+  native runtime session + Standalone workspace controller
       |                         |
       +-- awaited browser I/O   +-- local semantic reducer
       |                         |
       v                         v
-  Browser backend/CDP       Ratatui frame
+  selected browser backend  Ratatui frame
 ```
 
 The standalone event loop awaits browser commands on its application object.

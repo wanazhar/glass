@@ -1,10 +1,10 @@
 //! CDP-backed implementation of the transport-neutral browser backend.
 //!
-//! The adapter owns a [`BrowserSession`] and translates the typed backend
+//! The adapter owns a [`CdpBrowserSession`] and translates the typed backend
 //! protocol into the existing session API. CDP types stay below this module;
 //! callers only observe `browser_backend` contracts and stable errors.
 
-use super::session::{BrowserSession, PageTargetInfo, SemanticObservationLevel};
+use super::session::{CdpBrowserSession, PageTargetInfo, SemanticObservationLevel};
 use crate::browser_backend::{
     ActionRequest, ActionResult, BackendContract, BackendFuture, BackendOperation, BackendProfile,
     BackendRequest, BackendResponse, BrowserBackend, BrowserBackendError, BrowserCapability,
@@ -26,19 +26,19 @@ const CDP_BACKEND_VERSION: &str = "1";
 /// The session is owned so the lifecycle operation can close an owned browser
 /// without exposing CDP or requiring a second browser runtime.
 pub struct CdpBrowserBackend {
-    session: Mutex<Option<BrowserSession>>,
+    session: Mutex<Option<CdpBrowserSession>>,
     profile: BackendProfile,
 }
 /// Borrowed adapter used by existing session call chains that retain ownership
 /// of the session for tracing and shutdown. It currently exposes navigation,
 /// whose typed contract has no timeout/revision fields.
 pub struct CdpSessionBackend<'a> {
-    session: &'a BrowserSession,
+    session: &'a CdpBrowserSession,
     profile: BackendProfile,
 }
 
 impl<'a> CdpSessionBackend<'a> {
-    pub fn new(session: &'a BrowserSession) -> Result<Self, BrowserBackendError> {
+    pub fn new(session: &'a CdpBrowserSession) -> Result<Self, BrowserBackendError> {
         Ok(Self {
             session,
             profile: CdpBrowserBackend::navigation_profile(DEFAULT_GLASS_VERSION)?,
@@ -120,13 +120,13 @@ impl BrowserBackend for CdpSessionBackend<'_> {
 impl CdpBrowserBackend {
     /// Wrap an existing session using the current Glass version for
     /// certification metadata.
-    pub fn new(session: BrowserSession) -> Result<Self, BrowserBackendError> {
+    pub fn new(session: CdpBrowserSession) -> Result<Self, BrowserBackendError> {
         Self::with_glass_version(session, DEFAULT_GLASS_VERSION)
     }
 
     /// Wrap an existing session with an explicit Glass version in the profile.
     pub fn with_glass_version(
-        session: BrowserSession,
+        session: CdpBrowserSession,
         glass_version: &str,
     ) -> Result<Self, BrowserBackendError> {
         let profile = Self::profile_for(glass_version)?;
@@ -183,7 +183,7 @@ impl CdpBrowserBackend {
                     level: SupportLevel::Unavailable,
                     portability: crate::browser_backend::Portability::NonPortable,
                     dependencies: Vec::new(),
-                    limitations: vec!["not implemented by the CDP BrowserSession boundary".into()],
+                    limitations: vec!["not implemented by the Chromium/CDP backend adapter".into()],
                 },
             );
         }
@@ -215,7 +215,7 @@ impl CdpBrowserBackend {
     }
 
     async fn select_context(
-        session: &BrowserSession,
+        session: &CdpBrowserSession,
         context_id: &str,
         operation: &str,
     ) -> Result<(), BrowserBackendError> {
@@ -233,7 +233,7 @@ impl CdpBrowserBackend {
     async fn session_error(
         &self,
         operation: BackendOperation,
-    ) -> Result<tokio::sync::MutexGuard<'_, Option<BrowserSession>>, BrowserBackendError> {
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<CdpBrowserSession>>, BrowserBackendError> {
         let guard = self.session.lock().await;
         if guard.is_none() {
             return Err(BrowserBackendError::Lifecycle {
@@ -413,7 +413,7 @@ fn validate_dispatch_result(
 }
 
 async fn execute_action(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     request: &ActionRequest,
 ) -> Result<ActionResult, BrowserBackendError> {
     let outcome = match &request.action {
@@ -485,7 +485,7 @@ async fn execute_action(
 }
 
 async fn storage_operation(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     scope: &StorageScope,
     operation: &StorageOperation,
 ) -> Result<BTreeMap<String, String>, BrowserBackendError> {
@@ -534,7 +534,7 @@ async fn storage_operation(
 }
 
 async fn read_storage(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     scope: &StorageScope,
 ) -> Result<BTreeMap<String, String>, BrowserBackendError> {
     match scope {

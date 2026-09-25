@@ -19,8 +19,8 @@ source-behavior reference.
 
 | Domain | CLI | TUI | MCP | Rust | Guide |
 |---|---|---|---|---|---|
-| Install/update and browser launch/attach | `update`, global options, `doctor`, `install-chromium` | startup | session configuration | `BrowserSession`, `SessionOptions` | [Installation](installation.md) |
-| Navigation and targets | `navigate`, `targets`, `new-target`, `select-target`, `close-target` | `navigate` | navigation and target tools | `BrowserSession` target/navigation methods | [CLI](cli.md) |
+| Install/update and browser launch/attach | `update`, global options, `doctor`, `install-chromium` | startup | session configuration | native `BrowserSession`; explicit `CdpBrowserSession` + `SessionOptions` for Chromium | [Installation](installation.md) |
+| Navigation and targets | `navigate`, `targets`, `new-target`, `select-target`, `close-target` | `navigate` | navigation and target tools | native `BrowserSession` navigation; `CdpBrowserSession` migration surface | [CLI](cli.md) |
 | Frames and topology | `frames`, `select-frame`, `verify` | current frame state | frame tools and predicates | session frame/topology APIs | [Actions](actions.md) |
 | Structured observation | `observe`, `inspect-page`, `observe-delta` | semantic page pane | `observe`, `inspectPage`, `observeDelta` | `observe`, `semantic_observe` | [Semantic observation](semantic-observation.md) |
 | Deep/visual evidence | `dom`, `screenshot`, `pdf`, `diagnostics` | explicit screenshot/live view | `getDOM`, `screenshot`, `printToPdf`, `diagnostics` | observation, visual, diagnostic APIs | [Feature details](#observation-and-evidence) |
@@ -45,13 +45,15 @@ source-behavior reference.
 
 ## Browser lifecycle and ownership
 
-- Owned mode launches Chrome/Chromium, owns its process, selects exactly one
-  page target, and closes Chrome explicitly on `BrowserSession::close`.
+- The native `BrowserSession` owns a Glass-native context and never launches
+  Chrome or connects to CDP. The explicit `CdpBrowserSession` path launches or
+  attaches to Chrome/Chromium and closes owned processes on `close`.
 - The portable `BrowserRuntimeSession` can connect to an externally started
   Firefox WebDriver BiDi or SafariDriver W3C WebDriver endpoint for the
   bounded semantic one-shot command set.
-- A `native-engine` feature build can construct the explicit local
-  `BrowserRuntimeSession::connect_native` path or use
+- A `native-engine` feature build can construct the public native
+  `BrowserSession::start(NativeEngineConfig)` path (or the lower-level
+  `BrowserRuntimeSession::connect_native` path) or use
   `--browser-runtime native`; it accepts local `about:blank`, bounded
   percent-decoded or standard padded-base64 `data:text/html`, and validated
   external HTTP(S) navigation through the native content process, and never

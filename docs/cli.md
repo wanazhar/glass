@@ -66,7 +66,7 @@ stdio server and reserves stdout for protocol frames.
 ### Alternative browser runtimes
 
 The default feature-enabled runtime is the Glass-owned `native` engine. The
-explicit `chromium` runtime uses the full `BrowserSession` and CDP lifecycle.
+explicit `chromium` runtime uses the full `CdpBrowserSession` and CDP lifecycle.
 `firefox` connects to Firefox's direct WebDriver BiDi endpoint, while `safari`
 connects to an externally started `safaridriver` W3C WebDriver server. These
 external runtimes expose only the portable semantic

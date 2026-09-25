@@ -2,7 +2,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::Utc;
 use glass_browser::browser::chrome::detect_chrome;
 use glass_browser::browser::session::{
-    BrowserResult, BrowserSession, InteractionMode, SessionOptions,
+    BrowserResult, CdpBrowserSession, InteractionMode, SessionOptions,
 };
 use serde_json::json;
 use std::path::PathBuf;
@@ -26,7 +26,7 @@ async fn main() -> BrowserResult<()> {
         .or_else(detect_chrome)
         .ok_or("Chrome/Chromium is required for the popup benchmark")?;
     let url = format!("data:text/html;base64,{}", STANDARD.encode(POPUP_FIXTURE));
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port: available_port().await?,
         chrome_path: Some(chrome_path.clone()),
         profile: "popup-benchmark".to_string(),

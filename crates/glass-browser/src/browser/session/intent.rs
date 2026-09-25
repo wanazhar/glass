@@ -1520,7 +1520,7 @@ impl std::fmt::Display for IntentResolutionError {
 
 impl std::error::Error for IntentResolutionError {}
 
-impl super::BrowserSession {
+impl super::CdpBrowserSession {
     /// Resolve one declared intent against a fresh interactive observation.
     /// This method returns candidates only; it never dispatches an action.
     pub async fn resolve_intent(

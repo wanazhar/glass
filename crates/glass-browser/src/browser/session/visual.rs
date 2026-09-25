@@ -6,7 +6,7 @@
 
 use super::*;
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Highlight one current semantic target in the live page without changing page state.
     pub async fn highlight_target_with_revision(
         &self,

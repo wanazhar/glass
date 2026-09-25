@@ -96,7 +96,7 @@ impl AgentIdentity {
     }
 }
 
-impl BrowserSession {
+impl CdpBrowserSession {
     /// Sign an explicitly supplied request after policy approval.
     pub fn sign_http_request(
         &self,

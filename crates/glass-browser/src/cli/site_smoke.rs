@@ -2,7 +2,7 @@
 
 use crate::browser::policy::{BrowserPolicy, PolicyPreset};
 use crate::browser::session::{
-    BrowserResult, BrowserSession, InteractionMode, NavigationExecution, NavigationReadiness,
+    BrowserResult, CdpBrowserSession, InteractionMode, NavigationExecution, NavigationReadiness,
     NavigationReadinessPhase, NavigationReadinessStatus, NavigationRedirectStatus, PageState,
     PoliteNavigationClassification, SemanticPageKind, SessionOptions, StartupDiagnostics,
     TargetActionabilityReason, TargetErrorKind, classify_polite_navigation_error,
@@ -499,7 +499,7 @@ async fn run_site(
 
     let startup_started = Instant::now();
     let session =
-        match BrowserSession::start_with_policy_and_viewport(options, policy, viewport).await {
+        match CdpBrowserSession::start_with_policy_and_viewport(options, policy, viewport).await {
             Ok(session) => {
                 let diagnostics = *session.startup_diagnostics();
                 result.startup_diagnostics = Some(diagnostics);

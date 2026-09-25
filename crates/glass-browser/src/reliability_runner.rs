@@ -6,7 +6,7 @@
 //! browser payloads.
 
 use crate::browser::session::{
-    BrowserResult, BrowserSession, WorkflowCheckpoint, WorkflowDefinition, WorkflowRunResult,
+    BrowserResult, CdpBrowserSession, WorkflowCheckpoint, WorkflowDefinition, WorkflowRunResult,
     WorkflowRunStatus, compile_workflow_json, compile_workflow_yaml,
 };
 use crate::reliability::{
@@ -36,7 +36,7 @@ pub struct ReliabilityRunEvidence {
 
 /// Execute one validated scenario against an already navigated fixture page.
 pub async fn run_reliability_scenario(
-    session: &BrowserSession,
+    session: &CdpBrowserSession,
     scenario: &ReliabilityScenario,
     fixture: &ReliabilityFixtureManifest,
     options: &ReliabilityRunOptions,
@@ -325,7 +325,7 @@ fn load_workflow(path: &Path) -> BrowserResult<WorkflowDefinition> {
     Ok(document.definition)
 }
 
-async fn browser_version(session: &BrowserSession) -> BrowserResult<String> {
+async fn browser_version(session: &CdpBrowserSession) -> BrowserResult<String> {
     let Ok(cdp) = session.raw_cdp() else {
         return Ok("unknown".into());
     };

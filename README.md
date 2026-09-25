@@ -301,7 +301,7 @@ design](docs/architecture/mobile-cockpit.md).
 ## Browser verification
 
 Glass uses the Glass-owned native runtime by default for browser operations.
-The full `BrowserSession` and raw Chrome DevTools Protocol (CDP) are an
+The full `CdpBrowserSession` and raw Chrome DevTools Protocol (CDP) are an
 explicit migration runtime selected with `--browser-runtime chromium`.
 Firefox and Safari are available through the bounded portable semantic
 session; unsupported operations fail closed.
@@ -897,9 +897,10 @@ workflows, advisory knowledge, backend/surface contracts, presentation, daemon
 and MCP integration. Project, PTY, LSP, agent, and Neovim runtime ownership is
 provided by the separate `glass-dev` crate and installed `glass` product.
 
-Owned sessions must call `BrowserSession::close().await` so Chrome can flush a
-persistent profile before process fallback. Attach sessions never own or close
-the external browser.
+Native `BrowserSession` callers close the session to release native state.
+Explicit `CdpBrowserSession` callers should close owned sessions so Chrome can
+flush a persistent profile before process fallback; attached sessions never
+own or close the external browser.
 
 Read the [Rust SDK guide](docs/rust-sdk.md), [runnable example
 catalog](docs/examples.md), [glass-browser docs.rs](https://docs.rs/glass-browser),
@@ -926,12 +927,12 @@ PyPI packages and not browser runtimes:
 |---|---|---|
 | Project buffers and PTYs | active Glass project session | process lifetime; saves explicitly mutate project files |
 | Development timeline | project-scoped local data | bounded and actor-attributed; prompt text and process output excluded |
-| Browser profile | named Glass profile or external attached Chrome | persistent for named profiles; disposable for incognito |
+| Browser profile | native Glass context; explicit `CdpBrowserSession` Chrome profile when selected | persistent state follows the selected runtime; disposable sessions are explicit |
 | Semantic observation | BrowserSession | bounded in memory and invalidated by navigation/target/reconnect changes |
 | Screenshot, DOM, PDF, diagnostics | explicit caller operation | returned/written only when requested |
 | Knowledge and snapshots | profile/workspace-scoped store | bounded, validated, explainable, and explicitly manageable |
 | Reconnect capsule | project-scoped local data | non-sensitive navigation/control metadata only |
-| Remote View frames | current BrowserSession | newest-frame memory only; never persisted by the service |
+| Remote View frames | current browser session | newest-frame memory only; never persisted by the service |
 
 Keep CDP, daemon sockets, Remote View, and development servers on trusted local
 interfaces. Use SSH forwarding instead of public binds. Treat profiles,

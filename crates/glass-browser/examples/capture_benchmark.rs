@@ -1,7 +1,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use glass_browser::browser::chrome::detect_chrome;
 use glass_browser::browser::session::{
-    BrowserResult, BrowserSession, InteractionMode, SessionOptions,
+    BrowserResult, CdpBrowserSession, InteractionMode, SessionOptions,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -50,7 +50,7 @@ async fn main() -> BrowserResult<()> {
         }
     };
 
-    let session = BrowserSession::start(&SessionOptions {
+    let session = CdpBrowserSession::start(&SessionOptions {
         port,
         chrome_path,
         profile: if attach {
@@ -208,7 +208,7 @@ async fn main() -> BrowserResult<()> {
     session.close().await
 }
 
-async fn trace_current_png(session: &BrowserSession) -> BrowserResult<Value> {
+async fn trace_current_png(session: &CdpBrowserSession) -> BrowserResult<Value> {
     let trace_iterations = positive_env("GLASS_CAPTURE_TRACE_ITERATIONS", 10);
     let mut events = session.raw_cdp()?.subscribe_events_with_params();
     session
@@ -291,7 +291,7 @@ async fn trace_current_png(session: &BrowserSession) -> BrowserResult<Value> {
     }))
 }
 
-async fn capture(session: &BrowserSession, spec: &CaptureSpec) -> BrowserResult<CaptureSample> {
+async fn capture(session: &CdpBrowserSession, spec: &CaptureSpec) -> BrowserResult<CaptureSample> {
     let started = Instant::now();
     let response = session
         .raw_cdp()?

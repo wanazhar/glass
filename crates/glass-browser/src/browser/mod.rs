@@ -76,7 +76,7 @@ pub mod profile;
 pub mod proof_backend;
 /// Alternative browser runtime sessions backed by BiDi or W3C WebDriver.
 pub mod runtime;
-/// Central browser session orchestrating all CDP operations.
+/// Legacy Chrome/CDP session implementation and migration operation surface.
 pub mod session;
 /// Bounded W3C WebDriver adapter for runtimes such as SafariDriver.
 pub mod webdriver_backend;
@@ -108,6 +108,9 @@ pub use native_engine::{
 };
 /// Browser-free deterministic backend used for semantic conformance tests.
 pub use proof_backend::ProofBackend;
+/// Canonical native-first session alias; the native constructors never fall
+/// back to Chromium/CDP.
+pub use runtime::BrowserSession;
 /// Alternative browser runtime and portable semantic session.
 pub use runtime::{BrowserRuntime, BrowserRuntimeSession};
 /// W3C WebDriver backend and endpoint configuration.
@@ -133,8 +136,8 @@ pub use session::ActionStatus;
 pub use session::ActionVerificationEvidence;
 /// Type alias for fallible browser operations.
 pub use session::BrowserResult;
-/// A headful or headless browser session that drives Chrome via CDP.
-pub use session::BrowserSession;
+/// Explicit legacy session that drives Chrome/Chromium through CDP.
+pub use session::CdpBrowserSession;
 /// An HTTP cookie with name, value, domain, path, and expiration.
 pub use session::Cookie;
 /// A single change (added, removed, or modified) in an accessibility diff.

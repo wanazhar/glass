@@ -1,7 +1,8 @@
 //! Local, revision-safe browser intelligence for the Glass-owned native
 //! runtime, explicit Chromium/CDP migration sessions, Firefox, and Safari.
 //!
-//! `glass-browser` provides an owned/attached Chromium [`BrowserSession`],
+//! `glass-browser` provides a native-first [`BrowserSession`] and an explicit
+//! Chromium/CDP migration [`CdpBrowserSession`],
 //! structured semantic observation, guarded actions, stable Web IR, Task
 //! Protocol compilation/execution, workflows, advisory knowledge, policy,
 //! MCP, daemon, TUI, backend, surface, presentation, and reliability contracts.
@@ -23,7 +24,8 @@
 //!
 //! | Goal | Entry point |
 //! |---|---|
-//! | Drive an owned or attached browser | [`BrowserSession`] and [`SessionOptions`] |
+//! | Drive the native browser | [`BrowserSession`] and [`browser::NativeEngineConfig`] |
+//! | Migrate an owned or attached Chromium session | [`CdpBrowserSession`] and [`SessionOptions`] |
 //! | Collect stable evidence | [`extraction`] and [`web_ir`] |
 //! | Compile/execute semantic tasks | [`task_protocol`] and [`task_compiler`] |
 //! | Run typed workflows | [`browser::session::WorkflowDefinition`] |
@@ -36,25 +38,24 @@
 //!
 //! # Browser lifecycle
 //!
-//! Start, navigate, observe, and explicitly close an owned session:
+//! Start, navigate, and explicitly close the native session:
 //!
 //! ```rust,no_run
-//! use glass_browser::{BrowserSession, SessionOptions};
+//! use glass_browser::BrowserSession;
+//! use glass_browser::browser::NativeEngineConfig;
 //!
 //! # async fn run() -> glass_browser::BrowserResult<()> {
-//! let options = SessionOptions::builder().incognito(true).build()?;
-//! let session = BrowserSession::start(&options).await?;
+//! let session = BrowserSession::start(NativeEngineConfig::default()).await?;
 //! let page = session.navigate("https://example.com").await?;
-//! let observation = session.observe().await?;
-//! println!("{} revision={}", page.url, observation.accessibility.revision);
+//! println!("{}", page.url);
 //! session.close().await?;
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! `close` sends `Browser.close` before process fallback so owned profile state
-//! can flush. Attach mode does not own or close the external Chrome process.
-//! [`SessionOptions::validate`] rejects incompatible attach/launch settings.
+//! The native session owns no Chrome process or CDP connection. The explicit
+//! [`CdpBrowserSession`] migration API uses [`SessionOptions`] to own or attach
+//! to Chromium; attached sessions never close the external process.
 //!
 //! # Structured observation and guarded action
 //!
@@ -63,10 +64,10 @@
 //!
 //! ```rust,no_run
 //! use glass_browser::browser::session::SemanticObservationLevel;
-//! use glass_browser::{BrowserSession, SessionOptions};
+//! use glass_browser::{CdpBrowserSession, SessionOptions};
 //!
 //! # async fn run() -> glass_browser::BrowserResult<()> {
-//! let session = BrowserSession::start(&SessionOptions::builder().build()?).await?;
+//! let session = CdpBrowserSession::start(&SessionOptions::builder().build()?).await?;
 //! let semantic = session
 //!     .semantic_observe(SemanticObservationLevel::Interactive)
 //!     .await?;
@@ -92,7 +93,7 @@
 //! # Evidence, Web IR, and tasks
 //!
 //! [`ExtractionRequest`] selects source-labelled evidence and hard budgets.
-//! [`BrowserSession::extract_web_ir`] reconciles it into stable
+//! [`CdpBrowserSession::extract_web_ir`] reconciles it into stable
 //! [`GlassWebIrV1`]. Offline callers can validate, diff, and classify
 //! continuity without starting Chrome.
 //!
@@ -188,7 +189,8 @@
 //! - [MCP tool catalog](https://github.com/wanazhar/glass/blob/main/docs/mcp-tools.md)
 //! - [Security policy](https://github.com/wanazhar/glass/blob/main/SECURITY.md)
 
-/// Browser control modules and the reusable [`browser::BrowserSession`] API.
+/// Browser control modules, the native-first [`browser::BrowserSession`] API,
+/// and the explicit [`browser::CdpBrowserSession`] migration API.
 pub mod browser;
 /// Transport-neutral backend capability contract.
 pub mod browser_backend;
@@ -240,7 +242,7 @@ pub use browser::{
     AccessibilityDiffSummary, ActionContractError, ActionFailureKind, ActionKind, ActionOutcome,
     ActionStatus, ActionVerificationEvidence, BackendFactory, BackendStartup, BidiBackendConfig,
     BidiBrowserBackend, BrowserResult, BrowserRuntime, BrowserRuntimeSession, BrowserSession,
-    KnowledgeAssessment, KnowledgeAssessmentSignal, KnowledgeAssessmentStatus,
+    CdpBrowserSession, KnowledgeAssessment, KnowledgeAssessmentSignal, KnowledgeAssessmentStatus,
     KnowledgeBackendCapability, KnowledgeBackendKind, KnowledgeBackendProvenance,
     KnowledgeConfidence, KnowledgeCurrentValidation, KnowledgeCurrentValidationStatus,
     KnowledgeEmbeddingProvider, KnowledgeEvidenceQuality, KnowledgeGraph, KnowledgeGraphEdge,

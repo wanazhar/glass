@@ -5,12 +5,21 @@ completed browser expansion slice is `native-engine-browser-746`. Slice 746
 migrates initial navigation documents to a Glass-owned `html5ever` sink. Its
 locked scoped check, 177 parser-filtered unit tests, process-backed HTTP
 navigation regression, and documentation truth/depth/shortcut/coverage gates
-passed locally. Fragment and XHR parsing, full HTML conformance, remote CI, and
-cross-platform certification remain open. Issue #40 remains open. Slice 728
+passed. Slice 747 is in progress: the Rust `innerHTML` commit and same-turn
+JavaScript/frame projection now use a bounded html5ever context-fragment
+algorithm. Its scoped check, fragment/`innerHTML` tests, selector/dialog tests,
+and process-backed HTTP regression pass; documentation truth/depth/shortcut
+and Markdown-link checks pass. Full live documentation inventory coverage is
+pending because `target/debug/glass` is not built. XHR parsing, full HTML
+conformance, remote CI, and cross-platform certification remain open. Issue #40
+remains open. Slice 728
 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API
 `CdpBrowserSession`. This source-level migration is not a Core Web Profile
-completion claim. Slice 729 promotes native revisioned semantic observation,
+completion claim. Slice 747 reparses the source at ordered Rust commit time
+using the same bounded parser and context as the synchronous JavaScript/frame
+projection; it does not transfer the identical tree instance between runtimes.
+Slice 729 promotes native revisioned semantic observation,
 page inspection/bootstrap, and region expansion into the canonical Rust API.
 Slice 730 promotes native target/frame topology into the canonical Rust API
 and corrects iframe fallback text in the parent visible-text projection. These

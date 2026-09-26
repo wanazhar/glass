@@ -116,6 +116,19 @@ creating foster-parented HTML `<p>`/`<br>` nodes before the table; a later
 `<col>` belongs to an implied anonymous `<colgroup>`. The legacy fragment/XHR
 routes retain their separate expected trees.
 
+Slice 747 migrates HTML fragments to the bounded html5ever context-fragment
+algorithm. The synchronous JavaScript/frame projection consumes its structured
+parse result; the ordered Rust `innerHTML` commit reparses the same source using
+the same parser and actual context element, including namespace and attributes.
+This avoids sending serialized markup through a second parser, but does parse
+the source once for immediate JS reads and again for the authoritative commit.
+The Rust commit is transactional: parser, node, or depth-limit failure leaves
+the previous subtree attached. The scoped check, fragment/`innerHTML` unit
+tests, and process-backed HTTP regression pass. Release-truth, documentation
+depth, shortcut, and Markdown-link checks also pass. The full documentation
+inventory gate still needs the missing `glass` CLI binary; it has not been
+claimed as passed.
+
 The token-aware TreeSink bridge also preserves MathML `annotation-xml` as the
 HTML integration boundary during `</p>` and `</br>` foreign-content breakouts.
 html5ever 0.40.x currently omits that dynamic boundary from its breakout loop;
@@ -139,12 +152,11 @@ document source → html5ever tokenizer/tree builder → Glass TreeSink
 
 This slice does not finish the HTML platform. The current Glass DOM projection
 still flattens template contents into the template element, quirks mode does
-not yet alter CSS/layout, and script-stream reentrancy plus `innerHTML`,
-same-turn JavaScript fragments, and XHR `responseType="document"` remain on
-separate parser routes. html5ever documents remaining tree-builder differences;
-the pinned GCWP conformance corpus and explicit treatment of each failure are
-still promotion gates. See
-[slice 746](../plan/tasks/native-engine-browser-746.md).
+not yet alter CSS/layout, script-stream reentrancy remains incomplete, and XHR
+`responseType="document"` still uses its separate parser route. html5ever
+documents remaining tree-builder differences; the pinned GCWP conformance
+corpus and explicit treatment of each failure are still promotion gates. See
+[slice 747](../plan/tasks/native-engine-browser-747.md).
 
 Earlier completed slices include
 `native-engine-browser-696` through

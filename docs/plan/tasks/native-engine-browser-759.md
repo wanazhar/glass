@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-759
 scope: glass-browser/native-custom-elements
-status: complete
+status: done
 depends-on: [native-engine-browser-758]
 ---
 
@@ -99,6 +99,10 @@ the full Core Web Profile gate, not silent aliases to `HTMLUnknownElement`.
   passed; output contains existing dead-code warnings in `native_engine/dom.rs`.
 - `cargo test -p glass-browser --test native_engine native_custom --locked --quiet`
   passed: 6 tests, 0 failures, 0 ignored (88.25 seconds).
+- `cargo test -p glass-browser --test native_engine native_local_runtime_preserves_custom_element_registry_and_builtins --locked --quiet`
+  passed: 1 test, 0 failures, 0 ignored (10.16 seconds), covering in-process
+  parser upgrade, customized-button creation, interface identity, serialization,
+  and click behavior.
 - Process-backed regressions cover parser upgrade, object and string creation
   options, direct construction, correct interface identity, serialization
   without a reflected attribute, local-name and `is` mismatch, invalid base

@@ -28,10 +28,11 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is complete through
-`native-engine-browser-757`. Slice 758 is actively implementing and verifying
-the autonomous custom-element contract. These are implementation checkpoints,
-not browser-completion evidence; issue #40 remains open for the full Core Web
-Profile, conformance, platform, and release gates.
+`native-engine-browser-759`. Slices 758 and 759 implement the autonomous and
+customized-built-in custom-element contracts for the currently mapped HTML
+interfaces. These are implementation checkpoints, not browser-completion
+evidence; issue #40 remains open for the full Core Web Profile, conformance,
+platform, and release gates.
 Slice 755 implements target-document-aware `Document.importNode()` for live
 top-level, same-origin-frame, and inert template-owner Documents. Its focused
 process-backed regression passes locally; this remains a bounded DOM slice,
@@ -53,7 +54,11 @@ document. Cross-origin and independent-root routes are rejected by the backend
 owner/origin guards. Worker-loss rollback is implemented but has not been
 fault-injection-tested. Remote CI and cross-platform certification remain
 issue-level gates.
-The [slice 758 contract](tasks/native-engine-browser-758.md) is in progress.
+The [slice 758 contract](tasks/native-engine-browser-758.md) is complete
+locally. Its regressions cover inline and process-backed execution, parser
+upgrade, registry identity, lifecycle ordering, bounded reactions and
+`whenDefined()`, import, same-origin frame registries, and `adoptedCallback`
+across top-level/frame ownership.
 Alongside template-content identity and selected-frame registry coverage, the
 process-backed reaction-safety regression now checks FIFO ordering across
 300 queued callbacks, callback-triggered insertion, definition reentrancy and
@@ -62,9 +67,9 @@ recovery. A process stress test also crosses the 4,096 reaction queue cap,
 checks explicit overflow reports, and verifies later callbacks still run. The
 10,000-reaction checkpoint work ceiling is also stress-tested by re-queuing
 through the internal scheduler bridge; the test checks the cap, one explicit
-error report, and successful later callback delivery. Custom elements remain
-an explicit Core Web Profile requirement, not a completed capability; exact
-evidence is recorded in the task file.
+error report, and successful later callback delivery. Autonomous registry and
+lifecycle behavior are complete in this bounded slice; broader custom-element
+requirements remain open and exact evidence is recorded in the task file.
 The slice-758 follow-up also covers owning-global-registry `importNode()` and
 typed invalid/unsupported registry choices. A frame-template hydration fix
 preserves imported content after the next script call; the focused cross-
@@ -74,7 +79,7 @@ The [slice 759 task](tasks/native-engine-browser-759.md) implements customized
 built-ins for the HTML interfaces represented by the native element-interface
 table, including internal `is` identity, parser and DOM creation, direct
 construction, serialization, clone/import, lifecycle, and selected frame
-registries. Its six-test custom-element group passes locally. Unmapped built-in
+registries. Inline-runtime and process-backed checks pass locally. Unmapped built-in
 interfaces and the other custom-element profile requirements remain open.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory

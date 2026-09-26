@@ -149,6 +149,11 @@ case covers the 4,096 queue cap, explicit overflow reports, and later callback
 recovery. A second process stress case re-queues reactions through the
 internal scheduler bridge to cover the 10,000-reaction per-checkpoint work
 limit, its `RangeError` report, and later callback recovery.
+The same slice covers `importNode()` with the owning global registry and
+typed invalid/unsupported registry failures. A frame-projected template
+hydration fix preserves imported `.content` across the next script call; its
+cross-document regression passes locally. Scoped registries are not yet
+implemented.
 Customized built-ins, scoped registries, form-associated elements, custom
 states, and full Web Platform Tests remain profile requirements beyond this
 bounded slice.

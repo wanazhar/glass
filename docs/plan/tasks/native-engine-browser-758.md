@@ -16,6 +16,10 @@ depends-on: [native-engine-browser-757]
   queued lifecycle reactions. The [DOM adoption algorithm](https://dom.spec.whatwg.org/#concept-node-adopt)
   queues `adoptedCallback(oldDocument, newDocument)` for upgraded custom
   elements when their node document changes.
+- The [DOM `importNode()` algorithm](https://dom.spec.whatwg.org/#dom-document-importnode)
+  defines the destination registry fallback and rejects unsupported global
+  registry choices; this slice implements the owning global-registry path, not
+  scoped registries.
 - Native page realms now expose a bounded global autonomous custom-element
   registry and core reactions over identity-stable wrappers. This task extends
   that implementation across parser upgrades, mutation boundaries, adoption,
@@ -229,6 +233,36 @@ The paired focused run passed:
 - `cargo test -p glass-browser --test native_engine native_custom_element_reaction_ --locked --quiet`:
   `2 passed; 0 failed; 0 ignored; 0 measured; 794 filtered out; finished in
   33.34s`
+
+The import/registry follow-up adds `Document.importNode()` options for the
+owning global custom-element registry. It reports `TypeError` for an invalid
+registry value and `NotSupportedError` when the requested global registry does
+not belong to the target Document. The clone receives that registry and is
+upgraded after its copied attributes and descendants are present. Scoped
+registries remain outside this slice.
+
+The process-backed import regression also exposed a projected-frame identity
+bug: a template created through `contentDocument` retained its initially empty
+`.content` fragment after the native snapshot assigned the stable fragment
+index. Frame hydration now reuses the template host's cached fragment while
+binding that snapshot identity, preserving imported content across the next
+script call. The focused regression now passes:
+
+- `cargo check -p glass-browser --lib --test native_engine --locked --quiet`:
+  passed.
+- `cargo test -p glass-browser --test native_engine native_documents_import_nodes_into_the_target_document --locked --quiet`:
+  `1 passed; 0 failed; 0 ignored; 0 measured; 795 filtered out; finished in
+  31.55s`.
+- `cargo test -p glass-browser --test native_engine native_custom_elements_upgrade_create_and_run_lifecycle_reactions --locked --quiet`:
+  `1 passed; 0 failed; 0 ignored; 0 measured; 795 filtered out; finished in
+  19.71s` after correcting the expected counters for the separate import-probe
+  class.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+- Documentation gates passed: release truth (1,386 Markdown files, 83 current
+  documents, zero current-claim failures); depth (93 current guides/19
+  contracts); TUI shortcuts (15 implementation help keys/63 markers); live
+  coverage (1,386 Markdown files, 346 full-product MCP tools/101 browser-only,
+  17 examples, 22 public modules).
 
 Full custom-element WPT, customized built-ins, scoped registries, form-
 associated behavior, custom states, remote CI, and Windows/macOS runtime

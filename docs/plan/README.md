@@ -57,9 +57,10 @@ The [slice 758 contract](tasks/native-engine-browser-758.md) is in progress.
 Alongside template-content identity and selected-frame registry coverage, the
 process-backed reaction-safety regression now checks FIFO ordering across
 300 queued callbacks, callback-triggered insertion, definition reentrancy and
-recovery, and bounded `whenDefined()` capacity recovery. Custom elements remain
-an explicit Core Web Profile requirement, not a completed capability; exact
-evidence and unverified bounds are recorded in the task file.
+recovery, bounded observed-attribute iteration, and `whenDefined()` capacity
+recovery. Custom elements remain an explicit Core Web Profile requirement,
+not a completed capability; exact evidence and the untested reaction queue
+overflow/work ceiling are recorded in the task file.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

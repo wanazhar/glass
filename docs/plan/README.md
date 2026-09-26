@@ -32,7 +32,9 @@ browser expansion implementation is complete through
 customized-built-in custom-element contracts for the currently mapped HTML
 interfaces. Slice 760 implements bounded `ElementInternals` form values and
 `FormData(form)` integration; slice 761 implements form-owner and disabled-
-state callbacks. These are implementation checkpoints, not browser-completion
+state callbacks. Slice 762 is in progress for native form reset, reset-button
+activation, and `formResetCallback()` ordering; its contract is
+[recorded here](tasks/native-engine-browser-762.md). These are implementation checkpoints, not browser-completion
 evidence; issue #40 remains open for the full Core Web Profile, conformance,
 platform, and release gates.
 Slice 755 implements target-document-aware `Document.importNode()` for live
@@ -99,6 +101,11 @@ ancestor owners, first-ID resolution, fieldset/legend and own-disabled changes,
 removal/reinsertion, and script-refresh persistence. Reset/state-restore
 callbacks remain explicitly unsupported. See the
 [slice 761 contract](tasks/native-engine-browser-761.md).
+The [slice 762 contract](tasks/native-engine-browser-762.md) covers reset-event
+cancellation, built-in control reset, reset-button default action, and
+form-associated reset reactions; it does not claim full form-control Web IDL
+reflection, complete value sanitization, state restoration, WPT conformance,
+or issue #40 completion.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

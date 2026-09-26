@@ -76,6 +76,11 @@ owner/disabled-state reconciliation across custom-element upgrades and DOM
 mutations. Reset and state-restore callbacks remain fail-closed until their
 corresponding native paths exist; see the
 [slice 761 task](../plan/tasks/native-engine-browser-761.md).
+Slice 762 is in progress for cancelable native form reset, reset-button
+activation, built-in control default restoration, and ordered
+`formResetCallback()` reactions. Its exact boundary is recorded in the
+[slice 762 task](../plan/tasks/native-engine-browser-762.md); state restoration
+and full form-control Web IDL reflection remain open.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

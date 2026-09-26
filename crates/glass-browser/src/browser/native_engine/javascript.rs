@@ -39007,6 +39007,9 @@ fn document_bootstrap(
       const qualified = qualifiedAttributeName(name, namespaceURI);
       const value = String(nextValue);
       if (value.length > {storage_value_limit}) throw new RangeError("native attribute value exceeds its limit");
+      const oldValue = Object.prototype.hasOwnProperty.call(entry.attributes, qualified)
+        ? String(entry.attributes[qualified])
+        : null;
       entry.attributes[qualified] = value;
       if (namespaceURI === null) delete entry.attributeNamespaces[qualified];
       else entry.attributeNamespaces[qualified] = namespaceURI;
@@ -39020,6 +39023,14 @@ fn document_bootstrap(
         namespace_uri: namespaceURI === null ? "" : namespaceURI,
       }});
       if (namespaceURI === null) captureDynamicCspMetaPolicy(element);
+      if (oldValue !== value && typeof globalThis.__glassQueueNativeCustomElementReaction === "function") {{
+        globalThis.__glassQueueNativeCustomElementReaction(
+          element,
+          "attributeChangedCallback",
+          [storedAttributeLocalName(qualified, namespaceURI), oldValue, value, namespaceURI],
+          true,
+        );
+      }}
     }};
     const namespacedAttributeValue = (namespace, name) => {{
       const namespaceURI = normalizeAttributeNamespace(namespace);
@@ -39040,6 +39051,7 @@ fn document_bootstrap(
           && candidateNamespace === namespaceURI;
       }});
       if (key === undefined) return;
+      const oldValue = String(entry.attributes[key]);
       delete entry.attributes[key];
       delete entry.attributeNamespaces[key];
       element.__glassSyncContent();
@@ -39050,6 +39062,14 @@ fn document_bootstrap(
         name: key,
         namespace_uri: namespaceURI === null ? "" : namespaceURI,
       }});
+      if (typeof globalThis.__glassQueueNativeCustomElementReaction === "function") {{
+        globalThis.__glassQueueNativeCustomElementReaction(
+          element,
+          "attributeChangedCallback",
+          [localName, oldValue, null, namespaceURI],
+          true,
+        );
+      }}
     }};
     let selectionStart = entry.selectionStart;
     let selectionEnd = entry.selectionEnd;
@@ -39312,6 +39332,9 @@ fn document_bootstrap(
       setAttribute(name, value) {{
         const key = String(name).toLowerCase();
         const stringValue = String(value);
+        const oldValue = Object.prototype.hasOwnProperty.call(entry.attributes, key)
+          ? String(entry.attributes[key])
+          : null;
         entry.attributes[key] = stringValue;
         delete entry.attributeNamespaces[key];
         installInlineAttributeHandler(key, stringValue);
@@ -39325,12 +39348,23 @@ fn document_bootstrap(
         element.__glassSyncContent();
         pushCommand({{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue, namespace_uri: "" }});
         captureDynamicCspMetaPolicy(element);
+        if (oldValue !== stringValue && typeof globalThis.__glassQueueNativeCustomElementReaction === "function") {{
+          globalThis.__glassQueueNativeCustomElementReaction(
+            element,
+            "attributeChangedCallback",
+            [key, oldValue, stringValue, null],
+            true,
+          );
+        }}
       }},
       __glassSetParsedAttribute(name, value, namespace) {{
         const qualifiedName = String(name);
         const namespaceURI = namespace === null || namespace === undefined ? null : String(namespace);
         const stringValue = String(value);
         if (stringValue.length > {storage_value_limit}) throw new RangeError("native parsed attribute value exceeds its limit");
+        const oldValue = Object.prototype.hasOwnProperty.call(entry.attributes, qualifiedName)
+          ? String(entry.attributes[qualifiedName])
+          : null;
         entry.attributes[qualifiedName] = stringValue;
         if (namespaceURI === null) delete entry.attributeNamespaces[qualifiedName];
         else entry.attributeNamespaces[qualifiedName] = namespaceURI;
@@ -39355,12 +39389,24 @@ fn document_bootstrap(
           value: stringValue,
           namespace_uri: namespaceURI === null ? "" : namespaceURI,
         }});
+        if (oldValue !== stringValue
+            && typeof globalThis.__glassQueueNativeCustomElementReaction === "function") {{
+          globalThis.__glassQueueNativeCustomElementReaction(
+            element,
+            "attributeChangedCallback",
+            [storedAttributeLocalName(qualifiedName, namespaceURI), oldValue, stringValue, namespaceURI],
+            true,
+          );
+        }}
       }},
       setAttributeNS(namespace, qualifiedName, value) {{
         setNamespacedAttribute(namespace, qualifiedName, value);
       }},
       removeAttribute(name) {{
         const key = String(name).toLowerCase();
+        const oldValue = Object.prototype.hasOwnProperty.call(entry.attributes, key)
+          ? String(entry.attributes[key])
+          : null;
         delete entry.attributes[key];
         delete entry.attributeNamespaces[key];
         removeInlineAttributeHandler(key);
@@ -39373,6 +39419,14 @@ fn document_bootstrap(
         if (key === "multiple") multiple = false;
         element.__glassSyncContent();
         pushCommand({{ kind: "removeAttribute", node_index: entry.nodeIndex, name: key, namespace_uri: "" }});
+        if (oldValue !== null && typeof globalThis.__glassQueueNativeCustomElementReaction === "function") {{
+          globalThis.__glassQueueNativeCustomElementReaction(
+            element,
+            "attributeChangedCallback",
+            [key, oldValue, null, null],
+            true,
+          );
+        }}
       }},
       removeAttributeNS(namespace, name) {{
         removeNamespacedAttribute(namespace, name);
@@ -39386,6 +39440,7 @@ fn document_bootstrap(
         }}
         if (!child || typeof child.nodeIndex !== "number") throw new TypeError("child must be a native element");
         if (child === element) throw new TypeError("a node cannot contain itself");
+        const wasConnected = nodeIsConnected(child);
         let ancestor = element;
         while (ancestor) {{
           if (ancestor === child) throw new TypeError("a node cannot contain one of its ancestors");
@@ -39405,6 +39460,9 @@ fn document_bootstrap(
         if (child.localName === "source"
             && (element.tagName === "AUDIO" || element.tagName === "VIDEO")) resetMediaState();
         pushCommand({{ kind: "appendChild", parent_index: entry.nodeIndex, child_index: child.nodeIndex }});
+        if (typeof globalThis.__glassRunNativeCustomElementInsertionReactions === "function") {{
+          globalThis.__glassRunNativeCustomElementInsertionReactions(child, wasConnected, nodeIsConnected(element));
+        }}
         if (nodeIsConnected(element)) executeInsertedScripts(child);
         return child;
       }},
@@ -39422,6 +39480,7 @@ fn document_bootstrap(
         }}
         if (before.__glassParent !== element) throw new TypeError("reference node is not a child");
         if (child === before) return child;
+        const wasConnected = nodeIsConnected(child);
         let ancestor = element;
         while (ancestor) {{
           if (ancestor === child) throw new TypeError("a node cannot contain one of its ancestors");
@@ -39447,12 +39506,16 @@ fn document_bootstrap(
           child_index: child.nodeIndex,
           before_index: before.nodeIndex,
         }});
+        if (typeof globalThis.__glassRunNativeCustomElementInsertionReactions === "function") {{
+          globalThis.__glassRunNativeCustomElementInsertionReactions(child, wasConnected, nodeIsConnected(element));
+        }}
         if (nodeIsConnected(element)) executeInsertedScripts(child);
         return child;
       }},
       remove() {{
         const parent = element.__glassParent || null;
         if (!parent && element.parentIndex === null) return;
+        const wasConnected = nodeIsConnected(element);
         const commitRemoval = !element.__glassCreated || element.parentIndex !== null;
         queueFragmentChildRemoval(parent, element);
         if (parent && Array.isArray(parent.__glassChildren)) {{
@@ -39462,6 +39525,9 @@ fn document_bootstrap(
         element.parentIndex = null;
         if (parent && typeof parent.__glassSyncContent === "function") parent.__glassSyncContent(true);
         if (commitRemoval) pushCommand({{ kind: "removeNode", node_index: entry.nodeIndex }});
+        if (wasConnected && typeof globalThis.__glassRunNativeCustomElementRemovalReactions === "function") {{
+          globalThis.__glassRunNativeCustomElementRemovalReactions(element);
+        }}
       }},
       removeChild(child) {{
         if (!child || child.__glassParent !== element) {{
@@ -39706,6 +39772,8 @@ fn document_bootstrap(
         set(next) {{
           const value = String(next);
           if (value.length > storageValueLimit) throw new RangeError("native element textContent exceeds its limit");
+          const oldChildren = element.__glassChildren.slice();
+          const wasConnected = nodeIsConnected(element);
           for (const child of element.__glassChildren) {{
             child.__glassParent = null;
             child.parentIndex = null;
@@ -39721,6 +39789,9 @@ fn document_bootstrap(
           }}
           element.__glassSyncContent(true);
           pushCommand({{ kind: "setTextContent", node_index: entry.nodeIndex, value }});
+          if (wasConnected && typeof globalThis.__glassRunNativeCustomElementRemovalReactions === "function") {{
+            for (const child of oldChildren) globalThis.__glassRunNativeCustomElementRemovalReactions(child);
+          }}
         }},
       }});
     }}
@@ -39752,9 +39823,9 @@ fn document_bootstrap(
       enumerable: true,
       configurable: false,
       get() {{ return element.localName === "template" ? element.content.innerHTML : innerHtml; }},
-      set(next) {{
-        const value = String(next);
-        if (value.length > storageValueLimit) throw new RangeError("native element innerHTML exceeds its limit");
+        set(next) {{
+          const value = String(next);
+          if (value.length > storageValueLimit) throw new RangeError("native element innerHTML exceeds its limit");
         if (element.localName === "template") {{
           const content = element.content;
           for (const child of content.__glassChildren) {{
@@ -39774,8 +39845,10 @@ fn document_bootstrap(
           element.__glassSyncContent(true);
           pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
           return;
-        }}
-        for (const child of element.__glassChildren) {{
+          }}
+          const oldChildren = element.__glassChildren.slice();
+          const wasConnected = nodeIsConnected(element);
+          for (const child of element.__glassChildren) {{
           child.__glassParent = null;
           child.parentIndex = null;
         }}
@@ -39787,10 +39860,23 @@ fn document_bootstrap(
           populateDetachedFragment(element, value, makeDetachedElement, makeDetachedText, makeDetachedComment);
         }} finally {{
           suppressHostCommands -= 1;
-        }}
-        element.__glassSyncContent(true);
-        pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
-      }},
+          }}
+          element.__glassSyncContent(true);
+          pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
+          if (wasConnected && typeof globalThis.__glassRunNativeCustomElementRemovalReactions === "function") {{
+            for (const child of oldChildren) globalThis.__glassRunNativeCustomElementRemovalReactions(child);
+          }}
+          if (element.__glassChildren.length > 0
+              && typeof globalThis.__glassRunNativeCustomElementInsertionReactions === "function") {{
+            for (const child of element.__glassChildren) {{
+              globalThis.__glassRunNativeCustomElementInsertionReactions(
+                child,
+                false,
+                nodeIsConnected(element),
+              );
+            }}
+          }}
+        }},
     }});
     value = element.value;
     Object.defineProperty(element, "value", {{
@@ -40657,7 +40743,30 @@ fn document_bootstrap(
   }};
   const templateContentsOwnerDocumentForNode = (node) => {{
     if (!node) return globalThis.document || null;
-    if (node.__glassAdoptedOwnerDocument) return node.__glassAdoptedOwnerDocument;
+    if (node.__glassAdoptedOwnerDocument) {{
+      const adoptedOwnerDocument = node.__glassAdoptedOwnerDocument;
+      if (adoptedOwnerDocument.__glassIsTemplateContentsOwnerDocument !== true) {{
+        const contextId = String(adoptedOwnerDocument.__glassNativeContextId || "");
+        const generation = Number(adoptedOwnerDocument.__glassNativeGeneration);
+        const currentDocument = globalThis.document;
+        if (contextId && currentDocument
+            && String(currentDocument.__glassNativeContextId || "") === contextId
+            && Number(currentDocument.__glassNativeGeneration) === generation) {{
+          node.__glassAdoptedOwnerDocument = currentDocument;
+          return currentDocument;
+        }}
+        const frameDocuments = globalThis.__glassFrameDocumentCache;
+        const currentFrameDocument = frameDocuments instanceof Map
+          ? frameDocuments.get(contextId)?.document
+          : null;
+        if (contextId && currentFrameDocument
+            && Number(currentFrameDocument.__glassNativeGeneration) === generation) {{
+          node.__glassAdoptedOwnerDocument = currentFrameDocument;
+          return currentFrameDocument;
+        }}
+      }}
+      return adoptedOwnerDocument;
+    }}
     if (node.__glassOwnerDocumentOverride) return node.__glassOwnerDocumentOverride;
     let current = node;
     while (current) {{
@@ -41168,10 +41277,12 @@ fn document_bootstrap(
     const selfOnly = options === null ? undefined : options.selfOnly;
     const customElementRegistry = options === null ? undefined : options.customElementRegistry;
     if (customElementRegistry !== undefined && customElementRegistry !== null) {{
-      throw new DOMExceptionNative(
-        "Custom element registries are not implemented by the native engine",
-        "NotSupportedError",
-      );
+      if (customElementRegistry !== globalThis.__glassNativeCustomElementRegistry) {{
+        throw new DOMExceptionNative(
+          "The requested custom element registry is unavailable",
+          "NotSupportedError",
+        );
+      }}
     }}
     return !Boolean(selfOnly);
   }};
@@ -41568,6 +41679,18 @@ fn document_bootstrap(
           }}
         }}
       }}
+      if (sourceDocument !== targetDocument
+          && typeof globalThis.__glassQueueNativeCustomElementReaction === "function") {{
+        for (const [node] of state.nodes) {{
+          if (Number(node && node.nodeType) === 1) {{
+            globalThis.__glassQueueNativeCustomElementReaction(
+              node,
+              "adoptedCallback",
+              [sourceDocument, targetDocument],
+            );
+          }}
+        }}
+      }}
       return source;
     }}
 
@@ -41578,6 +41701,18 @@ fn document_bootstrap(
       else throw new DOMExceptionNative("The source node cannot be detached", "NotSupportedError");
     }}
     for (const [node, ownerDocument] of state.nodes) setAdoptedOwnerDocument(node, ownerDocument);
+    if (sourceDocument !== targetDocument
+        && typeof globalThis.__glassQueueNativeCustomElementReaction === "function") {{
+      for (const [node] of state.nodes) {{
+        if (Number(node && node.nodeType) === 1) {{
+          globalThis.__glassQueueNativeCustomElementReaction(
+            node,
+            "adoptedCallback",
+            [sourceDocument, targetDocument],
+          );
+        }}
+      }}
+    }}
     return source;
   }};
   const defineTreeAccessors = (node) => {{
@@ -43354,9 +43489,18 @@ fn document_bootstrap(
     dispatchEvent(event) {{
       return dispatchTarget(this, event);
     }},
-    createElement(tagName) {{ return makeDetachedElement(tagName, HTML_NAMESPACE); }},
-    createElementNS(namespace, qualifiedName) {{
-      return makeDetachedElement(qualifiedName, normalizeElementNamespace(namespace));
+    createElement(tagName, options) {{
+      const createCustom = globalThis.__glassCreateNativeCustomElement;
+      return typeof createCustom === "function"
+        ? createCustom(document, tagName, options, HTML_NAMESPACE)
+        : makeDetachedElement(tagName, HTML_NAMESPACE);
+    }},
+    createElementNS(namespace, qualifiedName, options) {{
+      const namespaceURI = normalizeElementNamespace(namespace);
+      const createCustom = globalThis.__glassCreateNativeCustomElement;
+      return typeof createCustom === "function"
+        ? createCustom(document, qualifiedName, options, namespaceURI)
+        : makeDetachedElement(qualifiedName, namespaceURI);
     }},
     importNode(node, options = false) {{
       return importNativeNode(document, node, options);
@@ -45348,6 +45492,10 @@ fn document_bootstrap(
     let constructor = globalThis[name];
     if (typeof constructor !== "function") {{
       constructor = function NativeWebIdlConstructor() {{
+        if (name === "HTMLElement"
+            && typeof globalThis.__glassConstructNativeCustomElement === "function") {{
+          return globalThis.__glassConstructNativeCustomElement(new.target);
+        }}
         throw new TypeError("Illegal constructor");
       }};
       globalThis[name] = constructor;
@@ -45787,6 +45935,477 @@ fn document_bootstrap(
     }}[tagName] || "HTMLUnknownElement";
     return elementConstructors[name].prototype;
   }};
+  const nativeCustomElementLimits = {{
+    definitions: 1024,
+    pendingWhenDefined: 1024,
+    observedAttributes: 256,
+    reactions: 4096,
+    reactionsPerCheckpoint: 10000,
+    nameLength: 256,
+    treeDepth: {native_dom_max_depth},
+    treeNodes: {native_dom_max_nodes},
+  }};
+  const customElementContextId = String(host.context_id || "native");
+  const customElementGeneration = Number(host.generation) || 0;
+  let nativeCustomElementState = globalThis.__glassNativeCustomElementState;
+  if (!nativeCustomElementState
+      || nativeCustomElementState.contextId !== customElementContextId
+      || nativeCustomElementState.generation !== customElementGeneration) {{
+    nativeCustomElementState = {{
+      contextId: customElementContextId,
+      generation: customElementGeneration,
+      definitionsByName: new Map(),
+      definitionsByConstructor: new Map(),
+      whenDefined: new Map(),
+      constructorStack: [],
+      reactions: [],
+      reactionErrors: [],
+      defining: false,
+      upgrading: 0,
+      directConstructions: 0,
+      draining: false,
+      registry: null,
+    }};
+    globalThis.__glassNativeCustomElementState = nativeCustomElementState;
+  }}
+  let CustomElementRegistryNative = globalThis.CustomElementRegistry;
+  if (typeof CustomElementRegistryNative !== "function") {{
+    CustomElementRegistryNative = function CustomElementRegistry() {{
+      if (!new.target) throw new TypeError("CustomElementRegistry requires new");
+      throw new DOMExceptionNative(
+        "Scoped custom element registries are not supported by this native profile",
+        "NotSupportedError",
+      );
+    }};
+    globalThis.CustomElementRegistry = CustomElementRegistryNative;
+  }}
+  const reservedCustomElementNames = new Set([
+    "annotation-xml", "color-profile", "font-face", "font-face-src",
+    "font-face-uri", "font-face-format", "font-face-name", "missing-glyph",
+  ]);
+  const isPcenCharacter = (codePoint) => codePoint === 0x2d || codePoint === 0x2e
+    || (codePoint >= 0x30 && codePoint <= 0x39)
+    || (codePoint >= 0x61 && codePoint <= 0x7a)
+    || codePoint === 0x5f || codePoint === 0xb7
+    || (codePoint >= 0xc0 && codePoint <= 0xd6)
+    || (codePoint >= 0xd8 && codePoint <= 0xf6)
+    || (codePoint >= 0xf8 && codePoint <= 0x37d)
+    || (codePoint >= 0x37f && codePoint <= 0x1fff)
+    || (codePoint >= 0x200c && codePoint <= 0x200d)
+    || (codePoint >= 0x203f && codePoint <= 0x2040)
+    || (codePoint >= 0x2070 && codePoint <= 0x218f)
+    || (codePoint >= 0x2c00 && codePoint <= 0x2fef)
+    || (codePoint >= 0x3001 && codePoint <= 0xd7ff)
+    || (codePoint >= 0xf900 && codePoint <= 0xfdcf)
+    || (codePoint >= 0xfdf0 && codePoint <= 0xfffd)
+    || (codePoint >= 0x10000 && codePoint <= 0xeffff);
+  const isValidNativeCustomElementName = (name) => {{
+    const value = String(name);
+    if (value.length === 0 || value.length > nativeCustomElementLimits.nameLength
+        || value.charCodeAt(0) < 0x61 || value.charCodeAt(0) > 0x7a
+        || !value.includes("-") || reservedCustomElementNames.has(value)) return false;
+    for (const character of value) {{
+      if (!isPcenCharacter(character.codePointAt(0))) return false;
+    }}
+    return true;
+  }};
+  const nativeCustomElementReportError = (error) => {{
+    const errors = nativeCustomElementState.reactionErrors;
+    if (errors.length >= 128) errors.shift();
+    errors.push(error);
+    try {{
+      if (typeof globalThis.reportError === "function") globalThis.reportError(error);
+      else if (globalThis.console && typeof globalThis.console.error === "function") globalThis.console.error(error);
+    }} catch (_reportError) {{}}
+  }};
+  const nativeCustomElementDefinitionFor = (element) =>
+    element && element.__glassCustomElementDefinition || null;
+  const nativeCustomElementDrainReactions = () => {{
+    if (nativeCustomElementState.draining || nativeCustomElementState.upgrading > 0) return;
+    nativeCustomElementState.draining = true;
+    let work = 0;
+    try {{
+      while (nativeCustomElementState.reactions.length > 0) {{
+        if (++work > nativeCustomElementLimits.reactionsPerCheckpoint) {{
+          nativeCustomElementState.reactions.length = 0;
+          nativeCustomElementReportError(new RangeError("native custom element reaction checkpoint exceeded its work limit"));
+          break;
+        }}
+        const reaction = nativeCustomElementState.reactions.shift();
+        try {{ reaction.callback.apply(reaction.element, reaction.arguments); }}
+        catch (error) {{ nativeCustomElementReportError(error); }}
+      }}
+    }} finally {{
+      nativeCustomElementState.draining = false;
+    }}
+  }};
+  const nativeCustomElementQueueCallback = (element, callbackName, argumentsList, observedOnly = false) => {{
+    const definition = nativeCustomElementDefinitionFor(element);
+    const status = element && element.__glassCustomElementState;
+    if (!definition || (status !== "custom" && status !== "precustomized")) return;
+    if (observedOnly && !definition.observedAttributes.includes(String(argumentsList[0]))) return;
+    const callback = definition.callbacks[callbackName];
+    if (typeof callback !== "function") return;
+    if (element.__glassDirectCustomConstructionPending) {{
+      const pending = Array.isArray(element.__glassDirectCustomElementReactions)
+        ? element.__glassDirectCustomElementReactions
+        : (element.__glassDirectCustomElementReactions = []);
+      if (pending.length >= nativeCustomElementLimits.reactions) {{
+        nativeCustomElementReportError(new RangeError("native custom element construction reactions exceeded their limit"));
+        return;
+      }}
+      pending.push({{ element, callback, arguments: argumentsList }});
+      return;
+    }}
+    if (nativeCustomElementState.reactions.length >= nativeCustomElementLimits.reactions) {{
+      nativeCustomElementReportError(new RangeError("native custom element reaction queue exceeded its limit"));
+      return;
+    }}
+    nativeCustomElementState.reactions.push({{ element, callback, arguments: argumentsList }});
+    nativeCustomElementDrainReactions();
+  }};
+  const nativeCustomElementElementsInTree = (root) => {{
+    const result = [];
+    const pending = [{{ node: root, depth: 0 }}];
+    let visited = 0;
+    while (pending.length > 0) {{
+      const item = pending.pop();
+      const node = item && item.node;
+      if (!node || typeof node !== "object") continue;
+      if (++visited > nativeCustomElementLimits.treeNodes
+          || item.depth > nativeCustomElementLimits.treeDepth) {{
+        throw new RangeError("native custom element tree walk exceeded its limit");
+      }}
+      if (Number(node.nodeType) === 1) result.push(node);
+      if (Number(node.nodeType) === 1 && node.namespaceURI === HTML_NAMESPACE
+          && node.localName === "template") continue;
+      const children = Array.isArray(node.__glassChildren) ? node.__glassChildren : [];
+      for (let index = children.length - 1; index >= 0; index -= 1) {{
+        pending.push({{ node: children[index], depth: item.depth + Number(Number(node.nodeType) === 1) }});
+      }}
+    }}
+    return result;
+  }};
+  const nativeCustomElementTryUpgrade = (element, enqueueConnection = true) => {{
+    if (!element || Number(element.nodeType) !== 1
+        || element.namespaceURI !== HTML_NAMESPACE) return element;
+    const name = String(element.localName || "");
+    const definition = nativeCustomElementState.definitionsByName.get(name);
+    if (!definition) return element;
+    const currentState = element.__glassCustomElementState;
+    if (currentState && currentState !== "undefined") {{
+      const existingDefinition = nativeCustomElementDefinitionFor(element) || definition;
+      if (currentState === "custom" || currentState === "failed"
+          || currentState === "precustomized") {{
+        try {{ Object.setPrototypeOf(element, existingDefinition.prototype); }}
+        catch (error) {{ nativeCustomElementReportError(error); }}
+      }}
+      return element;
+    }}
+    if (element.__glassCustomElementRegistry
+        && element.__glassCustomElementRegistry !== nativeCustomElementState.registry) return element;
+    Object.defineProperty(element, "__glassCustomElementDefinition", {{
+      configurable: true, enumerable: false, writable: true, value: definition,
+    }});
+    Object.defineProperty(element, "__glassCustomElementState", {{
+      configurable: true, enumerable: false, writable: true, value: "precustomized",
+    }});
+    try {{ Object.setPrototypeOf(element, definition.prototype); }}
+    catch (error) {{
+      element.__glassCustomElementState = "failed";
+      nativeCustomElementReportError(error);
+      return element;
+    }}
+    const stackEntry = {{ element, definition, constructed: false }};
+    nativeCustomElementState.constructorStack.push(stackEntry);
+    nativeCustomElementState.upgrading += 1;
+    let result;
+    let failure = null;
+    try {{ result = Reflect.construct(definition.constructor, []); }}
+    catch (error) {{ failure = error; }}
+    finally {{
+      const index = nativeCustomElementState.constructorStack.lastIndexOf(stackEntry);
+      if (index >= 0) nativeCustomElementState.constructorStack.splice(index, 1);
+    }}
+    if (!failure && (result !== element || !stackEntry.constructed)) {{
+      failure = new TypeError("custom element constructor did not return its native element");
+    }}
+    if (failure) {{
+      element.__glassCustomElementState = "failed";
+      nativeCustomElementReportError(failure);
+      nativeCustomElementState.upgrading -= 1;
+      nativeCustomElementDrainReactions();
+      return element;
+    }}
+    element.__glassCustomElementState = "custom";
+    let attributes = [];
+    try {{
+      attributes = typeof element.getAttributeNames === "function" ? element.getAttributeNames() : [];
+    }} catch (error) {{ nativeCustomElementReportError(error); }}
+    for (const attributeName of attributes) {{
+      const value = element.getAttribute(attributeName);
+      if (value !== null) {{
+        const namespace = typeof element.__glassAttributeNamespace === "function"
+          ? element.__glassAttributeNamespace(attributeName)
+          : null;
+        nativeCustomElementQueueCallback(
+          element,
+          "attributeChangedCallback",
+          [String(attributeName), null, String(value), namespace],
+          true,
+        );
+      }}
+    }}
+    if (enqueueConnection && typeof nodeIsConnected === "function" && nodeIsConnected(element)) {{
+      nativeCustomElementQueueCallback(element, "connectedCallback", []);
+    }}
+    nativeCustomElementState.upgrading -= 1;
+    nativeCustomElementDrainReactions();
+    return element;
+  }};
+  const nativeCustomElementUpgradeTree = (root, connectedOnly = false) => {{
+    for (const element of nativeCustomElementElementsInTree(root)) {{
+      if (!connectedOnly || (typeof nodeIsConnected === "function" && nodeIsConnected(element))) {{
+        nativeCustomElementTryUpgrade(element);
+      }}
+    }}
+  }};
+  globalThis.__glassQueueNativeCustomElementReaction = nativeCustomElementQueueCallback;
+  globalThis.__glassConstructNativeCustomElement = (newTarget) => {{
+    const stack = nativeCustomElementState.constructorStack;
+    const active = stack.length > 0 ? stack[stack.length - 1] : null;
+    if (active) {{
+      if (newTarget !== active.definition.constructor || active.constructed) {{
+        throw new TypeError("custom element constructor stack is invalid");
+      }}
+      active.constructed = true;
+      return active.element;
+    }}
+    const definition = nativeCustomElementState.definitionsByConstructor.get(newTarget);
+    if (!definition || newTarget !== definition.constructor) {{
+      throw new TypeError("Illegal constructor");
+    }}
+    const element = makeDetachedElement(definition.name, HTML_NAMESPACE);
+    Object.defineProperty(element, "__glassCustomElementDefinition", {{
+      configurable: true, enumerable: false, writable: true, value: definition,
+    }});
+    Object.defineProperty(element, "__glassCustomElementState", {{
+      configurable: true, enumerable: false, writable: true, value: "precustomized",
+    }});
+    Object.defineProperty(element, "__glassDirectCustomConstructionPending", {{
+      configurable: true, enumerable: false, writable: true, value: true,
+    }});
+    Object.defineProperty(element, "__glassDirectCustomElementReactions", {{
+      configurable: true, enumerable: false, writable: true, value: [],
+    }});
+    Object.setPrototypeOf(element, definition.prototype);
+    Promise.resolve().then(() => {{
+      if (!element.__glassDirectCustomConstructionPending) return;
+      element.__glassDirectCustomConstructionPending = false;
+      if (element.__glassCustomElementState === "precustomized") {{
+        element.__glassCustomElementState = "custom";
+      }}
+      for (const reaction of element.__glassDirectCustomElementReactions) {{
+        if (nativeCustomElementState.reactions.length >= nativeCustomElementLimits.reactions) {{
+          nativeCustomElementReportError(new RangeError("native custom element reaction queue exceeded its limit"));
+          break;
+        }}
+        nativeCustomElementState.reactions.push(reaction);
+      }}
+      element.__glassDirectCustomElementReactions.length = 0;
+      nativeCustomElementDrainReactions();
+    }});
+    return element;
+  }};
+  globalThis.__glassCreateNativeCustomElement = (targetDocument, tagName, options, namespace) => {{
+    const namespaceURI = normalizeElementNamespace(namespace);
+    let creationOptions = {{}};
+    if (options !== undefined && options !== null) {{
+      if ((typeof options !== "object" && typeof options !== "function")
+          && typeof options !== "string") throw new TypeError("createElement options must be a dictionary");
+      creationOptions = Object(options);
+    }}
+    const selectedRegistry = creationOptions.customElementRegistry;
+    if (selectedRegistry !== undefined && selectedRegistry !== null
+        && selectedRegistry !== nativeCustomElementState.registry) {{
+      throw new DOMExceptionNative("The requested custom element registry is unavailable", "NotSupportedError");
+    }}
+    if (creationOptions.is !== undefined && creationOptions.is !== null) {{
+      throw new DOMExceptionNative("Customized built-in elements are not supported by this native slice", "NotSupportedError");
+    }}
+    const element = makeDetachedElement(tagName, namespaceURI);
+    if (targetDocument === document && namespaceURI === HTML_NAMESPACE) {{
+      nativeCustomElementTryUpgrade(element);
+    }}
+    return element;
+  }};
+  globalThis.__glassRunNativeCustomElementInsertionReactions = (root, wasConnected, isConnected) => {{
+    if (!root || suppressHostCommands > 0) return;
+    const elements = nativeCustomElementElementsInTree(root);
+    nativeCustomElementState.upgrading += 1;
+    try {{
+      if (isConnected) {{
+        for (const element of elements) nativeCustomElementTryUpgrade(element, false);
+      }}
+      if (wasConnected) {{
+        for (const element of elements) {{
+          nativeCustomElementQueueCallback(element, "disconnectedCallback", []);
+        }}
+      }}
+      if (isConnected) {{
+        for (const element of elements) {{
+          nativeCustomElementQueueCallback(element, "connectedCallback", []);
+        }}
+      }}
+    }} finally {{
+      nativeCustomElementState.upgrading = Math.max(0, nativeCustomElementState.upgrading - 1);
+      nativeCustomElementDrainReactions();
+    }}
+  }};
+  globalThis.__glassRunNativeCustomElementRemovalReactions = (root) => {{
+    for (const element of nativeCustomElementElementsInTree(root)) {{
+      nativeCustomElementQueueCallback(element, "disconnectedCallback", []);
+    }}
+    nativeCustomElementDrainReactions();
+  }};
+  const nativeCustomRegistry = nativeCustomElementState.registry
+    || Object.create(CustomElementRegistryNative.prototype);
+  nativeCustomElementState.registry = nativeCustomRegistry;
+  Object.defineProperties(nativeCustomRegistry, {{
+    define: {{ configurable: true, writable: true, value(name, constructor, options = undefined) {{
+      const elementName = String(name);
+      if (typeof constructor !== "function") throw new TypeError("custom element constructor must be a function");
+      try {{ Reflect.construct(function NativeConstructorCheck() {{}}, [], constructor); }}
+      catch (_error) {{ throw new TypeError("custom element constructor must be constructible"); }}
+      if (!isValidNativeCustomElementName(elementName)) {{
+        throw new DOMExceptionNative("The custom element name is invalid", "SyntaxError");
+      }}
+      if (nativeCustomElementState.definitionsByName.has(elementName)
+          || nativeCustomElementState.definitionsByConstructor.has(constructor)) {{
+        throw new DOMExceptionNative("The custom element name or constructor is already defined", "NotSupportedError");
+      }}
+      if (nativeCustomElementState.defining) {{
+        throw new DOMExceptionNative("A custom element definition is already running", "NotSupportedError");
+      }}
+      const definitionOptions = options === undefined || options === null ? {{}} : Object(options);
+      if (definitionOptions.extends !== undefined && definitionOptions.extends !== null) {{
+        throw new DOMExceptionNative("Customized built-in elements are not supported by this native slice", "NotSupportedError");
+      }}
+      if (nativeCustomElementState.definitionsByName.size >= nativeCustomElementLimits.definitions) {{
+        throw new RangeError("native custom element definition limit exceeded");
+      }}
+      nativeCustomElementState.defining = true;
+      let definition;
+      try {{
+        const prototype = constructor.prototype;
+        if (!prototype || (typeof prototype !== "object" && typeof prototype !== "function")
+            || !HTMLElementNative.prototype.isPrototypeOf(prototype)) {{
+          throw new TypeError("custom element constructor must extend HTMLElement");
+        }}
+        const callbacks = {{}};
+        for (const callbackName of [
+          "connectedCallback", "disconnectedCallback", "adoptedCallback", "attributeChangedCallback",
+        ]) {{
+          const callback = prototype[callbackName];
+          if (callback !== undefined && typeof callback !== "function") {{
+            throw new TypeError(callbackName + " must be callable");
+          }}
+          callbacks[callbackName] = callback === undefined ? null : callback;
+        }}
+        let observedAttributes = [];
+        if (callbacks.attributeChangedCallback) {{
+          const observed = constructor.observedAttributes;
+          if (observed !== undefined) observedAttributes = Array.from(observed, value => String(value));
+        }}
+        if (observedAttributes.length > nativeCustomElementLimits.observedAttributes) {{
+          throw new RangeError("native custom element observed-attribute limit exceeded");
+        }}
+        definition = {{ name: elementName, constructor, prototype, callbacks, observedAttributes }};
+      }} finally {{ nativeCustomElementState.defining = false; }}
+      nativeCustomElementState.definitionsByName.set(elementName, definition);
+      nativeCustomElementState.definitionsByConstructor.set(constructor, definition);
+      nativeCustomElementState.upgrading += 1;
+      try {{ nativeCustomElementUpgradeTree(document, true); }}
+      finally {{
+        nativeCustomElementState.upgrading = Math.max(0, nativeCustomElementState.upgrading - 1);
+        nativeCustomElementDrainReactions();
+      }}
+      const pending = nativeCustomElementState.whenDefined.get(elementName);
+      if (pending) {{
+        nativeCustomElementState.whenDefined.delete(elementName);
+        pending.resolve(constructor);
+      }}
+    }} }},
+    get: {{ configurable: true, writable: true, value(name) {{
+      const definition = nativeCustomElementState.definitionsByName.get(String(name));
+      return definition ? definition.constructor : undefined;
+    }} }},
+    getName: {{ configurable: true, writable: true, value(constructor) {{
+      const definition = nativeCustomElementState.definitionsByConstructor.get(constructor);
+      return definition ? definition.name : null;
+    }} }},
+    whenDefined: {{ configurable: true, writable: true, value(name) {{
+      const elementName = String(name);
+      if (!isValidNativeCustomElementName(elementName)) {{
+        return Promise.reject(new DOMExceptionNative("The custom element name is invalid", "SyntaxError"));
+      }}
+      const definition = nativeCustomElementState.definitionsByName.get(elementName);
+      if (definition) return Promise.resolve(definition.constructor);
+      if (!nativeCustomElementState.whenDefined.has(elementName)) {{
+        if (nativeCustomElementState.whenDefined.size >= nativeCustomElementLimits.pendingWhenDefined) {{
+          return Promise.reject(new RangeError("native whenDefined promise limit exceeded"));
+        }}
+        let resolve;
+        const promise = new Promise((settle) => {{ resolve = settle; }});
+        nativeCustomElementState.whenDefined.set(elementName, {{ promise, resolve }});
+      }}
+      return nativeCustomElementState.whenDefined.get(elementName).promise;
+    }} }},
+    upgrade: {{ configurable: true, writable: true, value(root) {{
+      if (!root || typeof root !== "object") throw new TypeError("upgrade root must be a Node");
+      nativeCustomElementState.upgrading += 1;
+      try {{ nativeCustomElementUpgradeTree(root, false); }}
+      finally {{
+        nativeCustomElementState.upgrading = Math.max(0, nativeCustomElementState.upgrading - 1);
+        nativeCustomElementDrainReactions();
+      }}
+    }} }},
+    initialize: {{ configurable: true, writable: true, value(root) {{
+      if (!root || typeof root !== "object") throw new TypeError("initialize root must be a Node");
+      const ownerDocument = Number(root.nodeType) === 9 ? root : root.ownerDocument;
+      if (ownerDocument !== document) {{
+        throw new DOMExceptionNative("The global custom element registry cannot initialize this tree", "NotSupportedError");
+      }}
+      const elements = nativeCustomElementElementsInTree(root);
+      for (const element of elements) {{
+        if (element.__glassCustomElementRegistry
+            && element.__glassCustomElementRegistry !== nativeCustomRegistry) {{
+          throw new DOMExceptionNative("The element already belongs to another registry", "NotSupportedError");
+        }}
+      }}
+      for (const element of elements) {{
+        if (!element.__glassCustomElementRegistry) {{
+          Object.defineProperty(element, "__glassCustomElementRegistry", {{
+            configurable: true, enumerable: false, writable: true, value: nativeCustomRegistry,
+          }});
+        }}
+      }}
+      nativeCustomElementState.upgrading += 1;
+      try {{ nativeCustomElementUpgradeTree(root, false); }}
+      finally {{
+        nativeCustomElementState.upgrading = Math.max(0, nativeCustomElementState.upgrading - 1);
+        nativeCustomElementDrainReactions();
+      }}
+    }} }},
+  }});
+  globalThis.__glassNativeCustomElementRegistry = nativeCustomRegistry;
+  globalThis.__glassNativeCustomElementErrors = nativeCustomElementState.reactionErrors;
+  globalThis.customElements = nativeCustomRegistry;
+  Object.defineProperty(document, "customElementRegistry", {{
+    configurable: true,
+    enumerable: true,
+    get() {{ return nativeCustomRegistry; }},
+  }});
   const frameBindingForNode = (nodeIndex) => {{
     const bindings = Array.isArray(globalThis.__glassFrameBindings)
       ? globalThis.__glassFrameBindings
@@ -48578,6 +49197,7 @@ fn document_bootstrap(
       }});
     }}
   }}
+  nativeCustomElementUpgradeTree(document, true);
   for (const text of textNodes) {{
     try {{ Object.setPrototypeOf(text, TextNative.prototype); }} catch (_error) {{}}
   }}

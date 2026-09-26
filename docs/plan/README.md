@@ -28,15 +28,17 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is complete through
-`native-engine-browser-761`. Slices 758 and 759 implement the autonomous and
+`native-engine-browser-762`. Slices 758 and 759 implement the autonomous and
 customized-built-in custom-element contracts for the currently mapped HTML
 interfaces. Slice 760 implements bounded `ElementInternals` form values and
 `FormData(form)` integration; slice 761 implements form-owner and disabled-
-state callbacks. Slice 762 is in progress for native form reset, reset-button
-activation, and `formResetCallback()` ordering; its contract is
-[recorded here](tasks/native-engine-browser-762.md). These are implementation checkpoints, not browser-completion
-evidence; issue #40 remains open for the full Core Web Profile, conformance,
-platform, and release gates.
+state callbacks. Slice 762 implements `HTMLFormElement.reset()` and
+`formResetCallback()` ordering in local, process-backed, and same-origin-frame
+paths. Its focused tests cover cancellation, reentrancy, callback error
+recovery, reset defaults, and persistence; exact evidence is
+[recorded here](tasks/native-engine-browser-762.md). These are implementation
+checkpoints, not browser-completion evidence; issue #40 remains open for the
+full Core Web Profile, conformance, platform, and release gates.
 Slice 755 implements target-document-aware `Document.importNode()` for live
 top-level, same-origin-frame, and inert template-owner Documents. Its focused
 process-backed regression passes locally; this remains a bounded DOM slice,
@@ -101,11 +103,12 @@ ancestor owners, first-ID resolution, fieldset/legend and own-disabled changes,
 removal/reinsertion, and script-refresh persistence. Reset/state-restore
 callbacks remain explicitly unsupported. See the
 [slice 761 contract](tasks/native-engine-browser-761.md).
-The [slice 762 contract](tasks/native-engine-browser-762.md) covers reset-event
-cancellation, built-in control reset, reset-button default action, and
-form-associated reset reactions; it does not claim full form-control Web IDL
-reflection, complete value sanitization, state restoration, WPT conformance,
-or issue #40 completion.
+Slice 762 implements reset-event cancellation, built-in control reset, and
+form-associated reset reactions. The task records passing local/content-process
+and same-origin-frame regressions plus scoped compile and documentation checks.
+Reset-button activation, full form-control Web IDL reflection, complete value
+sanitization, state restoration, WPT conformance, remote CI, and issue #40
+completion remain open. See the [slice 762 contract](tasks/native-engine-browser-762.md).
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

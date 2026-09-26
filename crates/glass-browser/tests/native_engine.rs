@@ -63684,6 +63684,11 @@ fn native_form_associated_elements_script() -> &'static str {
         static formAssociated = true;
         formResetCallback() {}
       }
+      customElements.define('x-callback-element', CallbackElement);
+      class StateRestoreCallbackElement extends HTMLElement {
+        static formAssociated = true;
+        formStateRestoreCallback() {}
+      }
       class InvalidCallbackElement extends HTMLElement {
         static formAssociated = true;
       }
@@ -63711,8 +63716,9 @@ fn native_form_associated_elements_script() -> &'static str {
           nonFormAssociatedGetter: errorName(() => ordinary.internals.form),
           disabledInternals: errorName(() => document.createElement('x-disabled-internals').attachInternals()),
           customizedBuiltin: errorName(() => customizedBuiltin.attachInternals()),
-          unsupportedCallback: errorName(() => customElements.define('x-callback-element', CallbackElement)),
-          callbackNotPublished: customElements.get('x-callback-element') === undefined,
+          resetCallbackPublished: customElements.get('x-callback-element') === CallbackElement,
+          unsupportedStateRestoreCallback: errorName(() => customElements.define('x-state-restore-callback', StateRestoreCallbackElement)),
+          stateRestoreCallbackNotPublished: customElements.get('x-state-restore-callback') === undefined,
           invalidLifecycleCallback: errorName(() => customElements.define('x-invalid-lifecycle', InvalidCallbackElement)),
           ...setterErrors,
         },
@@ -63769,8 +63775,9 @@ fn assert_native_form_associated_elements_result(value: &serde_json::Value) {
                 "nonFormAssociatedGetter": "NotSupportedError",
                 "disabledInternals": "NotSupportedError",
                 "customizedBuiltin": "NotSupportedError",
-                "unsupportedCallback": "NotSupportedError",
-                "callbackNotPublished": true,
+                "resetCallbackPublished": true,
+                "unsupportedStateRestoreCallback": "NotSupportedError",
+                "stateRestoreCallbackNotPublished": true,
                 "invalidLifecycleCallback": "TypeError",
                 "missingValue": "TypeError",
                 "symbolValue": "TypeError",
@@ -63891,6 +63898,397 @@ async fn native_content_process_collects_form_associated_custom_element_values()
             "lifecycleEventCount": 19,
             "explicitLifecycleOwner": "main-form",
         })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+fn native_form_reset_script() -> &'static str {
+    r##"(() => {
+      const trace = [];
+      globalThis.__glassNativeFormResetTrace = trace;
+      class ResetField extends HTMLElement {
+        static formAssociated = true;
+        constructor() {
+          super();
+          this.internals = this.attachInternals();
+          this.internals.setFormValue('before');
+        }
+        formResetCallback() {
+          const text = document.getElementById('reset-text');
+          trace.push(['face-reset', text.value]);
+          this.internals.setFormValue('after');
+          text.value += ':callback';
+        }
+      }
+      customElements.define('x-reset-field', ResetField);
+      class ThrowingResetField extends HTMLElement {
+        static formAssociated = true;
+        formResetCallback() {
+          trace.push(['face-reset-throws']);
+          throw new Error('reset callback failure');
+        }
+      }
+      class LaterResetField extends HTMLElement {
+        static formAssociated = true;
+        formResetCallback() { trace.push(['face-reset-after-error']); }
+      }
+      customElements.define('x-reset-throwing-field', ThrowingResetField);
+      customElements.define('x-reset-later-field', LaterResetField);
+
+      const form = document.getElementById('reset-form');
+      const text = document.getElementById('reset-text');
+      const checkbox = document.getElementById('reset-checkbox');
+      const textarea = document.getElementById('reset-textarea');
+      const select = document.getElementById('reset-select');
+      const fallbackSelect = document.getElementById('reset-fallback-select');
+      const file = document.getElementById('reset-file');
+      const external = document.getElementById('reset-external');
+      const face = document.getElementById('reset-face');
+      const resetEvents = [];
+      form.addEventListener('reset', event => {
+        resetEvents.push([event.bubbles, event.cancelable]);
+        text.value = 'listener-value';
+      }, { once: true });
+      text.value = 'dirty-value';
+      text.setAttribute('value', 'current-default');
+      checkbox.checked = false;
+      textarea.value = 'dirty-notes';
+      select.options[0].selected = true;
+      fallbackSelect.options[0].selected = true;
+      external.value = 'dirty-external';
+      text.setCustomValidity('author validity survives reset');
+      const firstReturn = form.reset();
+      const first = {
+        returnValueIsUndefined: firstReturn === undefined,
+        text: text.value,
+        checked: checkbox.checked,
+        textarea: textarea.value,
+        select: select.value,
+        options: select.options.map(option => option.selected),
+        fallbackSelect: fallbackSelect.value,
+        fallbackOptions: fallbackSelect.options.map(option => option.selected),
+        fileCount: file.files.length,
+        fileValue: file.value,
+        customError: text.validity.customError,
+        unnamedRadios: ['reset-unnamed-a', 'reset-unnamed-b'].map(id => document.getElementById(id).checked),
+        namedRadios: ['reset-named-a', 'reset-named-b'].map(id => document.getElementById(id).checked),
+        external: external.value,
+        faceValue: new FormData(form).get('face'),
+        events: resetEvents.slice(),
+        callbacks: trace.slice(),
+      };
+
+      let nestedCalls = 0;
+      form.addEventListener('reset', () => {
+        nestedCalls += 1;
+        form.reset();
+      }, { once: true });
+      const nestedReturn = form.reset();
+      text.value = 'cancelled-value';
+      form.addEventListener('reset', event => event.preventDefault(), { once: true });
+      const cancelledReturn = form.reset();
+      return {
+        first,
+        nested: {
+          returnValueIsUndefined: nestedReturn === undefined,
+          listenerCalls: nestedCalls,
+          text: text.value,
+          callbacks: trace.slice(),
+        },
+        cancelled: {
+          returnValueIsUndefined: cancelledReturn === undefined,
+          text: text.value,
+          callbacks: trace.slice(),
+          faceValue: new FormData(form).get('face'),
+        },
+        faceOwner: face.internals.form === form,
+      };
+    })()"##
+}
+
+fn native_form_reset_after_script_refresh() -> &'static str {
+    r##"(() => {
+      const form = document.getElementById('reset-form');
+      const select = document.getElementById('reset-select');
+      const fallbackSelect = document.getElementById('reset-fallback-select');
+      const file = document.getElementById('reset-file');
+      return {
+        text: document.getElementById('reset-text').value,
+        checked: document.getElementById('reset-checkbox').checked,
+        textarea: document.getElementById('reset-textarea').value,
+        select: select.value,
+        options: select.options.map(option => option.selected),
+        fallbackSelect: fallbackSelect.value,
+        fallbackOptions: fallbackSelect.options.map(option => option.selected),
+        fileCount: file.files.length,
+        fileValue: file.value,
+        customError: document.getElementById('reset-text').validity.customError,
+        unnamedRadios: ['reset-unnamed-a', 'reset-unnamed-b'].map(id => document.getElementById(id).checked),
+        namedRadios: ['reset-named-a', 'reset-named-b'].map(id => document.getElementById(id).checked),
+        external: document.getElementById('reset-external').value,
+        faceValue: new FormData(form).get('face'),
+        callbackCount: globalThis.__glassNativeFormResetTrace.length,
+      };
+    })()"##
+}
+
+fn assert_native_form_reset_result(value: &serde_json::Value) {
+    assert_eq!(
+        value,
+        &serde_json::json!({
+            "first": {
+                "returnValueIsUndefined": true,
+                "text": "current-default:callback",
+                "checked": true,
+                "textarea": "default-notes",
+                "select": "default-choice",
+                "options": [false, true],
+                "fallbackSelect": "fallback-enabled",
+                "fallbackOptions": [false, true],
+                "fileCount": 0,
+                "fileValue": "",
+                "customError": true,
+                "unnamedRadios": [true, true],
+                "namedRadios": [false, true],
+                "external": "external-default",
+                "faceValue": "after",
+                "events": [[true, true]],
+                "callbacks": [
+                    ["face-reset", "current-default"],
+                    ["face-reset-throws"],
+                    ["face-reset-after-error"],
+                ],
+            },
+            "nested": {
+                "returnValueIsUndefined": true,
+                "listenerCalls": 1,
+                "text": "cancelled-value",
+                "callbacks": [
+                    ["face-reset", "current-default"],
+                    ["face-reset-throws"],
+                    ["face-reset-after-error"],
+                    ["face-reset", "current-default"],
+                    ["face-reset-throws"],
+                    ["face-reset-after-error"],
+                ],
+            },
+            "cancelled": {
+                "returnValueIsUndefined": true,
+                "text": "cancelled-value",
+                "callbacks": [
+                    ["face-reset", "current-default"],
+                    ["face-reset-throws"],
+                    ["face-reset-after-error"],
+                    ["face-reset", "current-default"],
+                    ["face-reset-throws"],
+                    ["face-reset-after-error"],
+                ],
+                "faceValue": "after",
+            },
+            "faceOwner": true,
+        })
+    );
+}
+
+fn native_form_reset_fixture() -> &'static str {
+    "<!doctype html><html><body><form id='reset-form'><input id='reset-text' name='text' value='initial'><input id='reset-checkbox' name='checked' type='checkbox' checked><textarea id='reset-textarea' name='notes'>default-notes</textarea><select id='reset-select' name='choice'><option value='first-choice'>First</option><option value='default-choice' selected>Default</option></select><select id='reset-fallback-select' name='fallback'><option value='fallback-disabled' disabled>Disabled</option><option value='fallback-enabled'>Enabled</option></select><input id='reset-file' type='file' name='file'><input id='reset-unnamed-a' type='radio' checked><input id='reset-unnamed-b' type='radio' checked><input id='reset-named-a' type='radio' name='named-reset' checked><input id='reset-named-b' type='radio' name='named-reset' checked><x-reset-field id='reset-face' name='face'></x-reset-field><x-reset-throwing-field></x-reset-throwing-field><x-reset-later-field></x-reset-later-field></form><input id='reset-external' form='reset-form' name='external' value='external-default'></body></html>"
+}
+
+#[tokio::test]
+async fn native_local_runtime_resets_forms_and_runs_face_reset_reactions() {
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_fixture("fixture://native-form-reset", native_form_reset_fixture())
+            .unwrap()
+            .with_initial_url("fixture://native-form-reset"),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .action(NativeAction::Upload {
+            target: "id=reset-file".into(),
+            files: vec![NativeFile {
+                name: "reset.bin".into(),
+                media_type: "application/octet-stream".into(),
+                last_modified: 17,
+                bytes: vec![0, 127, 255],
+            }],
+        })
+        .unwrap();
+
+    let result = engine
+        .evaluate_async(native_form_reset_script())
+        .await
+        .unwrap();
+    assert_native_form_reset_result(&result);
+    assert_eq!(
+        engine
+            .evaluate_async(native_form_reset_after_script_refresh())
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "text": "cancelled-value",
+            "checked": true,
+            "textarea": "default-notes",
+            "select": "default-choice",
+            "options": [false, true],
+            "fallbackSelect": "fallback-enabled",
+            "fallbackOptions": [false, true],
+            "fileCount": 0,
+            "fileValue": "",
+            "customError": true,
+            "unnamedRadios": [true, true],
+            "namedRadios": [false, true],
+            "external": "external-default",
+            "faceValue": "after",
+            "callbackCount": 6,
+        })
+    );
+
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_resets_forms_and_runs_face_reset_reactions() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let body = native_form_reset_fixture();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("native form-reset request")
+            .unwrap();
+        let _request = read_http_request(&mut stream).await;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/reset")),
+    )
+    .await
+    .unwrap();
+    session
+        .native_upload_files(
+            "id=reset-file",
+            vec![NativeFile {
+                name: "reset.bin".into(),
+                media_type: "application/octet-stream".into(),
+                last_modified: 17,
+                bytes: vec![0, 127, 255],
+            }],
+            None,
+        )
+        .await
+        .unwrap();
+    let result = session.script(native_form_reset_script()).await.unwrap();
+    assert_native_form_reset_result(&result.value);
+    assert_eq!(
+        session
+            .script(native_form_reset_after_script_refresh())
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "text": "cancelled-value",
+            "checked": true,
+            "textarea": "default-notes",
+            "select": "default-choice",
+            "options": [false, true],
+            "fallbackSelect": "fallback-enabled",
+            "fallbackOptions": [false, true],
+            "fileCount": 0,
+            "fileValue": "",
+            "customError": true,
+            "unnamedRadios": [true, true],
+            "namedRadios": [false, true],
+            "external": "external-default",
+            "faceValue": "after",
+            "callbackCount": 6,
+        })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_resets_same_origin_frame_forms() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("same-origin frame reset request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = match request.split_whitespace().nth(1) {
+                Some("/parent") => {
+                    "<!doctype html><body><iframe id='child' src='/child'></iframe></body>"
+                }
+                Some("/child") => {
+                    "<!doctype html><body><form id='frame-form'><input id='frame-input' value='frame-default'></form></body>"
+                }
+                other => panic!("unexpected same-origin frame reset path: {other:?}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    let result = session
+        .script(
+            r##"(() => {
+              const frame = document.getElementById('child');
+              const child = frame.contentDocument;
+              const form = child.getElementById('frame-form');
+              const input = child.getElementById('frame-input');
+              let events = 0;
+              form.addEventListener('reset', () => { events += 1; input.value = 'frame-listener'; });
+              input.value = 'frame-dirty';
+              form.reset();
+              return { sameOrigin: child !== null, value: input.value, events };
+            })()"##,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.value,
+        serde_json::json!({"sameOrigin": true, "value": "frame-default", "events": 1})
+    );
+
+    let child_id = session
+        .native_list_frames()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("same-origin child frame")
+        .id;
+    session.select_frame(&child_id).await.unwrap();
+    assert_eq!(
+        session
+            .script("document.getElementById('frame-input').value")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("frame-default")
     );
 
     session.close().await.unwrap();

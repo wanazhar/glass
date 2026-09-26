@@ -270,6 +270,7 @@ pub enum NativeEventKind {
     KeyDown,
     KeyUp,
     Submit,
+    Reset,
     Click,
     MouseOver,
     MouseEnter,

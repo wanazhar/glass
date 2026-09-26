@@ -6442,6 +6442,24 @@ impl NativeDocument {
                         }
                     }
                 }
+                NativeScriptCommand::ResetForm {
+                    node_index,
+                    perform_reset,
+                } => {
+                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    if self
+                        .node(id)
+                        .is_none_or(|node| node.element_name() != Some("form"))
+                    {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "script form reset target is not a form".into(),
+                        });
+                    }
+                    if *perform_reset {
+                        self.reset_form_controls(id)?;
+                    }
+                    events.push((id, NativeEventKind::Reset));
+                }
                 NativeScriptCommand::Fetch { .. } => {}
                 NativeScriptCommand::FontFaceInstall {
                     request_id,
@@ -8437,13 +8455,34 @@ impl NativeDocument {
     }
 
     fn select_option_ids(&self, select_id: NativeNodeId) -> Vec<NativeNodeId> {
-        self.nodes
-            .iter()
-            .filter(|node| self.is_attached(node.id()))
-            .filter(|node| self.semantic_role(node.id()) == Some("option"))
-            .filter(|node| self.is_descendant_of(node.id(), select_id))
-            .map(NativeNode::id)
-            .collect()
+        let mut options = Vec::new();
+        let Some(select) = self.node(select_id) else {
+            return options;
+        };
+        for child in select.children() {
+            self.collect_select_options_in_tree(*child, &mut options, 0);
+        }
+        options
+    }
+
+    fn collect_select_options_in_tree(
+        &self,
+        current_id: NativeNodeId,
+        options: &mut Vec<NativeNodeId>,
+        depth: usize,
+    ) {
+        if depth > MAX_NATIVE_DOM_DEPTH {
+            return;
+        }
+        let Some(node) = self.node(current_id) else {
+            return;
+        };
+        if node.element_name() == Some("option") {
+            options.push(current_id);
+        }
+        for child in node.children() {
+            self.collect_select_options_in_tree(*child, options, depth + 1);
+        }
     }
 
     fn is_descendant_of(&self, id: NativeNodeId, ancestor: NativeNodeId) -> bool {
@@ -9120,6 +9159,132 @@ impl NativeDocument {
         self.form_owner(id)
     }
 
+    pub(crate) fn reset_form_controls(
+        &mut self,
+        form_id: NativeNodeId,
+    ) -> Result<(), NativeEngineError> {
+        let form = self
+            .node(form_id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if form.element_name() != Some("form") {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "form reset target is not a form".into(),
+            });
+        }
+        let controls = self.form_controls_in_document_order(form_id)?;
+        for id in &controls {
+            let Some(node) = self.node(*id) else {
+                continue;
+            };
+            match node.element_name() {
+                Some("input") => {
+                    let value = if node
+                        .attribute("type")
+                        .is_some_and(|kind| kind.eq_ignore_ascii_case("file"))
+                    {
+                        String::new()
+                    } else {
+                        node.attribute("value").unwrap_or_default().to_owned()
+                    };
+                    let checked = node.attribute("checked").is_some();
+                    let node = self
+                        .node_mut(*id)
+                        .ok_or(NativeEngineError::DetachedTarget)?;
+                    node.state.value = Some(value);
+                    node.state.files.clear();
+                    node.state.checked = checked;
+                    node.state.user_interacted = false;
+                    node.state.selection_start = None;
+                    node.state.selection_end = None;
+                    node.state.selection_direction = None;
+                }
+                Some("textarea") => {
+                    let mut value = String::new();
+                    self.collect_raw_text(*id, &mut value);
+                    let node = self
+                        .node_mut(*id)
+                        .ok_or(NativeEngineError::DetachedTarget)?;
+                    node.state.value = Some(value);
+                    node.state.user_interacted = false;
+                    node.state.selection_start = None;
+                    node.state.selection_end = None;
+                    node.state.selection_direction = None;
+                }
+                Some("select") => {
+                    let options = self.select_option_ids(*id);
+                    let selected = options
+                        .iter()
+                        .copied()
+                        .filter(|option_id| {
+                            self.node(*option_id)
+                                .is_some_and(|option| option.attribute("selected").is_some())
+                        })
+                        .collect::<Vec<_>>();
+                    let multiple = self
+                        .node(*id)
+                        .is_some_and(|select| select.attribute("multiple").is_some());
+                    let selected = if multiple {
+                        selected
+                            .into_iter()
+                            .map(NativeNodeId::index)
+                            .collect::<BTreeSet<_>>()
+                    } else if let Some(last_selected) = selected.last().copied() {
+                        BTreeSet::from([last_selected.index()])
+                    } else if self.select_display_size_is_one(*id) {
+                        options
+                            .iter()
+                            .copied()
+                            .find(|option_id| !self.is_option_disabled(*option_id))
+                            .map(NativeNodeId::index)
+                            .into_iter()
+                            .collect::<BTreeSet<_>>()
+                    } else {
+                        BTreeSet::new()
+                    };
+                    for option_id in options {
+                        if let Some(option) = self.node_mut(option_id) {
+                            option.state.selected = selected.contains(&option_id.index());
+                        }
+                    }
+                    if let Some(select) = self.node_mut(*id) {
+                        select.state.user_interacted = false;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // A radio group can have multiple checked content attributes. Reset
+        // each group's last checked control in document order wins.
+        let mut checked_radio_groups = BTreeSet::new();
+        for id in controls.iter().rev().copied() {
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            if node.element_name() != Some("input")
+                || !node
+                    .attribute("type")
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("radio"))
+                || !node.state.checked
+            {
+                continue;
+            }
+            let Some(group) = node
+                .attribute("name")
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if !checked_radio_groups.insert(group.clone()) {
+                if let Some(node) = self.node_mut(id) {
+                    node.state.checked = false;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Return required controls that block an interactive form submission.
     /// This is deliberately a bounded validity subset: disabled controls and
     /// read-only controls do not participate, while required text controls,
@@ -9514,21 +9679,38 @@ impl NativeDocument {
     ) -> Result<(), NativeEngineError> {
         self.node(parent_id)
             .ok_or(NativeEngineError::DetachedTarget)?;
-        for node in &self.nodes {
-            if !self.is_attached(node.id()) {
-                continue;
+        self.collect_form_controls_in_tree(self.root, parent_id, controls, 0)
+    }
+
+    fn collect_form_controls_in_tree(
+        &self,
+        current_id: NativeNodeId,
+        form_id: NativeNodeId,
+        controls: &mut Vec<NativeNodeId>,
+        depth: usize,
+    ) -> Result<(), NativeEngineError> {
+        if depth > self.max_dom_depth {
+            return Err(NativeEngineError::limit(
+                "DOM depth",
+                self.max_dom_depth,
+                depth,
+            ));
+        }
+        let node = self
+            .node(current_id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if node.element_name().is_some() && self.form_owner(current_id) == Some(form_id) {
+            controls.push(current_id);
+            if controls.len() > MAX_FORM_CONTROLS {
+                return Err(NativeEngineError::limit(
+                    "form controls",
+                    MAX_FORM_CONTROLS,
+                    controls.len(),
+                ));
             }
-            if self.form_owner(node.id()) == Some(parent_id) {
-                let child_id = node.id();
-                controls.push(child_id);
-                if controls.len() > MAX_FORM_CONTROLS {
-                    return Err(NativeEngineError::limit(
-                        "form controls",
-                        MAX_FORM_CONTROLS,
-                        controls.len(),
-                    ));
-                }
-            }
+        }
+        for child in node.children() {
+            self.collect_form_controls_in_tree(*child, form_id, controls, depth + 1)?;
         }
         Ok(())
     }
@@ -9551,14 +9733,27 @@ impl NativeDocument {
             return None;
         }
         if let Some(form_reference) = node.attribute("form") {
-            return self.nodes.iter().find_map(|candidate| {
-                (self.is_attached(candidate.id())
-                    && candidate.element_name() == Some("form")
-                    && candidate.attribute("id") == Some(form_reference))
-                .then_some(candidate.id())
-            });
+            if form_reference.is_empty() {
+                return None;
+            }
+            let first_match = self.first_element_by_id_in_tree(self.root, form_reference)?;
+            return (first_match.element_name() == Some("form")).then_some(first_match.id());
         }
         self.find_ancestor_element(id, "form")
+    }
+
+    fn first_element_by_id_in_tree(
+        &self,
+        current_id: NativeNodeId,
+        wanted: &str,
+    ) -> Option<&NativeNode> {
+        let node = self.node(current_id)?;
+        if node.element_name().is_some() && node.attribute("id") == Some(wanted) {
+            return Some(node);
+        }
+        node.children()
+            .iter()
+            .find_map(|child| self.first_element_by_id_in_tree(*child, wanted))
     }
 
     fn radio_group_has_checked(&self, form_id: NativeNodeId, radio_id: NativeNodeId) -> bool {
@@ -9964,6 +10159,42 @@ impl NativeDocument {
             parent = parent_node.parent();
         }
         false
+    }
+
+    fn is_option_disabled(&self, id: NativeNodeId) -> bool {
+        let Some(option) = self.node(id) else {
+            return true;
+        };
+        if option.element_name() != Some("option") || option.attribute("disabled").is_some() {
+            return true;
+        }
+        let mut parent = option.parent();
+        while let Some(parent_id) = parent {
+            let Some(parent_node) = self.node(parent_id) else {
+                break;
+            };
+            match parent_node.element_name() {
+                Some("optgroup") if parent_node.attribute("disabled").is_some() => return true,
+                Some("select") => break,
+                _ => parent = parent_node.parent(),
+            }
+        }
+        false
+    }
+
+    fn select_display_size_is_one(&self, id: NativeNodeId) -> bool {
+        let Some(size) = self.node(id).and_then(|select| select.attribute("size")) else {
+            return true;
+        };
+        let digits = size
+            .trim_start_matches(|character: char| character.is_ascii_whitespace())
+            .chars()
+            .take_while(|character| character.is_ascii_digit())
+            .collect::<String>();
+        if digits.is_empty() {
+            return true;
+        }
+        digits.trim_start_matches('0') == "1"
     }
 
     fn is_hidden(&self, id: NativeNodeId) -> bool {

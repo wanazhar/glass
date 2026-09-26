@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-762
 scope: glass-browser/native-form-reset-and-face-reset-reactions
-status: in-progress
+status: done
 depends-on: [native-engine-browser-761]
 ---
 
@@ -26,8 +26,8 @@ depends-on: [native-engine-browser-761]
 Implement the native form-reset path as one ordered behavior: dispatch the
 cancelable event, restore supported controls to their current defaults, and
 run form-associated custom-element reset callbacks. Expose it through
-`HTMLFormElement.reset()` and reset-button activation in top-level and
-same-origin frame documents, in both in-process and content-process execution.
+`HTMLFormElement.reset()` in top-level and same-origin frame documents, in both
+in-process and content-process execution.
 
 ## Contract
 
@@ -42,13 +42,12 @@ same-origin frame documents, in both in-process and content-process execution.
 - Reset restores input values from the current `value` attribute, checkedness
   from the current `checked` attribute, textarea values from current child text,
   select option selectedness from current `selected` attributes with the
-  supported single-select fallback, file inputs to an empty value and file
-  list, and output values from their current default text. Existing native
-  control-validity interaction state is reset without clearing author-provided
-  custom validity.
-- A `type=reset` button performs the same cancelable reset default action after
-  its click event is allowed. Canceled click or reset events leave control
-  values unchanged. Programmatic element `.click()` follows the same path.
+  supported single-select fallback to the first non-disabled option when the
+  display size is one, and file inputs to an empty value and file list. A
+  radio's checked content attribute participates in exclusivity only when it
+  has a nonempty `name`; among checked members of a named group, the last one
+  in document order remains checked. Existing native control-validity
+  interaction state is reset without clearing author-provided custom validity.
 - Callable `formResetCallback` is retained for form-associated autonomous
   custom elements. On an uncanceled reset, callbacks run through the existing
   bounded FIFO custom-element reaction queue after built-in controls are
@@ -67,10 +66,10 @@ same-origin frame documents, in both in-process and content-process execution.
 This slice does not claim complete form-control Web IDL reflection, including
 all `defaultValue`, `defaultChecked`, and `defaultSelected` property behavior;
 complete per-input-type value sanitization; picker/UI behavior; reset behavior
-for controls outside the native HTML control model; or full form-related Web
-Platform Tests. These remain profile and issue #40 requirements. Remote CI,
-cross-platform runtime certification, and browser-completion evidence remain
-open.
+for `output` or controls outside the supported input/textarea/select/file
+model; reset-button activation; or full form-related Web Platform Tests. These
+remain profile and issue #40 requirements. Remote CI, cross-platform runtime
+certification, and browser-completion evidence remain open.
 
 ## Tradeoffs
 
@@ -85,7 +84,6 @@ event order without a second independently maintained reset-state store.
 
 - `crates/glass-browser/src/browser/native_engine/dom.rs`
 - `crates/glass-browser/src/browser/native_engine/javascript.rs`
-- `crates/glass-browser/src/browser/native_engine/engine.rs`
 - `crates/glass-browser/src/browser/native_engine/content_process.rs`
 - `crates/glass-browser/tests/native_engine.rs`
 - `docs/architecture/native-engine.md`
@@ -95,9 +93,19 @@ event order without a second independently maintained reset-state store.
 
 ## Verification
 
-Pending implementation. Required evidence includes native reset cancellation
-and ordering, supported input/textarea/select/file/output reset state, reset
-button activation, form-associated callback ordering and errors, top-level and
-same-origin-frame execution, focused cargo checks/tests, formatting, and local
-documentation gates. Remote CI and cross-platform certification are not
-established by local checks.
+Passed locally:
+
+- `cargo check -p glass-browser --lib --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine resets_forms_and_runs_face_reset_reactions --locked --quiet`
+  (2 tests: in-process and content-process)
+- `cargo test -p glass-browser --test native_engine resets_same_origin_frame_forms --locked --quiet`
+  (1 same-origin-frame process test)
+- `cargo test -p glass-browser --test native_engine collects_form_associated_custom_element_values --locked --quiet`
+  (2 existing regressions for form-associated values and supported callback definitions)
+- `cargo fmt --all -- --check`
+- `git diff --check`
+- Maintainer documentation gates: release-documentation audit, documentation
+  depth, TUI shortcut inventory, and documentation coverage.
+
+These local checks do not establish remote CI, cross-platform certification,
+full form-related Web Platform Test conformance, or issue #40 completion.

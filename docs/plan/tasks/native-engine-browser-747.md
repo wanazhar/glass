@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-747
 scope: glass-browser/html-fragment-parser
-status: in-progress
+status: complete
 depends_on: [native-engine-browser-746]
 ---
 
@@ -56,9 +56,10 @@ agree without serializing markup through a second parser.
   RCDATA/RAWTEXT/script/plaintext, tables/foster parenting, SVG/MathML, and
   integration points) with direct parser and JavaScript read-after-write
   tests.
-- Keep XHR `responseType="document"`, template `DocumentFragment` exposure,
-  quirks-mode layout, parser-stream reentrancy, complete HTML WPT conformance,
-  and cross-platform/remote certification open unless independently proven.
+- XHR `responseType="document"` was outside this slice and is now covered by
+  completed slice 748. Template `DocumentFragment` exposure, quirks-mode
+  layout, parser-stream reentrancy, complete HTML WPT conformance, and
+  cross-platform/remote certification remain open.
 
 ## Tradeoffs
 
@@ -108,7 +109,11 @@ use does not itself establish browser conformance.
   regression passed (1 test).
 - `cargo fmt --all -- --check`, `git diff --check`, release-documentation
   truth, documentation depth, TUI shortcut, and Markdown-link checks passed.
-- Full `check-documentation-coverage.py` remains pending: its live CLI inventory
-  requires `target/debug/glass`, which was not built for this checkpoint.
-- Remote CI, cross-platform checks, XHR document parsing, and full GCWP/WPT
-  conformance remain open; this evidence does not close issue #40.
+- Built `glass` and `glass-browser` for live CLI inventory. The documentation
+  truth gate passed for 1,376 Markdown files with zero current-claim failures;
+  depth passed for 93 current guides and 19 contracts; shortcut inventory
+  passed for 15 implementation keys and 63 markers; coverage passed for 346
+  full-product MCP tools (101 browser-only), 17 examples, and 22 public
+  modules.
+- Remote CI, cross-platform checks, and full GCWP/WPT conformance remain open;
+  this evidence does not close issue #40.

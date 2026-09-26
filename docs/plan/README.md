@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-746`.
+browser expansion slices are complete through `native-engine-browser-748`.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux
@@ -40,27 +40,23 @@ not browser-completion evidence.
 Slice 746 completes the initial navigation-document parser migration to
 `html5ever` through a Glass-owned tree sink. Its temporary allocations are
 capped at twice the configured node budget and its depth limit is enforced
-during construction. The locked scoped check, 177 parser-filtered unit tests,
-and process-backed HTTP navigation regression (1/1) passed. Documentation
-truth, depth, shortcut, and coverage gates also passed locally. Fragment and
-XHR parser routes, full HTML conformance, remote CI, and cross-platform
-certification remain open; this is not browser-completion evidence. See the
-[slice 746 task](tasks/native-engine-browser-746.md).
-Slice 747 is in progress: committed `innerHTML` and same-turn JavaScript/frame
-projection now use the bounded html5ever context-fragment algorithm. The JS
-projection consumes a structured parse result; the ordered Rust commit parses
-the same source/context again through that algorithm, with parity covered by
-tests. The scoped check, 12 `innerHTML` tests, 10 parser tests, selector/dialog
-regressions, and process-backed HTTP regression (1/1) pass. Formatting,
-release-truth, depth, shortcut, and Markdown-link checks pass. Full docs
-inventory coverage is pending because `target/debug/glass` is not built; this
-gate is not claimed. XHR `responseType="document"` remains on its separate
-parser route. See the [slice 747 task](tasks/native-engine-browser-747.md).
-Slice 748 is the active next behavior task: replace the handwritten XHR HTML
-`responseType="document"` tree builder with the bounded html5ever document
-parser configured with scripting disabled, preserving the detached read-only
-response document and no-resource/no-script behavior. Response-byte charset
-selection remains open. Its contract is in the
+during construction. Slice 747 applies the bounded html5ever fragment
+algorithm to committed `innerHTML` and same-turn JavaScript/frame projection;
+the Rust commit reparses the same source/context transactionally. Slice 748
+routes HTML XHR `responseType="document"` through the same full-document sink
+with scripting disabled. The XHR result remains detached and read-only; it
+does not execute response scripts or load referenced resources. The scoped
+library/test-target check, six focused XHR parser tests, two process-backed
+XML/HTML XHR regressions, and process-backed navigation regression pass
+locally. Documentation gates pass: release-truth covers 1,376 Markdown files
+with zero current-claim failures; depth covers 93 current guides and 19
+contracts; shortcut inventory covers 15 implementation keys and 63 markers;
+live coverage includes 346 full-product MCP tools (101 browser-only), 17
+examples, and 22 public modules. UTF-8-only response decoding,
+full template `DocumentFragment` exposure, full HTML conformance, remote CI,
+and cross-platform certification remain open; this is not browser-completion
+evidence. See the [slice 746 task](tasks/native-engine-browser-746.md),
+[slice 747 task](tasks/native-engine-browser-747.md), and
 [slice 748 task](tasks/native-engine-browser-748.md).
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,

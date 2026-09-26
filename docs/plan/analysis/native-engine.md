@@ -1,30 +1,27 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-746`. Slice 746
-migrates initial navigation documents to a Glass-owned `html5ever` sink. Its
-locked scoped check, 177 parser-filtered unit tests, process-backed HTTP
-navigation regression, and documentation truth/depth/shortcut/coverage gates
-passed. Slice 747 is in progress: the Rust `innerHTML` commit and same-turn
-JavaScript/frame projection now use a bounded html5ever context-fragment
-algorithm. Its scoped check, fragment/`innerHTML` tests, selector/dialog tests,
-and process-backed HTTP regression pass; documentation truth/depth/shortcut
-and Markdown-link checks pass. Full live documentation inventory coverage is
-pending because `target/debug/glass` is not built. XHR parsing, full HTML
-conformance, remote CI, and cross-platform certification remain open. Slice
-748 targets the remaining handwritten XHR HTML-document parser: use the same
-bounded html5ever document sink with scripting disabled while retaining the
-detached read-only response-document boundary. UTF-8-only response decoding,
-template `DocumentFragment` exposure, full HTML conformance, remote CI, and
-cross-platform certification remain open. Issue #40 remains open. Slice 728
+completed browser expansion slice is `native-engine-browser-748`. Slice 746
+migrates initial navigation documents to a Glass-owned `html5ever` sink; slice
+747 migrates HTML fragments to its bounded context-fragment algorithm; and
+slice 748 routes HTML XHR document responses through the same full-document
+sink with scripting disabled. Process-backed checks verify detached/read-only
+responses, script inertness, no resource loads, response URL, and malformed
+HTML recovery. Documentation truth, depth, shortcut, and live inventory/link
+gates pass: 1,376 Markdown files with zero current-claim failures, 93 current
+guides/19 contracts, 15 implementation keys/63 markers, and 346 full-product
+MCP tools (101 browser-only), 17 examples, and 22 public modules. UTF-8-only
+response decoding, template `DocumentFragment`
+exposure, full HTML conformance, remote CI, and cross-platform certification
+remain open. Issue #40 remains open. Slice 728
 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API
 `CdpBrowserSession`. This source-level migration is not a Core Web Profile
 completion claim. Slice 747 reparses the source at ordered Rust commit time
 using the same bounded parser and context as the synchronous JavaScript/frame
 projection; it does not transfer the identical tree instance between runtimes.
-Slice 748 follows the XHR Standard's document-response algorithm; the current
-parser receives a UTF-8-decoded string, so charset selection and byte decoding
+Slice 748 follows the XHR Standard's document-response algorithm; the parser
+still receives a UTF-8-decoded string, so charset selection and byte decoding
 remain open and are not claimed by this tree-builder migration. Slice 729
 promotes native revisioned semantic observation,
 page inspection/bootstrap, and region expansion into the canonical Rust API.

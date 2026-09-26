@@ -1,7 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-754`. Slice 746
+completed browser expansion slice is `native-engine-browser-755`. Slice 746
 migrates initial navigation documents to a Glass-owned `html5ever` sink; slice
 747 migrates HTML fragments to its bounded context-fragment algorithm; and
 slice 748 routes HTML XHR document responses through the same full-document
@@ -25,9 +25,12 @@ path. Slice 754 implements the HTML template cloning step in shared
 `cloneNode()`: shallow copies get a separate empty `.content`; deep copies
 recursively clone content and nested templates; both preserve the inert
 template-contents owner-document identity. Its process-backed top-level and
-same-origin-frame regressions pass locally. Template `importNode()` and
-`adoptNode()`, full HTML conformance, remote CI, and cross-platform
-certification remain open. Issue #40 remains open. Slice 728
+same-origin-frame regressions pass locally. Slice 755 implements
+target-document-aware `importNode()` for live top-level, same-origin-frame,
+and inert template-owner Documents, with boolean/dictionary depth options and
+destination inert ownership for nested template content. `adoptNode()`, full
+HTML conformance, remote CI, and cross-platform certification remain open.
+Issue #40 remains open. Slice 728
 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API
 `CdpBrowserSession`. This source-level migration is not a Core Web Profile
@@ -40,12 +43,14 @@ decoding; slice 750 adds bounded WHATWG label lookup and HTML encoding
 prescan. These remain incremental parity tasks, not full Encoding/XHR
 conformance. Template content is preserved as a distinct fragment in detached
 XHR response documents, top-level live navigation DOMs, and same-origin frame
-documents; `cloneNode()` template copying is covered by slice 754, while
-`importNode()` and `adoptNode()` remain open. See [slice 749](../tasks/native-engine-browser-749.md),
+documents; `cloneNode()` template copying is covered by slice 754, and
+target-aware `importNode()` by slice 755; `adoptNode()` remains open. See
+[slice 749](../tasks/native-engine-browser-749.md),
 [slice 750](../tasks/native-engine-browser-750.md), and
 [slice 752](../tasks/native-engine-browser-752.md) and
 [slice 753](../tasks/native-engine-browser-753.md) and
-[slice 754](../tasks/native-engine-browser-754.md). Slice 729
+[slice 754](../tasks/native-engine-browser-754.md) and
+[slice 755](../tasks/native-engine-browser-755.md). Slice 729
 promotes native revisioned semantic observation,
 page inspection/bootstrap, and region expansion into the canonical Rust API.
 Slice 730 promotes native target/frame topology into the canonical Rust API

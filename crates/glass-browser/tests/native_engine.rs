@@ -63248,3 +63248,206 @@ async fn native_same_origin_frame_template_content_uses_native_fragments() {
     session.close().await.unwrap();
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn native_documents_import_nodes_into_the_target_document() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("native import-node request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = match request.split_whitespace().nth(1) {
+                Some("/parent") => {
+                    "<!doctype html><template id='top-template'><span id='top-inside'>top</span><template id='top-nested'><b>top-nested</b></template></template><div id='top-target'></div><iframe id='child' src='/child'></iframe>"
+                }
+                Some("/child") => {
+                    "<!doctype html><template id='frame-template'><span id='frame-inside'>frame</span><template id='frame-nested'><i>frame-nested</i></template></template><div id='frame-target'></div>"
+                }
+                other => panic!("unexpected native import-node request path: {other:?}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    let imported = session
+        .script(
+            r#"(() => {
+                const childDocument = document.getElementById('child').contentDocument;
+                const topTemplate = document.getElementById('top-template');
+                const frameTemplate = childDocument.getElementById('frame-template');
+                const topInertDocument = topTemplate.content.ownerDocument;
+                const frameInertDocument = frameTemplate.content.ownerDocument;
+                const importedIntoTop = document.importNode(frameTemplate, true);
+                const importedIntoFrame = childDocument.importNode(topTemplate, {});
+                const shallowDefault = document.importNode(frameTemplate);
+                const shallowDictionary = childDocument.importNode(topTemplate, { selfOnly: true });
+                const templateCopies = {
+                  topRootOwner: importedIntoTop.ownerDocument === document,
+                  topContentDifferent: importedIntoTop.content !== frameTemplate.content,
+                  topContentOwner: importedIntoTop.content.ownerDocument === topInertDocument,
+                  topChildOwner: importedIntoTop.content.querySelector('#frame-inside').ownerDocument === topInertDocument,
+                  topNestedOwner: importedIntoTop.content.querySelector('#frame-nested').content.ownerDocument === topInertDocument,
+                  topNestedChildOwner: importedIntoTop.content.querySelector('#frame-nested').content.querySelector('i').ownerDocument === topInertDocument,
+                  frameRootOwner: importedIntoFrame.ownerDocument === childDocument,
+                  frameContentDifferent: importedIntoFrame.content !== topTemplate.content,
+                  frameContentOwner: importedIntoFrame.content.ownerDocument === frameInertDocument,
+                  frameChildOwner: importedIntoFrame.content.querySelector('#top-inside').ownerDocument === frameInertDocument,
+                  frameNestedChildOwner: importedIntoFrame.content.querySelector('#top-nested').content.querySelector('b').ownerDocument === frameInertDocument,
+                  topShallowEmpty: shallowDefault.content.childNodes.length === 0,
+                  frameShallowEmpty: shallowDictionary.content.childNodes.length === 0,
+                  sourceUnchanged: topTemplate.content.querySelector('#top-inside').textContent === 'top'
+                    && frameTemplate.content.querySelector('#frame-inside').textContent === 'frame',
+                  detached: importedIntoTop.parentNode === null && importedIntoFrame.parentNode === null,
+                };
+                const source = document.createElement('article');
+                source.setAttribute('data-origin', 'top');
+                const sourceChild = document.createElement('strong');
+                sourceChild.textContent = 'child';
+                source.appendChild(sourceChild);
+                const defaultShallow = document.importNode(source);
+                const booleanShallow = document.importNode(source, false);
+                const booleanDeep = document.importNode(source, true);
+                const dictionaryDeep = childDocument.importNode(source, {});
+                const shallowOptions = document.importNode(source, { selfOnly: true });
+                const attr = document.createAttributeNS('http://www.w3.org/1999/xlink', 'xlink:title');
+                attr.value = 'imported';
+                const importedAttr = childDocument.importNode(attr);
+                const type = document.implementation.createDocumentType('html', 'public', 'system');
+                const importedType = childDocument.importNode(type);
+                const fragment = document.createDocumentFragment();
+                const fragmentChild = document.createElement('em');
+                fragmentChild.textContent = 'fragment';
+                fragment.appendChild(fragmentChild);
+                const importedFragment = childDocument.importNode(fragment, true);
+                const inertCopy = topInertDocument.importNode(frameTemplate, true);
+                const frameInertCopy = frameInertDocument.importNode(topTemplate, true);
+                const errors = {
+                  document: (() => { try { document.importNode(document); return null; } catch (error) { return error.name; } })(),
+                  invalidNode: (() => { try { document.importNode({ nodeType: 1 }); return null; } catch (error) { return error.name; } })(),
+                  invalidOptions: (() => { try { document.importNode(source, 1); return null; } catch (error) { return error.name; } })(),
+                  customRegistry: (() => { try { document.importNode(source, { customElementRegistry: {} }); return null; } catch (error) { return error.name; } })(),
+                };
+                document.getElementById('top-target').appendChild(importedIntoTop);
+                document.getElementById('top-target').appendChild(booleanDeep);
+                childDocument.getElementById('frame-target').appendChild(importedIntoFrame);
+                childDocument.getElementById('frame-target').appendChild(dictionaryDeep);
+                return {
+                  templateCopies,
+                  ordinary: {
+                    dynamicNodeBrand: source instanceof Node,
+                    dynamicElementBrand: source instanceof Element,
+                    defaultShallow: defaultShallow.childNodes.length === 0,
+                    booleanShallow: booleanShallow.childNodes.length === 0,
+                    optionsShallow: shallowOptions.childNodes.length === 0,
+                    booleanDeep: booleanDeep.firstChild !== sourceChild
+                      && booleanDeep.firstChild.ownerDocument === document,
+                    dictionaryDeep: dictionaryDeep.firstChild !== sourceChild
+                      && dictionaryDeep.firstChild.ownerDocument === childDocument
+                      && dictionaryDeep.ownerDocument === childDocument,
+                    sourceUnchanged: source.firstChild === sourceChild && sourceChild.ownerDocument === document,
+                    importedDetached: defaultShallow.parentNode === null && dictionaryDeep.parentNode === childDocument.getElementById('frame-target'),
+                  },
+                  attribute: [importedAttr instanceof Attr, importedAttr.ownerDocument === childDocument,
+                    importedAttr.ownerElement === null, importedAttr.namespaceURI, importedAttr.prefix,
+                    importedAttr.localName, importedAttr.value],
+                  documentType: [importedType instanceof DocumentType, importedType.ownerDocument === childDocument,
+                    importedType.name, importedType.publicId, importedType.systemId],
+                  fragment: [importedFragment instanceof DocumentFragment,
+                    importedFragment.ownerDocument === childDocument,
+                    importedFragment !== fragment, importedFragment.firstChild !== fragmentChild,
+                    importedFragment.firstChild.parentNode === importedFragment,
+                    importedFragment.firstChild.ownerDocument === childDocument,
+                    fragment.firstChild === fragmentChild],
+                  inert: [inertCopy.ownerDocument === topInertDocument,
+                    inertCopy.content.ownerDocument === topInertDocument,
+                    inertCopy.content.querySelector('#frame-inside').ownerDocument === topInertDocument,
+                    frameInertCopy.ownerDocument === frameInertDocument,
+                    frameInertCopy.content.ownerDocument === frameInertDocument,
+                    frameInertCopy.content.querySelector('#top-inside').ownerDocument === frameInertDocument],
+                  errors,
+                };
+              })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        imported.value,
+        serde_json::json!({
+            "templateCopies": {
+                "topRootOwner": true,
+                "topContentDifferent": true,
+                "topContentOwner": true,
+                "topChildOwner": true,
+                "topNestedOwner": true,
+                "topNestedChildOwner": true,
+                "frameRootOwner": true,
+                "frameContentDifferent": true,
+                "frameContentOwner": true,
+                "frameChildOwner": true,
+                "frameNestedChildOwner": true,
+                "topShallowEmpty": true,
+                "frameShallowEmpty": true,
+                "sourceUnchanged": true,
+                "detached": true,
+            },
+            "ordinary": {
+                "dynamicNodeBrand": true,
+                "dynamicElementBrand": true,
+                "defaultShallow": true,
+                "booleanShallow": true,
+                "optionsShallow": true,
+                "booleanDeep": true,
+                "dictionaryDeep": true,
+                "sourceUnchanged": true,
+                "importedDetached": true,
+            },
+            "attribute": [true, true, true, "http://www.w3.org/1999/xlink", "xlink", "title", "imported"],
+            "documentType": [true, true, "html", "public", "system"],
+            "fragment": [true, true, true, true, true, true, true],
+            "inert": [true, true, true, true, true, true],
+            "errors": {
+                "document": "NotSupportedError",
+                "invalidNode": "TypeError",
+                "invalidOptions": "TypeError",
+                "customRegistry": "NotSupportedError",
+            },
+        })
+    );
+
+    let persisted = session
+        .script(
+            "(() => { const childDocument = document.getElementById('child').contentDocument; const topImported = document.querySelector('#top-target template'); const frameImported = childDocument.querySelector('#frame-target template'); return { topContent: topImported.content.querySelector('#frame-inside')?.textContent, topNested: topImported.content.querySelector('#frame-nested')?.content.querySelector('i')?.textContent, frameContent: frameImported.content.querySelector('#top-inside')?.textContent, frameNested: frameImported.content.querySelector('#top-nested')?.content.querySelector('b')?.textContent, topInertOwner: topImported.content.ownerDocument === document.getElementById('top-template').content.ownerDocument, frameInertOwner: frameImported.content.ownerDocument === childDocument.getElementById('frame-template').content.ownerDocument, topOrdinary: document.getElementById('top-target').querySelector('article strong')?.textContent, frameOrdinary: childDocument.getElementById('frame-target').querySelector('article strong')?.textContent }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        persisted.value,
+        serde_json::json!({
+            "topContent": "frame",
+            "topNested": "frame-nested",
+            "frameContent": "top",
+            "frameNested": "top-nested",
+            "topInertOwner": true,
+            "frameInertOwner": true,
+            "topOrdinary": "child",
+            "frameOrdinary": "child",
+        })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}

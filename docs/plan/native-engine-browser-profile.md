@@ -118,11 +118,15 @@ top-level live navigation documents and same-origin frame documents, exposing
 fragment mutation, and template `innerHTML` replacement. Slice 754 adds shallow
 and deep `cloneNode()` template-content cloning, including nested templates,
 independent fragment identity, inert owner-document association, and
-top-level/frame persistence. `importNode()` and `adoptNode()` semantics remain
-open; see the [slice 751 contract](tasks/native-engine-browser-751.md),
+top-level/frame persistence. Slice 755 implements target-aware `importNode()`
+for live top-level, same-origin-frame, and inert template-owner Documents,
+including boolean/dictionary depth options and destination inert ownership for
+nested template content. `adoptNode()` semantics remain open; see the
+[slice 751 contract](tasks/native-engine-browser-751.md),
 [slice 752 contract](tasks/native-engine-browser-752.md), and
 [slice 753 contract](tasks/native-engine-browser-753.md) and
-[slice 754 contract](tasks/native-engine-browser-754.md).
+[slice 754 contract](tasks/native-engine-browser-754.md), and
+[slice 755 contract](tasks/native-engine-browser-755.md).
 
 ### Synchronous JavaScript dialog contract
 

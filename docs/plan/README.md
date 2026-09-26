@@ -52,6 +52,10 @@ document. Cross-origin and independent-root routes are rejected by the backend
 owner/origin guards. Worker-loss rollback is implemented but has not been
 fault-injection-tested. Remote CI and cross-platform certification remain
 issue-level gates.
+The next planned contract is [slice 758](tasks/native-engine-browser-758.md):
+implement the autonomous custom-element registry and bounded lifecycle
+reactions in native page realms. Custom elements remain an explicit Core Web
+Profile requirement, not a completed capability.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

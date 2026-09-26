@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-755`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-756`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -14,10 +14,13 @@ with `encoding_rs`, selects response/override labels, prescans the first 1,024
 bytes using HTML meta/XML rules when those labels are absent or invalid, and
 retains replacement decoding and raw/decoded bounds. HTML response bytes use
 the WHATWG encoding label table; XML and text XHR paths remain separate.
-`adoptNode()` semantics remain open; slice 756 plans bounded same-context
-adoption, while cross-context node transfer is still unplanned. Quirks-mode
-layout, parser-stream reentrancy, remote CI, and cross-platform certification
-also remain open.
+Slice 756 implements bounded `adoptNode()` within one browsing-context
+command owner, including top-level and same-origin-frame Documents, inert
+template-owner Documents, nested template contents, and same-Document detach.
+Unsupported trees are preflighted against native node/depth bounds; cross-owner
+transfer fails before mutation because frame command routing has no identity-
+transfer protocol. Cross-context transfer, quirks-mode layout, parser-stream
+reentrancy, remote CI, and cross-platform certification remain open.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and
@@ -171,7 +174,8 @@ the target Document for ordinary descendants and its inert owner Document for
 template-content descendants, including nested templates. A process-backed
 regression checks cross-document imports, source nonmutation, supported node
 kinds, error names, ownership, and persistence after script-realm refresh.
-`adoptNode()`, full encoding/XHR WPT conformance, and complete XHR/Web IDL
+The bounded `adoptNode()` behavior is implemented by slice 756; cross-context
+node transfer, full encoding/XHR WPT conformance, and complete XHR/Web IDL
 semantics remain separate gates; see
 the [slice 748 task](../plan/tasks/native-engine-browser-748.md),
 [slice 749 task](../plan/tasks/native-engine-browser-749.md), and
@@ -180,9 +184,8 @@ the [slice 748 task](../plan/tasks/native-engine-browser-748.md),
 [slice 752 task](../plan/tasks/native-engine-browser-752.md) and
 [slice 753 task](../plan/tasks/native-engine-browser-753.md) and
 [slice 754 task](../plan/tasks/native-engine-browser-754.md) and
-[slice 755 task](../plan/tasks/native-engine-browser-755.md); the
-[slice 756 adoption contract](../plan/tasks/native-engine-browser-756.md) is
-planned only.
+[slice 755 task](../plan/tasks/native-engine-browser-755.md), and
+[slice 756 adoption task](../plan/tasks/native-engine-browser-756.md).
 
 The token-aware TreeSink bridge also preserves MathML `annotation-xml` as the
 HTML integration boundary during `</p>` and `</br>` foreign-content breakouts.
@@ -212,7 +215,10 @@ documents and detached XHR response documents retain the template fragment
 boundary, and same-origin frame documents now project it as well. Slice 754
 implements shallow/deep template-content `cloneNode()` in top-level and
 same-origin-frame realms; slice 755 implements target-aware `importNode()`
-there and in inert template-owner Documents. `adoptNode()` remains incomplete.
+there and in inert template-owner Documents. Slice 756 implements bounded
+same-context `adoptNode()` with identity preservation, detachment, recursive
+inert-template ownership, and atomic bounds checks; cross-context transfer
+remains incomplete.
 Quirks mode does not yet alter CSS/layout, and
 script-stream reentrancy remains incomplete. html5ever documents remaining
 tree-builder differences; the

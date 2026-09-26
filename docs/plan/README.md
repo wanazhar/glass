@@ -27,15 +27,18 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-755`.
+browser expansion slices are complete through `native-engine-browser-756`.
 Slice 755 implements target-document-aware `Document.importNode()` for live
 top-level, same-origin-frame, and inert template-owner Documents. Its focused
 process-backed regression passes locally; this remains a bounded DOM slice,
 not browser-completion evidence.
-Slice 756 plans `Document.adoptNode()` for a node and target within the same
-browsing-context command owner, including its inert template-owner Document;
-cross-context identity transfer remains outside that contract until a native
-transfer path is implemented.
+Slice 756 implements bounded `Document.adoptNode()` for a node and target
+within the same browsing-context command owner, including its inert
+template-owner Document. Its process-backed top-level/frame regression covers
+identity, detachment, nested inert-template ownership, same-Document detach,
+typed failures, atomic preflight limits, cross-context rejection, and state
+persistence. A native identity-transfer protocol is still required for
+cross-context adoption.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux
@@ -80,7 +83,8 @@ template contents, separate fragments, inert ownership, and top-level/frame
 persistence through process-backed regressions. Slice 755 adds imports into
 target Documents with boolean and dictionary depth options, independent copied
 nodes, and destination inert-owner identity for nested template contents.
-`adoptNode()`, HTML/Encoding/XHR conformance, remote CI, and cross-platform
+Slice 756 implements bounded same-context adoption; cross-context transfer,
+HTML/Encoding/XHR conformance, remote CI, and cross-platform
 certification remain open. See the [slice 746 task](tasks/native-engine-browser-746.md),
 [slice 747 task](tasks/native-engine-browser-747.md), and
 [slice 748 task](tasks/native-engine-browser-748.md) and the
@@ -89,10 +93,9 @@ certification remain open. See the [slice 746 task](tasks/native-engine-browser-
 [slice 751 task](tasks/native-engine-browser-751.md), and the
 [slice 752 task](tasks/native-engine-browser-752.md) and
 [slice 753 task](tasks/native-engine-browser-753.md),
-[slice 754 task](tasks/native-engine-browser-754.md), and
-[slice 755 task](tasks/native-engine-browser-755.md).
-The [slice 756 task](tasks/native-engine-browser-756.md) is planned, not
-implementation evidence.
+[slice 754 task](tasks/native-engine-browser-754.md),
+[slice 755 task](tasks/native-engine-browser-755.md), and
+[slice 756 task](tasks/native-engine-browser-756.md).
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,
 and inherited sandboxed-modals eligibility. Remote CI and cross-platform

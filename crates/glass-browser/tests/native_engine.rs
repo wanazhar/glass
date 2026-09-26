@@ -63340,6 +63340,8 @@ async fn native_documents_import_nodes_into_the_target_document() {
                   invalidNode: (() => { try { document.importNode({ nodeType: 1 }); return null; } catch (error) { return error.name; } })(),
                   invalidOptions: (() => { try { document.importNode(source, 1); return null; } catch (error) { return error.name; } })(),
                   customRegistry: (() => { try { document.importNode(source, { customElementRegistry: {} }); return null; } catch (error) { return error.name; } })(),
+                  nullCustomRegistry: (() => { try { document.importNode(source, { customElementRegistry: null }); return null; } catch (error) { return error.name; } })(),
+                  inertCustomRegistry: (() => { try { topInertDocument.importNode(source, { customElementRegistry: customElements }); return null; } catch (error) { return error.name; } })(),
                 };
                 document.getElementById('top-target').appendChild(importedIntoTop);
                 document.getElementById('top-target').appendChild(booleanDeep);
@@ -63423,7 +63425,9 @@ async fn native_documents_import_nodes_into_the_target_document() {
                 "document": "NotSupportedError",
                 "invalidNode": "TypeError",
                 "invalidOptions": "TypeError",
-                "customRegistry": "NotSupportedError",
+                "customRegistry": "TypeError",
+                "nullCustomRegistry": "TypeError",
+                "inertCustomRegistry": "NotSupportedError",
             },
         })
     );
@@ -63518,6 +63522,39 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
               let unsupportedImportRegistryError = null;
               try { document.importNode(created, { customElementRegistry: {} }); }
               catch (error) { unsupportedImportRegistryError = error.name; }
+
+              const importTrace = [];
+              class ImportProbe extends HTMLElement {
+                static get observedAttributes() { return ['data-order']; }
+                constructor() {
+                  super();
+                  importTrace.push('construct:' + this.getAttribute('data-order'));
+                }
+                attributeChangedCallback(_name, oldValue, newValue) {
+                  importTrace.push('attribute:' + oldValue + ':' + newValue);
+                }
+                connectedCallback() {
+                  importTrace.push('connected:' + this.getAttribute('data-order'));
+                }
+              }
+              customElements.define('x-import-probe', ImportProbe);
+              const importSource = document.createElement('x-import-probe');
+              importSource.setAttribute('data-order', 'outer');
+              const importSourceChild = document.createElement('x-import-probe');
+              importSourceChild.setAttribute('data-order', 'inner');
+              importSource.appendChild(importSourceChild);
+              importTrace.length = 0;
+              const importedTree = document.importNode(importSource, {
+                customElementRegistry: customElements,
+              });
+              const importCloneTrace = importTrace.slice();
+              const importTreeIdentity = importedTree instanceof ImportProbe
+                && importedTree.firstElementChild instanceof ImportProbe
+                && importedTree !== importSource
+                && importedTree.firstElementChild !== importSourceChild
+                && importedTree.ownerDocument === document;
+              document.body.appendChild(importedTree);
+              const importConnectedTrace = importTrace.slice(importCloneTrace.length);
 
               const constructed = new ProbeElement();
               const directConstructorWorked = constructed instanceof ProbeElement;
@@ -63629,6 +63666,9 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
                 createElementUpgraded,
                 importNodeUsedRegistry,
                 unsupportedImportRegistryError,
+                importCloneTrace,
+                importTreeIdentity,
+                importConnectedTrace,
                 directConstructorWorked,
                 moveOrder,
                 innerHtmlReactions,
@@ -63672,7 +63712,15 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
             "manualUpgradeWorked": true,
             "createElementUpgraded": true,
             "importNodeUsedRegistry": true,
-            "unsupportedImportRegistryError": "NotSupportedError",
+            "unsupportedImportRegistryError": "TypeError",
+            "importCloneTrace": [
+                "construct:outer",
+                "construct:inner",
+                "attribute:null:outer",
+                "attribute:null:inner",
+            ],
+            "importTreeIdentity": true,
+            "importConnectedTrace": ["connected:outer", "connected:inner"],
             "directConstructorWorked": true,
             "moveOrder": ["disconnected:x-probe", "connected:x-probe"],
             "innerHtmlReactions": [
@@ -63694,8 +63742,8 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
             "unsupportedExtendsError": "NotSupportedError",
             "invalidWhenDefinedError": "SyntaxError",
             "lifecycleCounts": {
-                "constructor": 6,
-                "attribute": 5,
+                "constructor": 7,
+                "attribute": 6,
                 "connected": 6,
                 "disconnected": 5,
             },

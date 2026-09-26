@@ -13,8 +13,9 @@ use super::css::{
 };
 use super::dialog::NativeDialogResolution;
 use super::dom::{
-    NativeDocument, NativeNodeId, NativePageImportMapSource, NativePageScriptSource,
-    NativePageScriptTiming, NativeScriptDocumentSnapshot, NativeScriptElementSnapshot,
+    NativeDocument, NativeNodeId, NativeNodeTransferIdentity, NativePageImportMapSource,
+    NativePageScriptSource, NativePageScriptTiming, NativeScriptDocumentSnapshot,
+    NativeScriptElementSnapshot,
 };
 use super::environment::NativeEnvironmentOverrides;
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
@@ -639,6 +640,17 @@ pub(crate) enum NativeScriptCommand {
         frame_id: String,
         source_frame_id: String,
         command: Box<NativeScriptCommand>,
+    },
+    /// Transfer one already modeled DOM subtree between two live owners in
+    /// the same browsing-context tree. The browser coordinator validates the
+    /// captured generations and commits both document arenas together.
+    AdoptNode {
+        source_frame_id: String,
+        destination_frame_id: String,
+        source_generation: u32,
+        destination_generation: u32,
+        source_node_index: u32,
+        identities: Vec<NativeNodeTransferIdentity>,
     },
     SharedWorkerCreate {
         connection_id: u32,
@@ -31766,6 +31778,13 @@ fn document_bootstrap(
     : commands;
   const pushCommand = (command) => {{
     if (suppressHostCommands > 0) return;
+    if (typeof globalThis.__glassRouteTransferredNativeCommand === "function"
+        && globalThis.__glassRouteTransferredNativeCommand(command)) {{
+      if (typeof globalThis.__glassRecordMutationCommand === "function") {{
+        globalThis.__glassRecordMutationCommand(command);
+      }}
+      return;
+    }}
     const target = activeCommands();
     if (target.length >= {max_commands}) throw new RangeError("native host command limit exceeded");
     target.push(command);
@@ -40364,6 +40383,12 @@ fn document_bootstrap(
     const contextId = String(host.context_id || "native");
     const markOwnerDocument = (ownerDocument) => {{
       ownerDocument.__glassNativeContextId = contextId;
+      ownerDocument.__glassNativeGeneration = Number(host.generation) || 0;
+      ownerDocument.__glassNativeOrigin = String(host.origin || "null");
+      ownerDocument.__glassNativeScriptNodes = Array.isArray(state.scriptNodes)
+        ? state.scriptNodes
+        : [];
+      ownerDocument.__glassNativeFrameBinding = null;
       ownerDocument.__glassIsTemplateContentsOwnerDocument = true;
       ownerDocument.__glassGetTemplateContentsOwnerDocument = () => ownerDocument;
       return ownerDocument;
@@ -42883,6 +42908,10 @@ fn document_bootstrap(
     nodeType: 9,
     nodeName: "#document",
     __glassNativeContextId: String(host.context_id || "native"),
+    __glassNativeGeneration: Number(host.generation) || 0,
+    __glassNativeOrigin: String(host.origin || "null"),
+    __glassNativeScriptNodes: Array.isArray(state.scriptNodes) ? state.scriptNodes : [],
+    __glassNativeFrameBinding: null,
     __glassGetTemplateContentsOwnerDocument() {{ return getTemplateContentsOwnerDocument(); }},
     URL: host.url,
     documentURI: host.url,
@@ -45510,6 +45539,55 @@ fn document_bootstrap(
     }}
   }};
   globalThis.__glassRecordFrameMutation = recordFrameMutation;
+  const transferredNodeOwners = globalThis.__glassTransferredNodeOwners instanceof Map
+    ? globalThis.__glassTransferredNodeOwners
+    : new Map();
+  const pendingTransferredNodeOwners = new Map();
+  const currentOwnerFrameId = String(host.frame_id || host.context_id || "");
+  globalThis.__glassTransferredNodeOwners = transferredNodeOwners;
+  globalThis.__glassPendingTransferredNodeOwners = pendingTransferredNodeOwners;
+  const commandNodeIndexes = (command) => command && typeof command === "object"
+    ? [command.node_index, command.parent_index, command.child_index, command.before_index]
+      .map(Number)
+      .filter((index) => Number.isSafeInteger(index) && index >= 0)
+    : [];
+  const transferredOwnerForCommand = (command) => {{
+    for (const index of commandNodeIndexes(command)) {{
+      const owner = transferredNodeOwners.get(index);
+      if (owner) return {{ index, owner }};
+    }}
+    return null;
+  }};
+  const queueFrameScriptForOwner = (frameId, command) => {{
+    if (suppressHostCommands > 0) return;
+    if (!frameId || !currentOwnerFrameId) throw new TypeError("native node transfer owner is invalid");
+    pushCommand({{
+      kind: "frameScript",
+      frame_id: String(frameId),
+      source_frame_id: currentOwnerFrameId,
+      command,
+    }});
+  }};
+  const routeTransferredNativeCommand = (command) => {{
+    if (!command || typeof command !== "object" || command.kind === "frameScript") return false;
+    const routed = transferredOwnerForCommand(command);
+    if (!routed) return false;
+    const {{ index, owner }} = routed;
+    const frameId = String(owner.frameId || "");
+    if (!frameId) throw new TypeError("adopted native node has no destination owner");
+    if (frameId === currentOwnerFrameId) {{
+      if (pendingTransferredNodeOwners.has(index)) queueFrameScriptForOwner(frameId, command);
+      else return false;
+      return true;
+    }}
+    const binding = owner.binding || frameBindingForId(frameId);
+    if (!binding || frameIdentifier(binding) !== frameId || binding.sameOrigin !== true) {{
+      throw new DOMExceptionNative("The adopted node destination is no longer accessible", "InvalidStateError");
+    }}
+    queueFrameCommand(binding, command);
+    return true;
+  }};
+  globalThis.__glassRouteTransferredNativeCommand = routeTransferredNativeCommand;
   const frameBatchableCommand = (command) => command && [
     "setValue", "setSelection", "setChecked", "setSelected", "mediaLoad",
     "setAttribute", "removeAttribute", "setTextContent", "setInnerHtml",
@@ -45519,6 +45597,25 @@ fn document_bootstrap(
   const queueFrameCommand = (binding, command) => {{
     if (!binding || binding.sameOrigin !== true) throw crossOriginSecurityError("document");
     if (suppressHostCommands > 0) return;
+    const routed = transferredOwnerForCommand(command);
+    if (routed) {{
+      const {{ index, owner }} = routed;
+      const ownerFrameId = String(owner.frameId || "");
+      if (!ownerFrameId) throw new TypeError("adopted native node has no destination owner");
+      if (ownerFrameId === currentOwnerFrameId) {{
+        if (pendingTransferredNodeOwners.has(index)) queueFrameScriptForOwner(ownerFrameId, command);
+        else pushCommand(command);
+        return;
+      }}
+      if (frameIdentifier(binding) !== ownerFrameId) {{
+        const ownerBinding = owner.binding || frameBindingForId(ownerFrameId);
+        if (!ownerBinding || ownerBinding.sameOrigin !== true
+            || frameIdentifier(ownerBinding) !== ownerFrameId) {{
+          throw new DOMExceptionNative("The adopted node destination is no longer accessible", "InvalidStateError");
+        }}
+        binding = ownerBinding;
+      }}
+    }}
     if (typeof globalThis.__glassRecordFrameMutation === "function") {{
       globalThis.__glassRecordFrameMutation(binding, command);
     }}
@@ -45637,6 +45734,12 @@ fn document_bootstrap(
     const getFrameTemplateContentsOwnerDocument = () => {{
       const markFrameTemplateOwner = (ownerDocument) => {{
         ownerDocument.__glassNativeContextId = currentFrameId;
+        ownerDocument.__glassNativeGeneration = Number(frameGeneration) || 0;
+        ownerDocument.__glassNativeOrigin = String(currentBinding.origin || "null");
+        ownerDocument.__glassNativeScriptNodes = Array.isArray(snapshot.scriptNodes)
+          ? snapshot.scriptNodes
+          : [];
+        ownerDocument.__glassNativeFrameBinding = currentBinding;
         ownerDocument.__glassIsTemplateContentsOwnerDocument = true;
         ownerDocument.__glassGetTemplateContentsOwnerDocument = () => ownerDocument;
         return ownerDocument;
@@ -45654,6 +45757,10 @@ fn document_bootstrap(
         nodeType: 9,
         nodeName: "#document",
         __glassNativeContextId: currentFrameId,
+        __glassNativeGeneration: Number(frameGeneration) || 0,
+        __glassNativeOrigin: String(currentBinding.origin || "null"),
+        __glassNativeScriptNodes: Array.isArray(snapshot.scriptNodes) ? snapshot.scriptNodes : [],
+        __glassNativeFrameBinding: currentBinding,
         __glassIsTemplateContentsOwnerDocument: true,
         __glassGetTemplateContentsOwnerDocument() {{ return ownerDocument; }},
         URL: "",
@@ -47400,6 +47507,10 @@ fn document_bootstrap(
       nodeType: 9,
       nodeName: "#document",
       __glassNativeContextId: currentFrameId,
+      __glassNativeGeneration: Number(frameGeneration) || 0,
+      __glassNativeOrigin: String(currentBinding.origin || "null"),
+      __glassNativeScriptNodes: Array.isArray(snapshot.scriptNodes) ? snapshot.scriptNodes : [],
+      __glassNativeFrameBinding: currentBinding,
       __glassGetTemplateContentsOwnerDocument() {{ return getFrameTemplateContentsOwnerDocument(); }},
       URL: String(currentBinding.url),
       documentURI: String(currentBinding.url),

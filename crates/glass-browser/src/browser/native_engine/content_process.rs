@@ -1268,6 +1268,10 @@ impl NativeContentProcess {
         self.current_document_url.is_some()
     }
 
+    pub(crate) const fn is_healthy(&self) -> bool {
+        self.healthy
+    }
+
     pub(crate) async fn start(
         &mut self,
         storage_path: Option<&Path>,
@@ -1396,6 +1400,66 @@ impl NativeContentProcess {
             "viewport_synced",
             id,
             "content process viewport synchronization",
+        );
+        if result.is_err() {
+            self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+            let _ = self.child.start_kill();
+        }
+        result
+    }
+
+    /// Replace this worker's document snapshot after a browser-coordinated
+    /// cross-context DOM transfer. The generation check makes a stale worker
+    /// reject the complete candidate before changing its persistent document.
+    pub(crate) async fn sync_document(
+        &mut self,
+        document: &NativeDocumentWire,
+        limits: &NativeEngineLimits,
+        generation: u32,
+    ) -> Result<(), NativeEngineError> {
+        limits.validate()?;
+        let encoded = serde_json::to_vec(document).map_err(|_| NativeEngineError::Worker {
+            operation: "content process document synchronization".into(),
+            reason: "document snapshot could not be encoded".into(),
+        })?;
+        let maximum = MAX_CONTENT_IPC_FRAME_BYTES.saturating_sub(4096);
+        if encoded.len() > maximum {
+            return Err(NativeEngineError::limit(
+                "content-process document synchronization",
+                maximum,
+                encoded.len(),
+            ));
+        }
+        let id = self.next_id();
+        let response = self
+            .exchange_with_timeout(
+                json!({
+                    "kind": "document_sync",
+                    "id": id,
+                    "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                    "generation": generation,
+                    "limits": limits,
+                    "document": document,
+                }),
+                "content process document synchronization",
+                CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            )
+            .await?;
+        if response.get("kind").and_then(Value::as_str) == Some("error") {
+            return Err(NativeEngineError::Worker {
+                operation: "content process document synchronization".into(),
+                reason: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("content process rejected the document snapshot")
+                    .into(),
+            });
+        }
+        let result = require_response_kind(
+            &response,
+            "document_synced",
+            id,
+            "content process document synchronization",
         );
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
@@ -4959,6 +5023,83 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     document.set_viewport(next_viewport)?;
                 }
                 json!({"kind":"viewport_synced","id":id})
+            }
+            "document_sync" if protocol_matches(&request) && running => {
+                let current_generation = document.as_ref().map(NativeDocument::generation);
+                let requested_generation = request
+                    .get("generation")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok());
+                let prepared = (|| {
+                    let Some(current_generation) = current_generation else {
+                        return Err(NativeEngineError::Worker {
+                            operation: "content process document synchronization".into(),
+                            reason: "content process has no committed document".into(),
+                        });
+                    };
+                    let Some(requested_generation) = requested_generation else {
+                        return Err(NativeEngineError::invalid(
+                            "content-process document generation",
+                            "must be a positive integer",
+                        ));
+                    };
+                    if requested_generation != current_generation {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "content process document generation is stale".into(),
+                        });
+                    }
+                    let limits: NativeEngineLimits = request
+                        .get("limits")
+                        .cloned()
+                        .ok_or_else(|| {
+                            NativeEngineError::invalid(
+                                "content-process document limits",
+                                "must be present",
+                            )
+                        })
+                        .and_then(|value| {
+                            serde_json::from_value(value).map_err(|_| {
+                                NativeEngineError::invalid(
+                                    "content-process document limits",
+                                    "must be valid native engine limits",
+                                )
+                            })
+                        })?;
+                    limits.validate()?;
+                    let wire: NativeDocumentWire = request
+                        .get("document")
+                        .cloned()
+                        .ok_or_else(|| {
+                            NativeEngineError::invalid(
+                                "content-process document snapshot",
+                                "must be present",
+                            )
+                        })
+                        .and_then(|value| {
+                            serde_json::from_value(value).map_err(|_| {
+                                NativeEngineError::invalid(
+                                    "content-process document snapshot",
+                                    "must be a valid bounded native document",
+                                )
+                            })
+                        })?;
+                    let mut next = NativeDocument::from_content_wire(
+                        wire,
+                        &limits,
+                        requested_generation,
+                    )?;
+                    if let Some(url) = document_url.as_deref() {
+                        next.set_css_target_from_url(url)?;
+                    }
+                    Ok(next)
+                })();
+                match prepared {
+                    Ok(next) => {
+                        document = Some(next);
+                        json!({"kind":"document_synced","id":id})
+                    }
+                    Err(error) => content_error_response(id, error),
+                }
             }
             "commit" if protocol_matches(&request) && running => {
                 json!({"kind":"committed","id":id})

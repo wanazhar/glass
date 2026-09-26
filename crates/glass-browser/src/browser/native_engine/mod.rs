@@ -63,6 +63,7 @@ pub use dialog::{
     NativeDialogResolution, NativePendingDialog,
 };
 pub use dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind, NativeSemanticNode};
+pub(crate) use dom::NativeNodeTransferIdentity;
 pub(crate) use engine::parse_point_target;
 pub use engine::{
     NativeActionResult, NativeActionabilityReason, NativeDiagnosticsSnapshot,

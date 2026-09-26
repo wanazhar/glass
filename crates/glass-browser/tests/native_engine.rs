@@ -64295,6 +64295,238 @@ async fn native_content_process_resets_same_origin_frame_forms() {
     server.await.unwrap();
 }
 
+fn native_reset_button_fixture() -> &'static str {
+    "<!doctype html><html><body><form id='main-form' action='/submitted'><input id='main-value' name='value' value='main-default'><input id='reset-required' required><input id='input-reset' type='reset' value='Reset input'><button id='button-reset' type='reset'>Reset button</button><button id='click-cancel' type='reset'>Cancel click</button><button id='promote-reset' type='button' form='main-form'>Promote</button></form><form id='other-form' action='/other-submitted'><input id='other-value' name='other' value='other-default'><input id='other-required' required></form></body></html>"
+}
+
+fn native_reset_button_setup_script() -> &'static str {
+    r##"(() => {
+      const main = document.getElementById('main-form');
+      const other = document.getElementById('other-form');
+      const value = document.getElementById('main-value');
+      const clickCancel = document.getElementById('click-cancel');
+      const promote = document.getElementById('promote-reset');
+      const trace = { mainReset: 0, otherReset: 0, submit: 0, invalid: 0 };
+      globalThis.__glassResetButtonTrace = trace;
+      globalThis.__glassResetButtonInitialHref = location.href;
+      main.addEventListener('reset', () => { trace.mainReset += 1; });
+      other.addEventListener('reset', event => {
+        trace.otherReset += 1;
+        event.preventDefault();
+      });
+      for (const form of [main, other]) {
+        form.addEventListener('submit', event => {
+          trace.submit += 1;
+          event.preventDefault();
+        });
+      }
+      for (const id of ['reset-required', 'other-required']) {
+        document.getElementById(id).addEventListener('invalid', () => { trace.invalid += 1; });
+      }
+      clickCancel.addEventListener('click', event => event.preventDefault());
+      promote.addEventListener('click', () => {
+        promote.setAttribute('type', 'reset');
+        promote.setAttribute('form', 'other-form');
+      });
+      value.value = 'dirty-script';
+      document.getElementById('button-reset').click();
+      return true;
+    })()"##
+}
+
+fn native_reset_button_state_script() -> &'static str {
+    r##"(() => ({
+      mainValue: document.getElementById('main-value').value,
+      otherValue: document.getElementById('other-value').value,
+      ...globalThis.__glassResetButtonTrace,
+      sameHref: location.href === globalThis.__glassResetButtonInitialHref,
+    }))()"##
+}
+
+#[tokio::test]
+async fn native_content_process_activates_reset_buttons_after_click_default() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let body = native_reset_button_fixture();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("native reset-button request")
+            .unwrap();
+        let _request = read_http_request(&mut stream).await;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .await
+    .unwrap();
+    session
+        .script(native_reset_button_setup_script())
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script(native_reset_button_state_script())
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "mainValue": "main-default",
+            "otherValue": "other-default",
+            "mainReset": 1,
+            "otherReset": 0,
+            "submit": 0,
+            "invalid": 0,
+            "sameHref": true,
+        })
+    );
+
+    session
+        .script("document.getElementById('main-value').value = 'dirty-input'; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Click {
+            target: "id=input-reset".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script(native_reset_button_state_script())
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "mainValue": "main-default",
+            "otherValue": "other-default",
+            "mainReset": 2,
+            "otherReset": 0,
+            "submit": 0,
+            "invalid": 0,
+            "sameHref": true,
+        })
+    );
+
+    session
+        .script("document.getElementById('main-value').value = 'dirty-click-cancel'; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Click {
+            target: "id=click-cancel".into(),
+        })
+        .await
+        .unwrap();
+    session
+        .script("document.getElementById('other-value').value = 'dirty-other'; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Click {
+            target: "id=promote-reset".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script(native_reset_button_state_script())
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "mainValue": "dirty-click-cancel",
+            "otherValue": "dirty-other",
+            "mainReset": 2,
+            "otherReset": 1,
+            "submit": 0,
+            "invalid": 0,
+            "sameHref": true,
+        })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_activates_reset_buttons_in_same_origin_frames() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("same-origin reset-button request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = match request.split_whitespace().nth(1) {
+                Some("/parent") => {
+                    "<!doctype html><body><iframe id='child' src='/child'></iframe></body>"
+                }
+                Some("/child") => {
+                    "<!doctype html><body><form id='frame-form'><input id='frame-value' value='frame-default'><button id='frame-reset' type='reset'>Reset</button></form></body>"
+                }
+                other => panic!("unexpected same-origin reset-button path: {other:?}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    session
+        .script(
+            "(() => { const child = document.getElementById('child').contentDocument; child.getElementById('frame-value').value = 'frame-dirty'; child.getElementById('frame-reset').click(); return child !== null; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.getElementById('child').contentDocument.getElementById('frame-value').value")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("frame-default")
+    );
+
+    let child_id = session
+        .native_list_frames()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("same-origin reset-button child frame")
+        .id;
+    session.select_frame(&child_id).await.unwrap();
+    assert_eq!(
+        session
+            .script("document.getElementById('frame-value').value")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("frame-default")
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
 #[tokio::test]
 async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
     let _guard = native_content_process_test_lock().lock().await;

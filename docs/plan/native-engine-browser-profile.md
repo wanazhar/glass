@@ -182,9 +182,11 @@ defaults, and ordered `formResetCallback()` reactions across top-level and
 same-origin frame documents; local and content-process regressions cover
 cancellation, reentrancy, callback exceptions, control-state persistence, and
 reset defaults. Reset-button activation, state restoration, and complete
-form-control Web IDL reflection remain profile requirements. Slice 763 defines
-the reset-button activation path; keyboard-generated click activation remains
-in the broader input workstream. See the
+form-control Web IDL reflection remain profile requirements. Slice 763
+implements native activation of form-associated reset buttons through semantic clicks,
+JavaScript `.click()`, and same-origin frame routing. Local tests cover event
+cancellation, form-owner changes, and no submit/validation/navigation. Keyboard-
+generated click activation remains in the broader input workstream. See the
 [slice 762](tasks/native-engine-browser-762.md) and
 [slice 763](tasks/native-engine-browser-763.md) contracts.
 ### Synchronous JavaScript dialog contract

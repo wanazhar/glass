@@ -9426,7 +9426,38 @@ fn mutate_click_with_event_preflight(
     let mut navigation = None;
     if click_allowed {
         events.extend(next.apply_click(node_id)?);
-        if let Some(form_id) = next.submit_control_form(node_id) {
+        if let Some(form_id) = next.reset_control_form(node_id) {
+            let command = serde_json::json!({
+                "kind": "activateFormReset",
+                "node_index": form_id.index(),
+            });
+            let command =
+                serde_json::to_string(&command).map_err(|_| NativeEngineError::Worker {
+                    operation: "activate native reset button".into(),
+                    reason: "reset form target could not be encoded".into(),
+                })?;
+            let source = format!("globalThis.__glassApplyNativeCommand({command})");
+            let reset =
+                runtime.evaluate(&source, &next, document_url, document_origin, viewport)?;
+            apply_content_event_history(
+                &reset.commands,
+                document_url,
+                document_origin,
+                runtime,
+                &mut history,
+            )?;
+            scroll_commands.extend(extract_scroll_commands(&reset.commands));
+            let (effects, _) = apply_document_commands_with_font_face_ack(
+                &mut next,
+                runtime,
+                document_url,
+                document_origin,
+                viewport,
+                &reset.commands,
+                false,
+            )?;
+            events.extend(effects);
+        } else if let Some(form_id) = next.submit_control_form(node_id) {
             let invalid = next.invalid_form_controls(form_id, Some(node_id))?;
             if invalid.is_empty() {
                 if dispatch_submit_event(

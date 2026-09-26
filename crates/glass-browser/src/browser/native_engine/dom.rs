@@ -9159,6 +9159,21 @@ impl NativeDocument {
         self.form_owner(id)
     }
 
+    pub(crate) fn reset_control_form(&self, id: NativeNodeId) -> Option<NativeNodeId> {
+        let node = self.node(id)?;
+        let tag_name = node.element_name()?;
+        let is_reset = match tag_name {
+            "button" | "input" => node
+                .attribute("type")
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("reset")),
+            _ => false,
+        };
+        if !is_reset {
+            return None;
+        }
+        self.form_owner(id)
+    }
+
     pub(crate) fn reset_form_controls(
         &mut self,
         form_id: NativeNodeId,

@@ -902,6 +902,65 @@ impl NativeEngine {
         Ok(self.document.generation())
     }
 
+    pub(crate) fn frame_owner_id(&self) -> &str {
+        &self.frame_id
+    }
+
+    pub(crate) fn document_transfer_draft(&self) -> NativeDocument {
+        self.document.clone()
+    }
+
+    pub(crate) fn validate_document_transfer_candidate(
+        &self,
+        candidate: &NativeDocument,
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("cross-context node transfer")?;
+        if candidate.generation() != self.document.generation()
+            || self.document.revision() != self.revision
+            || candidate.revision() != self.next_revision()?
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "native node transfer document generation or revision is stale".into(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn synchronize_document_transfer_snapshot(
+        &mut self,
+        snapshot: &NativeDocument,
+    ) -> Result<(), NativeEngineError> {
+        if snapshot.generation() != self.document.generation() {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "native node transfer cannot synchronize a stale document generation"
+                    .into(),
+            });
+        }
+        if let Some(process) = self.content_process.as_mut() {
+            let result = process
+                .sync_document(
+                    &snapshot.to_content_wire(),
+                    &self.config.limits,
+                    snapshot.generation(),
+                )
+                .await;
+            let worker_failed = !process.is_healthy();
+            if worker_failed {
+                self.content_process.take();
+            }
+            result?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn publish_document_transfer_snapshot(
+        &mut self,
+        candidate: NativeDocument,
+    ) {
+        self.revision = candidate.revision();
+        self.document = candidate;
+    }
+
     pub(crate) fn navigation_requires_document_lifecycle(&self, target_url: &str) -> bool {
         !self.is_same_document_navigation(target_url)
     }

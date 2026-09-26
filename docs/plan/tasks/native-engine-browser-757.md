@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-757
 scope: glass-browser/cross-context-document-adopt-node
-status: planned
+status: in_progress
 depends-on: [native-engine-browser-756]
 ---
 

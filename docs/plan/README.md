@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-752`.
+browser expansion slices are complete through `native-engine-browser-753`.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux
@@ -49,7 +49,7 @@ does not execute response scripts or load referenced resources. The scoped
 library/test-target check, six focused XHR parser tests, two process-backed
 XML/HTML XHR regressions, and process-backed navigation regression pass
 locally. Slice 749's process-backed XML/HTML XHR regressions pass (2 tests).
-Documentation gates pass: release-truth covers 1,380 Markdown files
+Documentation gates pass: release-truth covers 1,381 Markdown files
 with zero current-claim failures; depth covers 93 current guides and 19
 contracts; shortcut inventory covers 15 implementation keys and 63 markers;
 live coverage includes 346 full-product MCP tools (101 browser-only), 17
@@ -64,15 +64,18 @@ documents. Slice 752 keeps parsed navigation-document template contents in
 separate native `DocumentFragment` nodes and exposes the live-window `.content`,
 query/traversal boundaries, inert owner-document identity, fragment insertion,
 and `innerHTML` replacement. The model unit and process-backed DOM regression
-pass locally. Same-origin frame projection, full template clone/import/adopt
-behavior, full HTML/Encoding/XHR conformance, remote CI, and cross-platform
-certification remain open. See the [slice 746 task](tasks/native-engine-browser-746.md),
+pass locally. Slice 753 projects the same native template fragment boundaries
+into same-origin frame documents; its process-backed test covers inert owner
+identity, query boundaries, mutation persistence, and replacement. Full
+template clone/import/adopt behavior, HTML/Encoding/XHR conformance, remote CI,
+and cross-platform certification remain open. See the [slice 746 task](tasks/native-engine-browser-746.md),
 [slice 747 task](tasks/native-engine-browser-747.md), and
 [slice 748 task](tasks/native-engine-browser-748.md) and the
 [slice 749 task](tasks/native-engine-browser-749.md) and the
 [slice 750 task](tasks/native-engine-browser-750.md), the
 [slice 751 task](tasks/native-engine-browser-751.md), and the
-[slice 752 task](tasks/native-engine-browser-752.md).
+[slice 752 task](tasks/native-engine-browser-752.md) and
+[slice 753 task](tasks/native-engine-browser-753.md).
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,
 and inherited sandboxed-modals eligibility. Remote CI and cross-platform

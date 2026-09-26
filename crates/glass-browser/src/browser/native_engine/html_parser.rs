@@ -13,7 +13,7 @@ use html5ever::tendril::StrTendril;
 use html5ever::tokenizer::{
     BufferQueue, EndTag, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
-use html5ever::tree_builder::TreeBuilder;
+use html5ever::tree_builder::{TreeBuilder, TreeBuilderOpts};
 use html5ever::{
     Attribute, ExpandedName, LocalName, Namespace, Prefix, QualName, TokenizerResult, local_name,
     ns,
@@ -133,11 +133,13 @@ impl HtmlParsedQuirksMode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct HtmlParsedDocument {
     pub(crate) nodes: Vec<HtmlParsedNode>,
     pub(crate) quirks_mode: HtmlParsedQuirksMode,
     pub(crate) parse_error_count: usize,
+    #[serde(skip_serializing)]
     pub(crate) sink_failure: Option<HtmlTreeSinkFailure>,
 }
 
@@ -861,9 +863,21 @@ pub(crate) fn parse_document_with_limits(
     max_nodes: usize,
     max_dom_depth: usize,
 ) -> HtmlParsedDocument {
+    parse_document_with_limits_and_scripting(source, max_nodes, max_dom_depth, true)
+}
+
+pub(crate) fn parse_document_with_limits_and_scripting(
+    source: &str,
+    max_nodes: usize,
+    max_dom_depth: usize,
+    scripting_enabled: bool,
+) -> HtmlParsedDocument {
     let tree_builder = TreeBuilder::new(
         NativeHtmlTreeSink::new(max_nodes, max_dom_depth),
-        Default::default(),
+        TreeBuilderOpts {
+            scripting_enabled,
+            ..TreeBuilderOpts::default()
+        },
     );
     let token_sink = NativeHtmlTokenSink { tree_builder };
     let tokenizer = Tokenizer::new(token_sink, TokenizerOpts::default());
@@ -1003,7 +1017,7 @@ mod tests {
     use super::{
         HtmlParsedAttribute, HtmlParsedFragment, HtmlParsedNodeKind, HtmlParsedQuirksMode,
         HtmlTreeSinkFailure, parse_document, parse_document_with_limits,
-        parse_fragment_with_limits,
+        parse_document_with_limits_and_scripting, parse_fragment_with_limits,
     };
 
     const HTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
@@ -1062,6 +1076,20 @@ mod tests {
             child(&parsed.nodes, body, "p"),
             parsed.nodes[body].children[0]
         );
+    }
+
+    #[test]
+    fn html_document_parser_honors_scripting_disabled_for_noscript() {
+        let parsed = parse_document_with_limits_and_scripting(
+            "<!doctype html><body><noscript><p id='fallback'>visible</p></noscript></body>",
+            128,
+            128,
+            false,
+        );
+        assert_eq!(parsed.sink_failure, None);
+        let fallback = element_by_id(&parsed.nodes, "fallback");
+        let noscript = child(&parsed.nodes, parent(&parsed.nodes, fallback), "noscript");
+        assert_eq!(child(&parsed.nodes, noscript, "p"), fallback);
     }
 
     #[test]

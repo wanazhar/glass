@@ -56,6 +56,12 @@ release-truth, depth, shortcut, and Markdown-link checks pass. Full docs
 inventory coverage is pending because `target/debug/glass` is not built; this
 gate is not claimed. XHR `responseType="document"` remains on its separate
 parser route. See the [slice 747 task](tasks/native-engine-browser-747.md).
+Slice 748 is the active next behavior task: replace the handwritten XHR HTML
+`responseType="document"` tree builder with the bounded html5ever document
+parser configured with scripting disabled, preserving the detached read-only
+response document and no-resource/no-script behavior. Response-byte charset
+selection remains open. Its contract is in the
+[slice 748 task](tasks/native-engine-browser-748.md).
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,
 and inherited sandboxed-modals eligibility. Remote CI and cross-platform

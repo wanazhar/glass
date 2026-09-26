@@ -26,7 +26,9 @@ use super::fetch_stream::{
 };
 use super::font::{MAX_NATIVE_FONT_BYTES, NativeFontBook};
 use super::html_parser::{
-    HtmlParsedAttribute, HtmlTreeSinkFailure, parse_fragment_with_limits as parse_html5_fragment,
+    HtmlParsedAttribute, HtmlTreeSinkFailure,
+    parse_document_with_limits_and_scripting as parse_html5_document,
+    parse_fragment_with_limits as parse_html5_fragment,
 };
 use super::interaction::{
     MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FORM_BODY_BYTES, MAX_NATIVE_SCRIPT_COMMAND_BYTES,
@@ -12125,6 +12127,7 @@ impl NativeJavaScriptRuntime {
         context
             .with(|ctx| {
                 install_native_html_fragment_parser(ctx.clone())?;
+                install_native_html_document_parser(ctx.clone())?;
                 ctx.eval::<(), _>(
                     r#"Object.defineProperty(globalThis, "__glassParseJSONModule", {
                       value: JSON.parse,
@@ -16780,6 +16783,50 @@ fn install_native_html_fragment_parser<'js>(ctx: Ctx<'js>) -> Result<(), Error> 
     ctx.eval::<(), _>(
         r#"Object.defineProperty(globalThis, "__glassParseHtmlFragmentHost", {
           value: globalThis.__glassParseHtmlFragmentHost,
+          writable: false,
+          configurable: false,
+          enumerable: false,
+        });"#,
+    )
+}
+
+fn install_native_html_document_parser<'js>(ctx: Ctx<'js>) -> Result<(), Error> {
+    let parse_document = Function::new(ctx.clone(), |source: String| -> String {
+        let error_response = |kind: &str| serde_json::json!({ "error": kind });
+        let response = if source.len() > crate::browser_backend::MAX_TEXT_BYTES {
+            error_response("byteLimit")
+        } else {
+            let parsed = parse_html5_document(
+                &source,
+                MAX_NATIVE_NODES.saturating_mul(2),
+                MAX_NATIVE_DOM_DEPTH,
+                false,
+            );
+            match parsed.sink_failure {
+                Some(HtmlTreeSinkFailure::InvalidTree(_)) => error_response("invalidTree"),
+                Some(HtmlTreeSinkFailure::NodeLimitExceeded { .. }) => {
+                    error_response("nodeLimit")
+                }
+                Some(HtmlTreeSinkFailure::DomDepthExceeded { .. }) => {
+                    error_response("depthLimit")
+                }
+                None => match serde_json::to_string(&parsed) {
+                    Ok(serialized) if serialized.len() <= MAX_NATIVE_SCRIPT_BYTES => {
+                        return serialized;
+                    }
+                    Ok(_) => error_response("resultLimit"),
+                    Err(_) => error_response("serialization"),
+                },
+            }
+        };
+        serde_json::to_string(&response)
+            .unwrap_or_else(|_| r#"{"error":"serialization"}"#.into())
+    })?;
+    ctx.globals()
+        .set("__glassParseHtmlDocumentHost", parse_document)?;
+    ctx.eval::<(), _>(
+        r#"Object.defineProperty(globalThis, "__glassParseHtmlDocumentHost", {
+          value: globalThis.__glassParseHtmlDocumentHost,
           writable: false,
           configurable: false,
           enumerable: false,

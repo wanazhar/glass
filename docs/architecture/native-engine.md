@@ -30,8 +30,9 @@ cross-origin DOM access, custom-element adopted callbacks/registries, and
 Shadow DOM adoption remain outside this slice. Quirks-mode layout,
 parser-stream reentrancy, remote CI, and cross-platform certification also
 remain open. See the [slice 757 task](../plan/tasks/native-engine-browser-757.md).
-Slice 758 is in progress. The autonomous registry and core lifecycle were
-introduced in `b4d7af0d`, with identity fixes in `6cefcc05` and `b88dbaf9`.
+Slice 758 completes the autonomous registry and core lifecycle locally. The
+implementation was introduced in `b4d7af0d`, with identity fixes in
+`6cefcc05` and `b88dbaf9`.
 Process-backed regressions verify template identity and frame-local registry
 state in the selected same-origin frame owner. The reaction queue now drains
 with a head cursor and periodic prefix compaction; a 300-reaction regression
@@ -58,9 +59,18 @@ direct construction, serialization, cloning/import, lifecycle ordering,
 frame-local registries, and native button behavior; the focused
 custom-element group passes locally.
 The [slice 759 task](../plan/tasks/native-engine-browser-759.md) records the
-contract and evidence. Unmapped built-in interfaces, scoped registries,
-form-associated elements, custom states, and broader Web Platform Tests remain
-open; this is not a browser-completion claim.
+contract and evidence. Unmapped built-in interfaces, scoped registries, custom
+states, and broader Web Platform Tests remain open; this is not a
+browser-completion claim.
+Slice 760 implements bounded form-associated autonomous custom elements
+through `ElementInternals.attachInternals()`, `setFormValue()`, and ordered
+`FormData(form)` entries. In-process and content-process regressions verify
+scalar/File/FormData values, explicit form ownership, document-order
+composition, failures for unsupported lifecycle hooks, and persistence across
+script refresh. They also verify disabled-fieldset inheritance and its
+first-legend exception. The executable contract is [recorded in the slice
+task](../plan/tasks/native-engine-browser-760.md); form lifecycle callbacks
+and native HTML form-navigation submission are not part of this slice.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

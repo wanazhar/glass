@@ -33098,7 +33098,34 @@ fn document_bootstrap(
       throw new TypeError("FormData constructor requires a form element");
     }}
     const entries = [];
+    const elementsByIndex = new Map();
+    const firstLegendByFieldset = new Map();
+    for (const element of elements) {{
+      elementsByIndex.set(element.nodeIndex, element);
+      if (element.tagName === "LEGEND") {{
+        const parent = elementsByIndex.get(element.parentIndex);
+        if (parent && parent.tagName === "FIELDSET" && !firstLegendByFieldset.has(parent.nodeIndex)) {{
+          firstLegendByFieldset.set(parent.nodeIndex, element);
+        }}
+      }}
+    }}
     for (const control of elements) {{
+      const customDefinition = nativeCustomElementDefinitionFor(control);
+      if (customDefinition && customDefinition.formAssociated && !customDefinition.extends) {{
+        if (nativeFormAssociatedOwnerFor(control)?.nodeIndex !== form.nodeIndex
+            || nativeFormAssociatedIsDisabled(control, firstLegendByFieldset)) continue;
+        const name = String(control.getAttribute("name") || "");
+        const submission = nativeFormAssociatedValues.get(control);
+        if (!submission || submission.kind === "null") continue;
+        if (submission.kind === "formdata") {{
+          for (const entry of submission.entries) entries.push([entry[0], entry[1]]);
+        }} else if (name) {{
+          entries.push([name, submission.kind === "file"
+            ? {{ kind: "file", value: submission.value, filename: submission.filename }}
+            : submission.value]);
+        }}
+        continue;
+      }}
       if (control.formOwnerIndex !== form.nodeIndex || control.disabled) continue;
       const name = String(control.getAttribute("name") || "");
       if (!name) continue;
@@ -33345,6 +33372,10 @@ fn document_bootstrap(
     }}
     return new BlobNative([begin > finish ? "" : this._text.slice(begin, finish)], {{ type: contentType }});
   }};
+  const nativeFileInstances = globalThis.__glassNativeFileInstances instanceof WeakSet
+    ? globalThis.__glassNativeFileInstances
+    : new WeakSet();
+  globalThis.__glassNativeFileInstances = nativeFileInstances;
   const FileNative = typeof globalThis.__glassFileConstructor === "function"
     ? globalThis.__glassFileConstructor
     : function(parts, name, options) {{
@@ -33356,6 +33387,7 @@ fn document_bootstrap(
       ? Number(options.lastModified)
       : 0;
     this.lastModified = Math.max(0, modified);
+    nativeFileInstances.add(this);
   }};
   if (typeof globalThis.__glassFileConstructor !== "function") {{
     FileNative.prototype = Object.create(BlobNative.prototype);
@@ -33412,9 +33444,14 @@ fn document_bootstrap(
     }}
     return String(value);
   }};
+  const nativeFormDataInstances = globalThis.__glassNativeFormDataInstances instanceof WeakSet
+    ? globalThis.__glassNativeFormDataInstances
+    : new WeakSet();
+  globalThis.__glassNativeFormDataInstances = nativeFormDataInstances;
   const FormDataNative = function(form) {{
     this.__glassFormData = true;
     this._entries = [];
+    nativeFormDataInstances.add(this);
     if (form !== undefined && form !== null) this._entries = formDataEntries(form);
   }};
   const formDataEntryValue = entry => entry[1].kind === "file" ? entry[1].value : entry[1];
@@ -46236,6 +46273,158 @@ fn document_bootstrap(
   }};
   const nativeCustomElementDefinitionFor = (element) =>
     element && element.__glassCustomElementDefinition || null;
+  const nativeElementInternalsConstructor = ensureNativeConstructor("ElementInternals", null);
+  if (!nativeElementInternalsConstructor.prototype[Symbol.toStringTag]) {{
+    Object.defineProperty(nativeElementInternalsConstructor.prototype, Symbol.toStringTag, {{
+      configurable: true,
+      value: "ElementInternals",
+    }});
+  }}
+  const nativeAttachedInternals = globalThis.__glassNativeAttachedInternals instanceof WeakMap
+    ? globalThis.__glassNativeAttachedInternals
+    : new WeakMap();
+  const nativeElementInternalsTargets = globalThis.__glassNativeElementInternalsTargets instanceof WeakMap
+    ? globalThis.__glassNativeElementInternalsTargets
+    : new WeakMap();
+  const nativeElementInternalsStates = globalThis.__glassNativeElementInternalsStates instanceof WeakMap
+    ? globalThis.__glassNativeElementInternalsStates
+    : new WeakMap();
+  const nativeFormAssociatedValues = globalThis.__glassNativeFormAssociatedValues instanceof WeakMap
+    ? globalThis.__glassNativeFormAssociatedValues
+    : new WeakMap();
+  globalThis.__glassNativeAttachedInternals = nativeAttachedInternals;
+  globalThis.__glassNativeElementInternalsTargets = nativeElementInternalsTargets;
+  globalThis.__glassNativeElementInternalsStates = nativeElementInternalsStates;
+  globalThis.__glassNativeFormAssociatedValues = nativeFormAssociatedValues;
+  const nativeFormAssociatedDefinitionFor = (element) => {{
+    const definition = nativeCustomElementDefinitionFor(element);
+    return definition && definition.formAssociated && !definition.extends ? definition : null;
+  }};
+  const nativeFormAssociatedIsWithin = (element, ancestor) => {{
+    let current = element;
+    while (current) {{
+      if (current.nodeIndex === ancestor.nodeIndex) return true;
+      current = current.parentElement;
+    }}
+    return false;
+  }};
+  const nativeFormAssociatedIsDisabled = (element, firstLegendByFieldset) => {{
+    if (element.hasAttribute("disabled")) return true;
+    let ancestor = element.parentElement;
+    while (ancestor) {{
+      if (ancestor.tagName === "FIELDSET" && ancestor.hasAttribute("disabled")) {{
+        const firstLegend = firstLegendByFieldset.get(ancestor.nodeIndex) || null;
+        if (!firstLegend || !nativeFormAssociatedIsWithin(element, firstLegend)) return true;
+      }}
+      ancestor = ancestor.parentElement;
+    }}
+    return false;
+  }};
+  const nativeFormAssociatedOwnerFor = (element) => {{
+    if (!nativeFormAssociatedDefinitionFor(element)) return null;
+    const formReference = element.getAttribute("form");
+    if (formReference !== null) {{
+      if (formReference === "") return null;
+      return elements.find((candidate) => candidate.tagName === "FORM"
+        && candidate.hasAttribute("id")
+        && candidate.id === formReference) || null;
+    }}
+    let parent = element.parentElement;
+    while (parent) {{
+      if (parent.tagName === "FORM") return parent;
+      parent = parent.parentElement;
+    }}
+    return null;
+  }};
+  const nativeFormAssociatedValue = (value) => {{
+    if (value === null) return {{ kind: "null" }};
+    if (nativeFormDataInstances.has(value)) {{
+      if (!Array.isArray(value._entries) || value._entries.length > storageEntryLimit) {{
+        throw new RangeError("native ElementInternals FormData entry limit exceeded");
+      }}
+      const entries = value._entries.map((entry) => {{
+        if (!Array.isArray(entry) || entry.length < 2) {{
+          throw new TypeError("native ElementInternals FormData entry is invalid");
+        }}
+        const name = String(entry[0]);
+        if (name.length > storageKeyLimit) {{
+          throw new RangeError("native ElementInternals FormData name exceeds its limit");
+        }}
+        const source = entry[1];
+        if (source && source.kind === "file"
+            && nativeFileInstances.has(source.value)) {{
+          return [name, {{
+            kind: "file",
+            value: source.value,
+            filename: String(source.filename === undefined ? source.value.name : source.filename),
+          }}];
+        }}
+        const text = String(source);
+        if (text.length > storageValueLimit) {{
+          throw new RangeError("native ElementInternals FormData value exceeds its limit");
+        }}
+        return [name, text];
+      }});
+      return {{ kind: "formdata", entries }};
+    }}
+    if (nativeFileInstances.has(value)) {{
+      return {{ kind: "file", value, filename: String(value.name || "") }};
+    }}
+    if (typeof value === "symbol") throw new TypeError("native ElementInternals value cannot be a Symbol");
+    const text = String(value);
+    if (text.length > storageValueLimit) {{
+      throw new RangeError("native ElementInternals form value exceeds its limit");
+    }}
+    return {{ kind: "string", value: text }};
+  }};
+  Object.defineProperty(nativeElementInternalsConstructor.prototype, "form", {{
+    configurable: true,
+    enumerable: true,
+    get() {{
+      const target = nativeElementInternalsTargets.get(this);
+      if (!target) throw new TypeError("Illegal ElementInternals receiver");
+      if (!nativeFormAssociatedDefinitionFor(target)) {{
+        throw new DOMExceptionNative("ElementInternals.form requires a form-associated custom element", "NotSupportedError");
+      }}
+      return nativeFormAssociatedOwnerFor(target);
+    }},
+  }});
+  Object.defineProperty(nativeElementInternalsConstructor.prototype, "setFormValue", {{
+    configurable: true,
+    writable: true,
+    value(value, state) {{
+      const target = nativeElementInternalsTargets.get(this);
+      if (!target) throw new TypeError("Illegal ElementInternals receiver");
+      if (arguments.length === 0) throw new TypeError("setFormValue requires a value");
+      const submission = nativeFormAssociatedValue(value);
+      const retainedState = arguments.length < 2 ? submission : nativeFormAssociatedValue(state);
+      if (!nativeFormAssociatedDefinitionFor(target)) {{
+        throw new DOMExceptionNative("setFormValue requires a form-associated custom element", "NotSupportedError");
+      }}
+      nativeFormAssociatedValues.set(target, submission);
+      nativeElementInternalsStates.set(this, retainedState);
+    }},
+  }});
+  Object.defineProperty(HTMLElementNative.prototype, "attachInternals", {{
+    configurable: true,
+    writable: true,
+    value() {{
+      const element = this;
+      const definition = nativeCustomElementDefinitionFor(element);
+      const customState = element && element.__glassCustomElementState;
+      if (!element || typeof element !== "object" || !definition
+          || nativeCustomElementIsValue(element) !== null
+          || definition.disableInternals
+          || !["precustomized", "custom"].includes(customState)
+          || nativeAttachedInternals.has(element)) {{
+        throw new DOMExceptionNative("attachInternals is not available for this element", "NotSupportedError");
+      }}
+      const internals = Object.create(nativeElementInternalsConstructor.prototype);
+      nativeAttachedInternals.set(element, internals);
+      nativeElementInternalsTargets.set(internals, element);
+      return internals;
+    }},
+  }});
   const nativeCustomElementPendingReactionCount = () =>
     Math.max(0, nativeCustomElementState.reactions.length - nativeCustomElementState.reactionHead);
   const nativeCustomElementEnqueueReaction = (reaction) => {{
@@ -46591,6 +46780,36 @@ fn document_bootstrap(
             }}
           }}
         }}
+        const disabledFeatures = new Set();
+        const disabledFeaturesIterable = constructor.disabledFeatures;
+        if (disabledFeaturesIterable !== undefined) {{
+          let disabledFeatureCount = 0;
+          for (const feature of disabledFeaturesIterable) {{
+            if (disabledFeatureCount >= 32) {{
+              throw new RangeError("native custom element disabled-feature limit exceeded");
+            }}
+            disabledFeatureCount += 1;
+            disabledFeatures.add(String(feature));
+          }}
+        }}
+        const formAssociated = Boolean(constructor.formAssociated);
+        if (formAssociated) {{
+          for (const callbackName of [
+            "formAssociatedCallback", "formDisabledCallback",
+            "formResetCallback", "formStateRestoreCallback",
+          ]) {{
+            const callback = prototype[callbackName];
+            if (callback !== undefined && typeof callback !== "function") {{
+              throw new TypeError(callbackName + " must be callable");
+            }}
+            if (callback !== undefined) {{
+              throw new DOMExceptionNative(
+                "Form-associated lifecycle callbacks are not supported by this native profile",
+                "NotSupportedError",
+              );
+            }}
+          }}
+        }}
         definition = {{
           name: elementName,
           localName,
@@ -46600,6 +46819,8 @@ fn document_bootstrap(
           prototype,
           callbacks,
           observedAttributes,
+          formAssociated,
+          disableInternals: disabledFeatures.has("internals"),
         }};
       }} finally {{ nativeCustomElementState.defining = false; }}
       nativeCustomElementState.definitionsByName.set(elementName, definition);

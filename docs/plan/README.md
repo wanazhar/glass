@@ -28,6 +28,8 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion slices are complete through `native-engine-browser-756`.
+The next planned contract is `native-engine-browser-757`; it is not an
+implementation checkpoint.
 Slice 755 implements target-document-aware `Document.importNode()` for live
 top-level, same-origin-frame, and inert template-owner Documents. Its focused
 process-backed regression passes locally; this remains a bounded DOM slice,
@@ -39,6 +41,11 @@ identity, detachment, nested inert-template ownership, same-Document detach,
 typed failures, atomic preflight limits, cross-context rejection, and state
 persistence. A native identity-transfer protocol is still required for
 cross-context adoption.
+Slice 757 plans coordinated same-origin adoption between the top-level
+Document and accessible frame Documents in one browsing-context tree, with
+transactional ownership remapping and later command routing. The contract is
+planned only; independent tabs/popups and implementation evidence remain
+open.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux
@@ -95,7 +102,8 @@ certification remain open. See the [slice 746 task](tasks/native-engine-browser-
 [slice 753 task](tasks/native-engine-browser-753.md),
 [slice 754 task](tasks/native-engine-browser-754.md),
 [slice 755 task](tasks/native-engine-browser-755.md), and
-[slice 756 task](tasks/native-engine-browser-756.md).
+[slice 756 task](tasks/native-engine-browser-756.md), and the
+[planned slice 757 task](tasks/native-engine-browser-757.md).
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,
 and inherited sandboxed-modals eligibility. Remote CI and cross-platform

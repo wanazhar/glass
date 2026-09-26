@@ -124,7 +124,10 @@ including boolean/dictionary depth options and destination inert ownership for
 nested template content. The [slice 756 contract](tasks/native-engine-browser-756.md)
 implements bounded same-context adoption with identity preservation,
 detachment, nested template-owner reassignment, and preflight bounds.
-Cross-context identity transfer remains open. See the
+The [slice 757 contract](tasks/native-engine-browser-757.md) plans
+identity-preserving transfer among same-origin top-level/frame Documents in
+one context tree; it is a plan, not implementation evidence. Independent
+top-level/popup transfer remains open. See the
 [slice 751 contract](tasks/native-engine-browser-751.md),
 [slice 752 contract](tasks/native-engine-browser-752.md), and
 [slice 753 contract](tasks/native-engine-browser-753.md) and

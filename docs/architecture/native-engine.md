@@ -21,6 +21,11 @@ Unsupported trees are preflighted against native node/depth bounds; cross-owner
 transfer fails before mutation because frame command routing has no identity-
 transfer protocol. Cross-context transfer, quirks-mode layout, parser-stream
 reentrancy, remote CI, and cross-platform certification remain open.
+Slice 757 is a planned contract for coordinated, identity-preserving adoption
+between same-origin Documents in one top-level browsing-context tree. It has
+not been implemented; independent top-level targets and popups remain outside
+that planned slice. See the
+[slice 757 task](../plan/tasks/native-engine-browser-757.md).
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and
@@ -218,7 +223,10 @@ same-origin-frame realms; slice 755 implements target-aware `importNode()`
 there and in inert template-owner Documents. Slice 756 implements bounded
 same-context `adoptNode()` with identity preservation, detachment, recursive
 inert-template ownership, and atomic bounds checks; cross-context transfer
-remains incomplete.
+remains incomplete. The planned
+[slice 757 contract](../plan/tasks/native-engine-browser-757.md) defines a
+same-origin top-level/frame identity-transfer gate; it is not implementation
+or conformance evidence.
 Quirks mode does not yet alter CSS/layout, and
 script-stream reentrancy remains incomplete. html5ever documents remaining
 tree-builder differences; the

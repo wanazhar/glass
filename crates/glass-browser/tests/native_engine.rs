@@ -63642,9 +63642,9 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
               let duplicateNameError = null;
               try { customElements.define('x-probe', class extends HTMLElement {}); }
               catch (error) { duplicateNameError = error.name; }
-              let unsupportedExtendsError = null;
+              let mismatchedBuiltinPrototypeError = null;
               try { customElements.define('x-option', class extends HTMLElement {}, { extends: 'button' }); }
-              catch (error) { unsupportedExtendsError = error.name; }
+              catch (error) { mismatchedBuiltinPrototypeError = error.name; }
               let invalidWhenDefinedError = null;
               try { await customElements.whenDefined('invalid'); }
               catch (error) { invalidWhenDefinedError = error.name; }
@@ -63682,7 +63682,7 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
                 ],
                 invalidNameError,
                 duplicateNameError,
-                unsupportedExtendsError,
+                mismatchedBuiltinPrototypeError,
                 invalidWhenDefinedError,
                 lifecycleCounts: {
                   constructor: trace.filter(item => item.startsWith('construct:')).length,
@@ -63739,7 +63739,7 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
             "exceptionRecovery": ["failed", true, "custom", 2],
             "invalidNameError": "SyntaxError",
             "duplicateNameError": "NotSupportedError",
-            "unsupportedExtendsError": "NotSupportedError",
+            "mismatchedBuiltinPrototypeError": "NotSupportedError",
             "invalidWhenDefinedError": "SyntaxError",
             "lifecycleCounts": {
                 "constructor": 6,
@@ -63845,6 +63845,177 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
 }
 
 #[tokio::test]
+async fn native_customized_builtins_preserve_interface_is_and_lifecycle() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("native customized built-in request")
+            .unwrap();
+        let _request = read_http_request(&mut stream).await;
+        let body = "<!doctype html><html><body><button id='parser' is='x-plastic-button' data-value='parser' data-label='parser'>P</button><div id='wrong-local' is='x-plastic-button'></div><button id='attribute-only'></button></body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/customized-builtins")),
+    )
+    .await
+    .unwrap();
+    let result = session
+        .script(
+            r##"await (async () => {
+              const trace = [];
+              class PlasticButton extends HTMLButtonElement {
+                static get observedAttributes() { return ['data-value']; }
+                constructor() {
+                  super();
+                  trace.push('construct:' + this.localName);
+                }
+                attributeChangedCallback(name, oldValue, newValue) {
+                  trace.push('attribute:' + name + ':' + oldValue + ':' + newValue);
+                }
+                connectedCallback() {
+                  trace.push('connected:' + this.getAttribute('data-label'));
+                }
+              }
+              customElements.define('x-plastic-button', PlasticButton, { extends: 'button' });
+
+              const parser = document.getElementById('parser');
+              const objectCreated = document.createElement('button', { is: 'x-plastic-button' });
+              objectCreated.setAttribute('data-label', 'object');
+              const stringCreated = document.createElement('button', 'x-plastic-button');
+              stringCreated.setAttribute('data-label', 'string');
+              const namespaceCreated = document.createElementNS(
+                'http://www.w3.org/1999/xhtml', 'button', { is: 'x-plastic-button' },
+              );
+              namespaceCreated.setAttribute('data-label', 'namespace');
+              const directCreated = new PlasticButton();
+              directCreated.setAttribute('data-label', 'direct');
+              await Promise.resolve();
+              const imported = document.importNode(objectCreated, true);
+              const cloned = objectCreated.cloneNode(true);
+              document.body.append(
+                objectCreated, stringCreated, namespaceCreated,
+                directCreated, imported, cloned,
+              );
+
+              let clickCount = 0;
+              objectCreated.addEventListener('click', () => { clickCount += 1; });
+              objectCreated.click();
+
+              const wrongLocal = document.getElementById('wrong-local');
+              const attributeOnly = document.getElementById('attribute-only');
+              attributeOnly.setAttribute('is', 'x-plastic-button');
+              document.body.append(attributeOnly);
+              const captureDefineError = (name, constructor, extendsName) => {
+                try { customElements.define(name, constructor, { extends: extendsName }); }
+                catch (error) { return error.name; }
+                return null;
+              };
+              const wrongBaseError = captureDefineError(
+                'x-wrong-button-base', class extends HTMLElement {}, 'button',
+              );
+              const unknownBaseError = captureDefineError(
+                'x-unknown-button-base', class extends HTMLElement {}, 'made-up-element',
+              );
+              const customBaseError = captureDefineError(
+                'x-custom-button-base', class extends HTMLElement {}, 'x-other-element',
+              );
+              let conflictingCreationOptionsError = null;
+              try {
+                document.createElement('button', {
+                  is: 'x-plastic-button', customElementRegistry: customElements,
+                });
+              } catch (error) { conflictingCreationOptionsError = error.name; }
+              const instances = [
+                objectCreated, stringCreated, namespaceCreated,
+                directCreated, imported, cloned,
+              ].map((element) => [
+                element.localName,
+                element instanceof PlasticButton,
+                element instanceof HTMLButtonElement,
+                element.getAttribute('is'),
+                element.outerHTML.includes('is="x-plastic-button"'),
+                element.__glassCustomElementState,
+              ]);
+              return {
+                parser: [
+                  parser instanceof PlasticButton,
+                  parser instanceof HTMLButtonElement,
+                  parser.getAttribute('is'),
+                ],
+                instances,
+                wrongLocal: [wrongLocal.localName, wrongLocal instanceof PlasticButton],
+                attributeOnly: [attributeOnly.getAttribute('is'), attributeOnly instanceof PlasticButton],
+                customName: customElements.getName(PlasticButton),
+                wrongBaseError,
+                unknownBaseError,
+                customBaseError,
+                unpublishedInvalidDefinitions: [
+                  customElements.get('x-wrong-button-base') === undefined,
+                  customElements.get('x-unknown-button-base') === undefined,
+                  customElements.get('x-custom-button-base') === undefined,
+                ],
+                conflictingCreationOptionsError,
+                constructedCount: trace.filter((item) => item === 'construct:button').length,
+                attributeTrace: trace.filter((item) => item.startsWith('attribute:')),
+                connectionTrace: trace.filter((item) => item.startsWith('connected:')),
+                serialized: objectCreated.outerHTML,
+                clickCount,
+              };
+            })()"##,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.value,
+        serde_json::json!({
+            "parser": [true, true, "x-plastic-button"],
+            "instances": [
+                ["button", true, true, null, true, "custom"],
+                ["button", true, true, null, true, "custom"],
+                ["button", true, true, null, true, "custom"],
+                ["button", true, true, null, true, "custom"],
+                ["button", true, true, null, true, "custom"],
+                ["button", true, true, null, true, "custom"],
+            ],
+            "wrongLocal": ["div", false],
+            "attributeOnly": ["x-plastic-button", false],
+            "customName": "x-plastic-button",
+            "wrongBaseError": "NotSupportedError",
+            "unknownBaseError": "NotSupportedError",
+            "customBaseError": "NotSupportedError",
+            "unpublishedInvalidDefinitions": [true, true, true],
+            "conflictingCreationOptionsError": "NotSupportedError",
+            "constructedCount": 7,
+            "attributeTrace": ["attribute:data-value:null:parser"],
+            "connectionTrace": [
+                "connected:parser",
+                "connected:object",
+                "connected:string",
+                "connected:namespace",
+                "connected:direct",
+                "connected:object",
+                "connected:object",
+            ],
+            "serialized": "<button data-label=\"object\" is=\"x-plastic-button\"></button>",
+            "clickCount": 1,
+        })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_custom_elements_have_frame_local_registries_in_selected_frame_realms() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -63858,10 +64029,10 @@ async fn native_custom_elements_have_frame_local_registries_in_selected_frame_re
             let request = read_http_request(&mut stream).await;
             let body = match request.split_whitespace().nth(1) {
                 Some("/parent") => {
-                    "<!doctype html><body><x-frame-probe id='parent-parser' data-value='parent'></x-frame-probe><iframe id='child' src='/child'></iframe></body>"
+                    "<!doctype html><body><x-frame-probe id='parent-parser' data-value='parent'></x-frame-probe><button id='parent-button' is='x-frame-button'></button><iframe id='child' src='/child'></iframe></body>"
                 }
                 Some("/child") => {
-                    "<!doctype html><body><x-frame-probe id='child-parser' data-value='child'></x-frame-probe></body>"
+                    "<!doctype html><body><x-frame-probe id='child-parser' data-value='child'></x-frame-probe><button id='child-button' is='x-frame-button'></button></body>"
                 }
                 other => panic!("unexpected native frame custom-element path: {other:?}"),
             };
@@ -63893,6 +64064,7 @@ async fn native_custom_elements_have_frame_local_registries_in_selected_frame_re
             r##"await (async () => {
               const trace = [];
               const parserElement = document.getElementById('child-parser');
+              const customizedButton = document.getElementById('child-button');
               const pending = customElements.whenDefined('x-frame-probe');
               class FrameProbe extends HTMLElement {
                 static get observedAttributes() { return ['data-value']; }
@@ -63903,17 +64075,27 @@ async fn native_custom_elements_have_frame_local_registries_in_selected_frame_re
                 connectedCallback() { trace.push('connected:' + this.id); }
               }
               customElements.define('x-frame-probe', FrameProbe);
+              class FrameButton extends HTMLButtonElement { constructor() { super(); } }
+              customElements.define('x-frame-button', FrameButton, { extends: 'button' });
               const resolved = await pending;
               globalThis.__frameCustomElementRegistry = customElements;
               globalThis.__frameCustomElementConstructor = FrameProbe;
               globalThis.__frameCustomElementParser = parserElement;
               globalThis.__frameCustomElementTrace = trace;
+              globalThis.__frameCustomizedButtonConstructor = FrameButton;
+              globalThis.__frameCustomizedButton = customizedButton;
               return {
                 registryIsWindowLocal: window.customElements === customElements
                   && document.customElementRegistry === customElements,
                 resolved: resolved === FrameProbe,
                 parserUpgraded: parserElement instanceof FrameProbe,
                 ownerDocument: parserElement.ownerDocument === document,
+                customizedBuiltIn: [
+                  customizedButton instanceof FrameButton,
+                  customizedButton instanceof HTMLButtonElement,
+                  customizedButton.localName,
+                  customizedButton.getAttribute('is'),
+                ],
                 trace,
               };
             })()"##,
@@ -63927,6 +64109,7 @@ async fn native_custom_elements_have_frame_local_registries_in_selected_frame_re
             "resolved": true,
             "parserUpgraded": true,
             "ownerDocument": true,
+            "customizedBuiltIn": [true, true, "button", "x-frame-button"],
             "trace": [
                 "construct:child-parser",
                 "attribute:data-value:null:child:null",
@@ -63941,10 +64124,13 @@ async fn native_custom_elements_have_frame_local_registries_in_selected_frame_re
             r##"(() => {
               const absentBeforeDefinition = customElements.get('x-frame-probe') === undefined;
               const parserElement = document.getElementById('parent-parser');
+              const customizedButton = document.getElementById('parent-button');
               class ParentProbe extends HTMLElement {
                 constructor() { super(); }
                 connectedCallback() { globalThis.__parentCustomElementConnected = this.id; }
               }
+              class ParentButton extends HTMLButtonElement { constructor() { super(); } }
+              customElements.define('x-frame-button', ParentButton, { extends: 'button' });
               customElements.define('x-frame-probe', ParentProbe);
               globalThis.__parentCustomElementRegistry = customElements;
               globalThis.__parentCustomElementConstructor = ParentProbe;
@@ -63955,6 +64141,12 @@ async fn native_custom_elements_have_frame_local_registries_in_selected_frame_re
                 parentParserUpgraded: parserElement instanceof ParentProbe,
                 connected: globalThis.__parentCustomElementConnected,
                 parentLookup: customElements.get('x-frame-probe') === ParentProbe,
+                customizedBuiltIn: [
+                  customizedButton instanceof ParentButton,
+                  customizedButton instanceof HTMLButtonElement,
+                  customizedButton.localName,
+                  customizedButton.getAttribute('is'),
+                ],
               };
             })()"##,
         )
@@ -63968,6 +64160,7 @@ async fn native_custom_elements_have_frame_local_registries_in_selected_frame_re
             "parentParserUpgraded": true,
             "connected": "parent-parser",
             "parentLookup": true,
+            "customizedBuiltIn": [true, true, "button", "x-frame-button"],
         })
     );
 
@@ -63985,6 +64178,12 @@ async fn native_custom_elements_have_frame_local_registries_in_selected_frame_re
                   === globalThis.__frameCustomElementConstructor,
                 parserStable: parserElement === globalThis.__frameCustomElementParser
                   && parserElement instanceof globalThis.__frameCustomElementConstructor,
+                customizedButtonStable: document.getElementById('child-button')
+                  === globalThis.__frameCustomizedButton
+                  && globalThis.__frameCustomizedButton
+                    instanceof globalThis.__frameCustomizedButtonConstructor,
+                customizedButtonRegistryStable: customElements.get('x-frame-button')
+                  === globalThis.__frameCustomizedButtonConstructor,
                 ownerDocument: parserElement.ownerDocument === document,
                 trace: globalThis.__frameCustomElementTrace,
               };
@@ -63999,6 +64198,8 @@ async fn native_custom_elements_have_frame_local_registries_in_selected_frame_re
             "parentConstructorIsDifferent": true,
             "definitionStable": true,
             "parserStable": true,
+            "customizedButtonStable": true,
+            "customizedButtonRegistryStable": true,
             "ownerDocument": true,
             "trace": [
                 "construct:child-parser",

@@ -51,6 +51,15 @@ host's cached `.content` fragment when binding its native snapshot identity;
 the cross-document import regression confirms the cloned contents survive the
 next script call. Scoped registries remain outside this slice. See the
 [slice 758 task](../plan/tasks/native-engine-browser-758.md) for exact evidence.
+Slice 759 implements customized built-ins for the HTML interfaces represented
+by the native element-interface table. Process-backed regressions cover parser
+upgrade, dictionary and legacy-string creation, direct construction,
+serialization, cloning/import, lifecycle ordering, frame-local registries,
+and native button behavior; the focused custom-element group passes locally.
+The [slice 759 task](../plan/tasks/native-engine-browser-759.md) records the
+contract and evidence. Unmapped built-in interfaces, scoped registries,
+form-associated elements, custom states, and broader Web Platform Tests remain
+open; this is not a browser-completion claim.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

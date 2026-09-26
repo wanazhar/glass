@@ -70,6 +70,12 @@ typed invalid/unsupported registry choices. A frame-template hydration fix
 preserves imported content after the next script call; the focused cross-
 document regression passes locally. Scoped registries and the broader custom-
 element contract remain open.
+The [slice 759 task](tasks/native-engine-browser-759.md) implements customized
+built-ins for the HTML interfaces represented by the native element-interface
+table, including internal `is` identity, parser and DOM creation, direct
+construction, serialization, clone/import, lifecycle, and selected frame
+registries. Its six-test custom-element group passes locally. Unmapped built-in
+interfaces and the other custom-element profile requirements remain open.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

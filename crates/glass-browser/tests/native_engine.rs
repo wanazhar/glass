@@ -63457,6 +63457,90 @@ async fn native_documents_import_nodes_into_the_target_document() {
 }
 
 #[tokio::test]
+async fn native_local_runtime_preserves_custom_element_registry_and_builtins() {
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://inline-custom-elements",
+                "<!doctype html><html><body><x-inline-probe id='probe' data-state='parser'></x-inline-probe><button id='parsed-button' is='x-inline-button'>Go</button></body></html>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://inline-custom-elements"),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r##"await (async () => {
+                  const trace = [];
+                  class InlineProbe extends HTMLElement {
+                    static get observedAttributes() { return ['data-state']; }
+                    constructor() { super(); trace.push('construct:' + this.id); }
+                    attributeChangedCallback(name, _oldValue, value) {
+                      trace.push('attribute:' + name + ':' + value);
+                    }
+                    connectedCallback() { trace.push('connected:' + this.id); }
+                  }
+                  customElements.define('x-inline-probe', InlineProbe);
+
+                  class InlineButton extends HTMLButtonElement {
+                    constructor() { super(); trace.push('construct:button'); }
+                  }
+                  customElements.define('x-inline-button', InlineButton, { extends: 'button' });
+
+                  const parsedProbe = document.getElementById('probe');
+                  const parsedButton = document.getElementById('parsed-button');
+                  const createdButton = document.createElement('button', { is: 'x-inline-button' });
+                  let clickCount = 0;
+                  createdButton.addEventListener('click', () => { clickCount += 1; });
+                  document.body.appendChild(createdButton);
+                  createdButton.click();
+                  return {
+                    autonomous: [parsedProbe instanceof InlineProbe, parsedProbe.localName],
+                    buttons: [
+                      parsedButton instanceof InlineButton,
+                      parsedButton instanceof HTMLButtonElement,
+                      parsedButton.getAttribute('is'),
+                      createdButton instanceof InlineButton,
+                      createdButton instanceof HTMLButtonElement,
+                      createdButton.getAttribute('is'),
+                      createdButton.outerHTML.includes('is=\"x-inline-button\"'),
+                    ],
+                    clickCount,
+                    trace,
+                  };
+                })()"##,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "autonomous": [true, "x-inline-probe"],
+            "buttons": [
+                true,
+                true,
+                "x-inline-button",
+                true,
+                true,
+                null,
+                true,
+            ],
+            "clickCount": 1,
+            "trace": [
+                "construct:probe",
+                "attribute:data-state:parser",
+                "connected:probe",
+                "construct:button",
+                "construct:button",
+            ],
+        })
+    );
+
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

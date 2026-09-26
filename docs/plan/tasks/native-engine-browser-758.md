@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-758
 scope: glass-browser/native-custom-elements
-status: in-progress
+status: done
 depends-on: [native-engine-browser-757]
 ---
 
@@ -264,6 +264,17 @@ script call. The focused regression now passes:
   coverage (1,386 Markdown files, 346 full-product MCP tools/101 browser-only,
   17 examples, 22 public modules).
 
-Full custom-element WPT, customized built-ins, scoped registries, form-
-associated behavior, custom states, remote CI, and Windows/macOS runtime
-certification remain open; slice 758 and issue #40 remain in progress.
+Closeout verification on Linux:
+
+- `cargo test -p glass-browser --test native_engine native_custom --locked --quiet`:
+  6 passed, 0 failed, 0 ignored (88.25s).
+- `cargo test -p glass-browser --test native_engine native_documents_adopt_nodes_within_their_browsing_contexts --locked --quiet`:
+  1 passed, 0 failed, 0 ignored (47.11s), including exactly one
+  `adoptedCallback` across a top-level-to-frame transfer.
+- `cargo test -p glass-browser --test native_engine native_local_runtime_preserves_custom_element_registry_and_builtins --locked --quiet`:
+  1 passed, 0 failed, 0 ignored (10.16s), covering the inline runtime.
+
+The autonomous global-registry contract in this slice is complete locally.
+Customized built-ins are implemented in slice 759. Scoped registries,
+form-associated behavior, custom states, full custom-element WPT, remote CI,
+and Windows/macOS runtime certification remain open issue #40 gates.

@@ -154,7 +154,11 @@ typed invalid/unsupported registry failures. A frame-projected template
 hydration fix preserves imported `.content` across the next script call; its
 cross-document regression passes locally. Scoped registries are not yet
 implemented.
-The [slice 759 contract](tasks/native-engine-browser-759.md) implements
+The [slice 758 contract](tasks/native-engine-browser-758.md) completes the
+autonomous global registry and lifecycle slice locally, with inline and
+process-backed coverage, including same-origin frame registries and
+`adoptedCallback` across top-level/frame ownership. The [slice 759
+contract](tasks/native-engine-browser-759.md) implements
 customized built-ins for the HTML interfaces represented by the native
 element-interface table. It distinguishes the built-in local name and
 interface from the custom registry name and internal `is` value; an `is`

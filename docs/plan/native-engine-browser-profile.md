@@ -135,9 +135,9 @@ callbacks remain open. See the
 [slice 753 contract](tasks/native-engine-browser-753.md) and
 [slice 754 contract](tasks/native-engine-browser-754.md), and
 [slice 755 contract](tasks/native-engine-browser-755.md).
-The [slice 758 contract](tasks/native-engine-browser-758.md) is in progress:
-autonomous custom-element registry and lifecycle code is implemented, while
-template-content identity preservation now passes its focused process-backed
+The [slice 758 contract](tasks/native-engine-browser-758.md) is complete
+locally: autonomous custom-element registry and lifecycle code is implemented,
+and template-content identity preservation now passes its focused process-backed
 regression after cached fragments are refreshed during snapshot hydration. A
 selected-frame regression covers independent top-level/frame registries and
 frame-owner lifecycle execution. Another process-backed regression verifies
@@ -173,7 +173,11 @@ bounded form-associated autonomous custom elements: `attachInternals()`,
 content-process regressions pass, including script-refresh persistence. It
 explicitly does not claim form lifecycle callbacks, native HTML form-navigation
 submission, custom validity, accessibility semantics, or custom states.
-
+The [slice 761 contract](tasks/native-engine-browser-761.md) implements
+`formAssociatedCallback` and `formDisabledCallback`, with in-process and
+content-process coverage for upgrade, owner/disabled transitions, and refresh.
+Reset and state-restore callbacks remain unsupported until later slices supply
+the native reset and restoration paths.
 ### Synchronous JavaScript dialog contract
 
 The native page realm implements the HTML Standard's modal user-prompt

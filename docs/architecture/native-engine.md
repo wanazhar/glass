@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-757`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-761`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -71,6 +71,11 @@ script refresh. They also verify disabled-fieldset inheritance and its
 first-legend exception. The executable contract is [recorded in the slice
 task](../plan/tasks/native-engine-browser-760.md); form lifecycle callbacks
 and native HTML form-navigation submission are not part of this slice.
+Slice 761 enables `formAssociatedCallback` and `formDisabledCallback` with
+owner/disabled-state reconciliation across custom-element upgrades and DOM
+mutations. Reset and state-restore callbacks remain fail-closed until their
+corresponding native paths exist; see the
+[slice 761 task](../plan/tasks/native-engine-browser-761.md).
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

@@ -28,12 +28,13 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is complete through
-`native-engine-browser-760`. Slices 758 and 759 implement the autonomous and
+`native-engine-browser-761`. Slices 758 and 759 implement the autonomous and
 customized-built-in custom-element contracts for the currently mapped HTML
 interfaces. Slice 760 implements bounded `ElementInternals` form values and
-`FormData(form)` integration. These are implementation checkpoints, not
-browser-completion evidence; issue #40 remains open for the full Core Web
-Profile, conformance, platform, and release gates.
+`FormData(form)` integration; slice 761 implements form-owner and disabled-
+state callbacks. These are implementation checkpoints, not browser-completion
+evidence; issue #40 remains open for the full Core Web Profile, conformance,
+platform, and release gates.
 Slice 755 implements target-document-aware `Document.importNode()` for live
 top-level, same-origin-frame, and inert template-owner Documents. Its focused
 process-backed regression passes locally; this remains a bounded DOM slice,
@@ -91,6 +92,13 @@ after script refresh. Form lifecycle callbacks, native HTML form-navigation
 submission, custom validity, states, accessibility, and full Web Platform
 Tests remain outside this slice. See the
 [slice 760 contract](tasks/native-engine-browser-760.md).
+Slice 761 completes `formAssociatedCallback` and `formDisabledCallback`
+reactions for owner and disabled-state transitions at upgrade and DOM
+mutation boundaries. In-process and content-process tests cover explicit and
+ancestor owners, first-ID resolution, fieldset/legend and own-disabled changes,
+removal/reinsertion, and script-refresh persistence. Reset/state-restore
+callbacks remain explicitly unsupported. See the
+[slice 761 contract](tasks/native-engine-browser-761.md).
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

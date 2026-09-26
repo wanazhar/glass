@@ -63546,6 +63546,8 @@ fn native_form_associated_elements_script() -> &'static str {
         try { action(); return null; }
         catch (error) { return error.name; }
       };
+      const lifecycleEvents = [];
+      globalThis.__glassNativeFaceLifecycleEvents = lifecycleEvents;
       class ScalarField extends HTMLElement {
         static formAssociated = true;
         constructor() {
@@ -63607,10 +63609,45 @@ fn native_form_associated_elements_script() -> &'static str {
       }
       customElements.define('x-external-field', ExternalField);
 
+      class LifecycleField extends HTMLElement {
+        static formAssociated = true;
+        constructor() { super(); this.internals = this.attachInternals(); }
+        formAssociatedCallback(form) {
+          lifecycleEvents.push(['owner', this.id, form === null ? null : form.id]);
+        }
+        formDisabledCallback(disabled) {
+          lifecycleEvents.push(['disabled', this.id, disabled]);
+        }
+      }
+      customElements.define('x-face-lifecycle', LifecycleField);
+      const initialLifecycleEvents = lifecycleEvents.slice();
+
       const main = document.getElementById('main-form');
       const external = document.getElementById('external-form');
       const scalar = document.getElementById('scalar');
       const externalField = document.getElementById('external-field');
+      const explicitLifecycle = document.getElementById('face-explicit');
+      const disabledFieldset = document.getElementById('face-fieldset');
+      const disabledLifecycle = document.getElementById('face-disabled');
+      const legendLifecycle = document.getElementById('face-legend');
+      external.setAttribute('id', 'renamed-form');
+      external.setAttribute('id', 'external-form');
+      const duplicateId = document.createElement('div');
+      duplicateId.setAttribute('id', 'external-form');
+      document.body.insertBefore(duplicateId, external);
+      duplicateId.remove();
+      explicitLifecycle.setAttribute('form', 'main-form');
+      const faceOwner = document.getElementById('face-owner');
+      faceOwner.setAttribute('disabled', '');
+      faceOwner.removeAttribute('disabled');
+      disabledFieldset.removeAttribute('disabled');
+      disabledFieldset.setAttribute('disabled', '');
+      const legend = legendLifecycle.parentElement;
+      disabledFieldset.appendChild(legendLifecycle);
+      legend.appendChild(legendLifecycle);
+      disabledLifecycle.remove();
+      main.appendChild(disabledLifecycle);
+      const currentLifecycleEvents = lifecycleEvents.slice();
       const setterErrors = {
         missingValue: errorName(() => scalar.internals.setFormValue()),
         symbolValue: errorName(() => scalar.internals.setFormValue(Symbol('invalid'))),
@@ -63645,8 +63682,12 @@ fn native_form_associated_elements_script() -> &'static str {
 
       class CallbackElement extends HTMLElement {
         static formAssociated = true;
-        formAssociatedCallback() {}
+        formResetCallback() {}
       }
+      class InvalidCallbackElement extends HTMLElement {
+        static formAssociated = true;
+      }
+      InvalidCallbackElement.prototype.formDisabledCallback = {};
 
       return {
         brands: [scalar.internals instanceof ElementInternals, scalar.internals.form === main,
@@ -63656,6 +63697,11 @@ fn native_form_associated_elements_script() -> &'static str {
           value instanceof File ? ['file', value.name, value.type] : value,
         ]),
         forgedMarkers,
+        lifecycle: {
+          initial: initialLifecycleEvents,
+          transitions: currentLifecycleEvents.slice(initialLifecycleEvents.length),
+          explicitOwner: explicitLifecycle.internals.form.id,
+        },
         externalEntries: Array.from(new FormData(external).entries()),
         errors: {
           directConstructor: errorName(() => new ElementInternals()),
@@ -63667,6 +63713,7 @@ fn native_form_associated_elements_script() -> &'static str {
           customizedBuiltin: errorName(() => customizedBuiltin.attachInternals()),
           unsupportedCallback: errorName(() => customElements.define('x-callback-element', CallbackElement)),
           callbackNotPublished: customElements.get('x-callback-element') === undefined,
+          invalidLifecycleCallback: errorName(() => customElements.define('x-invalid-lifecycle', InvalidCallbackElement)),
           ...setterErrors,
         },
       };
@@ -63688,6 +63735,32 @@ fn assert_native_form_associated_elements_result(value: &serde_json::Value) {
             ],
             "externalEntries": [["outside", "outside"]],
             "forgedMarkers": ["[object Object]", false, "[object Object]"],
+            "lifecycle": {
+                "initial": [
+                    ["owner", "face-owner", "main-form"],
+                    ["owner", "face-legend", "main-form"],
+                    ["owner", "face-disabled", "main-form"],
+                    ["disabled", "face-disabled", true],
+                    ["owner", "face-explicit", "external-form"],
+                ],
+                "transitions": [
+                    ["owner", "face-explicit", null],
+                    ["owner", "face-explicit", "external-form"],
+                    ["owner", "face-explicit", null],
+                    ["owner", "face-explicit", "external-form"],
+                    ["owner", "face-explicit", "main-form"],
+                    ["disabled", "face-owner", true],
+                    ["disabled", "face-owner", false],
+                    ["disabled", "face-disabled", false],
+                    ["disabled", "face-disabled", true],
+                    ["disabled", "face-legend", true],
+                    ["disabled", "face-legend", false],
+                    ["owner", "face-disabled", null],
+                    ["disabled", "face-disabled", false],
+                    ["owner", "face-disabled", "main-form"],
+                ],
+                "explicitOwner": "main-form",
+            },
             "errors": {
                 "directConstructor": "TypeError",
                 "ordinaryElement": "NotSupportedError",
@@ -63698,6 +63771,7 @@ fn assert_native_form_associated_elements_result(value: &serde_json::Value) {
                 "customizedBuiltin": "NotSupportedError",
                 "unsupportedCallback": "NotSupportedError",
                 "callbackNotPublished": true,
+                "invalidLifecycleCallback": "TypeError",
                 "missingValue": "TypeError",
                 "symbolValue": "TypeError",
             },
@@ -63716,6 +63790,8 @@ fn native_form_associated_entries_after_script_refresh() -> &'static str {
         entries,
         internalsBrand: document.getElementById('scalar').internals instanceof ElementInternals,
         formOwner: document.getElementById('scalar').internals.form === form,
+        lifecycleEventCount: globalThis.__glassNativeFaceLifecycleEvents.length,
+        explicitLifecycleOwner: document.getElementById('face-explicit').internals.form.id,
       };
     })()"##
 }
@@ -63726,7 +63802,7 @@ async fn native_local_runtime_collects_form_associated_custom_element_values() {
         NativeEngineConfig::default()
             .with_fixture(
                 "fixture://inline-form-associated-elements",
-                "<!doctype html><html><body><form id='main-form'><x-scalar-field id='scalar' name='scalar'></x-scalar-field><input name='builtin' value='native'><x-pair-field name='ignored'></x-pair-field><x-empty-field name='empty'></x-empty-field><x-disabled-field name='disabled' disabled></x-disabled-field><x-unnamed-field></x-unnamed-field><fieldset disabled><legend><x-legend-field name='legend'></x-legend-field></legend><x-fieldset-disabled name='fieldset-disabled'></x-fieldset-disabled></fieldset></form><form id='external-form'></form><x-external-field id='external-field' form='external-form' name='outside'></x-external-field></body></html>",
+                "<!doctype html><html><body><form id='main-form'><x-face-lifecycle id='face-owner'></x-face-lifecycle><x-scalar-field id='scalar' name='scalar'></x-scalar-field><input name='builtin' value='native'><x-pair-field name='ignored'></x-pair-field><x-empty-field name='empty'></x-empty-field><x-disabled-field name='disabled' disabled></x-disabled-field><x-unnamed-field></x-unnamed-field><fieldset id='face-fieldset' disabled><legend><x-legend-field name='legend'></x-legend-field><x-face-lifecycle id='face-legend'></x-face-lifecycle></legend><x-face-lifecycle id='face-disabled'></x-face-lifecycle><x-fieldset-disabled name='fieldset-disabled'></x-fieldset-disabled></fieldset></form><form id='external-form'></form><x-external-field id='external-field' form='external-form' name='outside'></x-external-field><x-face-lifecycle id='face-explicit' form='external-form'></x-face-lifecycle></body></html>",
             )
             .unwrap()
             .with_initial_url("fixture://inline-form-associated-elements"),
@@ -63757,6 +63833,8 @@ async fn native_local_runtime_collects_form_associated_custom_element_values() {
             ],
             "internalsBrand": true,
             "formOwner": true,
+            "lifecycleEventCount": 19,
+            "explicitLifecycleOwner": "main-form",
         })
     );
 
@@ -63774,7 +63852,7 @@ async fn native_content_process_collects_form_associated_custom_element_values()
             .expect("native form-associated custom-element request")
             .unwrap();
         let _request = read_http_request(&mut stream).await;
-        let body = "<!doctype html><html><body><form id='main-form'><x-scalar-field id='scalar' name='scalar'></x-scalar-field><input name='builtin' value='native'><x-pair-field name='ignored'></x-pair-field><x-empty-field name='empty'></x-empty-field><x-disabled-field name='disabled' disabled></x-disabled-field><x-unnamed-field></x-unnamed-field><fieldset disabled><legend><x-legend-field name='legend'></x-legend-field></legend><x-fieldset-disabled name='fieldset-disabled'></x-fieldset-disabled></fieldset></form><form id='external-form'></form><x-external-field id='external-field' form='external-form' name='outside'></x-external-field></body></html>";
+        let body = "<!doctype html><html><body><form id='main-form'><x-face-lifecycle id='face-owner'></x-face-lifecycle><x-scalar-field id='scalar' name='scalar'></x-scalar-field><input name='builtin' value='native'><x-pair-field name='ignored'></x-pair-field><x-empty-field name='empty'></x-empty-field><x-disabled-field name='disabled' disabled></x-disabled-field><x-unnamed-field></x-unnamed-field><fieldset id='face-fieldset' disabled><legend><x-legend-field name='legend'></x-legend-field><x-face-lifecycle id='face-legend'></x-face-lifecycle></legend><x-face-lifecycle id='face-disabled'></x-face-lifecycle><x-fieldset-disabled name='fieldset-disabled'></x-fieldset-disabled></fieldset></form><form id='external-form'></form><x-external-field id='external-field' form='external-form' name='outside'></x-external-field><x-face-lifecycle id='face-explicit' form='external-form'></x-face-lifecycle></body></html>";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len(),
@@ -63810,6 +63888,8 @@ async fn native_content_process_collects_form_associated_custom_element_values()
             ],
             "internalsBrand": true,
             "formOwner": true,
+            "lifecycleEventCount": 19,
+            "explicitLifecycleOwner": "main-form",
         })
     );
 

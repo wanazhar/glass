@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-753`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-754`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -14,7 +14,7 @@ with `encoding_rs`, selects response/override labels, prescans the first 1,024
 bytes using HTML meta/XML rules when those labels are absent or invalid, and
 retains replacement decoding and raw/decoded bounds. HTML response bytes use
 the WHATWG encoding label table; XML and text XHR paths remain separate.
-Template clone/import/adopt semantics, quirks-mode layout,
+Template `importNode()`/`adoptNode()` semantics, quirks-mode layout,
 parser-stream reentrancy,
 remote CI, and cross-platform certification remain open.
 Slice 745 adds an
@@ -157,14 +157,20 @@ process-backed regression verifies moving a child between the template
 fragment and document. Slice 753 projects those template fragment boundaries
 into same-origin frame documents and verifies owner-document identity,
 traversal, mutation, and persistence through the child-frame command owner.
-Clone/import/adopt semantics, full encoding/XHR WPT conformance, and complete
-XHR/Web IDL semantics remain separate gates; see
+Slice 754 adds the HTML template cloning step to shared `cloneNode()`: shallow
+clones receive a distinct empty content fragment, while deep clones recursively
+copy content and nested template fragments without sharing nodes. Both forms
+retain the source template-contents inert owner document. Top-level and
+same-origin-frame process-backed regressions cover identity, boundaries, and
+clone persistence. `importNode()`/`adoptNode()`, full encoding/XHR WPT
+conformance, and complete XHR/Web IDL semantics remain separate gates; see
 the [slice 748 task](../plan/tasks/native-engine-browser-748.md),
 [slice 749 task](../plan/tasks/native-engine-browser-749.md), and
 [slice 750 task](../plan/tasks/native-engine-browser-750.md) and
 [slice 751 task](../plan/tasks/native-engine-browser-751.md) and
 [slice 752 task](../plan/tasks/native-engine-browser-752.md) and
-[slice 753 task](../plan/tasks/native-engine-browser-753.md).
+[slice 753 task](../plan/tasks/native-engine-browser-753.md) and
+[slice 754 task](../plan/tasks/native-engine-browser-754.md).
 
 The token-aware TreeSink bridge also preserves MathML `annotation-xml` as the
 HTML integration boundary during `</p>` and `</br>` foreign-content breakouts.
@@ -191,8 +197,10 @@ document source → html5ever tokenizer/tree builder → Glass TreeSink
 
 These parser migrations do not finish the HTML platform. Top-level navigation
 documents and detached XHR response documents retain the template fragment
-boundary, and same-origin frame documents now project it as well. Template
-clone/import/adopt semantics remain incomplete. Quirks mode does not yet alter CSS/layout, and
+boundary, and same-origin frame documents now project it as well. Slice 754
+implements shallow/deep template-content `cloneNode()` in top-level and
+same-origin-frame realms; `importNode()` and `adoptNode()` remain incomplete.
+Quirks mode does not yet alter CSS/layout, and
 script-stream reentrancy remains incomplete. html5ever documents remaining
 tree-builder differences; the
 pinned GCWP conformance corpus and explicit treatment of each failure are

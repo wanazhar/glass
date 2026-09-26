@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-754
 scope: glass-browser/template-content-clone-node
-status: active
+status: complete
 depends-on: [native-engine-browser-753]
 ---
 
@@ -66,15 +66,30 @@ identity.
 
 ## Verification
 
-- Run `cargo fmt --all -- --check` and `git diff --check`.
-- After the complete clone batch, run one locked `glass-browser` check before
-  focused top-level and same-origin-frame template-clone tests.
-- Run release-documentation truth, depth, TUI-shortcut, and coverage gates.
-- Keep `importNode()`, `adoptNode()`, complete DOM conformance, remote CI, and
-  cross-platform status distinct from this Linux-local clone evidence.
+- `cargo fmt --all -- --check` passed.
+- `cargo check -p glass-browser --tests --locked --quiet` passed.
+- `cargo test --quiet -p glass-browser --test native_engine template_content
+  --locked -- --test-threads=1` passed: both top-level and same-origin-frame
+  process-backed regressions, with 787 unrelated tests filtered out.
+- `git diff --check` passed.
+- Release-documentation truth passed over 1,382 Markdown documents with zero
+  current-claim failures; depth passed for 93 current guides and 19 contracts;
+  shortcut inventory passed for 15 implementation keys and 63 markers; live
+  coverage passed for 346 full-product MCP tools (101 browser-only), 17
+  examples, and 22 public modules.
+- Evidence is local Linux only. `importNode()`, `adoptNode()`, complete DOM
+  conformance, remote CI, and cross-platform certification remain separate
+  issue #40 gates.
 
 ## Evidence
 
-Implementation and verification are in progress. The slice remains active
-until shallow/deep behavior, nested templates, independent content, inert
-ownership, and the maintainer documentation gates pass.
+The shared clone path applies template cloning steps before ordinary child
+recursion. Shallow and deep clones retain separate stable `.content` fragments;
+deep clones recursively copy nested content, and the destination fragment is
+associated with the source template's inert owner document. Top-level and
+same-origin-frame process-backed regressions verify clone independence and
+persistence across realm refresh. Scoped `glass-browser` check and both
+focused process tests pass on local Linux. All four maintainer documentation
+gates pass for the current checkout. `importNode()`, `adoptNode()`, complete
+WPT/GCWP conformance, remote CI, and cross-platform certification remain open;
+this slice does not complete issue #40.

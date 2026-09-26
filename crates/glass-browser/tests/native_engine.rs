@@ -62965,6 +62965,36 @@ async fn native_content_process_exposes_live_template_content_fragments() {
                       documentQuery: document.querySelector('#inside') === null,
                       innerHTML: template.innerHTML.includes('id="inside"'),
                     };
+                    const shallowClone = template.cloneNode(false);
+                    const deepClone = template.cloneNode(true);
+                    const shallowContent = shallowClone.content;
+                    const deepContent = deepClone.content;
+                    const clonedInside = deepContent.querySelector('#inside');
+                    const clonedNested = deepContent.querySelector('#nested');
+                    const clonedNestedChild = clonedNested.content.querySelector('b');
+                    const clones = {
+                      shallowFragmentIsDistinct: shallowContent !== content,
+                      shallowFragmentIsStable: shallowContent === shallowClone.content,
+                      shallowFragmentIsEmpty: shallowContent.childNodes.length === 0,
+                      shallowOwnerIsInert: shallowContent.ownerDocument === content.ownerDocument,
+                      deepFragmentIsDistinct: deepContent !== content,
+                      deepFragmentOwnerIsInert: deepContent.ownerDocument === content.ownerDocument,
+                      deepChildIsDistinct: clonedInside !== original,
+                      deepChildParent: clonedInside.parentNode === deepContent,
+                      deepOwnerIsInert: clonedInside.ownerDocument === content.ownerDocument,
+                      nestedTemplateIsDistinct: clonedNested !== nested,
+                      nestedContentIsDistinct: clonedNested.content !== nested.content,
+                      nestedChildIsDistinct: clonedNestedChild !== nested.content.querySelector('b'),
+                      nestedChildOwnerIsInert: clonedNestedChild.ownerDocument === content.ownerDocument,
+                      templateBoundary: deepClone.childNodes.length === 0
+                        && deepClone.querySelector('#inside') === null,
+                      nestedTemplateBoundary: deepContent.querySelector('b') === null,
+                      sourceUnchanged: original.textContent === 'inert',
+                    };
+                    shallowClone.id = 'shallowClone';
+                    deepClone.id = 'deepClone';
+                    root.appendChild(deepClone);
+                    root.appendChild(shallowClone);
                     const added = document.createElement('b');
                     added.id = 'added';
                     added.textContent = 'added';
@@ -62976,7 +63006,7 @@ async fn native_content_process_exposes_live_template_content_fragments() {
                     template.innerHTML = '<em id="replacement">new</em>';
                     globalThis.__templateRef = template;
                     globalThis.__templateContentRef = content;
-                    return { initial, moved, replacement: content.querySelector('#replacement') !== null };
+                    return { initial, clones, moved, replacement: content.querySelector('#replacement') !== null };
                   })()"#,
             )
             .await
@@ -62998,6 +63028,24 @@ async fn native_content_process_exposes_live_template_content_fragments() {
                 "documentQuery": true,
                 "innerHTML": true,
             },
+            "clones": {
+                "shallowFragmentIsDistinct": true,
+                "shallowFragmentIsStable": true,
+                "shallowFragmentIsEmpty": true,
+                "shallowOwnerIsInert": true,
+                "deepFragmentIsDistinct": true,
+                "deepFragmentOwnerIsInert": true,
+                "deepChildIsDistinct": true,
+                "deepChildParent": true,
+                "deepOwnerIsInert": true,
+                "nestedTemplateIsDistinct": true,
+                "nestedContentIsDistinct": true,
+                "nestedChildIsDistinct": true,
+                "nestedChildOwnerIsInert": true,
+                "templateBoundary": true,
+                "nestedTemplateBoundary": true,
+                "sourceUnchanged": true,
+            },
             "moved": true,
             "replacement": true,
         })
@@ -63014,6 +63062,9 @@ async fn native_content_process_exposes_live_template_content_fragments() {
                       templateQuery: template.querySelector('#replacement') === null,
                       documentQuery: document.querySelector('#replacement') === null,
                       movedNode: document.querySelector('#inside')?.textContent,
+                      deepCloneContent: document.querySelector('#deepClone')?.content.querySelector('#inside')?.textContent,
+                      deepCloneNested: document.querySelector('#deepClone')?.content.querySelector('#nested')?.content.querySelector('b')?.textContent,
+                      shallowCloneEmpty: document.querySelector('#shallowClone')?.content.childNodes.length === 0,
                     };
                   })()"#,
             )
@@ -63025,6 +63076,9 @@ async fn native_content_process_exposes_live_template_content_fragments() {
             "templateQuery": true,
             "documentQuery": true,
             "movedNode": "inert",
+            "deepCloneContent": "inert",
+            "deepCloneNested": "nested",
+            "shallowCloneEmpty": true,
         })
     );
 
@@ -63088,6 +63142,51 @@ async fn native_same_origin_frame_template_content_uses_native_fragments() {
             "documentBoundary": true,
             "fragmentQuery": true,
             "templateHTML": true,
+        })
+    );
+
+    let clones = session
+        .script(
+            "(() => { const childDocument = document.getElementById('child').contentDocument; const source = childDocument.getElementById('template'); const sourceContent = source.content; const original = sourceContent.querySelector('#inside'); const nested = sourceContent.querySelector('#nested'); const shallow = source.cloneNode(false); const deep = source.cloneNode(true); const shallowContent = shallow.content; const deepContent = deep.content; const copiedInside = deepContent.querySelector('#inside'); const copiedNested = deepContent.querySelector('#nested'); const copiedNestedChild = copiedNested.content.querySelector('b'); const result = { shallowDistinct: shallowContent !== sourceContent, shallowStable: shallowContent === shallow.content, shallowEmpty: shallowContent.childNodes.length === 0, shallowOwner: shallowContent.ownerDocument === sourceContent.ownerDocument, deepDistinct: deepContent !== sourceContent, deepFragmentOwner: deepContent.ownerDocument === sourceContent.ownerDocument, deepChildDistinct: copiedInside !== original, deepChildParent: copiedInside.parentNode === deepContent, deepOwner: copiedInside.ownerDocument === sourceContent.ownerDocument, nestedDistinct: copiedNested !== nested && copiedNested.content !== nested.content, nestedChildDistinct: copiedNestedChild !== nested.content.querySelector('b'), nestedChildOwner: copiedNestedChild.ownerDocument === sourceContent.ownerDocument, templateBoundary: deep.childNodes.length === 0 && deep.querySelector('#inside') === null, nestedBoundary: deepContent.querySelector('b') === null, sourceUnchanged: original.textContent === 'inert' }; shallow.id = 'frameShallowClone'; deep.id = 'frameDeepClone'; childDocument.body.appendChild(deep); childDocument.body.appendChild(shallow); return result; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        clones.value,
+        serde_json::json!({
+            "shallowDistinct": true,
+            "shallowStable": true,
+            "shallowEmpty": true,
+            "shallowOwner": true,
+            "deepDistinct": true,
+            "deepFragmentOwner": true,
+            "deepChildDistinct": true,
+            "deepChildParent": true,
+            "deepOwner": true,
+            "nestedDistinct": true,
+            "nestedChildDistinct": true,
+            "nestedChildOwner": true,
+            "templateBoundary": true,
+            "nestedBoundary": true,
+            "sourceUnchanged": true,
+        })
+    );
+
+    let persisted_clones = session
+        .script(
+            "(() => { const childDocument = document.getElementById('child').contentDocument; const source = childDocument.getElementById('template'); const deep = childDocument.getElementById('frameDeepClone'); const shallow = childDocument.getElementById('frameShallowClone'); return { deepContent: deep.content.querySelector('#inside')?.textContent, deepNested: deep.content.querySelector('#nested')?.content.querySelector('b')?.textContent, shallowEmpty: shallow.content.childNodes.length === 0, sourceUnchanged: source.content.querySelector('#inside')?.textContent === 'inert', distinctFragment: deep.content !== source.content, inertOwner: deep.content.ownerDocument === source.content.ownerDocument }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        persisted_clones.value,
+        serde_json::json!({
+            "deepContent": "inert",
+            "deepNested": "nested",
+            "shallowEmpty": true,
+            "sourceUnchanged": true,
+            "distinctFragment": true,
+            "inertOwner": true,
         })
     );
 

@@ -39382,6 +39382,7 @@ fn document_bootstrap(
           if (type === "radio") checked = true;
         }}
         pushCommand({{ kind: "click", node_index: entry.nodeIndex }});
+        nativeActivateResetButton(this, pushCommand);
       }},
       submit() {{
         if (this.tagName !== "FORM") throw new TypeError("submit requires a form");
@@ -41267,6 +41268,10 @@ fn document_bootstrap(
       case "setCustomValidity": element.setCustomValidity(command.message); break;
       case "checkValidity": element.checkValidity(); break;
       case "reportValidity": element.reportValidity(); break;
+      case "activateFormReset":
+        if (element.tagName !== "FORM") throw new TypeError("reset activation requires a form");
+        element.reset();
+        break;
       case "resetForm":
         pushCurrentDocumentCommand({{
           kind: "resetForm",
@@ -46540,6 +46545,17 @@ fn document_bootstrap(
     }} finally {{
       resetting.delete(form);
     }}
+  }};
+  const nativeActivateResetButton = (control, enqueueCommand) => {{
+    if (!control || !["BUTTON", "INPUT"].includes(control.tagName)) return;
+    if (String(control.getAttribute("type") || "").toLowerCase() !== "reset") return;
+    const root = nodeIsConnected(control)
+      ? control.ownerDocument || document
+      : nativeFormAssociatedTreeRootFor(control);
+    const elements = nativeCustomElementElementsInTree(root);
+    const firstElementById = nativeFormAssociatedFirstElementById(elements);
+    const form = nativeFormControlOwnerFor(control, elements, firstElementById);
+    if (form) nativeFormReset(form, enqueueCommand);
   }};
   const nativeFormAssociatedValue = (value) => {{
     if (value === null) return {{ kind: "null" }};

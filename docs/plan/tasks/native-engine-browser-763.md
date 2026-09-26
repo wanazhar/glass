@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-763
 scope: glass-browser/native-reset-button-activation
-status: in-progress
+status: done
 depends-on: [native-engine-browser-762]
 ---
 
@@ -41,8 +41,8 @@ navigating.
   same-origin frame Documents. Explicit `form` ownership follows the existing
   first-ID-in-tree-order rule.
 - Reset activation does not dispatch `submit`, validate the form, or navigate.
-  No reset behavior is added for controls removed or reassociated by the click
-  listener before activation.
+  Activation observes type/form-owner changes made by click listeners. If the
+  listener leaves the control without a current form owner, no form reset runs.
 
 ## Tradeoffs and boundaries
 
@@ -65,9 +65,18 @@ this slice; tests must not imply keyboard activation support.
 
 ## Verification
 
-Pending. Required evidence: input and button reset activation through semantic
-click and `.click()`, click cancellation, reset-event cancellation, listeners
-changing current type/form ownership, no submit/navigation side effect,
-top-level and same-origin-frame content-process execution, scoped Cargo
-checks/tests, formatting, and local documentation gates. Remote CI and
-cross-platform certification remain issue-level gates.
+Passed locally:
+
+- `cargo check -p glass-browser --lib --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine activates_reset_buttons --locked --quiet`
+  (2 tests: top-level native semantic click and JavaScript `.click()`, plus
+  same-origin-frame `.click()`)
+- `cargo fmt --all -- --check`
+- `git diff --check`
+- Maintainer documentation gates: release-documentation audit, documentation
+  depth, TUI shortcut inventory, and documentation coverage.
+
+The regressions verify click cancellation, reset-event cancellation, current
+type/form-owner changes made by click listeners, and no validation, submission,
+or navigation. Remote CI, cross-platform certification, keyboard-generated
+activation, and issue #40 completion are not established by these local checks.

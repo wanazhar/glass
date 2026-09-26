@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is complete through
-`native-engine-browser-762`. Slices 758 and 759 implement the autonomous and
+`native-engine-browser-763`. Slices 758 and 759 implement the autonomous and
 customized-built-in custom-element contracts for the currently mapped HTML
 interfaces. Slice 760 implements bounded `ElementInternals` form values and
 `FormData(form)` integration; slice 761 implements form-owner and disabled-
@@ -38,9 +38,11 @@ paths. Its focused tests cover cancellation, reentrancy, callback error
 recovery, reset defaults, and persistence; exact evidence is
 [recorded here](tasks/native-engine-browser-762.md). These are implementation
 checkpoints, not browser-completion evidence; issue #40 remains open for the
-full Core Web Profile, conformance, platform, and release gates. Slice 763 is
-in progress for reset-button activation through native click and JavaScript
-`.click()` paths; its contract is
+full Core Web Profile, conformance, platform, and release gates. Slice 763
+implements reset-button activation through native semantic clicks, JavaScript
+`.click()`, and same-origin frame routing. Its focused tests cover click/reset
+cancellation, dynamic type/form ownership, and the absence of validation,
+submission, or navigation; exact evidence is
 [recorded here](tasks/native-engine-browser-763.md).
 Slice 755 implements target-document-aware `Document.importNode()` for live
 top-level, same-origin-frame, and inert template-owner Documents. Its focused
@@ -112,9 +114,10 @@ and same-origin-frame regressions plus scoped compile and documentation checks.
 Reset-button activation, full form-control Web IDL reflection, complete value
 sanitization, state restoration, WPT conformance, remote CI, and issue #40
 completion remain open. See the [slice 762 contract](tasks/native-engine-browser-762.md).
-Slice 763 defines the next boundary for native activation of reset buttons;
-general keyboard-generated button activation remains part of the broader input
-workstream.
+Slice 763 implements form-associated reset-button activation using the shared
+reset algorithm. General keyboard-generated button activation remains part of
+the broader input workstream. See the
+[slice 763 contract](tasks/native-engine-browser-763.md).
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

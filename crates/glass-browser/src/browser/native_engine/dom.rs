@@ -14196,7 +14196,7 @@ mod tests {
                     const annotation = response.getElementById("math-annotation");
                     const mathHtml = response.getElementById("math-html");
                     const template = response.getElementById("template");
-                    const templateCell = response.getElementById("template-cell");
+                    const templateCell = template.content.getElementById("template-cell");
                     const serialized = new XMLSerializer().serializeToString(response);
                     return [
                         response.compatMode === "CSS1Compat",
@@ -14211,10 +14211,20 @@ mod tests {
                         annotation.getAttribute("definitionURL") === "urn:glass:test",
                         mathHtml.namespaceURI === "http://www.w3.org/1999/xhtml"
                             && mathHtml.parentElement === annotation,
-                        template.querySelector("#template-cell") === templateCell,
+                        template instanceof HTMLTemplateElement,
+                        template.content instanceof DocumentFragment
+                            && template.content.nodeType === 11
+                            && template.content.parentNode === null,
+                        template.content.ownerDocument !== response
+                            && template.content.ownerDocument.contentType === "text/html",
+                        template.childNodes.length === 0 && template.children.length === 0,
+                        template.querySelector("#template-cell") === null
+                            && response.getElementById("template-cell") === null,
+                        template.content.querySelector("#template-cell") === templateCell,
+                        templateCell.getRootNode() === template.content,
                         templateCell.parentElement.localName === "tr",
-                        template.children.length === 1
-                            && template.children[0].localName === "table",
+                        template.innerHTML.includes("id=\"template-cell\""),
+                        serialized.includes("<template id=\"template\"><table>"),
                         serialized.includes(
                             "<linearGradient id=\"gradient\" xlink:href=\"#target\"></linearGradient>",
                         ),
@@ -14231,7 +14241,7 @@ mod tests {
             evaluation.value,
             serde_json::json!([
                 true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-                true,
+                true, true, true, true, true, true, true, true,
             ])
         );
     }

@@ -61877,8 +61877,63 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                     explicit.send();
                 });
             })()"###;
+    let template_page_script = r###"globalThis.htmlResultPromise = globalThis.htmlResultPromise.then(result => new Promise((resolveTemplate, rejectTemplate) => {
+  const request = new XMLHttpRequest();
+  request.responseType = 'document';
+  request.open('GET', '/html-template');
+  request.onload = () => {
+    try {
+      const response = request.response;
+      const template = response.getElementById('template');
+      const content = template.content;
+      const cell = content.getElementById('template-cell');
+      const nested = content.querySelector('#nested-template');
+      let appendError = '';
+      try { content.appendChild(cell); } catch (error) { appendError = error.name; }
+      const serializer = new XMLSerializer();
+      result.template = {
+        templateType: template instanceof HTMLTemplateElement
+          && template instanceof HTMLElement,
+        contentIdentity: content === template.content
+          && content instanceof DocumentFragment
+          && content.nodeType === 11
+          && content.nodeName === '#document-fragment',
+        ownerDocument: content.ownerDocument !== response
+          && content.ownerDocument.nodeType === 9
+          && content.ownerDocument.contentType === 'text/html'
+          && nested.content.ownerDocument === content.ownerDocument,
+        parents: content.parentNode === null
+          && template.childNodes.length === 0
+          && template.children.length === 0
+          && cell.getRootNode() === content
+          && cell.parentElement.localName === 'tr',
+        queries: content.querySelector('#template-cell') === cell
+          && content.getElementsByTagName('td').length === 1
+          && template.querySelector('#template-cell') === null
+          && response.getElementById('template-cell') === null
+          && response.querySelector('#template-cell') === null,
+        serialization: template.innerHTML.includes('id="template-cell"')
+          && serializer.serializeToString(template).includes(
+            '<template id="template"><table>',
+          )
+          && serializer.serializeToString(content).includes(
+            '<td id="template-cell">template</td>',
+          ),
+        immutable: appendError === 'NoModificationAllowedError'
+          && Object.isFrozen(content),
+      };
+      resolveTemplate(result);
+    } catch (error) {
+      rejectTemplate(error);
+    }
+  };
+  request.onerror = () => rejectTemplate(new Error('template XHR failed'));
+  request.send();
+}));"###;
     let mut page_html = String::from("<script>");
     page_html.push_str(page_script);
+    page_html.push_str("</script><script>");
+    page_html.push_str(template_page_script);
     page_html.push_str("</script>");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -61894,6 +61949,7 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
             "/html-header-shift-jis",
             "/html-meta-shift-jis",
             "/html-meta-content-gbk",
+            "/html-template",
         ] {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
                 .await
@@ -61941,6 +61997,10 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                 "/html-meta-content-gbk" => (
                     "text/html; charset=unknown-native-label",
                     b"<!doctype html><meta http-equiv=Content-Type content=\"text/html; charset=gbk\"><title>\xd6\xd0\xce\xc4</title>".to_vec(),
+                ),
+                "/html-template" => (
+                    "text/html; charset=utf-8",
+                    b"<!doctype html><template id='template'><table><tr><td id='template-cell'>template</td></tr></table><template id='nested-template'><b>nested</b></template></template>".to_vec(),
                 ),
                 "/html-default" => ("text/html", b"<p>default-html</p>".to_vec()),
                 "/html-invalid" => ("text/html", b"<html><body><!--unterminated".to_vec()),
@@ -62019,6 +62079,15 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
             "headerShiftJis": "日本語",
             "metaCharset": "日本語",
             "metaContent": "中文",
+            "template": {
+                "templateType": true,
+                "contentIdentity": true,
+                "ownerDocument": true,
+                "parents": true,
+                "queries": true,
+                "serialization": true,
+                "immutable": true,
+            },
             "invalid": {
                 "identity": true,
                 "documentElement": "html",

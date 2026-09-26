@@ -63451,3 +63451,221 @@ async fn native_documents_import_nodes_into_the_target_document() {
     session.close().await.unwrap();
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("native adopt-node request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = match request.split_whitespace().nth(1) {
+                Some("/parent") => {
+                    "<!doctype html><template id='top-inert'></template><div id='top-holder'><section id='top-source' data-origin='top'><span id='top-child'>child</span><template id='top-nested'><b id='top-nested-child'>nested</b></template></section><p id='same-source'>same</p><p id='cross-source'>cross</p><div id='depth-source'></div><div id='node-source'></div></div><iframe id='child' src='/child'></iframe>"
+                }
+                Some("/child") => {
+                    "<!doctype html><template id='frame-inert'></template><div id='frame-holder'><section id='frame-source' data-origin='frame'><span id='frame-child'>child</span><template id='frame-nested'><i id='frame-nested-child'>nested</i></template></section></div>"
+                }
+                other => panic!("unexpected native adopt-node request path: {other:?}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    let adopted = session
+        .script(
+            r##"(() => {
+                const childDocument = document.getElementById('child').contentDocument;
+                const topTarget = document.getElementById('top-inert').content.ownerDocument;
+                const frameTarget = childDocument.getElementById('frame-inert').content.ownerDocument;
+                const topSource = document.getElementById('top-source');
+                const topAttribute = topSource.getAttributeNode('data-origin');
+                const topNested = topSource.querySelector('#top-nested');
+                const topNestedContent = topNested.content;
+                const topNestedChild = topNestedContent.firstElementChild;
+                globalThis.__glassAdoptedTopSource = topSource;
+                globalThis.__glassAdoptedTopTarget = topTarget;
+                const topResult = topTarget.adoptNode(topSource);
+
+                const frameSource = childDocument.getElementById('frame-source');
+                const frameAttribute = frameSource.getAttributeNode('data-origin');
+                const frameNested = frameSource.querySelector('#frame-nested');
+                const frameNestedContent = frameNested.content;
+                const frameNestedChild = frameNestedContent.firstElementChild;
+                globalThis.__glassAdoptedFrameSource = frameSource;
+                globalThis.__glassAdoptedFrameTarget = frameTarget;
+                const frameResult = frameTarget.adoptNode(frameSource);
+
+                const sameSource = document.getElementById('same-source');
+                globalThis.__glassAdoptedSameSource = sameSource;
+                const sameResult = document.adoptNode(sameSource);
+
+                const text = document.createTextNode('detached text');
+                const comment = document.createComment('detached comment');
+                const type = document.implementation.createDocumentType('html', 'public', 'system');
+                const fragment = document.createDocumentFragment();
+                const fragmentChild = document.createElement('em');
+                fragment.appendChild(fragmentChild);
+                const adoptedText = topTarget.adoptNode(text);
+                const adoptedComment = topTarget.adoptNode(comment);
+                const adoptedType = topTarget.adoptNode(type);
+                const adoptedFragment = topTarget.adoptNode(fragment);
+
+                const crossSource = document.getElementById('cross-source');
+                const crossParent = crossSource.parentNode;
+                let crossError = null;
+                try { childDocument.adoptNode(crossSource); } catch (error) { crossError = error.name; }
+
+                let documentError = null;
+                try { document.adoptNode(document); } catch (error) { documentError = error.name; }
+                let invalidNodeError = null;
+                try { document.adoptNode({ nodeType: 1 }); } catch (error) { invalidNodeError = error.name; }
+                const shadowRoot = Object.create(Node.prototype);
+                Object.defineProperties(shadowRoot, {
+                  nodeType: { value: 11 },
+                  __glassShadowRoot: { value: true },
+                });
+                let shadowRootError = null;
+                try { document.adoptNode(shadowRoot); } catch (error) { shadowRootError = error.name; }
+
+                const depthSource = document.getElementById('depth-source');
+                let depthCursor = depthSource;
+                for (let index = 0; index < 256; index += 1) {
+                  const synthetic = Object.create(Element.prototype);
+                  Object.defineProperties(synthetic, {
+                    nodeType: { value: 1 },
+                    namespaceURI: { value: 'http://www.w3.org/1999/xhtml' },
+                    localName: { value: 'div' },
+                    __glassChildren: { value: [], writable: true },
+                    getAttributeNames: { value: () => [] },
+                    getAttributeNode: { value: () => null },
+                  });
+                  depthCursor.__glassChildren.push(synthetic);
+                  depthCursor = synthetic;
+                }
+                let depthError = null;
+                try { topTarget.adoptNode(depthSource); } catch (error) { depthError = error.name; }
+
+                const nodeSource = document.getElementById('node-source');
+                for (let index = 0; index < 5000; index += 1) {
+                  const synthetic = Object.create(Text.prototype);
+                  Object.defineProperty(synthetic, 'nodeType', { value: 3 });
+                  nodeSource.__glassChildren.push(synthetic);
+                }
+                let nodeLimitError = null;
+                try { topTarget.adoptNode(nodeSource); } catch (error) { nodeLimitError = error.name; }
+
+                return {
+                  top: [topResult === topSource, topSource.parentNode === null,
+                    topSource.ownerDocument === topTarget,
+                    topSource.firstElementChild.ownerDocument === topTarget,
+                    topAttribute.ownerElement === topSource,
+                    topAttribute.ownerDocument === topTarget,
+                    topNested.content === topNestedContent,
+                    topNestedContent.ownerDocument === topTarget,
+                    topNestedChild.ownerDocument === topTarget],
+                  frame: [frameSource instanceof Node, frameSource instanceof Element,
+                    frameResult === frameSource, frameSource.parentNode === null,
+                    frameSource.ownerDocument === frameTarget,
+                    frameSource.firstElementChild.ownerDocument === frameTarget,
+                    frameAttribute.ownerElement === frameSource,
+                    frameAttribute.ownerDocument === frameTarget,
+                    frameNested.content === frameNestedContent,
+                    frameNestedContent.ownerDocument === frameTarget,
+                    frameNestedChild.ownerDocument === frameTarget],
+                  sameDocument: [sameResult === sameSource, sameSource.parentNode === null,
+                    sameSource.ownerDocument === document],
+                  otherNodes: [adoptedText === text, adoptedText.ownerDocument === topTarget,
+                    adoptedComment === comment, adoptedComment.ownerDocument === topTarget,
+                    adoptedType === type, adoptedType.ownerDocument === topTarget,
+                    adoptedFragment === fragment, adoptedFragment.ownerDocument === topTarget,
+                    fragmentChild.ownerDocument === topTarget],
+                  errors: [documentError, invalidNodeError, shadowRootError, crossError,
+                    crossSource.parentNode === crossParent,
+                    crossSource.ownerDocument === document],
+                  bounds: [depthError, depthSource.parentNode === document.getElementById('top-holder'),
+                    depthSource.ownerDocument === document,
+                    nodeLimitError, nodeSource.parentNode === document.getElementById('top-holder'),
+                    nodeSource.ownerDocument === document],
+                };
+              })()"##,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        adopted.value,
+        serde_json::json!({
+            "top": [true, true, true, true, true, true, true, true, true],
+            "frame": [true, true, true, true, true, true, true, true, true, true, true],
+            "sameDocument": [true, true, true],
+            "otherNodes": [true, true, true, true, true, true, true, true, true],
+            "errors": [
+                "NotSupportedError",
+                "TypeError",
+                "HierarchyRequestError",
+                "NotSupportedError",
+                true,
+                true,
+            ],
+            "bounds": [
+                "RangeError",
+                true,
+                true,
+                "RangeError",
+                true,
+                true,
+            ],
+        })
+    );
+
+    let persisted = session
+        .script(
+            r##"(() => {
+                const childDocument = document.getElementById('child').contentDocument;
+                const topSource = globalThis.__glassAdoptedTopSource;
+                const frameSource = globalThis.__glassAdoptedFrameSource;
+                const sameSource = globalThis.__glassAdoptedSameSource;
+                const topTarget = globalThis.__glassAdoptedTopTarget;
+                const frameTarget = globalThis.__glassAdoptedFrameTarget;
+                return [
+                  document.getElementById('top-source') === null,
+                  topSource.parentNode === null,
+                  topSource.ownerDocument === topTarget,
+                  topSource.querySelector('#top-nested').content.querySelector('b').ownerDocument === topTarget,
+                  childDocument.getElementById('frame-source') === null,
+                  frameSource.parentNode === null,
+                  frameSource.ownerDocument === frameTarget,
+                  frameSource.querySelector('#frame-nested').content.querySelector('i').ownerDocument === frameTarget,
+                  document.getElementById('same-source') === null,
+                  sameSource.parentNode === null,
+                  sameSource.ownerDocument === document,
+                  document.getElementById('cross-source') !== null,
+                ];
+              })()"##,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        persisted.value,
+        serde_json::json!([
+            true, true, true, true, true, true, true, true, true, true, true, true
+        ])
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}

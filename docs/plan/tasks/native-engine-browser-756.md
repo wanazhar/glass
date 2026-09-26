@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-756
 scope: glass-browser/context-local-document-adopt-node
-status: planned
+status: complete
 depends-on: [native-engine-browser-755]
 ---
 
@@ -103,4 +103,29 @@ ownership and preserve identity across the native command boundary.
 
 ## Evidence
 
-Pending implementation and verification.
+Implemented in the native JavaScript document projection and covered by the
+process-backed
+`native_documents_adopt_nodes_within_their_browsing_contexts` test. It verifies
+identity-preserving adoption in top-level and same-origin frame contexts,
+recursive nested-template inert ownership, attached-Attr ownership, same-
+Document detachment, supported text/comment/doctype/fragment nodes, persistence
+after script-realm refresh, typed failures, and atomic node/depth-limit and
+cross-context failures. The neighboring
+`native_documents_import_nodes_into_the_target_document` process-backed
+regression also passes after frame Element branding was corrected.
+
+Local Linux validation passed:
+
+- `cargo fmt --all -- --check`
+- `cargo check -p glass-browser --tests --locked --quiet`
+- `cargo test -p glass-browser --test native_engine --locked native_documents_adopt_nodes_within_their_browsing_contexts -- --exact --test-threads=1`
+- `cargo test -p glass-browser --test native_engine --locked native_documents_import_nodes_into_the_target_document -- --exact --test-threads=1`
+- Release-truth: 1,384 Markdown documents, 83 current documents, 63 previous-
+  version hits, 1,558 semantic-audit hits, zero current-claim failures.
+- Documentation-depth: 93 current guides and 19 substantive contracts.
+- TUI shortcuts: 15 implementation help keys and 63 documentation markers.
+- Live documentation coverage: 1,384 Markdown files, 346 full-product MCP
+  tools (101 browser-only), 17 examples, and 22 public modules.
+
+Cross-context node-identity transfer and the other exclusions above remain
+open issue #40 requirements; this slice is not browser-completion evidence.

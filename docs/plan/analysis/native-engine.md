@@ -28,8 +28,11 @@ template-contents owner-document identity. Its process-backed top-level and
 same-origin-frame regressions pass locally. Slice 755 implements
 target-document-aware `importNode()` for live top-level, same-origin-frame,
 and inert template-owner Documents, with boolean/dictionary depth options and
-destination inert ownership for nested template content. `adoptNode()`, full
-HTML conformance, remote CI, and cross-platform certification remain open.
+destination inert ownership for nested template content. Slice 756 implements
+bounded same-context `adoptNode()` for live and inert Documents, including
+same-Document detach, recursive template-owner reassignment, typed failures,
+and preflight bounds. Cross-context node transfer, full HTML conformance,
+remote CI, and cross-platform certification remain open.
 Issue #40 remains open. Slice 728
 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API
@@ -43,17 +46,16 @@ decoding; slice 750 adds bounded WHATWG label lookup and HTML encoding
 prescan. These remain incremental parity tasks, not full Encoding/XHR
 conformance. Template content is preserved as a distinct fragment in detached
 XHR response documents, top-level live navigation DOMs, and same-origin frame
-documents; `cloneNode()` template copying is covered by slice 754, and
-target-aware `importNode()` by slice 755; `adoptNode()` remains open. Its
-planned slice 756 scope is same-browsing-context adoption, not cross-context
-identity transfer. See
+documents; `cloneNode()` template copying is covered by slice 754,
+target-aware `importNode()` by slice 755, and bounded same-context
+`adoptNode()` by slice 756. Cross-context identity transfer remains open. See
 [slice 749](../tasks/native-engine-browser-749.md),
 [slice 750](../tasks/native-engine-browser-750.md), and
 [slice 752](../tasks/native-engine-browser-752.md) and
 [slice 753](../tasks/native-engine-browser-753.md) and
 [slice 754](../tasks/native-engine-browser-754.md),
-[slice 755](../tasks/native-engine-browser-755.md), and the
-[planned slice 756](../tasks/native-engine-browser-756.md). Slice 729
+[slice 755](../tasks/native-engine-browser-755.md), and
+[slice 756](../tasks/native-engine-browser-756.md). Slice 729
 promotes native revisioned semantic observation,
 page inspection/bootstrap, and region expansion into the canonical Rust API.
 Slice 730 promotes native target/frame topology into the canonical Rust API

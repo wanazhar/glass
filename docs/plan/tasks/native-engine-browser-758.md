@@ -123,11 +123,11 @@ separate path for later scoped-registry and form-associated support.
 
 Status remains `in-progress`; the template-identity checkpoint is committed on
 local `main` as `b88dbaf9`, based on autonomous custom-element commits
-`b4d7af0d` and `6cefcc05`. The current follow-up
-current template-identity follow-up emits a binding command for template
-`innerHTML` and pairs JavaScript temporary identities with native nodes while
-walking direct and nested template contents. This walk is identity bookkeeping
-only; it does not invoke custom-element lifecycle traversal. The regression
+`b4d7af0d` and `6cefcc05`. The template-identity follow-up emits a binding
+command for template `innerHTML` and pairs JavaScript temporary identities
+with native nodes while walking direct and nested template contents. This walk
+is identity bookkeeping only; it does not invoke custom-element lifecycle
+traversal. The regression
 covers direct `template.innerHTML`, a nested template in ordinary
 `innerHTML`, an additional nested template, cross-script wrapper identity,
 later attribute mutations, and inert lifecycle behavior.
@@ -169,3 +169,37 @@ Local verification on Linux aarch64 (`Linux 6.17.0-1018-oracle`):
   children. The two earlier focused runs failed at the script boundary. The
   broader task remains in progress. Remote CI and cross-platform
   certification were not run.
+
+The reaction dispatcher now tracks the first pending item with a head cursor
+and periodically compacts the consumed prefix, avoiding a full-array front
+shift for every callback while retaining the configured pending-queue bound.
+The new process-backed regression
+`native_custom_elements_recover_from_reentrancy_and_respect_bounds` verifies
+that 300 upgrade reactions preserve source order across compaction, a
+`connectedCallback` can append another custom element without recursively
+draining or reordering its callback, a reentrant definition is rejected without
+publishing the nested definition, and a throwing `observedAttributes` getter
+does not poison a retry. It also fills all 1,024 pending `whenDefined()` slots,
+checks the next request rejects with `RangeError`, resolves one definition,
+and verifies that the released slot can be used and resolved.
+
+The scoped verification passed:
+
+- `cargo fmt --all`
+- `cargo check -p glass-browser --lib --tests --locked --quiet` (passed; rustc
+  emitted unrelated dead-code warnings for superseded parser helpers in
+  `native_engine/dom.rs`)
+- `cargo test -p glass-browser --test native_engine native_custom_elements --locked --quiet`:
+  `3 passed; 0 failed; 0 ignored; 0 measured; 791 filtered out; finished in
+  51.77s`
+- Documentation gates passed: release truth (1,386 Markdown documents, 83
+  current documents, 1,564 semantic-audit hits, zero current-claim failures);
+  depth (93 guides/19 contracts); TUI shortcuts (15 keys/63 markers); live
+  coverage (346 full-product MCP tools, 101 browser-only, 17 examples, 22
+  public modules). `cargo fmt --all -- --check` and `git diff --check` passed.
+
+The hard reaction-queue overflow and 10,000-reaction checkpoint ceiling have
+not been stress-triggered. Full custom-element WPT, customized built-ins,
+scoped registries, form-associated behavior, custom states, remote CI, and
+Windows/macOS runtime certification remain open; slice 758 and issue #40 remain
+in progress.

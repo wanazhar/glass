@@ -46074,6 +46074,7 @@ fn document_bootstrap(
       whenDefined: new Map(),
       constructorStack: [],
       reactions: [],
+      reactionHead: 0,
       reactionErrors: [],
       defining: false,
       upgrading: 0,
@@ -46082,6 +46083,12 @@ fn document_bootstrap(
       registry: null,
     }};
     globalThis.__glassNativeCustomElementState = nativeCustomElementState;
+  }}
+  if (!Array.isArray(nativeCustomElementState.reactions)) nativeCustomElementState.reactions = [];
+  if (!Number.isSafeInteger(nativeCustomElementState.reactionHead)
+      || nativeCustomElementState.reactionHead < 0
+      || nativeCustomElementState.reactionHead > nativeCustomElementState.reactions.length) {{
+    nativeCustomElementState.reactionHead = 0;
   }}
   let CustomElementRegistryNative = globalThis.CustomElementRegistry;
   if (typeof CustomElementRegistryNative !== "function") {{
@@ -46135,22 +46142,43 @@ fn document_bootstrap(
   }};
   const nativeCustomElementDefinitionFor = (element) =>
     element && element.__glassCustomElementDefinition || null;
+  const nativeCustomElementPendingReactionCount = () =>
+    Math.max(0, nativeCustomElementState.reactions.length - nativeCustomElementState.reactionHead);
+  const nativeCustomElementEnqueueReaction = (reaction) => {{
+    if (nativeCustomElementPendingReactionCount() >= nativeCustomElementLimits.reactions) {{
+      nativeCustomElementReportError(new RangeError("native custom element reaction queue exceeded its limit"));
+      return false;
+    }}
+    nativeCustomElementState.reactions.push(reaction);
+    return true;
+  }};
   const nativeCustomElementDrainReactions = () => {{
     if (nativeCustomElementState.draining || nativeCustomElementState.upgrading > 0) return;
     nativeCustomElementState.draining = true;
     let work = 0;
     try {{
-      while (nativeCustomElementState.reactions.length > 0) {{
+      while (nativeCustomElementState.reactionHead < nativeCustomElementState.reactions.length) {{
         if (++work > nativeCustomElementLimits.reactionsPerCheckpoint) {{
           nativeCustomElementState.reactions.length = 0;
+          nativeCustomElementState.reactionHead = 0;
           nativeCustomElementReportError(new RangeError("native custom element reaction checkpoint exceeded its work limit"));
           break;
         }}
-        const reaction = nativeCustomElementState.reactions.shift();
+        const reaction = nativeCustomElementState.reactions[nativeCustomElementState.reactionHead];
+        nativeCustomElementState.reactionHead += 1;
         try {{ reaction.callback.apply(reaction.element, reaction.arguments); }}
         catch (error) {{ nativeCustomElementReportError(error); }}
+        if (nativeCustomElementState.reactionHead >= 256
+            && nativeCustomElementState.reactionHead * 2 >= nativeCustomElementState.reactions.length) {{
+          nativeCustomElementState.reactions.splice(0, nativeCustomElementState.reactionHead);
+          nativeCustomElementState.reactionHead = 0;
+        }}
       }}
     }} finally {{
+      if (nativeCustomElementState.reactionHead >= nativeCustomElementState.reactions.length) {{
+        nativeCustomElementState.reactions.length = 0;
+        nativeCustomElementState.reactionHead = 0;
+      }}
       nativeCustomElementState.draining = false;
     }}
   }};
@@ -46172,11 +46200,7 @@ fn document_bootstrap(
       pending.push({{ element, callback, arguments: argumentsList }});
       return;
     }}
-    if (nativeCustomElementState.reactions.length >= nativeCustomElementLimits.reactions) {{
-      nativeCustomElementReportError(new RangeError("native custom element reaction queue exceeded its limit"));
-      return;
-    }}
-    nativeCustomElementState.reactions.push({{ element, callback, arguments: argumentsList }});
+    if (!nativeCustomElementEnqueueReaction({{ element, callback, arguments: argumentsList }})) return;
     nativeCustomElementDrainReactions();
   }};
   const nativeCustomElementElementsInTree = (root) => {{
@@ -46321,11 +46345,7 @@ fn document_bootstrap(
         element.__glassCustomElementState = "custom";
       }}
       for (const reaction of element.__glassDirectCustomElementReactions) {{
-        if (nativeCustomElementState.reactions.length >= nativeCustomElementLimits.reactions) {{
-          nativeCustomElementReportError(new RangeError("native custom element reaction queue exceeded its limit"));
-          break;
-        }}
-        nativeCustomElementState.reactions.push(reaction);
+        if (!nativeCustomElementEnqueueReaction(reaction)) break;
       }}
       element.__glassDirectCustomElementReactions.length = 0;
       nativeCustomElementDrainReactions();

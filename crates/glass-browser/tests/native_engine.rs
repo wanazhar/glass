@@ -63549,6 +63549,7 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
                 disconnectedCallback() { mutationTrace.push('disconnected:' + this.id); }
               }
               customElements.define('x-mutation-probe', MutationProbe);
+              globalThis.__glassMutationProbeConstructor = MutationProbe;
               const mutationHost = document.createElement('div');
               mutationHost.id = 'mutation-host';
               document.body.appendChild(mutationHost);
@@ -63561,6 +63562,24 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
               mutationParent.setAttributeNS(null, 'data-value', 'namespaced');
               mutationParent.removeAttributeNS(null, 'data-value');
               const namespacedAttributeReactions = mutationTrace.splice(0);
+
+              const directTemplate = document.createElement('template');
+              directTemplate.id = 'direct-template-host';
+              directTemplate.innerHTML = "<x-mutation-probe id='direct-template-custom' data-value='direct-initial'><template><x-mutation-probe id='direct-nested-template-custom' data-value='direct-nested-initial'></x-mutation-probe></template></x-mutation-probe>";
+              document.body.appendChild(directTemplate);
+              const directTemplateCustom = directTemplate.content.querySelector('#direct-template-custom');
+              const directNestedTemplateCustom = directTemplateCustom.querySelector('template').content.querySelector('#direct-nested-template-custom');
+
+              const ordinaryTemplateHost = document.createElement('div');
+              ordinaryTemplateHost.id = 'ordinary-template-host';
+              document.body.appendChild(ordinaryTemplateHost);
+              ordinaryTemplateHost.innerHTML = "<template><x-mutation-probe id='ordinary-template-custom' data-value='ordinary-initial'><em>nested</em></x-mutation-probe></template>";
+              const ordinaryTemplateCustom = ordinaryTemplateHost.firstElementChild.content.querySelector('#ordinary-template-custom');
+              globalThis.__glassDirectTemplateCustom = directTemplateCustom;
+              globalThis.__glassDirectNestedTemplateCustom = directNestedTemplateCustom;
+              globalThis.__glassOrdinaryTemplateCustom = ordinaryTemplateCustom;
+              globalThis.__glassInertTemplateLifecycleTrace = mutationTrace;
+              const inertTemplateLifecycle = mutationTrace.splice(0);
               globalThis.__glassMutationTrace = mutationTrace;
 
               const reportedErrors = [];
@@ -63613,6 +63632,7 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
                 moveOrder,
                 innerHtmlReactions,
                 namespacedAttributeReactions,
+                inertTemplateLifecycle,
                 exceptionRecovery: [
                   failedConstruction.__glassCustomElementState,
                   typeof followUpElement.nodeIndex === 'number',
@@ -63663,9 +63683,10 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
                 "connected:child",
             ],
             "namespacedAttributeReactions": [
-                "attribute:parent:parent-initial:namespaced:null",
-                "attribute:parent:namespaced:null:null",
+              "attribute:parent:parent-initial:namespaced:null",
+              "attribute:parent:namespaced:null:null",
             ],
+            "inertTemplateLifecycle": [],
             "exceptionRecovery": ["failed", true, "custom", 2],
             "invalidNameError": "SyntaxError",
             "duplicateNameError": "NotSupportedError",
@@ -63684,6 +63705,23 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
         .script(
             r##"(() => {
               const trace = globalThis.__glassMutationTrace;
+              const directTemplateCustom = globalThis.__glassDirectTemplateCustom;
+              const directNestedTemplateCustom = globalThis.__glassDirectNestedTemplateCustom;
+              const ordinaryTemplateCustom = globalThis.__glassOrdinaryTemplateCustom;
+              const templateIdentities = [
+                directTemplateCustom === document.getElementById('direct-template-host').content.querySelector('#direct-template-custom'),
+                directNestedTemplateCustom === document.getElementById('direct-template-host').content.querySelector('#direct-template-custom').querySelector('template').content.querySelector('#direct-nested-template-custom'),
+                ordinaryTemplateCustom === document.getElementById('ordinary-template-host').firstElementChild.content.querySelector('#ordinary-template-custom'),
+              ];
+              directTemplateCustom.setAttribute('data-value', 'direct-mutated');
+              directNestedTemplateCustom.setAttribute('data-value', 'direct-nested-mutated');
+              ordinaryTemplateCustom.setAttribute('data-value', 'ordinary-mutated');
+              const templateValues = [
+                directTemplateCustom.getAttribute('data-value'),
+                directNestedTemplateCustom.getAttribute('data-value'),
+                ordinaryTemplateCustom.getAttribute('data-value'),
+              ];
+              const templateLifecycle = globalThis.__glassInertTemplateLifecycleTrace.splice(0);
               const mutationHost = document.getElementById('mutation-host');
               const parentSameIdentity = document.getElementById('parent') === globalThis.__glassMutationParent;
               const childSameIdentity = document.getElementById('child') === globalThis.__glassMutationChild;
@@ -63694,7 +63732,7 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
               const replacement = trace.splice(0);
               mutationHost.innerHTML = '';
               const innerHtmlRemoval = trace.splice(0);
-              return { parentSameIdentity, childSameIdentity, bootstrapReactions, textContent, replacement, innerHtmlRemoval };
+              return { parentSameIdentity, childSameIdentity, templateIdentities, templateValues, templateLifecycle, bootstrapReactions, textContent, replacement, innerHtmlRemoval };
             })()"##,
         )
         .await
@@ -63704,10 +63742,33 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
         serde_json::json!({
             "parentSameIdentity": true,
             "childSameIdentity": true,
+            "templateIdentities": [true, true, true],
+            "templateValues": ["direct-mutated", "direct-nested-mutated", "ordinary-mutated"],
+            "templateLifecycle": [],
             "bootstrapReactions": [],
             "textContent": ["disconnected:parent", "disconnected:child"],
             "replacement": ["construct:replacement", "connected:replacement"],
             "innerHtmlRemoval": ["disconnected:replacement"],
+        })
+    );
+
+    let template_mutations_persisted = session
+        .script(
+            "(() => { const direct = globalThis.__glassDirectTemplateCustom; const directNested = globalThis.__glassDirectNestedTemplateCustom; const ordinary = globalThis.__glassOrdinaryTemplateCustom; return { directSame: direct === document.getElementById('direct-template-host').content.querySelector('#direct-template-custom'), directValue: direct.getAttribute('data-value'), directNestedSame: directNested === document.getElementById('direct-template-host').content.querySelector('#direct-template-custom').querySelector('template').content.querySelector('#direct-nested-template-custom'), directNestedValue: directNested.getAttribute('data-value'), ordinarySame: ordinary === document.getElementById('ordinary-template-host').firstElementChild.content.querySelector('#ordinary-template-custom'), ordinaryValue: ordinary.getAttribute('data-value'), stillInert: [!(direct instanceof globalThis.__glassMutationProbeConstructor), !(directNested instanceof globalThis.__glassMutationProbeConstructor), !(ordinary instanceof globalThis.__glassMutationProbeConstructor)], lifecycle: globalThis.__glassInertTemplateLifecycleTrace.slice() }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        template_mutations_persisted.value,
+        serde_json::json!({
+            "directSame": true,
+            "directValue": "direct-mutated",
+            "directNestedSame": true,
+            "directNestedValue": "direct-nested-mutated",
+            "ordinarySame": true,
+            "ordinaryValue": "ordinary-mutated",
+            "stillInert": [true, true, true],
+            "lifecycle": [],
         })
     );
 

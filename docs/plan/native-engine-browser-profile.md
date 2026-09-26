@@ -135,10 +135,13 @@ callbacks remain open. See the
 [slice 753 contract](tasks/native-engine-browser-753.md) and
 [slice 754 contract](tasks/native-engine-browser-754.md), and
 [slice 755 contract](tasks/native-engine-browser-755.md).
-The next planned [slice 758 contract](tasks/native-engine-browser-758.md)
-targets autonomous custom elements and their core lifecycle reactions. It does
-not close the profile requirements for customized built-ins, scoped
-registries, form-associated elements, or custom states.
+The [slice 758 contract](tasks/native-engine-browser-758.md) is in progress:
+autonomous custom-element registry and lifecycle code is implemented, while
+template-content identity preservation now passes its focused process-backed
+regression after cached fragments are refreshed during snapshot hydration.
+Customized built-ins, scoped registries, form-associated elements, custom
+states, and full Web Platform Tests remain profile requirements beyond this
+bounded slice.
 
 ### Synchronous JavaScript dialog contract
 

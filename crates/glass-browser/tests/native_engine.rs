@@ -63453,6 +63453,215 @@ async fn native_documents_import_nodes_into_the_target_document() {
 }
 
 #[tokio::test]
+async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("native custom-element request")
+            .unwrap();
+        let _request = read_http_request(&mut stream).await;
+        let body = "<!doctype html><html><body><x-probe id='parser' data-value='parser'></x-probe></body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/custom-elements")),
+    )
+    .await
+    .unwrap();
+    let result = session
+        .script(
+            r##"await (async () => {
+              const trace = [];
+              const parserElement = document.querySelector('#parser');
+              const detached = document.createElement('x-probe');
+              const detachedInitiallyNative = detached instanceof HTMLElement;
+              const pendingDefinition = customElements.whenDefined('x-probe');
+              class ProbeElement extends HTMLElement {
+                static get observedAttributes() { return ['data-value']; }
+                constructor() {
+                  super();
+                  trace.push('construct:' + this.localName);
+                }
+                attributeChangedCallback(name, oldValue, newValue) {
+                  trace.push('attribute:' + name + ':' + oldValue + ':' + newValue);
+                }
+                connectedCallback() { trace.push('connected:' + this.localName); }
+                disconnectedCallback() { trace.push('disconnected:' + this.localName); }
+                adoptedCallback() { trace.push('adopted:' + this.localName); }
+              }
+              customElements.define('x-probe', ProbeElement);
+              const pendingConstructor = await pendingDefinition;
+              const parserOrder = trace.slice(0, 3);
+              const detachedRemainedUnupgraded = !(detached instanceof ProbeElement);
+              customElements.upgrade(detached);
+              const manualUpgradeWorked = detached instanceof ProbeElement;
+              document.body.appendChild(detached);
+              detached.setAttribute('data-value', 'detached');
+              detached.remove();
+
+              const created = document.createElement('x-probe');
+              const createElementUpgraded = created instanceof ProbeElement;
+              created.setAttribute('data-value', 'created');
+              document.body.appendChild(created);
+              created.remove();
+              const imported = document.importNode(created, { customElementRegistry: customElements });
+              const importNodeUsedRegistry = imported instanceof ProbeElement
+                && imported.ownerDocument === document;
+              let unsupportedImportRegistryError = null;
+              try { document.importNode(created, { customElementRegistry: {} }); }
+              catch (error) { unsupportedImportRegistryError = error.name; }
+
+              const constructed = new ProbeElement();
+              const directConstructorWorked = constructed instanceof ProbeElement;
+              document.body.appendChild(constructed);
+              constructed.setAttribute('data-value', 'constructed');
+              constructed.remove();
+
+              const left = document.createElement('div');
+              const right = document.createElement('div');
+              document.body.append(left, right);
+              const mover = document.createElement('x-probe');
+              left.appendChild(mover);
+              const beforeMove = trace.length;
+              right.appendChild(mover);
+              const moveOrder = trace.slice(beforeMove, beforeMove + 2);
+              mover.remove();
+
+              const reportedErrors = [];
+              const previousReportError = globalThis.reportError;
+              globalThis.reportError = error => reportedErrors.push(String(error));
+              class FailingConstructor extends HTMLElement {
+                constructor() { super(); throw new Error('constructor failure'); }
+              }
+              customElements.define('x-failing-constructor', FailingConstructor);
+              const failedConstruction = document.createElement('x-failing-constructor');
+              const followUpElement = document.createElement('div');
+              class FailingCallback extends HTMLElement {
+                connectedCallback() { throw new Error('callback failure'); }
+              }
+              customElements.define('x-failing-callback', FailingCallback);
+              const failedCallback = document.createElement('x-failing-callback');
+              document.body.appendChild(failedCallback);
+              failedCallback.remove();
+              globalThis.reportError = previousReportError;
+              let invalidNameError = null;
+              try { customElements.define('invalid', class extends HTMLElement {}); }
+              catch (error) { invalidNameError = error.name; }
+              let duplicateNameError = null;
+              try { customElements.define('x-probe', class extends HTMLElement {}); }
+              catch (error) { duplicateNameError = error.name; }
+              let unsupportedExtendsError = null;
+              try { customElements.define('x-option', class extends HTMLElement {}, { extends: 'button' }); }
+              catch (error) { unsupportedExtendsError = error.name; }
+              let invalidWhenDefinedError = null;
+              try { await customElements.whenDefined('invalid'); }
+              catch (error) { invalidWhenDefinedError = error.name; }
+              customElements.initialize(document);
+              globalThis.__glassCustomElementTrace = trace;
+              globalThis.__glassCustomElementConstructor = ProbeElement;
+              return {
+                registryIdentity: window.customElements === customElements
+                  && document.customElementRegistry === customElements,
+                pendingResolved: pendingConstructor === ProbeElement,
+                lookup: customElements.get('x-probe') === ProbeElement
+                  && customElements.getName(ProbeElement) === 'x-probe',
+                parserUpgrade: parserElement instanceof ProbeElement,
+                parserOrder,
+                detachedInitiallyNative,
+                detachedRemainedUnupgraded,
+                manualUpgradeWorked,
+                createElementUpgraded,
+                importNodeUsedRegistry,
+                unsupportedImportRegistryError,
+                directConstructorWorked,
+                moveOrder,
+                exceptionRecovery: [
+                  failedConstruction.__glassCustomElementState,
+                  typeof followUpElement.nodeIndex === 'number',
+                  failedCallback.__glassCustomElementState,
+                  reportedErrors.length,
+                ],
+                invalidNameError,
+                duplicateNameError,
+                unsupportedExtendsError,
+                invalidWhenDefinedError,
+                lifecycleCounts: {
+                  constructor: trace.filter(item => item.startsWith('construct:')).length,
+                  attribute: trace.filter(item => item.startsWith('attribute:')).length,
+                  connected: trace.filter(item => item.startsWith('connected:')).length,
+                  disconnected: trace.filter(item => item.startsWith('disconnected:')).length,
+                },
+              };
+            })()"##,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.value,
+        serde_json::json!({
+            "registryIdentity": true,
+            "pendingResolved": true,
+            "lookup": true,
+            "parserUpgrade": true,
+            "parserOrder": [
+                "construct:x-probe",
+                "attribute:data-value:null:parser",
+                "connected:x-probe",
+            ],
+            "detachedInitiallyNative": true,
+            "detachedRemainedUnupgraded": true,
+            "manualUpgradeWorked": true,
+            "createElementUpgraded": true,
+            "importNodeUsedRegistry": true,
+            "unsupportedImportRegistryError": "NotSupportedError",
+            "directConstructorWorked": true,
+            "moveOrder": ["disconnected:x-probe", "connected:x-probe"],
+            "exceptionRecovery": ["failed", true, "custom", 2],
+            "invalidNameError": "SyntaxError",
+            "duplicateNameError": "NotSupportedError",
+            "unsupportedExtendsError": "NotSupportedError",
+            "invalidWhenDefinedError": "SyntaxError",
+            "lifecycleCounts": {
+                "constructor": 6,
+                "attribute": 5,
+                "connected": 6,
+                "disconnected": 5,
+            },
+        })
+    );
+
+    let refreshed = session
+        .script(
+            "(() => { const parser = document.querySelector('#parser'); return { registryStable: window.customElements === document.customElementRegistry, defined: customElements.get('x-probe') === globalThis.__glassCustomElementConstructor, parserStillCustom: parser instanceof globalThis.__glassCustomElementConstructor, parserState: parser.__glassCustomElementState || null, parserPrototypeRestored: Object.getPrototypeOf(parser) === globalThis.__glassCustomElementConstructor.prototype, parserHasDefinition: Boolean(parser.__glassCustomElementDefinition), parserCount: document.querySelectorAll('x-probe').length }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        refreshed.value,
+        serde_json::json!({
+            "registryStable": true,
+            "defined": true,
+            "parserStillCustom": true,
+            "parserState": "custom",
+            "parserPrototypeRestored": true,
+            "parserHasDefinition": true,
+            "parserCount": 1,
+        })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -63466,7 +63675,7 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
             let request = read_http_request(&mut stream).await;
             let body = match request.split_whitespace().nth(1) {
                 Some("/parent") => {
-                    "<!doctype html><template id='top-inert'></template><div id='top-holder'><section id='top-source' data-origin='top'><span id='top-child'>child</span><template id='top-nested'><b id='top-nested-child'>nested</b></template></section><p id='same-source'>same</p><p id='cross-source'>cross</p><div id='depth-source'></div><div id='node-source'></div></div><iframe id='child' src='/child'></iframe><iframe id='sibling' src='/sibling'></iframe>"
+                    "<!doctype html><template id='top-inert'></template><div id='top-holder'><section id='top-source' data-origin='top'><span id='top-child'>child</span><template id='top-nested'><b id='top-nested-child'>nested</b></template></section><p id='same-source'>same</p><p id='cross-source'>cross</p><x-adoption-probe id='adoption-probe'></x-adoption-probe><div id='depth-source'></div><div id='node-source'></div></div><iframe id='child' src='/child'></iframe><iframe id='sibling' src='/sibling'></iframe>"
                 }
                 Some("/child") => {
                     "<!doctype html><template id='frame-inert'></template><div id='frame-holder'><section id='frame-source' data-origin='frame'><span id='frame-child'>child</span><template id='frame-nested'><i id='frame-nested-child'>nested</i></template></section><p id='frame-cross-source'>frame-cross</p><p id='sibling-cross-source'>sibling-cross</p></div>"
@@ -63494,6 +63703,21 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
             r##"(() => {
                 const childDocument = document.getElementById('child').contentDocument;
                 const siblingDocument = document.getElementById('sibling').contentDocument;
+                const adoptionTrace = [];
+                class AdoptionProbe extends HTMLElement {
+                  adoptedCallback(oldDocument, newDocument) {
+                    adoptionTrace.push([
+                      oldDocument === document,
+                      newDocument === childDocument,
+                      this.ownerDocument === childDocument,
+                    ]);
+                  }
+                }
+                customElements.define('x-adoption-probe', AdoptionProbe);
+                const adoptionProbe = document.getElementById('adoption-probe');
+                globalThis.__glassCustomAdoptionProbe = adoptionProbe;
+                childDocument.adoptNode(adoptionProbe);
+                globalThis.__glassCustomAdoptionTrace = adoptionTrace;
                 const topTarget = document.getElementById('top-inert').content.ownerDocument;
                 const frameTarget = childDocument.getElementById('frame-inert').content.ownerDocument;
                 const topSource = document.getElementById('top-source');
@@ -63633,6 +63857,8 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
                     depthSource.ownerDocument === document,
                     nodeLimitError, nodeSource.parentNode === document.getElementById('top-holder'),
                     nodeSource.ownerDocument === document],
+                  customAdoption: [adoptionProbe.ownerDocument === childDocument,
+                    adoptionTrace.length, adoptionTrace[0]],
                 };
               })()"##,
         )
@@ -63664,6 +63890,7 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
                 true,
                 true,
             ],
+            "customAdoption": [true, 1, [true, true, true]],
         })
     );
 
@@ -63678,6 +63905,7 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
                 const crossSource = globalThis.__glassAdoptedCrossSource;
                 const frameCrossSource = globalThis.__glassAdoptedFrameCrossSource;
                 const siblingSource = globalThis.__glassAdoptedSiblingSource;
+                const adoptionProbe = globalThis.__glassCustomAdoptionProbe;
                 const topTarget = globalThis.__glassAdoptedTopTarget;
                 const frameTarget = globalThis.__glassAdoptedFrameTarget;
                 return [
@@ -63701,6 +63929,11 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
                   siblingDocument.getElementById('sibling-cross-source') === siblingSource,
                   siblingSource.parentNode === siblingDocument.getElementById('sibling-holder'),
                   siblingSource.getAttribute('data-after-adopt') === 'frame-to-sibling',
+                  adoptionProbe.ownerDocument === childDocument,
+                  globalThis.__glassCustomAdoptionTrace.length === 1,
+                  globalThis.__glassCustomAdoptionTrace[0][0],
+                  globalThis.__glassCustomAdoptionTrace[0][1],
+                  globalThis.__glassCustomAdoptionTrace[0][2],
                 ];
               })()"##,
         )
@@ -63710,7 +63943,7 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
         persisted.value,
         serde_json::json!([
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true
+            true, true, true, true, true, true, true, true, true, true, true
         ])
     );
 

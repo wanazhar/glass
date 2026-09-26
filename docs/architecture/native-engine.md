@@ -84,7 +84,9 @@ file clearing, custom-validity preservation, select fallback, radio groups,
 and refreshed state. Reset-button activation, state restoration, complete
 form-control Web IDL reflection, remote CI, and cross-platform certification
 remain open. See the [slice 762 task](../plan/tasks/native-engine-browser-762.md)
-for exact verification evidence.
+for exact verification evidence. Slice 763 is in progress to connect reset
+buttons to this shared algorithm through native and JavaScript click paths;
+general keyboard-generated button activation remains open.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

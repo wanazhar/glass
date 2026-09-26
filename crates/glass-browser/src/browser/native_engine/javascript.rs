@@ -39066,6 +39066,17 @@ fn document_bootstrap(
       mediaError = null;
     }};
     if (!entry.attributeNamespaces || typeof entry.attributeNamespaces !== "object") entry.attributeNamespaces = {{}};
+    const reconcileNativeFormAssociatedAttribute = (name, namespace) => {{
+      if (namespace !== null && namespace !== undefined) return;
+      const attributeName = String(name).toLowerCase();
+      if (!["form", "id", "disabled"].includes(attributeName)) return;
+      const reconcile = globalThis.__glassReconcileNativeFormAssociatedLifecycle;
+      if (typeof reconcile === "function") {{
+        let root = element;
+        while (root && root.__glassParent) root = root.__glassParent;
+        reconcile(root || element);
+      }}
+    }};
     const setNamespacedAttribute = (namespace, name, nextValue) => {{
       const namespaceURI = normalizeAttributeNamespace(namespace);
       const qualified = qualifiedAttributeName(name, namespaceURI);
@@ -39095,6 +39106,7 @@ fn document_bootstrap(
           true,
         );
       }}
+      reconcileNativeFormAssociatedAttribute(storedAttributeLocalName(qualified, namespaceURI), namespaceURI);
     }};
     const namespacedAttributeValue = (namespace, name) => {{
       const namespaceURI = normalizeAttributeNamespace(namespace);
@@ -39134,6 +39146,7 @@ fn document_bootstrap(
           true,
         );
       }}
+      reconcileNativeFormAssociatedAttribute(localName, namespaceURI);
     }};
     let selectionStart = entry.selectionStart;
     let selectionEnd = entry.selectionEnd;
@@ -39420,6 +39433,7 @@ fn document_bootstrap(
             true,
           );
         }}
+        reconcileNativeFormAssociatedAttribute(key, null);
       }},
       __glassSetParsedAttribute(name, value, namespace) {{
         const qualifiedName = String(name);
@@ -39462,6 +39476,9 @@ fn document_bootstrap(
             true,
           );
         }}
+        reconcileNativeFormAssociatedAttribute(
+          storedAttributeLocalName(qualifiedName, namespaceURI), namespaceURI,
+        );
       }},
       setAttributeNS(namespace, qualifiedName, value) {{
         setNamespacedAttribute(namespace, qualifiedName, value);
@@ -39491,6 +39508,7 @@ fn document_bootstrap(
             true,
           );
         }}
+        reconcileNativeFormAssociatedAttribute(key, null);
       }},
       removeAttributeNS(namespace, name) {{
         removeNamespacedAttribute(namespace, name);
@@ -46200,6 +46218,8 @@ fn document_bootstrap(
       reactions: [],
       reactionHead: 0,
       reactionErrors: [],
+      formOwners: new WeakMap(),
+      formDisabledStates: new WeakMap(),
       defining: false,
       upgrading: 0,
       directConstructions: 0,
@@ -46209,6 +46229,12 @@ fn document_bootstrap(
     globalThis.__glassNativeCustomElementState = nativeCustomElementState;
   }}
   if (!Array.isArray(nativeCustomElementState.reactions)) nativeCustomElementState.reactions = [];
+  if (!(nativeCustomElementState.formOwners instanceof WeakMap)) {{
+    nativeCustomElementState.formOwners = new WeakMap();
+  }}
+  if (!(nativeCustomElementState.formDisabledStates instanceof WeakMap)) {{
+    nativeCustomElementState.formDisabledStates = new WeakMap();
+  }}
   if (!Number.isSafeInteger(nativeCustomElementState.reactionHead)
       || nativeCustomElementState.reactionHead < 0
       || nativeCustomElementState.reactionHead > nativeCustomElementState.reactions.length) {{
@@ -46320,14 +46346,34 @@ fn document_bootstrap(
     }}
     return false;
   }};
-  const nativeFormAssociatedOwnerFor = (element) => {{
+  const nativeFormAssociatedTreeRootFor = (element) => {{
+    let root = element;
+    while (root && root.__glassParent) root = root.__glassParent;
+    return root || element;
+  }};
+  const nativeFormAssociatedFirstElementById = (treeElements) => {{
+    const firstElementById = new Map();
+    for (const candidate of treeElements) {{
+      if (!candidate.hasAttribute("id")) continue;
+      const id = String(candidate.id);
+      if (!firstElementById.has(id)) firstElementById.set(id, candidate);
+    }}
+    return firstElementById;
+  }};
+  const nativeFormAssociatedOwnerFor = (element, treeElements = null, firstElementById = null) => {{
     if (!nativeFormAssociatedDefinitionFor(element)) return null;
     const formReference = element.getAttribute("form");
     if (formReference !== null) {{
       if (formReference === "") return null;
-      return elements.find((candidate) => candidate.tagName === "FORM"
-        && candidate.hasAttribute("id")
-        && candidate.id === formReference) || null;
+      const candidates = treeElements || nativeCustomElementElementsInTree(
+        nodeIsConnected(element) ? document : nativeFormAssociatedTreeRootFor(element),
+      );
+      const firstMatch = firstElementById
+        ? firstElementById.get(formReference)
+        : candidates.find((candidate) =>
+          candidate.hasAttribute("id") && candidate.id === formReference
+        );
+      return firstMatch && firstMatch.tagName === "FORM" ? firstMatch : null;
     }}
     let parent = element.parentElement;
     while (parent) {{
@@ -46508,6 +46554,80 @@ fn document_bootstrap(
     }}
     return result;
   }};
+  const nativeFormAssociatedReconcile = (extraRoot = null) => {{
+    if (suppressHostCommands > 0
+        || Number(globalThis.__glassNativeCustomElementReactionSuppression) > 0) return;
+    const documentElements = nativeCustomElementElementsInTree(document);
+    const documentFirstElementById = nativeFormAssociatedFirstElementById(documentElements);
+    const candidates = documentElements.slice();
+    const seen = new Set(documentElements);
+    if (extraRoot) {{
+      for (const element of nativeCustomElementElementsInTree(extraRoot)) {{
+        if (!seen.has(element)) {{
+          seen.add(element);
+          candidates.push(element);
+        }}
+      }}
+    }}
+    const firstLegendByFieldset = new Map();
+    for (const element of candidates) {{
+      if (element.tagName !== "LEGEND") continue;
+      const parent = element.parentElement;
+      if (parent && parent.tagName === "FIELDSET"
+          && !firstLegendByFieldset.has(parent.nodeIndex)) {{
+        firstLegendByFieldset.set(parent.nodeIndex, element);
+      }}
+    }}
+    const detachedTrees = new Map();
+    const treeStateFor = (element) => {{
+      if (nodeIsConnected(element)) {{
+        return {{ elements: documentElements, firstElementById: documentFirstElementById }};
+      }}
+      const root = nativeFormAssociatedTreeRootFor(element);
+      if (!detachedTrees.has(root)) {{
+        const elements = nativeCustomElementElementsInTree(root);
+        detachedTrees.set(root, {{
+          elements,
+          firstElementById: nativeFormAssociatedFirstElementById(elements),
+        }});
+      }}
+      return detachedTrees.get(root);
+    }};
+    nativeCustomElementState.upgrading += 1;
+    try {{
+      for (const element of candidates) {{
+        if (!nativeFormAssociatedDefinitionFor(element)
+            || !["custom", "precustomized"].includes(element.__glassCustomElementState)) {{
+          continue;
+        }}
+        const treeState = treeStateFor(element);
+        const owner = nativeFormAssociatedOwnerFor(
+          element, treeState.elements, treeState.firstElementById,
+        );
+        const owners = nativeCustomElementState.formOwners;
+        if (!owners.has(element)) {{
+          owners.set(element, owner);
+          if (owner) nativeCustomElementQueueCallback(element, "formAssociatedCallback", [owner]);
+        }} else if (owners.get(element) !== owner) {{
+          owners.set(element, owner);
+          nativeCustomElementQueueCallback(element, "formAssociatedCallback", [owner]);
+        }}
+        const disabled = nativeFormAssociatedIsDisabled(element, firstLegendByFieldset);
+        const disabledStates = nativeCustomElementState.formDisabledStates;
+        if (!disabledStates.has(element)) {{
+          disabledStates.set(element, disabled);
+          if (disabled) nativeCustomElementQueueCallback(element, "formDisabledCallback", [true]);
+        }} else if (disabledStates.get(element) !== disabled) {{
+          disabledStates.set(element, disabled);
+          nativeCustomElementQueueCallback(element, "formDisabledCallback", [disabled]);
+        }}
+      }}
+    }} finally {{
+      nativeCustomElementState.upgrading = Math.max(0, nativeCustomElementState.upgrading - 1);
+    }}
+    nativeCustomElementDrainReactions();
+  }};
+  globalThis.__glassReconcileNativeFormAssociatedLifecycle = nativeFormAssociatedReconcile;
   const nativeCustomElementTryUpgrade = (element, enqueueConnection = true) => {{
     if (!element || Number(element.nodeType) !== 1
         || element.namespaceURI !== HTML_NAMESPACE) return element;
@@ -46693,14 +46813,21 @@ fn document_bootstrap(
           nativeCustomElementQueueCallback(element, "connectedCallback", []);
         }}
       }}
+      nativeFormAssociatedReconcile(root);
     }} finally {{
       nativeCustomElementState.upgrading = Math.max(0, nativeCustomElementState.upgrading - 1);
       nativeCustomElementDrainReactions();
     }}
   }};
   globalThis.__glassRunNativeCustomElementRemovalReactions = (root) => {{
-    for (const element of nativeCustomElementElementsInTree(root)) {{
-      nativeCustomElementQueueCallback(element, "disconnectedCallback", []);
+    nativeCustomElementState.upgrading += 1;
+    try {{
+      for (const element of nativeCustomElementElementsInTree(root)) {{
+        nativeCustomElementQueueCallback(element, "disconnectedCallback", []);
+      }}
+      nativeFormAssociatedReconcile(root);
+    }} finally {{
+      nativeCustomElementState.upgrading = Math.max(0, nativeCustomElementState.upgrading - 1);
     }}
     nativeCustomElementDrainReactions();
   }};
@@ -46802,12 +46929,14 @@ fn document_bootstrap(
             if (callback !== undefined && typeof callback !== "function") {{
               throw new TypeError(callbackName + " must be callable");
             }}
-            if (callback !== undefined) {{
+            if (["formResetCallback", "formStateRestoreCallback"].includes(callbackName)
+                && callback !== undefined) {{
               throw new DOMExceptionNative(
-                "Form-associated lifecycle callbacks are not supported by this native profile",
+                callbackName + " is not supported by this native profile",
                 "NotSupportedError",
               );
             }}
+            callbacks[callbackName] = callback === undefined ? null : callback;
           }}
         }}
         definition = {{
@@ -46826,7 +46955,10 @@ fn document_bootstrap(
       nativeCustomElementState.definitionsByName.set(elementName, definition);
       nativeCustomElementState.definitionsByConstructor.set(constructor, definition);
       nativeCustomElementState.upgrading += 1;
-      try {{ nativeCustomElementUpgradeTree(document, true); }}
+      try {{
+        nativeCustomElementUpgradeTree(document, true);
+        nativeFormAssociatedReconcile(document);
+      }}
       finally {{
         nativeCustomElementState.upgrading = Math.max(0, nativeCustomElementState.upgrading - 1);
         nativeCustomElementDrainReactions();
@@ -46865,7 +46997,10 @@ fn document_bootstrap(
     upgrade: {{ configurable: true, writable: true, value(root) {{
       if (!root || typeof root !== "object") throw new TypeError("upgrade root must be a Node");
       nativeCustomElementState.upgrading += 1;
-      try {{ nativeCustomElementUpgradeTree(root, false); }}
+      try {{
+        nativeCustomElementUpgradeTree(root, false);
+        nativeFormAssociatedReconcile(root);
+      }}
       finally {{
         nativeCustomElementState.upgrading = Math.max(0, nativeCustomElementState.upgrading - 1);
         nativeCustomElementDrainReactions();
@@ -46892,7 +47027,10 @@ fn document_bootstrap(
         }}
       }}
       nativeCustomElementState.upgrading += 1;
-      try {{ nativeCustomElementUpgradeTree(root, false); }}
+      try {{
+        nativeCustomElementUpgradeTree(root, false);
+        nativeFormAssociatedReconcile(root);
+      }}
       finally {{
         nativeCustomElementState.upgrading = Math.max(0, nativeCustomElementState.upgrading - 1);
         nativeCustomElementDrainReactions();
@@ -49700,6 +49838,7 @@ fn document_bootstrap(
     }}
   }}
   nativeCustomElementUpgradeTree(document, true);
+  nativeFormAssociatedReconcile(document);
   for (const text of textNodes) {{
     try {{ Object.setPrototypeOf(text, TextNative.prototype); }} catch (_error) {{}}
   }}

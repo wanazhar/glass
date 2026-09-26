@@ -39,8 +39,10 @@ Slice [native-engine-browser-758](../tasks/native-engine-browser-758.md) is in
 progress, covering autonomous custom elements, registry operations, parser
 upgrades, and bounded lifecycle reactions. The focused template-content
 identity regression now passes after cached fragment wrappers receive their
-native snapshot index before tree reconstruction; exact local verification and
-remaining scope are recorded in the task.
+native snapshot index before tree reconstruction. A selected-frame process
+regression also confirms independent top-level/frame registries and frame-owner
+parser upgrade, reactions, and identity after script refresh. Exact local
+verification and remaining scope are recorded in the task.
 Customized built-ins, scoped registries, form-associated behavior, custom
 states, and full WPT coverage remain profile requirements beyond that bounded
 slice.

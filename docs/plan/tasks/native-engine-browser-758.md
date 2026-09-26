@@ -16,11 +16,11 @@ depends-on: [native-engine-browser-757]
   queued lifecycle reactions. The [DOM adoption algorithm](https://dom.spec.whatwg.org/#concept-node-adopt)
   queues `adoptedCallback(oldDocument, newDocument)` for upgraded custom
   elements when their node document changes.
-- Native page realms currently expose no working `customElements` registry;
-  importing with a non-null custom registry is rejected. `makeElement` already
-  builds identity-stable native DOM wrappers, while document mutation methods
-  publish ordered native commands. This task connects custom-element state to
-  those existing owners and mutation boundaries.
+- Native page realms now expose a bounded global autonomous custom-element
+  registry and core reactions over identity-stable wrappers. This task extends
+  that implementation across parser upgrades, mutation boundaries, adoption,
+  and actual frame-owner script execution; the remaining contract gaps are
+  recorded in the current checkpoint below.
 - Slice 757 provides same-tree identity-preserving node transfer. Its normal
   post-adoption route must preserve the custom constructor and deliver the
   adoption reaction exactly once.
@@ -121,9 +121,9 @@ separate path for later scoped-registry and form-associated support.
 
 ## Current implementation checkpoint (2026-09-26)
 
-Status remains `in-progress` on branch
-`task/native-engine-browser-758-template-identities`. The autonomous
-custom-element implementation is based on `b4d7af0d` and `6cefcc05`. The
+Status remains `in-progress`; the template-identity checkpoint is committed on
+local `main` as `b88dbaf9`, based on autonomous custom-element commits
+`b4d7af0d` and `6cefcc05`. The current follow-up
 current template-identity follow-up emits a binding command for template
 `innerHTML` and pairs JavaScript temporary identities with native nodes while
 walking direct and nested template contents. This walk is identity bookkeeping
@@ -131,6 +131,14 @@ only; it does not invoke custom-element lifecycle traversal. The regression
 covers direct `template.innerHTML`, a nested template in ordinary
 `innerHTML`, an additional nested template, cross-script wrapper identity,
 later attribute mutations, and inert lifecycle behavior.
+
+The selected-frame regression executes through the normal frame owner using
+`native_list_frames()` and `select_frame(child.id)`, not the parent's projected
+`contentDocument`. It defines the same autonomous name independently in the
+top-level and child-frame registries, verifies parser-created upgrade and
+connection/attribute reactions in the frame realm, and checks registry,
+constructor, and element identity after switching away from and back to the
+frame.
 
 The third rehydration correction unconditionally calls
 `fragment.__glassRefresh(entry)` for cached and new fragments in
@@ -142,8 +150,15 @@ host reference used by `template.content`.
 Local verification on Linux aarch64 (`Linux 6.17.0-1018-oracle`):
 
 - `cargo fmt --all`: passed.
-- `git diff --check`: passed after the synchronized documentation update.
+- `git diff --check`: passed after this documentation update.
 - `cargo check -p glass-browser --lib --tests --locked --quiet`: passed.
+- `cargo test -p glass-browser --test native_engine native_custom_elements_have_frame_local_registries_in_selected_frame_realms --locked --quiet`:
+  exact output: `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;
+  792 filtered out; finished in 27.23s`.
+- Documentation gates passed: release truth (1,386 Markdown files, 83 current
+  documents, zero current-claim failures); depth (93 guides/19 contracts);
+  TUI shortcuts (15 keys/63 markers); live coverage (346 MCP tools, 17
+  examples, 22 public modules).
 - `cargo test -p glass-browser --test native_engine native_custom_elements_upgrade_create_and_run_lifecycle_reactions --locked --quiet`:
   exact output: `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;
   791 filtered out; finished in 19.65s`. This was the third focused run, after

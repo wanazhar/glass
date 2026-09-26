@@ -63796,6 +63796,175 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
 }
 
 #[tokio::test]
+async fn native_custom_elements_have_frame_local_registries_in_selected_frame_realms() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("native frame custom-element request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = match request.split_whitespace().nth(1) {
+                Some("/parent") => {
+                    "<!doctype html><body><x-frame-probe id='parent-parser' data-value='parent'></x-frame-probe><iframe id='child' src='/child'></iframe></body>"
+                }
+                Some("/child") => {
+                    "<!doctype html><body><x-frame-probe id='child-parser' data-value='child'></x-frame-probe></body>"
+                }
+                other => panic!("unexpected native frame custom-element path: {other:?}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    let frames = session.native_list_frames().await.unwrap();
+    assert_eq!(frames.len(), 2);
+    let child_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("same-origin child frame")
+        .id
+        .clone();
+
+    session.select_frame(&child_id).await.unwrap();
+    let child_definition = session
+        .script(
+            r##"await (async () => {
+              const trace = [];
+              const parserElement = document.getElementById('child-parser');
+              const pending = customElements.whenDefined('x-frame-probe');
+              class FrameProbe extends HTMLElement {
+                static get observedAttributes() { return ['data-value']; }
+                constructor() { super(); trace.push('construct:' + this.id); }
+                attributeChangedCallback(name, oldValue, newValue, namespace) {
+                  trace.push('attribute:' + name + ':' + oldValue + ':' + newValue + ':' + namespace);
+                }
+                connectedCallback() { trace.push('connected:' + this.id); }
+              }
+              customElements.define('x-frame-probe', FrameProbe);
+              const resolved = await pending;
+              globalThis.__frameCustomElementRegistry = customElements;
+              globalThis.__frameCustomElementConstructor = FrameProbe;
+              globalThis.__frameCustomElementParser = parserElement;
+              globalThis.__frameCustomElementTrace = trace;
+              return {
+                registryIsWindowLocal: window.customElements === customElements
+                  && document.customElementRegistry === customElements,
+                resolved: resolved === FrameProbe,
+                parserUpgraded: parserElement instanceof FrameProbe,
+                ownerDocument: parserElement.ownerDocument === document,
+                trace,
+              };
+            })()"##,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        child_definition.value,
+        serde_json::json!({
+            "registryIsWindowLocal": true,
+            "resolved": true,
+            "parserUpgraded": true,
+            "ownerDocument": true,
+            "trace": [
+                "construct:child-parser",
+                "attribute:data-value:null:child:null",
+                "connected:child-parser",
+            ],
+        })
+    );
+
+    session.select_frame("native-context:main").await.unwrap();
+    let parent_definition = session
+        .script(
+            r##"(() => {
+              const absentBeforeDefinition = customElements.get('x-frame-probe') === undefined;
+              const parserElement = document.getElementById('parent-parser');
+              class ParentProbe extends HTMLElement {
+                constructor() { super(); }
+                connectedCallback() { globalThis.__parentCustomElementConnected = this.id; }
+              }
+              customElements.define('x-frame-probe', ParentProbe);
+              globalThis.__parentCustomElementRegistry = customElements;
+              globalThis.__parentCustomElementConstructor = ParentProbe;
+              return {
+                registryIsWindowLocal: window.customElements === customElements
+                  && document.customElementRegistry === customElements,
+                absentBeforeDefinition,
+                parentParserUpgraded: parserElement instanceof ParentProbe,
+                connected: globalThis.__parentCustomElementConnected,
+                parentLookup: customElements.get('x-frame-probe') === ParentProbe,
+              };
+            })()"##,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        parent_definition.value,
+        serde_json::json!({
+            "registryIsWindowLocal": true,
+            "absentBeforeDefinition": true,
+            "parentParserUpgraded": true,
+            "connected": "parent-parser",
+            "parentLookup": true,
+        })
+    );
+
+    session.select_frame(&child_id).await.unwrap();
+    let child_refreshed = session
+        .script(
+            r##"(() => {
+              const parserElement = document.getElementById('child-parser');
+              parserElement.setAttribute('data-value', 'updated');
+              return {
+                registryStable: window.customElements === globalThis.__frameCustomElementRegistry,
+                parentConstructorIsDifferent: globalThis.__frameCustomElementConstructor
+                  !== globalThis.__parentCustomElementConstructor,
+                definitionStable: customElements.get('x-frame-probe')
+                  === globalThis.__frameCustomElementConstructor,
+                parserStable: parserElement === globalThis.__frameCustomElementParser
+                  && parserElement instanceof globalThis.__frameCustomElementConstructor,
+                ownerDocument: parserElement.ownerDocument === document,
+                trace: globalThis.__frameCustomElementTrace,
+              };
+            })()"##,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        child_refreshed.value,
+        serde_json::json!({
+            "registryStable": true,
+            "parentConstructorIsDifferent": true,
+            "definitionStable": true,
+            "parserStable": true,
+            "ownerDocument": true,
+            "trace": [
+                "construct:child-parser",
+                "attribute:data-value:null:child:null",
+                "connected:child-parser",
+                "attribute:data-value:child:updated:null",
+            ],
+        })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

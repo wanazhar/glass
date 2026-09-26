@@ -138,7 +138,9 @@ callbacks remain open. See the
 The [slice 758 contract](tasks/native-engine-browser-758.md) is in progress:
 autonomous custom-element registry and lifecycle code is implemented, while
 template-content identity preservation now passes its focused process-backed
-regression after cached fragments are refreshed during snapshot hydration.
+regression after cached fragments are refreshed during snapshot hydration. A
+selected-frame regression covers independent top-level/frame registries and
+frame-owner lifecycle execution.
 Customized built-ins, scoped registries, form-associated elements, custom
 states, and full Web Platform Tests remain profile requirements beyond this
 bounded slice.

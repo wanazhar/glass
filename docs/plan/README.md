@@ -56,8 +56,11 @@ The [slice 758 contract](tasks/native-engine-browser-758.md) is in progress.
 Autonomous custom-element registry and bounded lifecycle code is locally
 implemented, and template-content identity preservation passes its focused
 process-backed regression after cached fragments are refreshed during snapshot
-hydration. Custom elements remain an explicit Core Web Profile requirement,
-not a completed capability; exact evidence is recorded in the task file.
+hydration. A selected-frame regression also verifies that a same-origin frame
+executes custom-element definitions in its own registry and preserves state
+across frame selection changes. Custom elements remain an explicit Core Web
+Profile requirement, not a completed capability; exact evidence is recorded
+in the task file.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

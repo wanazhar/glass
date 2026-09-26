@@ -115,10 +115,14 @@ identity is distinct from its children, and selectors on the response document
 do not traverse into it. Slices 752 and 753 also preserve fragments in
 top-level live navigation documents and same-origin frame documents, exposing
 `.content`, inert owner-document identity, query/traversal boundaries,
-fragment mutation, and template `innerHTML` replacement. Clone/import/adopt
-semantics remain open; see the [slice 751 contract](tasks/native-engine-browser-751.md),
+fragment mutation, and template `innerHTML` replacement. Slice 754 adds shallow
+and deep `cloneNode()` template-content cloning, including nested templates,
+independent fragment identity, inert owner-document association, and
+top-level/frame persistence. `importNode()` and `adoptNode()` semantics remain
+open; see the [slice 751 contract](tasks/native-engine-browser-751.md),
 [slice 752 contract](tasks/native-engine-browser-752.md), and
-[slice 753 contract](tasks/native-engine-browser-753.md).
+[slice 753 contract](tasks/native-engine-browser-753.md) and
+[slice 754 contract](tasks/native-engine-browser-754.md).
 
 ### Synchronous JavaScript dialog contract
 

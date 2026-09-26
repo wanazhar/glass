@@ -41115,6 +41115,25 @@ fn document_bootstrap(
             if (child && typeof child.cloneNode === "function") clone.appendChild(child.cloneNode(true));
           }}
         }};
+        const copyTemplateContents = (clone) => {{
+          if (node.nodeType !== 1 || node.namespaceURI !== HTML_NAMESPACE
+              || node.localName !== "template") return;
+          const source = node.content;
+          const destination = clone.content;
+          const sourceOwnerDocument = source.ownerDocument;
+          if (sourceOwnerDocument && destination.ownerDocument !== sourceOwnerDocument
+              && !destination.__glassOwnerDocumentOverride) {{
+            Object.defineProperty(destination, "__glassOwnerDocumentOverride", {{
+              enumerable: false,
+              configurable: false,
+              value: sourceOwnerDocument,
+            }});
+          }}
+          if (!Boolean(deep)) return;
+          for (const child of source.__glassChildren || []) {{
+            if (child && typeof child.cloneNode === "function") destination.appendChild(child.cloneNode(true));
+          }}
+        }};
         if (node.nodeType === 3) return owner.createTextNode(String(node.nodeValue || ""));
         if (node.nodeType === 8) return owner.createComment(String(node.nodeValue || ""));
         if (node.nodeType === 2) {{
@@ -41136,6 +41155,7 @@ fn document_bootstrap(
             }} else if (namespaceURI === null) clone.setAttribute(name, value);
             else clone.setAttributeNS(namespaceURI, name, value);
           }}
+          copyTemplateContents(clone);
           copyChildren(clone);
           return clone;
         }}

@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-753`.
+browser expansion slices are complete through `native-engine-browser-754`.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux
@@ -67,15 +67,19 @@ and `innerHTML` replacement. The model unit and process-backed DOM regression
 pass locally. Slice 753 projects the same native template fragment boundaries
 into same-origin frame documents; its process-backed test covers inert owner
 identity, query boundaries, mutation persistence, and replacement. Full
-template clone/import/adopt behavior, HTML/Encoding/XHR conformance, remote CI,
-and cross-platform certification remain open. See the [slice 746 task](tasks/native-engine-browser-746.md),
+template `cloneNode()` behavior now covers shallow/deep cloning, nested
+template contents, separate fragments, inert ownership, and top-level/frame
+persistence through process-backed regressions. Template `importNode()` and
+`adoptNode()`, HTML/Encoding/XHR conformance, remote CI, and cross-platform
+certification remain open. See the [slice 746 task](tasks/native-engine-browser-746.md),
 [slice 747 task](tasks/native-engine-browser-747.md), and
 [slice 748 task](tasks/native-engine-browser-748.md) and the
 [slice 749 task](tasks/native-engine-browser-749.md) and the
 [slice 750 task](tasks/native-engine-browser-750.md), the
 [slice 751 task](tasks/native-engine-browser-751.md), and the
 [slice 752 task](tasks/native-engine-browser-752.md) and
-[slice 753 task](tasks/native-engine-browser-753.md).
+[slice 753 task](tasks/native-engine-browser-753.md) and
+[slice 754 task](tasks/native-engine-browser-754.md).
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,
 and inherited sandboxed-modals eligibility. Remote CI and cross-platform

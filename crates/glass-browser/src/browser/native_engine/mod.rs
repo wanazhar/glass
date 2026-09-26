@@ -62,8 +62,8 @@ pub use dialog::{
     NATIVE_BEFOREUNLOAD_MESSAGE, NATIVE_DIALOG_TEXT_LIMIT_BYTES, NativeDialogController,
     NativeDialogResolution, NativePendingDialog,
 };
+pub(crate) use dom::NativeNodeSubtreeTransfer;
 pub use dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind, NativeSemanticNode};
-pub(crate) use dom::NativeNodeTransferIdentity;
 pub(crate) use engine::parse_point_target;
 pub use engine::{
     NativeActionResult, NativeActionabilityReason, NativeDiagnosticsSnapshot,

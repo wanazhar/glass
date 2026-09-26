@@ -72,7 +72,7 @@ impl Viewport {
 }
 
 /// Hard resource and state limits for one native engine.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeEngineLimits {
     pub max_document_bytes: usize,
     pub max_nodes: usize,

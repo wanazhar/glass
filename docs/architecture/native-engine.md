@@ -44,7 +44,12 @@ delivered, 256 overflow reports are emitted, and a later callback still runs.
 The per-checkpoint work limit is also process-tested by re-queuing reactions
 through the internal scheduler bridge: exactly 10,000 callbacks run, one
 `RangeError` is reported, and a later callback still runs. The broader
-custom-element contract remains incomplete. See the
+custom-element contract remains incomplete. The same slice now covers
+`importNode()` with the owning global registry and typed invalid/unsupported
+registry failures. Same-origin frame template hydration also reuses a template
+host's cached `.content` fragment when binding its native snapshot identity;
+the cross-document import regression confirms the cloned contents survive the
+next script call. Scoped registries remain outside this slice. See the
 [slice 758 task](../plan/tasks/native-engine-browser-758.md) for exact evidence.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,

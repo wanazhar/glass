@@ -48787,7 +48787,8 @@ fn document_bootstrap(
         const hostIndex = entry.templateHostIndex == null ? null : Number(entry.templateHostIndex);
         const templateHost = hostIndex === null ? null : frameNodesByIndex.get(hostIndex) || null;
         const key = frameMutationKey(currentBinding, nodeIndex);
-        const cached = frameMutationNodes.get(key);
+        const cached = frameMutationNodes.get(key)
+          || (templateHost && templateHost.__glassTemplateContentRef);
         const fragment = cached && cached.__glassFrameGeneration === frameGeneration
           && typeof cached.__glassRefresh === "function"
           ? cached

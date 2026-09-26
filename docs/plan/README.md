@@ -65,6 +65,11 @@ through the internal scheduler bridge; the test checks the cap, one explicit
 error report, and successful later callback delivery. Custom elements remain
 an explicit Core Web Profile requirement, not a completed capability; exact
 evidence is recorded in the task file.
+The slice-758 follow-up also covers owning-global-registry `importNode()` and
+typed invalid/unsupported registry choices. A frame-template hydration fix
+preserves imported content after the next script call; the focused cross-
+document regression passes locally. Scoped registries and the broader custom-
+element contract remain open.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

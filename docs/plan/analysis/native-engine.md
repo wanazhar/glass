@@ -53,7 +53,10 @@ work limit, one reported `RangeError`, and later callback recovery; exact local
 evidence and remaining scope are recorded in the task.
 Customized built-ins, scoped registries, form-associated behavior, custom
 states, and full WPT coverage remain profile requirements beyond that bounded
-slice.
+slice. The latest focused slice-758 follow-up adds owning-global-registry
+`importNode()` coverage and fixes same-origin frame template-content hydration
+so imported `.content` survives the next script call; exact check/test evidence
+is recorded in the task.
 Issue #40 remains open. Slice 728
 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API

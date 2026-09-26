@@ -62913,3 +62913,121 @@ async fn native_content_process_fetches_bounded_url_search_params() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn native_content_process_exposes_live_template_content_fragments() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("native page request")
+            .unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<!doctype html><template id='template'><span id='inside'>inert</span><template id='nested'><b>nested</b></template></template><div id='root'></div>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    const template = document.querySelector('#template');
+                    const content = template.content;
+                    const original = content.querySelector('#inside');
+                    const nested = content.querySelector('#nested');
+                    const root = document.querySelector('#root');
+                    const initial = {
+                      templateType: template instanceof HTMLTemplateElement,
+                      contentIdentity: content === template.content,
+                      fragmentType: content instanceof DocumentFragment,
+                      fragmentParent: content.parentNode === null,
+                      childParent: original.parentNode === content,
+                      childParentElement: original.parentElement === null,
+                      rootIdentity: original.getRootNode() === content,
+                      ownerDocumentType: content.ownerDocument instanceof Document,
+                      ownerDocumentDetached: content.ownerDocument !== document,
+                      nestedOwnerDocument: nested.content.ownerDocument === content.ownerDocument,
+                      templateChildCount: template.childNodes.length === 0,
+                      templateQuery: template.querySelector('#inside') === null,
+                      documentQuery: document.querySelector('#inside') === null,
+                      innerHTML: template.innerHTML.includes('id="inside"'),
+                    };
+                    const added = document.createElement('b');
+                    added.id = 'added';
+                    added.textContent = 'added';
+                    content.appendChild(added);
+                    root.appendChild(original);
+                    const moved = content.querySelector('#added') === added
+                      && original.parentNode === root
+                      && document.querySelector('#inside') === original;
+                    template.innerHTML = '<em id="replacement">new</em>';
+                    globalThis.__templateRef = template;
+                    globalThis.__templateContentRef = content;
+                    return { initial, moved, replacement: content.querySelector('#replacement') !== null };
+                  })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "initial": {
+                "templateType": true,
+                "contentIdentity": true,
+                "fragmentType": true,
+                "fragmentParent": true,
+                "childParent": true,
+                "childParentElement": true,
+                "rootIdentity": true,
+                "ownerDocumentType": true,
+                "ownerDocumentDetached": true,
+                "nestedOwnerDocument": true,
+                "templateChildCount": true,
+                "templateQuery": true,
+                "documentQuery": true,
+                "innerHTML": true,
+            },
+            "moved": true,
+            "replacement": true,
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+                    const template = globalThis.__templateRef;
+                    const content = globalThis.__templateContentRef;
+                    return {
+                      stable: template.content === content,
+                      replacement: content.querySelector('#replacement')?.textContent,
+                      templateQuery: template.querySelector('#replacement') === null,
+                      documentQuery: document.querySelector('#replacement') === null,
+                      movedNode: document.querySelector('#inside')?.textContent,
+                    };
+                  })()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "stable": true,
+            "replacement": "new",
+            "templateQuery": true,
+            "documentQuery": true,
+            "movedNode": "inert",
+        })
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}

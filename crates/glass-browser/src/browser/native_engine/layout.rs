@@ -2367,7 +2367,7 @@ impl<'a> LayoutBuilder<'a> {
                     self.place_text(parent, flow, &value);
                 }
                 NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => {}
-                NativeNodeKind::Document => {
+                NativeNodeKind::Document | NativeNodeKind::DocumentFragment => {
                     self.process_children(child, flow, depth, containing_block);
                 }
                 NativeNodeKind::Element { .. } => {
@@ -3155,7 +3155,7 @@ impl<'a> LayoutBuilder<'a> {
                     let display = self.effective_display(*child);
                     display != DisplayValue::Contents && child_node.element_name() != Some("br")
                 }
-                NativeNodeKind::Document => false,
+                NativeNodeKind::Document | NativeNodeKind::DocumentFragment => false,
             }
         })
     }
@@ -3180,7 +3180,7 @@ impl<'a> LayoutBuilder<'a> {
                 match child_node.kind() {
                     NativeNodeKind::Text(value) => value.chars().all(char::is_whitespace),
                     NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => true,
-                    NativeNodeKind::Document => false,
+                    NativeNodeKind::Document | NativeNodeKind::DocumentFragment => false,
                     NativeNodeKind::Element { .. } => {
                         if self.is_non_rendered(*child)
                             || self.document.is_hidden_for_layout(*child)
@@ -3897,7 +3897,7 @@ impl<'a> LayoutBuilder<'a> {
             match node.kind() {
                 NativeNodeKind::Text(_) => {}
                 NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => {}
-                NativeNodeKind::Document => {
+                NativeNodeKind::Document | NativeNodeKind::DocumentFragment => {
                     return self.layout_children(parent, x, y, available_width, depth);
                 }
                 NativeNodeKind::Element { .. } => {
@@ -4612,7 +4612,7 @@ impl<'a> LayoutBuilder<'a> {
             match node.kind() {
                 NativeNodeKind::Text(_) => {}
                 NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => {}
-                NativeNodeKind::Document => {
+                NativeNodeKind::Document | NativeNodeKind::DocumentFragment => {
                     return self.layout_children(parent, x, y, available_width, depth);
                 }
                 NativeNodeKind::Element { .. } => {
@@ -4877,7 +4877,7 @@ impl<'a> LayoutBuilder<'a> {
             match node.kind() {
                 NativeNodeKind::Text(_) => {}
                 NativeNodeKind::DocumentType { .. } | NativeNodeKind::Comment(_) => {}
-                NativeNodeKind::Document => {
+                NativeNodeKind::Document | NativeNodeKind::DocumentFragment => {
                     return self.layout_children(parent, x, y, available_width, depth);
                 }
                 NativeNodeKind::Element { .. } => {

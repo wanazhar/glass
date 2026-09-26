@@ -27,7 +27,7 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-751`.
+browser expansion slices are complete through `native-engine-browser-752`.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux
@@ -49,25 +49,30 @@ does not execute response scripts or load referenced resources. The scoped
 library/test-target check, six focused XHR parser tests, two process-backed
 XML/HTML XHR regressions, and process-backed navigation regression pass
 locally. Slice 749's process-backed XML/HTML XHR regressions pass (2 tests).
-Documentation gates pass: release-truth covers 1,379 Markdown files
+Documentation gates pass: release-truth covers 1,380 Markdown files
 with zero current-claim failures; depth covers 93 current guides and 19
 contracts; shortcut inventory covers 15 implementation keys and 63 markers;
 live coverage includes 346 full-product MCP tools (101 browser-only), 17
 examples, and 22 public modules. Slice 749 added bounded common charset
 decoding for HTML XHR document responses. Slice 750 replaces the subset with
 WHATWG encoding labels and the bounded HTML prescan; its decoder unit tests and
-process-backed XML/HTML XHR regressions pass locally. Full template
-`DocumentFragment` exposure for live navigation DOMs, full HTML/Encoding/XHR
+process-backed XML/HTML XHR regressions pass locally. Full HTML/Encoding/XHR
 conformance, remote CI, and cross-platform certification remain open; this is
 not browser-completion evidence. Slice 751 adds identity-preserving
 `HTMLTemplateElement.content` for detached, read-only HTML XHR response
-documents only; its focused DOM unit and process-backed XHR regression pass.
-Mutable live-page template behavior remains open. See the [slice 746 task](tasks/native-engine-browser-746.md),
+documents. Slice 752 keeps parsed navigation-document template contents in
+separate native `DocumentFragment` nodes and exposes the live-window `.content`,
+query/traversal boundaries, inert owner-document identity, fragment insertion,
+and `innerHTML` replacement. The model unit and process-backed DOM regression
+pass locally. Same-origin frame projection, full template clone/import/adopt
+behavior, full HTML/Encoding/XHR conformance, remote CI, and cross-platform
+certification remain open. See the [slice 746 task](tasks/native-engine-browser-746.md),
 [slice 747 task](tasks/native-engine-browser-747.md), and
 [slice 748 task](tasks/native-engine-browser-748.md) and the
 [slice 749 task](tasks/native-engine-browser-749.md) and the
-[slice 750 task](tasks/native-engine-browser-750.md) and the
-[slice 751 task](tasks/native-engine-browser-751.md).
+[slice 750 task](tasks/native-engine-browser-750.md), the
+[slice 751 task](tasks/native-engine-browser-751.md), and the
+[slice 752 task](tasks/native-engine-browser-752.md).
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,
 and inherited sandboxed-modals eligibility. Remote CI and cross-platform

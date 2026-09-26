@@ -14174,6 +14174,88 @@ mod tests {
     }
 
     #[test]
+    fn xhr_html_response_document_keeps_disabled_script_and_foreign_tree_semantics() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("xhr-html-standards-test")
+            .expect("native JavaScript runtime must construct");
+        let document =
+            NativeDocument::parse("<main></main>", &NativeEngineLimits::default()).unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const response = globalThis.__glassParseHtmlDocument(
+                        "<!doctype html><body><script>globalThis.__glassXhrResponseScriptRan=true;</script><noscript id='fallback'><b id='fallback-child'>visible</b></noscript><svg viewBox='0 0 1 1'><linearGradient id='gradient' xlink:href='#target'></linearGradient></svg><template id='template'><table><tr><td id='template-cell'>template</td></tr></table></template></body>",
+                        "https://example.test/response.html",
+                        "text/html; charset=UTF-8",
+                    );
+                    if (!response) return null;
+                    const fallback = response.getElementById("fallback");
+                    const fallbackChild = response.getElementById("fallback-child");
+                    const svg = response.querySelector("svg");
+                    const gradient = response.getElementById("gradient");
+                    const xlink = gradient && gradient.getAttributeNode("xlink:href");
+                    const template = response.getElementById("template");
+                    const templateCell = response.getElementById("template-cell");
+                    const serialized = new XMLSerializer().serializeToString(response);
+                    return [
+                        response.compatMode === "CSS1Compat",
+                        fallbackChild.parentElement === fallback,
+                        globalThis.__glassXhrResponseScriptRan === undefined,
+                        gradient.localName === "linearGradient",
+                        gradient.namespaceURI === "http://www.w3.org/2000/svg",
+                        svg.getAttribute("viewBox") === "0 0 1 1",
+                        xlink.namespaceURI === "http://www.w3.org/1999/xlink",
+                        template.querySelector("#template-cell") === templateCell,
+                        templateCell.parentElement.localName === "tr",
+                        template.children.length === 1
+                            && template.children[0].localName === "table",
+                        serialized.includes(
+                            "<linearGradient id=\"gradient\" xlink:href=\"#target\"></linearGradient>",
+                        ),
+                    ];
+                })()"##,
+                &document,
+                "fixture://xhr-html-standards.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("XHR HTML response document must parse");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([
+                true, true, true, true, true, true, true, true, true, true, true,
+            ])
+        );
+    }
+
+    #[test]
+    fn xhr_html_response_document_accepts_bounded_structured_parser_output() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("xhr-html-result-limit-test")
+            .expect("native JavaScript runtime must construct");
+        let document =
+            NativeDocument::parse("<main></main>", &NativeEngineLimits::default()).unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const source = "<p>x</p>".repeat(1024);
+                    const response = globalThis.__glassParseHtmlDocument(
+                        source,
+                        "https://example.test/large-response.html",
+                        "text/html",
+                    );
+                    return response !== null && response.body.children.length === 1024;
+                })()"##,
+                &document,
+                "fixture://xhr-html-result-limit.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("bounded XHR HTML response document must parse");
+
+        assert_eq!(evaluation.value, serde_json::json!(true));
+    }
+
+    #[test]
     fn xhr_html_response_document_implies_table_sections_rows_and_colgroups() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("xhr-implied-table-test")
             .expect("native JavaScript runtime must construct");

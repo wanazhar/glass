@@ -61179,10 +61179,14 @@ async fn native_content_process_xhr_exposes_bounded_xml_response_document() {
         for expected_path in ["/page", "/xml-default", "/xml-document", "/xml-invalid"] {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
                 .await
-                .expect("timed out waiting for the next XML XHR request")
+                .unwrap_or_else(|_| panic!("timed out waiting for XML XHR request {expected_path}"))
                 .unwrap();
             let request = read_http_request(&mut stream).await;
-            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            assert_eq!(
+                request.split_whitespace().nth(1),
+                Some(expected_path),
+                "unexpected request while awaiting {expected_path}: {request}"
+            );
             let (content_type, body) = match expected_path {
                 "/page" => ("text/html", "<p>XHR XML</p>"),
                 "/xml-default" | "/xml-document" => (
@@ -61692,47 +61696,20 @@ xhr.send();"#,
 #[tokio::test]
 async fn native_content_process_xhr_exposes_bounded_html_response_document() {
     let _guard = native_content_process_test_lock().lock().await;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        for expected_path in ["/page", "/html-document", "/html-default", "/html-invalid"] {
-            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
-                .await
-                .expect("timed out waiting for the next HTML XHR request")
-                .unwrap();
-            let request = read_http_request(&mut stream).await;
-            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
-            let (content_type, body) = match expected_path {
-                "/page" => ("text/html", "<p>XHR HTML</p>"),
-                "/html-document" => (
-                    "text/html; charset=UTF-8",
-                    r#"<!DOCTYPE HTML><HTML data-root='yes'><HEAD><TITLE>Native &amp; HTML</TITLE><META charset='utf-8'><SCRIPT id='raw'>if (a < b) rawValue();</SCRIPT></HEAD><BODY><P id='first' data-value='one &amp; two'>one<DIV id='second'>two<BR>three</DIV><INPUT disabled><TEXTAREA id='rc'>A &amp; B</TEXTAREA><!--comment--></BODY></HTML>"#,
-                ),
-                "/html-default" => ("text/html", "<p>default-html</p>"),
-                "/html-invalid" => ("text/html", "<html><body><!--unterminated"),
-                other => panic!("unexpected XHR HTML request path: {other}"),
-            };
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream.write_all(response.as_bytes()).await.unwrap();
-        }
-    });
-
-    let mut engine = NativeEngine::new(
-        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
-    )
-    .unwrap();
-    engine.initialize_async().await.unwrap();
-    engine
-        .evaluate_async(
-            r#"(() => {
+    let page_script = r###"(() => {
                 globalThis.htmlResultPromise = new Promise(resolve => {
                     const result = {};
-                    const fail = (stage, error) => resolve({
+                    const fail = (stage, error, xhr = null) => resolve({
                         error: stage,
                         message: String(error && error.message || error),
+                        location: location.href,
+                        xhr: xhr && {
+                            readyState: xhr.readyState,
+                            responseType: xhr.responseType,
+                            responseURL: xhr.responseURL,
+                            status: xhr.status,
+                            statusText: xhr.statusText,
+                        },
                     });
                     const invalid = new XMLHttpRequest();
                     invalid.responseType = 'DOCUMENT';
@@ -61741,9 +61718,14 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                         try {
                             let responseTextError = '';
                             try { invalid.responseText; } catch (error) { responseTextError = error.name; }
+                            const response = invalid.response;
                             result.invalid = {
-                                response: invalid.response,
-                                responseXML: invalid.responseXML,
+                                identity: response instanceof Document
+                                    && response === invalid.responseXML,
+                                documentElement: response && response.documentElement.localName,
+                                recoveredComment: response && response.body.lastChild.nodeType === 8
+                                    && response.body.lastChild.nodeValue === 'unterminated',
+                                compatMode: response && response.compatMode,
                                 responseTextError,
                             };
                             resolve(result);
@@ -61751,7 +61733,7 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                             fail('invalid-callback', error);
                         }
                     };
-                    invalid.onerror = error => fail('invalid-xhr', error);
+                    invalid.onerror = error => fail('invalid-xhr', error, invalid);
 
                     const defaultRequest = new XMLHttpRequest();
                     defaultRequest.open('GET', '/html-default');
@@ -61767,7 +61749,7 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                             fail('default-callback', error);
                         }
                     };
-                    defaultRequest.onerror = error => fail('default-xhr', error);
+                    defaultRequest.onerror = error => fail('default-xhr', error, defaultRequest);
 
                     const explicit = new XMLHttpRequest();
                     explicit.responseType = 'DOCUMENT';
@@ -61783,6 +61765,7 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                             const first = document.getElementById('first');
                             const second = document.querySelector('#second');
                             const script = document.getElementById('raw');
+                            const detachedImage = document.getElementById('detached-image');
                             const textarea = document.getElementById('rc');
                             let appendError = '';
                             try { root.appendChild(first); } catch (error) { appendError = error.name; }
@@ -61799,6 +61782,8 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                                 bodyText: body.textContent.includes('one')
                                     && body.textContent.includes('A & B'),
                                 scriptText: script.textContent,
+                                inertScript: globalThis.__glassXhrProcessScriptRan === undefined,
+                                detachedImage: detachedImage.getAttribute('src'),
                                 textareaText: textarea.textContent,
                                 firstAttribute: first.getAttribute('DATA-VALUE'),
                                 firstParent: first.parentNode === body
@@ -61824,13 +61809,63 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                             fail('explicit-callback', error);
                         }
                     };
-                    explicit.onerror = error => fail('explicit-xhr', error);
+                    explicit.onerror = error => fail('explicit-xhr', error, explicit);
                     explicit.send();
                 });
-            })()"#,
-        )
-        .await
-        .unwrap();
+            })()"###;
+    let mut page_html = String::from("<script>");
+    page_html.push_str(page_script);
+    page_html.push_str("</script>");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/html-document", "/html-default", "/html-invalid"] {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("timed out waiting for HTML XHR request {expected_path}")
+                })
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(
+                request.split_whitespace().nth(1),
+                Some(expected_path),
+                "unexpected request while awaiting {expected_path}: {request}"
+            );
+            let (content_type, body) = match expected_path {
+                "/page" => ("text/html", page_html.as_str()),
+                "/html-document" => (
+                    "text/html; charset=UTF-8",
+                    r#"<!DOCTYPE HTML><HTML data-root='yes'><HEAD><TITLE>Native &amp; HTML</TITLE><META charset='utf-8'><SCRIPT id='raw'>if (a < b) rawValue();</SCRIPT><SCRIPT id='inert'>globalThis.__glassXhrProcessScriptRan = true;</SCRIPT></HEAD><BODY><P id='first' data-value='one &amp; two'>one<DIV id='second'>two<BR>three</DIV><INPUT disabled><IMG id='detached-image' src='/xhr-document-resource'><TEXTAREA id='rc'>A &amp; B</TEXTAREA><!--comment--></BODY></HTML>"#,
+                ),
+                "/html-default" => ("text/html", "<p>default-html</p>"),
+                "/html-invalid" => ("text/html", "<html><body><!--unterminated"),
+                other => panic!("unexpected XHR HTML request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+        match tokio::time::timeout(Duration::from_millis(250), listener.accept()).await {
+            Ok(Ok((mut stream, _))) => {
+                let request = read_http_request(&mut stream).await;
+                panic!(
+                    "XHR response document unexpectedly fetched a referenced resource: {request}"
+                );
+            }
+            Ok(Err(error)) => panic!("XHR response-document listener failed: {error}"),
+            Err(_) => {}
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
     assert_eq!(
         engine
             .evaluate_async("await htmlResultPromise")
@@ -61847,6 +61882,8 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                 "body": "BODY",
                 "bodyText": true,
                 "scriptText": "if (a < b) rawValue();",
+                "inertScript": true,
+                "detachedImage": "/xhr-document-resource",
                 "textareaText": "A & B",
                 "firstAttribute": "one & two",
                 "firstParent": true,
@@ -61855,6 +61892,7 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                 "namespaceMatches": 1,
                 "voids": true,
                 "doctype": "html",
+                "compatMode": "CSS1Compat",
                 "serialized": true,
                 "immutable": true,
             },
@@ -61864,8 +61902,10 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                 "responseXml": null,
             },
             "invalid": {
-                "response": null,
-                "responseXML": null,
+                "identity": true,
+                "documentElement": "html",
+                "recoveredComment": true,
+                "compatMode": "BackCompat",
                 "responseTextError": "InvalidStateError",
             },
         })

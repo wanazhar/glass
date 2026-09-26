@@ -16791,6 +16791,9 @@ fn install_native_html_fragment_parser<'js>(ctx: Ctx<'js>) -> Result<(), Error> 
 }
 
 fn install_native_html_document_parser<'js>(ctx: Ctx<'js>) -> Result<(), Error> {
+    const MAX_NATIVE_HTML_DOCUMENT_RESULT_BYTES: usize =
+        MAX_NATIVE_SCRIPT_BYTES.saturating_mul(128);
+
     let parse_document = Function::new(ctx.clone(), |source: String| -> String {
         let error_response = |kind: &str| serde_json::json!({ "error": kind });
         let response = if source.len() > crate::browser_backend::MAX_TEXT_BYTES {
@@ -16804,14 +16807,10 @@ fn install_native_html_document_parser<'js>(ctx: Ctx<'js>) -> Result<(), Error> 
             );
             match parsed.sink_failure {
                 Some(HtmlTreeSinkFailure::InvalidTree(_)) => error_response("invalidTree"),
-                Some(HtmlTreeSinkFailure::NodeLimitExceeded { .. }) => {
-                    error_response("nodeLimit")
-                }
-                Some(HtmlTreeSinkFailure::DomDepthExceeded { .. }) => {
-                    error_response("depthLimit")
-                }
+                Some(HtmlTreeSinkFailure::NodeLimitExceeded { .. }) => error_response("nodeLimit"),
+                Some(HtmlTreeSinkFailure::DomDepthExceeded { .. }) => error_response("depthLimit"),
                 None => match serde_json::to_string(&parsed) {
-                    Ok(serialized) if serialized.len() <= MAX_NATIVE_SCRIPT_BYTES => {
+                    Ok(serialized) if serialized.len() <= MAX_NATIVE_HTML_DOCUMENT_RESULT_BYTES => {
                         return serialized;
                     }
                     Ok(_) => error_response("resultLimit"),
@@ -16819,8 +16818,7 @@ fn install_native_html_document_parser<'js>(ctx: Ctx<'js>) -> Result<(), Error> 
                 },
             }
         };
-        serde_json::to_string(&response)
-            .unwrap_or_else(|_| r#"{"error":"serialization"}"#.into())
+        serde_json::to_string(&response).unwrap_or_else(|_| r#"{"error":"serialization"}"#.into())
     })?;
     ctx.globals()
         .set("__glassParseHtmlDocumentHost", parse_document)?;
@@ -30205,1147 +30203,185 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
       || mime.endsWith("+xml");
   };
   const nativeHtmlNamespaceUri = "http://www.w3.org/1999/xhtml";
-  const nativeSvgNamespaceUri = "http://www.w3.org/2000/svg";
-  const nativeMathmlNamespaceUri = "http://www.w3.org/1998/Math/MathML";
-  const nativeHtmlXlinkNamespaceUri = "http://www.w3.org/1999/xlink";
-  const nativeHtmlXmlNamespaceUri = "http://www.w3.org/XML/1998/namespace";
-  const nativeHtmlXmlnsNamespaceUri = "http://www.w3.org/2000/xmlns/";
-  const nativeHtmlSvgAttributeNameAdjustments = new Map([
-    ["attributename", "attributeName"], ["attributetype", "attributeType"],
-    ["basefrequency", "baseFrequency"], ["baseprofile", "baseProfile"],
-    ["calcmode", "calcMode"], ["clippathunits", "clipPathUnits"],
-    ["diffuseconstant", "diffuseConstant"], ["edgemode", "edgeMode"],
-    ["filterunits", "filterUnits"], ["glyphref", "glyphRef"],
-    ["gradienttransform", "gradientTransform"], ["gradientunits", "gradientUnits"],
-    ["kernelmatrix", "kernelMatrix"], ["kernelunitlength", "kernelUnitLength"],
-    ["keypoints", "keyPoints"], ["keysplines", "keySplines"], ["keytimes", "keyTimes"],
-    ["lengthadjust", "lengthAdjust"], ["limitingconeangle", "limitingConeAngle"],
-    ["markerheight", "markerHeight"], ["markerunits", "markerUnits"],
-    ["markerwidth", "markerWidth"], ["maskcontentunits", "maskContentUnits"],
-    ["maskunits", "maskUnits"], ["numoctaves", "numOctaves"], ["pathlength", "pathLength"],
-    ["patterncontentunits", "patternContentUnits"], ["patterntransform", "patternTransform"],
-    ["patternunits", "patternUnits"], ["pointsatx", "pointsAtX"],
-    ["pointsaty", "pointsAtY"], ["pointsatz", "pointsAtZ"],
-    ["preservealpha", "preserveAlpha"], ["preserveaspectratio", "preserveAspectRatio"],
-    ["primitiveunits", "primitiveUnits"], ["refx", "refX"], ["refy", "refY"],
-    ["repeatcount", "repeatCount"], ["repeatdur", "repeatDur"],
-    ["requiredextensions", "requiredExtensions"], ["requiredfeatures", "requiredFeatures"],
-    ["specularconstant", "specularConstant"], ["specularexponent", "specularExponent"],
-    ["spreadmethod", "spreadMethod"], ["startoffset", "startOffset"],
-    ["stddeviation", "stdDeviation"], ["stitchtiles", "stitchTiles"],
-    ["surfacescale", "surfaceScale"], ["systemlanguage", "systemLanguage"],
-    ["tablevalues", "tableValues"], ["targetx", "targetX"], ["targety", "targetY"],
-    ["textlength", "textLength"], ["viewbox", "viewBox"], ["viewtarget", "viewTarget"],
-    ["xchannelselector", "xChannelSelector"], ["ychannelselector", "yChannelSelector"],
-    ["zoomandpan", "zoomAndPan"],
+  const nativeHtmlVoidElements = new Set([
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+    "meta", "param", "source", "track", "wbr",
   ]);
-  const nativeHtmlForeignAttributeAdjustments = new Map([
-    ["xlink:actuate", ["xlink", "actuate", nativeHtmlXlinkNamespaceUri]],
-    ["xlink:arcrole", ["xlink", "arcrole", nativeHtmlXlinkNamespaceUri]],
-    ["xlink:href", ["xlink", "href", nativeHtmlXlinkNamespaceUri]],
-    ["xlink:role", ["xlink", "role", nativeHtmlXlinkNamespaceUri]],
-    ["xlink:show", ["xlink", "show", nativeHtmlXlinkNamespaceUri]],
-    ["xlink:title", ["xlink", "title", nativeHtmlXlinkNamespaceUri]],
-    ["xlink:type", ["xlink", "type", nativeHtmlXlinkNamespaceUri]],
-    ["xml:lang", ["xml", "lang", nativeHtmlXmlNamespaceUri]],
-    ["xml:space", ["xml", "space", nativeHtmlXmlNamespaceUri]],
-    ["xmlns", [null, "xmlns", nativeHtmlXmlnsNamespaceUri]],
-    ["xmlns:xlink", ["xmlns", "xlink", nativeHtmlXmlnsNamespaceUri]],
-  ]);
-  const nativeHtmlAdjustForeignAttribute = (name, namespaceURI) => {
-    let adjustedName = String(name).toLowerCase();
-    if (namespaceURI === nativeSvgNamespaceUri) {
-      adjustedName = nativeHtmlSvgAttributeNameAdjustments.get(adjustedName) || adjustedName;
-    } else if (namespaceURI === nativeMathmlNamespaceUri && adjustedName === "definitionurl") {
-      adjustedName = "definitionURL";
-    }
-    const foreign = namespaceURI === nativeHtmlNamespaceUri
-      ? null
-      : nativeHtmlForeignAttributeAdjustments.get(adjustedName);
-    return {
-      name: adjustedName,
-      prefix: foreign ? foreign[0] : null,
-      localName: foreign ? foreign[1] : adjustedName,
-      namespaceURI: foreign ? foreign[2] : null,
-    };
-  };
-  const nativeHtmlVoidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
   const nativeHtmlRawTextElements = new Set([
-    "script", "style", "xmp", "iframe", "noembed", "noframes", "noscript",
+    "script", "style", "xmp", "iframe", "noembed", "noframes", "plaintext",
   ]);
-  const nativeHtmlRcdataElements = new Set(["textarea", "title"]);
-  const nativeHtmlHeadElements = new Set(["base", "link", "meta", "title", "style", "noscript", "template"]);
-  const nativeHtmlShouldAutoClose = (current, next) =>
-    (current === "li" && next === "li")
-    || (current === "p" && [
-      "address", "article", "aside", "blockquote", "details", "div", "dl",
-      "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2",
-      "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "main", "menu",
-      "nav", "ol", "p", "pre", "section", "table", "ul",
-    ].includes(next))
-    || ((current === "dt" || current === "dd") && (next === "dt" || next === "dd"))
-    || (current === "rt" && next === "rt")
-    || (current === "rp" && next === "rp")
-    || (current === "option" && ["option", "optgroup"].includes(next))
-    || (current === "optgroup" && next === "optgroup")
-    || (current === "tr" && ["tr", "tbody", "thead", "tfoot"].includes(next))
-    || (["td", "th"].includes(current) && ["td", "th", "tr", "tbody", "thead", "tfoot"].includes(next))
-    || (current === "thead" && ["tbody", "tfoot"].includes(next))
-    || (current === "tbody" && ["tbody", "tfoot"].includes(next))
-    || (current === "tfoot" && next === "tbody")
-    || (current === "colgroup" && ["colgroup", "tbody", "thead", "tfoot"].includes(next));
-  const nativeHtmlValidateCharacters = (value) => {
-    for (let cursor = 0; cursor < value.length; cursor += 1) {
-      const code = value.charCodeAt(cursor);
-      if (code >= 0xd800 && code <= 0xdbff) {
-        if (cursor + 1 >= value.length) throw new Error("native HTML contains an unpaired surrogate");
-        const next = value.charCodeAt(cursor + 1);
-        if (next < 0xdc00 || next > 0xdfff) throw new Error("native HTML contains an unpaired surrogate");
-        cursor += 1;
-      } else if (code >= 0xdc00 && code <= 0xdfff || code === 0xfffe || code === 0xffff) {
-        throw new Error("native HTML contains an invalid character");
-      }
-    }
-  };
-  const nativeHtmlDecodeEntities = (value) => String(value).replace(
-    /&(?:amp|lt|gt|quot|apos|nbsp);|&#x[0-9A-Fa-f]+;|&#[0-9]+;/gi,
-    (entity) => {
-      const lower = entity.toLowerCase();
-      if (lower === "&amp;") return "&";
-      if (lower === "&lt;") return "<";
-      if (lower === "&gt;") return ">";
-      if (lower === "&quot;") return '"';
-      if (lower === "&apos;") return "'";
-      if (lower === "&nbsp;") return "\u00a0";
-      const hexadecimal = lower.startsWith("&#x")
-        ? Number.parseInt(lower.slice(3, -1), 16)
-        : Number.parseInt(lower.slice(2, -1), 10);
-      return Number.isFinite(hexadecimal) && hexadecimal > 0 && hexadecimal <= 0x10ffff
-        && !(hexadecimal >= 0xd800 && hexadecimal <= 0xdfff)
-        ? String.fromCodePoint(hexadecimal)
-        : "\ufffd";
-    },
-  );
-  const nativeHtmlMarkupEnd = (value, offset) => {
-    let quote = null;
-    for (let cursor = offset; cursor < value.length; cursor += 1) {
-      const character = value[cursor];
-      if (quote) {
-        if (character === quote) quote = null;
-      } else if (character === '"' || character === "'") {
-        quote = character;
-      } else if (character === ">") {
-        return cursor;
-      }
-    }
-    return -1;
-  };
-  const nativeHtmlScriptDataEnd = (value, offset) => {
-    const isDelimiter = (character) => character === " " || character === "\t"
-      || character === "\n" || character === "\r" || character === "\f"
-      || character === "/" || character === ">";
-    const scriptToken = (cursor, closing) => {
-      const needle = closing ? "</script" : "<script";
-      if (value.slice(cursor, cursor + needle.length).toLowerCase() !== needle) return null;
-      const boundary = value[cursor + needle.length];
-      if (!isDelimiter(boundary)) return null;
-      return { boundaryIndex: cursor + needle.length };
-    };
-    let state = "data";
-    let cursor = offset;
-    while (cursor < value.length) {
-      if (state === "data") {
-        if (value.startsWith("<!--", cursor)) {
-          state = "escaped";
-          cursor += 4;
-          continue;
-        }
-        const closing = scriptToken(cursor, true);
-        if (closing) {
-          const end = nativeHtmlMarkupEnd(value, closing.boundaryIndex);
-          if (end >= 0) return { start: cursor, end: end + 1 };
-        }
-      } else if (state === "escaped") {
-        if (value.startsWith("-->", cursor)) {
-          state = "data";
-          cursor += 3;
-          continue;
-        }
-        const closing = scriptToken(cursor, true);
-        if (closing) {
-          const end = nativeHtmlMarkupEnd(value, closing.boundaryIndex);
-          if (end >= 0) return { start: cursor, end: end + 1 };
-        }
-        const opening = scriptToken(cursor, false);
-        if (opening) {
-          state = "double-escaped";
-          cursor = opening.boundaryIndex + 1;
-          continue;
-        }
-      } else {
-        if (value.startsWith("-->", cursor)) {
-          state = "data";
-          cursor += 3;
-          continue;
-        }
-        const closing = scriptToken(cursor, true);
-        if (closing) {
-          state = "escaped";
-          cursor = closing.boundaryIndex + 1;
-          continue;
-        }
-      }
-      cursor += 1;
-    }
-    return null;
-  };
-  const nativeHtmlSpecialEnd = (value, offset, name) => {
-    if (String(name).toLowerCase() === "script") {
-      return nativeHtmlScriptDataEnd(value, offset);
-    }
-    const lower = value.toLowerCase();
-    const needle = "</" + name;
-    let candidate = lower.indexOf(needle, offset);
-    while (candidate >= 0) {
-      const boundary = value[candidate + needle.length];
-      if (boundary === undefined || /[\s/>]/.test(boundary)) {
-        const end = nativeHtmlMarkupEnd(value, candidate + needle.length);
-        if (end >= 0) return { start: candidate, end: end + 1 };
-      }
-      candidate = lower.indexOf(needle, candidate + 1);
-    }
-    return null;
-  };
-  const nativeHtmlReadName = (value, offset) => {
-    const match = /^[A-Za-z][A-Za-z0-9:_-]*/.exec(value.slice(offset));
-    return match ? { value: match[0], next: offset + match[0].length } : null;
-  };
-  const nativeHtmlRawElement = (name, parent) => {
-    const parentNamespace = parent && parent.namespaceURI || nativeHtmlNamespaceUri;
-    const parentName = String(parent && parent.localName || "").toLowerCase();
-    const parentIsMathmlAnnotationXml = parentNamespace === nativeMathmlNamespaceUri
-      && parentName === "annotation-xml";
-    const encoding = parentIsMathmlAnnotationXml
-      ? String((parent.attributes || []).find((attribute) => attribute.name === "encoding")?.value || "").toLowerCase()
-      : "";
-    const usesHtmlRules = parentNamespace === nativeHtmlNamespaceUri
-      || (parentNamespace === nativeSvgNamespaceUri
-        && ["foreignobject", "desc", "title"].includes(parentName))
-      || (parentNamespace === nativeMathmlNamespaceUri
-        && (["mi", "mo", "mn", "ms", "mtext"].includes(parentName)
-          && !["mglyph", "malignmark"].includes(name)
-          || parentIsMathmlAnnotationXml
-            && (["text/html", "application/xhtml+xml"].includes(encoding) || name === "svg")));
-    const childNamespace = usesHtmlRules ? nativeHtmlNamespaceUri : parentNamespace;
-    const namespaceURI = childNamespace === nativeSvgNamespaceUri
-      ? nativeSvgNamespaceUri
-      : childNamespace === nativeMathmlNamespaceUri
-        ? nativeMathmlNamespaceUri
-        : name === "svg"
-          ? nativeSvgNamespaceUri
-          : name === "math"
-            ? nativeMathmlNamespaceUri
-            : nativeHtmlNamespaceUri;
-    return {
-      type: "element",
-      html: true,
-      name,
-      prefix: null,
-      localName: name,
-      namespaceURI,
-      attributes: [],
-      children: [],
-      parent,
-    };
-  };
   const nativeHtmlParseDocument = (source, url, contentType) => {
     try {
-      const rawInput = String(source);
-      nativeHtmlValidateCharacters(rawInput);
-      if (nativeXmlByteLength(rawInput) > nativeXmlMaxBytes) throw new Error("native HTML response exceeds its limit");
-      const input = rawInput.includes("\r") ? rawInput.replace(/\r\n?/g, "\n") : rawInput;
-      const state = { input, cursor: 0, nodes: 1 };
-      const document = { type: "document", html: true, children: [] };
-      const append = (parent, node, before = null) => {
-        node.parent = parent;
-        if (before === null) {
-          parent.children.push(node);
-        } else {
-          const index = parent.children.indexOf(before);
-          if (index < 0) throw new Error("native HTML foster table is not in its insertion parent");
-          parent.children.splice(index, 0, node);
-        }
-        return nativeXmlAddNode(state, node);
+      const sourceText = String(source);
+      if (nativeXmlByteLength(sourceText) > nativeXmlMaxBytes) return null;
+      const parseHost = globalThis.__glassParseHtmlDocumentHost;
+      const parseJSON = globalThis.__glassParseJSONModule;
+      if (typeof parseHost !== "function" || typeof parseJSON !== "function") return null;
+      const parsed = parseJSON(String(parseHost(sourceText)));
+      if (!parsed || typeof parsed !== "object" || parsed.error
+          || !Array.isArray(parsed.nodes) || parsed.nodes.length === 0
+          || parsed.nodes.length > nativeXmlMaxNodes * 2
+          || !["noQuirks", "limitedQuirks", "quirks"].includes(parsed.quirksMode)
+          || !Number.isInteger(parsed.parseErrorCount)
+          || parsed.parseErrorCount < 0 || parsed.parseErrorCount > 128) return null;
+
+      const nodes = parsed.nodes;
+      const rawDocument = {
+        type: "document",
+        html: true,
+        children: [],
+        parent: null,
+        url: String(url || ""),
+        contentType: String(contentType || "text/html")
+          .split(";", 1)[0].trim().toLowerCase() || "text/html",
+        compatMode: parsed.quirksMode === "quirks" ? "BackCompat" : "CSS1Compat",
       };
-      const tableStructureElements = new Set(["table", "tbody", "tfoot", "thead", "tr"]);
-      const tableSpecialStartTags = new Set([
-        "caption", "col", "colgroup", "tbody", "tfoot", "thead", "tr", "td", "th",
-        "table", "style", "script", "template", "form",
-      ]);
-      const tableCellStructuralStartTags = new Set([
-        "caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr",
-      ]);
-      const tableLevelCellStructuralStartTags = new Set([
-        "caption", "col", "colgroup", "tbody", "tfoot", "thead",
-      ]);
-      const tableFosterLocation = () => {
-        const current = state.stack[state.stack.length - 1];
-        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri
-            || !tableStructureElements.has(String(current.localName || "").toLowerCase())) return null;
-        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-          const candidate = state.stack[index];
-          if (candidate.namespaceURI !== nativeHtmlNamespaceUri || candidate.localName !== "table") continue;
-          const parent = candidate.parent || null;
-          return parent
-            ? { parent, before: candidate }
-            : { parent: state.stack[0], before: null };
-        }
-        return { parent: state.stack[0], before: null };
-      };
-      const consumeHtmlTableEnd = () => {
-        const current = state.stack[state.stack.length - 1];
-        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
-        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-          const candidate = state.stack[index];
-          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
-          const candidateName = String(candidate.localName || "").toLowerCase();
-          if (candidateName === "table") {
-            state.stack.length = index;
-            return true;
-          }
-          if (candidateName === "html" || candidateName === "template") return true;
-        }
-        // In an HTML parsing context, an out-of-scope table end tag is ignored.
-        return true;
-      };
-      const tableModeIgnoredEndTags = new Set([
-        "body", "caption", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr",
-      ]);
-      const consumeHtmlTableColumnGroupEnd = (targetName) => {
-        if (!tableModeIgnoredEndTags.has(targetName) && targetName !== "br" && targetName !== "p") return false;
-        const current = state.stack[state.stack.length - 1];
-        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
-        let columnGroupIndex = -1;
-        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-          const candidate = state.stack[index];
-          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
-          const candidateName = String(candidate.localName || "").toLowerCase();
-          if (["td", "th", "tr", "tbody", "tfoot", "thead", "caption"].includes(candidateName)) return false;
-          if (candidateName === "colgroup" && columnGroupIndex < 0) columnGroupIndex = index;
-          else if (candidateName === "table") {
-            if (columnGroupIndex < 0) return false;
-            if (targetName === "br" || targetName === "p") return true;
-            if (targetName === "col") return true;
-            if (targetName === "colgroup") {
-              if (columnGroupIndex === state.stack.length - 1) state.stack.length = columnGroupIndex;
-              return true;
-            }
-            // Other column-group end tags pop the current group and reprocess
-            // in table mode, where these tokens are ignored.
-            if (columnGroupIndex === state.stack.length - 1) state.stack.length = columnGroupIndex;
-            return true;
-          } else if (candidateName === "html" || candidateName === "template") return false;
-        }
-        return false;
-      };
-      const consumeHtmlTableStructureEnd = (targetName) => {
-        const current = state.stack[state.stack.length - 1];
-        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
-        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-          const candidate = state.stack[index];
-          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
-          const candidateName = String(candidate.localName || "").toLowerCase();
-          if (candidateName === targetName) {
-            state.stack.length = index;
-            return true;
-          }
-          if (candidateName === "html" || candidateName === "table" || candidateName === "template") return true;
-        }
-        // In an HTML parsing context, an out-of-scope table-structure end tag is ignored.
-        return true;
-      };
-      const consumeHtmlTableCellIgnoredEnd = (targetName) => {
-        if (!["body", "caption", "col", "colgroup", "html"].includes(targetName)) return false;
-        const current = state.stack[state.stack.length - 1];
-        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
-        let cellInScope = false;
-        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-          const candidate = state.stack[index];
-          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
-          const candidateName = String(candidate.localName || "").toLowerCase();
-          if (candidateName === "td" || candidateName === "th") cellInScope = true;
-          else if (candidateName === "table") return cellInScope;
-          else if (candidateName === "html" || candidateName === "template") return false;
-        }
-        return false;
-      };
-      const consumeHtmlTableRowIgnoredEnd = (targetName) => {
-        if (!["body", "caption", "col", "colgroup", "html"].includes(targetName)) return false;
-        const current = state.stack[state.stack.length - 1];
-        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
-        let rowContextInScope = false;
-        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-          const candidate = state.stack[index];
-          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
-          const candidateName = String(candidate.localName || "").toLowerCase();
-          if (["td", "th", "caption", "colgroup"].includes(candidateName)) return false;
-          if (["tr", "tbody", "tfoot", "thead"].includes(candidateName)) rowContextInScope = true;
-          else if (candidateName === "table") return rowContextInScope;
-          else if (candidateName === "html" || candidateName === "template") return false;
-        }
-        return false;
-      };
-      const consumeHtmlTableCaptionIgnoredEnd = (targetName) => {
-        if (!["body", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr"].includes(targetName)) return false;
-        const current = state.stack[state.stack.length - 1];
-        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
-        let captionInScope = false;
-        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-          const candidate = state.stack[index];
-          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
-          const candidateName = String(candidate.localName || "").toLowerCase();
-          if (["td", "th", "tr", "tbody", "tfoot", "thead", "colgroup"].includes(candidateName)) return false;
-          if (candidateName === "caption") captionInScope = true;
-          else if (candidateName === "table") return captionInScope;
-          else if (candidateName === "html" || candidateName === "template") return false;
-        }
-        return false;
-      };
-      const consumeHtmlTableModeIgnoredEnd = (targetName) => {
-        if (!tableModeIgnoredEndTags.has(targetName)) return false;
-        const current = state.stack[state.stack.length - 1];
-        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return false;
-        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-          const candidate = state.stack[index];
-          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
-          const candidateName = String(candidate.localName || "").toLowerCase();
-          if (["td", "th", "tr", "tbody", "tfoot", "thead", "caption", "colgroup"].includes(candidateName)) return false;
-          if (candidateName === "table") return true;
-          if (candidateName === "html" || candidateName === "template") return false;
-        }
-        return false;
-      };
-      const prepareHtmlTableCellStructuralStart = (incomingName) => {
-        if (!tableCellStructuralStartTags.has(incomingName)) return;
-        const current = state.stack[state.stack.length - 1];
-        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return;
-        let cellIndex = -1;
-        let tableIndex = -1;
-        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-          const candidate = state.stack[index];
-          const candidateName = String(candidate.localName || "").toLowerCase();
-          if (candidate.namespaceURI === nativeSvgNamespaceUri && candidateName === "foreignobject") break;
-          if (candidate.namespaceURI !== nativeHtmlNamespaceUri) continue;
-          if (candidateName === "table") {
-            if (cellIndex >= 0) tableIndex = index;
-            break;
-          }
-          if (candidateName === "html" || candidateName === "template") break;
-          if (cellIndex < 0 && (candidateName === "td" || candidateName === "th")) cellIndex = index;
-        }
-        if (cellIndex < 0 || tableIndex < 0) return;
-        state.stack.length = cellIndex;
-        if (tableLevelCellStructuralStartTags.has(incomingName)) {
-          state.stack.length = tableIndex + 1;
-        }
-      };
-      const prepareHtmlTableStart = () => {
-        const current = state.stack[state.stack.length - 1];
-        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return true;
-        while (true) {
-          let tableIndex = -1;
-          for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-            const candidate = state.stack[index];
-            const candidateName = String(candidate.localName || "").toLowerCase();
-            if (candidate.namespaceURI === nativeHtmlNamespaceUri && candidateName === "template") return true;
-            if (candidate.namespaceURI === nativeSvgNamespaceUri && candidateName === "foreignobject") return true;
-            if (candidate.namespaceURI === nativeHtmlNamespaceUri && candidateName === "table") {
-              tableIndex = index;
-              break;
-            }
-          }
-          if (tableIndex < 0) return true;
-          const hasModeBoundary = state.stack.slice(tableIndex + 1).some((candidate) => {
-            const candidateName = String(candidate.localName || "").toLowerCase();
-            return (candidate.namespaceURI === nativeHtmlNamespaceUri
-                && ["td", "th", "caption", "template"].includes(candidateName))
-              || (candidate.namespaceURI === nativeSvgNamespaceUri && candidateName === "foreignobject");
-          });
-          if (hasModeBoundary) return true;
-          state.stack.length = tableIndex;
-        }
-      };
-      const insertImpliedTableElements = (incomingName) => {
-        const current = state.stack[state.stack.length - 1];
-        if (!current || current.namespaceURI !== nativeHtmlNamespaceUri) return;
-        const currentName = String(current.localName || "").toLowerCase();
-        const impliedNames = currentName === "table" && incomingName === "col"
-          ? ["colgroup"]
-          : currentName === "table" && incomingName === "tr"
-          ? ["tbody"]
-          : currentName === "table" && (incomingName === "td" || incomingName === "th")
-            ? ["tbody", "tr"]
-            : (currentName === "tbody" || currentName === "thead" || currentName === "tfoot")
-                && (incomingName === "td" || incomingName === "th")
-              ? ["tr"]
-              : [];
-        for (const impliedName of impliedNames) {
-          if (state.stack.length >= nativeXmlMaxDepth) throw new Error("native HTML depth limit exceeded");
-          const parent = state.stack[state.stack.length - 1];
-          const implied = nativeHtmlRawElement(impliedName, parent);
-          append(parent, implied);
-          state.stack.push(implied);
-        }
-      };
-      const activeFormatting = [];
-      const htmlFormattingNames = new Set([
-        "a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small",
-        "strike", "strong", "tt", "u",
-      ]);
-      const htmlSpecialTreeNames = new Set([
-        "address", "applet", "area", "article", "aside", "base", "basefont", "bgsound",
-        "blockquote", "body", "br", "button", "caption", "center", "col", "colgroup",
-        "dd", "details", "dir", "div", "dl", "dt", "embed", "fieldset", "figcaption",
-        "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5",
-        "h6", "head", "header", "hgroup", "hr", "html", "iframe", "img", "input", "keygen", "li",
-        "link", "listing", "main", "marquee", "menu", "meta", "nav", "noembed", "noframes",
-        "noscript", "object", "ol", "p", "param", "plaintext", "pre", "script", "search",
-        "section", "select", "source", "style", "summary", "table", "tbody", "td", "template",
-        "textarea", "tfoot", "th", "thead", "title", "tr", "track", "ul", "wbr", "xmp",
-      ]);
-      const activeFormattingMarkerNames = new Set([
-        "applet", "caption", "marquee", "object", "template", "td", "th",
-      ]);
-      const markerSensitiveEndNames = new Set([
-        "applet", "caption", "marquee", "object", "table", "tbody", "td", "template",
-        "tfoot", "th", "thead", "tr",
-      ]);
-      const clearActiveFormattingToMarker = () => {
-        while (activeFormatting.length) {
-          if (activeFormatting.pop() === null) break;
-        }
-      };
-      const activeFormattingIndex = (name) => {
-        const first = activeFormatting.lastIndexOf(null) + 1;
-        for (let index = activeFormatting.length - 1; index >= first; index -= 1) {
-          const entry = activeFormatting[index];
-          if (entry && entry.namespaceURI === nativeHtmlNamespaceUri && entry.localName === name) return index;
-        }
-        return -1;
-      };
-      const sameFormattingAttributes = (left, right) => {
-        const attributes = (element) => (element.attributes || [])
-          .map((attribute) => JSON.stringify([
-            attribute.namespaceURI || "",
-            attribute.localName || attribute.name,
-            attribute.value,
-          ]))
-          .sort();
-        const leftAttributes = attributes(left);
-        const rightAttributes = attributes(right);
-        return left.localName === right.localName
-          && left.namespaceURI === right.namespaceURI
-          && leftAttributes.length === rightAttributes.length
-          && leftAttributes.every((attribute, index) => attribute === rightAttributes[index]);
-      };
-      const pushActiveFormatting = (element) => {
-        const marker = activeFormatting.lastIndexOf(null) + 1;
-        const equivalent = [];
-        for (let index = marker; index < activeFormatting.length; index += 1) {
-          const entry = activeFormatting[index];
-          if (entry && sameFormattingAttributes(entry, element)) equivalent.push(index);
-        }
-        if (equivalent.length >= 3) activeFormatting.splice(equivalent[0], 1);
-        activeFormatting.push(element);
-      };
-      const isScopeBoundary = (element) => {
-        if (!element) return true;
-        const name = String(element.localName || "").toLowerCase();
-        if (element.namespaceURI === nativeHtmlNamespaceUri) {
-          return ["applet", "caption", "html", "table", "td", "th", "marquee", "object", "select", "template"].includes(name);
-        }
-        if (element.namespaceURI === nativeMathmlNamespaceUri) {
-          return ["mi", "mo", "mn", "ms", "mtext", "annotation-xml"].includes(name);
-        }
-        return element.namespaceURI === nativeSvgNamespaceUri
-          && ["foreignobject", "desc", "title"].includes(name);
-      };
-      const elementInScope = (target) => {
-        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-          const candidate = state.stack[index];
-          if (candidate === target) return true;
-          if (isScopeBoundary(candidate)) return false;
-        }
-        return false;
-      };
-      const paragraphInButtonScope = () => {
-        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-          const candidate = state.stack[index];
-          if (candidate && candidate.namespaceURI === nativeHtmlNamespaceUri
-              && candidate.localName === "p") return true;
-          if (isScopeBoundary(candidate)
-              || (candidate && candidate.namespaceURI === nativeHtmlNamespaceUri
-                && candidate.localName === "button")) return false;
-        }
-        return false;
-      };
-      const isSpecialHtmlTreeElement = (element) => {
-        const name = String(element && element.localName || "").toLowerCase();
-        if (element && element.namespaceURI === nativeHtmlNamespaceUri) {
-          return htmlSpecialTreeNames.has(name);
-        }
-        if (element && element.namespaceURI === nativeMathmlNamespaceUri) {
-          return ["mi", "mo", "mn", "ms", "mtext", "annotation-xml"].includes(name);
-        }
-        return element && element.namespaceURI === nativeSvgNamespaceUri
-          && ["foreignobject", "desc", "title"].includes(name);
-      };
-      const assertRawHtmlDepth = (parent, root) => {
-        let parentDepth = 0;
-        for (let current = parent; current; current = current.parent || null) {
-          if (current.type === "element") parentDepth += 1;
-        }
-        let subtreeDepth = 0;
-        const pending = [[root, 0]];
-        while (pending.length) {
-          const [node, depth] = pending.pop();
-          const nextDepth = depth + Number(node.type === "element");
-          subtreeDepth = Math.max(subtreeDepth, nextDepth);
-          for (const child of node.children || []) pending.push([child, nextDepth]);
-        }
-        if (parentDepth + subtreeDepth > nativeXmlMaxDepth) throw new Error("native HTML depth limit exceeded");
-      };
-      const moveRawHtmlNode = (parent, node, before = null) => {
-        const oldParent = node.parent || null;
-        if (oldParent) {
-          const oldIndex = oldParent.children.indexOf(node);
-          if (oldIndex >= 0) oldParent.children.splice(oldIndex, 1);
-        }
-        node.parent = parent;
-        if (before === null) parent.children.push(node);
-        else {
-          const index = parent.children.indexOf(before);
-          if (index < 0) throw new Error("native HTML insertion reference is not a child");
-          parent.children.splice(index, 0, node);
-        }
-        assertRawHtmlDepth(parent, node);
-      };
-      const insertFormattingClone = (sourceElement, intendedParent, useFoster = true) => {
-        const foster = useFoster ? tableFosterLocation() : null;
-        const parent = foster ? foster.parent : intendedParent;
-        const clone = nativeHtmlRawElement(sourceElement.localName, parent);
-        clone.namespaceURI = nativeHtmlNamespaceUri;
-        clone.attributes = (sourceElement.attributes || []).map((attribute) => ({
-          ...attribute,
-          owner: clone,
-        }));
-        for (const _attribute of clone.attributes) nativeXmlAddNode(state, { type: "attribute" });
-        append(parent, clone, foster && foster.before);
-        assertRawHtmlDepth(parent, clone);
-        return clone;
-      };
-      const reconstructActiveFormatting = () => {
-        const current = state.stack[state.stack.length - 1];
-        if (current && current.namespaceURI !== nativeHtmlNamespaceUri
-            && !(current.namespaceURI === nativeSvgNamespaceUri
-              && ["foreignobject", "desc", "title"].includes(current.localName))
-            && !(current.namespaceURI === nativeMathmlNamespaceUri
-              && (["mi", "mo", "mn", "ms", "mtext"].includes(current.localName)
-                || (current.localName === "annotation-xml"
-                  && ["text/html", "application/xhtml+xml"].includes(
-                    String(current.attributes.find((attribute) => attribute.name === "encoding")?.value || "").toLowerCase()))))) return;
-        const last = activeFormatting.length - 1;
-        if (last < 0 || activeFormatting[last] === null || state.stack.includes(activeFormatting[last])) return;
-        let first = last;
-        while (first > 0 && activeFormatting[first - 1] !== null
-            && !state.stack.includes(activeFormatting[first - 1])) first -= 1;
-        for (let index = first; index < activeFormatting.length; index += 1) {
-          const oldElement = activeFormatting[index];
-          if (oldElement === null) continue;
-          const parent = state.stack[state.stack.length - 1];
-          const replacement = insertFormattingClone(oldElement, parent);
-          if (state.stack.length >= nativeXmlMaxDepth) throw new Error("native HTML depth limit exceeded");
-          state.stack.push(replacement);
-          activeFormatting[index] = replacement;
-        }
-      };
-      const adoptActiveFormatting = (subject) => {
-        const current = state.stack[state.stack.length - 1];
-        if (current && current.namespaceURI === nativeHtmlNamespaceUri
-            && current.localName === subject && activeFormattingIndex(subject) < 0) {
-          state.stack.pop();
-          return true;
-        }
-        for (let outer = 0; outer < 8; outer += 1) {
-          const formattingIndex = activeFormattingIndex(subject);
-          if (formattingIndex < 0) return false;
-          const formattingElement = activeFormatting[formattingIndex];
-          const formattingStackIndex = state.stack.indexOf(formattingElement);
-          if (formattingStackIndex < 0) {
-            activeFormatting.splice(formattingIndex, 1);
-            return true;
-          }
-          if (!elementInScope(formattingElement)) return true;
-          let furthestIndex = -1;
-          for (let index = state.stack.length - 1; index > formattingStackIndex; index -= 1) {
-            if (isSpecialHtmlTreeElement(state.stack[index])) {
-              furthestIndex = index;
-              break;
-            }
-          }
-          if (furthestIndex < 0) {
-            state.stack.length = formattingStackIndex;
-            activeFormatting.splice(formattingIndex, 1);
-            return true;
-          }
-          const furthestBlock = state.stack[furthestIndex];
-          const commonAncestor = state.stack[formattingStackIndex - 1];
-          if (!commonAncestor) return true;
-          let bookmark = formattingIndex;
-          let node = furthestBlock;
-          let lastNode = furthestBlock;
-          let removedNodeParent = null;
-          let inner = 0;
-          while (true) {
-            inner += 1;
-            let candidateIndex;
-            const nodeIndex = state.stack.indexOf(node);
-            if (nodeIndex >= 0) candidateIndex = nodeIndex - 1;
-            else if (removedNodeParent) candidateIndex = state.stack.indexOf(removedNodeParent);
-            else throw new Error("native HTML adoption agency lost its open node");
-            if (candidateIndex < 0) throw new Error("native HTML adoption agency reached the parser root");
-            const candidate = state.stack[candidateIndex];
-            if (candidate === formattingElement) break;
-            if (inner > 3) {
-              const oldActiveIndex = activeFormatting.indexOf(candidate);
-              if (oldActiveIndex >= 0) {
-                activeFormatting.splice(oldActiveIndex, 1);
-                if (oldActiveIndex < bookmark) bookmark -= 1;
-              }
-            }
-            const activeIndex = activeFormatting.indexOf(candidate);
-            if (activeIndex < 0) {
-              removedNodeParent = candidateIndex > 0 ? state.stack[candidateIndex - 1] : null;
-              node = candidate;
-              state.stack.splice(candidateIndex, 1);
-              continue;
-            }
-            const replacement = insertFormattingClone(candidate, commonAncestor);
-            activeFormatting[activeIndex] = replacement;
-            state.stack[candidateIndex] = replacement;
-            if (lastNode === furthestBlock) bookmark = activeIndex + 1;
-            moveRawHtmlNode(replacement, lastNode);
-            lastNode = replacement;
-            node = replacement;
-            removedNodeParent = null;
-          }
-          const foster = tableFosterLocation();
-          moveRawHtmlNode(foster ? foster.parent : commonAncestor, lastNode, foster && foster.before);
-          const furthestChildren = furthestBlock.children.slice();
-          const replacement = insertFormattingClone(formattingElement, furthestBlock, false);
-          for (const child of furthestChildren) moveRawHtmlNode(replacement, child);
-          moveRawHtmlNode(furthestBlock, replacement);
-          const oldFormattingIndex = activeFormatting.indexOf(formattingElement);
-          if (oldFormattingIndex >= 0) {
-            const insertionIndex = bookmark - Number(oldFormattingIndex < bookmark);
-            activeFormatting.splice(oldFormattingIndex, 1);
-            activeFormatting.splice(Math.min(insertionIndex, activeFormatting.length), 0, replacement);
-          }
-          const oldStackIndex = state.stack.indexOf(formattingElement);
-          const blockStackIndex = state.stack.indexOf(furthestBlock);
-          if (oldStackIndex < 0 || blockStackIndex < 0) throw new Error("native HTML adoption agency lost a boundary node");
-          state.stack.splice(oldStackIndex, 1);
-          state.stack.splice(state.stack.indexOf(furthestBlock) + 1, 0, replacement);
-        }
-        return true;
-      };
-      const consumeFormattingFallbackEnd = (subject) => {
-        const current = state.stack[state.stack.length - 1];
-        if (current && current.namespaceURI !== nativeHtmlNamespaceUri
-            && !(current.namespaceURI === nativeSvgNamespaceUri
-              && ["foreignobject", "desc", "title"].includes(current.localName))
-            && !(current.namespaceURI === nativeMathmlNamespaceUri
-              && (["mi", "mo", "mn", "ms", "mtext"].includes(current.localName)
-                || (current.localName === "annotation-xml"
-                  && ["text/html", "application/xhtml+xml"].includes(
-                    String(current.attributes.find((attribute) => attribute.name === "encoding")?.value || "").toLowerCase()))))) return false;
-        for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-          const candidate = state.stack[index];
-          if (candidate.type === "element" && candidate.namespaceURI === nativeHtmlNamespaceUri
-              && candidate.localName === subject) {
-            state.stack.length = index;
-            return true;
-          }
-          if (isSpecialHtmlTreeElement(candidate)) return true;
-        }
-        return true;
-      };
-      const clearMarkersForPoppedElements = (stackBefore) => {
-        if (!stackBefore) return;
-        for (const element of stackBefore.slice(state.stack.length).reverse()) {
-          if (element && element.namespaceURI === nativeHtmlNamespaceUri
-              && activeFormattingMarkerNames.has(element.localName)) clearActiveFormattingToMarker();
-        }
-      };
-      const usesForeignCharacterRules = (element) => {
-        if (!element || element.type !== "element" || element.namespaceURI === nativeHtmlNamespaceUri) return false;
-        const name = String(element.localName || "").toLowerCase();
-        if (element.namespaceURI === nativeSvgNamespaceUri) {
-          return !["foreignobject", "desc", "title"].includes(name);
-        }
-        if (element.namespaceURI === nativeMathmlNamespaceUri) {
-          if (["mi", "mo", "mn", "ms", "mtext"].includes(name)) return false;
-          if (name === "annotation-xml") {
-            const encoding = (element.attributes || []).find((attribute) => attribute.name === "encoding")?.value || "";
-            return !["text/html", "application/xhtml+xml"].includes(String(encoding).toLowerCase());
-          }
-          return true;
-        }
-        return true;
-      };
-      const prepareForeignContentEndTag = (name) => {
-        const current = state.stack[state.stack.length - 1];
-        if (!current || current.type !== "element"
-            || current.namespaceURI === nativeHtmlNamespaceUri) return "html";
-        if (name === "br" || name === "p") {
-          const stackBefore = state.stack.slice();
-          while (state.stack.length > 1
-              && usesForeignCharacterRules(state.stack[state.stack.length - 1])) state.stack.pop();
-          clearMarkersForPoppedElements(stackBefore);
-          return "breakout";
-        }
-        let index = state.stack.length - 1;
-        while (true) {
-          if (index === 0) return "consume";
-          const candidate = state.stack[index];
-          if (String(candidate.localName || "").toLowerCase() === name) {
-            const stackBefore = state.stack.slice();
-            state.stack.length = index;
-            clearMarkersForPoppedElements(stackBefore);
-            return "consume";
-          }
-          index -= 1;
-          if (state.stack[index].namespaceURI === nativeHtmlNamespaceUri) return "html";
-        }
-      };
-      const insertHtmlEndRecoveryElement = (name, pushToStack) => {
-        const fosterLocation = tableFosterLocation();
-        const parent = fosterLocation ? fosterLocation.parent : state.stack[state.stack.length - 1];
-        const element = nativeHtmlRawElement(name, parent);
-        element.parent = parent;
-        append(parent, element, fosterLocation && fosterLocation.before);
-        if (pushToStack) state.stack.push(element);
-      };
-      const foreignContentBreakoutStartTags = new Set([
-        "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt",
-        "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head", "hr", "i", "img",
-        "li", "listing", "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s", "small",
-        "span", "strong", "strike", "sub", "sup", "table", "tt", "u", "ul", "var",
-      ]);
-      const isForeignContentBreakoutStartTag = (name, attributes) =>
-        foreignContentBreakoutStartTags.has(name)
-        || (name === "font" && attributes.some((attribute) =>
-          ["color", "face", "size"].includes(attribute.name)));
-      const appendHtmlText = (value) => {
-        const current = state.stack[state.stack.length - 1];
-        const nullReplacement = usesForeignCharacterRules(current) ? "\ufffd" : "";
-        const normalized = String(value).replace(/\u0000/g, nullReplacement);
-        if (!normalized) return;
-        reconstructActiveFormatting();
-        const fosterLocation = /[^\t\n\f\r ]/.test(normalized) ? tableFosterLocation() : null;
-        const parent = fosterLocation ? fosterLocation.parent : state.stack[state.stack.length - 1];
-        append(parent, { type: "text", html: true, value: normalized }, fosterLocation && fosterLocation.before);
-      };
-      const parseAttributes = (element, rawTag, offset, countNodes = true) => {
-        const seen = new Set();
-        let cursor = offset;
-        while (cursor < rawTag.length) {
-          while (cursor < rawTag.length && /\s/.test(rawTag[cursor])) cursor += 1;
-          if (cursor >= rawTag.length || rawTag[cursor] === "/") break;
-          const name = /^[A-Za-z_:][A-Za-z0-9:._-]*/.exec(rawTag.slice(cursor));
-          if (!name) {
-            cursor += 1;
-            continue;
-          }
-          const attributeName = name[0].toLowerCase();
-          cursor += name[0].length;
-          while (cursor < rawTag.length && /\s/.test(rawTag[cursor])) cursor += 1;
-          let value = "";
-          if (rawTag[cursor] === "=") {
-            cursor += 1;
-            while (cursor < rawTag.length && /\s/.test(rawTag[cursor])) cursor += 1;
-            const quote = rawTag[cursor];
-            if (quote === '"' || quote === "'") {
-              const end = rawTag.indexOf(quote, cursor + 1);
-              if (end < 0) throw new Error("native HTML attribute is unterminated");
-              value = rawTag.slice(cursor + 1, end);
-              cursor = end + 1;
-            } else {
-              const start = cursor;
-              while (cursor < rawTag.length && !/\s/.test(rawTag[cursor])) cursor += 1;
-              value = rawTag.slice(start, cursor).replace(/\/$/, "");
-            }
-          }
-          if (seen.has(attributeName)) continue;
-          seen.add(attributeName);
-          if (countNodes) nativeXmlAddNode(state, { type: "attribute" });
-          const adjusted = nativeHtmlAdjustForeignAttribute(attributeName, element.namespaceURI);
-          element.attributes.push({
-            name: adjusted.name,
-            prefix: adjusted.prefix,
-            localName: adjusted.localName,
-            namespaceURI: adjusted.namespaceURI,
-            value: nativeHtmlDecodeEntities(value).replace(/\u0000/g, "\ufffd"),
-            owner: element,
-          });
-        }
-      };
-      while (state.cursor < input.length) {
-        if (!state.stack) state.stack = [document];
-        const activeParent = state.stack[state.stack.length - 1];
-        if (input[state.cursor] !== "<") {
-          const end = input.indexOf("<", state.cursor);
-          const textEnd = end < 0 ? input.length : end;
-          if (textEnd > state.cursor) appendHtmlText(nativeHtmlDecodeEntities(input.slice(state.cursor, textEnd)));
-          state.cursor = textEnd;
-          continue;
-        }
-        if (input.startsWith("<!--", state.cursor)) {
-          const end = input.indexOf("-->", state.cursor + 4);
-          if (end < 0) throw new Error("native HTML comment is unterminated");
-          append(activeParent, {
-            type: "comment", html: true,
-            value: input.slice(state.cursor + 4, end).replace(/\u0000/g, "\ufffd"),
-          });
-          state.cursor = end + 3;
-          continue;
-        }
-        const end = nativeHtmlMarkupEnd(input, state.cursor + 2);
-        if (input.slice(state.cursor, state.cursor + 9).toLowerCase() === "<!doctype") {
-          if (end < 0) throw new Error("native HTML doctype is unterminated");
-          const declaration = input.slice(state.cursor + 2, end);
-          const doctype = /^doctype\s+([A-Za-z][A-Za-z0-9:_-]*)/i.exec(declaration);
-          if (!doctype) throw new Error("native HTML doctype is invalid");
-          append(document, {
+      const rawNodes = new Array(nodes.length);
+      const isRecord = (value) => value !== null && typeof value === "object"
+        && !Array.isArray(value);
+      const isString = (value) => typeof value === "string";
+      const validIndex = (value) => Number.isInteger(value)
+        && value >= 0 && value < nodes.length;
+
+      for (let index = 0; index < nodes.length; index += 1) {
+        const node = nodes[index];
+        if (!isRecord(node) || !isRecord(node.kind) || !Array.isArray(node.children)
+            || !(node.templateContents === null || validIndex(node.templateContents))
+            || !node.children.every(validIndex)) return null;
+        const kind = node.kind;
+        let raw = null;
+        if (kind.type === "document") {
+          if (index !== 0) return null;
+          raw = rawDocument;
+        } else if (kind.type === "documentFragment") {
+          raw = null;
+        } else if (kind.type === "documentType") {
+          const data = kind.data;
+          if (!isRecord(data) || !isString(data.name) || !isString(data.publicId)
+              || !isString(data.systemId)) return null;
+          raw = {
             type: "doctype",
             html: true,
-            name: doctype[1].toLowerCase(),
-            publicId: "",
-            systemId: "",
+            name: data.name,
+            publicId: data.publicId,
+            systemId: data.systemId,
             internalSubset: "",
-            raw: "<!DOCTYPE " + doctype[1].toLowerCase() + ">",
-          });
-          state.cursor = end + 1;
-          continue;
-        }
-        if (input.startsWith("<!", state.cursor) || input.startsWith("<?", state.cursor)) {
-          if (end < 0) throw new Error("native HTML declaration is unterminated");
-          append(activeParent, {
-            type: "comment", html: true,
-            value: input.slice(state.cursor + 2, end).replace(/\u0000/g, "\ufffd"),
-          });
-          state.cursor = end + 1;
-          continue;
-        }
-        if (input.startsWith("</", state.cursor)) {
-          if (end < 0) throw new Error("native HTML closing tag is unterminated");
-          const closing = nativeHtmlReadName(input, state.cursor + 2);
-          if (closing) {
-            const name = closing.value.toLowerCase();
-            const foreignEndTag = prepareForeignContentEndTag(name);
-            if (foreignEndTag === "consume") {
-              state.cursor = end + 1;
-              continue;
-            }
-            const stackBefore = markerSensitiveEndNames.has(name) ? state.stack.slice() : null;
-            const consumed = (name === "table" && consumeHtmlTableEnd())
-              || consumeHtmlTableColumnGroupEnd(name)
-              || (["tbody", "tfoot", "thead", "tr", "td", "th"].includes(name)
-                && consumeHtmlTableStructureEnd(name))
-              || consumeHtmlTableCellIgnoredEnd(name)
-              || consumeHtmlTableRowIgnoredEnd(name)
-              || consumeHtmlTableCaptionIgnoredEnd(name)
-              || consumeHtmlTableModeIgnoredEnd(name);
-            if (consumed) {
-              clearMarkersForPoppedElements(stackBefore);
-              state.cursor = end + 1;
-              continue;
-            }
-            if (name === "br") {
-              reconstructActiveFormatting();
-              insertHtmlEndRecoveryElement("br", false);
-              state.cursor = end + 1;
-              continue;
-            }
-            if (name === "p" && !paragraphInButtonScope()) {
-              reconstructActiveFormatting();
-              insertHtmlEndRecoveryElement("p", true);
-            }
-            if (htmlFormattingNames.has(name)) {
-              if (adoptActiveFormatting(name) || consumeFormattingFallbackEnd(name)) {
-                state.cursor = end + 1;
-                continue;
-              }
-            }
-            let found = -1;
-            for (let index = state.stack.length - 1; index > 0; index -= 1) {
-              const candidate = state.stack[index];
-              if (candidate.namespaceURI === nativeHtmlNamespaceUri
-                  && String(candidate.localName || "").toLowerCase() === name) {
-                found = index;
-                break;
-              }
-              if (isSpecialHtmlTreeElement(candidate)) break;
-            }
-            if (found >= 0) state.stack.length = found;
-            clearMarkersForPoppedElements(stackBefore);
+            children: [],
+            parent: null,
+          };
+        } else if (kind.type === "element") {
+          const data = kind.data;
+          if (!isRecord(data) || !isString(data.name) || data.name.length === 0
+              || !isString(data.namespace) || data.namespace.length === 0
+              || !Array.isArray(data.attributes)) return null;
+          const attributes = [];
+          for (const attribute of data.attributes) {
+            if (!isRecord(attribute) || !isString(attribute.name) || attribute.name.length === 0
+                || !isString(attribute.value)
+                || !(attribute.namespace === null || isString(attribute.namespace))) return null;
+            const colon = attribute.name.indexOf(":");
+            if (colon === 0 || colon === attribute.name.length - 1
+                || (colon >= 0 && attribute.name.indexOf(":", colon + 1) >= 0)) return null;
+            attributes.push({
+              name: attribute.name,
+              prefix: colon < 0 ? null : attribute.name.slice(0, colon),
+              localName: colon < 0 ? attribute.name : attribute.name.slice(colon + 1),
+              namespaceURI: attribute.namespace,
+              value: attribute.value,
+              children: [],
+              parent: null,
+            });
           }
-          state.cursor = end + 1;
-          continue;
-        }
-        if (end < 0) {
-          appendHtmlText(nativeHtmlDecodeEntities(input.slice(state.cursor)));
-          state.cursor = input.length;
-          continue;
-        }
-        const rawTag = input.slice(state.cursor + 1, end);
-        const opening = /^\s*([A-Za-z][A-Za-z0-9:_-]*)/.exec(rawTag);
-        if (!opening) {
-          appendHtmlText("<");
-          state.cursor += 1;
-          continue;
-        }
-        const name = opening[1].toLowerCase();
-        let selfClosing = /\/\s*$/.test(rawTag);
-        let fontAttributes = null;
-        let fontReprocessedAsHtml = false;
-        if (name === "font") {
-          const probe = nativeHtmlRawElement(name, state.stack[state.stack.length - 1]);
-          parseAttributes(probe, rawTag, opening[0].length, false);
-          fontAttributes = probe.attributes;
-        }
-        const foreignBreakout = isForeignContentBreakoutStartTag(name, fontAttributes || []);
-        if (foreignBreakout
-            && usesForeignCharacterRules(state.stack[state.stack.length - 1])) {
-          const stackBeforeBreakout = state.stack.slice();
-          while (state.stack.length > 1
-              && usesForeignCharacterRules(state.stack[state.stack.length - 1])) state.stack.pop();
-          clearMarkersForPoppedElements(stackBeforeBreakout);
-          fontReprocessedAsHtml = name === "font";
-          // HTML ignores the self-closing flag on non-void elements.
-          selfClosing = false;
-        }
-        if (name === "table") {
-          const stackBeforeTable = state.stack.slice();
-          const processTable = prepareHtmlTableStart();
-          clearMarkersForPoppedElements(stackBeforeTable);
-          if (!processTable) {
-            state.cursor = end + 1;
-            continue;
-          }
-        }
-        const stackLengthBeforeCellRecovery = state.stack.length;
-        prepareHtmlTableCellStructuralStart(name);
-        if (state.stack.length < stackLengthBeforeCellRecovery) clearActiveFormattingToMarker();
-        while (state.stack.length > 1
-            && nativeHtmlShouldAutoClose(state.stack[state.stack.length - 1].localName, name)) state.stack.pop();
-        insertImpliedTableElements(name);
-        const element = nativeHtmlRawElement(name, state.stack[state.stack.length - 1]);
-        if (fontAttributes && !fontReprocessedAsHtml) {
-          element.attributes = fontAttributes;
-          for (const attribute of fontAttributes) {
-            nativeXmlAddNode(state, { type: "attribute" });
-            attribute.owner = element;
-          }
-        } else {
-          parseAttributes(element, rawTag, opening[0].length);
-        }
-        const hiddenInput = name === "input" && element.attributes.some((attribute) =>
-          attribute.name === "type" && attribute.value.toLowerCase() === "hidden");
-        if (!tableSpecialStartTags.has(name) && !hiddenInput) {
-          reconstructActiveFormatting();
-          const nestedFormattingStart = (name === "a" && activeFormattingIndex("a") >= 0)
-            || (name === "nobr" && activeFormattingIndex("nobr") >= 0
-              && elementInScope(activeFormatting[activeFormattingIndex("nobr")]));
-          if (nestedFormattingStart) {
-            adoptActiveFormatting(name);
-            reconstructActiveFormatting();
-          }
-        }
-        const fosterLocation = tableSpecialStartTags.has(name) || hiddenInput
-          ? null
-          : tableFosterLocation();
-        const parentForElement = fosterLocation
-          ? fosterLocation.parent
-          : state.stack[state.stack.length - 1];
-        element.parent = parentForElement;
-        append(parentForElement, element, fosterLocation && fosterLocation.before);
-        state.cursor = end + 1;
-        if ((selfClosing && element.namespaceURI !== nativeHtmlNamespaceUri)
-            || (element.namespaceURI === nativeHtmlNamespaceUri && nativeHtmlVoidElements.has(name))) continue;
-        if (element.namespaceURI === nativeHtmlNamespaceUri
-            && (nativeHtmlRawTextElements.has(name) || nativeHtmlRcdataElements.has(name))) {
-          const special = nativeHtmlSpecialEnd(input, state.cursor, name);
-          const textEnd = special ? special.start : input.length;
-          if (textEnd > state.cursor) append(element, {
-            type: "text",
+          raw = {
+            type: "element",
+            html: data.namespace === nativeHtmlNamespaceUri,
+            htmlDocument: true,
+            name: data.name,
+            prefix: null,
+            localName: data.name,
+            namespaceURI: data.namespace,
+            attributes,
+            children: [],
+            parent: null,
+          };
+        } else if (kind.type === "text" || kind.type === "comment") {
+          if (!isString(kind.data)) return null;
+          raw = {
+            type: kind.type,
             html: true,
-            value: (nativeHtmlRawTextElements.has(name)
-              ? input.slice(state.cursor, textEnd)
-              : nativeHtmlDecodeEntities(input.slice(state.cursor, textEnd))).replace(/\u0000/g, "\ufffd"),
+            value: kind.data,
+            children: [],
+            parent: null,
+          };
+        } else if (kind.type === "processingInstruction") {
+          const data = kind.data;
+          if (!isRecord(data) || !isString(data.target) || !isString(data.data)) return null;
+          raw = {
+            type: "pi",
+            html: true,
+            target: data.target,
+            value: data.data,
+            children: [],
+            parent: null,
+          };
+        } else {
+          return null;
+        }
+        rawNodes[index] = raw;
+      }
+      if (nodes[0].kind.type !== "document" || rawNodes[0] !== rawDocument) return null;
+
+      const visited = new Uint8Array(nodes.length);
+      visited[0] = 1;
+      let publishedNodeCount = 1;
+      const pending = [{ sourceIndex: 0, rawParent: null, depth: 0, fragment: false }];
+      while (pending.length > 0) {
+        const current = pending.pop();
+        const parsedParent = nodes[current.sourceIndex];
+        const kind = parsedParent.kind;
+        if (current.fragment) {
+          if (kind.type !== "documentFragment" || parsedParent.templateContents !== null)
+            return null;
+        } else if (kind.type === "documentFragment") {
+          return null;
+        }
+        const rawParent = current.fragment ? current.rawParent : rawNodes[current.sourceIndex];
+        const isHtmlTemplate = !current.fragment && kind.type === "element"
+          && kind.data.namespace === nativeHtmlNamespaceUri && kind.data.name === "template";
+        if (!current.fragment && (isHtmlTemplate !== (parsedParent.templateContents !== null)
+            || (isHtmlTemplate && parsedParent.children.length !== 0))) return null;
+
+        for (const childIndex of parsedParent.children) {
+          if (visited[childIndex]) return null;
+          const child = nodes[childIndex];
+          if (child.kind.type === "documentFragment") return null;
+          const rawChild = rawNodes[childIndex];
+          if (!rawChild) return null;
+          visited[childIndex] = 1;
+          publishedNodeCount += 1;
+          if (publishedNodeCount > nativeXmlMaxNodes) return null;
+          const depth = current.depth + Number(rawChild.type === "element");
+          if (depth > nativeXmlMaxDepth) return null;
+          rawParent.children.push(rawChild);
+          rawChild.parent = rawParent;
+          pending.push({ sourceIndex: childIndex, rawParent: null, depth, fragment: false });
+        }
+
+        if (!current.fragment && parsedParent.templateContents !== null) {
+          const fragmentIndex = parsedParent.templateContents;
+          if (!validIndex(fragmentIndex) || visited[fragmentIndex]
+              || nodes[fragmentIndex].kind.type !== "documentFragment") return null;
+          visited[fragmentIndex] = 1;
+          pending.push({
+            sourceIndex: fragmentIndex,
+            rawParent,
+            depth: current.depth,
+            fragment: true,
           });
-          state.cursor = special ? special.end : input.length;
-          continue;
-        }
-        if (state.stack.length >= nativeXmlMaxDepth) throw new Error("native HTML depth limit exceeded");
-        state.stack.push(element);
-        if (element.namespaceURI === nativeHtmlNamespaceUri) {
-          if (activeFormattingMarkerNames.has(name)) activeFormatting.push(null);
-          else if (htmlFormattingNames.has(name)) pushActiveFormatting(element);
         }
       }
-      const makeImplicitElement = (name, parent) => {
-        const element = nativeHtmlRawElement(name, parent);
-        nativeXmlAddNode(state, element);
-        return element;
-      };
-      const setChildren = (parent, children) => {
-        parent.children = children;
-        for (const child of children) child.parent = parent;
-      };
-      let html = document.children.find((child) => child.type === "element" && child.name === "html") || null;
-      const preserved = document.children.filter((child) => child.type === "doctype" || child.type === "comment");
-      const topLevelContent = document.children.filter((child) => !preserved.includes(child) && child !== html);
-      if (!html) html = makeImplicitElement("html", document);
-      const htmlChildren = html.children.slice();
-      for (const child of topLevelContent) {
-        if (!htmlChildren.includes(child)) htmlChildren.push(child);
-        child.parent = html;
-      }
-      let head = htmlChildren.find((child) => child.type === "element" && child.name === "head") || null;
-      let body = htmlChildren.find((child) => child.type === "element" && child.name === "body") || null;
-      if (!head) head = makeImplicitElement("head", html);
-      if (!body) body = makeImplicitElement("body", html);
-      const headChildren = head.children.slice();
-      const bodyChildren = body.children.slice();
-      for (const child of htmlChildren) {
-        if (child === head || child === body) continue;
-        if (child.type === "element" && nativeHtmlHeadElements.has(child.name) && !bodyChildren.includes(child)) {
-          if (!headChildren.includes(child)) headChildren.push(child);
-          child.parent = head;
-        } else if (!bodyChildren.includes(child)) {
-          bodyChildren.push(child);
-          child.parent = body;
-        }
-      }
-      setChildren(head, headChildren);
-      setChildren(body, bodyChildren);
-      setChildren(html, [head, body]);
-      setChildren(document, [...preserved, html]);
-      document.doctype = preserved.find((child) => child.type === "doctype") || null;
-      document.url = String(url || "");
-      document.contentType = String(contentType || "text/html").split(";", 1)[0].trim().toLowerCase() || "text/html";
-      return nativeXmlMaterializeDocument(document);
+      if (visited.some((value) => value === 0)) return null;
+      return nativeXmlMaterializeDocument(rawDocument);
     } catch (_error) {
       return null;
     }
@@ -31546,6 +30582,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
           URL: { configurable: true, enumerable: true, value: raw.url },
           documentURI: { configurable: true, enumerable: true, value: raw.url },
           contentType: { configurable: true, enumerable: true, value: raw.contentType },
+          compatMode: { configurable: true, enumerable: true, value: raw.compatMode || "CSS1Compat" },
           characterSet: { configurable: true, enumerable: true, value: "UTF-8" },
           charset: { configurable: true, enumerable: true, value: "UTF-8" },
           inputEncoding: { configurable: true, enumerable: true, value: "UTF-8" },
@@ -31655,7 +30692,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
         if (raw && raw.html && raw.namespaceURI === nativeHtmlNamespaceUri
             && nativeHtmlVoidElements.has(raw.name)) return "<" + raw.name + attributes + ">";
         const name = raw && raw.html ? raw.name : node.nodeName;
-        if (!raw || !raw.html) return children ? "<" + name + attributes + ">" + children + "</" + name + ">" : "<" + name + attributes + "/>";
+        if (!raw || !raw.htmlDocument) return children ? "<" + name + attributes + ">" + children + "</" + name + ">" : "<" + name + attributes + "/>";
         return "<" + name + attributes + ">" + children + "</" + name + ">";
       }
       if (node.nodeType === 3) {

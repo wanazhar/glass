@@ -45,9 +45,12 @@ reactions, and identity after script refresh. A separate process-backed
 reaction-safety regression verifies reentrant definition rejection/recovery,
 callback-triggered insertion order, 300 FIFO reactions across queue compaction,
 bounded `observedAttributes` iteration/iterator closing, and the 1,024-entry
-`whenDefined()` bound and recovery. The hard reaction-queue overflow and
-per-checkpoint work limits remain untested; exact local evidence and remaining
-scope are recorded in the task.
+`whenDefined()` bound and recovery. A 4,352-reaction process stress case
+confirms the 4,096 pending-queue cap, its explicit overflow reports, and later
+callback recovery. A second process stress case re-queues reactions through
+the internal scheduler bridge to verify the 10,000-reaction per-checkpoint
+work limit, one reported `RangeError`, and later callback recovery; exact local
+evidence and remaining scope are recorded in the task.
 Customized built-ins, scoped registries, form-associated behavior, custom
 states, and full WPT coverage remain profile requirements beyond that bounded
 slice.

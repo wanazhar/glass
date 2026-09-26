@@ -58,9 +58,13 @@ Alongside template-content identity and selected-frame registry coverage, the
 process-backed reaction-safety regression now checks FIFO ordering across
 300 queued callbacks, callback-triggered insertion, definition reentrancy and
 recovery, bounded observed-attribute iteration, and `whenDefined()` capacity
-recovery. Custom elements remain an explicit Core Web Profile requirement,
-not a completed capability; exact evidence and the untested reaction queue
-overflow/work ceiling are recorded in the task file.
+recovery. A process stress test also crosses the 4,096 reaction queue cap,
+checks explicit overflow reports, and verifies later callbacks still run. The
+10,000-reaction checkpoint work ceiling is also stress-tested by re-queuing
+through the internal scheduler bridge; the test checks the cap, one explicit
+error report, and successful later callback delivery. Custom elements remain
+an explicit Core Web Profile requirement, not a completed capability; exact
+evidence is recorded in the task file.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

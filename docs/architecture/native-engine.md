@@ -39,8 +39,12 @@ checks stable order across compaction. Additional process coverage verifies
 reentrant definition rejection and recovery, callback-triggered insertion
 ordering, bounded `observedAttributes` iteration with iterator closing, and the
 1,024-pending-`whenDefined` bound with capacity recovery. Hard reaction-queue
-overflow and the per-checkpoint work limit are not yet stress-tested. The
-broader custom-element contract remains incomplete. See the
+overflow is process-tested with 4,352 upgrade reactions: 4,096 callbacks are
+delivered, 256 overflow reports are emitted, and a later callback still runs.
+The per-checkpoint work limit is also process-tested by re-queuing reactions
+through the internal scheduler bridge: exactly 10,000 callbacks run, one
+`RangeError` is reported, and a later callback still runs. The broader
+custom-element contract remains incomplete. See the
 [slice 758 task](../plan/tasks/native-engine-browser-758.md) for exact evidence.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,

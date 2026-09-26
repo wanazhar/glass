@@ -144,8 +144,11 @@ frame-owner lifecycle execution. Another process-backed regression verifies
 reentrant definition rejection and recovery, callback-triggered insertion
 ordering, FIFO ordering for 300 reactions across queue compaction, bounded
 `observedAttributes` iteration with iterator closing, and the 1,024-entry
-`whenDefined()` capacity/recovery boundary. The hard reaction-queue overflow
-and per-checkpoint work limit still lack stress coverage.
+`whenDefined()` capacity/recovery boundary. A 4,352-reaction process stress
+case covers the 4,096 queue cap, explicit overflow reports, and later callback
+recovery. A second process stress case re-queues reactions through the
+internal scheduler bridge to cover the 10,000-reaction per-checkpoint work
+limit, its `RangeError` report, and later callback recovery.
 Customized built-ins, scoped registries, form-associated elements, custom
 states, and full Web Platform Tests remain profile requirements beyond this
 bounded slice.

@@ -109,6 +109,13 @@ UTF-16, Shift_JIS, and GBK paths locally; this is not a complete XHR/Encoding
 WPT conformance claim. Worker-specific `responseType` behavior remains
 separate from the HTML document parser route.
 
+The detached HTML response-document projection preserves each parsed template
+contents node as a separate `DocumentFragment`: the template's `.content`
+identity is distinct from its children, and selectors on the response document
+do not traverse into it. This bounded XHR projection does not establish mutable
+template semantics for ordinary navigation documents; see the
+[slice 751 contract](tasks/native-engine-browser-751.md).
+
 ### Synchronous JavaScript dialog contract
 
 The native page realm implements the HTML Standard's modal user-prompt

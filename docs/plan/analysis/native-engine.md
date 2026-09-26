@@ -1,22 +1,23 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-750`. Slice 746
+completed browser expansion slice is `native-engine-browser-751`. Slice 746
 migrates initial navigation documents to a Glass-owned `html5ever` sink; slice
 747 migrates HTML fragments to its bounded context-fragment algorithm; and
 slice 748 routes HTML XHR document responses through the same full-document
 sink with scripting disabled. Process-backed checks verify detached/read-only
 responses, script inertness, no resource loads, response URL, and malformed
 HTML recovery. Documentation truth, depth, shortcut, and live inventory/link
-gates pass: 1,378 Markdown files with zero current-claim failures, 93 current
+gates pass: 1,379 Markdown files with zero current-claim failures, 93 current
 guides/19 contracts, 15 implementation keys/63 markers, and 346 full-product
 MCP tools (101 browser-only), 17 examples, and 22 public modules. Slice 749
 added bounded common charset decoding for HTML XHR document responses. Slice
 750 replaces that subset with `encoding_rs` label lookup and the HTML
 first-1,024-byte prescan, including pragma-gated `content` and XML declaration
 fallback. Nine decoder unit tests and two process-backed XML/HTML XHR tests
-pass locally. Template
-`DocumentFragment` exposure, full HTML conformance, remote CI, and
+pass locally. Slice 751 implements and locally verifies the distinct read-only
+template-content `DocumentFragment` projection for HTML XHR response documents; live
+navigation-document template semantics, full HTML conformance, remote CI, and
 cross-platform certification remain open. Issue #40 remains open. Slice 728
 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API
@@ -28,7 +29,9 @@ Slice 748 follows the XHR Standard's document-response algorithm at the
 decoded-string parser boundary; slice 749 added common header/override charset
 decoding; slice 750 adds bounded WHATWG label lookup and HTML encoding
 prescan. These remain incremental parity tasks, not full Encoding/XHR
-conformance. See [slice 749](../tasks/native-engine-browser-749.md) and
+conformance. Template content is preserved as a distinct fragment only in the
+XHR response-document materializer in slice 751; the main mutable DOM still
+flattens template content. See [slice 749](../tasks/native-engine-browser-749.md) and
 [slice 750](../tasks/native-engine-browser-750.md). Slice 729
 promotes native revisioned semantic observation,
 page inspection/bootstrap, and region expansion into the canonical Rust API.

@@ -61755,12 +61755,23 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                                             utf16Request.responseType = 'document';
                                             utf16Request.open('GET', '/html-utf16-bom');
                                             utf16Request.onload = () => {
-                                                try {
+                                                (async () => {
                                                     result.utf16Bom = utf16Request.response.title;
+                                                    const readDocumentTitle = path => new Promise((resolveTitle, rejectTitle) => {
+                                                        const request = new XMLHttpRequest();
+                                                        request.responseType = 'document';
+                                                        request.open('GET', path);
+                                                        request.onload = () => resolveTitle(request.response.title);
+                                                        request.onerror = () => rejectTitle(new Error('XHR failed: ' + path));
+                                                        request.send();
+                                                    });
+                                                    result.headerShiftJis = await readDocumentTitle('/html-header-shift-jis');
+                                                    result.metaCharset = await readDocumentTitle('/html-meta-shift-jis');
+                                                    result.metaContent = await readDocumentTitle('/html-meta-content-gbk');
                                                     resolve(result);
-                                                } catch (error) {
+                                                })().catch(error => {
                                                     fail('utf16-callback', error);
-                                                }
+                                                });
                                             };
                                             utf16Request.onerror = error =>
                                                 fail('utf16-xhr', error, utf16Request);
@@ -61880,6 +61891,9 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
             "/html-windows-1252",
             "/html-override-charset",
             "/html-utf16-bom",
+            "/html-header-shift-jis",
+            "/html-meta-shift-jis",
+            "/html-meta-content-gbk",
         ] {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
                 .await
@@ -61901,7 +61915,7 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                 ),
                 "/html-windows-1252" => (
                     "text/html; charset=windows-1252",
-                    b"<!doctype html><title>caf\xe9</title><p>Price: \x80</p>".to_vec(),
+                    b"<!doctype html><meta charset=shift_jis><title>caf\xe9</title><p>Price: \x80</p>".to_vec(),
                 ),
                 "/html-override-charset" => (
                     "text/html; charset=utf-8",
@@ -61916,6 +61930,18 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                     );
                     ("text/html; charset=windows-1252", body)
                 },
+                "/html-header-shift-jis" => (
+                    "text/html; charset=Shift_JIS",
+                    b"<!doctype html><title>\x93\xfa\x96\x7b\x8c\xea</title>".to_vec(),
+                ),
+                "/html-meta-shift-jis" => (
+                    "text/html; charset=unknown-native-label",
+                    b"<!doctype html><meta charset=Shift_JIS><title>\x93\xfa\x96\x7b\x8c\xea</title>".to_vec(),
+                ),
+                "/html-meta-content-gbk" => (
+                    "text/html; charset=unknown-native-label",
+                    b"<!doctype html><meta http-equiv=Content-Type content=\"text/html; charset=gbk\"><title>\xd6\xd0\xce\xc4</title>".to_vec(),
+                ),
                 "/html-default" => ("text/html", b"<p>default-html</p>".to_vec()),
                 "/html-invalid" => ("text/html", b"<html><body><!--unterminated".to_vec()),
                 other => panic!("unexpected XHR HTML request path: {other}"),
@@ -61990,6 +62016,9 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                 "body": "Price: €",
             },
             "utf16Bom": "café",
+            "headerShiftJis": "日本語",
+            "metaCharset": "日本語",
+            "metaContent": "中文",
             "invalid": {
                 "identity": true,
                 "documentElement": "html",

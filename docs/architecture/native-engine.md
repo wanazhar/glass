@@ -1,16 +1,20 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-749`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-750`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
 `responseType="document"` responses to the bounded html5ever document sink
 with scripting disabled. The XHR result remains detached and read-only; it
 does not execute response scripts or load referenced resources. Full
-conformance is not claimed. Slice 749 adds common explicit charset decoding
-for HTML XHR document responses; HTML meta prescan and complete encoding-label
-coverage remain open. Template `DocumentFragment` exposure, quirks-mode layout,
+conformance is not claimed. Slice 749 added common explicit charset decoding
+for HTML XHR document responses. Slice 750 replaces the hand-maintained codec
+with `encoding_rs`, selects response/override labels, prescans the first 1,024
+bytes using HTML meta/XML rules when those labels are absent or invalid, and
+retains replacement decoding and raw/decoded bounds. HTML response bytes use
+the WHATWG encoding label table; XML and text XHR paths remain separate.
+Template `DocumentFragment` exposure, quirks-mode layout,
 parser-stream reentrancy,
 remote CI, and cross-platform certification remain open.
 Slice 745 adds an
@@ -130,22 +134,23 @@ This avoids sending serialized markup through a second parser, but does parse
 the source once for immediate JS reads and again for the authoritative commit.
 The Rust commit is transactional: parser, node, or depth-limit failure leaves
 the previous subtree attached. The scoped check, fragment/`innerHTML` unit
-tests, and process-backed HTTP regression pass. Release-truth, documentation
-depth, shortcut, and Markdown-link checks also pass. The full documentation
-inventory gate still needs the missing `glass` CLI binary; it has not been
-claimed as passed.
+tests, and process-backed HTTP regression pass. At the slice 747 checkpoint,
+the full documentation inventory gate was deferred because the Glass CLI
+binary was absent; the current slice 750 coverage gate passes, as recorded
+below.
 
 Slice 748 completes the XHR HTML-document parser migration. The full-document
 html5ever sink runs with scripting disabled, and structured parser output is
 validated before the detached read-only response document is materialized.
 Process-backed tests verify response URL, MIME selection, malformed recovery,
 foreign namespaces, script inertness, and the absence of referenced-resource
-requests. Slice 749 locally verifies bounded response-header/override decoding
-for UTF-8, UTF-16LE/BE, and Windows-1252 HTML documents. HTML meta prescan,
-other WHATWG encodings, full template `DocumentFragment` exposure, and
-complete XHR/Web IDL semantics remain separate conformance work; see the
-[slice 748 task](../plan/tasks/native-engine-browser-748.md) and
-[slice 749 task](../plan/tasks/native-engine-browser-749.md).
+requests. Slice 750's nine decoder unit tests and two process-backed XML/HTML
+XHR regressions pass locally, covering Shift_JIS/GBK response and meta labels,
+override and BOM precedence, and the 1,024-byte scan bound. Full encoding/XHR
+WPT conformance, template `DocumentFragment` exposure, and complete XHR/Web
+IDL semantics remain separate gates; see the [slice 748 task](../plan/tasks/native-engine-browser-748.md),
+[slice 749 task](../plan/tasks/native-engine-browser-749.md), and
+[slice 750 task](../plan/tasks/native-engine-browser-750.md).
 
 The token-aware TreeSink bridge also preserves MathML `annotation-xml` as the
 HTML integration boundary during `</p>` and `</br>` foreign-content breakouts.
@@ -156,9 +161,9 @@ QName for subsequent decisions. The regression covers case-insensitive
 encoding and nested SVG content, and confirms the published tree keeps the
 original MathML element name and expected HTML children.
 
-Local Linux verification for slices 746–748 covers the locked
+Local Linux verification for slices 746–750 covers the locked
 `glass-browser` library/test-target check, parser and XHR tests, process-backed
-navigation and XHR regressions, and maintainer documentation gates: 1,376
+navigation and XHR regressions, and maintainer documentation gates: 1,378
 Markdown files with zero current-claim failures, 93 current guides/19
 contracts, 15 implementation keys/63 markers, and 346 full-product MCP tools
 (101 browser-only), 17 examples, and 22 public modules. This evidence does

@@ -98,12 +98,16 @@ parser with scripting support disabled and returns null on a well-formedness
 or encoding failure. Parsed response documents do not load referenced
 resources or apply XSLT. See the [XHR document-response algorithm](https://xhr.spec.whatwg.org/#document-response).
 
-The current native HTML-response route has a bounded common-charset decoder
-for response-header/override UTF-8, UTF-16LE/BE, and Windows-1252 labels, with
-BOM handling before tree construction. This is partial progress, not charset
-parity: HTML meta prescan and the remaining WHATWG encoding labels are still
-part of the XHR/Encoding conformance gate. Worker-specific `responseType`
-behavior is also separate from the HTML document parser route.
+The native HTML-response route uses `encoding_rs`'s WHATWG label table and
+replacement decoder for valid response/override MIME labels. If no supported
+label is selected, it prescans at most the first 1,024 response bytes for
+`meta` charset/pragma declarations, UTF-16 XML prefixes, and XML declaration
+fallback, then uses UTF-8. A BOM overrides the chosen encoding. The original
+response-byte cap remains in force and decoded source is bounded to three
+times that cap before tree construction. Slice 750 verifies common Western,
+UTF-16, Shift_JIS, and GBK paths locally; this is not a complete XHR/Encoding
+WPT conformance claim. Worker-specific `responseType` behavior remains
+separate from the HTML document parser route.
 
 ### Synchronous JavaScript dialog contract
 

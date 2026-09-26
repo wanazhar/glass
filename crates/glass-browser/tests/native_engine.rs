@@ -61730,7 +61730,55 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                                 compatMode: response && response.compatMode,
                                 responseTextError,
                             };
-                            resolve(result);
+                            const charsetRequest = new XMLHttpRequest();
+                            charsetRequest.responseType = 'document';
+                            charsetRequest.open('GET', '/html-windows-1252');
+                            charsetRequest.onload = () => {
+                                try {
+                                    result.charset = {
+                                        title: charsetRequest.response.title,
+                                        body: charsetRequest.response.body.textContent,
+                                    };
+                                    const overrideRequest = new XMLHttpRequest();
+                                    overrideRequest.responseType = 'document';
+                                    overrideRequest.overrideMimeType(
+                                        'text/html; charset=windows-1252',
+                                    );
+                                    overrideRequest.open('GET', '/html-override-charset');
+                                    overrideRequest.onload = () => {
+                                        try {
+                                            result.overrideCharset = {
+                                                title: overrideRequest.response.title,
+                                                body: overrideRequest.response.body.textContent,
+                                            };
+                                            const utf16Request = new XMLHttpRequest();
+                                            utf16Request.responseType = 'document';
+                                            utf16Request.open('GET', '/html-utf16-bom');
+                                            utf16Request.onload = () => {
+                                                try {
+                                                    result.utf16Bom = utf16Request.response.title;
+                                                    resolve(result);
+                                                } catch (error) {
+                                                    fail('utf16-callback', error);
+                                                }
+                                            };
+                                            utf16Request.onerror = error =>
+                                                fail('utf16-xhr', error, utf16Request);
+                                            utf16Request.send();
+                                        } catch (error) {
+                                            fail('override-charset-callback', error);
+                                        }
+                                    };
+                                    overrideRequest.onerror = error =>
+                                        fail('override-charset-xhr', error, overrideRequest);
+                                    overrideRequest.send();
+                                } catch (error) {
+                                    fail('charset-callback', error);
+                                }
+                            };
+                            charsetRequest.onerror = error =>
+                                fail('charset-xhr', error, charsetRequest);
+                            charsetRequest.send();
                         } catch (error) {
                             fail('invalid-callback', error);
                         }
@@ -61824,7 +61872,15 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for expected_path in ["/page", "/html-document", "/html-default", "/html-invalid"] {
+        for expected_path in [
+            "/page",
+            "/html-document",
+            "/html-default",
+            "/html-invalid",
+            "/html-windows-1252",
+            "/html-override-charset",
+            "/html-utf16-bom",
+        ] {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
                 .await
                 .unwrap_or_else(|_| {
@@ -61837,21 +61893,39 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                 Some(expected_path),
                 "unexpected request while awaiting {expected_path}: {request}"
             );
-            let (content_type, body) = match expected_path {
-                "/page" => ("text/html", page_html.as_str()),
+            let (content_type, body): (&str, Vec<u8>) = match expected_path {
+                "/page" => ("text/html", page_html.as_bytes().to_vec()),
                 "/html-document" => (
                     "text/html; charset=UTF-8",
-                    r#"<!DOCTYPE HTML><HTML data-root='yes'><HEAD><TITLE>Native &amp; HTML</TITLE><META charset='utf-8'><SCRIPT id='raw'>if (a < b) rawValue();</SCRIPT><SCRIPT id='inert'>globalThis.__glassXhrProcessScriptRan = true;</SCRIPT></HEAD><BODY><P id='first' data-value='one &amp; two'>one<DIV id='second'>two<BR>three</DIV><INPUT disabled><IMG id='detached-image' src='/xhr-document-resource'><TEXTAREA id='rc'>A &amp; B</TEXTAREA><!--comment--></BODY></HTML>"#,
+                    r#"<!DOCTYPE HTML><HTML data-root='yes'><HEAD><TITLE>Native &amp; HTML</TITLE><META charset='utf-8'><SCRIPT id='raw'>if (a < b) rawValue();</SCRIPT><SCRIPT id='inert'>globalThis.__glassXhrProcessScriptRan = true;</SCRIPT></HEAD><BODY><P id='first' data-value='one &amp; two'>one<DIV id='second'>two<BR>three</DIV><INPUT disabled><IMG id='detached-image' src='/xhr-document-resource'><TEXTAREA id='rc'>A &amp; B</TEXTAREA><!--comment--></BODY></HTML>"#.as_bytes().to_vec(),
                 ),
-                "/html-default" => ("text/html", "<p>default-html</p>"),
-                "/html-invalid" => ("text/html", "<html><body><!--unterminated"),
+                "/html-windows-1252" => (
+                    "text/html; charset=windows-1252",
+                    b"<!doctype html><title>caf\xe9</title><p>Price: \x80</p>".to_vec(),
+                ),
+                "/html-override-charset" => (
+                    "text/html; charset=utf-8",
+                    b"<!doctype html><title>caf\xe9</title><p>Price: \x80</p>".to_vec(),
+                ),
+                "/html-utf16-bom" => {
+                    let mut body = vec![0xff, 0xfe];
+                    body.extend(
+                        "<!doctype html><title>café</title>"
+                            .encode_utf16()
+                            .flat_map(u16::to_le_bytes),
+                    );
+                    ("text/html; charset=windows-1252", body)
+                },
+                "/html-default" => ("text/html", b"<p>default-html</p>".to_vec()),
+                "/html-invalid" => ("text/html", b"<html><body><!--unterminated".to_vec()),
                 other => panic!("unexpected XHR HTML request path: {other}"),
             };
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len(),
             );
             stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
         }
         match tokio::time::timeout(Duration::from_millis(250), listener.accept()).await {
             Ok(Ok((mut stream, _))) => {
@@ -61907,6 +61981,15 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                 "responseText": "<p>default-html</p>",
                 "responseXml": null,
             },
+            "charset": {
+                "title": "café",
+                "body": "Price: €",
+            },
+            "overrideCharset": {
+                "title": "café",
+                "body": "Price: €",
+            },
+            "utf16Bom": "café",
             "invalid": {
                 "identity": true,
                 "documentElement": "html",

@@ -36104,6 +36104,72 @@ fn document_bootstrap(
       timeoutMs: xhr._timeout === 0 ? null : xhr._timeout,
     }};
   }};
+  const nativeXhrCharsetParameter = (contentType) => {{
+    if (typeof contentType !== "string") return null;
+    for (const parameter of contentType.split(";").slice(1)) {{
+      const separator = parameter.indexOf("=");
+      if (separator < 0 || parameter.slice(0, separator).trim().toLowerCase() !== "charset") continue;
+      return parameter.slice(separator + 1).trim().replace(/^(?:"([^"]*)"|'([^']*)')$/, (_match, doubleQuoted, singleQuoted) => doubleQuoted ?? singleQuoted);
+    }}
+    return null;
+  }};
+  const nativeXhrDecodeDocumentBytes = (bytes, responseContentType, overrideMimeType) => {{
+    let label = nativeXhrCharsetParameter(responseContentType);
+    const overrideLabel = nativeXhrCharsetParameter(overrideMimeType);
+    if (overrideLabel !== null) label = overrideLabel;
+    let encoding = (label || "utf-8").trim().toLowerCase();
+    let offset = 0;
+    if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {{
+      offset = 3;
+      encoding = "utf-8";
+    }} else if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {{
+      offset = 2;
+      encoding = "utf-16le";
+    }} else if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {{
+      offset = 2;
+      encoding = "utf-16be";
+    }}
+    if (["utf-8", "utf8", "unicode-1-1-utf-8"].includes(encoding))
+      return utf8TextFromBytes(bytes.slice(offset));
+    if (["utf-16", "utf-16le", "utf-16be"].includes(encoding)) {{
+      const littleEndian = encoding !== "utf-16be";
+      let result = "";
+      let chunk = "";
+      for (let index = offset; index + 1 < bytes.length; index += 2) {{
+        const unit = littleEndian
+          ? bytes[index] | (bytes[index + 1] << 8)
+          : (bytes[index] << 8) | bytes[index + 1];
+        if (unit >= 0xd800 && unit <= 0xdbff) {{
+          const nextIndex = index + 2;
+          const next = nextIndex + 1 < bytes.length
+            ? littleEndian
+              ? bytes[nextIndex] | (bytes[nextIndex + 1] << 8)
+              : (bytes[nextIndex] << 8) | bytes[nextIndex + 1]
+            : 0;
+          if (next >= 0xdc00 && next <= 0xdfff) {{
+            chunk += String.fromCodePoint(0x10000 + ((unit - 0xd800) << 10) + next - 0xdc00);
+            index += 2;
+          }} else chunk += "\ufffd";
+        }} else if (unit >= 0xdc00 && unit <= 0xdfff) chunk += "\ufffd";
+        else chunk += String.fromCharCode(unit);
+        if (chunk.length >= 8192) {{ result += chunk; chunk = ""; }}
+      }}
+      if ((bytes.length - offset) % 2 !== 0) chunk += "\ufffd";
+      return result + chunk;
+    }}
+    if (["windows-1252", "cp1252", "iso-8859-1", "iso8859-1", "latin1", "latin-1", "l1", "us-ascii", "ascii", "x-cp1252"].includes(encoding)) {{
+      const special = ["€", "\u0081", "‚", "ƒ", "„", "…", "†", "‡", "ˆ", "‰", "Š", "‹", "Œ", "\u008d", "Ž", "\u008f", "\u0090", "‘", "’", "“", "”", "•", "–", "—", "˜", "™", "š", "›", "œ", "\u009d", "ž", "Ÿ"];
+      let result = "";
+      let chunk = "";
+      for (let index = offset; index < bytes.length; index += 1) {{
+        const byte = bytes[index];
+        chunk += byte >= 0x80 && byte <= 0x9f ? special[byte - 0x80] : String.fromCharCode(byte);
+        if (chunk.length >= 8192) {{ result += chunk; chunk = ""; }}
+      }}
+      return result + chunk;
+    }}
+    return utf8TextFromBytes(bytes.slice(offset));
+  }};
   const nativeXhrNormalizeOverrideMimeType = (value) => {{
     const text = String(value).trim();
     const essence = text.split(";", 1)[0].trim();
@@ -36203,7 +36269,13 @@ fn document_bootstrap(
             ? globalThis.__glassParseHtmlDocument
             : null;
         xhr._responseXML = parseDocument
-          ? parseDocument(utf8TextFromBytes(bytes), xhr.responseURL, responseContentType)
+          ? parseDocument(htmlContent
+            ? nativeXhrDecodeDocumentBytes(
+              bytes,
+              xhr._responseHeaders.get("content-type"),
+              xhr._overrideMimeType,
+            )
+            : utf8TextFromBytes(bytes), xhr.responseURL, responseContentType)
           : null;
         xhr._responseText = "";
         xhr._response = xhr._responseXML;
@@ -36494,7 +36566,13 @@ fn document_bootstrap(
             ? globalThis.__glassParseHtmlDocument
             : null;
         this._responseXML = parseDocument
-          ? parseDocument(utf8TextFromBytes(bytes), this.responseURL, this._responseContentType)
+          ? parseDocument(htmlContent
+            ? nativeXhrDecodeDocumentBytes(
+              bytes,
+              this._responseHeaders.get("content-type"),
+              this._overrideMimeType,
+            )
+            : utf8TextFromBytes(bytes), this.responseURL, this._responseContentType)
           : null;
         this._responseText = "";
         this._response = this._responseXML;

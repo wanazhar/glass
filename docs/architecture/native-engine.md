@@ -1,15 +1,17 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-748`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-749`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
 `responseType="document"` responses to the bounded html5ever document sink
 with scripting disabled. The XHR result remains detached and read-only; it
 does not execute response scripts or load referenced resources. Full
-conformance is not claimed. UTF-8-only response decoding, template
-`DocumentFragment` exposure, quirks-mode layout, parser-stream reentrancy,
+conformance is not claimed. Slice 749 adds common explicit charset decoding
+for HTML XHR document responses; HTML meta prescan and complete encoding-label
+coverage remain open. Template `DocumentFragment` exposure, quirks-mode layout,
+parser-stream reentrancy,
 remote CI, and cross-platform certification remain open.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
@@ -138,9 +140,12 @@ html5ever sink runs with scripting disabled, and structured parser output is
 validated before the detached read-only response document is materialized.
 Process-backed tests verify response URL, MIME selection, malformed recovery,
 foreign namespaces, script inertness, and the absence of referenced-resource
-requests. UTF-8-only response decoding, full template `DocumentFragment`
-exposure, and complete XHR/Web IDL semantics remain separate conformance work;
-see the [slice 748 task](../plan/tasks/native-engine-browser-748.md).
+requests. Slice 749 locally verifies bounded response-header/override decoding
+for UTF-8, UTF-16LE/BE, and Windows-1252 HTML documents. HTML meta prescan,
+other WHATWG encodings, full template `DocumentFragment` exposure, and
+complete XHR/Web IDL semantics remain separate conformance work; see the
+[slice 748 task](../plan/tasks/native-engine-browser-748.md) and
+[slice 749 task](../plan/tasks/native-engine-browser-749.md).
 
 The token-aware TreeSink bridge also preserves MathML `annotation-xml` as the
 HTML integration boundary during `</p>` and `</br>` foreign-content breakouts.

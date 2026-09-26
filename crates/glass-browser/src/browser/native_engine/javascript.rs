@@ -37906,6 +37906,7 @@ fn document_bootstrap(
         }}
       }}
       const childIndices = record.children.slice();
+      let templateContentChildren = null;
       if (record.templateContents !== null && record.templateContents !== undefined) {{
         const templateContents = nodes[record.templateContents];
         if (!templateContents || !templateContents.kind
@@ -37913,9 +37914,12 @@ fn document_bootstrap(
             || !Array.isArray(templateContents.children)) {{
           throw new Error("native HTML fragment parser returned invalid template contents");
         }}
-        childIndices.push(...templateContents.children);
+        templateContentChildren = templateContents.children;
       }}
       for (const childIndex of childIndices) element.appendChild(buildNode(childIndex));
+      if (templateContentChildren) {{
+        for (const childIndex of templateContentChildren) element.content.appendChild(buildNode(childIndex));
+      }}
       return element;
     }};
     for (const childIndex of root.children) fragment.appendChild(buildNode(childIndex));
@@ -38780,6 +38784,7 @@ fn document_bootstrap(
     let entry = initialEntry;
     let textContent = snapshotElementTextContent(entry, exactTextForNode);
     let innerHtml = String(entry.innerHtml || "");
+    let templateContent = null;
     let value = entry.value === null
       ? (entry.tagName.toLowerCase() === "option"
         ? (entry.attributes.value === undefined ? entry.text : entry.attributes.value)
@@ -39440,7 +39445,9 @@ fn document_bootstrap(
           .join("");
         const opening = "<" + element.localName + attributes + ">";
         if (["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"].includes(element.localName)) return opening;
-        const content = element.__glassChildren.length > 0
+        const content = element.localName === "template"
+          ? element.content.innerHTML
+          : element.__glassChildren.length > 0
           ? element.__glassChildren.map(child => child.__glassMarkup).join("")
           : innerHtml;
         return opening + content + "</" + element.localName + ">";
@@ -39487,7 +39494,7 @@ fn document_bootstrap(
     Object.defineProperty(element, "ownerDocument", {{
       enumerable: false,
       configurable: false,
-      get() {{ return globalThis.document || null; }},
+      get() {{ return templateContentsOwnerDocumentForNode(element); }},
     }});
     installAttributeNodeSurface(element, () => globalThis.document || null);
     installCommonAttributeProperties(element, {{
@@ -39545,13 +39552,57 @@ fn document_bootstrap(
         }},
       }});
     }}
+    if (element.namespaceURI === HTML_NAMESPACE && element.localName === "template") {{
+      Object.defineProperty(element, "content", {{
+        enumerable: true,
+        configurable: false,
+        get() {{
+          const contentIndex = entry.templateContentIndex;
+          const current = globalThis.__glassHostNodes;
+          const cache = globalThis.__glassTemplateContents instanceof Map
+            ? globalThis.__glassTemplateContents
+            : (globalThis.__glassTemplateContents = new Map());
+          if (!templateContent && contentIndex !== null && contentIndex !== undefined
+              && current instanceof Map && current.has(Number(contentIndex))) {{
+            templateContent = current.get(Number(contentIndex));
+          }}
+          if (!templateContent && cache.has(Number(entry.nodeIndex))) {{
+            templateContent = cache.get(Number(entry.nodeIndex));
+          }}
+          if (!templateContent) templateContent = makeDocumentFragment(null, element);
+          templateContent.__glassTemplateHost = element;
+          cache.set(Number(entry.nodeIndex), templateContent);
+          return templateContent;
+        }},
+      }});
+    }}
     Object.defineProperty(element, "innerHTML", {{
       enumerable: true,
       configurable: false,
-      get() {{ return innerHtml; }},
+      get() {{ return element.localName === "template" ? element.content.innerHTML : innerHtml; }},
       set(next) {{
         const value = String(next);
         if (value.length > storageValueLimit) throw new RangeError("native element innerHTML exceeds its limit");
+        if (element.localName === "template") {{
+          const content = element.content;
+          for (const child of content.__glassChildren) {{
+            child.__glassParent = null;
+            child.parentIndex = null;
+          }}
+          content.__glassChildren = [];
+          innerHtml = "";
+          textContent = "";
+          suppressHostCommands += 1;
+          try {{
+            populateDetachedFragment(content, value, makeDetachedElement, makeDetachedText, makeDetachedComment);
+          }} finally {{
+            suppressHostCommands -= 1;
+          }}
+          innerHtml = value;
+          element.__glassSyncContent(true);
+          pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
+          return;
+        }}
         for (const child of element.__glassChildren) {{
           child.__glassParent = null;
           child.parentIndex = null;
@@ -39946,7 +39997,7 @@ fn document_bootstrap(
     Object.defineProperty(text, "ownerDocument", {{
       enumerable: false,
       configurable: false,
-      get() {{ return globalThis.document || null; }},
+      get() {{ return templateContentsOwnerDocumentForNode(text); }},
     }});
     Object.defineProperty(text, "nodeValue", {{
       enumerable: true,
@@ -40029,7 +40080,7 @@ fn document_bootstrap(
           : null;
       }},
     }});
-    Object.defineProperty(comment, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return globalThis.document || null; }} }});
+    Object.defineProperty(comment, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return templateContentsOwnerDocumentForNode(comment); }} }});
     Object.defineProperty(comment, "nodeValue", {{
       enumerable: true,
       configurable: false,
@@ -40121,11 +40172,18 @@ fn document_bootstrap(
     pushCommand({{ kind: "createDocumentType", node_index: nodeIndex, name: normalizedName, public_id: publicIdentifier, system_id: systemIdentifier }});
     return documentType;
   }};
-  const makeDocumentFragment = () => {{
+  let defineTreeAccessorsForNativeFragments = null;
+  const makeDocumentFragment = (snapshotEntry = null, templateHost = null) => {{
     const fragment = {{
+      nodeIndex: snapshotEntry ? Number(snapshotEntry.nodeIndex) : null,
+      parentIndex: snapshotEntry && snapshotEntry.parentIndex != null ? Number(snapshotEntry.parentIndex) : null,
       nodeType: 11,
       nodeName: "#document-fragment",
       __glassFragment: true,
+      __glassTemplateHost: templateHost,
+      templateHostIndex: snapshotEntry && snapshotEntry.templateHostIndex != null
+        ? Number(snapshotEntry.templateHostIndex)
+        : null,
       __glassChildren: [],
       __glassParent: null,
       appendChild(child) {{
@@ -40149,8 +40207,16 @@ fn document_bootstrap(
         this.__glassChildren.push(child);
         child.__glassParent = this;
         child.parentIndex = null;
-        if (oldParent && oldParent.nodeType === 1 && oldParentIndex !== null && oldParentIndex !== undefined) {{
-          pushCommand({{ kind: "removeNode", node_index: child.nodeIndex }});
+        child.parentIndex = this.nodeIndex == null ? null : this.nodeIndex;
+        if (!suppressHostCommands) {{
+          if (this.nodeIndex !== null && this.nodeIndex !== undefined) {{
+            pushCommand({{ kind: "appendChild", parent_index: this.nodeIndex, child_index: child.nodeIndex }});
+          }} else if (this.__glassTemplateHost) {{
+            if (oldParentIndex !== null && oldParentIndex !== undefined) {{
+              pushCommand({{ kind: "removeNode", node_index: child.nodeIndex }});
+            }}
+            pushCommand({{ kind: "setInnerHtml", node_index: this.__glassTemplateHost.nodeIndex, value: this.innerHTML }});
+          }}
         }}
         queueMutation({{ type: "childList", target: this, addedNodes: [child], removedNodes: [], previousSibling: this.__glassChildren.length > 1 ? this.__glassChildren[this.__glassChildren.length - 2] : null, nextSibling: null }});
         return child;
@@ -40181,13 +40247,30 @@ fn document_bootstrap(
         this.__glassChildren.splice(index < 0 ? this.__glassChildren.length : index, 0, child);
         child.__glassParent = this;
         child.parentIndex = null;
-        if (oldParent && oldParent.nodeType === 1 && oldParentIndex !== null && oldParentIndex !== undefined) {{
-          pushCommand({{ kind: "removeNode", node_index: child.nodeIndex }});
+        child.parentIndex = this.nodeIndex == null ? null : this.nodeIndex;
+        if (!suppressHostCommands) {{
+          if (this.nodeIndex !== null && this.nodeIndex !== undefined) {{
+            pushCommand({{ kind: "insertBefore", parent_index: this.nodeIndex, child_index: child.nodeIndex, before_index: before.nodeIndex }});
+          }} else if (this.__glassTemplateHost) {{
+            if (oldParentIndex !== null && oldParentIndex !== undefined) {{
+              pushCommand({{ kind: "removeNode", node_index: child.nodeIndex }});
+            }}
+            pushCommand({{ kind: "setInnerHtml", node_index: this.__glassTemplateHost.nodeIndex, value: this.innerHTML }});
+          }}
         }}
         queueMutation({{ type: "childList", target: this, addedNodes: [child], removedNodes: [], previousSibling, nextSibling }});
         return child;
       }},
     }};
+    Object.defineProperty(fragment, "__glassRefresh", {{
+      enumerable: false,
+      configurable: false,
+      value(nextEntry) {{
+        fragment.nodeIndex = Number(nextEntry.nodeIndex);
+        fragment.parentIndex = nextEntry.parentIndex == null ? null : Number(nextEntry.parentIndex);
+        fragment.templateHostIndex = nextEntry.templateHostIndex == null ? null : Number(nextEntry.templateHostIndex);
+      }},
+    }});
     Object.defineProperty(fragment, "__glassTextValue", {{
       enumerable: false,
       configurable: false,
@@ -40201,7 +40284,7 @@ fn document_bootstrap(
     Object.defineProperty(fragment, "ownerDocument", {{
       enumerable: false,
       configurable: false,
-      get() {{ return globalThis.document || null; }},
+      get() {{ return templateContentsOwnerDocumentForNode(fragment); }},
     }});
     Object.defineProperty(fragment, "parentNode", {{
       enumerable: false,
@@ -40230,16 +40313,94 @@ fn document_bootstrap(
       set(next) {{
         const value = String(next);
         if (value.length > storageValueLimit) throw new RangeError("native fragment innerHTML exceeds its limit");
-        for (const child of fragment.__glassChildren.slice()) child.remove();
-        populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText, makeDetachedComment);
+        for (const child of fragment.__glassChildren) {{
+          child.__glassParent = null;
+          child.parentIndex = null;
+        }}
+        fragment.__glassChildren = [];
+        suppressHostCommands += 1;
+        try {{
+          populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText, makeDetachedComment);
+        }} finally {{
+          suppressHostCommands -= 1;
+        }}
+        const host = fragment.__glassTemplateHost
+          || (fragment.templateHostIndex != null && globalThis.__glassHostElements instanceof Map
+            ? globalThis.__glassHostElements.get(fragment.templateHostIndex)
+            : null);
+        if (host) pushCommand({{ kind: "setInnerHtml", node_index: host.nodeIndex, value }});
       }},
     }});
-    defineTreeAccessors(fragment);
+    if (defineTreeAccessorsForNativeFragments) defineTreeAccessorsForNativeFragments(fragment);
     const constructor = globalThis.DocumentFragment;
     if (typeof constructor === "function" && constructor.prototype) {{
       try {{ Object.setPrototypeOf(fragment, constructor.prototype); }} catch (_error) {{}}
     }}
     return fragment;
+  }};
+  let templateContentsOwnerDocument = null;
+  const getTemplateContentsOwnerDocument = () => {{
+    if (templateContentsOwnerDocument) {{
+      if (typeof globalThis.Document === "function") {{
+        try {{ Object.setPrototypeOf(templateContentsOwnerDocument, globalThis.Document.prototype); }} catch (_error) {{}}
+      }}
+      return templateContentsOwnerDocument;
+    }}
+    templateContentsOwnerDocument = {{
+      nodeType: 9,
+      nodeName: "#document",
+      URL: "",
+      documentURI: "",
+      contentType: "text/html",
+      compatMode: "CSS1Compat",
+      defaultView: null,
+      get documentElement() {{ return null; }},
+      get childNodes() {{ return asNodeList([]); }},
+      get children() {{ return asNodeList([]); }},
+      getRootNode() {{ return this; }},
+      createElement(name) {{
+        const element = makeDetachedElement(name, HTML_NAMESPACE);
+        Object.defineProperty(element, "__glassOwnerDocumentOverride", {{ value: templateContentsOwnerDocument }});
+        return element;
+      }},
+      createElementNS(namespace, name) {{
+        const element = makeDetachedElement(name, namespace);
+        Object.defineProperty(element, "__glassOwnerDocumentOverride", {{ value: templateContentsOwnerDocument }});
+        return element;
+      }},
+      createTextNode(value) {{
+        const node = makeDetachedText(value);
+        Object.defineProperty(node, "__glassOwnerDocumentOverride", {{ value: templateContentsOwnerDocument }});
+        return node;
+      }},
+      createComment(value) {{
+        const node = makeDetachedComment(value);
+        Object.defineProperty(node, "__glassOwnerDocumentOverride", {{ value: templateContentsOwnerDocument }});
+        return node;
+      }},
+      createDocumentFragment() {{
+        const fragment = makeDocumentFragment();
+        Object.defineProperty(fragment, "__glassOwnerDocumentOverride", {{ value: templateContentsOwnerDocument }});
+        return fragment;
+      }},
+    }};
+    if (typeof globalThis.Document === "function") {{
+      try {{ Object.setPrototypeOf(templateContentsOwnerDocument, globalThis.Document.prototype); }} catch (_error) {{}}
+    }}
+    return templateContentsOwnerDocument;
+  }};
+  const templateContentsOwnerDocumentForNode = (node) => {{
+    if (!node) return globalThis.document || null;
+    if (node.__glassOwnerDocumentOverride) return node.__glassOwnerDocumentOverride;
+    let current = node;
+    while (current) {{
+      if (Number(current.nodeType) === 11
+          && (current.templateHostIndex != null || current.__glassTemplateHost)) {{
+        return getTemplateContentsOwnerDocument();
+      }}
+      current = current.__glassParent || null;
+    }}
+    return globalThis.document || null;
   }};
   const makeSnapshotText = (initialEntry) => {{
     const isComment = Number(initialEntry.nodeType) === 8;
@@ -40294,7 +40455,7 @@ fn document_bootstrap(
       get() {{ return textContent; }},
       set(next) {{ text.textContent = next; }},
     }});
-    Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return globalThis.document || null; }} }});
+    Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return templateContentsOwnerDocumentForNode(text); }} }});
     Object.defineProperty(text, "textContent", {{
       enumerable: true,
       configurable: false,
@@ -40441,11 +40602,28 @@ fn document_bootstrap(
       }}
       return documentType;
     }});
+  const templateContentsCache = globalThis.__glassTemplateContents instanceof Map
+    ? globalThis.__glassTemplateContents
+    : (globalThis.__glassTemplateContents = new Map());
+  const fragmentNodes = snapshotNodes
+    .filter((entry) => entry && Number(entry.nodeType) === 11)
+    .map((entry) => {{
+      const hostIndex = entry.templateHostIndex == null ? null : Number(entry.templateHostIndex);
+      const cached = hostIndex == null ? null : templateContentsCache.get(hostIndex);
+      const existing = cached || previousNodes.get(entry.nodeIndex);
+      const fragment = existing && typeof existing.__glassRefresh === "function"
+        ? existing
+        : makeDocumentFragment(entry);
+      if (fragment !== existing && typeof fragment.__glassRefresh === "function") fragment.__glassRefresh(entry);
+      if (hostIndex != null) templateContentsCache.set(hostIndex, fragment);
+      return fragment;
+    }});
   const nodesByIndex = new Map([
     ...elements.map((element) => [element.nodeIndex, element]),
     ...textNodes.map((text) => [text.nodeIndex, text]),
     ...commentNodes.map((comment) => [comment.nodeIndex, comment]),
     ...documentTypeNodes.map((documentType) => [documentType.nodeIndex, documentType]),
+    ...fragmentNodes.map((fragment) => [fragment.nodeIndex, fragment]),
   ]);
   globalThis.__glassHostElements = elementsByIndex;
   globalThis.__glassHostNodes = nodesByIndex;
@@ -40464,6 +40642,10 @@ fn document_bootstrap(
   for (const documentType of documentTypeNodes) {{
     documentType.__glassChildren = [];
     documentType.__glassParent = null;
+  }}
+  for (const fragment of fragmentNodes) {{
+    fragment.__glassChildren = [];
+    fragment.__glassParent = null;
   }}
   if (snapshotNodes.length > 0) {{
     for (const snapshotNode of snapshotNodes) {{
@@ -41073,8 +41255,10 @@ fn document_bootstrap(
     }});
     return node;
   }};
+  defineTreeAccessorsForNativeFragments = defineTreeAccessors;
   for (const element of elements) defineTreeAccessors(element);
   for (const text of textNodes) defineTreeAccessors(text);
+  for (const fragment of fragmentNodes) defineTreeAccessors(fragment);
   for (const comment of commentNodes) {{
     defineTreeAccessors(comment);
     try {{ Object.setPrototypeOf(comment, CommentNative.prototype); }} catch (_error) {{}}
@@ -44759,6 +44943,9 @@ fn document_bootstrap(
   const DocumentTypeNative = ensureNativeConstructor("DocumentType", NodeNative);
   const DocumentNative = ensureNativeConstructor("Document", NodeNative);
   const DocumentFragmentNative = ensureNativeConstructor("DocumentFragment", NodeNative);
+  for (const fragment of fragmentNodes) {{
+    try {{ Object.setPrototypeOf(fragment, DocumentFragmentNative.prototype); }} catch (_error) {{}}
+  }}
   const ElementNative = ensureNativeConstructor("Element", NodeNative);
   const HTMLElementNative = ensureNativeConstructor("HTMLElement", ElementNative);
   const HTMLMediaElementNative = ensureNativeConstructor("HTMLMediaElement", HTMLElementNative);

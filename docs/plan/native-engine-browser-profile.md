@@ -112,9 +112,12 @@ separate from the HTML document parser route.
 The detached HTML response-document projection preserves each parsed template
 contents node as a separate `DocumentFragment`: the template's `.content`
 identity is distinct from its children, and selectors on the response document
-do not traverse into it. This bounded XHR projection does not establish mutable
-template semantics for ordinary navigation documents; see the
-[slice 751 contract](tasks/native-engine-browser-751.md).
+do not traverse into it. Slice 752 also preserves fragments in top-level live
+navigation documents and exposes `.content`, inert owner-document identity,
+query/traversal boundaries, fragment mutation, and template `innerHTML`
+replacement. Same-origin frame projection and clone/import/adopt semantics
+remain open; see the [slice 751 contract](tasks/native-engine-browser-751.md)
+and [slice 752 contract](tasks/native-engine-browser-752.md).
 
 ### Synchronous JavaScript dialog contract
 

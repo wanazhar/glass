@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-751`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-752`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -14,7 +14,7 @@ with `encoding_rs`, selects response/override labels, prescans the first 1,024
 bytes using HTML meta/XML rules when those labels are absent or invalid, and
 retains replacement decoding and raw/decoded bounds. HTML response bytes use
 the WHATWG encoding label table; XML and text XHR paths remain separate.
-Template `DocumentFragment` exposure, quirks-mode layout,
+Same-origin frame template-content projection, quirks-mode layout,
 parser-stream reentrancy,
 remote CI, and cross-platform certification remain open.
 Slice 745 adds an
@@ -136,7 +136,7 @@ The Rust commit is transactional: parser, node, or depth-limit failure leaves
 the previous subtree attached. The scoped check, fragment/`innerHTML` unit
 tests, and process-backed HTTP regression pass. At the slice 747 checkpoint,
 the full documentation inventory gate was deferred because the Glass CLI
-binary was absent; the current slice 750 coverage gate passes, as recorded
+binary was absent; the current slice 752 coverage gate passes, as recorded
 below.
 
 Slice 748 completes the XHR HTML-document parser migration. The full-document
@@ -149,12 +149,19 @@ XHR regressions pass locally, covering Shift_JIS/GBK response and meta labels,
 override and BOM precedence, and the 1,024-byte scan bound. Slice 751 adds the
 separate read-only template-content fragment boundary to XHR response
 documents; its focused DOM unit and process-backed XHR regression pass.
-Mutable navigation-document template semantics remain open. Full encoding/XHR
-WPT conformance and complete XHR/Web IDL semantics remain separate gates; see
+Slice 752 stores navigation-document template contents as separate
+native `DocumentFragment` nodes and exposes stable `.content`, query and
+traversal boundaries, inert owner-document identity, direct fragment mutation,
+and template `innerHTML` replacement in the live top-level page realm. A
+process-backed regression verifies moving a child between the template
+fragment and document. Same-origin frame projection, clone/import/adopt
+semantics, full encoding/XHR WPT conformance, and complete XHR/Web IDL
+semantics remain separate gates; see
 the [slice 748 task](../plan/tasks/native-engine-browser-748.md),
 [slice 749 task](../plan/tasks/native-engine-browser-749.md), and
 [slice 750 task](../plan/tasks/native-engine-browser-750.md) and
-[slice 751 task](../plan/tasks/native-engine-browser-751.md).
+[slice 751 task](../plan/tasks/native-engine-browser-751.md) and
+[slice 752 task](../plan/tasks/native-engine-browser-752.md).
 
 The token-aware TreeSink bridge also preserves MathML `annotation-xml` as the
 HTML integration boundary during `</p>` and `</br>` foreign-content breakouts.
@@ -165,9 +172,9 @@ QName for subsequent decisions. The regression covers case-insensitive
 encoding and nested SVG content, and confirms the published tree keeps the
 original MathML element name and expected HTML children.
 
-Local Linux verification for slices 746–751 covers the locked
+Local Linux verification for slices 746–752 covers the locked
 `glass-browser` library/test-target check, parser and XHR tests, process-backed
-navigation and XHR regressions, and maintainer documentation gates: 1,379
+navigation and XHR regressions, and maintainer documentation gates: 1,380
 Markdown files with zero current-claim failures, 93 current guides/19
 contracts, 15 implementation keys/63 markers, and 346 full-product MCP tools
 (101 browser-only), 17 examples, and 22 public modules. This evidence does
@@ -179,11 +186,12 @@ document source → html5ever tokenizer/tree builder → Glass TreeSink
                → bounded NativeDocument → resources/CSP/style/scripts
 ```
 
-These parser migrations do not finish the HTML platform. The current mutable
-navigation/fragment DOM projection still flattens template contents into the
-template element; only detached read-only XHR response documents retain the
-fragment boundary. Quirks mode does not yet alter CSS/layout, and script-stream
-reentrancy remains incomplete. html5ever documents remaining tree-builder differences; the
+These parser migrations do not finish the HTML platform. Top-level navigation
+documents and detached XHR response documents now retain the template fragment
+boundary, but same-origin frame projection and template clone/import/adopt
+semantics remain incomplete. Quirks mode does not yet alter CSS/layout, and
+script-stream reentrancy remains incomplete. html5ever documents remaining
+tree-builder differences; the
 pinned GCWP conformance corpus and explicit treatment of each failure are
 still promotion gates. See [slice 748](../plan/tasks/native-engine-browser-748.md).
 

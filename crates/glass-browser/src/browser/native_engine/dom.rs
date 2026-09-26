@@ -191,6 +191,7 @@ impl NativeElementState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeNodeKind {
     Document,
+    DocumentFragment,
     DocumentType {
         name: String,
         public_id: Option<String>,
@@ -376,6 +377,10 @@ pub(crate) struct NativeScriptNodeIdentity {
 pub(crate) struct NativeNodeWire {
     pub(crate) parent: Option<u32>,
     pub(crate) children: Vec<u32>,
+    #[serde(default)]
+    pub(crate) template_content: Option<u32>,
+    #[serde(default)]
+    pub(crate) template_host: Option<u32>,
     pub(crate) kind: NativeNodeKindWire,
     pub(crate) state: NativeElementStateWire,
 }
@@ -383,6 +388,7 @@ pub(crate) struct NativeNodeWire {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NativeNodeKindWire {
     Document,
+    DocumentFragment,
     DocumentType {
         name: String,
         public_id: Option<String>,
@@ -430,6 +436,8 @@ pub struct NativeNode {
     id: NativeNodeId,
     parent: Option<NativeNodeId>,
     children: Vec<NativeNodeId>,
+    template_content: Option<NativeNodeId>,
+    template_host: Option<NativeNodeId>,
     kind: NativeNodeKind,
     state: NativeElementState,
 }
@@ -456,6 +464,7 @@ impl NativeNode {
         match &self.kind {
             NativeNodeKind::Element { attributes, .. } => Some(attributes),
             NativeNodeKind::Document
+            | NativeNodeKind::DocumentFragment
             | NativeNodeKind::DocumentType { .. }
             | NativeNodeKind::Comment(_)
             | NativeNodeKind::Text(_) => None,
@@ -541,6 +550,7 @@ impl NativeNode {
         match &self.kind {
             NativeNodeKind::Element { name, .. } => Some(name),
             NativeNodeKind::Document
+            | NativeNodeKind::DocumentFragment
             | NativeNodeKind::DocumentType { .. }
             | NativeNodeKind::Comment(_)
             | NativeNodeKind::Text(_) => None,
@@ -648,6 +658,10 @@ pub(crate) struct NativeScriptGeometrySnapshot {
 pub(crate) struct NativeScriptNodeSnapshot {
     pub(crate) node_index: u32,
     pub(crate) parent_index: Option<u32>,
+    #[serde(default)]
+    pub(crate) template_content_index: Option<u32>,
+    #[serde(default)]
+    pub(crate) template_host_index: Option<u32>,
     pub(crate) node_type: u8,
     pub(crate) node_name: String,
     pub(crate) node_value: Option<String>,
@@ -663,6 +677,8 @@ pub(crate) struct NativeScriptNodeSnapshot {
 pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) node_index: u32,
     pub(crate) parent_index: Option<u32>,
+    #[serde(default)]
+    pub(crate) template_content_index: Option<u32>,
     pub(crate) form_owner_index: Option<u32>,
     pub(crate) tag_name: String,
     #[serde(default)]
@@ -1202,7 +1218,6 @@ impl NativeDocument {
                         native_node.state.namespace_uri = Some(namespace.clone());
                         native_node.state.attribute_namespaces = attribute_namespaces;
                     }
-                    let mut children = node.children.clone();
                     if let Some(template_contents_index) = node.template_contents {
                         let template_contents =
                             parsed.get(template_contents_index).ok_or_else(|| {
@@ -1220,11 +1235,26 @@ impl NativeDocument {
                                 reason: "HTML template contents are not a fragment".into(),
                             });
                         }
-                        children.extend_from_slice(&template_contents.children);
+                        let fragment =
+                            self.add_detached_node(NativeNodeKind::DocumentFragment, max_nodes)?;
+                        if let Some(template) = self.raw_node_mut(id) {
+                            template.template_content = Some(fragment);
+                        }
+                        if let Some(fragment_node) = self.raw_node_mut(fragment) {
+                            fragment_node.template_host = Some(id);
+                        }
+                        self.append_html_parsed_nodes(
+                            parsed,
+                            &template_contents.children,
+                            fragment,
+                            element_depth.saturating_add(1),
+                            max_nodes,
+                            max_dom_depth,
+                        )?;
                     }
                     self.append_html_parsed_nodes(
                         parsed,
-                        &children,
+                        &node.children,
                         id,
                         element_depth.saturating_add(1),
                         max_nodes,
@@ -1336,6 +1366,8 @@ impl NativeDocument {
                 id: root,
                 parent: None,
                 children: Vec::new(),
+                template_content: None,
+                template_host: None,
                 kind: NativeNodeKind::Document,
                 state: NativeElementState::default(),
             }],
@@ -1413,6 +1445,7 @@ impl NativeDocument {
                                 .and_then(|node| match node.kind() {
                                     NativeNodeKind::Element { name, .. } => Some(name.as_str()),
                                     NativeNodeKind::Document
+                                    | NativeNodeKind::DocumentFragment
                                     | NativeNodeKind::DocumentType { .. }
                                     | NativeNodeKind::Comment(_)
                                     | NativeNodeKind::Text(_) => None,
@@ -3040,8 +3073,11 @@ impl NativeDocument {
             .map(|node| NativeNodeWire {
                 parent: node.parent.map(|parent| parent.index),
                 children: node.children.iter().map(|child| child.index).collect(),
+                template_content: node.template_content.map(|fragment| fragment.index),
+                template_host: node.template_host.map(|host| host.index),
                 kind: match &node.kind {
                     NativeNodeKind::Document => NativeNodeKindWire::Document,
+                    NativeNodeKind::DocumentFragment => NativeNodeKindWire::DocumentFragment,
                     NativeNodeKind::Element { name, attributes } => NativeNodeKindWire::Element {
                         name: name.clone(),
                         attributes: attributes.clone(),
@@ -3450,6 +3486,7 @@ impl NativeDocument {
                                 .any(|(name, _)| name.eq_ignore_ascii_case("style"))
                     }
                     NativeNodeKindWire::Document
+                    | NativeNodeKindWire::DocumentFragment
                     | NativeNodeKindWire::DocumentType { .. }
                     | NativeNodeKindWire::Comment(_)
                     | NativeNodeKindWire::Text(_) => true,
@@ -3486,8 +3523,11 @@ impl NativeDocument {
                 .copied()
                 .map(node_id)
                 .collect::<Result<Vec<_>, _>>()?;
+            let template_content = wire_node.template_content.map(&node_id).transpose()?;
+            let template_host = wire_node.template_host.map(&node_id).transpose()?;
             let kind = match &wire_node.kind {
                 NativeNodeKindWire::Document => NativeNodeKind::Document,
+                NativeNodeKindWire::DocumentFragment => NativeNodeKind::DocumentFragment,
                 NativeNodeKindWire::Element { name, attributes } => {
                     if name.len() > MAX_ATTRIBUTE_BYTES
                         || attributes.iter().any(|(name, value)| {
@@ -3570,6 +3610,8 @@ impl NativeDocument {
                 id: NativeNodeId { generation, index },
                 parent,
                 children,
+                template_content,
+                template_host,
                 kind,
                 state: NativeElementState {
                     namespace_uri,
@@ -3594,6 +3636,64 @@ impl NativeDocument {
                 offset: 0,
                 reason: "content process returned an invalid document root".into(),
             });
+        }
+        for node in &nodes {
+            match node.kind() {
+                NativeNodeKind::Element { name, .. }
+                    if name == "template" && node.namespace_uri() == Some(HTML_NAMESPACE_URI) =>
+                {
+                    let fragment_id =
+                        node.template_content
+                            .ok_or_else(|| NativeEngineError::Parse {
+                                offset: 0,
+                                reason: "content process returned a template without contents"
+                                    .into(),
+                            })?;
+                    let fragment = nodes.get(fragment_id.index as usize).ok_or_else(|| {
+                        NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "content process returned an invalid template fragment".into(),
+                        }
+                    })?;
+                    if !matches!(fragment.kind(), NativeNodeKind::DocumentFragment)
+                        || fragment.parent().is_some()
+                        || fragment.template_host != Some(node.id())
+                        || node.children().contains(&fragment_id)
+                    {
+                        return Err(NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "content process returned an inconsistent template fragment"
+                                .into(),
+                        });
+                    }
+                }
+                NativeNodeKind::DocumentFragment => {
+                    let host_id = node.template_host.ok_or_else(|| NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "content process returned an unowned document fragment".into(),
+                    })?;
+                    let host = nodes.get(host_id.index as usize).ok_or_else(|| {
+                        NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "content process returned an invalid fragment owner".into(),
+                        }
+                    })?;
+                    if node.parent().is_some() || host.template_content != Some(node.id()) {
+                        return Err(NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "content process returned an inconsistent fragment owner"
+                                .into(),
+                        });
+                    }
+                }
+                _ if node.template_content.is_some() || node.template_host.is_some() => {
+                    return Err(NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "content process returned invalid template links".into(),
+                    });
+                }
+                _ => {}
+            }
         }
         if wire.image_resources.len() > limits.max_nodes {
             return Err(NativeEngineError::limit(
@@ -4218,6 +4318,8 @@ impl NativeDocument {
                 id: root,
                 parent: None,
                 children: Vec::new(),
+                template_content: None,
+                template_host: None,
                 kind: NativeNodeKind::Document,
                 state: NativeElementState::default(),
             }],
@@ -4275,7 +4377,7 @@ impl NativeDocument {
 
     pub fn node(&self, id: NativeNodeId) -> Option<&NativeNode> {
         let node = self.raw_node(id)?;
-        self.is_attached(id).then_some(node)
+        (self.is_attached(id) || self.is_attached_template_content(id)).then_some(node)
     }
 
     pub const fn node_count(&self) -> usize {
@@ -4402,6 +4504,7 @@ impl NativeDocument {
                 self.node(node.id())?;
                 let (node_type, node_name, node_value) = match node.kind() {
                     NativeNodeKind::Document => (9, "#document".to_owned(), None),
+                    NativeNodeKind::DocumentFragment => (11, "#document-fragment".to_owned(), None),
                     NativeNodeKind::DocumentType { name, .. } => (10, name.clone(), None),
                     NativeNodeKind::Element { name, .. } => (1, name.to_ascii_uppercase(), None),
                     NativeNodeKind::Comment(value) => {
@@ -4427,6 +4530,8 @@ impl NativeDocument {
                 Some(NativeScriptNodeSnapshot {
                     node_index: node.id().index(),
                     parent_index: node.parent().map(NativeNodeId::index),
+                    template_content_index: node.template_content.map(NativeNodeId::index),
+                    template_host_index: node.template_host.map(NativeNodeId::index),
                     node_type,
                     node_name,
                     node_value,
@@ -4472,6 +4577,7 @@ impl NativeDocument {
                 Some(NativeScriptElementSnapshot {
                     node_index: node.id().index(),
                     parent_index: self.parent_element_index(node.id()),
+                    template_content_index: node.template_content.map(NativeNodeId::index),
                     form_owner_index: self.form_owner(node.id()).map(NativeNodeId::index),
                     tag_name,
                     namespace_uri: node.state.namespace_uri.clone(),
@@ -6106,6 +6212,8 @@ impl NativeDocument {
                         Some("") => None,
                         Some(value) => Some(validate_namespace_uri(value)?),
                     };
+                    let has_template_contents =
+                        name == "template" && namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI);
                     let id = self.add_detached_node(
                         NativeNodeKind::Element {
                             name,
@@ -6115,6 +6223,16 @@ impl NativeDocument {
                     )?;
                     if let Some(node) = self.raw_node_mut(id) {
                         node.state.namespace_uri = namespace_uri;
+                    }
+                    if has_template_contents {
+                        let fragment = self
+                            .add_detached_node(NativeNodeKind::DocumentFragment, self.max_nodes)?;
+                        if let Some(template) = self.raw_node_mut(id) {
+                            template.template_content = Some(fragment);
+                        }
+                        if let Some(fragment_node) = self.raw_node_mut(fragment) {
+                            fragment_node.template_host = Some(id);
+                        }
                     }
                     script_nodes.insert(*node_index, id);
                 }
@@ -6843,7 +6961,14 @@ impl NativeDocument {
             ));
         }
         let id = self.resolve_script_node_id(node_index, script_nodes);
-        let (context_name, context_namespace, context_attributes, old_children, context_depth) = {
+        let (
+            context_name,
+            context_namespace,
+            context_attributes,
+            old_children,
+            template_fragment,
+            context_depth,
+        ) = {
             let target = self
                 .script_node(id, script_nodes)
                 .ok_or(NativeEngineError::DetachedTarget)?;
@@ -6862,6 +6987,16 @@ impl NativeDocument {
                     namespace: target.state.attribute_namespaces.get(name).cloned(),
                 })
                 .collect::<Vec<_>>();
+            let template_fragment = (context_name == "template"
+                && target.namespace_uri() == Some(HTML_NAMESPACE_URI))
+            .then_some(target.template_content)
+            .flatten();
+            let old_children = template_fragment
+                .and_then(|fragment| self.raw_node(fragment))
+                .map_or_else(
+                    || target.children().to_vec(),
+                    |fragment| fragment.children().to_vec(),
+                );
             (
                 context_name.to_owned(),
                 target
@@ -6869,7 +7004,8 @@ impl NativeDocument {
                     .unwrap_or(HTML_NAMESPACE_URI)
                     .to_owned(),
                 context_attributes,
-                target.children().to_vec(),
+                old_children,
+                template_fragment,
                 self.element_depth(id),
             )
         };
@@ -6917,12 +7053,16 @@ impl NativeDocument {
             &fragment_root.children,
             context_depth,
         )?;
+        let needs_template_fragment = context_name == "template"
+            && context_namespace == HTML_NAMESPACE_URI
+            && template_fragment.is_none();
+        let required_nodes = parsed_node_count.saturating_add(usize::from(needs_template_fragment));
         let available_nodes = self.max_nodes.saturating_sub(self.nodes.len());
-        if parsed_node_count > available_nodes {
+        if required_nodes > available_nodes {
             return Err(NativeEngineError::limit(
                 "DOM nodes",
                 self.max_nodes,
-                self.nodes.len().saturating_add(parsed_node_count),
+                self.nodes.len().saturating_add(required_nodes),
             ));
         }
 
@@ -6931,10 +7071,25 @@ impl NativeDocument {
         for child in old_children {
             self.detach_subtree(child)?;
         }
+        let replacement_parent = if let Some(fragment) = template_fragment {
+            fragment
+        } else if needs_template_fragment {
+            let fragment =
+                self.add_detached_node(NativeNodeKind::DocumentFragment, self.max_nodes)?;
+            if let Some(template) = self.raw_node_mut(id) {
+                template.template_content = Some(fragment);
+            }
+            if let Some(fragment_node) = self.raw_node_mut(fragment) {
+                fragment_node.template_host = Some(id);
+            }
+            fragment
+        } else {
+            id
+        };
         self.append_html_parsed_nodes(
             &parsed.nodes,
             &fragment_root.children,
-            id,
+            replacement_parent,
             context_depth,
             self.max_nodes,
             self.max_dom_depth,
@@ -6988,7 +7143,13 @@ impl NativeDocument {
                             element_depth.saturating_add(1),
                         ));
                     }
-                    let mut children = node.children.clone();
+                    count = count.saturating_add(1).saturating_add(
+                        self.count_validated_html_fragment_nodes(
+                            parsed,
+                            &node.children,
+                            element_depth.saturating_add(1),
+                        )?,
+                    );
                     if let Some(contents_index) = node.template_contents {
                         let contents = parsed.nodes.get(contents_index).ok_or_else(|| {
                             NativeEngineError::Parse {
@@ -7002,15 +7163,14 @@ impl NativeDocument {
                                 reason: "HTML fragment template contents are not a fragment".into(),
                             });
                         }
-                        children.extend_from_slice(&contents.children);
+                        count = count.saturating_add(1).saturating_add(
+                            self.count_validated_html_fragment_nodes(
+                                parsed,
+                                &contents.children,
+                                element_depth.saturating_add(1),
+                            )?,
+                        );
                     }
-                    count = count.saturating_add(1).saturating_add(
-                        self.count_validated_html_fragment_nodes(
-                            parsed,
-                            &children,
-                            element_depth.saturating_add(1),
-                        )?,
-                    );
                 }
                 HtmlParsedNodeKind::DocumentType { .. }
                 | HtmlParsedNodeKind::Comment(_)
@@ -7039,7 +7199,9 @@ impl NativeDocument {
             });
         }
         let is_script_node = script_nodes.values().any(|candidate| *candidate == id);
-        if (!is_script_node && self.node(id).is_none()) || self.raw_node(id).is_none() {
+        if (!is_script_node && !self.is_attached(id) && !self.belongs_to_template_content(id))
+            || self.raw_node(id).is_none()
+        {
             return Err(NativeEngineError::DetachedTarget);
         }
         self.detach_subtree(id)
@@ -7055,7 +7217,7 @@ impl NativeDocument {
             if node.element_name().is_some() {
                 depth = depth.saturating_add(1);
             }
-            current = node.parent();
+            current = node.parent().or(node.template_host);
         }
         depth
     }
@@ -7070,7 +7232,13 @@ impl NativeDocument {
             && element
                 .element_name()
                 .is_some_and(is_html_literal_text_element);
-        let children = element.children().to_vec();
+        let children = element
+            .template_content
+            .and_then(|fragment| self.raw_node(fragment))
+            .map_or_else(
+                || element.children().to_vec(),
+                |fragment| fragment.children().to_vec(),
+            );
         for child in children {
             self.append_serialized_node(
                 child,
@@ -7114,8 +7282,14 @@ impl NativeDocument {
                 };
                 append_bounded_markup(output, &value, max_bytes, truncated);
             }
-            NativeNodeKind::Document => {
-                let children = node.children().to_vec();
+            NativeNodeKind::Document | NativeNodeKind::DocumentFragment => {
+                let children = node
+                    .template_content
+                    .and_then(|fragment| self.raw_node(fragment))
+                    .map_or_else(
+                        || node.children().to_vec(),
+                        |fragment| fragment.children().to_vec(),
+                    );
                 for child in children {
                     self.append_serialized_node(child, max_bytes, output, truncated, false);
                     if *truncated {
@@ -7170,7 +7344,13 @@ impl NativeDocument {
                 {
                     return;
                 }
-                let children = node.children().to_vec();
+                let children = node
+                    .template_content
+                    .and_then(|fragment| self.raw_node(fragment))
+                    .map_or_else(
+                        || node.children().to_vec(),
+                        |fragment| fragment.children().to_vec(),
+                    );
                 let child_raw_text = node.namespace_uri() == Some(HTML_NAMESPACE_URI)
                     && is_html_literal_text_element(name);
                 for child in children {
@@ -7242,6 +7422,7 @@ impl NativeDocument {
                 NativeElementState::initial(name, attributes)
             }
             NativeNodeKind::Document
+            | NativeNodeKind::DocumentFragment
             | NativeNodeKind::DocumentType { .. }
             | NativeNodeKind::Comment(_)
             | NativeNodeKind::Text(_) => NativeElementState::default(),
@@ -7250,6 +7431,8 @@ impl NativeDocument {
             id,
             parent: Some(parent),
             children: Vec::new(),
+            template_content: None,
+            template_host: None,
             kind,
             state,
         });
@@ -7328,6 +7511,7 @@ impl NativeDocument {
                 NativeElementState::initial(name, attributes)
             }
             NativeNodeKind::Document
+            | NativeNodeKind::DocumentFragment
             | NativeNodeKind::DocumentType { .. }
             | NativeNodeKind::Comment(_)
             | NativeNodeKind::Text(_) => NativeElementState::default(),
@@ -7336,6 +7520,8 @@ impl NativeDocument {
             id,
             parent: None,
             children: Vec::new(),
+            template_content: None,
+            template_host: None,
             kind,
             state,
         });
@@ -7370,6 +7556,53 @@ impl NativeDocument {
                 return false;
             }
             current = parent;
+        }
+        false
+    }
+
+    fn is_attached_template_content(&self, id: NativeNodeId) -> bool {
+        let mut current = id;
+        for _ in 0..=self.nodes.len() {
+            let Some(node) = self.raw_node(current) else {
+                return false;
+            };
+            if current == self.root {
+                return true;
+            }
+            if let Some(parent) = node.parent {
+                current = parent;
+                continue;
+            }
+            let Some(host) = node.template_host else {
+                return false;
+            };
+            if self
+                .raw_node(host)
+                .is_none_or(|host_node| host_node.template_content != Some(current))
+            {
+                return false;
+            }
+            current = host;
+        }
+        false
+    }
+
+    fn belongs_to_template_content(&self, id: NativeNodeId) -> bool {
+        let mut current = id;
+        for _ in 0..=self.nodes.len() {
+            let Some(node) = self.raw_node(current) else {
+                return false;
+            };
+            if let Some(host) = node.template_host {
+                return self
+                    .raw_node(host)
+                    .is_some_and(|host_node| host_node.template_content == Some(current));
+            }
+            if let Some(parent) = node.parent {
+                current = parent;
+                continue;
+            }
+            return false;
         }
         false
     }
@@ -7415,8 +7648,10 @@ impl NativeDocument {
     ) -> Option<&'a NativeNode> {
         if script_nodes.values().any(|candidate| *candidate == id) {
             self.raw_node(id)
+        } else if self.is_attached(id) || self.belongs_to_template_content(id) {
+            self.raw_node(id)
         } else {
-            self.node(id)
+            None
         }
     }
 
@@ -7427,8 +7662,10 @@ impl NativeDocument {
     ) -> Option<&'a mut NativeNode> {
         if script_nodes.values().any(|candidate| *candidate == id) {
             self.raw_node_mut(id)
+        } else if self.is_attached(id) || self.belongs_to_template_content(id) {
+            self.raw_node_mut(id)
         } else {
-            self.node_mut(id)
+            None
         }
     }
 
@@ -7481,9 +7718,13 @@ impl NativeDocument {
             .script_node(parent, script_nodes)
             .ok_or(NativeEngineError::DetachedTarget)?;
         let parent_is_document = matches!(parent_node.kind(), NativeNodeKind::Document);
-        if !parent_is_document && !matches!(parent_node.kind(), NativeNodeKind::Element { .. }) {
+        let parent_is_fragment = matches!(parent_node.kind(), NativeNodeKind::DocumentFragment);
+        if !parent_is_document
+            && !parent_is_fragment
+            && !matches!(parent_node.kind(), NativeNodeKind::Element { .. })
+        {
             return Err(NativeEngineError::TargetNotActionable {
-                reason: "appendChild parent must be an element or document".into(),
+                reason: "appendChild parent must be an element, document, or fragment".into(),
             });
         }
         let child_node = self
@@ -9238,7 +9479,9 @@ impl NativeDocument {
         };
         match node.kind() {
             NativeNodeKind::Text(value) => output.push_str(value),
-            NativeNodeKind::Document | NativeNodeKind::Element { .. } => {
+            NativeNodeKind::Document
+            | NativeNodeKind::DocumentFragment
+            | NativeNodeKind::Element { .. } => {
                 for child in node.children() {
                     self.collect_raw_text(*child, output);
                 }
@@ -9265,7 +9508,7 @@ impl NativeDocument {
             NativeNodeKind::Text(value) if !hidden_parent => {
                 append_collapsed_text(output, value, max_bytes, truncated);
             }
-            NativeNodeKind::Document => {
+            NativeNodeKind::Document | NativeNodeKind::DocumentFragment => {
                 for child in node.children() {
                     self.collect_visible(*child, hidden_parent, output, truncated, max_bytes);
                 }
@@ -13622,6 +13865,88 @@ mod tests {
         );
         assert_eq!(document.node(old), None);
         assert_eq!(document.node(new).and_then(NativeNode::parent), Some(root));
+    }
+
+    #[test]
+    fn html_template_contents_use_an_inert_fragment_outside_document_traversal() {
+        let document = NativeDocument::parse(
+            "<body><template id='template'><span id='inside'>private</span></template><p>visible</p></body>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let template = document.find_element_by_id("template").unwrap();
+        let fragment = document
+            .node(template)
+            .and_then(|node| node.template_content)
+            .expect("template has its stable content fragment");
+        let fragment_node = document.node(fragment).expect("connected template content");
+        let inside = *fragment_node.children().first().expect("template child");
+
+        assert!(matches!(
+            fragment_node.kind(),
+            NativeNodeKind::DocumentFragment
+        ));
+        assert_eq!(fragment_node.parent(), None);
+        assert_eq!(
+            document.node(inside).and_then(NativeNode::parent),
+            Some(fragment)
+        );
+        assert!(!document.is_attached(inside));
+        assert!(document.node(inside).is_some());
+        assert!(document.find_element_by_id("inside").is_none());
+        assert_eq!(
+            document.element_inner_html(template, 1024),
+            "<span id=\"inside\">private</span>"
+        );
+        assert!(!document.element_node_ids().any(|node| node == inside));
+
+        let snapshot = document.script_snapshot_for_viewport(1024, Viewport::default());
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.node_index == fragment.index()
+                && node.node_type == 11
+                && node.parent_index.is_none()
+                && node.template_host_index == Some(template.index())
+        }));
+        assert!(snapshot.elements.iter().any(|element| {
+            element.node_index == template.index()
+                && element.template_content_index == Some(fragment.index())
+        }));
+    }
+
+    #[test]
+    fn script_can_mutate_template_content_without_replacing_its_fragment() {
+        let mut document = NativeDocument::parse(
+            "<body><template id='template'><i id='old'>old</i></template></body>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let template = document.find_element_by_id("template").unwrap();
+        let fragment = document.node(template).unwrap().template_content.unwrap();
+
+        document
+            .apply_script_commands(&[NativeScriptCommand::SetInnerHtml {
+                node_index: template.index(),
+                value: "<b id='new'>new</b>".into(),
+            }])
+            .unwrap();
+
+        let template_node = document.node(template).unwrap();
+        let fragment_node = document.node(fragment).unwrap();
+        let child = *fragment_node.children().first().expect("replacement child");
+        assert_eq!(template_node.template_content, Some(fragment));
+        assert_eq!(
+            document.node(child).and_then(NativeNode::parent),
+            Some(fragment)
+        );
+        assert_eq!(
+            document.node(child).and_then(NativeNode::element_name),
+            Some("b")
+        );
+        assert_eq!(
+            document.element_inner_html(template, 1024),
+            "<b id=\"new\">new</b>"
+        );
+        assert!(document.find_element_by_id("new").is_none());
     }
 
     #[test]

@@ -28,6 +28,8 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion slices are complete through `native-engine-browser-754`.
+Slice 755 plans target-document-aware `Document.importNode()` semantics; it is
+not implementation evidence until its verification is recorded.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux
@@ -80,6 +82,9 @@ certification remain open. See the [slice 746 task](tasks/native-engine-browser-
 [slice 752 task](tasks/native-engine-browser-752.md) and
 [slice 753 task](tasks/native-engine-browser-753.md) and
 [slice 754 task](tasks/native-engine-browser-754.md).
+Slice 755 plans cross-document imports, including the target document's inert
+template-content owner-document behavior; see the
+[slice 755 task](tasks/native-engine-browser-755.md).
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,
 and inherited sandboxed-modals eligibility. Remote CI and cross-platform

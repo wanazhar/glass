@@ -135,6 +135,10 @@ callbacks remain open. See the
 [slice 753 contract](tasks/native-engine-browser-753.md) and
 [slice 754 contract](tasks/native-engine-browser-754.md), and
 [slice 755 contract](tasks/native-engine-browser-755.md).
+The next planned [slice 758 contract](tasks/native-engine-browser-758.md)
+targets autonomous custom elements and their core lifecycle reactions. It does
+not close the profile requirements for customized built-ins, scoped
+registries, form-associated elements, or custom states.
 
 ### Synchronous JavaScript dialog contract
 

@@ -30,6 +30,9 @@ cross-origin DOM access, custom-element adopted callbacks/registries, and
 Shadow DOM adoption remain outside this slice. Quirks-mode layout,
 parser-stream reentrancy, remote CI, and cross-platform certification also
 remain open. See the [slice 757 task](../plan/tasks/native-engine-browser-757.md).
+The next planned contract, [slice 758](../plan/tasks/native-engine-browser-758.md),
+adds the autonomous custom-element registry and core lifecycle reactions;
+custom-element support is currently incomplete.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

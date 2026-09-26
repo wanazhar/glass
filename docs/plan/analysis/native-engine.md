@@ -1,14 +1,14 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-752`. Slice 746
+completed browser expansion slice is `native-engine-browser-753`. Slice 746
 migrates initial navigation documents to a Glass-owned `html5ever` sink; slice
 747 migrates HTML fragments to its bounded context-fragment algorithm; and
 slice 748 routes HTML XHR document responses through the same full-document
 sink with scripting disabled. Process-backed checks verify detached/read-only
 responses, script inertness, no resource loads, response URL, and malformed
 HTML recovery. Documentation truth, depth, shortcut, and live inventory/link
-gates pass: 1,380 Markdown files with zero current-claim failures, 93 current
+gates pass: 1,381 Markdown files with zero current-claim failures, 93 current
 guides/19 contracts, 15 implementation keys/63 markers, and 346 full-product
 MCP tools (101 browser-only), 17 examples, and 22 public modules. Slice 749
 added bounded common charset decoding for HTML XHR document responses. Slice
@@ -19,9 +19,10 @@ pass locally. Slice 751 implements the distinct read-only template-content
 `DocumentFragment` projection for HTML XHR response documents. Slice 752
 preserves native template fragments in top-level navigation documents and
 exposes live-page content identity, inert ownership, traversal boundaries, and
-fragment mutation. Same-origin frame projection, template clone/import/adopt,
-full HTML conformance, remote CI, and cross-platform certification remain
-open. Issue #40 remains open. Slice 728
+fragment mutation. Slice 753 projects template fragments into same-origin
+frame documents with an inert owner document and child-frame-owned mutation
+path. Template clone/import/adopt, full HTML conformance, remote CI, and
+cross-platform certification remain open. Issue #40 remains open. Slice 728
 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API
 `CdpBrowserSession`. This source-level migration is not a Core Web Profile
@@ -33,10 +34,11 @@ decoded-string parser boundary; slice 749 added common header/override charset
 decoding; slice 750 adds bounded WHATWG label lookup and HTML encoding
 prescan. These remain incremental parity tasks, not full Encoding/XHR
 conformance. Template content is preserved as a distinct fragment in detached
-XHR response documents and top-level live navigation DOMs; same-origin frame
-projection and clone/import/adopt semantics remain open. See [slice 749](../tasks/native-engine-browser-749.md),
+XHR response documents, top-level live navigation DOMs, and same-origin frame
+documents; clone/import/adopt semantics remain open. See [slice 749](../tasks/native-engine-browser-749.md),
 [slice 750](../tasks/native-engine-browser-750.md), and
-[slice 752](../tasks/native-engine-browser-752.md). Slice 729
+[slice 752](../tasks/native-engine-browser-752.md) and
+[slice 753](../tasks/native-engine-browser-753.md). Slice 729
 promotes native revisioned semantic observation,
 page inspection/bootstrap, and region expansion into the canonical Rust API.
 Slice 730 promotes native target/frame topology into the canonical Rust API

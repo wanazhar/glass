@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-752`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-753`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -14,7 +14,7 @@ with `encoding_rs`, selects response/override labels, prescans the first 1,024
 bytes using HTML meta/XML rules when those labels are absent or invalid, and
 retains replacement decoding and raw/decoded bounds. HTML response bytes use
 the WHATWG encoding label table; XML and text XHR paths remain separate.
-Same-origin frame template-content projection, quirks-mode layout,
+Template clone/import/adopt semantics, quirks-mode layout,
 parser-stream reentrancy,
 remote CI, and cross-platform certification remain open.
 Slice 745 adds an
@@ -154,14 +154,17 @@ native `DocumentFragment` nodes and exposes stable `.content`, query and
 traversal boundaries, inert owner-document identity, direct fragment mutation,
 and template `innerHTML` replacement in the live top-level page realm. A
 process-backed regression verifies moving a child between the template
-fragment and document. Same-origin frame projection, clone/import/adopt
-semantics, full encoding/XHR WPT conformance, and complete XHR/Web IDL
-semantics remain separate gates; see
+fragment and document. Slice 753 projects those template fragment boundaries
+into same-origin frame documents and verifies owner-document identity,
+traversal, mutation, and persistence through the child-frame command owner.
+Clone/import/adopt semantics, full encoding/XHR WPT conformance, and complete
+XHR/Web IDL semantics remain separate gates; see
 the [slice 748 task](../plan/tasks/native-engine-browser-748.md),
 [slice 749 task](../plan/tasks/native-engine-browser-749.md), and
 [slice 750 task](../plan/tasks/native-engine-browser-750.md) and
 [slice 751 task](../plan/tasks/native-engine-browser-751.md) and
-[slice 752 task](../plan/tasks/native-engine-browser-752.md).
+[slice 752 task](../plan/tasks/native-engine-browser-752.md) and
+[slice 753 task](../plan/tasks/native-engine-browser-753.md).
 
 The token-aware TreeSink bridge also preserves MathML `annotation-xml` as the
 HTML integration boundary during `</p>` and `</br>` foreign-content breakouts.
@@ -172,9 +175,9 @@ QName for subsequent decisions. The regression covers case-insensitive
 encoding and nested SVG content, and confirms the published tree keeps the
 original MathML element name and expected HTML children.
 
-Local Linux verification for slices 746–752 covers the locked
+Local Linux verification for slices 746–753 covers the locked
 `glass-browser` library/test-target check, parser and XHR tests, process-backed
-navigation and XHR regressions, and maintainer documentation gates: 1,380
+navigation and XHR regressions, and maintainer documentation gates: 1,381
 Markdown files with zero current-claim failures, 93 current guides/19
 contracts, 15 implementation keys/63 markers, and 346 full-product MCP tools
 (101 browser-only), 17 examples, and 22 public modules. This evidence does
@@ -187,9 +190,9 @@ document source → html5ever tokenizer/tree builder → Glass TreeSink
 ```
 
 These parser migrations do not finish the HTML platform. Top-level navigation
-documents and detached XHR response documents now retain the template fragment
-boundary, but same-origin frame projection and template clone/import/adopt
-semantics remain incomplete. Quirks mode does not yet alter CSS/layout, and
+documents and detached XHR response documents retain the template fragment
+boundary, and same-origin frame documents now project it as well. Template
+clone/import/adopt semantics remain incomplete. Quirks mode does not yet alter CSS/layout, and
 script-stream reentrancy remains incomplete. html5ever documents remaining
 tree-builder differences; the
 pinned GCWP conformance corpus and explicit treatment of each failure are

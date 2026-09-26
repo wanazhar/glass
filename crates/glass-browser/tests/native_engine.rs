@@ -63031,3 +63031,121 @@ async fn native_content_process_exposes_live_template_content_fragments() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn native_same_origin_frame_template_content_uses_native_fragments() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("native frame template request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = match request.split_whitespace().nth(1) {
+                Some("/parent") => {
+                    "<html><body><iframe id='child' src='/child'></iframe></body></html>"
+                }
+                Some("/child") => {
+                    "<!doctype html><template id='template'><span id='inside'>inert</span><template id='nested'><b>nested</b></template></template><p id='outside'>visible</p>"
+                }
+                other => panic!("unexpected same-origin frame request path: {other:?}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    let initial = session
+        .script(
+            "(() => { const childDocument = document.getElementById('child').contentDocument; const template = childDocument.getElementById('template'); const content = template.content; const inside = content.querySelector('#inside'); const nested = content.querySelector('#nested'); globalThis.__frameTemplate = template; globalThis.__frameTemplateContent = content; globalThis.__frameTemplateOwner = content.ownerDocument; return { document: childDocument instanceof Document, template: template instanceof HTMLTemplateElement, fragment: content instanceof DocumentFragment && content.nodeType === 11, stable: content === template.content, detached: content.parentNode === null, owner: content.ownerDocument instanceof Document && content.ownerDocument !== childDocument && content.ownerDocument.documentElement === null, childOwner: inside.ownerDocument === content.ownerDocument, nestedOwner: nested.content.ownerDocument === content.ownerDocument, root: inside.getRootNode() === content && inside.parentNode === content, templateBoundary: template.childNodes.length === 0 && template.querySelector('#inside') === null, documentBoundary: childDocument.querySelector('#inside') === null, fragmentQuery: content.querySelector('#inside') === inside, templateHTML: template.innerHTML.includes('id=\"inside\"') }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        initial.value,
+        serde_json::json!({
+            "document": true,
+            "template": true,
+            "fragment": true,
+            "stable": true,
+            "detached": true,
+            "owner": true,
+            "childOwner": true,
+            "nestedOwner": true,
+            "root": true,
+            "templateBoundary": true,
+            "documentBoundary": true,
+            "fragmentQuery": true,
+            "templateHTML": true,
+        })
+    );
+
+    let mutations = session
+        .script(
+            "(() => { const childDocument = document.getElementById('child').contentDocument; const template = childDocument.getElementById('template'); const content = template.content; const inside = content.querySelector('#inside'); const added = childDocument.createElement('b'); added.id = 'added'; added.textContent = 'added'; content.appendChild(added); childDocument.body.appendChild(inside); globalThis.__frameTemplateMoved = inside; return { added: content.querySelector('#added') === added, moved: inside.parentNode === childDocument.body, ownerPreserved: inside.ownerDocument === globalThis.__frameTemplateOwner, fragmentStable: template.content === globalThis.__frameTemplateContent }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        mutations.value,
+        serde_json::json!({
+            "added": true,
+            "moved": true,
+            "ownerPreserved": true,
+            "fragmentStable": true,
+        })
+    );
+
+    let persisted = session
+        .script(
+            "(() => { const childDocument = document.getElementById('child').contentDocument; const template = childDocument.getElementById('template'); return { sameDocumentOwner: template.content.ownerDocument === globalThis.__frameTemplateOwner, sameFragment: template.content === globalThis.__frameTemplateContent, added: template.content.querySelector('#added')?.textContent, moved: childDocument.querySelector('#inside')?.parentNode === childDocument.body }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        persisted.value,
+        serde_json::json!({
+            "sameDocumentOwner": true,
+            "sameFragment": true,
+            "added": "added",
+            "moved": true,
+        })
+    );
+
+    session
+        .script(
+            "(() => { const childDocument = document.getElementById('child').contentDocument; childDocument.getElementById('template').innerHTML = '<em id=\"replacement\">new</em>'; return true; })()",
+        )
+        .await
+        .unwrap();
+    let replaced = session
+        .script(
+            "(() => { const childDocument = document.getElementById('child').contentDocument; const template = childDocument.getElementById('template'); return { sameFragment: template.content === globalThis.__frameTemplateContent, replacement: template.content.querySelector('#replacement')?.textContent, templateBoundary: template.querySelector('#replacement') === null, documentBoundary: childDocument.querySelector('#replacement') === null, moved: childDocument.querySelector('#inside')?.parentNode === childDocument.body }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        replaced.value,
+        serde_json::json!({
+            "sameFragment": true,
+            "replacement": "new",
+            "templateBoundary": true,
+            "documentBoundary": true,
+            "moved": true,
+        })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}

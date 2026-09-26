@@ -45317,10 +45317,14 @@ fn document_bootstrap(
   const frameDocumentCache = globalThis.__glassFrameDocumentCache instanceof Map
     ? globalThis.__glassFrameDocumentCache
     : new Map();
+  const frameTemplateContentsOwnerDocuments = globalThis.__glassFrameTemplateContentsOwnerDocuments instanceof Map
+    ? globalThis.__glassFrameTemplateContentsOwnerDocuments
+    : new Map();
   const frameWindowCache = globalThis.__glassFrameWindowCache instanceof Map
     ? globalThis.__glassFrameWindowCache
     : new Map();
   globalThis.__glassFrameDocumentCache = frameDocumentCache;
+  globalThis.__glassFrameTemplateContentsOwnerDocuments = frameTemplateContentsOwnerDocuments;
   globalThis.__glassFrameWindowCache = frameWindowCache;
   const projectedFrameMatches = (element, selector, scope = element) => {{
     return matchesSelector(element, selector, scope);
@@ -45367,6 +45371,82 @@ fn document_bootstrap(
     }}
     let frameDocumentTitle = String(snapshot.title || "");
     let frameDocument;
+    let frameTemplateContentsOwnerDocument = null;
+    const getFrameTemplateContentsOwnerDocument = () => {{
+      const existing = frameTemplateContentsOwnerDocuments.get(currentFrameId);
+      if (existing && existing.generation === frameGeneration && existing.document) {{
+        frameTemplateContentsOwnerDocument = existing.document;
+      }}
+      if (frameTemplateContentsOwnerDocument) {{
+        try {{ Object.setPrototypeOf(frameTemplateContentsOwnerDocument, DocumentNative.prototype); }} catch (_error) {{}}
+        return frameTemplateContentsOwnerDocument;
+      }}
+      const ownerDocument = {{
+        nodeType: 9,
+        nodeName: "#document",
+        URL: "",
+        documentURI: "",
+        contentType: "text/html",
+        compatMode: "CSS1Compat",
+        defaultView: null,
+        get documentElement() {{ return null; }},
+        get childNodes() {{ return asNodeList([]); }},
+        get children() {{ return asNodeList([]); }},
+        getRootNode() {{ return this; }},
+        createElement(name) {{
+          const element = makeFrameDetachedElement(name, HTML_NAMESPACE);
+          Object.defineProperty(element, "__glassOwnerDocumentOverride", {{ value: ownerDocument }});
+          return element;
+        }},
+        createElementNS(namespace, name) {{
+          const element = makeFrameDetachedElement(name, normalizeElementNamespace(namespace));
+          Object.defineProperty(element, "__glassOwnerDocumentOverride", {{ value: ownerDocument }});
+          return element;
+        }},
+        createTextNode(value) {{
+          const node = makeFrameDetachedText(value);
+          Object.defineProperty(node, "__glassOwnerDocumentOverride", {{ value: ownerDocument }});
+          return node;
+        }},
+        createComment(value) {{
+          const node = makeFrameDetachedComment(value);
+          Object.defineProperty(node, "__glassOwnerDocumentOverride", {{ value: ownerDocument }});
+          return node;
+        }},
+        createDocumentFragment() {{
+          const fragment = makeFrameDocumentFragment();
+          Object.defineProperty(fragment, "__glassOwnerDocumentOverride", {{ value: ownerDocument }});
+          return fragment;
+        }},
+      }};
+      frameTemplateContentsOwnerDocument = ownerDocument;
+      frameTemplateContentsOwnerDocuments.set(currentFrameId, {{
+        generation: frameGeneration,
+        document: ownerDocument,
+      }});
+      try {{ Object.setPrototypeOf(ownerDocument, DocumentNative.prototype); }} catch (_error) {{}}
+      return ownerDocument;
+    }};
+    const frameTemplateContentsOwnerDocumentForNode = (node) => {{
+      if (!node) return frameDocument || null;
+      if (node.__glassOwnerDocumentOverride) return node.__glassOwnerDocumentOverride;
+      let current = node;
+      while (current) {{
+        if (Number(current.nodeType) === 11
+            && (current.templateHostIndex != null || current.__glassTemplateHost)) {{
+          return getFrameTemplateContentsOwnerDocument();
+        }}
+        current = current.__glassParent || null;
+      }}
+      return frameDocument || null;
+    }};
+    const markFrameTemplateContentsOwner = (node, ownerDocument) => {{
+      if (!node) return;
+      if (!node.__glassOwnerDocumentOverride) {{
+        Object.defineProperty(node, "__glassOwnerDocumentOverride", {{ value: ownerDocument }});
+      }}
+      for (const child of node.__glassChildren || []) markFrameTemplateContentsOwner(child, ownerDocument);
+    }};
     const frameSnapshotTextContentForNode = createSnapshotTextContentResolver(snapshot.nodes);
     const frameElements = (Array.isArray(snapshot.elements) ? snapshot.elements : []).map((entry) => {{
       const existing = frameScriptNodeAliasesByIndex.get(Number(entry.nodeIndex));
@@ -45383,6 +45463,8 @@ fn document_bootstrap(
       )) attributeNamespaces[name] = String(namespace);
       let textContent = snapshotElementTextContent(entry, frameSnapshotTextContentForNode);
       let innerHtml = String(entry.innerHtml || "");
+      let templateContentIndex = entry.templateContentIndex == null ? null : Number(entry.templateContentIndex);
+      let templateContent = null;
       const namespaceURI = namespaceUriForEntry(entry);
       let value = entry.value == null ? "" : entry.value;
       let checked = Boolean(entry.checked);
@@ -45695,6 +45777,12 @@ fn document_bootstrap(
         writable: true,
         value: true,
       }});
+      Object.defineProperty(projected, "__glassTemplateContentRef", {{
+        enumerable: false,
+        configurable: false,
+        writable: true,
+        value: null,
+      }});
       Object.defineProperty(projected, "__glassAttributeSource", {{
         enumerable: false,
         configurable: false,
@@ -45745,7 +45833,9 @@ fn document_bootstrap(
             .join("");
           const opening = "<" + projected.localName + markup + ">";
           if (["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"].includes(projected.localName)) return opening;
-          const content = projected.__glassChildren.length > 0
+          const content = projected.namespaceURI === HTML_NAMESPACE && projected.localName === "template"
+            ? projected.content.innerHTML
+            : projected.__glassChildren.length > 0
             ? projected.__glassChildren.map(child => child.__glassMarkup).join("")
             : innerHtml;
           return opening + content + "</" + projected.localName + ">";
@@ -45782,6 +45872,29 @@ fn document_bootstrap(
             : null;
         }},
       }});
+      if (namespaceURI === HTML_NAMESPACE && projected.localName === "template") {{
+        Object.defineProperty(projected, "content", {{
+          enumerable: true,
+          configurable: false,
+          get() {{
+            if (templateContent) return templateContent;
+            if (projected.__glassTemplateContentRef) {{
+              templateContent = projected.__glassTemplateContentRef;
+              return templateContent;
+            }}
+            const indexed = templateContentIndex === null ? null : frameNodesByIndex.get(templateContentIndex);
+            if (indexed && Number(indexed.nodeType) === 11) {{
+              templateContent = indexed;
+              indexed.__glassTemplateHost = projected;
+              projected.__glassTemplateContentRef = indexed;
+              return templateContent;
+            }}
+            templateContent = makeFrameDocumentFragment(null, projected);
+            projected.__glassTemplateContentRef = templateContent;
+            return templateContent;
+          }},
+        }});
+      }}
       for (const property of ["textContent", "innerText"]) {{
         Object.defineProperty(projected, property, {{
             enumerable: true,
@@ -45812,10 +45925,31 @@ fn document_bootstrap(
       Object.defineProperty(projected, "innerHTML", {{
         enumerable: true,
         configurable: false,
-        get() {{ return innerHtml; }},
+        get() {{ return projected.localName === "template" ? projected.content.innerHTML : innerHtml; }},
         set(next) {{
           const value = String(next);
           if (value.length > storageValueLimit) throw new RangeError("native frame element innerHTML exceeds its limit");
+          if (namespaceURI === HTML_NAMESPACE && projected.localName === "template") {{
+            const content = projected.content;
+            for (const child of content.__glassChildren) {{
+              child.__glassParent = null;
+              child.parentIndex = null;
+              detachFrameSubtree(child);
+            }}
+            content.__glassChildren = [];
+            innerHtml = "";
+            textContent = "";
+            suppressHostCommands += 1;
+            try {{
+              populateDetachedFragment(content, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment, projected);
+            }} finally {{
+              suppressHostCommands -= 1;
+            }}
+            innerHtml = value;
+            projected.__glassSyncContent(true);
+            queueFrameCommand(currentBinding, {{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
+            return;
+          }}
           for (const child of projected.__glassChildren) {{
             child.__glassParent = null;
             child.parentIndex = null;
@@ -45864,7 +45998,7 @@ fn document_bootstrap(
       Object.defineProperty(projected, "ownerDocument", {{
         enumerable: false,
         configurable: false,
-        get() {{ return frameDocument; }},
+        get() {{ return frameTemplateContentsOwnerDocumentForNode(projected); }},
       }});
       installAttributeNodeSurface(projected, () => frameDocument);
       const childBinding = frameChildBindingForNode(currentBinding, entry.nodeIndex);
@@ -45887,6 +46021,9 @@ fn document_bootstrap(
             return makeFrameDocument(childBinding, projected, currentWindow, topWindow);
           }},
         }});
+      }}
+      if (projected.namespaceURI === HTML_NAMESPACE && projected.localName === "template") {{
+        try {{ Object.setPrototypeOf(projected, elementPrototypeFor(projected.tagName)); }} catch (_error) {{}}
       }}
       return projected;
     }});
@@ -45951,7 +46088,7 @@ fn document_bootstrap(
           get() {{ return textContent; }},
           set(next) {{ text.textContent = next; }},
         }});
-        Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocument; }} }});
+        Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameTemplateContentsOwnerDocumentForNode(text); }} }});
         Object.defineProperty(text, "textContent", {{
           enumerable: true,
           configurable: false,
@@ -46088,6 +46225,8 @@ fn document_bootstrap(
       const attributeNamespaces = {{}};
       let textContent = "";
       let innerHtml = "";
+      let templateContentIndex = null;
+      let templateContent = null;
       let value = "";
       let checked = false;
       let selected = false;
@@ -46344,6 +46483,29 @@ fn document_bootstrap(
       Object.defineProperty(projected, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
       Object.defineProperty(projected, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: true }});
       Object.defineProperty(projected, "__glassAttached", {{ enumerable: false, configurable: false, writable: true, value: false }});
+      Object.defineProperty(projected, "__glassTemplateContentRef", {{ enumerable: false, configurable: false, writable: true, value: null }});
+      if (namespaceURI === HTML_NAMESPACE && normalized === "template") {{
+        Object.defineProperty(projected, "content", {{
+          enumerable: true,
+          configurable: false,
+          get() {{
+            if (templateContent) return templateContent;
+            if (projected.__glassTemplateContentRef) {{
+              templateContent = projected.__glassTemplateContentRef;
+              return templateContent;
+            }}
+            const indexed = templateContentIndex === null ? null : frameNodesByIndex.get(templateContentIndex);
+            if (indexed && Number(indexed.nodeType) === 11) {{
+              templateContent = indexed;
+              indexed.__glassTemplateHost = projected;
+            }} else {{
+              templateContent = makeFrameDocumentFragment(null, projected);
+            }}
+            projected.__glassTemplateContentRef = templateContent;
+            return templateContent;
+          }},
+        }});
+      }}
       Object.defineProperty(projected, "__glassSyncContent", {{
         enumerable: false,
         configurable: false,
@@ -46380,6 +46542,7 @@ fn document_bootstrap(
           for (const [name, namespace] of Object.entries(nextAttributeNamespaces)) attributeNamespaces[name] = String(namespace);
           textContent = snapshotElementTextContent(nextEntry, nextExactTextForNode);
           innerHtml = String(nextEntry.innerHtml || "");
+          templateContentIndex = nextEntry.templateContentIndex == null ? null : Number(nextEntry.templateContentIndex);
           value = nextEntry.value == null ? "" : nextEntry.value;
           checked = Boolean(nextEntry.checked);
           selected = Boolean(nextEntry.selected);
@@ -46398,7 +46561,9 @@ fn document_bootstrap(
           const markup = Object.keys(attributes).sort().map(name => " " + name + "=\"" + escapeHtmlText(attributes[name]).replace(/\"/g, "&quot;") + "\"").join("");
           const opening = "<" + normalized + markup + ">";
           if (["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"].includes(normalized)) return opening;
-          const content = projected.__glassChildren.length > 0 ? projected.__glassChildren.map(child => child.__glassMarkup).join("") : innerHtml;
+          const content = projected.namespaceURI === HTML_NAMESPACE && projected.localName === "template"
+            ? projected.content.innerHTML
+            : projected.__glassChildren.length > 0 ? projected.__glassChildren.map(child => child.__glassMarkup).join("") : innerHtml;
           return opening + content + "</" + normalized + ">";
         }},
       }});
@@ -46445,10 +46610,31 @@ fn document_bootstrap(
       Object.defineProperty(projected, "innerHTML", {{
         enumerable: true,
         configurable: false,
-        get() {{ return innerHtml; }},
+        get() {{ return projected.localName === "template" ? projected.content.innerHTML : innerHtml; }},
         set(next) {{
           const value = String(next);
           if (value.length > storageValueLimit) throw new RangeError("native frame element innerHTML exceeds its limit");
+          if (namespaceURI === HTML_NAMESPACE && projected.localName === "template") {{
+            const content = projected.content;
+            for (const child of content.__glassChildren) {{
+              child.__glassParent = null;
+              child.parentIndex = null;
+              detachFrameSubtree(child);
+            }}
+            content.__glassChildren = [];
+            innerHtml = "";
+            textContent = "";
+            suppressHostCommands += 1;
+            try {{
+              populateDetachedFragment(content, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment, projected);
+            }} finally {{
+              suppressHostCommands -= 1;
+            }}
+            innerHtml = value;
+            projected.__glassSyncContent(true);
+            queueFrameCommand(currentBinding, {{ kind: "setInnerHtml", node_index: nodeIndex, value }});
+            return;
+          }}
           for (const child of projected.__glassChildren) {{ child.__glassParent = null; child.parentIndex = null; detachFrameSubtree(child); }}
           projected.__glassChildren = [];
           innerHtml = "";
@@ -46469,7 +46655,7 @@ fn document_bootstrap(
       Object.defineProperty(projected, "ownerDocument", {{
         enumerable: false,
         configurable: false,
-        get() {{ return frameDocumentCache.get(currentFrameId)?.document || frameDocument; }},
+        get() {{ return frameTemplateContentsOwnerDocumentForNode(projected); }},
       }});
       Object.defineProperty(projected, "__glassAttributeSource", {{
         enumerable: false,
@@ -46481,7 +46667,7 @@ fn document_bootstrap(
         configurable: false,
         value: (name) => frameAttributeNamespace(name),
       }});
-      installAttributeNodeSurface(projected, () => frameDocumentCache.get(currentFrameId)?.document || frameDocument);
+      installAttributeNodeSurface(projected, () => frameTemplateContentsOwnerDocumentForNode(projected));
       try {{ Object.setPrototypeOf(projected, elementPrototypeFor(projected.tagName)); }} catch (_error) {{}}
       defineTreeAccessors(projected);
       installClassList(projected);
@@ -46541,7 +46727,7 @@ fn document_bootstrap(
       Object.defineProperty(text, "ownerDocument", {{
         enumerable: false,
         configurable: false,
-        get() {{ return frameDocumentCache.get(currentFrameId)?.document || frameDocument; }},
+        get() {{ return frameTemplateContentsOwnerDocumentForNode(text); }},
       }});
       text.remove = () => {{
         const parent = text.__glassParent || null;
@@ -46589,7 +46775,7 @@ fn document_bootstrap(
         queueFrameCommand(currentBinding, {{ kind: "setTextContent", node_index: nodeIndex, value: nextValue }});
       }} }});
       Object.defineProperty(comment, "data", {{ enumerable: true, configurable: false, get() {{ return textContent; }}, set(next) {{ comment.textContent = next; }} }});
-      Object.defineProperty(comment, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocumentCache.get(currentFrameId)?.document || frameDocument; }} }});
+      Object.defineProperty(comment, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameTemplateContentsOwnerDocumentForNode(comment); }} }});
       Object.defineProperty(comment, "__glassRefresh", {{ enumerable: false, configurable: false, value(nextEntry) {{
         nodeIndex = Number(nextEntry.nodeIndex);
         comment.nodeIndex = nodeIndex;
@@ -46676,13 +46862,21 @@ fn document_bootstrap(
       try {{ Object.setPrototypeOf(documentType, DocumentTypeNative.prototype); }} catch (_error) {{}}
       return documentType;
     }};
-    const makeFrameDocumentFragment = () => {{
+    const makeFrameDocumentFragment = (snapshotEntry = null, templateHost = null) => {{
       const fragment = {{
+        nodeIndex: snapshotEntry ? Number(snapshotEntry.nodeIndex) : null,
+        parentIndex: snapshotEntry && snapshotEntry.parentIndex != null ? Number(snapshotEntry.parentIndex) : null,
+        __glassFrameGeneration: frameGeneration,
         nodeType: 11,
         nodeName: "#document-fragment",
         __glassFragment: true,
+        __glassTemplateHost: templateHost,
+        templateHostIndex: snapshotEntry && snapshotEntry.templateHostIndex != null
+          ? Number(snapshotEntry.templateHostIndex)
+          : null,
         __glassChildren: [],
         __glassParent: null,
+        __glassAttached: false,
         appendChild(child) {{
           if (child === this) throw new TypeError("a node cannot contain itself");
           if (child && child.__glassFragment === true) {{
@@ -46693,6 +46887,10 @@ fn document_bootstrap(
           }}
           if (!child || ![1, 3, 8].includes(Number(child.nodeType)))
             throw new TypeError("DocumentFragment children must be elements or text nodes");
+          const originalOwnerDocument = child.ownerDocument || null;
+          if (!child.__glassOwnerDocumentOverride && originalOwnerDocument) {{
+            Object.defineProperty(child, "__glassOwnerDocumentOverride", {{ value: originalOwnerDocument }});
+          }}
           const oldParent = child.__glassParent || null;
           if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
             queueFragmentChildRemoval(oldParent, child);
@@ -46703,12 +46901,24 @@ fn document_bootstrap(
           this.__glassChildren = this.__glassChildren.filter(candidate => candidate !== child);
           this.__glassChildren.push(child);
           child.__glassParent = this;
-          child.parentIndex = null;
+          child.parentIndex = this.nodeIndex == null ? null : this.nodeIndex;
           if (oldParent && oldParent.nodeType === 1 && oldParentIndex !== null && oldParentIndex !== undefined) {{
             queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: child.nodeIndex }});
           }}
+          if (!suppressHostCommands) {{
+            if (this.nodeIndex !== null && this.nodeIndex !== undefined) {{
+              queueFrameCommand(currentBinding, {{ kind: "appendChild", parent_index: this.nodeIndex, child_index: child.nodeIndex }});
+            }} else if (this.__glassTemplateHost) {{
+              queueFrameCommand(currentBinding, {{
+                kind: "setInnerHtml",
+                node_index: this.__glassTemplateHost.nodeIndex,
+                value: this.innerHTML,
+              }});
+            }}
+          }}
           queueMutation({{ type: "childList", target: this, addedNodes: [child], removedNodes: [], previousSibling: this.__glassChildren.length > 1 ? this.__glassChildren[this.__glassChildren.length - 2] : null, nextSibling: null }});
-          detachFrameSubtree(child);
+          if (this.__glassAttached) registerFrameSubtree(child);
+          else detachFrameSubtree(child);
           return child;
         }},
         insertBefore(child, before) {{
@@ -46723,6 +46933,10 @@ fn document_bootstrap(
           if (!child || ![1, 3, 8].includes(Number(child.nodeType)))
             throw new TypeError("DocumentFragment children must be elements or text nodes");
           if (before.__glassParent !== this) throw new TypeError("reference node is not a child");
+          const originalOwnerDocument = child.ownerDocument || null;
+          if (!child.__glassOwnerDocumentOverride && originalOwnerDocument) {{
+            Object.defineProperty(child, "__glassOwnerDocumentOverride", {{ value: originalOwnerDocument }});
+          }}
           const oldParent = child.__glassParent || null;
           if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
             queueFragmentChildRemoval(oldParent, child);
@@ -46736,12 +46950,24 @@ fn document_bootstrap(
           const nextSibling = before;
           this.__glassChildren.splice(index < 0 ? this.__glassChildren.length : index, 0, child);
           child.__glassParent = this;
-          child.parentIndex = null;
+          child.parentIndex = this.nodeIndex == null ? null : this.nodeIndex;
           if (oldParent && oldParent.nodeType === 1 && oldParentIndex !== null && oldParentIndex !== undefined) {{
             queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: child.nodeIndex }});
           }}
+          if (!suppressHostCommands) {{
+            if (this.nodeIndex !== null && this.nodeIndex !== undefined) {{
+              queueFrameCommand(currentBinding, {{ kind: "insertBefore", parent_index: this.nodeIndex, child_index: child.nodeIndex, before_index: before.nodeIndex }});
+            }} else if (this.__glassTemplateHost) {{
+              queueFrameCommand(currentBinding, {{
+                kind: "setInnerHtml",
+                node_index: this.__glassTemplateHost.nodeIndex,
+                value: this.innerHTML,
+              }});
+            }}
+          }}
           queueMutation({{ type: "childList", target: this, addedNodes: [child], removedNodes: [], previousSibling, nextSibling }});
-          detachFrameSubtree(child);
+          if (this.__glassAttached) registerFrameSubtree(child);
+          else detachFrameSubtree(child);
           return child;
         }},
       }};
@@ -46758,7 +46984,7 @@ fn document_bootstrap(
       Object.defineProperty(fragment, "ownerDocument", {{
         enumerable: false,
         configurable: false,
-        get() {{ return frameDocument; }},
+        get() {{ return frameTemplateContentsOwnerDocumentForNode(fragment); }},
       }});
       Object.defineProperty(fragment, "parentNode", {{
         enumerable: false,
@@ -46788,9 +47014,38 @@ fn document_bootstrap(
           const value = String(next);
           if (value.length > storageValueLimit) throw new RangeError("native frame fragment innerHTML exceeds its limit");
           for (const child of fragment.__glassChildren.slice()) child.remove();
-            populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment);
+          populateDetachedFragment(
+            fragment,
+            value,
+            makeFrameDetachedElement,
+            makeFrameDetachedText,
+            makeFrameDetachedComment,
+            fragment.__glassTemplateHost || fragment,
+          );
+          if (fragment.__glassTemplateHost) {{
+            queueFrameCommand(currentBinding, {{
+              kind: "setInnerHtml",
+              node_index: fragment.__glassTemplateHost.nodeIndex,
+              value,
+            }});
+          }}
         }},
       }});
+      Object.defineProperty(fragment, "__glassRefresh", {{
+        enumerable: false,
+        configurable: false,
+        value(nextEntry, nextTemplateHost = null) {{
+          fragment.nodeIndex = Number(nextEntry.nodeIndex);
+          fragment.parentIndex = nextEntry.parentIndex == null ? null : Number(nextEntry.parentIndex);
+          fragment.templateHostIndex = nextEntry.templateHostIndex == null ? null : Number(nextEntry.templateHostIndex);
+          if (nextTemplateHost) fragment.__glassTemplateHost = nextTemplateHost;
+        }},
+      }});
+      if (templateHost) {{
+        Object.defineProperty(fragment, "__glassOwnerDocumentOverride", {{
+          value: getFrameTemplateContentsOwnerDocument(),
+        }});
+      }}
       defineTreeAccessors(fragment);
       const constructor = globalThis.DocumentFragment;
       if (typeof constructor === "function" && constructor.prototype) {{
@@ -46798,6 +47053,40 @@ fn document_bootstrap(
       }}
       return fragment;
     }};
+    const frameFragmentNodes = frameNodeSnapshots
+      .filter((entry) => entry && Number(entry.nodeType) === 11)
+      .map((entry) => {{
+        const nodeIndex = Number(entry.nodeIndex);
+        const hostIndex = entry.templateHostIndex == null ? null : Number(entry.templateHostIndex);
+        const templateHost = hostIndex === null ? null : frameNodesByIndex.get(hostIndex) || null;
+        const key = frameMutationKey(currentBinding, nodeIndex);
+        const cached = frameMutationNodes.get(key);
+        const fragment = cached && cached.__glassFrameGeneration === frameGeneration
+          && typeof cached.__glassRefresh === "function"
+          ? cached
+          : makeFrameDocumentFragment(entry, templateHost);
+        fragment.__glassChildren = [];
+        fragment.__glassParent = null;
+        fragment.__glassAttached = false;
+        fragment.__glassRefresh(entry, templateHost);
+        frameNodesByIndex.set(nodeIndex, fragment);
+        frameMutationNodes.set(key, fragment);
+        frameMutationChildren.set(key, Array.isArray(entry.children) ? entry.children.map(Number) : []);
+        if (templateHost) {{
+          templateHost.__glassTemplateContentRef = fragment;
+          fragment.__glassTemplateHost = templateHost;
+        }}
+        for (const childIndex of Array.isArray(entry.children) ? entry.children : []) {{
+          const child = frameNodesByIndex.get(Number(childIndex));
+          if (!child) continue;
+          fragment.__glassChildren.push(child);
+          child.__glassParent = fragment;
+          child.parentIndex = nodeIndex;
+        }}
+        if (templateHost) markFrameTemplateContentsOwner(fragment, getFrameTemplateContentsOwnerDocument());
+        detachFrameSubtree(fragment);
+        return fragment;
+      }});
     const find = (selector) => frameElements.filter((element) =>
       element.__glassAttached && projectedFrameMatches(element, selector, documentElement));
     const findById = (id) => frameElements.find((element) => element.__glassAttached && element.id === String(id)) || null;
@@ -46858,11 +47147,11 @@ fn document_bootstrap(
         return makeFrameDetachedElement(qualifiedName, normalizeElementNamespace(namespace));
       }},
       createAttribute(name) {{
-        return makeAttributeNode(name, "", () => frameDocumentCache.get(currentFrameId)?.document || frameDocument);
+        return makeAttributeNode(name, "", () => frameTemplateContentsOwnerDocumentForNode(null));
       }},
       createAttributeNS(namespace, qualifiedName) {{
         const namespaceURI = normalizeAttributeNamespace(namespace);
-        return makeAttributeNode(qualifiedName, "", () => frameDocumentCache.get(currentFrameId)?.document || frameDocument, namespaceURI);
+        return makeAttributeNode(qualifiedName, "", () => frameTemplateContentsOwnerDocumentForNode(null), namespaceURI);
       }},
       createTextNode(value) {{ return makeFrameDetachedText(value); }},
       createComment(value) {{ return makeFrameDetachedComment(value); }},

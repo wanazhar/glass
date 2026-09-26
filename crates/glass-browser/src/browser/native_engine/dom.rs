@@ -384,6 +384,16 @@ pub(crate) struct NativeNodeTransferIdentity {
     pub(crate) destination_temporary_index: u32,
 }
 
+/// One native root included in a single atomic adoption transaction. A
+/// virtual JavaScript `DocumentFragment` can contain several such roots even
+/// though the fragment itself has no native arena slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeNodeSubtreeTransfer {
+    pub(crate) source_index: u32,
+    pub(crate) identities: Vec<NativeNodeTransferIdentity>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeNodeWire {
     pub(crate) parent: Option<u32>,
@@ -3691,21 +3701,24 @@ impl NativeDocument {
                     }
                 }
                 NativeNodeKind::DocumentFragment => {
-                    let host_id = node.template_host.ok_or_else(|| NativeEngineError::Parse {
-                        offset: 0,
-                        reason: "content process returned an unowned document fragment".into(),
-                    })?;
-                    let host = nodes.get(host_id.index as usize).ok_or_else(|| {
-                        NativeEngineError::Parse {
-                            offset: 0,
-                            reason: "content process returned an invalid fragment owner".into(),
+                    if let Some(host_id) = node.template_host {
+                        let host = nodes.get(host_id.index as usize).ok_or_else(|| {
+                            NativeEngineError::Parse {
+                                offset: 0,
+                                reason: "content process returned an invalid fragment owner".into(),
+                            }
+                        })?;
+                        if node.parent().is_some() || host.template_content != Some(node.id()) {
+                            return Err(NativeEngineError::Parse {
+                                offset: 0,
+                                reason: "content process returned an inconsistent fragment owner"
+                                    .into(),
+                            });
                         }
-                    })?;
-                    if node.parent().is_some() || host.template_content != Some(node.id()) {
+                    } else if node.parent().is_some() || node.template_content.is_some() {
                         return Err(NativeEngineError::Parse {
                             offset: 0,
-                            reason: "content process returned an inconsistent fragment owner"
-                                .into(),
+                            reason: "content process returned an invalid detached fragment".into(),
                         });
                     }
                 }
@@ -4416,13 +4429,62 @@ impl NativeDocument {
         source_index: u32,
         identities: &[NativeNodeTransferIdentity],
     ) -> Result<(), NativeEngineError> {
+        self.transfer_script_nodes_to(
+            destination,
+            &[NativeNodeSubtreeTransfer {
+                source_index,
+                identities: identities.to_vec(),
+            }],
+        )
+    }
+
+    /// Atomically move one or more disjoint subtrees and all retained
+    /// temporary identities. The multi-root form represents virtual
+    /// DocumentFragments without creating a synthetic native node.
+    pub(crate) fn transfer_script_nodes_to(
+        &mut self,
+        destination: &mut Self,
+        transfers: &[NativeNodeSubtreeTransfer],
+    ) -> Result<(), NativeEngineError> {
+        if transfers.is_empty() || transfers.len() > self.max_nodes {
+            return Err(NativeEngineError::limit(
+                "native node transfer roots",
+                self.max_nodes,
+                transfers.len(),
+            ));
+        }
         let mut source_draft = self.clone();
         let mut destination_draft = destination.clone();
-        source_draft.transfer_script_node_to_draft(
-            &mut destination_draft,
-            source_index,
-            identities,
-        )?;
+        let source_revision = source_draft.revision.checked_add(1).ok_or_else(|| {
+            NativeEngineError::TargetNotActionable {
+                reason: "source document revision is exhausted".into(),
+            }
+        })?;
+        let destination_revision = destination_draft.revision.checked_add(1).ok_or_else(|| {
+            NativeEngineError::TargetNotActionable {
+                reason: "destination document revision is exhausted".into(),
+            }
+        })?;
+        let mut transferred_indices = BTreeSet::new();
+        let mut total_identities = 0usize;
+        for transfer in transfers {
+            total_identities = total_identities.saturating_add(transfer.identities.len());
+            if total_identities > source_draft.max_nodes {
+                return Err(NativeEngineError::limit(
+                    "native node transfer identities",
+                    source_draft.max_nodes,
+                    total_identities,
+                ));
+            }
+            source_draft.transfer_script_node_to_draft(
+                &mut destination_draft,
+                transfer.source_index,
+                &transfer.identities,
+                &mut transferred_indices,
+            )?;
+        }
+        source_draft.revision = source_revision;
+        destination_draft.revision = destination_revision;
         *self = source_draft;
         *destination = destination_draft;
         Ok(())
@@ -4433,6 +4495,7 @@ impl NativeDocument {
         destination: &mut Self,
         source_index: u32,
         identities: &[NativeNodeTransferIdentity],
+        transferred_indices: &mut BTreeSet<u32>,
     ) -> Result<(), NativeEngineError> {
         if identities.is_empty() || identities.len() > self.max_nodes {
             return Err(NativeEngineError::limit(
@@ -4464,13 +4527,10 @@ impl NativeDocument {
         while let Some((id, depth)) = pending.pop() {
             if id.generation != self.generation || !seen.insert(id.index) {
                 return Err(NativeEngineError::TargetNotActionable {
-                    reason: "native node transfer subtree contains a stale or repeated node"
-                        .into(),
+                    reason: "native node transfer subtree contains a stale or repeated node".into(),
                 });
             }
-            let node = self
-                .raw_node(id)
-                .ok_or(NativeEngineError::DetachedTarget)?;
+            let node = self.raw_node(id).ok_or(NativeEngineError::DetachedTarget)?;
             if matches!(&node.kind, NativeNodeKind::Document) {
                 return Err(NativeEngineError::TargetNotActionable {
                     reason: "native node transfer subtree contains a Document".into(),
@@ -4500,6 +4560,14 @@ impl NativeDocument {
             }
         }
 
+        for source_node_index in &subtree {
+            if !transferred_indices.insert(*source_node_index) {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "native node transfer roots overlap".into(),
+                });
+            }
+        }
+
         let mut identity_by_source = BTreeMap::new();
         let mut destination_aliases = BTreeSet::new();
         for identity in identities {
@@ -4522,8 +4590,7 @@ impl NativeDocument {
         }
         if identity_by_source.len() != subtree.len() {
             return Err(NativeEngineError::TargetNotActionable {
-                reason: "native node transfer identity mapping does not cover the subtree"
-                    .into(),
+                reason: "native node transfer identity mapping does not cover the subtree".into(),
             });
         }
         for (temporary_index, node_id) in &self.script_node_ids {
@@ -4553,16 +4620,19 @@ impl NativeDocument {
                 reason: "destination document revision is exhausted".into(),
             }
         })?;
-        let source_revision = self.revision.checked_add(1).ok_or_else(|| {
-            NativeEngineError::TargetNotActionable {
-                reason: "source document revision is exhausted".into(),
-            }
-        })?;
+        let source_revision =
+            self.revision
+                .checked_add(1)
+                .ok_or_else(|| NativeEngineError::TargetNotActionable {
+                    reason: "source document revision is exhausted".into(),
+                })?;
 
         let mut native_index_map = BTreeMap::new();
         for (offset, source_node_index) in subtree.iter().copied().enumerate() {
             let destination_index = u32::try_from(destination.nodes.len().saturating_add(offset))
-                .map_err(|_| NativeEngineError::limit("native DOM node index", u32::MAX as usize, offset))?;
+                .map_err(|_| {
+                NativeEngineError::limit("native DOM node index", u32::MAX as usize, offset)
+            })?;
             native_index_map.insert(source_node_index, destination_index);
         }
         let target_id = |source_id: NativeNodeId| {
@@ -4599,7 +4669,7 @@ impl NativeDocument {
             let next_index = native_index_map[source_node_index];
             node.id = NativeNodeId::from_parts(destination.generation, next_index);
             node.parent = match node.parent {
-                Some(parent) if parent == root => None,
+                Some(_) if source_id == root => None,
                 Some(parent) => Some(target_id(parent).ok_or_else(|| {
                     NativeEngineError::TargetNotActionable {
                         reason: "native node transfer subtree has an external parent".into(),
@@ -4849,11 +4919,20 @@ impl NativeDocument {
     ) -> NativeScriptDocumentSnapshot {
         let (title, _) = self.title(max_text_bytes);
         let (visible_text, _) = self.visible_text(max_text_bytes);
+        let script_node_indices = self
+            .script_node_ids
+            .values()
+            .map(|id| id.index())
+            .collect::<BTreeSet<_>>();
         let nodes = self
             .nodes
             .iter()
             .filter_map(|node| {
-                self.node(node.id())?;
+                if self.node(node.id()).is_none()
+                    && !script_node_indices.contains(&node.id().index())
+                {
+                    return None;
+                }
                 let (node_type, node_name, node_value) = match node.kind() {
                     NativeNodeKind::Document => (9, "#document".to_owned(), None),
                     NativeNodeKind::DocumentFragment => (11, "#document-fragment".to_owned(), None),
@@ -4897,7 +4976,11 @@ impl NativeDocument {
             .nodes
             .iter()
             .filter_map(|node| {
-                self.node(node.id())?;
+                if self.node(node.id()).is_none()
+                    && !script_node_indices.contains(&node.id().index())
+                {
+                    return None;
+                }
                 let tag_name = node.element_name()?.to_owned();
                 let (text, _) = self
                     .element_text(node.id(), max_text_bytes)
@@ -6279,6 +6362,18 @@ impl NativeDocument {
         let mut script_nodes = self.script_node_ids.clone();
         for command in commands {
             match command {
+                NativeScriptCommand::AdoptNode { .. } => {
+                    return Err(NativeEngineError::invalid(
+                        "native node adoption",
+                        "cross-context adoption must use the paired browsing-context transfer path",
+                    ));
+                }
+                NativeScriptCommand::AdoptedNodeCommand { .. } => {
+                    return Err(NativeEngineError::invalid(
+                        "adopted native node command",
+                        "must be routed through the browsing-context coordinator",
+                    ));
+                }
                 NativeScriptCommand::Focus { node_index } => {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
                     events.extend(self.apply_script_focus(id)?);
@@ -13975,13 +14070,11 @@ mod tests {
         let incomplete = &identities[..identities.len() - 1];
         let mut rejected_source = source.clone();
         let mut rejected_destination = destination.clone();
-        assert!(rejected_source
-            .transfer_script_node_to(
-                &mut rejected_destination,
-                source_root.index,
-                incomplete,
-            )
-            .is_err());
+        assert!(
+            rejected_source
+                .transfer_script_node_to(&mut rejected_destination, source_root.index, incomplete,)
+                .is_err()
+        );
         assert_eq!(source, old_source);
         assert_eq!(destination, old_destination);
 
@@ -13991,11 +14084,13 @@ mod tests {
         assert_eq!(source.revision(), old_source.revision() + 1);
         assert_eq!(destination.revision(), old_destination.revision() + 1);
         assert!(source.node(source_root).is_none());
-        assert!(!source
-            .raw_node(source_parent)
-            .unwrap()
-            .children()
-            .contains(&source_root));
+        assert!(
+            !source
+                .raw_node(source_parent)
+                .unwrap()
+                .children()
+                .contains(&source_root)
+        );
 
         let target = destination.find_element_by_id("target").unwrap();
         let moved_root = destination.script_node_ids[&root_temporary_index];
@@ -14007,7 +14102,11 @@ mod tests {
             .map(|identity| destination.script_node_ids[&identity.destination_temporary_index])
             .find(|id| destination.raw_node(*id).unwrap().element_name() == Some("template"))
             .unwrap();
-        let content = destination.raw_node(template).unwrap().template_content.unwrap();
+        let content = destination
+            .raw_node(template)
+            .unwrap()
+            .template_content
+            .unwrap();
         let content_child = destination.raw_node(content).unwrap().children()[0];
         assert_eq!(
             destination
@@ -14045,11 +14144,140 @@ mod tests {
         let old_source = source.clone();
         let old_destination = destination.clone();
 
-        assert!(source
-            .transfer_script_node_to(&mut destination, root.index, &identities)
-            .is_err());
+        assert!(
+            source
+                .transfer_script_node_to(&mut destination, root.index, &identities)
+                .is_err()
+        );
         assert_eq!(source, old_source);
         assert_eq!(destination, old_destination);
+    }
+
+    #[test]
+    fn native_document_multi_root_transfer_is_atomic_and_identity_mapped() {
+        let limits = NativeEngineLimits::default();
+        let mut source = NativeDocument::parse(
+            "<main><p id='first'>one</p><p id='second'>two</p></main>",
+            &limits,
+        )
+        .unwrap();
+        let mut destination = NativeDocument::parse("<main id='target'></main>", &limits).unwrap();
+        let first = source.find_element_by_id("first").unwrap();
+        let second = source.find_element_by_id("second").unwrap();
+        let first_parent = source.raw_node(first).unwrap().parent().unwrap();
+        let first_child = source.raw_node(first).unwrap().children()[0];
+        let first_identities = transfer_identities(&source, first);
+        let mut second_identities = transfer_identities(&source, second);
+        for identity in &mut second_identities {
+            identity.destination_temporary_index =
+                identity.destination_temporary_index.saturating_sub(64);
+        }
+        let transfers = vec![
+            NativeNodeSubtreeTransfer {
+                source_index: first.index,
+                identities: first_identities,
+            },
+            NativeNodeSubtreeTransfer {
+                source_index: second.index,
+                identities: second_identities,
+            },
+        ];
+        let source_before = source.clone();
+        let destination_before = destination.clone();
+        let mut overlapping = transfers.clone();
+        let nested = source.find_element_by_id("first").unwrap();
+        let nested_child = source
+            .raw_node(nested)
+            .unwrap()
+            .children()
+            .iter()
+            .copied()
+            .find(|id| source.raw_node(*id).unwrap().element_name().is_some())
+            .unwrap();
+        let mut overlapping_identities = transfer_identities(&source, nested_child);
+        for identity in &mut overlapping_identities {
+            identity.destination_temporary_index =
+                identity.destination_temporary_index.saturating_sub(128);
+        }
+        overlapping.push(NativeNodeSubtreeTransfer {
+            source_index: nested_child.index,
+            identities: overlapping_identities,
+        });
+        let mut failed_source = source.clone();
+        let mut failed_destination = destination.clone();
+        assert!(
+            failed_source
+                .transfer_script_nodes_to(&mut failed_destination, &overlapping)
+                .is_err()
+        );
+        assert_eq!(failed_source, source_before);
+        assert_eq!(failed_destination, destination_before);
+
+        source
+            .transfer_script_nodes_to(&mut destination, &transfers)
+            .unwrap();
+        assert_eq!(source.revision(), source_before.revision() + 1);
+        assert_eq!(destination.revision(), destination_before.revision() + 1);
+        assert!(source.node(first).is_none());
+        assert!(source.node(second).is_none());
+        assert!(
+            !source
+                .raw_node(first_parent)
+                .unwrap()
+                .children()
+                .contains(&first)
+        );
+        let destination_first =
+            destination.script_node_ids[&transfers[0].identities[0].destination_temporary_index];
+        let snapshot = destination.script_snapshot_for_viewport(1024, Viewport::default());
+        assert!(snapshot.nodes.iter().any(
+            |node| node.node_index == destination_first.index() && node.parent_index.is_none()
+        ));
+        assert!(
+            snapshot
+                .elements
+                .iter()
+                .any(|element| element.node_index == destination_first.index())
+        );
+        let first_child_identity = transfers[0]
+            .identities
+            .iter()
+            .find(|identity| identity.source_index == first_child.index)
+            .unwrap();
+        let destination_first_child =
+            destination.script_node_ids[&first_child_identity.destination_temporary_index];
+        assert_eq!(
+            destination
+                .raw_node(destination_first_child)
+                .unwrap()
+                .parent(),
+            Some(destination_first)
+        );
+        assert_eq!(
+            destination
+                .raw_node(destination_first)
+                .unwrap()
+                .element_name(),
+            Some("p")
+        );
+        assert_eq!(
+            destination
+                .raw_node(
+                    destination.script_node_ids
+                        [&transfers[1].identities[0].destination_temporary_index]
+                )
+                .unwrap()
+                .element_name(),
+            Some("p")
+        );
+        NativeDocument::from_content_wire(source.to_content_wire(), &limits, source.generation())
+            .unwrap();
+        NativeDocument::from_content_wire(
+            destination.to_content_wire(),
+            &limits,
+            destination.generation(),
+        )
+        .unwrap();
     }
 
     #[test]

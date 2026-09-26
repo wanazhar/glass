@@ -5083,11 +5083,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 )
                             })
                         })?;
-                    let mut next = NativeDocument::from_content_wire(
-                        wire,
-                        &limits,
-                        requested_generation,
-                    )?;
+                    let mut next =
+                        NativeDocument::from_content_wire(wire, &limits, requested_generation)?;
                     if let Some(url) = document_url.as_deref() {
                         next.set_css_target_from_url(url)?;
                     }

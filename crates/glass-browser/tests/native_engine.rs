@@ -63458,7 +63458,7 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for _ in 0..2 {
+        for _ in 0..3 {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
                 .await
                 .expect("native adopt-node request")
@@ -63466,10 +63466,13 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
             let request = read_http_request(&mut stream).await;
             let body = match request.split_whitespace().nth(1) {
                 Some("/parent") => {
-                    "<!doctype html><template id='top-inert'></template><div id='top-holder'><section id='top-source' data-origin='top'><span id='top-child'>child</span><template id='top-nested'><b id='top-nested-child'>nested</b></template></section><p id='same-source'>same</p><p id='cross-source'>cross</p><div id='depth-source'></div><div id='node-source'></div></div><iframe id='child' src='/child'></iframe>"
+                    "<!doctype html><template id='top-inert'></template><div id='top-holder'><section id='top-source' data-origin='top'><span id='top-child'>child</span><template id='top-nested'><b id='top-nested-child'>nested</b></template></section><p id='same-source'>same</p><p id='cross-source'>cross</p><div id='depth-source'></div><div id='node-source'></div></div><iframe id='child' src='/child'></iframe><iframe id='sibling' src='/sibling'></iframe>"
                 }
                 Some("/child") => {
-                    "<!doctype html><template id='frame-inert'></template><div id='frame-holder'><section id='frame-source' data-origin='frame'><span id='frame-child'>child</span><template id='frame-nested'><i id='frame-nested-child'>nested</i></template></section></div>"
+                    "<!doctype html><template id='frame-inert'></template><div id='frame-holder'><section id='frame-source' data-origin='frame'><span id='frame-child'>child</span><template id='frame-nested'><i id='frame-nested-child'>nested</i></template></section><p id='frame-cross-source'>frame-cross</p><p id='sibling-cross-source'>sibling-cross</p></div>"
+                }
+                Some("/sibling") => {
+                    "<!doctype html><div id='sibling-holder'></div><p id='sibling-source'>sibling</p>"
                 }
                 other => panic!("unexpected native adopt-node request path: {other:?}"),
             };
@@ -63490,6 +63493,7 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
         .script(
             r##"(() => {
                 const childDocument = document.getElementById('child').contentDocument;
+                const siblingDocument = document.getElementById('sibling').contentDocument;
                 const topTarget = document.getElementById('top-inert').content.ownerDocument;
                 const frameTarget = childDocument.getElementById('frame-inert').content.ownerDocument;
                 const topSource = document.getElementById('top-source');
@@ -63527,8 +63531,26 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
 
                 const crossSource = document.getElementById('cross-source');
                 const crossParent = crossSource.parentNode;
+                globalThis.__glassAdoptedCrossSource = crossSource;
                 let crossError = null;
-                try { childDocument.adoptNode(crossSource); } catch (error) { crossError = error.name; }
+                let crossResult = null;
+                try {
+                  crossResult = childDocument.adoptNode(crossSource);
+                  childDocument.getElementById('frame-holder').appendChild(crossResult);
+                  crossResult.setAttribute('data-after-adopt', 'top-to-frame');
+                } catch (error) { crossError = error.name; }
+
+                const frameCrossSource = childDocument.getElementById('frame-cross-source');
+                globalThis.__glassAdoptedFrameCrossSource = frameCrossSource;
+                const frameCrossResult = document.adoptNode(frameCrossSource);
+                document.getElementById('top-holder').appendChild(frameCrossResult);
+                frameCrossResult.setAttribute('data-after-adopt', 'frame-to-top');
+
+                const siblingSource = childDocument.getElementById('sibling-cross-source');
+                globalThis.__glassAdoptedSiblingSource = siblingSource;
+                const siblingResult = siblingDocument.adoptNode(siblingSource);
+                siblingDocument.getElementById('sibling-holder').appendChild(siblingResult);
+                siblingResult.setAttribute('data-after-adopt', 'frame-to-sibling');
 
                 let documentError = null;
                 try { document.adoptNode(document); } catch (error) { documentError = error.name; }
@@ -63595,8 +63617,18 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
                     adoptedFragment === fragment, adoptedFragment.ownerDocument === topTarget,
                     fragmentChild.ownerDocument === topTarget],
                   errors: [documentError, invalidNodeError, shadowRootError, crossError,
-                    crossSource.parentNode === crossParent,
-                    crossSource.ownerDocument === document],
+                    crossSource.parentNode === childDocument.getElementById('frame-holder'),
+                    crossSource.ownerDocument === childDocument,
+                    crossSource.parentNode !== crossParent,
+                    crossResult === crossSource],
+                  transfers: [frameCrossResult === frameCrossSource,
+                    frameCrossSource.parentNode === document.getElementById('top-holder'),
+                    frameCrossSource.ownerDocument === document,
+                    frameCrossSource.getAttribute('data-after-adopt'),
+                    siblingResult === siblingSource,
+                    siblingSource.parentNode === siblingDocument.getElementById('sibling-holder'),
+                    siblingSource.ownerDocument === siblingDocument,
+                    siblingSource.getAttribute('data-after-adopt')],
                   bounds: [depthError, depthSource.parentNode === document.getElementById('top-holder'),
                     depthSource.ownerDocument === document,
                     nodeLimitError, nodeSource.parentNode === document.getElementById('top-holder'),
@@ -63617,10 +63649,13 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
                 "NotSupportedError",
                 "TypeError",
                 "HierarchyRequestError",
-                "NotSupportedError",
+                null,
+                true,
+                true,
                 true,
                 true,
             ],
+            "transfers": [true, true, true, "frame-to-top", true, true, true, "frame-to-sibling"],
             "bounds": [
                 "RangeError",
                 true,
@@ -63636,9 +63671,13 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
         .script(
             r##"(() => {
                 const childDocument = document.getElementById('child').contentDocument;
+                const siblingDocument = document.getElementById('sibling').contentDocument;
                 const topSource = globalThis.__glassAdoptedTopSource;
                 const frameSource = globalThis.__glassAdoptedFrameSource;
                 const sameSource = globalThis.__glassAdoptedSameSource;
+                const crossSource = globalThis.__glassAdoptedCrossSource;
+                const frameCrossSource = globalThis.__glassAdoptedFrameCrossSource;
+                const siblingSource = globalThis.__glassAdoptedSiblingSource;
                 const topTarget = globalThis.__glassAdoptedTopTarget;
                 const frameTarget = globalThis.__glassAdoptedFrameTarget;
                 return [
@@ -63653,7 +63692,15 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
                   document.getElementById('same-source') === null,
                   sameSource.parentNode === null,
                   sameSource.ownerDocument === document,
-                  document.getElementById('cross-source') !== null,
+                  childDocument.getElementById('cross-source') === crossSource,
+                  crossSource.parentNode === childDocument.getElementById('frame-holder'),
+                  crossSource.getAttribute('data-after-adopt') === 'top-to-frame',
+                  document.getElementById('frame-cross-source') === frameCrossSource,
+                  frameCrossSource.parentNode === document.getElementById('top-holder'),
+                  frameCrossSource.getAttribute('data-after-adopt') === 'frame-to-top',
+                  siblingDocument.getElementById('sibling-cross-source') === siblingSource,
+                  siblingSource.parentNode === siblingDocument.getElementById('sibling-holder'),
+                  siblingSource.getAttribute('data-after-adopt') === 'frame-to-sibling',
                 ];
               })()"##,
         )
@@ -63662,7 +63709,8 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
     assert_eq!(
         persisted.value,
         serde_json::json!([
-            true, true, true, true, true, true, true, true, true, true, true, true
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true
         ])
     );
 

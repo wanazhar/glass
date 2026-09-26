@@ -16,10 +16,9 @@ use super::native_engine::{
     NativeEventKind, NativeFile, NativeFrameScriptBinding, NativeFrameScriptContext,
     NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHistoryDirection,
     NativeInspectionSnapshot, NativeLayoutSnapshot, NativeNavigationCancellation,
-    NativeNavigationMethod, NativeNavigationRequest, NativeNodeTransferIdentity, NativeOrigin,
-    NativePageMessagePortCommand,
-    NativePendingDialog, NativePoint, NativePopupRequest, NativePostMessageRequest,
-    NativePreflightAction, NativeRequestBody, NativeScriptCommand,
+    NativeNavigationMethod, NativeNavigationRequest, NativeNodeSubtreeTransfer, NativeOrigin,
+    NativePageMessagePortCommand, NativePendingDialog, NativePoint, NativePopupRequest,
+    NativePostMessageRequest, NativePreflightAction, NativeRequestBody, NativeScriptCommand,
     NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest, NativeSurface,
     NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, Viewport, parse_point_target,
@@ -311,8 +310,7 @@ async fn coordinate_native_document_adoption(
     destination_frame_id: &str,
     source_generation: u32,
     destination_generation: u32,
-    source_node_index: u32,
-    identities: &[NativeNodeTransferIdentity],
+    transfers: &[NativeNodeSubtreeTransfer],
 ) -> Result<(), BrowserBackendError> {
     if source.frame_owner_id() != source_frame_id
         || destination.frame_owner_id() != destination_frame_id
@@ -330,11 +328,7 @@ async fn coordinate_native_document_adoption(
     let mut source_candidate = source_before.clone();
     let mut destination_candidate = destination_before.clone();
     source_candidate
-        .transfer_script_node_to(
-            &mut destination_candidate,
-            source_node_index,
-            identities,
-        )
+        .transfer_script_nodes_to(&mut destination_candidate, transfers)
         .map_err(native_error)?;
     source
         .validate_document_transfer_candidate(&source_candidate)
@@ -1982,9 +1976,24 @@ impl NativeEngineBackend {
                 }
             })?;
             let source_frame_id = request.source_frame_id.clone();
-            if matches!(request.command.as_ref(), NativeScriptCommand::AdoptNode { .. }) {
-                self.apply_frame_node_adoption(route, request).await?;
-                continue;
+            match request.command.as_ref() {
+                NativeScriptCommand::AdoptNode { .. } => {
+                    self.apply_frame_node_adoption(route, request).await?;
+                    continue;
+                }
+                NativeScriptCommand::AdoptedNodeCommand { .. } => {
+                    let (nested, effects, event_effects) =
+                        self.apply_adopted_node_command(request).await?;
+                    self.process_frame_event_effects(&source_frame_id, event_effects)
+                        .await?;
+                    Box::pin(self.process_pending_browser_effects(
+                        effects.0, effects.1, effects.2, effects.3, effects.4, effects.5, effects.6,
+                    ))
+                    .await?;
+                    pending.extend(nested);
+                    continue;
+                }
+                _ => {}
             }
             let (nested, effects, event_effects) =
                 self.apply_frame_script_to_frame(route, request).await?;
@@ -2009,8 +2018,7 @@ impl NativeEngineBackend {
             destination_frame_id,
             source_generation,
             destination_generation,
-            source_node_index,
-            identities,
+            transfers,
         } = *request.command
         else {
             return Err(BrowserBackendError::InvalidConfiguration {
@@ -2021,7 +2029,9 @@ impl NativeEngineBackend {
         validate_native_topology_id(&source_frame_id)?;
         validate_native_topology_id(&destination_frame_id)?;
         validate_native_topology_id(&request.source_frame_id)?;
-        if destination_frame_id != request.frame_id || identities.is_empty() {
+        if (destination_frame_id != request.frame_id && source_frame_id != request.frame_id)
+            || transfers.is_empty()
+        {
             return Err(BrowserBackendError::SelectionFailed {
                 reason: "native node transfer target or identity map is invalid".into(),
             });
@@ -2032,16 +2042,16 @@ impl NativeEngineBackend {
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
                 reason: "native node transfer caller disappeared before routing".into(),
             })?;
-        let source_origin = self
-            .frame_origin(&source_frame_id)?
-            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+        let source_origin = self.frame_origin(&source_frame_id)?.ok_or_else(|| {
+            BrowserBackendError::SelectionFailed {
                 reason: "native node transfer source disappeared before routing".into(),
-            })?;
-        let destination_origin = self
-            .frame_origin(&destination_frame_id)?
-            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+            }
+        })?;
+        let destination_origin = self.frame_origin(&destination_frame_id)?.ok_or_else(|| {
+            BrowserBackendError::SelectionFailed {
                 reason: "native node transfer destination disappeared before routing".into(),
-            })?;
+            }
+        })?;
         if caller_origin == NativeOrigin::Opaque
             || source_origin == NativeOrigin::Opaque
             || destination_origin == NativeOrigin::Opaque
@@ -2060,8 +2070,100 @@ impl NativeEngineBackend {
             &destination_frame_id,
             source_generation,
             destination_generation,
-            source_node_index,
-            &identities,
+            &transfers,
+        )
+        .await
+    }
+
+    async fn apply_adopted_node_command(
+        &self,
+        request: NativeFrameScriptRequest,
+    ) -> Result<
+        (
+            Vec<NativeFrameScriptRequest>,
+            NativeQueuedBrowserEffects,
+            Vec<NativeEffect>,
+        ),
+        BrowserBackendError,
+    > {
+        let NativeScriptCommand::AdoptedNodeCommand {
+            destination_frame_id,
+            command,
+        } = *request.command
+        else {
+            return Err(BrowserBackendError::InvalidConfiguration {
+                field: "adopted native node command".into(),
+                reason: "frame request did not contain a routed node command".into(),
+            });
+        };
+        validate_native_topology_id(&destination_frame_id)?;
+        if request.frame_id == destination_frame_id
+            || matches!(
+                command.as_ref(),
+                NativeScriptCommand::AdoptNode { .. }
+                    | NativeScriptCommand::AdoptedNodeCommand { .. }
+                    | NativeScriptCommand::FrameScript { .. }
+            )
+        {
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: "adopted native node relay target or command is invalid".into(),
+            });
+        }
+        let caller_origin = self
+            .frame_origin(&request.source_frame_id)?
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "adopted native node caller disappeared before routing".into(),
+            })?;
+        let destination_origin = self.frame_origin(&destination_frame_id)?.ok_or_else(|| {
+            BrowserBackendError::SelectionFailed {
+                reason: "adopted native node owner disappeared before routing".into(),
+            }
+        })?;
+        if caller_origin == NativeOrigin::Opaque || caller_origin != destination_origin {
+            return Err(BrowserBackendError::UnsupportedOperation {
+                operation: "adopted native node mutation".into(),
+                reason: "cross-origin native node mutation was rejected".into(),
+            });
+        }
+        {
+            let targets = self.lock_targets(BackendOperation::Script)?;
+            let caller_route = native_frame_route_in_state(&targets, &request.source_frame_id)
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "adopted native node caller is no longer attached".into(),
+                })?;
+            let relay_route =
+                native_frame_route_in_state(&targets, &request.frame_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "adopted native node relay is no longer attached".into(),
+                    }
+                })?;
+            let destination_route = native_frame_route_in_state(&targets, &destination_frame_id)
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "adopted native node owner is no longer attached".into(),
+                })?;
+            let caller_owner = native_frame_route_owner_id(&targets, &caller_route);
+            if caller_owner.is_none()
+                || caller_owner != native_frame_route_owner_id(&targets, &relay_route)
+                || caller_owner != native_frame_route_owner_id(&targets, &destination_route)
+            {
+                return Err(BrowserBackendError::UnsupportedOperation {
+                    operation: "adopted native node mutation".into(),
+                    reason: "owner, relay, and caller must share one browsing-context tree".into(),
+                });
+            }
+        }
+        let route = self.frame_route(&destination_frame_id)?.ok_or_else(|| {
+            BrowserBackendError::SelectionFailed {
+                reason: "adopted native node owner is no longer attached".into(),
+            }
+        })?;
+        self.apply_frame_script_to_frame(
+            route,
+            NativeFrameScriptRequest {
+                frame_id: destination_frame_id,
+                source_frame_id: request.source_frame_id,
+                command,
+            },
         )
         .await
     }
@@ -2073,25 +2175,24 @@ impl NativeEngineBackend {
         destination_frame_id: &str,
         source_generation: u32,
         destination_generation: u32,
-        source_node_index: u32,
-        identities: &[NativeNodeTransferIdentity],
+        transfers: &[NativeNodeSubtreeTransfer],
     ) -> Result<(), BrowserBackendError> {
         let mut targets = self.lock_targets(BackendOperation::Script)?;
-        let caller_route = native_frame_route_in_state(&targets, caller_frame_id).ok_or_else(|| {
-            BrowserBackendError::SelectionFailed {
-                reason: "native node transfer caller frame is no longer attached".into(),
-            }
-        })?;
-        let source_route = native_frame_route_in_state(&targets, source_frame_id).ok_or_else(|| {
-            BrowserBackendError::SelectionFailed {
-                reason: "native node transfer source frame is no longer attached".into(),
-            }
-        })?;
-        let destination_route =
-            native_frame_route_in_state(&targets, destination_frame_id).ok_or_else(|| {
+        let caller_route =
+            native_frame_route_in_state(&targets, caller_frame_id).ok_or_else(|| {
                 BrowserBackendError::SelectionFailed {
-                    reason: "native node transfer destination frame is no longer attached".into(),
+                    reason: "native node transfer caller frame is no longer attached".into(),
                 }
+            })?;
+        let source_route =
+            native_frame_route_in_state(&targets, source_frame_id).ok_or_else(|| {
+                BrowserBackendError::SelectionFailed {
+                    reason: "native node transfer source frame is no longer attached".into(),
+                }
+            })?;
+        let destination_route = native_frame_route_in_state(&targets, destination_frame_id)
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "native node transfer destination frame is no longer attached".into(),
             })?;
         let caller_owner = native_frame_route_owner_id(&targets, &caller_route);
         let source_owner = native_frame_route_owner_id(&targets, &source_route);
@@ -2111,7 +2212,7 @@ impl NativeEngineBackend {
         let result = match (&source_route, &destination_route) {
             (NativeFrameRoute::ActiveSelected, NativeFrameRoute::ActiveParked)
             | (NativeFrameRoute::ActiveParked, NativeFrameRoute::ActiveSelected) => {
-                let source_is_root = matches!(source_route, NativeFrameRoute::ActiveSelected);
+                let source_is_root = matches!(&source_route, NativeFrameRoute::ActiveSelected);
                 let parked_frame_id = if source_is_root {
                     destination_frame_id
                 } else {
@@ -2133,8 +2234,7 @@ impl NativeEngineBackend {
                         destination_frame_id,
                         source_generation,
                         destination_generation,
-                        source_node_index,
-                        identities,
+                        transfers,
                     )
                     .await
                 } else {
@@ -2145,8 +2245,7 @@ impl NativeEngineBackend {
                         destination_frame_id,
                         source_generation,
                         destination_generation,
-                        source_node_index,
-                        identities,
+                        transfers,
                     )
                     .await
                 };
@@ -2165,18 +2264,17 @@ impl NativeEngineBackend {
                         reason: "native transfer source frame disappeared while locking its owner"
                             .into(),
                     })?;
-                let Some(mut destination_frame) = targets
-                    .active_frames
-                    .parked
-                    .remove(destination_frame_id)
+                let Some(mut destination_frame) =
+                    targets.active_frames.parked.remove(destination_frame_id)
                 else {
                     targets
                         .active_frames
                         .parked
                         .insert(source_frame_id.to_owned(), source_frame);
                     return Err(BrowserBackendError::SelectionFailed {
-                        reason: "native transfer destination frame disappeared while locking its owner"
-                            .into(),
+                        reason:
+                            "native transfer destination frame disappeared while locking its owner"
+                                .into(),
                     });
                 };
                 let result = coordinate_native_document_adoption(
@@ -2186,8 +2284,7 @@ impl NativeEngineBackend {
                     destination_frame_id,
                     source_generation,
                     destination_generation,
-                    source_node_index,
-                    identities,
+                    transfers,
                 )
                 .await;
                 targets
@@ -2228,8 +2325,7 @@ impl NativeEngineBackend {
                     destination_frame_id,
                     source_generation,
                     destination_generation,
-                    source_node_index,
-                    identities,
+                    transfers,
                 )
                 .await;
                 target
@@ -2266,11 +2362,13 @@ impl NativeEngineBackend {
                     destination_frame_id,
                     source_generation,
                     destination_generation,
-                    source_node_index,
-                    identities,
+                    transfers,
                 )
                 .await;
-                target.frames.parked.insert(source_frame_id.to_owned(), frame);
+                target
+                    .frames
+                    .parked
+                    .insert(source_frame_id.to_owned(), frame);
                 result
             }
             (
@@ -2286,14 +2384,16 @@ impl NativeEngineBackend {
                         reason: "native transfer top-level target disappeared".into(),
                     }
                 })?;
-                let mut source_frame = target
-                    .frames
-                    .parked
-                    .remove(source_frame_id)
-                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                        reason: "native transfer source frame disappeared while locking its owner"
-                            .into(),
-                    })?;
+                let mut source_frame =
+                    target
+                        .frames
+                        .parked
+                        .remove(source_frame_id)
+                        .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                            reason:
+                                "native transfer source frame disappeared while locking its owner"
+                                    .into(),
+                        })?;
                 let Some(mut destination_frame) = target.frames.parked.remove(destination_frame_id)
                 else {
                     target
@@ -2301,8 +2401,9 @@ impl NativeEngineBackend {
                         .parked
                         .insert(source_frame_id.to_owned(), source_frame);
                     return Err(BrowserBackendError::SelectionFailed {
-                        reason: "native transfer destination frame disappeared while locking its owner"
-                            .into(),
+                        reason:
+                            "native transfer destination frame disappeared while locking its owner"
+                                .into(),
                     });
                 };
                 let result = coordinate_native_document_adoption(
@@ -2312,11 +2413,13 @@ impl NativeEngineBackend {
                     destination_frame_id,
                     source_generation,
                     destination_generation,
-                    source_node_index,
-                    identities,
+                    transfers,
                 )
                 .await;
-                target.frames.parked.insert(source_frame_id.to_owned(), source_frame);
+                target
+                    .frames
+                    .parked
+                    .insert(source_frame_id.to_owned(), source_frame);
                 target
                     .frames
                     .parked
@@ -2325,8 +2428,9 @@ impl NativeEngineBackend {
             }
             _ => Err(BrowserBackendError::UnsupportedOperation {
                 operation: "same-tree native node adoption".into(),
-                reason: "native node transfer topology is unsupported or belongs to independent roots"
-                    .into(),
+                reason:
+                    "native node transfer topology is unsupported or belongs to independent roots"
+                        .into(),
             }),
         };
         result

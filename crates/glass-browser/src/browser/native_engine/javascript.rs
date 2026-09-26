@@ -13,7 +13,7 @@ use super::css::{
 };
 use super::dialog::NativeDialogResolution;
 use super::dom::{
-    NativeDocument, NativeNodeId, NativeNodeTransferIdentity, NativePageImportMapSource,
+    NativeDocument, NativeNodeId, NativeNodeSubtreeTransfer, NativePageImportMapSource,
     NativePageScriptSource, NativePageScriptTiming, NativeScriptDocumentSnapshot,
     NativeScriptElementSnapshot,
 };
@@ -641,6 +641,14 @@ pub(crate) enum NativeScriptCommand {
         source_frame_id: String,
         command: Box<NativeScriptCommand>,
     },
+    /// Relay a command for an adopted node through an accessible frame when
+    /// the node's new owner is the caller's own document. FrameScript itself
+    /// intentionally targets another context, so the host resolves this
+    /// explicit owner before applying the inner DOM operation.
+    AdoptedNodeCommand {
+        destination_frame_id: String,
+        command: Box<NativeScriptCommand>,
+    },
     /// Transfer one already modeled DOM subtree between two live owners in
     /// the same browsing-context tree. The browser coordinator validates the
     /// captured generations and commits both document arenas together.
@@ -649,8 +657,7 @@ pub(crate) enum NativeScriptCommand {
         destination_frame_id: String,
         source_generation: u32,
         destination_generation: u32,
-        source_node_index: u32,
-        identities: Vec<NativeNodeTransferIdentity>,
+        transfers: Vec<NativeNodeSubtreeTransfer>,
     },
     SharedWorkerCreate {
         connection_id: u32,
@@ -11357,6 +11364,22 @@ fn is_ignorable_page_script_error(error: &NativeEngineError) -> bool {
     )
 }
 
+fn script_command_batch_error(
+    commands: &[NativeScriptCommand],
+    error: NativeEngineError,
+) -> NativeEngineError {
+    let summary = commands
+        .iter()
+        .take(8)
+        .map(|command| format!("{command:?}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let summary = summary.chars().take(2048).collect::<String>();
+    NativeEngineError::TargetNotActionable {
+        reason: format!("native script command batch failed ({error}); commands: {summary}"),
+    }
+}
+
 pub(crate) fn apply_page_script_evaluation(
     document: &mut NativeDocument,
     runtime: &NativeJavaScriptRuntime,
@@ -11417,7 +11440,10 @@ pub(crate) fn apply_page_script_evaluation(
             })
             .collect::<Vec<_>>();
         let (effects, acknowledgement_payload) = if request_ids.is_empty() {
-            (document.apply_script_commands(&commands)?, None)
+            let applied = document
+                .apply_script_commands(&commands)
+                .map_err(|error| script_command_batch_error(&commands, error))?;
+            (applied, None)
         } else {
             let mut next = document.clone();
             match next.apply_script_commands(&commands) {
@@ -11502,14 +11528,13 @@ pub(crate) fn apply_document_commands_with_font_face_ack(
             })
             .collect::<Vec<_>>();
         let (effects, acknowledgement_payload) = if request_ids.is_empty() {
-            (
-                if allow_script_navigation {
-                    document.apply_script_commands_allowing_links(&batch)?
-                } else {
-                    document.apply_script_commands(&batch)?
-                },
-                None,
-            )
+            let applied = if allow_script_navigation {
+                document.apply_script_commands_allowing_links(&batch)
+            } else {
+                document.apply_script_commands(&batch)
+            }
+            .map_err(|error| script_command_batch_error(&batch, error))?;
+            (applied, None)
         } else {
             let mut next = document.clone();
             let applied = if allow_script_navigation {
@@ -11525,7 +11550,7 @@ pub(crate) fn apply_document_commands_with_font_face_ack(
                 Err(_error) if font_face_install_admission_failed(document, &batch) => {
                     (Vec::new(), Some(font_face_install_error_payload()))
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(script_command_batch_error(&batch, error)),
             }
         };
         events.extend(effects);
@@ -31792,6 +31817,14 @@ fn document_bootstrap(
       globalThis.__glassRecordMutationCommand(command);
     }}
   }};
+  const pushCurrentDocumentCommand = (command) => {{
+    const target = activeCommands();
+    if (target.length >= {max_commands}) throw new RangeError("native host command limit exceeded");
+    target.push(command);
+    if (typeof globalThis.__glassRecordMutationCommand === "function") {{
+      globalThis.__glassRecordMutationCommand(command);
+    }}
+  }};
   const timers = globalThis.__glassTimers instanceof Map
     ? globalThis.__glassTimers
     : new Map();
@@ -37427,15 +37460,38 @@ fn document_bootstrap(
     ? globalThis.__glassScriptNodeObjects
     : new Map();
   globalThis.__glassScriptNodeObjects = scriptNodeObjects;
+  const transferredNodeOwnerRegistry = globalThis.__glassTransferredNodeOwners instanceof Map
+    ? globalThis.__glassTransferredNodeOwners
+    : new Map();
+  globalThis.__glassTransferredNodeOwners = transferredNodeOwnerRegistry;
+  const currentNativeOwnerId = String(host.frame_id || host.context_id || "");
+  globalThis.__glassRebindTransferredNodeIndex = (temporaryIndex, nodeIndex) => {{
+    const temporary = Number(temporaryIndex);
+    const next = Number(nodeIndex);
+    if (!Number.isSafeInteger(temporary) || !Number.isSafeInteger(next)) return;
+    const owner = transferredNodeOwnerRegistry.get(temporary);
+    if (!owner) return;
+    transferredNodeOwnerRegistry.delete(temporary);
+    if (String(owner.frameId || "") !== currentNativeOwnerId) {{
+      transferredNodeOwnerRegistry.set(next, owner);
+    }}
+  }};
   const scriptNodeAliasesByIndex = new Map();
+  const scriptNodeIndexesByTemporary = new Map();
   for (const identity of Array.isArray(state.scriptNodes) ? state.scriptNodes : []) {{
     const temporaryIndex = Number(identity && identity.temporaryIndex);
     const nodeIndex = Number(identity && identity.nodeIndex);
+    if (Number.isSafeInteger(temporaryIndex) && temporaryIndex >= 0
+        && Number.isSafeInteger(nodeIndex) && nodeIndex >= 0) {{
+      scriptNodeIndexesByTemporary.set(temporaryIndex, nodeIndex);
+    }}
     const object = scriptNodeObjects.get(temporaryIndex);
     if (!object || !Number.isSafeInteger(nodeIndex) || nodeIndex < 0) continue;
+    globalThis.__glassRebindTransferredNodeIndex(temporaryIndex, nodeIndex);
     object.nodeIndex = nodeIndex;
     scriptNodeAliasesByIndex.set(nodeIndex, object);
   }}
+  globalThis.__glassScriptNodeIndexesByTemporary = scriptNodeIndexesByTemporary;
   const mutationShadowAttributes = new Map();
   for (const entry of Array.isArray(state.elements) ? state.elements : []) {{
     mutationShadowAttributes.set(Number(entry.nodeIndex), {{ ...(entry.attributes || {{}}) }});
@@ -39791,6 +39847,16 @@ fn document_bootstrap(
         if (typeof element.__glassSyncAttributeNodes === "function") element.__glassSyncAttributeNodes();
       }}
     }});
+    Object.defineProperty(element, "__glassSetNativeIndex", {{
+      enumerable: false,
+      configurable: false,
+      value(nextIndex) {{
+        const index = Number(nextIndex);
+        if (!Number.isSafeInteger(index) || index < 0) throw new TypeError("native node index is invalid");
+        entry = {{ ...entry, nodeIndex: index }};
+        element.nodeIndex = index;
+      }},
+    }});
     return element;
   }};
   const makeDetachedElement = (tagName, namespace = HTML_NAMESPACE) => {{
@@ -40012,6 +40078,10 @@ fn document_bootstrap(
         textContent = String(nextEntry.nodeValue || "");
       }},
     }});
+    Object.defineProperty(text, "__glassSetNativeIndex", {{ enumerable: false, configurable: false, value(nextIndex) {{
+      nodeIndex = Number(nextIndex);
+      text.nodeIndex = nodeIndex;
+    }} }});
     Object.defineProperty(text, "parentElement", {{
       enumerable: false,
       configurable: false,
@@ -40094,6 +40164,10 @@ fn document_bootstrap(
         textContent = String(nextEntry.nodeValue || "");
       }},
     }});
+    Object.defineProperty(comment, "__glassSetNativeIndex", {{ enumerable: false, configurable: false, value(nextIndex) {{
+      nodeIndex = Number(nextIndex);
+      comment.nodeIndex = nodeIndex;
+    }} }});
     Object.defineProperty(comment, "parentElement", {{
       enumerable: false,
       configurable: false,
@@ -40152,7 +40226,7 @@ fn document_bootstrap(
     let publicIdentifier = String(publicId);
     let systemIdentifier = String(systemId);
     if (publicIdentifier.length > {storage_value_limit} || systemIdentifier.length > {storage_value_limit}) throw new RangeError("native document type identifier exceeds its limit");
-    const nodeIndex = allocateTemporaryNodeIndex();
+    let nodeIndex = allocateTemporaryNodeIndex();
     const documentType = {{
       nodeIndex,
       parentIndex: null,
@@ -40183,6 +40257,8 @@ fn document_bootstrap(
       return "<!DOCTYPE " + normalizedName + publicPart + systemPart + ">";
     }} }});
     Object.defineProperty(documentType, "__glassRefresh", {{ enumerable: false, configurable: false, value(nextEntry) {{
+      nodeIndex = Number(nextEntry.nodeIndex);
+      documentType.nodeIndex = nodeIndex;
       documentType.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
       normalizedName = String(nextEntry.nodeName || normalizedName);
       documentType.name = normalizedName;
@@ -40191,6 +40267,10 @@ fn document_bootstrap(
       systemIdentifier = nextEntry.systemId == null ? "" : String(nextEntry.systemId);
       documentType.publicId = publicIdentifier;
       documentType.systemId = systemIdentifier;
+    }} }});
+    Object.defineProperty(documentType, "__glassSetNativeIndex", {{ enumerable: false, configurable: false, value(nextIndex) {{
+      nodeIndex = Number(nextIndex);
+      documentType.nodeIndex = nodeIndex;
     }} }});
     Object.defineProperty(documentType, "parentNode", {{ enumerable: false, configurable: false, get() {{
       if (documentType.__glassParent) return documentType.__glassParent;
@@ -40767,10 +40847,45 @@ fn document_bootstrap(
   globalThis.__glassApplyNativeCommand = (command) => {{
     if (!command || typeof command !== "object") throw new TypeError("native frame command must be an object");
     const current = globalThis.__glassHostNodes;
-    const nodeIndex = Number(command.node_index);
+    const kind = String(command.kind);
+    const temporaryIndex = Number(command.node_index);
+    const temporaryIndexes = globalThis.__glassScriptNodeIndexesByTemporary;
+    const resolveNodeIndex = (index) => {{
+      const value = Number(index);
+      return temporaryIndexes instanceof Map ? temporaryIndexes.get(value) ?? value : value;
+    }};
+    if (kind === "appendChild" || kind === "insertBefore") {{
+      const parent = current instanceof Map
+        ? current.get(resolveNodeIndex(command.parent_index))
+        : null;
+      const child = current instanceof Map
+        ? current.get(resolveNodeIndex(command.child_index))
+        : null;
+      const before = kind === "insertBefore" && command.before_index != null
+        ? current instanceof Map ? current.get(resolveNodeIndex(command.before_index)) : null
+        : null;
+      if (!parent || !child || kind === "insertBefore" && command.before_index != null && !before) {{
+        throw new Error("native frame child insertion target is detached");
+      }}
+      suppressHostCommands += 1;
+      try {{
+        if (kind === "insertBefore") parent.insertBefore(child, before);
+        else parent.appendChild(child);
+      }} finally {{
+        suppressHostCommands -= 1;
+      }}
+      pushCurrentDocumentCommand(command);
+      return true;
+    }}
+    const nodeIndex = resolveNodeIndex(temporaryIndex);
     const element = current instanceof Map ? current.get(nodeIndex) : null;
-    if (!element) throw new Error("native frame command target is detached");
-    switch (String(command.kind)) {{
+    if (!element) throw new Error(
+      "native frame command target is detached: " + String(command.kind)
+        + " index " + temporaryIndex + " resolved " + nodeIndex
+        + " (identity mapped: "
+        + Boolean(temporaryIndexes instanceof Map && temporaryIndexes.has(temporaryIndex)) + ")",
+    );
+    switch (kind) {{
       case "focus": element.focus(); break;
       case "blur": element.blur(); break;
       case "click": element.click(); break;
@@ -41112,9 +41227,9 @@ fn document_bootstrap(
     const sourceDocument = source.ownerDocument;
     const sourceContextId = sourceDocument && String(sourceDocument.__glassNativeContextId || "");
     const targetContextId = targetDocument && String(targetDocument.__glassNativeContextId || "");
-    if (!sourceDocument || !sourceContextId || !targetContextId || sourceContextId !== targetContextId) {{
+    if (!sourceDocument || !sourceContextId || !targetContextId) {{
       throw new DOMExceptionNative(
-        "Native nodes cannot be adopted across browsing-context owners",
+        "The source or target Document is not a live native owner",
         "NotSupportedError",
       );
     }}
@@ -41161,6 +41276,209 @@ fn document_bootstrap(
       }}
     }};
     visit(source, targetDocument);
+
+    if (sourceContextId !== targetContextId) {{
+      const sourceOrigin = String(sourceDocument.__glassNativeOrigin || "null");
+      const targetOrigin = String(targetDocument.__glassNativeOrigin || "null");
+      const sourceGeneration = Number(sourceDocument.__glassNativeGeneration);
+      const targetGeneration = Number(targetDocument.__glassNativeGeneration);
+      if (sourceOrigin === "null" || targetOrigin === "null" || sourceOrigin !== targetOrigin) {{
+        throw new DOMExceptionNative("Native nodes cannot be adopted across origins", "SecurityError");
+      }}
+      if (!Number.isSafeInteger(sourceGeneration) || sourceGeneration <= 0
+          || !Number.isSafeInteger(targetGeneration) || targetGeneration <= 0) {{
+        throw new DOMExceptionNative("A source or target Document is stale", "InvalidStateError");
+      }}
+
+      const targetAliases = new Set(
+        (Array.isArray(targetDocument.__glassNativeScriptNodes)
+          ? targetDocument.__glassNativeScriptNodes
+          : [])
+          .map((identity) => Number(identity && identity.temporaryIndex))
+          .filter((index) => Number.isSafeInteger(index) && index >= 0),
+      );
+      const usedAliases = new Set();
+      const identityRecords = [];
+      const transfers = [];
+      const currentContextId = String(host.frame_id || host.context_id || "");
+      const allocateDestinationAlias = () => {{
+        for (let attempt = 0; attempt <= {native_dom_max_nodes}; attempt += 1) {{
+          const alias = allocateTemporaryNodeIndex();
+          if (!targetAliases.has(alias) && !usedAliases.has(alias)) {{
+            usedAliases.add(alias);
+            return alias;
+          }}
+        }}
+        throw new RangeError("native destination identity limit exceeded");
+      }};
+      const appendNativeSubtree = (root) => {{
+        const identities = [];
+        const seen = new Set();
+        const pending = [{{ node: root, depth: 0 }}];
+        while (pending.length > 0) {{
+          const item = pending.pop();
+          const node = item && item.node;
+          if (!node || typeof node !== "object" || seen.has(node)) continue;
+          seen.add(node);
+          const type = Number(node.nodeType);
+          if (type === 2) continue;
+          if (type === 11 && node.__glassFragment === true
+              && (typeof node.nodeIndex !== "number"
+                || !Number.isSafeInteger(node.nodeIndex)
+                || node.nodeIndex >= 4294963200)) {{
+            const children = Array.isArray(node.__glassChildren) ? node.__glassChildren : [];
+            for (let index = children.length - 1; index >= 0; index -= 1) {{
+              pending.push({{ node: children[index], depth: item.depth }});
+            }}
+            continue;
+          }}
+          const sourceIndex = Number(node.nodeIndex);
+          if (!Number.isSafeInteger(sourceIndex) || sourceIndex < 0) {{
+            throw new DOMExceptionNative(
+              "The adoption subtree contains a node without a native identity",
+              "NotSupportedError",
+            );
+          }}
+          if (identities.length >= {native_dom_max_nodes}) {{
+            throw new RangeError("native node adoption exceeds its node limit");
+          }}
+          const destinationTemporaryIndex = allocateDestinationAlias();
+          identities.push({{ sourceIndex, destinationTemporaryIndex }});
+          identityRecords.push({{ node, sourceIndex, destinationTemporaryIndex }});
+          const nextDepth = item.depth + Number(type === 1);
+          if (nextDepth > {native_dom_max_depth}) {{
+            throw new RangeError("native node adoption exceeds its depth limit");
+          }}
+          const children = Array.isArray(node.__glassChildren) ? node.__glassChildren : [];
+          for (let index = children.length - 1; index >= 0; index -= 1) {{
+            pending.push({{ node: children[index], depth: nextDepth }});
+          }}
+          if (type === 1 && node.namespaceURI === HTML_NAMESPACE && node.localName === "template") {{
+            const content = node.content;
+            if (content && Number(content.nodeType) === 11) {{
+              pending.push({{ node: content, depth: nextDepth }});
+            }}
+          }}
+        }}
+        if (identities.length > 0) {{
+          transfers.push({{
+            sourceIndex: identities[0].sourceIndex,
+            identities,
+          }});
+        }}
+      }};
+      const roots = Number(source.nodeType) === 11 && source.__glassFragment === true
+          && (typeof source.nodeIndex !== "number"
+            || !Number.isSafeInteger(source.nodeIndex)
+            || source.nodeIndex >= 4294963200)
+        ? (Array.isArray(source.__glassChildren) ? source.__glassChildren.slice() : [])
+        : Number(source.nodeType) === 2
+          ? []
+          : [source];
+      for (const root of roots) appendNativeSubtree(root);
+      if (identityRecords.length > {native_dom_max_nodes}) {{
+        throw new RangeError("native node adoption exceeds its total identity limit");
+      }}
+
+      const attributeOwner = Number(source.nodeType) === 2 ? source.ownerElement : null;
+      if (attributeOwner) {{
+        if (source.namespaceURI == null) attributeOwner.removeAttribute(source.name);
+        else attributeOwner.removeAttributeNS(source.namespaceURI, source.localName);
+      }}
+      if (transfers.length > 0) {{
+        const relayFrameId = targetContextId === currentContextId
+          ? sourceContextId
+          : targetContextId;
+        const queueFrameCommand = globalThis.__glassQueueNativeFrameCommand;
+        if (typeof queueFrameCommand !== "function") {{
+          throw new DOMExceptionNative("Native frame command routing is unavailable", "InvalidStateError");
+        }}
+        queueFrameCommand(relayFrameId, {{
+          kind: "adoptNode",
+          source_frame_id: sourceContextId,
+          destination_frame_id: targetContextId,
+          source_generation: sourceGeneration,
+          destination_generation: targetGeneration,
+          transfers,
+        }});
+      }}
+
+      const scriptObjects = globalThis.__glassScriptNodeObjects instanceof Map
+        ? globalThis.__glassScriptNodeObjects
+        : null;
+      const frameObjectsById = globalThis.__glassFrameScriptNodeObjectsByFrame instanceof Map
+        ? globalThis.__glassFrameScriptNodeObjectsByFrame
+        : new Map();
+      globalThis.__glassFrameScriptNodeObjectsByFrame = frameObjectsById;
+      let destinationObjects;
+      if (targetContextId === currentContextId) {{
+        destinationObjects = scriptObjects || new Map();
+        globalThis.__glassScriptNodeObjects = destinationObjects;
+      }} else {{
+        destinationObjects = frameObjectsById.get(targetContextId);
+        if (!(destinationObjects instanceof Map)) {{
+          destinationObjects = new Map();
+          frameObjectsById.set(targetContextId, destinationObjects);
+        }}
+      }}
+      const caches = [scriptObjects, ...frameObjectsById.values()]
+        .filter((cache) => cache instanceof Map);
+      const ownerRoutes = globalThis.__glassTransferredNodeOwners instanceof Map
+        ? globalThis.__glassTransferredNodeOwners
+        : new Map();
+      const pendingOwners = globalThis.__glassPendingTransferredNodeOwners instanceof Map
+        ? globalThis.__glassPendingTransferredNodeOwners
+        : new Map();
+      globalThis.__glassTransferredNodeOwners = ownerRoutes;
+      globalThis.__glassPendingTransferredNodeOwners = pendingOwners;
+      const relayBinding = targetContextId === currentContextId
+        ? sourceDocument.__glassNativeFrameBinding
+        : targetDocument.__glassNativeFrameBinding;
+      for (const record of identityRecords) {{
+        const {{ node, destinationTemporaryIndex }} = record;
+        for (const cache of caches) {{
+          for (const [alias, cached] of cache) {{
+            if (cached === node) cache.delete(alias);
+          }}
+        }}
+        if (typeof node.__glassSetNativeIndex === "function") {{
+          node.__glassSetNativeIndex(destinationTemporaryIndex);
+        }} else {{
+          node.nodeIndex = destinationTemporaryIndex;
+        }}
+        destinationObjects.set(destinationTemporaryIndex, node);
+        const owner = {{
+          frameId: targetContextId,
+          relayFrameId: targetContextId === currentContextId ? sourceContextId : targetContextId,
+          binding: targetContextId === currentContextId ? null : targetDocument.__glassNativeFrameBinding,
+          relayBinding,
+        }};
+        ownerRoutes.set(destinationTemporaryIndex, owner);
+        pendingOwners.set(destinationTemporaryIndex, true);
+      }}
+      for (const [node, ownerDocument] of state.nodes) {{
+        setAdoptedOwnerDocument(node, ownerDocument);
+        if (node !== source && node.parentNode && node.parentNode.nodeIndex != null
+            && typeof node.parentNode.nodeIndex === "number") {{
+          node.parentIndex = node.parentNode.nodeIndex;
+        }}
+      }}
+      if (Number(source.nodeType) !== 2) {{
+        const oldParent = source.parentNode;
+        if (oldParent) {{
+          suppressHostCommands += 1;
+          try {{
+            if (typeof source.remove === "function") source.remove();
+            else if (typeof oldParent.removeChild === "function") oldParent.removeChild(source);
+            else throw new DOMExceptionNative("The source node cannot be detached", "NotSupportedError");
+          }} finally {{
+            suppressHostCommands -= 1;
+          }}
+        }}
+      }}
+      return source;
+    }}
+
     const oldParent = source.parentNode;
     if (oldParent) {{
       if (typeof source.remove === "function") source.remove();
@@ -45558,14 +45876,27 @@ fn document_bootstrap(
     }}
     return null;
   }};
-  const queueFrameScriptForOwner = (frameId, command) => {{
+  const queueFrameScriptForOwner = (owner, command) => {{
     if (suppressHostCommands > 0) return;
-    if (!frameId || !currentOwnerFrameId) throw new TypeError("native node transfer owner is invalid");
+    const ownerFrameId = String(owner && owner.frameId || "");
+    const frameId = ownerFrameId === currentOwnerFrameId
+      ? String(owner && owner.relayFrameId || "")
+      : ownerFrameId;
+    if (!ownerFrameId || !frameId || !currentOwnerFrameId || frameId === currentOwnerFrameId) {{
+      throw new TypeError("native node transfer relay is invalid");
+    }}
+    const binding = frameBindingForId(frameId);
+    if (!binding || binding.sameOrigin !== true || frameIdentifier(binding) !== frameId) {{
+      throw new DOMExceptionNative("The native node transfer relay is no longer accessible", "InvalidStateError");
+    }}
+    const routedCommand = ownerFrameId === currentOwnerFrameId
+      ? {{ kind: "adoptedNodeCommand", destination_frame_id: ownerFrameId, command }}
+      : command;
     pushCommand({{
       kind: "frameScript",
-      frame_id: String(frameId),
+      frame_id: frameId,
       source_frame_id: currentOwnerFrameId,
-      command,
+      command: routedCommand,
     }});
   }};
   const routeTransferredNativeCommand = (command) => {{
@@ -45576,11 +45907,11 @@ fn document_bootstrap(
     const frameId = String(owner.frameId || "");
     if (!frameId) throw new TypeError("adopted native node has no destination owner");
     if (frameId === currentOwnerFrameId) {{
-      if (pendingTransferredNodeOwners.has(index)) queueFrameScriptForOwner(frameId, command);
+      if (pendingTransferredNodeOwners.has(index)) queueFrameScriptForOwner(owner, command);
       else return false;
       return true;
     }}
-    const binding = owner.binding || frameBindingForId(frameId);
+    const binding = frameBindingForId(frameId);
     if (!binding || frameIdentifier(binding) !== frameId || binding.sameOrigin !== true) {{
       throw new DOMExceptionNative("The adopted node destination is no longer accessible", "InvalidStateError");
     }}
@@ -45603,12 +45934,12 @@ fn document_bootstrap(
       const ownerFrameId = String(owner.frameId || "");
       if (!ownerFrameId) throw new TypeError("adopted native node has no destination owner");
       if (ownerFrameId === currentOwnerFrameId) {{
-        if (pendingTransferredNodeOwners.has(index)) queueFrameScriptForOwner(ownerFrameId, command);
+        if (pendingTransferredNodeOwners.has(index)) queueFrameScriptForOwner(owner, command);
         else pushCommand(command);
         return;
       }}
       if (frameIdentifier(binding) !== ownerFrameId) {{
-        const ownerBinding = owner.binding || frameBindingForId(ownerFrameId);
+        const ownerBinding = frameBindingForId(ownerFrameId);
         if (!ownerBinding || ownerBinding.sameOrigin !== true
             || frameIdentifier(ownerBinding) !== ownerFrameId) {{
           throw new DOMExceptionNative("The adopted node destination is no longer accessible", "InvalidStateError");
@@ -45646,6 +45977,13 @@ fn document_bootstrap(
       command: dispatchedCommand,
     }});
   }};
+  globalThis.__glassQueueNativeFrameCommand = (frameId, command) => {{
+    const binding = frameBindingForId(String(frameId || ""));
+    if (!binding || binding.sameOrigin !== true || frameIdentifier(binding) !== String(frameId || "")) {{
+      throw new DOMExceptionNative("The native node transfer context is no longer accessible", "InvalidStateError");
+    }}
+    queueFrameCommand(binding, command);
+  }};
   const frameBindingForId = (frameId) => {{
     const visit = (bindings) => {{
       for (const binding of bindings) {{
@@ -45658,7 +45996,13 @@ fn document_bootstrap(
     const bindings = Array.isArray(globalThis.__glassFrameBindings)
       ? globalThis.__glassFrameBindings
       : [];
-    return visit(bindings);
+    const embedded = visit(bindings);
+    if (embedded) return embedded;
+    const context = globalThis.__glassFrameContext;
+    for (const related of [context && context.parent, context && context.top]) {{
+      if (related && frameIdentifier(related) === frameId) return related;
+    }}
+    return null;
   }};
   const frameTopologyKey = (binding) => JSON.stringify([
     frameIdentifier(binding),
@@ -45725,6 +46069,9 @@ fn document_bootstrap(
       const nodeIndex = Number(identity && identity.nodeIndex);
       const object = frameScriptNodeObjects.get(temporaryIndex);
       if (!object || !Number.isSafeInteger(nodeIndex) || nodeIndex < 0) continue;
+      if (typeof globalThis.__glassRebindTransferredNodeIndex === "function") {{
+        globalThis.__glassRebindTransferredNodeIndex(temporaryIndex, nodeIndex);
+      }}
       object.nodeIndex = nodeIndex;
       frameScriptNodeAliasesByIndex.set(nodeIndex, object);
     }}
@@ -46423,6 +46770,44 @@ fn document_bootstrap(
           }},
         }});
       }}
+      Object.defineProperty(projected, "__glassSetNativeIndex", {{
+        enumerable: false,
+        configurable: false,
+        value(nextIndex) {{
+          const index = Number(nextIndex);
+          if (!Number.isSafeInteger(index) || index < 0) throw new TypeError("native node index is invalid");
+          entry = {{ ...entry, nodeIndex: index }};
+          projected.nodeIndex = index;
+        }},
+      }});
+      Object.defineProperty(projected, "__glassRefresh", {{
+        enumerable: false,
+        configurable: false,
+        value(nextEntry, nextExactTextForNode = frameSnapshotTextContentForNode) {{
+          entry = nextEntry;
+          projected.nodeIndex = Number(nextEntry.nodeIndex);
+          projected.parentIndex = nextEntry.parentIndex == null ? null : Number(nextEntry.parentIndex);
+          projected.tagName = tagNameForEntry(nextEntry);
+          projected.nodeName = tagNameForEntry(nextEntry);
+          projected.localName = String(nextEntry.tagName || "").toLowerCase();
+          for (const name of Object.keys(attributes)) delete attributes[name];
+          for (const [name, value] of Object.entries(nextEntry.attributes || {{}})) attributes[name] = String(value);
+          for (const name of Object.keys(attributeNamespaces)) delete attributeNamespaces[name];
+          for (const [name, namespace] of Object.entries(nextEntry.attributeNamespaces || {{}})) {{
+            attributeNamespaces[name] = String(namespace);
+          }}
+          textContent = snapshotElementTextContent(nextEntry, nextExactTextForNode);
+          innerHtml = String(nextEntry.innerHtml || "");
+          templateContentIndex = nextEntry.templateContentIndex == null ? null : Number(nextEntry.templateContentIndex);
+          value = nextEntry.value == null ? "" : nextEntry.value;
+          checked = Boolean(nextEntry.checked);
+          selected = Boolean(nextEntry.selected);
+          disabled = Boolean(nextEntry.disabled);
+          hidden = Boolean(nextEntry.hidden);
+          multiple = Object.prototype.hasOwnProperty.call(attributes, "multiple");
+          if (typeof projected.__glassSyncAttributeNodes === "function") projected.__glassSyncAttributeNodes();
+        }},
+      }});
       try {{ Object.setPrototypeOf(projected, elementPrototypeFor(projected.tagName)); }} catch (_error) {{}}
       return projected;
     }});
@@ -46456,6 +46841,19 @@ fn document_bootstrap(
             if (commitRemoval) queueFrameCommand(currentBinding, {{ kind: "removeNode", node_index: text.nodeIndex }});
           }},
         }};
+        Object.defineProperty(text, "__glassRefresh", {{
+          enumerable: false,
+          configurable: false,
+          value(nextEntry) {{
+            text.nodeIndex = Number(nextEntry.nodeIndex);
+            text.parentIndex = nextEntry.parentIndex == null ? null : Number(nextEntry.parentIndex);
+            textContent = String(nextEntry.nodeValue || "");
+            text.nodeValue = textContent;
+          }},
+        }});
+        Object.defineProperty(text, "__glassSetNativeIndex", {{ enumerable: false, configurable: false, value(nextIndex) {{
+          text.nodeIndex = Number(nextIndex);
+        }} }});
         Object.defineProperty(text, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
         Object.defineProperty(text, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: false }});
         Object.defineProperty(text, "__glassAttached", {{ enumerable: false, configurable: false, writable: true, value: true }});
@@ -46532,6 +46930,7 @@ fn document_bootstrap(
         }};
         if (!Object.prototype.hasOwnProperty.call(documentType, "__glassRefresh")) {{
           Object.defineProperty(documentType, "__glassRefresh", {{ enumerable: false, configurable: false, value(nextEntry) {{
+            documentType.nodeIndex = Number(nextEntry.nodeIndex);
             documentType.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
             documentType.name = String(nextEntry.nodeName || documentType.name || "");
             documentType.nodeName = documentType.name;
@@ -46919,6 +47318,10 @@ fn document_bootstrap(
           if (projected.__glassParent && typeof projected.__glassParent.__glassSyncContent === "function") projected.__glassParent.__glassSyncContent(clearEmpty);
         }},
       }});
+      Object.defineProperty(projected, "__glassSetNativeIndex", {{ enumerable: false, configurable: false, value(nextIndex) {{
+        nodeIndex = Number(nextIndex);
+        projected.nodeIndex = nodeIndex;
+      }} }});
       Object.defineProperty(projected, "__glassRefresh", {{
         enumerable: false,
         configurable: false,
@@ -47123,6 +47526,10 @@ fn document_bootstrap(
           text.__glassAttached = true;
         }},
       }});
+      Object.defineProperty(text, "__glassSetNativeIndex", {{ enumerable: false, configurable: false, value(nextIndex) {{
+        nodeIndex = Number(nextIndex);
+        text.nodeIndex = nodeIndex;
+      }} }});
       Object.defineProperty(text, "ownerDocument", {{
         enumerable: false,
         configurable: false,
@@ -47180,6 +47587,10 @@ fn document_bootstrap(
         comment.nodeIndex = nodeIndex;
         comment.parentIndex = nextEntry.parentIndex == null ? null : nextEntry.parentIndex;
         textContent = String(nextEntry.nodeValue || "");
+      }} }});
+      Object.defineProperty(comment, "__glassSetNativeIndex", {{ enumerable: false, configurable: false, value(nextIndex) {{
+        nodeIndex = Number(nextIndex);
+        comment.nodeIndex = nodeIndex;
       }} }});
       comment.remove = () => {{
         const parent = comment.__glassParent || null;
@@ -47254,6 +47665,10 @@ fn document_bootstrap(
         documentType.nodeName = normalizedName;
         documentType.publicId = publicIdentifier;
         documentType.systemId = systemIdentifier;
+      }} }});
+      Object.defineProperty(documentType, "__glassSetNativeIndex", {{ enumerable: false, configurable: false, value(nextIndex) {{
+        nodeIndex = Number(nextIndex);
+        documentType.nodeIndex = nodeIndex;
       }} }});
       Object.defineProperty(documentType, "parentNode", {{ enumerable: false, configurable: false, get() {{ return documentType.__glassParent || null; }} }});
       Object.defineProperty(documentType, "parentElement", {{ enumerable: false, configurable: false, get() {{ return null; }} }});
@@ -47938,6 +48353,7 @@ fn document_bootstrap(
   const frameContext = host.frame_context && typeof host.frame_context === "object"
     ? host.frame_context
     : null;
+  globalThis.__glassFrameContext = frameContext;
   let relationshipParent = null;
   let relationshipTop = null;
   let selectedFrameElement = null;

@@ -953,10 +953,7 @@ impl NativeEngine {
         Ok(())
     }
 
-    pub(crate) fn publish_document_transfer_snapshot(
-        &mut self,
-        candidate: NativeDocument,
-    ) {
+    pub(crate) fn publish_document_transfer_snapshot(&mut self, candidate: NativeDocument) {
         self.revision = candidate.revision();
         self.document = candidate;
     }

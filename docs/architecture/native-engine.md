@@ -37,9 +37,10 @@ state in the selected same-origin frame owner. The reaction queue now drains
 with a head cursor and periodic prefix compaction; a 300-reaction regression
 checks stable order across compaction. Additional process coverage verifies
 reentrant definition rejection and recovery, callback-triggered insertion
-ordering, and the 1,024-pending-`whenDefined` bound with capacity recovery.
-Hard reaction-queue overflow and the per-checkpoint work limit are not yet
-stress-tested. The broader custom-element contract remains incomplete. See the
+ordering, bounded `observedAttributes` iteration with iterator closing, and the
+1,024-pending-`whenDefined` bound with capacity recovery. Hard reaction-queue
+overflow and the per-checkpoint work limit are not yet stress-tested. The
+broader custom-element contract remains incomplete. See the
 [slice 758 task](../plan/tasks/native-engine-browser-758.md) for exact evidence.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,

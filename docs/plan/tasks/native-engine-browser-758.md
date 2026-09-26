@@ -173,6 +173,12 @@ Local verification on Linux aarch64 (`Linux 6.17.0-1018-oracle`):
 The reaction dispatcher now tracks the first pending item with a head cursor
 and periodically compacts the consumed prefix, avoiding a full-array front
 shift for every callback while retaining the configured pending-queue bound.
+Definition collection now consumes `observedAttributes` incrementally and
+throws on the first item beyond the 256-entry cap; this prevents `Array.from()`
+from exhausting an arbitrarily large or non-terminating iterable before the
+limit check. The regression uses a finite 10,000-item generator, verifies only
+257 values are requested, confirms iterator finalization, and proves that the
+failed definition is unpublished and the name can be defined afterward.
 The new process-backed regression
 `native_custom_elements_recover_from_reentrancy_and_respect_bounds` verifies
 that 300 upgrade reactions preserve source order across compaction, a
@@ -191,12 +197,13 @@ The scoped verification passed:
   `native_engine/dom.rs`)
 - `cargo test -p glass-browser --test native_engine native_custom_elements --locked --quiet`:
   `3 passed; 0 failed; 0 ignored; 0 measured; 791 filtered out; finished in
-  51.77s`
+  51.55s`
 - Documentation gates passed: release truth (1,386 Markdown documents, 83
-  current documents, 1,564 semantic-audit hits, zero current-claim failures);
-  depth (93 guides/19 contracts); TUI shortcuts (15 keys/63 markers); live
-  coverage (346 full-product MCP tools, 101 browser-only, 17 examples, 22
-  public modules). `cargo fmt --all -- --check` and `git diff --check` passed.
+  current documents, 1,565 semantic-audit hits, zero current-claim failures);
+  depth (93 guides/19
+  contracts); TUI shortcuts (15 keys/63 markers); live coverage (346
+  full-product MCP tools, 101 browser-only, 17 examples, 22 public modules).
+  `cargo fmt --all -- --check` and `git diff --check` passed.
 
 The hard reaction-queue overflow and 10,000-reaction checkpoint ceiling have
 not been stress-triggered. Full custom-element WPT, customized built-ins,

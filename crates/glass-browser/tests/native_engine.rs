@@ -64007,6 +64007,27 @@ async fn native_custom_elements_recover_from_reentrancy_and_respect_bounds() {
               const reentrantDefinitionWasAtomic = customElements.get('x-reentrant-inner') === undefined;
               customElements.define('x-reentrant-inner', reentrantInnerConstructor);
 
+              let observedAttributeIterationCount = 0;
+              let observedAttributeIteratorClosed = false;
+              function* oversizedObservedAttributes() {
+                try {
+                  for (let index = 0; index < 10000; index += 1) {
+                    observedAttributeIterationCount += 1;
+                    yield `data-attribute-${index}`;
+                  }
+                } finally { observedAttributeIteratorClosed = true; }
+              }
+              let observedAttributeLimitError = null;
+              class OversizedObservedAttributesProbe extends HTMLElement {
+                static get observedAttributes() { return oversizedObservedAttributes(); }
+                attributeChangedCallback() {}
+              }
+              try { customElements.define('x-observed-bound', OversizedObservedAttributesProbe); }
+              catch (error) { observedAttributeLimitError = error.name; }
+              const observedAttributeDefinitionWasAtomic = customElements.get('x-observed-bound') === undefined;
+              class ObservedAttributeBoundRecovery extends HTMLElement {}
+              customElements.define('x-observed-bound', ObservedAttributeBoundRecovery);
+
               let rejectedDefinitionMessage = null;
               class RejectedDefinitionProbe extends HTMLElement {
                 static get observedAttributes() { throw new Error('observed attributes rejected'); }
@@ -64069,6 +64090,12 @@ async fn native_custom_elements_recover_from_reentrancy_and_respect_bounds() {
                 reentrantDefinitionError,
                 reentrantDefinitionWasAtomic,
                 reentrantDefinitionRecovery: customElements.get('x-reentrant-inner') === reentrantInnerConstructor,
+                observedAttributeLimitError,
+                observedAttributeIterationCount,
+                observedAttributeIteratorClosed,
+                observedAttributeDefinitionWasAtomic,
+                observedAttributeDefinitionRecovered: customElements.get('x-observed-bound')
+                  === ObservedAttributeBoundRecovery,
                 rejectedDefinitionMessage,
                 rejectedDefinitionWasAtomic,
                 rejectedDefinitionRecovery: customElements.get('x-definition-retry') === RetriedDefinitionProbe,
@@ -64088,6 +64115,11 @@ async fn native_custom_elements_recover_from_reentrancy_and_respect_bounds() {
             "reentrantDefinitionError": "NotSupportedError",
             "reentrantDefinitionWasAtomic": true,
             "reentrantDefinitionRecovery": true,
+            "observedAttributeLimitError": "RangeError",
+            "observedAttributeIterationCount": 257,
+            "observedAttributeIteratorClosed": true,
+            "observedAttributeDefinitionWasAtomic": true,
+            "observedAttributeDefinitionRecovered": true,
             "rejectedDefinitionMessage": "observed attributes rejected",
             "rejectedDefinitionWasAtomic": true,
             "rejectedDefinitionRecovery": true,

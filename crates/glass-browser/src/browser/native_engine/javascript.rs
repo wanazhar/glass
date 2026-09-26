@@ -46451,10 +46451,14 @@ fn document_bootstrap(
         let observedAttributes = [];
         if (callbacks.attributeChangedCallback) {{
           const observed = constructor.observedAttributes;
-          if (observed !== undefined) observedAttributes = Array.from(observed, value => String(value));
-        }}
-        if (observedAttributes.length > nativeCustomElementLimits.observedAttributes) {{
-          throw new RangeError("native custom element observed-attribute limit exceeded");
+          if (observed !== undefined) {{
+            for (const value of observed) {{
+              if (observedAttributes.length >= nativeCustomElementLimits.observedAttributes) {{
+                throw new RangeError("native custom element observed-attribute limit exceeded");
+              }}
+              observedAttributes.push(String(value));
+            }}
+          }}
         }}
         definition = {{ name: elementName, constructor, prototype, callbacks, observedAttributes }};
       }} finally {{ nativeCustomElementState.defining = false; }}

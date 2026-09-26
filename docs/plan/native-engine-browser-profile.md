@@ -121,7 +121,9 @@ independent fragment identity, inert owner-document association, and
 top-level/frame persistence. Slice 755 implements target-aware `importNode()`
 for live top-level, same-origin-frame, and inert template-owner Documents,
 including boolean/dictionary depth options and destination inert ownership for
-nested template content. `adoptNode()` semantics remain open; see the
+nested template content. `adoptNode()` semantics remain open. The
+[slice 756 contract](tasks/native-engine-browser-756.md) plans a same-context
+adoption boundary; it does not cover cross-context identity transfer. See the
 [slice 751 contract](tasks/native-engine-browser-751.md),
 [slice 752 contract](tasks/native-engine-browser-752.md), and
 [slice 753 contract](tasks/native-engine-browser-753.md) and

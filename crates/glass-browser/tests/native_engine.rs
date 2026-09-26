@@ -63742,8 +63742,8 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
             "unsupportedExtendsError": "NotSupportedError",
             "invalidWhenDefinedError": "SyntaxError",
             "lifecycleCounts": {
-                "constructor": 7,
-                "attribute": 6,
+                "constructor": 6,
+                "attribute": 5,
                 "connected": 6,
                 "disconnected": 5,
             },

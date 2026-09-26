@@ -7599,11 +7599,23 @@ impl NativeDocument {
         let root = self
             .raw_node(root_id)
             .ok_or(NativeEngineError::DetachedTarget)?;
-        let mut pending = root
-            .children()
-            .iter()
+        let root_is_html_template = matches!(root.kind(), NativeNodeKind::Element { name, .. }
+            if name.eq_ignore_ascii_case("template")
+                && root.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI));
+        let root_children = if root_is_html_template {
+            let fragment_id = root
+                .template_content
+                .ok_or(NativeEngineError::DetachedTarget)?;
+            self.raw_node(fragment_id)
+                .ok_or(NativeEngineError::DetachedTarget)?
+                .children()
+                .to_vec()
+        } else {
+            root.children().to_vec()
+        };
+        let mut pending = root_children
+            .into_iter()
             .rev()
-            .copied()
             .map(|id| (id, 1usize))
             .collect::<Vec<_>>();
         let mut visited = 0usize;
@@ -7631,6 +7643,14 @@ impl NativeDocument {
                     let is_html_template = name.eq_ignore_ascii_case("template")
                         && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI);
                     if is_html_template {
+                        if let Some(fragment_id) = node.template_content {
+                            let fragment = self
+                                .raw_node(fragment_id)
+                                .ok_or(NativeEngineError::DetachedTarget)?;
+                            for child in fragment.children().iter().rev().copied() {
+                                pending.push((child, depth.saturating_add(1)));
+                            }
+                        }
                         continue;
                     }
                     for child in node.children().iter().rev().copied() {

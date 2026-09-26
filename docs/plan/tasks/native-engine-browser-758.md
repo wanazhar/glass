@@ -118,3 +118,39 @@ separate path for later scoped-registry and form-associated support.
   after synchronized documentation edits.
 - Record exact local platform/results. Remote CI, Windows/macOS certification,
   full custom-element WPT, and issue #40 closure remain separate gates.
+
+## Current implementation checkpoint (2026-09-26)
+
+Status remains `in-progress` on branch
+`task/native-engine-browser-758-template-identities`. The autonomous
+custom-element implementation is based on `b4d7af0d` and `6cefcc05`. The
+current template-identity follow-up emits a binding command for template
+`innerHTML` and pairs JavaScript temporary identities with native nodes while
+walking direct and nested template contents. This walk is identity bookkeeping
+only; it does not invoke custom-element lifecycle traversal. The regression
+covers direct `template.innerHTML`, a nested template in ordinary
+`innerHTML`, an additional nested template, cross-script wrapper identity,
+later attribute mutations, and inert lifecycle behavior.
+
+The third rehydration correction unconditionally calls
+`fragment.__glassRefresh(entry)` for cached and new fragments in
+`fragmentNodes`, before `nodesByIndex` is built and child links are restored.
+This assigns the native snapshot index to a cached fragment created while its
+template host had a temporary index, while retaining the fragment object and
+host reference used by `template.content`.
+
+Local verification on Linux aarch64 (`Linux 6.17.0-1018-oracle`):
+
+- `cargo fmt --all`: passed.
+- `git diff --check`: passed after the synchronized documentation update.
+- `cargo check -p glass-browser --lib --tests --locked --quiet`: passed.
+- `cargo test -p glass-browser --test native_engine native_custom_elements_upgrade_create_and_run_lifecycle_reactions --locked --quiet`:
+  exact output: `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;
+  791 filtered out; finished in 19.65s`. This was the third focused run, after
+  `fragmentNodes` unconditionally called `fragment.__glassRefresh(entry)` for
+  cached and new fragments before rebuilding tree children. The cached
+  fragment object is retained and receives its native node index, so the
+  template host's retained `content` reference resolves its rehydrated
+  children. The two earlier focused runs failed at the script boundary. The
+  broader task remains in progress. Remote CI and cross-platform
+  certification were not run.

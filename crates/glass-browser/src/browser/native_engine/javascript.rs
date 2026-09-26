@@ -37585,6 +37585,20 @@ fn document_bootstrap(
     if (!object || !Number.isSafeInteger(nodeIndex) || nodeIndex < 0) continue;
     globalThis.__glassRebindTransferredNodeIndex(temporaryIndex, nodeIndex);
     object.nodeIndex = nodeIndex;
+    if (Number(object.nodeType) === 1
+        && object.namespaceURI === HTML_NAMESPACE
+        && object.localName === "template"
+        && temporaryIndex !== nodeIndex) {{
+      const templateContentsCache = globalThis.__glassTemplateContents;
+      if (templateContentsCache instanceof Map && templateContentsCache.has(temporaryIndex)) {{
+        const templateContent = templateContentsCache.get(temporaryIndex);
+        templateContentsCache.delete(temporaryIndex);
+        templateContentsCache.set(nodeIndex, templateContent);
+        if (templateContent && typeof templateContent === "object") {{
+          templateContent.__glassTemplateHost = object;
+        }}
+      }}
+    }}
     scriptNodeAliasesByIndex.set(nodeIndex, object);
   }}
   globalThis.__glassScriptNodeIndexesByTemporary = scriptNodeIndexesByTemporary;
@@ -39859,6 +39873,17 @@ fn document_bootstrap(
           innerHtml = value;
           element.__glassSyncContent(true);
           pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
+          const nativeInnerHtmlNodeIndexes = globalThis.__glassNativeInnerHtmlNodeIndexes;
+          if (typeof nativeInnerHtmlNodeIndexes === "function") {{
+            const temporaryNodeIndexes = nativeInnerHtmlNodeIndexes(element);
+            if (temporaryNodeIndexes.length > 0) {{
+              pushCommand({{
+                kind: "bindInnerHtmlNodeIndexes",
+                root_index: entry.nodeIndex,
+                temporary_node_indexes: temporaryNodeIndexes,
+              }});
+            }}
+          }}
           return;
         }}
         const oldChildren = element.__glassChildren.slice();
@@ -41025,7 +41050,7 @@ fn document_bootstrap(
       const fragment = existing && typeof existing.__glassRefresh === "function"
         ? existing
         : makeDocumentFragment(entry);
-      if (fragment !== existing && typeof fragment.__glassRefresh === "function") fragment.__glassRefresh(entry);
+      if (typeof fragment.__glassRefresh === "function") fragment.__glassRefresh(entry);
       if (hostIndex != null) templateContentsCache.set(hostIndex, fragment);
       return fragment;
     }});
@@ -45998,7 +46023,16 @@ fn document_bootstrap(
   globalThis.__glassNativeInnerHtmlNodeIndexes = (root) => {{
     const indexes = [];
     const pending = [];
-    const children = root && Array.isArray(root.__glassChildren) ? root.__glassChildren : [];
+    const childrenForIdentity = (node) => {{
+      if (Number(node && node.nodeType) === 1
+          && node.namespaceURI === HTML_NAMESPACE
+          && node.localName === "template") {{
+        const content = node.content;
+        return content && Array.isArray(content.__glassChildren) ? content.__glassChildren : [];
+      }}
+      return node && Array.isArray(node.__glassChildren) ? node.__glassChildren : [];
+    }};
+    const children = childrenForIdentity(root);
     for (let index = children.length - 1; index >= 0; index -= 1) {{
       pending.push({{ node: children[index], depth: 1 }});
     }}
@@ -46019,9 +46053,7 @@ fn document_bootstrap(
         }}
         indexes.push(nodeIndex);
       }}
-      if (nodeType === 1 && node.namespaceURI === HTML_NAMESPACE
-          && node.localName === "template") continue;
-      const descendants = Array.isArray(node.__glassChildren) ? node.__glassChildren : [];
+      const descendants = childrenForIdentity(node);
       for (let index = descendants.length - 1; index >= 0; index -= 1) {{
         pending.push({{ node: descendants[index], depth: item.depth + Number(nodeType === 1) }});
       }}

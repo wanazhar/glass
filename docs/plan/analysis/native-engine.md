@@ -35,11 +35,15 @@ and preflight bounds. Slice 757 adds same-origin top-level/frame identity
 transfer with coordinated owner synchronization and destination mutation
 routing. Full custom-element behavior, HTML conformance, remote CI, and
 cross-platform certification remain open.
-The next planned slice is [native-engine-browser-758](../tasks/native-engine-browser-758.md),
-covering autonomous custom elements, registry operations, parser upgrades, and
-bounded lifecycle reactions. Customized built-ins, scoped registries,
-form-associated behavior, custom states, and full WPT coverage remain profile
-requirements after that bounded slice.
+Slice [native-engine-browser-758](../tasks/native-engine-browser-758.md) is in
+progress, covering autonomous custom elements, registry operations, parser
+upgrades, and bounded lifecycle reactions. The focused template-content
+identity regression now passes after cached fragment wrappers receive their
+native snapshot index before tree reconstruction; exact local verification and
+remaining scope are recorded in the task.
+Customized built-ins, scoped registries, form-associated behavior, custom
+states, and full WPT coverage remain profile requirements beyond that bounded
+slice.
 Issue #40 remains open. Slice 728
 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API

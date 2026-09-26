@@ -1,8 +1,12 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-733`. Issue #40
-remains open. Slice 728
+completed browser expansion slice is `native-engine-browser-746`. Slice 746
+migrates initial navigation documents to a Glass-owned `html5ever` sink. Its
+locked scoped check, 177 parser-filtered unit tests, process-backed HTTP
+navigation regression, and documentation truth/depth/shortcut/coverage gates
+passed locally. Fragment and XHR parsing, full HTML conformance, remote CI, and
+cross-platform certification remain open. Issue #40 remains open. Slice 728
 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API
 `CdpBrowserSession`. This source-level migration is not a Core Web Profile

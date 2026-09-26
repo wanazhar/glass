@@ -8,15 +8,17 @@ pub const MAX_NATIVE_DIAGNOSTIC_DETAIL_BYTES: usize = 64;
 /// Stable category for one native-engine diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeDiagnosticCode {
+    MalformedHtml,
     UnsupportedCssSelector,
     UnsupportedCssProperty,
     UnsupportedCssValue,
     MalformedCss,
 }
 
-/// Bounded source identity for a CSS diagnostic.
+/// Bounded source identity for one native-engine diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeDiagnosticSource {
+    Document,
     Stylesheet { index: usize },
     InlineStyle { node_index: u32 },
 }

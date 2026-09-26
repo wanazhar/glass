@@ -20,6 +20,7 @@ mod error;
 mod fetch_stream;
 mod font;
 mod history;
+mod html_parser;
 mod image;
 mod interaction;
 mod javascript;

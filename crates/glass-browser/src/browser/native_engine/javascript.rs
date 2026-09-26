@@ -32112,6 +32112,7 @@ fn document_bootstrap(
     };
     let serialized = serde_json::to_string(&serde_json::json!({
         "url": document_url,
+        "compat_mode": document.compat_mode(),
         "context_id": context_id,
         "frame_id": context_id,
         "window_name": window_name,
@@ -43980,7 +43981,7 @@ fn document_bootstrap(
     nodeName: "#document",
     URL: host.url,
     documentURI: host.url,
-    compatMode: "CSS1Compat",
+    compatMode: host.compat_mode === "BackCompat" ? "BackCompat" : "CSS1Compat",
     hidden: false,
     visibilityState: "visible",
     get defaultView() {{ return globalThis; }},

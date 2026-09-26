@@ -12,8 +12,14 @@ use super::css::{
     parse_font_metric_override, parse_font_size_adjust, parse_font_stretch_range,
     parse_font_variation_settings, parse_font_weight_range,
 };
-use super::diagnostics::{NativeDiagnostic, NativeDiagnosticSink, NativeDiagnosticSource};
+use super::diagnostics::{
+    NativeDiagnostic, NativeDiagnosticCode, NativeDiagnosticSink, NativeDiagnosticSource,
+};
 use super::error::NativeEngineError;
+use super::html_parser::{
+    HtmlParsedDocument, HtmlParsedNodeKind, HtmlTreeSinkFailure,
+    parse_document_with_limits as parse_html5,
+};
 use super::image::{
     MAX_NATIVE_IMAGE_FRAMES, MAX_NATIVE_IMAGE_TRANSFER_BYTES, MAX_NATIVE_IMAGE_TRANSFER_PIXELS,
     NativeImage, NativeImageFrame, NativeImageResource, decode_data_image,
@@ -201,6 +207,8 @@ pub enum NativeNodeKind {
 pub(crate) struct NativeDocumentWire {
     pub(crate) nodes: Vec<NativeNodeWire>,
     pub(crate) computed_styles: Vec<NativeComputedStyle>,
+    #[serde(default)]
+    pub(crate) quirks_mode: super::html_parser::HtmlParsedQuirksMode,
     #[serde(default)]
     pub(crate) viewport: Viewport,
     #[serde(default)]
@@ -829,6 +837,7 @@ pub struct NativeDocument {
     root: NativeNodeId,
     max_nodes: usize,
     max_dom_depth: usize,
+    quirks_mode: super::html_parser::HtmlParsedQuirksMode,
     nodes: Vec<NativeNode>,
     stylesheet: NativeStylesheet,
     font_resources: Vec<NativeFontFaceResource>,
@@ -1009,8 +1018,9 @@ fn image_from_wire(
 }
 
 impl NativeDocument {
-    /// Parse one bounded HTML document using the initial Glass-owned tree
-    /// builder. This parser is intentionally not an HTML5 conformance claim.
+    /// Parse one bounded HTML document using html5ever's tree builder and a
+    /// Glass-owned, resource-limited node sink. This is not a full HTML
+    /// conformance claim.
     pub fn parse(source: &str, limits: &NativeEngineLimits) -> Result<Self, NativeEngineError> {
         Self::parse_with_stylesheets(source, limits, &[], 1)
     }
@@ -1053,6 +1063,258 @@ impl NativeDocument {
                 source.len(),
             ));
         }
+        let temporary_node_limit = limits.max_nodes.saturating_mul(2);
+        let parsed = parse_html5(source, temporary_node_limit, limits.max_dom_depth);
+        if let Some(failure) = parsed.sink_failure {
+            return Err(match failure {
+                HtmlTreeSinkFailure::InvalidTree(reason) => NativeEngineError::Parse {
+                    offset: 0,
+                    reason: reason.into(),
+                },
+                HtmlTreeSinkFailure::NodeLimitExceeded { actual } => NativeEngineError::limit(
+                    "temporary HTML parser nodes",
+                    temporary_node_limit,
+                    actual,
+                ),
+                HtmlTreeSinkFailure::DomDepthExceeded { actual } => {
+                    NativeEngineError::limit("DOM depth", limits.max_dom_depth, actual)
+                }
+            });
+        }
+        let root_node = parsed
+            .nodes
+            .first()
+            .ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "HTML parser returned no document node".into(),
+            })?;
+        if !matches!(root_node.kind, HtmlParsedNodeKind::Document) {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "HTML parser returned an invalid document root".into(),
+            });
+        }
+
+        let root = NativeNodeId {
+            generation,
+            index: 0,
+        };
+        let mut document = Self::empty();
+        document.generation = generation;
+        document.revision = u64::from(generation);
+        document.root = root;
+        document.max_nodes = limits.max_nodes;
+        document.max_dom_depth = limits.max_dom_depth;
+        document.quirks_mode = parsed.quirks_mode;
+        document.nodes[0].id = root;
+        document.append_html_parsed_nodes(&parsed, &root_node.children, root, 0, limits)?;
+        document.finish_html_parse(
+            external_stylesheets,
+            allowed_inline_style_nodes,
+            parsed.parse_error_count,
+        )?;
+        Ok(document)
+    }
+
+    fn append_html_parsed_nodes(
+        &mut self,
+        parsed: &HtmlParsedDocument,
+        node_indices: &[usize],
+        parent: NativeNodeId,
+        element_depth: usize,
+        limits: &NativeEngineLimits,
+    ) -> Result<(), NativeEngineError> {
+        for node_index in node_indices {
+            let node = parsed
+                .nodes
+                .get(*node_index)
+                .ok_or_else(|| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "HTML tree sink returned an invalid child index".into(),
+                })?;
+            match &node.kind {
+                HtmlParsedNodeKind::Document | HtmlParsedNodeKind::DocumentFragment => {
+                    self.append_html_parsed_nodes(
+                        parsed,
+                        &node.children,
+                        parent,
+                        element_depth,
+                        limits,
+                    )?;
+                }
+                HtmlParsedNodeKind::DocumentType {
+                    name,
+                    public_id,
+                    system_id,
+                } => {
+                    self.add_node(
+                        parent,
+                        NativeNodeKind::DocumentType {
+                            name: name.clone(),
+                            public_id: (!public_id.is_empty()).then(|| public_id.clone()),
+                            system_id: (!system_id.is_empty()).then(|| system_id.clone()),
+                        },
+                        limits.max_nodes,
+                    )?;
+                }
+                HtmlParsedNodeKind::Element {
+                    name,
+                    namespace,
+                    attributes,
+                } => {
+                    if element_depth >= limits.max_dom_depth {
+                        return Err(NativeEngineError::limit(
+                            "DOM depth",
+                            limits.max_dom_depth,
+                            element_depth.saturating_add(1),
+                        ));
+                    }
+                    let mut attribute_map = BTreeMap::new();
+                    let mut attribute_namespaces = BTreeMap::new();
+                    for attribute in attributes {
+                        attribute_map
+                            .entry(attribute.name.clone())
+                            .or_insert_with(|| attribute.value.clone());
+                        if let Some(attribute_namespace) = &attribute.namespace {
+                            attribute_namespaces
+                                .entry(attribute.name.clone())
+                                .or_insert_with(|| attribute_namespace.clone());
+                        }
+                    }
+                    let id = self.add_node(
+                        parent,
+                        NativeNodeKind::Element {
+                            name: name.clone(),
+                            attributes: attribute_map,
+                        },
+                        limits.max_nodes,
+                    )?;
+                    if let Some(native_node) = self.raw_node_mut(id) {
+                        native_node.state.namespace_uri = Some(namespace.clone());
+                        native_node.state.attribute_namespaces = attribute_namespaces;
+                    }
+                    let mut children = node.children.clone();
+                    if let Some(template_contents_index) = node.template_contents {
+                        let template_contents = parsed
+                            .nodes
+                            .get(template_contents_index)
+                            .ok_or_else(|| NativeEngineError::Parse {
+                                offset: 0,
+                                reason: "HTML template has invalid contents".into(),
+                            })?;
+                        if !matches!(template_contents.kind, HtmlParsedNodeKind::DocumentFragment) {
+                            return Err(NativeEngineError::Parse {
+                                offset: 0,
+                                reason: "HTML template contents are not a fragment".into(),
+                            });
+                        }
+                        children.extend_from_slice(&template_contents.children);
+                    }
+                    self.append_html_parsed_nodes(
+                        parsed,
+                        &children,
+                        id,
+                        element_depth.saturating_add(1),
+                        limits,
+                    )?;
+                }
+                HtmlParsedNodeKind::Comment(value) => {
+                    self.add_node(
+                        parent,
+                        NativeNodeKind::Comment(value.clone()),
+                        limits.max_nodes,
+                    )?;
+                }
+                HtmlParsedNodeKind::Text(value) => {
+                    self.add_node(
+                        parent,
+                        NativeNodeKind::Text(value.clone()),
+                        limits.max_nodes,
+                    )?;
+                }
+                HtmlParsedNodeKind::ProcessingInstruction { .. } => {
+                    return Err(NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "HTML tree sink returned a processing instruction".into(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_html_parse(
+        &mut self,
+        external_stylesheets: &[String],
+        allowed_inline_style_nodes: Option<&BTreeSet<u32>>,
+        parse_error_count: usize,
+    ) -> Result<(), NativeEngineError> {
+        if let Some(allowed_inline_style_nodes) = allowed_inline_style_nodes {
+            self.set_inline_style_policy(allowed_inline_style_nodes);
+        }
+        let mut style_sources = self
+            .nodes
+            .iter()
+            .filter(|node| node.element_name() == Some("style") && node.inline_style_allowed())
+            .map(|node| {
+                let mut source = String::new();
+                self.collect_raw_text(node.id(), &mut source);
+                source
+            })
+            .collect::<Vec<_>>();
+        style_sources.extend(external_stylesheets.iter().cloned());
+        let mut diagnostics = NativeDiagnosticSink::default();
+        if parse_error_count > 0 {
+            diagnostics.push(
+                NativeDiagnosticCode::MalformedHtml,
+                NativeDiagnosticSource::Document,
+                0,
+                &format!("html-parse-errors-{parse_error_count}"),
+            );
+        }
+        self.stylesheet =
+            NativeStylesheet::from_sources_with_diagnostics(style_sources, &mut diagnostics)?;
+        self.background_image_sources = self.stylesheet.background_image_sources().clone();
+        for node in &self.nodes {
+            if !node.inline_style_allowed() {
+                continue;
+            }
+            let Some(inline_style) = node.attribute("style") else {
+                continue;
+            };
+            collect_background_image_sources(inline_style, &mut self.background_image_sources);
+            super::css::collect_declaration_diagnostics(
+                inline_style,
+                NativeDiagnosticSource::InlineStyle {
+                    node_index: node.id().index(),
+                },
+                0,
+                &mut diagnostics,
+            );
+        }
+        let (diagnostics, diagnostics_truncated) = diagnostics.finish();
+        self.diagnostics = diagnostics;
+        self.diagnostics_truncated = diagnostics_truncated;
+        self.normalize_select_defaults();
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn parse_legacy_with_stylesheets_and_inline_style_policy(
+        source: &str,
+        limits: &NativeEngineLimits,
+        external_stylesheets: &[String],
+        generation: u32,
+        allowed_inline_style_nodes: Option<&BTreeSet<u32>>,
+    ) -> Result<Self, NativeEngineError> {
+        limits.validate()?;
+        if source.len() > limits.max_document_bytes {
+            return Err(NativeEngineError::limit(
+                "HTML document",
+                limits.max_document_bytes,
+                source.len(),
+            ));
+        }
         let tokens = tokenize(source, limits.max_nodes.saturating_mul(2).saturating_add(1))?;
         let root = NativeNodeId {
             generation,
@@ -1064,6 +1326,7 @@ impl NativeDocument {
             root,
             max_nodes: limits.max_nodes,
             max_dom_depth: limits.max_dom_depth,
+            quirks_mode: super::html_parser::HtmlParsedQuirksMode::NoQuirks,
             nodes: vec![NativeNode {
                 id: root,
                 parent: None,
@@ -2972,6 +3235,7 @@ impl NativeDocument {
             nodes,
             computed_styles,
             viewport: self.viewport,
+            quirks_mode: self.quirks_mode,
             font_resources,
             blocked_inline_style_nodes: self
                 .nodes
@@ -3009,6 +3273,7 @@ impl NativeDocument {
         generation: u32,
     ) -> Result<Self, NativeEngineError> {
         let viewport = wire.viewport;
+        let quirks_mode = wire.quirks_mode;
         viewport.validate()?;
         limits.validate()?;
         if wire.nodes.is_empty() {
@@ -3817,6 +4082,7 @@ impl NativeDocument {
             root,
             max_nodes: limits.max_nodes,
             max_dom_depth: limits.max_dom_depth,
+            quirks_mode,
             nodes,
             stylesheet: NativeStylesheet::default(),
             font_resources: font_resources.clone(),
@@ -3848,6 +4114,7 @@ impl NativeDocument {
         Ok(document)
     }
 
+    #[cfg(test)]
     fn assign_parsed_namespaces(&mut self) {
         let children = self
             .raw_node(self.root)
@@ -3915,6 +4182,7 @@ impl NativeDocument {
         Ok(())
     }
 
+    #[cfg(test)]
     fn assign_parsed_namespace_subtree(&mut self, id: NativeNodeId, parent: NativeNodeId) {
         let Some(parent_node) = self.raw_node(parent) else {
             return;
@@ -3946,6 +4214,7 @@ impl NativeDocument {
             root,
             max_nodes: MAX_NATIVE_NODES,
             max_dom_depth: MAX_NATIVE_DOM_DEPTH,
+            quirks_mode: super::html_parser::HtmlParsedQuirksMode::NoQuirks,
             nodes: vec![NativeNode {
                 id: root,
                 parent: None,
@@ -3982,6 +4251,10 @@ impl NativeDocument {
     /// Return the bounded diagnostics collected while parsing this document.
     pub fn diagnostics(&self) -> &[NativeDiagnostic] {
         &self.diagnostics
+    }
+
+    pub(crate) const fn compat_mode(&self) -> &'static str {
+        self.quirks_mode.compat_mode()
     }
 
     pub const fn diagnostics_truncated(&self) -> bool {
@@ -9959,6 +10232,7 @@ enum HtmlToken {
     },
     EndTag(String),
     Comment(String),
+    #[cfg_attr(not(test), allow(dead_code))]
     Doctype {
         name: String,
         public_id: Option<String>,
@@ -13310,6 +13584,55 @@ mod tests {
     }
 
     #[test]
+    fn html_parser_standards_route_preserves_basic_legacy_text_projection() {
+        let source = "<!doctype html><p id='content'>before <b>after</b></p>";
+        let limits = NativeEngineLimits::default();
+        let standards = NativeDocument::parse(source, &limits).unwrap();
+        let legacy = NativeDocument::parse_legacy_with_stylesheets_and_inline_style_policy(
+            source,
+            &limits,
+            &[],
+            1,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(standards.visible_text(1024), legacy.visible_text(1024));
+        assert!(standards.find_element_by_id("content").is_some());
+        assert!(legacy.find_element_by_id("content").is_some());
+    }
+
+    #[test]
+    fn html_parser_standards_route_maps_temporary_tree_limits_to_typed_errors() {
+        let source = "<html><body>a<!--one--><!--two--></body></html>";
+        let limits = NativeEngineLimits {
+            max_nodes: 3,
+            ..NativeEngineLimits::default()
+        };
+        assert!(matches!(
+            NativeDocument::parse(source, &limits),
+            Err(NativeEngineError::LimitExceeded {
+                resource,
+                limit: 6,
+                actual: 7,
+            }) if resource == "temporary HTML parser nodes"
+        ));
+
+        let limits = NativeEngineLimits {
+            max_dom_depth: 2,
+            ..NativeEngineLimits::default()
+        };
+        assert!(matches!(
+            NativeDocument::parse("<div><span>deep</span></div>", &limits),
+            Err(NativeEngineError::LimitExceeded {
+                resource,
+                limit: 2,
+                actual: 3,
+            }) if resource == "DOM depth"
+        ));
+    }
+
+    #[test]
     fn visible_text_excludes_html_iframe_fallback_descendants() {
         let document = NativeDocument::parse(
             "<main>before <iframe><strong>fallback content</strong></iframe> after</main>",
@@ -13440,7 +13763,7 @@ mod tests {
         assert_eq!(document.visible_text(1024), ("Visible".into(), false));
         assert_eq!(
             document.element_inner_html(root, 1024),
-            "<!DOCTYPE html PUBLIC \"public-id\" \"system-id\"><!--before--><html><body><!--inside-->Visible</body></html>"
+            "<!DOCTYPE html PUBLIC \"public-id\" \"system-id\"><!--before--><html><head></head><body><!--inside-->Visible</body></html>"
         );
     }
 
@@ -15331,11 +15654,16 @@ mod tests {
 
         assert!(document.semantic_nodes().is_empty());
         let root_children = document.node(document.root()).unwrap().children();
-        assert_eq!(root_children.len(), 1);
+        assert_eq!(root_children.len(), 2);
         assert!(matches!(
             document.node(root_children[0]).map(NativeNode::kind),
             Some(NativeNodeKind::Comment(value)) if value == "unterminated<!unknown declaration<div title='unfinished>"
         ));
+        assert!(matches!(
+            document.node(root_children[1]).map(NativeNode::kind),
+            Some(NativeNodeKind::Element { name, .. }) if name == "html"
+        ));
+        assert!(document.find_element_by_id("unfinished").is_none());
     }
 
     #[test]
@@ -17140,6 +17468,17 @@ mod tests {
             .iter()
             .map(|(_, namespace, parent)| serde_json::json!([namespace, parent]))
             .collect::<Vec<_>>();
+        let standards_summary = expected_nodes
+            .iter()
+            .map(|(element_id, namespace, parent)| {
+                let parent = if *element_id == "end-mode-col" {
+                    ""
+                } else {
+                    *parent
+                };
+                serde_json::json!([namespace, parent])
+            })
+            .collect::<Vec<_>>();
         let summarize_native = |tree: &NativeDocument| {
             let nodes = expected_nodes
                 .iter()
@@ -17152,7 +17491,7 @@ mod tests {
                         .parent()
                         .and_then(|parent| tree.node(parent))
                         .and_then(|parent| parent.attribute("id"))
-                        .expect("fixture element parent must have an id");
+                        .unwrap_or("");
                     serde_json::json!([node.namespace_uri().unwrap(), parent_id])
                 })
                 .collect::<Vec<_>>();
@@ -17180,10 +17519,17 @@ mod tests {
             serde_json::json!([nodes, recovery])
         };
         let expected = serde_json::json!([expected_summary, expected_recovery_nodes()]);
+        let mut standards_recovery_nodes = expected_recovery_nodes();
+        standards_recovery_nodes.extend([
+            serde_json::json!(["br", HTML_NAMESPACE_URI, "zone", ""]),
+            serde_json::json!(["p", HTML_NAMESPACE_URI, "zone", ""]),
+        ]);
+        standards_recovery_nodes.sort_by_key(|value| value.to_string());
+        let standards_expected = serde_json::json!([standards_summary, standards_recovery_nodes]);
 
         let direct = NativeDocument::parse(markup, &NativeEngineLimits::default())
             .expect("document parser must reprocess foreign end-tag breakouts");
-        assert_eq!(summarize_native(&direct), expected);
+        assert_eq!(summarize_native(&direct), standards_expected);
 
         let runtime = NativeJavaScriptRuntime::new_with_context_id("foreign-end-breakout")
             .expect("native JavaScript runtime must construct");

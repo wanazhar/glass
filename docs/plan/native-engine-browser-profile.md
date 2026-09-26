@@ -98,11 +98,12 @@ parser with scripting support disabled and returns null on a well-formedness
 or encoding failure. Parsed response documents do not load referenced
 resources or apply XSLT. See the [XHR document-response algorithm](https://xhr.spec.whatwg.org/#document-response).
 
-The current native HTML-response route receives a UTF-8-decoded string before
-tree construction. Replacing its HTML tree builder does not certify response
-charset selection or byte decoding; that remains part of the XHR/Encoding
-conformance gate. Worker-specific `responseType` behavior is also separate
-from the HTML document parser route.
+The current native HTML-response route has a bounded common-charset decoder
+for response-header/override UTF-8, UTF-16LE/BE, and Windows-1252 labels, with
+BOM handling before tree construction. This is partial progress, not charset
+parity: HTML meta prescan and the remaining WHATWG encoding labels are still
+part of the XHR/Encoding conformance gate. Worker-specific `responseType`
+behavior is also separate from the HTML document parser route.
 
 ### Synchronous JavaScript dialog contract
 

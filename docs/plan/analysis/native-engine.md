@@ -1,28 +1,32 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-748`. Slice 746
+completed browser expansion slice is `native-engine-browser-749`. Slice 746
 migrates initial navigation documents to a Glass-owned `html5ever` sink; slice
 747 migrates HTML fragments to its bounded context-fragment algorithm; and
 slice 748 routes HTML XHR document responses through the same full-document
 sink with scripting disabled. Process-backed checks verify detached/read-only
 responses, script inertness, no resource loads, response URL, and malformed
 HTML recovery. Documentation truth, depth, shortcut, and live inventory/link
-gates pass: 1,376 Markdown files with zero current-claim failures, 93 current
+gates pass: 1,377 Markdown files with zero current-claim failures, 93 current
 guides/19 contracts, 15 implementation keys/63 markers, and 346 full-product
-MCP tools (101 browser-only), 17 examples, and 22 public modules. UTF-8-only
-response decoding, template `DocumentFragment`
-exposure, full HTML conformance, remote CI, and cross-platform certification
-remain open. Issue #40 remains open. Slice 728
+MCP tools (101 browser-only), 17 examples, and 22 public modules. Slice 749
+adds bounded common charset decoding for HTML XHR document responses. HTML
+meta prescan, the remaining WHATWG encoding labels, template
+`DocumentFragment` exposure, full HTML conformance, remote CI, and
+cross-platform certification remain open. Issue #40 remains open. Slice 728
 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API
 `CdpBrowserSession`. This source-level migration is not a Core Web Profile
 completion claim. Slice 747 reparses the source at ordered Rust commit time
 using the same bounded parser and context as the synchronous JavaScript/frame
 projection; it does not transfer the identical tree instance between runtimes.
-Slice 748 follows the XHR Standard's document-response algorithm; the parser
-still receives a UTF-8-decoded string, so charset selection and byte decoding
-remain open and are not claimed by this tree-builder migration. Slice 729
+Slice 748 follows the XHR Standard's document-response algorithm at the
+decoded-string parser boundary; slice 749 adds common header/override charset
+decoding but not HTML meta prescan or complete WHATWG encoding-label support.
+Its XML/HTML process-backed regression passes 2/2. This remains incremental
+parity work, not full encoding conformance. See
+[slice 749](../tasks/native-engine-browser-749.md). Slice 729
 promotes native revisioned semantic observation,
 page inspection/bootstrap, and region expansion into the canonical Rust API.
 Slice 730 promotes native target/frame topology into the canonical Rust API

@@ -63535,6 +63535,34 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
               const moveOrder = trace.slice(beforeMove, beforeMove + 2);
               mover.remove();
 
+              const mutationTrace = [];
+              class MutationProbe extends HTMLElement {
+                static get observedAttributes() { return ['data-value']; }
+                constructor() {
+                  super();
+                  mutationTrace.push('construct:' + this.id);
+                }
+                attributeChangedCallback(name, oldValue, newValue, namespace) {
+                  mutationTrace.push('attribute:' + this.id + ':' + oldValue + ':' + newValue + ':' + namespace);
+                }
+                connectedCallback() { mutationTrace.push('connected:' + this.id); }
+                disconnectedCallback() { mutationTrace.push('disconnected:' + this.id); }
+              }
+              customElements.define('x-mutation-probe', MutationProbe);
+              const mutationHost = document.createElement('div');
+              mutationHost.id = 'mutation-host';
+              document.body.appendChild(mutationHost);
+              mutationHost.innerHTML = "<x-mutation-probe id='parent' data-value='parent-initial'><x-mutation-probe id='child' data-value='child-initial'></x-mutation-probe></x-mutation-probe>";
+              const innerHtmlReactions = mutationTrace.splice(0);
+              const mutationParent = mutationHost.firstElementChild;
+              const mutationChild = mutationParent.firstElementChild;
+              globalThis.__glassMutationParent = mutationParent;
+              globalThis.__glassMutationChild = mutationChild;
+              mutationParent.setAttributeNS(null, 'data-value', 'namespaced');
+              mutationParent.removeAttributeNS(null, 'data-value');
+              const namespacedAttributeReactions = mutationTrace.splice(0);
+              globalThis.__glassMutationTrace = mutationTrace;
+
               const reportedErrors = [];
               const previousReportError = globalThis.reportError;
               globalThis.reportError = error => reportedErrors.push(String(error));
@@ -63583,6 +63611,8 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
                 unsupportedImportRegistryError,
                 directConstructorWorked,
                 moveOrder,
+                innerHtmlReactions,
+                namespacedAttributeReactions,
                 exceptionRecovery: [
                   failedConstruction.__glassCustomElementState,
                   typeof followUpElement.nodeIndex === 'number',
@@ -63624,6 +63654,18 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
             "unsupportedImportRegistryError": "NotSupportedError",
             "directConstructorWorked": true,
             "moveOrder": ["disconnected:x-probe", "connected:x-probe"],
+            "innerHtmlReactions": [
+                "construct:parent",
+                "construct:child",
+                "attribute:parent:null:parent-initial:null",
+                "attribute:child:null:child-initial:null",
+                "connected:parent",
+                "connected:child",
+            ],
+            "namespacedAttributeReactions": [
+                "attribute:parent:parent-initial:namespaced:null",
+                "attribute:parent:namespaced:null:null",
+            ],
             "exceptionRecovery": ["failed", true, "custom", 2],
             "invalidNameError": "SyntaxError",
             "duplicateNameError": "NotSupportedError",
@@ -63635,6 +63677,37 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
                 "connected": 6,
                 "disconnected": 5,
             },
+        })
+    );
+
+    let mutation_routes = session
+        .script(
+            r##"(() => {
+              const trace = globalThis.__glassMutationTrace;
+              const mutationHost = document.getElementById('mutation-host');
+              const parentSameIdentity = document.getElementById('parent') === globalThis.__glassMutationParent;
+              const childSameIdentity = document.getElementById('child') === globalThis.__glassMutationChild;
+              const bootstrapReactions = trace.splice(0);
+              mutationHost.textContent = 'cleared';
+              const textContent = trace.splice(0);
+              mutationHost.innerHTML = "<x-mutation-probe id='replacement'></x-mutation-probe>";
+              const replacement = trace.splice(0);
+              mutationHost.innerHTML = '';
+              const innerHtmlRemoval = trace.splice(0);
+              return { parentSameIdentity, childSameIdentity, bootstrapReactions, textContent, replacement, innerHtmlRemoval };
+            })()"##,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        mutation_routes.value,
+        serde_json::json!({
+            "parentSameIdentity": true,
+            "childSameIdentity": true,
+            "bootstrapReactions": [],
+            "textContent": ["disconnected:parent", "disconnected:child"],
+            "replacement": ["construct:replacement", "connected:replacement"],
+            "innerHtmlRemoval": ["disconnected:replacement"],
         })
     );
 

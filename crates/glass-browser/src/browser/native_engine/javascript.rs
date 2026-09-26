@@ -577,6 +577,10 @@ pub(crate) enum NativeScriptCommand {
         node_index: u32,
         value: String,
     },
+    BindInnerHtmlNodeIndexes {
+        root_index: u32,
+        temporary_node_indexes: Vec<u32>,
+    },
     RemoveNode {
         node_index: u32,
     },
@@ -11926,6 +11930,7 @@ pub(crate) fn validate_frame_script_command(
                 | NativeScriptCommand::SetTextContent { .. }
                 | NativeScriptCommand::SetDocumentTitle { .. }
                 | NativeScriptCommand::SetInnerHtml { .. }
+                | NativeScriptCommand::BindInnerHtmlNodeIndexes { .. }
                 | NativeScriptCommand::RemoveNode { .. }
                 | NativeScriptCommand::CreateElement { .. }
                 | NativeScriptCommand::CreateTextNode { .. }
@@ -11972,6 +11977,7 @@ fn is_frame_script_batch_command(command: &NativeScriptCommand) -> bool {
             | NativeScriptCommand::SetTextContent { .. }
             | NativeScriptCommand::SetDocumentTitle { .. }
             | NativeScriptCommand::SetInnerHtml { .. }
+            | NativeScriptCommand::BindInnerHtmlNodeIndexes { .. }
             | NativeScriptCommand::RemoveNode { .. }
             | NativeScriptCommand::CreateElement { .. }
             | NativeScriptCommand::CreateTextNode { .. }
@@ -39823,9 +39829,9 @@ fn document_bootstrap(
       enumerable: true,
       configurable: false,
       get() {{ return element.localName === "template" ? element.content.innerHTML : innerHtml; }},
-        set(next) {{
-          const value = String(next);
-          if (value.length > storageValueLimit) throw new RangeError("native element innerHTML exceeds its limit");
+      set(next) {{
+        const value = String(next);
+        if (value.length > storageValueLimit) throw new RangeError("native element innerHTML exceeds its limit");
         if (element.localName === "template") {{
           const content = element.content;
           for (const child of content.__glassChildren) {{
@@ -39837,7 +39843,16 @@ fn document_bootstrap(
           textContent = "";
           suppressHostCommands += 1;
           try {{
-            populateDetachedFragment(content, value, makeDetachedElement, makeDetachedText, makeDetachedComment);
+            const populate = () => populateDetachedFragment(
+              content,
+              value,
+              makeDetachedElement,
+              makeDetachedText,
+              makeDetachedComment,
+            );
+            const suppressReactions = globalThis.__glassWithNativeCustomElementReactionsSuppressed;
+            if (typeof suppressReactions === "function") suppressReactions(populate);
+            else populate();
           }} finally {{
             suppressHostCommands -= 1;
           }}
@@ -39845,10 +39860,10 @@ fn document_bootstrap(
           element.__glassSyncContent(true);
           pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
           return;
-          }}
-          const oldChildren = element.__glassChildren.slice();
-          const wasConnected = nodeIsConnected(element);
-          for (const child of element.__glassChildren) {{
+        }}
+        const oldChildren = element.__glassChildren.slice();
+        const wasConnected = nodeIsConnected(element);
+        for (const child of element.__glassChildren) {{
           child.__glassParent = null;
           child.parentIndex = null;
         }}
@@ -39857,26 +39872,46 @@ fn document_bootstrap(
         textContent = "";
         suppressHostCommands += 1;
         try {{
-          populateDetachedFragment(element, value, makeDetachedElement, makeDetachedText, makeDetachedComment);
+          const populate = () => populateDetachedFragment(
+            element,
+            value,
+            makeDetachedElement,
+            makeDetachedText,
+            makeDetachedComment,
+          );
+          const suppressReactions = globalThis.__glassWithNativeCustomElementReactionsSuppressed;
+          if (typeof suppressReactions === "function") suppressReactions(populate);
+          else populate();
         }} finally {{
           suppressHostCommands -= 1;
+        }}
+        element.__glassSyncContent(true);
+        pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
+        const nativeInnerHtmlNodeIndexes = globalThis.__glassNativeInnerHtmlNodeIndexes;
+        if (typeof nativeInnerHtmlNodeIndexes === "function") {{
+          const temporaryNodeIndexes = nativeInnerHtmlNodeIndexes(element);
+          if (temporaryNodeIndexes.length > 0) {{
+            pushCommand({{
+              kind: "bindInnerHtmlNodeIndexes",
+              root_index: entry.nodeIndex,
+              temporary_node_indexes: temporaryNodeIndexes,
+            }});
           }}
-          element.__glassSyncContent(true);
-          pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
-          if (wasConnected && typeof globalThis.__glassRunNativeCustomElementRemovalReactions === "function") {{
-            for (const child of oldChildren) globalThis.__glassRunNativeCustomElementRemovalReactions(child);
+        }}
+        if (wasConnected && typeof globalThis.__glassRunNativeCustomElementRemovalReactions === "function") {{
+          for (const child of oldChildren) globalThis.__glassRunNativeCustomElementRemovalReactions(child);
+        }}
+        if (element.__glassChildren.length > 0
+            && typeof globalThis.__glassRunNativeCustomElementInsertionReactions === "function") {{
+          for (const child of element.__glassChildren) {{
+            globalThis.__glassRunNativeCustomElementInsertionReactions(
+              child,
+              false,
+              nodeIsConnected(element),
+            );
           }}
-          if (element.__glassChildren.length > 0
-              && typeof globalThis.__glassRunNativeCustomElementInsertionReactions === "function") {{
-            for (const child of element.__glassChildren) {{
-              globalThis.__glassRunNativeCustomElementInsertionReactions(
-                child,
-                false,
-                nodeIsConnected(element),
-              );
-            }}
-          }}
-        }},
+        }}
+      }},
     }});
     value = element.value;
     Object.defineProperty(element, "value", {{
@@ -45945,6 +45980,54 @@ fn document_bootstrap(
     treeDepth: {native_dom_max_depth},
     treeNodes: {native_dom_max_nodes},
   }};
+  if (!Number.isSafeInteger(globalThis.__glassNativeCustomElementReactionSuppression)
+      || globalThis.__glassNativeCustomElementReactionSuppression < 0) {{
+    globalThis.__glassNativeCustomElementReactionSuppression = 0;
+  }}
+  globalThis.__glassWithNativeCustomElementReactionsSuppressed = (callback) => {{
+    const suppression = Number(globalThis.__glassNativeCustomElementReactionSuppression) || 0;
+    globalThis.__glassNativeCustomElementReactionSuppression = suppression + 1;
+    try {{ return callback(); }}
+    finally {{
+      globalThis.__glassNativeCustomElementReactionSuppression = Math.max(
+        0,
+        Number(globalThis.__glassNativeCustomElementReactionSuppression) - 1,
+      );
+    }}
+  }};
+  globalThis.__glassNativeInnerHtmlNodeIndexes = (root) => {{
+    const indexes = [];
+    const pending = [];
+    const children = root && Array.isArray(root.__glassChildren) ? root.__glassChildren : [];
+    for (let index = children.length - 1; index >= 0; index -= 1) {{
+      pending.push({{ node: children[index], depth: 1 }});
+    }}
+    let visited = 0;
+    while (pending.length > 0) {{
+      const item = pending.pop();
+      const node = item && item.node;
+      if (!node || typeof node !== "object") continue;
+      if (++visited > nativeCustomElementLimits.treeNodes
+          || item.depth > nativeCustomElementLimits.treeDepth) {{
+        throw new RangeError("native innerHTML identity walk exceeded its limit");
+      }}
+      const nodeType = Number(node.nodeType);
+      if (nodeType === 1 || nodeType === 3 || nodeType === 8) {{
+        const nodeIndex = Number(node.nodeIndex);
+        if (!Number.isSafeInteger(nodeIndex) || nodeIndex < 0) {{
+          throw new TypeError("native innerHTML node identity is invalid");
+        }}
+        indexes.push(nodeIndex);
+      }}
+      if (nodeType === 1 && node.namespaceURI === HTML_NAMESPACE
+          && node.localName === "template") continue;
+      const descendants = Array.isArray(node.__glassChildren) ? node.__glassChildren : [];
+      for (let index = descendants.length - 1; index >= 0; index -= 1) {{
+        pending.push({{ node: descendants[index], depth: item.depth + Number(nodeType === 1) }});
+      }}
+    }}
+    return indexes;
+  }};
   const customElementContextId = String(host.context_id || "native");
   const customElementGeneration = Number(host.generation) || 0;
   let nativeCustomElementState = globalThis.__glassNativeCustomElementState;
@@ -46240,7 +46323,8 @@ fn document_bootstrap(
     return element;
   }};
   globalThis.__glassRunNativeCustomElementInsertionReactions = (root, wasConnected, isConnected) => {{
-    if (!root || suppressHostCommands > 0) return;
+    if (!root || suppressHostCommands > 0
+        || Number(globalThis.__glassNativeCustomElementReactionSuppression) > 0) return;
     const elements = nativeCustomElementElementsInTree(root);
     nativeCustomElementState.upgrading += 1;
     try {{

@@ -6637,6 +6637,17 @@ impl NativeDocument {
                 NativeScriptCommand::SetInnerHtml { node_index, value } => {
                     self.apply_script_inner_html(*node_index, value, &script_nodes)?;
                 }
+                NativeScriptCommand::BindInnerHtmlNodeIndexes {
+                    root_index,
+                    temporary_node_indexes,
+                } => {
+                    let root_id = self.resolve_script_node_id(*root_index, &script_nodes);
+                    self.bind_inner_html_node_indexes(
+                        root_id,
+                        temporary_node_indexes,
+                        &mut script_nodes,
+                    )?;
+                }
                 NativeScriptCommand::RemoveNode { node_index } => {
                     let id = self.resolve_script_node_id(*node_index, &script_nodes);
                     self.apply_script_remove_node(id, &script_nodes)?;
@@ -7556,6 +7567,94 @@ impl NativeDocument {
         }
         self.computed_styles = None;
         self.capture_attached_content_security_policy_meta();
+        Ok(())
+    }
+
+    fn bind_inner_html_node_indexes(
+        &self,
+        root_id: NativeNodeId,
+        temporary_node_indexes: &[u32],
+        script_nodes: &mut BTreeMap<u32, NativeNodeId>,
+    ) -> Result<(), NativeEngineError> {
+        if temporary_node_indexes.len() > self.max_nodes {
+            return Err(NativeEngineError::limit(
+                "innerHTML node identities",
+                self.max_nodes,
+                temporary_node_indexes.len(),
+            ));
+        }
+        let mut seen_temporary_indexes = BTreeSet::new();
+        for temporary_index in temporary_node_indexes {
+            if *temporary_index < SCRIPT_TEMP_NODE_BASE
+                || script_nodes.contains_key(temporary_index)
+                || !seen_temporary_indexes.insert(*temporary_index)
+            {
+                return Err(NativeEngineError::invalid(
+                    "innerHTML node identities",
+                    "temporary node indexes must be unique, unmapped script-node identities",
+                ));
+            }
+        }
+
+        let root = self
+            .raw_node(root_id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        let mut pending = root
+            .children()
+            .iter()
+            .rev()
+            .copied()
+            .map(|id| (id, 1usize))
+            .collect::<Vec<_>>();
+        let mut visited = 0usize;
+        let mut node_ids = Vec::new();
+        while let Some((id, depth)) = pending.pop() {
+            visited = visited.saturating_add(1);
+            if visited > self.max_nodes {
+                return Err(NativeEngineError::limit(
+                    "innerHTML identity tree nodes",
+                    self.max_nodes,
+                    visited,
+                ));
+            }
+            if depth > self.max_dom_depth {
+                return Err(NativeEngineError::limit(
+                    "innerHTML identity tree depth",
+                    self.max_dom_depth,
+                    depth,
+                ));
+            }
+            let node = self.raw_node(id).ok_or(NativeEngineError::DetachedTarget)?;
+            match node.kind() {
+                NativeNodeKind::Element { name, .. } => {
+                    node_ids.push(id);
+                    let is_html_template = name.eq_ignore_ascii_case("template")
+                        && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI);
+                    if is_html_template {
+                        continue;
+                    }
+                    for child in node.children().iter().rev().copied() {
+                        pending.push((child, depth.saturating_add(1)));
+                    }
+                }
+                NativeNodeKind::Text(_) | NativeNodeKind::Comment(_) => node_ids.push(id),
+                NativeNodeKind::DocumentFragment => {
+                    for child in node.children().iter().rev().copied() {
+                        pending.push((child, depth.saturating_add(1)));
+                    }
+                }
+                NativeNodeKind::Document | NativeNodeKind::DocumentType { .. } => {}
+            }
+        }
+        if node_ids.len() != temporary_node_indexes.len() {
+            return Err(NativeEngineError::invalid(
+                "innerHTML node identities",
+                "JavaScript and native fragment trees have different node counts",
+            ));
+        }
+        for (temporary_index, node_id) in temporary_node_indexes.iter().zip(node_ids) {
+            script_nodes.insert(*temporary_index, node_id);
+        }
         Ok(())
     }
 

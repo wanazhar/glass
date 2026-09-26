@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-755
 scope: glass-browser/document-import-node
-status: planned
+status: complete
 depends-on: [native-engine-browser-754]
 ---
 
@@ -78,15 +78,36 @@ can apply the standard cloning hooks.
 
 ## Verification
 
-- `cargo fmt --all -- --check`
-- `cargo check -p glass-browser --tests --locked --quiet`
-- Focused process-backed top-level and same-origin-frame import regressions.
+- `cargo fmt --all -- --check` passed.
+- `cargo check -p glass-browser --tests --locked --quiet` passed.
+- `cargo test --quiet -p glass-browser --test native_engine
+  native_documents_import_nodes_into_the_target_document --locked --
+  --test-threads=1` passed (1 process-backed test).
+- `cargo test --quiet -p glass-browser --test native_engine template_content
+  --locked -- --test-threads=1` passed (2 process-backed top-level and
+  same-origin-frame template regressions).
 - Maintainer documentation inventory, route, current-claim, depth, shortcut,
-  and live-coverage gates.
-- `git diff --check`.
+  and live-coverage gates passed: release truth covered 1,383 Markdown
+  documents with zero current-claim failures; depth covered 93 current guides
+  and 19 contracts; shortcut inventory covered 15 implementation keys and 63
+  markers; coverage found 346 full-product MCP tools (101 browser-only), 17
+  examples, and 22 public modules.
+- `git diff --check` passed.
 - Evidence is local Linux only; broader DOM conformance, remote CI, and
   cross-platform certification remain issue-level gates.
 
 ## Evidence
 
-Pending implementation and verification.
+The shared target-aware copier now backs both `cloneNode()` and
+`Document.importNode()`. Imports support the existing native node kinds and
+boolean/dictionary subtree options, keep imported nodes detached until the
+caller inserts them, preserve source ownership, and assign copied template
+contents to the target's stable inert owner document. The process-backed test
+covers top-level/frame/inert targets, nested templates, attributes, doctypes,
+fragments, source nonmutation, persistence, and typed failures. `adoptNode()`,
+custom-element registries, full DOM conformance, remote CI, and
+cross-platform certification remain open; this does not complete issue #40.
+Maintainer gates pass for all 1,383 Markdown documents in this checkout:
+zero current-claim failures, 93 current guides/19 contracts, 15 implementation
+keys/63 shortcut markers, and 346 full-product MCP tools (101 browser-only),
+17 examples, and 22 public modules.

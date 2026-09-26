@@ -27,9 +27,11 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-754`.
-Slice 755 plans target-document-aware `Document.importNode()` semantics; it is
-not implementation evidence until its verification is recorded.
+browser expansion slices are complete through `native-engine-browser-755`.
+Slice 755 implements target-document-aware `Document.importNode()` for live
+top-level, same-origin-frame, and inert template-owner Documents. Its focused
+process-backed regression passes locally; this remains a bounded DOM slice,
+not browser-completion evidence.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux
@@ -71,7 +73,9 @@ into same-origin frame documents; its process-backed test covers inert owner
 identity, query boundaries, mutation persistence, and replacement. Full
 template `cloneNode()` behavior now covers shallow/deep cloning, nested
 template contents, separate fragments, inert ownership, and top-level/frame
-persistence through process-backed regressions. Template `importNode()` and
+persistence through process-backed regressions. Slice 755 adds imports into
+target Documents with boolean and dictionary depth options, independent copied
+nodes, and destination inert-owner identity for nested template contents.
 `adoptNode()`, HTML/Encoding/XHR conformance, remote CI, and cross-platform
 certification remain open. See the [slice 746 task](tasks/native-engine-browser-746.md),
 [slice 747 task](tasks/native-engine-browser-747.md), and
@@ -80,10 +84,8 @@ certification remain open. See the [slice 746 task](tasks/native-engine-browser-
 [slice 750 task](tasks/native-engine-browser-750.md), the
 [slice 751 task](tasks/native-engine-browser-751.md), and the
 [slice 752 task](tasks/native-engine-browser-752.md) and
-[slice 753 task](tasks/native-engine-browser-753.md) and
-[slice 754 task](tasks/native-engine-browser-754.md).
-Slice 755 plans cross-document imports, including the target document's inert
-template-content owner-document behavior; see the
+[slice 753 task](tasks/native-engine-browser-753.md),
+[slice 754 task](tasks/native-engine-browser-754.md), and
 [slice 755 task](tasks/native-engine-browser-755.md).
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,

@@ -31457,6 +31457,7 @@ fn document_bootstrap(
         "compat_mode": document.compat_mode(),
         "context_id": context_id,
         "frame_id": context_id,
+        "generation": document.generation(),
         "window_name": window_name,
         "opener_context_id": opener_context_id,
         "opener_window_name": opener_window_name,
@@ -31495,6 +31496,8 @@ fn document_bootstrap(
     let service_worker_page_script = service_worker_page_script();
     let xml_document_script = native_xml_document_script();
     let font_face_script = native_font_face_script();
+    let native_dom_max_depth = MAX_NATIVE_DOM_DEPTH;
+    let native_dom_max_nodes = MAX_NATIVE_NODES;
     let mut bootstrap = format!(
         r###"(() => {{
   const host = {serialized};
@@ -39813,6 +39816,14 @@ fn document_bootstrap(
     }};
     const element = makeElement(entry);
     element.__glassCreated = true;
+    try {{
+      Object.setPrototypeOf(
+        element,
+        namespaceURI === HTML_NAMESPACE
+          ? elementPrototypeFor(element.tagName)
+          : ElementNative.prototype,
+      );
+    }} catch (_error) {{}}
     Object.defineProperty(element, "__glassDynamicScriptStarted", {{
       enumerable: false,
       configurable: false,
@@ -40112,7 +40123,7 @@ fn document_bootstrap(
     pushCommand({{ kind: "createComment", node_index: nodeIndex, value: textContent }});
     return comment;
   }};
-  const makeDetachedDocumentType = (name, publicId = "", systemId = "") => {{
+  const makeDetachedDocumentType = (name, publicId = "", systemId = "", ownerDocumentResolver = () => globalThis.document) => {{
     let normalizedName = String(name);
     if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalizedName)) throw new TypeError("invalid document type name");
     let publicIdentifier = String(publicId);
@@ -40160,11 +40171,11 @@ fn document_bootstrap(
     }} }});
     Object.defineProperty(documentType, "parentNode", {{ enumerable: false, configurable: false, get() {{
       if (documentType.__glassParent) return documentType.__glassParent;
-      const owner = globalThis.document;
+      const owner = ownerDocumentResolver();
       return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(documentType) ? owner : null;
     }} }});
     Object.defineProperty(documentType, "parentElement", {{ enumerable: false, configurable: false, get() {{ return null; }} }});
-    Object.defineProperty(documentType, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return globalThis.document || null; }} }});
+    Object.defineProperty(documentType, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return ownerDocumentResolver() || null; }} }});
     try {{ Object.setPrototypeOf(documentType, DocumentTypeNative.prototype); }} catch (_error) {{}}
     defineTreeAccessors(documentType);
     mutationCreatedNodes.set(nodeIndex, documentType);
@@ -40338,9 +40349,24 @@ fn document_bootstrap(
     }}
     return fragment;
   }};
+  const templateContentsOwnerDocuments = globalThis.__glassTemplateContentsOwnerDocuments instanceof Map
+    ? globalThis.__glassTemplateContentsOwnerDocuments
+    : new Map();
+  globalThis.__glassTemplateContentsOwnerDocuments = templateContentsOwnerDocuments;
   let templateContentsOwnerDocument = null;
   const getTemplateContentsOwnerDocument = () => {{
     if (templateContentsOwnerDocument) {{
+      if (typeof globalThis.Document === "function") {{
+        try {{ Object.setPrototypeOf(templateContentsOwnerDocument, globalThis.Document.prototype); }} catch (_error) {{}}
+      }}
+      return templateContentsOwnerDocument;
+    }}
+    const contextId = String(host.context_id || "native");
+    const cachePrefix = contextId + ":";
+    const cacheKey = cachePrefix + String(host.generation ?? "");
+    const cached = templateContentsOwnerDocuments.get(cacheKey);
+    if (cached) {{
+      templateContentsOwnerDocument = cached;
       if (typeof globalThis.Document === "function") {{
         try {{ Object.setPrototypeOf(templateContentsOwnerDocument, globalThis.Document.prototype); }} catch (_error) {{}}
       }}
@@ -40368,6 +40394,13 @@ fn document_bootstrap(
         Object.defineProperty(element, "__glassOwnerDocumentOverride", {{ value: templateContentsOwnerDocument }});
         return element;
       }},
+      createAttribute(name) {{
+        return makeAttributeNode(name, "", () => templateContentsOwnerDocument);
+      }},
+      createAttributeNS(namespace, qualifiedName) {{
+        const namespaceURI = normalizeAttributeNamespace(namespace);
+        return makeAttributeNode(qualifiedName, "", () => templateContentsOwnerDocument, namespaceURI);
+      }},
       createTextNode(value) {{
         const node = makeDetachedText(value);
         Object.defineProperty(node, "__glassOwnerDocumentOverride", {{ value: templateContentsOwnerDocument }});
@@ -40383,7 +40416,27 @@ fn document_bootstrap(
         Object.defineProperty(fragment, "__glassOwnerDocumentOverride", {{ value: templateContentsOwnerDocument }});
         return fragment;
       }},
+      importNode(node, options = false) {{
+        return importNativeNode(templateContentsOwnerDocument, node, options);
+      }},
+      implementation: {{
+        createDocumentType(name, publicId = "", systemId = "") {{
+          return makeDetachedDocumentType(
+            name,
+            publicId,
+            systemId,
+            () => templateContentsOwnerDocument,
+          );
+        }},
+      }},
     }};
+    templateContentsOwnerDocuments.set(cacheKey, templateContentsOwnerDocument);
+    for (const key of templateContentsOwnerDocuments.keys()) {{
+      if (key.startsWith(cachePrefix) && key !== cacheKey) templateContentsOwnerDocuments.delete(key);
+    }}
+    while (templateContentsOwnerDocuments.size > 128) {{
+      templateContentsOwnerDocuments.delete(templateContentsOwnerDocuments.keys().next().value);
+    }}
     if (typeof globalThis.Document === "function") {{
       try {{ Object.setPrototypeOf(templateContentsOwnerDocument, globalThis.Document.prototype); }} catch (_error) {{}}
     }}
@@ -40857,6 +40910,128 @@ fn document_bootstrap(
     visit(owner);
     return result;
   }};
+  const importNodeSubtree = (options) => {{
+    if (options === undefined) return false;
+    if (typeof options === "boolean") return options;
+    if (options !== null && typeof options !== "object" && typeof options !== "function") {{
+      throw new TypeError("importNode options must be a boolean or dictionary");
+    }}
+    const selfOnly = options === null ? undefined : options.selfOnly;
+    const customElementRegistry = options === null ? undefined : options.customElementRegistry;
+    if (customElementRegistry !== undefined && customElementRegistry !== null) {{
+      throw new DOMExceptionNative(
+        "Custom element registries are not implemented by the native engine",
+        "NotSupportedError",
+      );
+    }}
+    return !Boolean(selfOnly);
+  }};
+  const cloneNativeNodeIntoDocument = (
+    source,
+    targetDocument,
+    deep,
+    state = {{ nodeCount: 0 }},
+    depth = 0,
+    preserveTemplateContentsOwner = false,
+  ) => {{
+    state.nodeCount += 1;
+    if (state.nodeCount > {native_dom_max_nodes}) throw new RangeError("native node clone exceeds its node limit");
+    const nodeType = Number(source && source.nodeType);
+    if (depth + Number(nodeType === 1) > {native_dom_max_depth}) {{
+      throw new RangeError("native node clone exceeds its depth limit");
+    }}
+    if (nodeType === 9) throw new DOMExceptionNative("A Document cannot be imported", "NotSupportedError");
+    if (nodeType === 11 && typeof globalThis.ShadowRoot === "function"
+        && source instanceof globalThis.ShadowRoot) {{
+      throw new DOMExceptionNative("A ShadowRoot cannot be imported", "NotSupportedError");
+    }}
+    const cloneChild = (child, ownerDocument) => cloneNativeNodeIntoDocument(
+      child,
+      ownerDocument,
+      true,
+      state,
+      depth + Number(nodeType === 1),
+      preserveTemplateContentsOwner,
+    );
+    if (nodeType === 3) return targetDocument.createTextNode(String(source.nodeValue || ""));
+    if (nodeType === 8) return targetDocument.createComment(String(source.nodeValue || ""));
+    if (nodeType === 2) {{
+      if (typeof targetDocument.createAttributeNS !== "function") {{
+        throw new DOMExceptionNative("The target Document cannot create attributes", "NotSupportedError");
+      }}
+      const clone = targetDocument.createAttributeNS(source.namespaceURI || null, source.name);
+      clone.value = String(source.value || "");
+      return clone;
+    }}
+    if (nodeType === 10) {{
+      if (!targetDocument.implementation
+          || typeof targetDocument.implementation.createDocumentType !== "function") {{
+        throw new DOMExceptionNative("The target Document cannot create document types", "NotSupportedError");
+      }}
+      return targetDocument.implementation.createDocumentType(source.name, source.publicId, source.systemId);
+    }}
+    if (nodeType === 1) {{
+      const qualifiedName = source.prefix ? source.prefix + ":" + source.localName : source.localName;
+      const clone = targetDocument.createElementNS(source.namespaceURI || null, qualifiedName);
+      for (const name of source.getAttributeNames()) {{
+        const value = source.getAttribute(name);
+        if (value === null) continue;
+        const namespaceURI = typeof source.__glassAttributeNamespace === "function"
+          ? source.__glassAttributeNamespace(name)
+          : null;
+        if (typeof clone.__glassSetParsedAttribute === "function") {{
+          clone.__glassSetParsedAttribute(name, value, namespaceURI);
+        }} else if (namespaceURI === null) clone.setAttribute(name, value);
+        else clone.setAttributeNS(namespaceURI, name, value);
+      }}
+      if (source.namespaceURI === HTML_NAMESPACE && source.localName === "template") {{
+        const sourceContent = source.content;
+        const targetContent = clone.content;
+        const sourceContentOwner = sourceContent && sourceContent.ownerDocument;
+        if (preserveTemplateContentsOwner && sourceContentOwner
+            && targetContent.ownerDocument !== sourceContentOwner
+            && !targetContent.__glassOwnerDocumentOverride) {{
+          Object.defineProperty(targetContent, "__glassOwnerDocumentOverride", {{
+            enumerable: false,
+            configurable: false,
+            value: sourceContentOwner,
+          }});
+        }}
+        if (deep) {{
+          const targetContentDocument = targetContent.ownerDocument || targetDocument;
+          for (const child of sourceContent.__glassChildren || []) {{
+            targetContent.appendChild(cloneChild(child, targetContentDocument));
+          }}
+        }}
+      }}
+      if (deep) {{
+        for (const child of source.__glassChildren || []) {{
+          clone.appendChild(cloneChild(child, targetDocument));
+        }}
+      }}
+      return clone;
+    }}
+    if (nodeType === 11) {{
+      const clone = targetDocument.createDocumentFragment();
+      if (deep) {{
+        for (const child of source.__glassChildren || []) {{
+          clone.appendChild(cloneChild(child, targetDocument));
+        }}
+      }}
+      return clone;
+    }}
+    throw new DOMExceptionNative("This native node type cannot be cloned", "NotSupportedError");
+  }};
+  const importNativeNode = (targetDocument, source, options = false) => {{
+    if (!source || typeof source !== "object" || !(source instanceof NodeNative)) {{
+      throw new TypeError("importNode requires a Node");
+    }}
+    const deep = importNodeSubtree(options);
+    if (Number(source.nodeType) === 9) {{
+      throw new DOMExceptionNative("A Document cannot be imported", "NotSupportedError");
+    }}
+    return cloneNativeNodeIntoDocument(source, targetDocument, deep);
+  }};
   const defineTreeAccessors = (node) => {{
     if (!node || typeof node !== "object") return node;
     const children = () => Array.isArray(node.__glassChildren) ? node.__glassChildren : [];
@@ -41109,62 +41284,7 @@ fn document_bootstrap(
       value(deep = false) {{
         const owner = node.ownerDocument || null;
         if (!owner) throw new DOMExceptionNative("The node has no owner document", "InvalidStateError");
-        const copyChildren = (clone) => {{
-          if (!Boolean(deep)) return;
-          for (const child of children()) {{
-            if (child && typeof child.cloneNode === "function") clone.appendChild(child.cloneNode(true));
-          }}
-        }};
-        const copyTemplateContents = (clone) => {{
-          if (node.nodeType !== 1 || node.namespaceURI !== HTML_NAMESPACE
-              || node.localName !== "template") return;
-          const source = node.content;
-          const destination = clone.content;
-          const sourceOwnerDocument = source.ownerDocument;
-          if (sourceOwnerDocument && destination.ownerDocument !== sourceOwnerDocument
-              && !destination.__glassOwnerDocumentOverride) {{
-            Object.defineProperty(destination, "__glassOwnerDocumentOverride", {{
-              enumerable: false,
-              configurable: false,
-              value: sourceOwnerDocument,
-            }});
-          }}
-          if (!Boolean(deep)) return;
-          for (const child of source.__glassChildren || []) {{
-            if (child && typeof child.cloneNode === "function") destination.appendChild(child.cloneNode(true));
-          }}
-        }};
-        if (node.nodeType === 3) return owner.createTextNode(String(node.nodeValue || ""));
-        if (node.nodeType === 8) return owner.createComment(String(node.nodeValue || ""));
-        if (node.nodeType === 2) {{
-          const clone = owner.createAttributeNS(node.namespaceURI || null, node.name);
-          clone.value = String(node.value || "");
-          return clone;
-        }}
-        if (node.nodeType === 10) return owner.implementation.createDocumentType(node.name, node.publicId, node.systemId);
-        if (node.nodeType === 1) {{
-          const clone = owner.createElementNS(node.namespaceURI || null, node.localName);
-          for (const name of node.getAttributeNames()) {{
-            const value = node.getAttribute(name);
-            if (value === null) continue;
-            const namespaceURI = typeof node.__glassAttributeNamespace === "function"
-              ? node.__glassAttributeNamespace(name)
-              : null;
-            if (typeof clone.__glassSetParsedAttribute === "function") {{
-              clone.__glassSetParsedAttribute(name, value, namespaceURI);
-            }} else if (namespaceURI === null) clone.setAttribute(name, value);
-            else clone.setAttributeNS(namespaceURI, name, value);
-          }}
-          copyTemplateContents(clone);
-          copyChildren(clone);
-          return clone;
-        }}
-        if (node.nodeType === 11) {{
-          const clone = owner.createDocumentFragment();
-          copyChildren(clone);
-          return clone;
-        }}
-        throw new DOMExceptionNative("This native node type cannot be cloned", "NotSupportedError");
+        return cloneNativeNodeIntoDocument(node, owner, Boolean(deep), {{ nodeCount: 0 }}, 0, true);
       }},
     }});
     defineMissing(node, "isSameNode", {{
@@ -42683,6 +42803,9 @@ fn document_bootstrap(
     createElement(tagName) {{ return makeDetachedElement(tagName, HTML_NAMESPACE); }},
     createElementNS(namespace, qualifiedName) {{
       return makeDetachedElement(qualifiedName, normalizeElementNamespace(namespace));
+    }},
+    importNode(node, options = false) {{
+      return importNativeNode(document, node, options);
     }},
     createAttribute(name) {{ return makeAttributeNode(name, "", () => document); }},
     createAttributeNS(namespace, qualifiedName) {{
@@ -45300,11 +45423,14 @@ fn document_bootstrap(
       else previous.command = {{ kind: "frameScriptBatch", commands: [previous.command, command] }};
       return;
     }}
+    const dispatchedCommand = frameBatchableCommand(command)
+      ? {{ kind: "frameScriptBatch", commands: [command] }}
+      : command;
     pushCommand({{
       kind: "frameScript",
       frame_id: frameId,
       source_frame_id: sourceFrameId,
-      command,
+      command: dispatchedCommand,
     }});
   }};
   const frameBindingForId = (frameId) => {{
@@ -45423,6 +45549,13 @@ fn document_bootstrap(
           Object.defineProperty(element, "__glassOwnerDocumentOverride", {{ value: ownerDocument }});
           return element;
         }},
+        createAttribute(name) {{
+          return makeAttributeNode(name, "", () => ownerDocument);
+        }},
+        createAttributeNS(namespace, qualifiedName) {{
+          const namespaceURI = normalizeAttributeNamespace(namespace);
+          return makeAttributeNode(qualifiedName, "", () => ownerDocument, namespaceURI);
+        }},
         createTextNode(value) {{
           const node = makeFrameDetachedText(value);
           Object.defineProperty(node, "__glassOwnerDocumentOverride", {{ value: ownerDocument }});
@@ -45437,6 +45570,19 @@ fn document_bootstrap(
           const fragment = makeFrameDocumentFragment();
           Object.defineProperty(fragment, "__glassOwnerDocumentOverride", {{ value: ownerDocument }});
           return fragment;
+        }},
+        importNode(node, options = false) {{
+          return importNativeNode(ownerDocument, node, options);
+        }},
+        implementation: {{
+          createDocumentType(name, publicId = "", systemId = "") {{
+            return makeFrameDetachedDocumentType(
+              name,
+              publicId,
+              systemId,
+              () => ownerDocument,
+            );
+          }},
         }},
       }};
       frameTemplateContentsOwnerDocument = ownerDocument;
@@ -46823,7 +46969,12 @@ fn document_bootstrap(
       try {{ Object.setPrototypeOf(comment, CommentNative.prototype); }} catch (_error) {{}}
       return comment;
     }};
-    const makeFrameDetachedDocumentType = (name, publicId = "", systemId = "") => {{
+    const makeFrameDetachedDocumentType = (
+      name,
+      publicId = "",
+      systemId = "",
+      ownerDocumentResolver = () => frameDocumentCache.get(currentFrameId)?.document || frameDocument,
+    ) => {{
       let normalizedName = String(name);
       if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalizedName)) throw new TypeError("invalid document type name");
       let publicIdentifier = String(publicId);
@@ -46873,7 +47024,7 @@ fn document_bootstrap(
       }} }});
       Object.defineProperty(documentType, "parentNode", {{ enumerable: false, configurable: false, get() {{ return documentType.__glassParent || null; }} }});
       Object.defineProperty(documentType, "parentElement", {{ enumerable: false, configurable: false, get() {{ return null; }} }});
-      Object.defineProperty(documentType, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return frameDocumentCache.get(currentFrameId)?.document || frameDocument; }} }});
+      Object.defineProperty(documentType, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return ownerDocumentResolver() || null; }} }});
       defineTreeAccessors(documentType);
       frameMutationNodes.set(frameMutationKey(currentBinding, nodeIndex), documentType);
       frameMutationChildren.set(frameMutationKey(currentBinding, nodeIndex), []);
@@ -47165,6 +47316,9 @@ fn document_bootstrap(
       createElement(tagName) {{ return makeFrameDetachedElement(tagName, HTML_NAMESPACE); }},
       createElementNS(namespace, qualifiedName) {{
         return makeFrameDetachedElement(qualifiedName, normalizeElementNamespace(namespace));
+      }},
+      importNode(node, options = false) {{
+        return importNativeNode(frameDocument, node, options);
       }},
       createAttribute(name) {{
         return makeAttributeNode(name, "", () => frameTemplateContentsOwnerDocumentForNode(null));

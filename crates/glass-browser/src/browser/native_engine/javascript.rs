@@ -60,7 +60,7 @@ use rquickjs::function::This;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
     ArrayBuffer, CaughtError, Coerced, Context, Ctx, Error, FromJs, Function, Module, Runtime,
-    Value,
+    TypedArray, Value,
 };
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
@@ -12128,6 +12128,7 @@ impl NativeJavaScriptRuntime {
             .with(|ctx| {
                 install_native_html_fragment_parser(ctx.clone())?;
                 install_native_html_document_parser(ctx.clone())?;
+                install_native_html_document_decoder(ctx.clone())?;
                 ctx.eval::<(), _>(
                     r#"Object.defineProperty(globalThis, "__glassParseJSONModule", {
                       value: JSON.parse,
@@ -16793,10 +16794,12 @@ fn install_native_html_fragment_parser<'js>(ctx: Ctx<'js>) -> Result<(), Error> 
 fn install_native_html_document_parser<'js>(ctx: Ctx<'js>) -> Result<(), Error> {
     const MAX_NATIVE_HTML_DOCUMENT_RESULT_BYTES: usize =
         MAX_NATIVE_SCRIPT_BYTES.saturating_mul(128);
+    const MAX_NATIVE_HTML_DOCUMENT_SOURCE_BYTES: usize =
+        crate::browser_backend::MAX_TEXT_BYTES.saturating_mul(3);
 
     let parse_document = Function::new(ctx.clone(), |source: String| -> String {
         let error_response = |kind: &str| serde_json::json!({ "error": kind });
-        let response = if source.len() > crate::browser_backend::MAX_TEXT_BYTES {
+        let response = if source.len() > MAX_NATIVE_HTML_DOCUMENT_SOURCE_BYTES {
             error_response("byteLimit")
         } else {
             let parsed = parse_html5_document(
@@ -16825,6 +16828,37 @@ fn install_native_html_document_parser<'js>(ctx: Ctx<'js>) -> Result<(), Error> 
     ctx.eval::<(), _>(
         r#"Object.defineProperty(globalThis, "__glassParseHtmlDocumentHost", {
           value: globalThis.__glassParseHtmlDocumentHost,
+          writable: false,
+          configurable: false,
+          enumerable: false,
+        });"#,
+    )
+}
+
+fn install_native_html_document_decoder<'js>(ctx: Ctx<'js>) -> Result<(), Error> {
+    let decode_document = Function::new(
+        ctx.clone(),
+        |bytes: TypedArray<'_, u8>,
+         response_content_type: Option<String>,
+         override_mime_type: Option<String>| {
+            let bytes: &[u8] = bytes.as_ref();
+            if bytes.len() > crate::browser_backend::MAX_TEXT_BYTES {
+                return None;
+            }
+            let decoded = super::html_encoding::decode_xhr_html_document(
+                bytes,
+                response_content_type.as_deref(),
+                override_mime_type.as_deref(),
+            );
+            (decoded.len() <= crate::browser_backend::MAX_TEXT_BYTES.saturating_mul(3))
+                .then_some(decoded)
+        },
+    )?;
+    ctx.globals()
+        .set("__glassDecodeHtmlDocumentHost", decode_document)?;
+    ctx.eval::<(), _>(
+        r#"Object.defineProperty(globalThis, "__glassDecodeHtmlDocumentHost", {
+          value: globalThis.__glassDecodeHtmlDocumentHost,
           writable: false,
           configurable: false,
           enumerable: false,
@@ -29824,6 +29858,7 @@ fn service_worker_page_script() -> String {
 
 const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
   const nativeXmlMaxBytes = __GLASS_XML_MAX_BYTES__;
+  const nativeHtmlMaxBytes = __GLASS_HTML_MAX_BYTES__;
   const nativeXmlMaxNodes = __GLASS_XML_MAX_NODES__;
   const nativeXmlMaxDepth = __GLASS_XML_MAX_DEPTH__;
   const nativeXmlNamespace = "http://www.w3.org/2000/xmlns/";
@@ -30213,7 +30248,7 @@ const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"
   const nativeHtmlParseDocument = (source, url, contentType) => {
     try {
       const sourceText = String(source);
-      if (nativeXmlByteLength(sourceText) > nativeXmlMaxBytes) return null;
+      if (nativeXmlByteLength(sourceText) > nativeHtmlMaxBytes) return null;
       const parseHost = globalThis.__glassParseHtmlDocumentHost;
       const parseJSON = globalThis.__glassParseJSONModule;
       if (typeof parseHost !== "function" || typeof parseJSON !== "function") return null;
@@ -30731,6 +30766,12 @@ fn native_xml_document_script() -> String {
         .replace(
             "__GLASS_XML_MAX_BYTES__",
             &crate::browser_backend::MAX_TEXT_BYTES.to_string(),
+        )
+        .replace(
+            "__GLASS_HTML_MAX_BYTES__",
+            &crate::browser_backend::MAX_TEXT_BYTES
+                .saturating_mul(3)
+                .to_string(),
         )
         .replace(
             "__GLASS_XML_MAX_NODES__",
@@ -36104,71 +36145,14 @@ fn document_bootstrap(
       timeoutMs: xhr._timeout === 0 ? null : xhr._timeout,
     }};
   }};
-  const nativeXhrCharsetParameter = (contentType) => {{
-    if (typeof contentType !== "string") return null;
-    for (const parameter of contentType.split(";").slice(1)) {{
-      const separator = parameter.indexOf("=");
-      if (separator < 0 || parameter.slice(0, separator).trim().toLowerCase() !== "charset") continue;
-      return parameter.slice(separator + 1).trim().replace(/^(?:"([^"]*)"|'([^']*)')$/, (_match, doubleQuoted, singleQuoted) => doubleQuoted ?? singleQuoted);
-    }}
-    return null;
-  }};
   const nativeXhrDecodeDocumentBytes = (bytes, responseContentType, overrideMimeType) => {{
-    let label = nativeXhrCharsetParameter(responseContentType);
-    const overrideLabel = nativeXhrCharsetParameter(overrideMimeType);
-    if (overrideLabel !== null) label = overrideLabel;
-    let encoding = (label || "utf-8").trim().toLowerCase();
-    let offset = 0;
-    if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {{
-      offset = 3;
-      encoding = "utf-8";
-    }} else if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {{
-      offset = 2;
-      encoding = "utf-16le";
-    }} else if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {{
-      offset = 2;
-      encoding = "utf-16be";
-    }}
-    if (["utf-8", "utf8", "unicode-1-1-utf-8"].includes(encoding))
-      return utf8TextFromBytes(bytes.slice(offset));
-    if (["utf-16", "utf-16le", "utf-16be"].includes(encoding)) {{
-      const littleEndian = encoding !== "utf-16be";
-      let result = "";
-      let chunk = "";
-      for (let index = offset; index + 1 < bytes.length; index += 2) {{
-        const unit = littleEndian
-          ? bytes[index] | (bytes[index + 1] << 8)
-          : (bytes[index] << 8) | bytes[index + 1];
-        if (unit >= 0xd800 && unit <= 0xdbff) {{
-          const nextIndex = index + 2;
-          const next = nextIndex + 1 < bytes.length
-            ? littleEndian
-              ? bytes[nextIndex] | (bytes[nextIndex + 1] << 8)
-              : (bytes[nextIndex] << 8) | bytes[nextIndex + 1]
-            : 0;
-          if (next >= 0xdc00 && next <= 0xdfff) {{
-            chunk += String.fromCodePoint(0x10000 + ((unit - 0xd800) << 10) + next - 0xdc00);
-            index += 2;
-          }} else chunk += "\ufffd";
-        }} else if (unit >= 0xdc00 && unit <= 0xdfff) chunk += "\ufffd";
-        else chunk += String.fromCharCode(unit);
-        if (chunk.length >= 8192) {{ result += chunk; chunk = ""; }}
-      }}
-      if ((bytes.length - offset) % 2 !== 0) chunk += "\ufffd";
-      return result + chunk;
-    }}
-    if (["windows-1252", "cp1252", "iso-8859-1", "iso8859-1", "latin1", "latin-1", "l1", "us-ascii", "ascii", "x-cp1252"].includes(encoding)) {{
-      const special = ["€", "\u0081", "‚", "ƒ", "„", "…", "†", "‡", "ˆ", "‰", "Š", "‹", "Œ", "\u008d", "Ž", "\u008f", "\u0090", "‘", "’", "“", "”", "•", "–", "—", "˜", "™", "š", "›", "œ", "\u009d", "ž", "Ÿ"];
-      let result = "";
-      let chunk = "";
-      for (let index = offset; index < bytes.length; index += 1) {{
-        const byte = bytes[index];
-        chunk += byte >= 0x80 && byte <= 0x9f ? special[byte - 0x80] : String.fromCharCode(byte);
-        if (chunk.length >= 8192) {{ result += chunk; chunk = ""; }}
-      }}
-      return result + chunk;
-    }}
-    return utf8TextFromBytes(bytes.slice(offset));
+    const decodeHost = globalThis.__glassDecodeHtmlDocumentHost;
+    if (typeof decodeHost !== "function")
+      throw new Error("native HTML document decoder is unavailable");
+    const decoded = decodeHost(new Uint8Array(bytes), responseContentType, overrideMimeType);
+    if (typeof decoded !== "string")
+      throw new RangeError("native HTML response document exceeds its byte limit");
+    return decoded;
   }};
   const nativeXhrNormalizeOverrideMimeType = (value) => {{
     const text = String(value).trim();

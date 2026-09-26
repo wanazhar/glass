@@ -205,8 +205,31 @@ The scoped verification passed:
   full-product MCP tools, 101 browser-only, 17 examples, 22 public modules).
   `cargo fmt --all -- --check` and `git diff --check` passed.
 
-The hard reaction-queue overflow and 10,000-reaction checkpoint ceiling have
-not been stress-triggered. Full custom-element WPT, customized built-ins,
-scoped registries, form-associated behavior, custom states, remote CI, and
-Windows/macOS runtime certification remain open; slice 758 and issue #40 remain
-in progress.
+The focused process-backed stress test
+`native_custom_element_reaction_queue_overflow_is_bounded_and_recovers` builds
+17 connected elements with 256 observed attributes each, queuing 4,352 upgrade
+reactions at the definition boundary. It verifies all 17 elements upgrade,
+exactly 4,096 callbacks run, the 256 excess reactions each produce a `RangeError`
+through `reportError`, no other errors are reported, and a later observed
+attribute callback runs successfully. Exact local result:
+
+- `cargo test -p glass-browser --test native_engine native_custom_element_reaction_queue_overflow_is_bounded_and_recovers --locked --quiet`:
+  `1 passed; 0 failed; 0 ignored; 0 measured; 794 filtered out; finished in
+  23.59s`
+
+The focused process-backed stress test
+`native_custom_element_reaction_checkpoint_work_is_bounded_and_recovers`
+re-queues its connected callback through the internal scheduler bridge until
+the per-checkpoint ceiling is reached. A guard stops enqueueing at 10,002
+attempts if the bound regresses, preventing a runaway test. It verifies exactly
+10,000 callbacks, one checkpoint-limit `RangeError` through `reportError`, no
+unexpected reports, and successful delivery of a later connected callback.
+The paired focused run passed:
+
+- `cargo test -p glass-browser --test native_engine native_custom_element_reaction_ --locked --quiet`:
+  `2 passed; 0 failed; 0 ignored; 0 measured; 794 filtered out; finished in
+  33.34s`
+
+Full custom-element WPT, customized built-ins, scoped registries, form-
+associated behavior, custom states, remote CI, and Windows/macOS runtime
+certification remain open; slice 758 and issue #40 remain in progress.

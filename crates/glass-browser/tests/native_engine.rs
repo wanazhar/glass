@@ -64136,6 +64136,186 @@ async fn native_custom_elements_recover_from_reentrancy_and_respect_bounds() {
 }
 
 #[tokio::test]
+async fn native_custom_element_reaction_queue_overflow_is_bounded_and_recovers() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("native custom-element queue-bound request")
+            .unwrap();
+        let _request = read_http_request(&mut stream).await;
+        let attributes = (0..256)
+            .map(|index| format!(" a{index}='value'"))
+            .collect::<String>();
+        let mut body = String::from("<!doctype html><html><body>");
+        for index in 0..17 {
+            body.push_str(&format!(
+                "<x-reaction-bound id='bound-{index}'{attributes}></x-reaction-bound>"
+            ));
+        }
+        body.push_str("</body></html>");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/custom-element-queue-bound")),
+    )
+    .await
+    .unwrap();
+    let result = session
+        .script(
+            r##"(() => {
+              const observedAttributes = Array.from(
+                { length: 256 },
+                (_, index) => `a${index}`,
+              );
+              let callbackCount = 0;
+              let overflowReportCount = 0;
+              let unexpectedReportCount = 0;
+              globalThis.reportError = error => {
+                if (error instanceof RangeError
+                    && String(error.message).includes('reaction queue exceeded its limit')) {
+                  overflowReportCount += 1;
+                } else {
+                  unexpectedReportCount += 1;
+                }
+              };
+              class QueueBoundProbe extends HTMLElement {
+                static get observedAttributes() { return observedAttributes; }
+                attributeChangedCallback() { callbackCount += 1; }
+              }
+              customElements.define('x-reaction-bound', QueueBoundProbe);
+              const nodes = Array.from(document.querySelectorAll('x-reaction-bound'));
+
+              let postOverflowCallbackCount = 0;
+              class PostOverflowProbe extends HTMLElement {
+                static get observedAttributes() { return ['data-trigger']; }
+                attributeChangedCallback() { postOverflowCallbackCount += 1; }
+              }
+              customElements.define('x-after-overflow', PostOverflowProbe);
+              document.createElement('x-after-overflow').setAttribute('data-trigger', 'recovered');
+
+              return {
+                nodeCount: nodes.length,
+                upgradedCount: nodes.filter(node => node instanceof QueueBoundProbe).length,
+                callbackCount,
+                overflowReportCount,
+                unexpectedReportCount,
+                postOverflowCallbackCount,
+              };
+            })()"##,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.value,
+        serde_json::json!({
+            "nodeCount": 17,
+            "upgradedCount": 17,
+            "callbackCount": 4096,
+            "overflowReportCount": 256,
+            "unexpectedReportCount": 0,
+            "postOverflowCallbackCount": 1,
+        })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_custom_element_reaction_checkpoint_work_is_bounded_and_recovers() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("native custom-element checkpoint-bound request")
+            .unwrap();
+        let _request = read_http_request(&mut stream).await;
+        let body = "<!doctype html><html><body></body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/custom-element-checkpoint-bound")),
+    )
+    .await
+    .unwrap();
+    let result = session
+        .script(
+            r##"(() => {
+              let callbackCount = 0;
+              let checkpointLimitReportCount = 0;
+              let unexpectedReportCount = 0;
+              globalThis.reportError = error => {
+                if (error instanceof RangeError
+                    && String(error.message).includes('reaction checkpoint exceeded its work limit')) {
+                  checkpointLimitReportCount += 1;
+                } else {
+                  unexpectedReportCount += 1;
+                }
+              };
+              class WorkLimitProbe extends HTMLElement {
+                connectedCallback() {
+                  callbackCount += 1;
+                  if (callbackCount < 10002) {
+                    globalThis.__glassQueueNativeCustomElementReaction(
+                      this,
+                      'connectedCallback',
+                      [],
+                    );
+                  }
+                }
+              }
+              customElements.define('x-work-limit-probe', WorkLimitProbe);
+              document.body.appendChild(document.createElement('x-work-limit-probe'));
+
+              let recoveryCallbackCount = 0;
+              class RecoveryProbe extends HTMLElement {
+                connectedCallback() { recoveryCallbackCount += 1; }
+              }
+              customElements.define('x-work-limit-recovery', RecoveryProbe);
+              document.body.appendChild(document.createElement('x-work-limit-recovery'));
+
+              return {
+                callbackCount,
+                checkpointLimitReportCount,
+                unexpectedReportCount,
+                recoveryCallbackCount,
+              };
+            })()"##,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.value,
+        serde_json::json!({
+            "callbackCount": 10000,
+            "checkpointLimitReportCount": 1,
+            "unexpectedReportCount": 0,
+            "recoveryCallbackCount": 1,
+        })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-748
 scope: glass-browser/xhr-html-document-parser
-status: in-progress
+status: complete
 depends_on: [native-engine-browser-747]
 ---
 
@@ -95,4 +95,25 @@ before this boundary, so byte encoding remains a separate correctness gap.
 
 ## Evidence
 
-- Design contract recorded; implementation and verification are in progress.
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- `cargo check -p glass-browser --lib --tests --locked --quiet` passed.
+- `cargo test -p glass-browser --lib --locked --quiet xhr_html_response_document`
+  passed (6 tests), covering scripting-disabled `noscript`, malformed-table
+  recovery, HTML table construction, SVG/MathML namespaces and adjusted
+  attributes, templates, and bounded structured-parser output.
+- `cargo test -p glass-browser --test native_engine --locked --quiet
+  native_content_process_xhr_exposes_bounded -- --nocapture` passed (2 tests),
+  covering process-backed XML and HTML responses, response URL, malformed HTML,
+  inert scripts, read-only documents, and no referenced-resource requests.
+- The response parser no longer contains the handwritten JavaScript HTML
+  tokenizer/tree builder. The HTML route uses the bounded html5ever document
+  sink with scripting disabled; XML still uses its strict XML parser.
+- Maintainer documentation gates passed after building `glass` and
+  `glass-browser`: release-truth covered 1,376 Markdown files with zero
+  current-claim failures; depth covered 93 current guides and 19 contracts;
+  shortcut inventory covered 15 implementation keys and 63 markers; live
+  coverage found 346 full-product MCP tools (101 browser-only), 17 examples,
+  and 22 public modules.
+- UTF-8-only response decoding, full template `DocumentFragment` identity,
+  complete XHR/Web IDL and HTML WPT conformance, remote CI, and cross-platform
+  certification remain open. This does not close issue #40.

@@ -61776,6 +61776,8 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                                 identity: document instanceof Document
                                     && document === explicit.responseXML,
                                 contentType: document.contentType,
+                                responseUrl: document.URL === explicit.responseURL
+                                    && document.documentURI === explicit.responseURL,
                                 responseTextError,
                                 root: [root.nodeName, root.localName, root.tagName],
                                 title: document.title,
@@ -61878,6 +61880,7 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
             "explicit": {
                 "identity": true,
                 "contentType": "text/html",
+                "responseUrl": true,
                 "responseTextError": "InvalidStateError",
                 "root": ["HTML", "html", "HTML"],
                 "title": "Native & HTML",

@@ -14183,7 +14183,7 @@ mod tests {
             .evaluate(
                 r##"(() => {
                     const response = globalThis.__glassParseHtmlDocument(
-                        "<!doctype html><body><script>globalThis.__glassXhrResponseScriptRan=true;</script><noscript id='fallback'><b id='fallback-child'>visible</b></noscript><svg viewBox='0 0 1 1'><linearGradient id='gradient' xlink:href='#target'></linearGradient></svg><template id='template'><table><tr><td id='template-cell'>template</td></tr></table></template></body>",
+                        "<!doctype html><body><script>globalThis.__glassXhrResponseScriptRan=true;</script><noscript id='fallback'><b id='fallback-child'>visible</b></noscript><svg viewBox='0 0 1 1'><linearGradient id='gradient' xlink:href='#target'></linearGradient></svg><math><annotation-xml id='math-annotation' encoding='text/html' definitionurl='urn:glass:test'><div id='math-html'>math</div></annotation-xml></math><template id='template'><table><tr><td id='template-cell'>template</td></tr></table></template></body>",
                         "https://example.test/response.html",
                         "text/html; charset=UTF-8",
                     );
@@ -14193,6 +14193,8 @@ mod tests {
                     const svg = response.querySelector("svg");
                     const gradient = response.getElementById("gradient");
                     const xlink = gradient && gradient.getAttributeNode("xlink:href");
+                    const annotation = response.getElementById("math-annotation");
+                    const mathHtml = response.getElementById("math-html");
                     const template = response.getElementById("template");
                     const templateCell = response.getElementById("template-cell");
                     const serialized = new XMLSerializer().serializeToString(response);
@@ -14204,6 +14206,11 @@ mod tests {
                         gradient.namespaceURI === "http://www.w3.org/2000/svg",
                         svg.getAttribute("viewBox") === "0 0 1 1",
                         xlink.namespaceURI === "http://www.w3.org/1999/xlink",
+                        annotation.namespaceURI === "http://www.w3.org/1998/Math/MathML",
+                        annotation.getAttributeNode("definitionURL").name === "definitionURL",
+                        annotation.getAttribute("definitionURL") === "urn:glass:test",
+                        mathHtml.namespaceURI === "http://www.w3.org/1999/xhtml"
+                            && mathHtml.parentElement === annotation,
                         template.querySelector("#template-cell") === templateCell,
                         templateCell.parentElement.localName === "tr",
                         template.children.length === 1
@@ -14223,7 +14230,8 @@ mod tests {
         assert_eq!(
             evaluation.value,
             serde_json::json!([
-                true, true, true, true, true, true, true, true, true, true, true,
+                true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+                true,
             ])
         );
     }

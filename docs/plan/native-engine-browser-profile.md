@@ -140,7 +140,11 @@ autonomous custom-element registry and lifecycle code is implemented, while
 template-content identity preservation now passes its focused process-backed
 regression after cached fragments are refreshed during snapshot hydration. A
 selected-frame regression covers independent top-level/frame registries and
-frame-owner lifecycle execution.
+frame-owner lifecycle execution. Another process-backed regression verifies
+reentrant definition rejection and recovery, callback-triggered insertion
+ordering, FIFO ordering for 300 reactions across queue compaction, and the
+1,024-entry `whenDefined()` capacity/recovery boundary. The hard reaction-queue
+overflow and per-checkpoint work limit still lack stress coverage.
 Customized built-ins, scoped registries, form-associated elements, custom
 states, and full Web Platform Tests remain profile requirements beyond this
 bounded slice.

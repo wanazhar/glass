@@ -38,11 +38,15 @@ cross-platform certification remain open.
 Slice [native-engine-browser-758](../tasks/native-engine-browser-758.md) is in
 progress, covering autonomous custom elements, registry operations, parser
 upgrades, and bounded lifecycle reactions. The focused template-content
-identity regression now passes after cached fragment wrappers receive their
-native snapshot index before tree reconstruction. A selected-frame process
-regression also confirms independent top-level/frame registries and frame-owner
-parser upgrade, reactions, and identity after script refresh. Exact local
-verification and remaining scope are recorded in the task.
+identity regression passes after cached fragment wrappers receive their native
+snapshot index before tree reconstruction. A selected-frame process regression
+confirms independent top-level/frame registries and frame-owner parser upgrade,
+reactions, and identity after script refresh. A separate process-backed
+reaction-safety regression verifies reentrant definition rejection/recovery,
+callback-triggered insertion order, 300 FIFO reactions across queue compaction,
+and the 1,024-entry `whenDefined()` bound and recovery. The hard reaction-queue
+overflow and per-checkpoint work limits remain untested; exact local evidence
+and remaining scope are recorded in the task.
 Customized built-ins, scoped registries, form-associated behavior, custom
 states, and full WPT coverage remain profile requirements beyond that bounded
 slice.

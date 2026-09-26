@@ -27,10 +27,11 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-757`.
-These are implementation checkpoints, not browser-completion evidence; issue
-#40 remains open for the full Core Web Profile, conformance, platform, and
-release gates.
+browser expansion implementation is complete through
+`native-engine-browser-757`. Slice 758 is actively implementing and verifying
+the autonomous custom-element contract. These are implementation checkpoints,
+not browser-completion evidence; issue #40 remains open for the full Core Web
+Profile, conformance, platform, and release gates.
 Slice 755 implements target-document-aware `Document.importNode()` for live
 top-level, same-origin-frame, and inert template-owner Documents. Its focused
 process-backed regression passes locally; this remains a bounded DOM slice,
@@ -53,14 +54,12 @@ owner/origin guards. Worker-loss rollback is implemented but has not been
 fault-injection-tested. Remote CI and cross-platform certification remain
 issue-level gates.
 The [slice 758 contract](tasks/native-engine-browser-758.md) is in progress.
-Autonomous custom-element registry and bounded lifecycle code is locally
-implemented, and template-content identity preservation passes its focused
-process-backed regression after cached fragments are refreshed during snapshot
-hydration. A selected-frame regression also verifies that a same-origin frame
-executes custom-element definitions in its own registry and preserves state
-across frame selection changes. Custom elements remain an explicit Core Web
-Profile requirement, not a completed capability; exact evidence is recorded
-in the task file.
+Alongside template-content identity and selected-frame registry coverage, the
+process-backed reaction-safety regression now checks FIFO ordering across
+300 queued callbacks, callback-triggered insertion, definition reentrancy and
+recovery, and bounded `whenDefined()` capacity recovery. Custom elements remain
+an explicit Core Web Profile requirement, not a completed capability; exact
+evidence and unverified bounds are recorded in the task file.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

@@ -63611,6 +63611,7 @@ async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
               let invalidWhenDefinedError = null;
               try { await customElements.whenDefined('invalid'); }
               catch (error) { invalidWhenDefinedError = error.name; }
+
               customElements.initialize(document);
               globalThis.__glassCustomElementTrace = trace;
               globalThis.__glassCustomElementConstructor = ProbeElement;
@@ -63957,6 +63958,144 @@ async fn native_custom_elements_have_frame_local_registries_in_selected_frame_re
                 "connected:child-parser",
                 "attribute:data-value:child:updated:null",
             ],
+        })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_custom_elements_recover_from_reentrancy_and_respect_bounds() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("native custom-element reentrancy request")
+            .unwrap();
+        let _request = read_http_request(&mut stream).await;
+        let body = "<!doctype html><html><body></body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/custom-element-reentrancy")),
+    )
+    .await
+    .unwrap();
+    let result = session
+        .script(
+            r##"await (async () => {
+              let reentrantDefinitionError = null;
+              const reentrantInnerConstructor = class extends HTMLElement {};
+              class ReentrantDefinitionProbe extends HTMLElement {
+                static get observedAttributes() {
+                  try { customElements.define('x-reentrant-inner', reentrantInnerConstructor); }
+                  catch (error) { reentrantDefinitionError = error.name; }
+                  return [];
+                }
+                attributeChangedCallback() {}
+              }
+              customElements.define('x-reentrant-outer', ReentrantDefinitionProbe);
+              const reentrantDefinitionWasAtomic = customElements.get('x-reentrant-inner') === undefined;
+              customElements.define('x-reentrant-inner', reentrantInnerConstructor);
+
+              let rejectedDefinitionMessage = null;
+              class RejectedDefinitionProbe extends HTMLElement {
+                static get observedAttributes() { throw new Error('observed attributes rejected'); }
+                attributeChangedCallback() {}
+              }
+              try { customElements.define('x-definition-retry', RejectedDefinitionProbe); }
+              catch (error) { rejectedDefinitionMessage = error.message; }
+              const rejectedDefinitionWasAtomic = customElements.get('x-definition-retry') === undefined;
+              class RetriedDefinitionProbe extends HTMLElement {}
+              customElements.define('x-definition-retry', RetriedDefinitionProbe);
+
+              const nestedReactionOrder = [];
+              class ReentrantReactionChild extends HTMLElement {
+                connectedCallback() { nestedReactionOrder.push('child:connected'); }
+              }
+              class ReentrantReactionParent extends HTMLElement {
+                connectedCallback() {
+                  nestedReactionOrder.push('parent:start');
+                  this.appendChild(document.createElement('x-reentrant-reaction-child'));
+                  nestedReactionOrder.push('parent:end');
+                }
+              }
+              customElements.define('x-reentrant-reaction-child', ReentrantReactionChild);
+              customElements.define('x-reentrant-reaction-parent', ReentrantReactionParent);
+              document.body.appendChild(document.createElement('x-reentrant-reaction-parent'));
+
+              const queuedReactionOrder = [];
+              const queuedReactionRoot = document.createElement('div');
+              queuedReactionRoot.innerHTML = Array.from(
+                { length: 300 },
+                (_, index) => `<x-q n="${index}"></x-q>`,
+              ).join('');
+              class QueuedReactionProbe extends HTMLElement {
+                static get observedAttributes() { return ['n']; }
+                attributeChangedCallback(name, oldValue, newValue) {
+                  queuedReactionOrder.push(Number(newValue));
+                }
+              }
+              customElements.define('x-q', QueuedReactionProbe);
+              customElements.upgrade(queuedReactionRoot);
+              const queuedReactionOrderIsStable = queuedReactionOrder.length === 300
+                && queuedReactionOrder.every((value, index) => value === index);
+
+              const pendingDefinitions = [];
+              for (let index = 0; index < 1024; index += 1) {
+                pendingDefinitions.push(customElements.whenDefined(`x-pending-limit-${index}`));
+              }
+              let pendingLimitError = null;
+              try { await customElements.whenDefined('x-pending-limit-overflow'); }
+              catch (error) { pendingLimitError = error.name; }
+              class PendingCapacityProbe extends HTMLElement {}
+              customElements.define('x-pending-limit-0', PendingCapacityProbe);
+              const pendingCapacityResolved = await pendingDefinitions[0] === PendingCapacityProbe;
+              const releasedPendingDefinition = customElements.whenDefined('x-pending-limit-overflow');
+              class ReleasedPendingProbe extends HTMLElement {}
+              customElements.define('x-pending-limit-overflow', ReleasedPendingProbe);
+              const pendingCapacityRecovered = await releasedPendingDefinition === ReleasedPendingProbe;
+
+              return {
+                reentrantDefinitionError,
+                reentrantDefinitionWasAtomic,
+                reentrantDefinitionRecovery: customElements.get('x-reentrant-inner') === reentrantInnerConstructor,
+                rejectedDefinitionMessage,
+                rejectedDefinitionWasAtomic,
+                rejectedDefinitionRecovery: customElements.get('x-definition-retry') === RetriedDefinitionProbe,
+                nestedReactionOrder,
+                queuedReactionOrderIsStable,
+                pendingLimitError,
+                pendingCapacityResolved,
+                pendingCapacityRecovered,
+              };
+            })()"##,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.value,
+        serde_json::json!({
+            "reentrantDefinitionError": "NotSupportedError",
+            "reentrantDefinitionWasAtomic": true,
+            "reentrantDefinitionRecovery": true,
+            "rejectedDefinitionMessage": "observed attributes rejected",
+            "rejectedDefinitionWasAtomic": true,
+            "rejectedDefinitionRecovery": true,
+            "nestedReactionOrder": ["parent:start", "parent:end", "child:connected"],
+            "queuedReactionOrderIsStable": true,
+            "pendingLimitError": "RangeError",
+            "pendingCapacityResolved": true,
+            "pendingCapacityRecovered": true,
         })
     );
 

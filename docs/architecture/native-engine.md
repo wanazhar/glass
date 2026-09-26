@@ -30,14 +30,17 @@ cross-origin DOM access, custom-element adopted callbacks/registries, and
 Shadow DOM adoption remain outside this slice. Quirks-mode layout,
 parser-stream reentrancy, remote CI, and cross-platform certification also
 remain open. See the [slice 757 task](../plan/tasks/native-engine-browser-757.md).
-Slice 758 is in progress. Its autonomous custom-element registry and core
-lifecycle reactions are locally implemented through `6cefcc05`; the current
-local follow-up binds script wrapper identities through direct and nested
-template contents and verifies registry isolation in the selected same-origin
-frame owner. Focused process-backed regressions pass for template identity and
-frame-local registry/lifecycle behavior. The broader custom-element contract
-remains incomplete. See the [slice 758 task](../plan/tasks/native-engine-browser-758.md)
-for exact evidence.
+Slice 758 is in progress. The autonomous registry and core lifecycle were
+introduced in `b4d7af0d`, with identity fixes in `6cefcc05` and `b88dbaf9`.
+Process-backed regressions verify template identity and frame-local registry
+state in the selected same-origin frame owner. The reaction queue now drains
+with a head cursor and periodic prefix compaction; a 300-reaction regression
+checks stable order across compaction. Additional process coverage verifies
+reentrant definition rejection and recovery, callback-triggered insertion
+ordering, and the 1,024-pending-`whenDefined` bound with capacity recovery.
+Hard reaction-queue overflow and the per-checkpoint work limit are not yet
+stress-tested. The broader custom-element contract remains incomplete. See the
+[slice 758 task](../plan/tasks/native-engine-browser-758.md) for exact evidence.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

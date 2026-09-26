@@ -63540,6 +63540,283 @@ async fn native_local_runtime_preserves_custom_element_registry_and_builtins() {
     engine.close_async().await.unwrap();
 }
 
+fn native_form_associated_elements_script() -> &'static str {
+    r##"await (async () => {
+      const errorName = action => {
+        try { action(); return null; }
+        catch (error) { return error.name; }
+      };
+      class ScalarField extends HTMLElement {
+        static formAssociated = true;
+        constructor() {
+          super();
+          this.internals = this.attachInternals();
+          this.internals.setFormValue('one', 'state-one');
+        }
+      }
+      customElements.define('x-scalar-field', ScalarField);
+
+      class PairField extends HTMLElement {
+        static formAssociated = true;
+        constructor() {
+          super();
+          this.internals = this.attachInternals();
+          const submitted = new FormData();
+          submitted.append('first', 'alpha');
+          submitted.append('second', 'beta');
+          submitted.append('proof', new File(['payload'], 'proof.txt', { type: 'text/plain' }));
+          this.internals.setFormValue(submitted, 'state-pair');
+          submitted.set('first', 'later mutation');
+        }
+      }
+      customElements.define('x-pair-field', PairField);
+
+      class EmptyField extends HTMLElement {
+        static formAssociated = true;
+        constructor() { super(); this.attachInternals().setFormValue(null); }
+      }
+      customElements.define('x-empty-field', EmptyField);
+
+      class DisabledField extends HTMLElement {
+        static formAssociated = true;
+        constructor() { super(); this.attachInternals().setFormValue('must-not-submit'); }
+      }
+      customElements.define('x-disabled-field', DisabledField);
+
+      class LegendField extends HTMLElement {
+        static formAssociated = true;
+        constructor() { super(); this.attachInternals().setFormValue('legend'); }
+      }
+      customElements.define('x-legend-field', LegendField);
+
+      class DisabledFieldsetControl extends HTMLElement {
+        static formAssociated = true;
+        constructor() { super(); this.attachInternals().setFormValue('fieldset-disabled'); }
+      }
+      customElements.define('x-fieldset-disabled', DisabledFieldsetControl);
+
+      class UnnamedField extends HTMLElement {
+        static formAssociated = true;
+        constructor() { super(); this.attachInternals().setFormValue('must-not-submit'); }
+      }
+      customElements.define('x-unnamed-field', UnnamedField);
+
+      class ExternalField extends HTMLElement {
+        static formAssociated = true;
+        constructor() { super(); this.internals = this.attachInternals(); this.internals.setFormValue('outside'); }
+      }
+      customElements.define('x-external-field', ExternalField);
+
+      const main = document.getElementById('main-form');
+      const external = document.getElementById('external-form');
+      const scalar = document.getElementById('scalar');
+      const externalField = document.getElementById('external-field');
+      const setterErrors = {
+        missingValue: errorName(() => scalar.internals.setFormValue()),
+        symbolValue: errorName(() => scalar.internals.setFormValue(Symbol('invalid'))),
+      };
+      const forgedMarkers = (() => {
+        scalar.internals.setFormValue({ __glassFormData: true, _entries: [['forged', 'entry']] });
+        const formDataMarkerValue = new FormData(main).get('scalar');
+        const forgedEntryWasExpanded = new FormData(main).has('forged');
+        scalar.internals.setFormValue({ __glassNativeFile: true, name: 'forged.txt' });
+        const fileMarkerValue = new FormData(main).get('scalar');
+        scalar.internals.setFormValue('one');
+        return [formDataMarkerValue, forgedEntryWasExpanded, fileMarkerValue];
+      })();
+      const formData = new FormData(main);
+
+      class OrdinaryElement extends HTMLElement {
+        constructor() { super(); this.internals = this.attachInternals(); }
+      }
+      customElements.define('x-ordinary-element', OrdinaryElement);
+      const ordinary = document.createElement('x-ordinary-element');
+
+      class DisabledInternalsElement extends HTMLElement {
+        static disabledFeatures = ['internals'];
+      }
+      customElements.define('x-disabled-internals', DisabledInternalsElement);
+
+      class BuiltinElement extends HTMLButtonElement {
+        static formAssociated = true;
+      }
+      customElements.define('x-builtin-element', BuiltinElement, { extends: 'button' });
+      const customizedBuiltin = document.createElement('button', { is: 'x-builtin-element' });
+
+      class CallbackElement extends HTMLElement {
+        static formAssociated = true;
+        formAssociatedCallback() {}
+      }
+
+      return {
+        brands: [scalar.internals instanceof ElementInternals, scalar.internals.form === main,
+          externalField.internals.form === external],
+        entries: Array.from(formData.entries(), ([name, value]) => [
+          name,
+          value instanceof File ? ['file', value.name, value.type] : value,
+        ]),
+        forgedMarkers,
+        externalEntries: Array.from(new FormData(external).entries()),
+        errors: {
+          directConstructor: errorName(() => new ElementInternals()),
+          ordinaryElement: errorName(() => document.createElement('div').attachInternals()),
+          duplicateAttachment: errorName(() => scalar.attachInternals()),
+          nonFormAssociatedSetter: errorName(() => ordinary.internals.setFormValue('bad')),
+          nonFormAssociatedGetter: errorName(() => ordinary.internals.form),
+          disabledInternals: errorName(() => document.createElement('x-disabled-internals').attachInternals()),
+          customizedBuiltin: errorName(() => customizedBuiltin.attachInternals()),
+          unsupportedCallback: errorName(() => customElements.define('x-callback-element', CallbackElement)),
+          callbackNotPublished: customElements.get('x-callback-element') === undefined,
+          ...setterErrors,
+        },
+      };
+    })()"##
+}
+
+fn assert_native_form_associated_elements_result(value: &serde_json::Value) {
+    assert_eq!(
+        value,
+        &serde_json::json!({
+            "brands": [true, true, true],
+            "entries": [
+                ["scalar", "one"],
+                ["builtin", "native"],
+                ["first", "alpha"],
+                ["second", "beta"],
+                ["proof", ["file", "proof.txt", "text/plain"]],
+                ["legend", "legend"],
+            ],
+            "externalEntries": [["outside", "outside"]],
+            "forgedMarkers": ["[object Object]", false, "[object Object]"],
+            "errors": {
+                "directConstructor": "TypeError",
+                "ordinaryElement": "NotSupportedError",
+                "duplicateAttachment": "NotSupportedError",
+                "nonFormAssociatedSetter": "NotSupportedError",
+                "nonFormAssociatedGetter": "NotSupportedError",
+                "disabledInternals": "NotSupportedError",
+                "customizedBuiltin": "NotSupportedError",
+                "unsupportedCallback": "NotSupportedError",
+                "callbackNotPublished": true,
+                "missingValue": "TypeError",
+                "symbolValue": "TypeError",
+            },
+        })
+    );
+}
+
+fn native_form_associated_entries_after_script_refresh() -> &'static str {
+    r##"(() => {
+      const form = document.getElementById('main-form');
+      const entries = Array.from(new FormData(form).entries(), ([name, value]) => [
+        name,
+        value instanceof File ? ['file', value.name, value.type] : value,
+      ]);
+      return {
+        entries,
+        internalsBrand: document.getElementById('scalar').internals instanceof ElementInternals,
+        formOwner: document.getElementById('scalar').internals.form === form,
+      };
+    })()"##
+}
+
+#[tokio::test]
+async fn native_local_runtime_collects_form_associated_custom_element_values() {
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://inline-form-associated-elements",
+                "<!doctype html><html><body><form id='main-form'><x-scalar-field id='scalar' name='scalar'></x-scalar-field><input name='builtin' value='native'><x-pair-field name='ignored'></x-pair-field><x-empty-field name='empty'></x-empty-field><x-disabled-field name='disabled' disabled></x-disabled-field><x-unnamed-field></x-unnamed-field><fieldset disabled><legend><x-legend-field name='legend'></x-legend-field></legend><x-fieldset-disabled name='fieldset-disabled'></x-fieldset-disabled></fieldset></form><form id='external-form'></form><x-external-field id='external-field' form='external-form' name='outside'></x-external-field></body></html>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://inline-form-associated-elements"),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let result = engine
+        .evaluate_async(native_form_associated_elements_script())
+        .await
+        .unwrap();
+    assert_native_form_associated_elements_result(&result);
+
+    let result = engine
+        .evaluate_async(native_form_associated_entries_after_script_refresh())
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "entries": [
+                ["scalar", "one"],
+                ["builtin", "native"],
+                ["first", "alpha"],
+                ["second", "beta"],
+                ["proof", ["file", "proof.txt", "text/plain"]],
+                ["legend", "legend"],
+            ],
+            "internalsBrand": true,
+            "formOwner": true,
+        })
+    );
+
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_collects_form_associated_custom_element_values() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("native form-associated custom-element request")
+            .unwrap();
+        let _request = read_http_request(&mut stream).await;
+        let body = "<!doctype html><html><body><form id='main-form'><x-scalar-field id='scalar' name='scalar'></x-scalar-field><input name='builtin' value='native'><x-pair-field name='ignored'></x-pair-field><x-empty-field name='empty'></x-empty-field><x-disabled-field name='disabled' disabled></x-disabled-field><x-unnamed-field></x-unnamed-field><fieldset disabled><legend><x-legend-field name='legend'></x-legend-field></legend><x-fieldset-disabled name='fieldset-disabled'></x-fieldset-disabled></fieldset></form><form id='external-form'></form><x-external-field id='external-field' form='external-form' name='outside'></x-external-field></body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/face")),
+    )
+    .await
+    .unwrap();
+    let result = session
+        .script(native_form_associated_elements_script())
+        .await
+        .unwrap();
+    assert_native_form_associated_elements_result(&result.value);
+
+    let persisted = session
+        .script(native_form_associated_entries_after_script_refresh())
+        .await
+        .unwrap();
+    assert_eq!(
+        persisted.value,
+        serde_json::json!({
+            "entries": [
+                ["scalar", "one"],
+                ["builtin", "native"],
+                ["first", "alpha"],
+                ["second", "beta"],
+                ["proof", ["file", "proof.txt", "text/plain"]],
+                ["legend", "legend"],
+            ],
+            "internalsBrand": true,
+            "formOwner": true,
+        })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
 #[tokio::test]
 async fn native_custom_elements_upgrade_create_and_run_lifecycle_reactions() {
     let _guard = native_content_process_test_lock().lock().await;

@@ -165,9 +165,14 @@ interface from the custom registry name and internal `is` value; an `is`
 content attribute alone does not change creation-time registry matching.
 Process-backed coverage exercises parser and DOM creation, direct construction,
 serialization, clone/import, lifecycle, selected frame registries, and native
-button behavior. Unmapped built-in interfaces, scoped registries,
-form-associated elements, custom states, and full Web Platform Tests remain
-profile requirements.
+button behavior. Unmapped built-in interfaces, scoped registries, custom
+states, and full Web Platform Tests remain profile requirements.
+The [slice 760 contract](tasks/native-engine-browser-760.md) implements
+bounded form-associated autonomous custom elements: `attachInternals()`,
+`setFormValue()`, and ordered `FormData(form)` construction. In-process and
+content-process regressions pass, including script-refresh persistence. It
+explicitly does not claim form lifecycle callbacks, native HTML form-navigation
+submission, custom validity, accessibility semantics, or custom states.
 
 ### Synchronous JavaScript dialog contract
 

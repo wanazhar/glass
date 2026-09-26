@@ -28,11 +28,12 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is complete through
-`native-engine-browser-759`. Slices 758 and 759 implement the autonomous and
+`native-engine-browser-760`. Slices 758 and 759 implement the autonomous and
 customized-built-in custom-element contracts for the currently mapped HTML
-interfaces. These are implementation checkpoints, not browser-completion
-evidence; issue #40 remains open for the full Core Web Profile, conformance,
-platform, and release gates.
+interfaces. Slice 760 implements bounded `ElementInternals` form values and
+`FormData(form)` integration. These are implementation checkpoints, not
+browser-completion evidence; issue #40 remains open for the full Core Web
+Profile, conformance, platform, and release gates.
 Slice 755 implements target-document-aware `Document.importNode()` for live
 top-level, same-origin-frame, and inert template-owner Documents. Its focused
 process-backed regression passes locally; this remains a bounded DOM slice,
@@ -79,8 +80,17 @@ The [slice 759 task](tasks/native-engine-browser-759.md) implements customized
 built-ins for the HTML interfaces represented by the native element-interface
 table, including internal `is` identity, parser and DOM creation, direct
 construction, serialization, clone/import, lifecycle, and selected frame
-registries. Inline-runtime and process-backed checks pass locally. Unmapped built-in
-interfaces and the other custom-element profile requirements remain open.
+registries. Inline-runtime and process-backed checks pass locally. Unmapped
+built-in interfaces, scoped registries, form lifecycle/validation behavior,
+custom states, and broader custom-element requirements remain open.
+The completed slice 760 implements bounded `ElementInternals` form values for
+autonomous custom elements and ordered `new FormData(form)` entries integrated
+with the existing request serializer. Its in-process and content-process tests
+pass, including disabled-fieldset/first-legend semantics and values retained
+after script refresh. Form lifecycle callbacks, native HTML form-navigation
+submission, custom validity, states, accessibility, and full Web Platform
+Tests remain outside this slice. See the
+[slice 760 contract](tasks/native-engine-browser-760.md).
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

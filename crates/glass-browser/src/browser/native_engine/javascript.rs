@@ -41328,23 +41328,42 @@ fn document_bootstrap(
     visit(owner);
     return result;
   }};
-  const importNodeSubtree = (options) => {{
-    if (options === undefined) return false;
-    if (typeof options === "boolean") return options;
-    if (options !== null && typeof options !== "object" && typeof options !== "function") {{
-      throw new TypeError("importNode options must be a boolean or dictionary");
+  const nativeCustomElementRegistryForDocument = (targetDocument) => {{
+    if (!targetDocument || targetDocument !== document
+        || targetDocument.__glassIsTemplateContentsOwnerDocument === true) return null;
+    return nativeCustomElementState.registry || null;
+  }};
+  const importNodeOptions = (targetDocument, options) => {{
+    let deep = false;
+    let requestedRegistry;
+    if (typeof options === "boolean") {{
+      deep = options;
+    }} else if (options !== undefined) {{
+      if (options !== null && typeof options !== "object" && typeof options !== "function") {{
+        throw new TypeError("importNode options must be a boolean or dictionary");
+      }}
+      if (options !== null) {{
+        requestedRegistry = options.customElementRegistry;
+        deep = !Boolean(options.selfOnly);
+      }}
     }}
-    const selfOnly = options === null ? undefined : options.selfOnly;
-    const customElementRegistry = options === null ? undefined : options.customElementRegistry;
-    if (customElementRegistry !== undefined && customElementRegistry !== null) {{
-      if (customElementRegistry !== globalThis.__glassNativeCustomElementRegistry) {{
+
+    const targetRegistry = nativeCustomElementRegistryForDocument(targetDocument);
+    if (requestedRegistry !== undefined) {{
+      if (requestedRegistry === null
+          || (typeof requestedRegistry !== "object" && typeof requestedRegistry !== "function")
+          || !(requestedRegistry instanceof CustomElementRegistryNative)) {{
+        throw new TypeError("customElementRegistry must be a CustomElementRegistry");
+      }}
+      if (requestedRegistry !== targetRegistry
+          || requestedRegistry !== nativeCustomElementState.registry) {{
         throw new DOMExceptionNative(
-          "The requested custom element registry is unavailable",
+          "The requested custom element registry is not available to the target Document",
           "NotSupportedError",
         );
       }}
     }}
-    return !Boolean(selfOnly);
+    return {{ deep, registry: requestedRegistry === undefined ? targetRegistry : requestedRegistry }};
   }};
   const cloneNativeNodeIntoDocument = (
     source,
@@ -41353,6 +41372,7 @@ fn document_bootstrap(
     state = {{ nodeCount: 0 }},
     depth = 0,
     preserveTemplateContentsOwner = false,
+    registry = null,
   ) => {{
     state.nodeCount += 1;
     if (state.nodeCount > {native_dom_max_nodes}) throw new RangeError("native node clone exceeds its node limit");
@@ -41372,6 +41392,7 @@ fn document_bootstrap(
       state,
       depth + Number(nodeType === 1),
       preserveTemplateContentsOwner,
+      registry,
     );
     if (nodeType === 3) return targetDocument.createTextNode(String(source.nodeValue || ""));
     if (nodeType === 8) return targetDocument.createComment(String(source.nodeValue || ""));
@@ -41392,7 +41413,18 @@ fn document_bootstrap(
     }}
     if (nodeType === 1) {{
       const qualifiedName = source.prefix ? source.prefix + ":" + source.localName : source.localName;
-      const clone = targetDocument.createElementNS(source.namespaceURI || null, qualifiedName);
+      const namespaceURI = source.namespaceURI || null;
+      const clone = targetDocument === document
+        ? makeDetachedElement(qualifiedName, namespaceURI)
+        : targetDocument.createElementNS(namespaceURI, qualifiedName);
+      if (registry !== null && namespaceURI === HTML_NAMESPACE) {{
+        Object.defineProperty(clone, "__glassCustomElementRegistry", {{
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value: registry,
+        }});
+      }}
       for (const name of source.getAttributeNames()) {{
         const value = source.getAttribute(name);
         if (value === null) continue;
@@ -41446,11 +41478,34 @@ fn document_bootstrap(
     if (!source || typeof source !== "object" || !(source instanceof NodeNative)) {{
       throw new TypeError("importNode requires a Node");
     }}
-    const deep = importNodeSubtree(options);
     if (Number(source.nodeType) === 9) {{
       throw new DOMExceptionNative("A Document cannot be imported", "NotSupportedError");
     }}
-    return cloneNativeNodeIntoDocument(source, targetDocument, deep);
+    if ((typeof globalThis.ShadowRoot === "function" && source instanceof globalThis.ShadowRoot)
+        || source.__glassShadowRoot === true) {{
+      throw new DOMExceptionNative("A ShadowRoot cannot be imported", "NotSupportedError");
+    }}
+    const importOptions = importNodeOptions(targetDocument, options);
+    const clone = cloneNativeNodeIntoDocument(
+      source,
+      targetDocument,
+      importOptions.deep,
+      {{ nodeCount: 0 }},
+      0,
+      false,
+      importOptions.registry,
+    );
+    if (importOptions.registry !== null
+        && importOptions.registry === nativeCustomElementState.registry
+        && targetDocument.__glassIsTemplateContentsOwnerDocument !== true) {{
+      nativeCustomElementState.upgrading += 1;
+      try {{ nativeCustomElementUpgradeTree(clone, false); }}
+      finally {{
+        nativeCustomElementState.upgrading = Math.max(0, nativeCustomElementState.upgrading - 1);
+        nativeCustomElementDrainReactions();
+      }}
+    }}
+    return clone;
   }};
   const templateContentsOwnerDocumentForDocument = (ownerDocument) => {{
     if (ownerDocument && ownerDocument.__glassIsTemplateContentsOwnerDocument === true) return ownerDocument;

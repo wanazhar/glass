@@ -32,13 +32,12 @@ parser-stream reentrancy, remote CI, and cross-platform certification also
 remain open. See the [slice 757 task](../plan/tasks/native-engine-browser-757.md).
 Slice 758 is in progress. Its autonomous custom-element registry and core
 lifecycle reactions are locally implemented through `6cefcc05`; the current
-uncommitted follow-up binds script wrapper identities through direct and nested
-template contents. The focused regression passes after the third rehydration
-correction unconditionally refreshes cached template fragments with their
-native snapshot identity before rebuilding child links. The broader
-custom-element contract remains incomplete. See
-the [slice 758 task](../plan/tasks/native-engine-browser-758.md) for exact
-evidence.
+local follow-up binds script wrapper identities through direct and nested
+template contents and verifies registry isolation in the selected same-origin
+frame owner. Focused process-backed regressions pass for template identity and
+frame-local registry/lifecycle behavior. The broader custom-element contract
+remains incomplete. See the [slice 758 task](../plan/tasks/native-engine-browser-758.md)
+for exact evidence.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

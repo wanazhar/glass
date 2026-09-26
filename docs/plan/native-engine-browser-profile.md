@@ -154,9 +154,16 @@ typed invalid/unsupported registry failures. A frame-projected template
 hydration fix preserves imported `.content` across the next script call; its
 cross-document regression passes locally. Scoped registries are not yet
 implemented.
-Customized built-ins, scoped registries, form-associated elements, custom
-states, and full Web Platform Tests remain profile requirements beyond this
-bounded slice.
+The [slice 759 contract](tasks/native-engine-browser-759.md) implements
+customized built-ins for the HTML interfaces represented by the native
+element-interface table. It distinguishes the built-in local name and
+interface from the custom registry name and internal `is` value; an `is`
+content attribute alone does not change creation-time registry matching.
+Process-backed coverage exercises parser and DOM creation, direct construction,
+serialization, clone/import, lifecycle, selected frame registries, and native
+button behavior. Unmapped built-in interfaces, scoped registries,
+form-associated elements, custom states, and full Web Platform Tests remain
+profile requirements.
 
 ### Synchronous JavaScript dialog contract
 

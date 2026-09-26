@@ -38078,6 +38078,13 @@ fn document_bootstrap(
         throw new Error("native HTML fragment parser returned an unsupported node");
       }}
       const element = createElement(String(kind.data.name), String(kind.data.namespace));
+      if (String(kind.data.namespace) === HTML_NAMESPACE) {{
+        const isAttribute = kind.data.attributes.find((attribute) =>
+          attribute && !attribute.namespace && attribute.name === "is");
+        if (isAttribute && Object.prototype.hasOwnProperty.call(element, "__glassCustomElementIs")) {{
+          element.__glassCustomElementIs = String(isAttribute.value);
+        }}
+      }}
       for (const attribute of kind.data.attributes) {{
         if (!attribute || typeof attribute.name !== "string"
             || typeof attribute.value !== "string") {{
@@ -39614,6 +39621,14 @@ fn document_bootstrap(
       configurable: false,
       value: "node:" + entry.nodeIndex,
     }});
+    Object.defineProperty(element, "__glassCustomElementIs", {{
+      enumerable: false,
+      configurable: false,
+      writable: true,
+      value: Object.prototype.hasOwnProperty.call(entry.attributes || {{}}, "is")
+        ? String(entry.attributes.is)
+        : null,
+    }});
     const inlineEventType = (name) => {{
       const value = String(name).toLowerCase();
       if (!value.startsWith("on") || value.length <= 2 || !/^[a-z][a-z0-9]*$/.test(value.slice(2))) return null;
@@ -39697,9 +39712,16 @@ fn document_bootstrap(
       enumerable: false,
       configurable: false,
       get() {{
-        const attributes = Object.keys(entry.attributes)
+        const names = Object.keys(entry.attributes);
+        if (element.__glassCustomElementIs !== null && !names.includes("is")) names.push("is");
+        const attributes = names
           .sort()
-          .map(name => " " + name + "=\"" + escapeHtmlText(entry.attributes[name]).replace(/\"/g, "&quot;") + "\"")
+          .map(name => {{
+            const value = Object.prototype.hasOwnProperty.call(entry.attributes, name)
+              ? entry.attributes[name]
+              : element.__glassCustomElementIs;
+            return " " + name + "=\"" + escapeHtmlText(value).replace(/\"/g, "&quot;") + "\"";
+          }})
           .join("");
         const opening = "<" + element.localName + attributes + ">";
         if (["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"].includes(element.localName)) return opening;
@@ -41417,6 +41439,11 @@ fn document_bootstrap(
       const clone = targetDocument === document
         ? makeDetachedElement(qualifiedName, namespaceURI)
         : targetDocument.createElementNS(namespaceURI, qualifiedName);
+      const sourceIsValue = nativeCustomElementIsValue(source);
+      if (sourceIsValue !== null
+          && Object.prototype.hasOwnProperty.call(clone, "__glassCustomElementIs")) {{
+        clone.__glassCustomElementIs = sourceIsValue;
+      }}
       if (registry !== null && namespaceURI === HTML_NAMESPACE) {{
         Object.defineProperty(clone, "__glassCustomElementRegistry", {{
           configurable: true,
@@ -45607,9 +45634,15 @@ fn document_bootstrap(
     let constructor = globalThis[name];
     if (typeof constructor !== "function") {{
       constructor = function NativeWebIdlConstructor() {{
-        if (name === "HTMLElement"
+        const htmlElementBase = name === "HTMLElement"
+          || (name.startsWith("HTML")
+            && parent
+            && globalThis.HTMLElement
+            && (parent === globalThis.HTMLElement
+              || globalThis.HTMLElement.prototype.isPrototypeOf(parent.prototype)));
+        if (htmlElementBase
             && typeof globalThis.__glassConstructNativeCustomElement === "function") {{
-          return globalThis.__glassConstructNativeCustomElement(new.target);
+          return globalThis.__glassConstructNativeCustomElement(new.target, name);
         }}
         throw new TypeError("Illegal constructor");
       }};
@@ -46030,8 +46063,7 @@ fn document_bootstrap(
   for (const name of Object.keys(elementConstructors)) {{
     elementConstructors[name] = ensureNativeConstructor(name, elementConstructors[name]);
   }}
-  const elementPrototypeFor = (tagName) => {{
-    const name = {{
+  const elementInterfaceNameFor = (tagName) => ({{
       HTML: "HTMLHtmlElement",
       BODY: "HTMLBodyElement",
       FORM: "HTMLFormElement",
@@ -46047,9 +46079,9 @@ fn document_bootstrap(
       VIDEO: "HTMLVideoElement",
       IFRAME: "HTMLIFrameElement",
       FRAME: "HTMLFrameElement",
-    }}[tagName] || "HTMLUnknownElement";
-    return elementConstructors[name].prototype;
-  }};
+    }})[String(tagName || "").toUpperCase()] || "HTMLUnknownElement";
+  const elementPrototypeFor = (tagName) =>
+    elementConstructors[elementInterfaceNameFor(tagName)].prototype;
   const nativeCustomElementLimits = {{
     definitions: 1024,
     pendingWhenDefined: 1024,
@@ -46195,6 +46227,13 @@ fn document_bootstrap(
       else if (globalThis.console && typeof globalThis.console.error === "function") globalThis.console.error(error);
     }} catch (_reportError) {{}}
   }};
+  const nativeCustomElementIsValue = (element) => {{
+    if (!element) return null;
+    const value = element.__glassCustomElementIs;
+    if (value === null) return null;
+    if (value !== undefined) return String(value);
+    return typeof element.getAttribute === "function" ? element.getAttribute("is") : null;
+  }};
   const nativeCustomElementDefinitionFor = (element) =>
     element && element.__glassCustomElementDefinition || null;
   const nativeCustomElementPendingReactionCount = () =>
@@ -46283,9 +46322,11 @@ fn document_bootstrap(
   const nativeCustomElementTryUpgrade = (element, enqueueConnection = true) => {{
     if (!element || Number(element.nodeType) !== 1
         || element.namespaceURI !== HTML_NAMESPACE) return element;
-    const name = String(element.localName || "");
+    const localName = String(element.localName || "");
+    const isValue = nativeCustomElementIsValue(element);
+    const name = isValue === null ? localName : isValue;
     const definition = nativeCustomElementState.definitionsByName.get(name);
-    if (!definition) return element;
+    if (!definition || definition.localName !== localName) return element;
     const currentState = element.__glassCustomElementState;
     if (currentState && currentState !== "undefined") {{
       const existingDefinition = nativeCustomElementDefinitionFor(element) || definition;
@@ -46365,21 +46406,24 @@ fn document_bootstrap(
     }}
   }};
   globalThis.__glassQueueNativeCustomElementReaction = nativeCustomElementQueueCallback;
-  globalThis.__glassConstructNativeCustomElement = (newTarget) => {{
+  globalThis.__glassConstructNativeCustomElement = (newTarget, interfaceName = "HTMLElement") => {{
     const stack = nativeCustomElementState.constructorStack;
     const active = stack.length > 0 ? stack[stack.length - 1] : null;
     if (active) {{
-      if (newTarget !== active.definition.constructor || active.constructed) {{
+      if (newTarget !== active.definition.constructor || active.constructed
+          || interfaceName !== active.definition.interfaceName) {{
         throw new TypeError("custom element constructor stack is invalid");
       }}
       active.constructed = true;
       return active.element;
     }}
     const definition = nativeCustomElementState.definitionsByConstructor.get(newTarget);
-    if (!definition || newTarget !== definition.constructor) {{
+    if (!definition || newTarget !== definition.constructor
+        || interfaceName !== definition.interfaceName) {{
       throw new TypeError("Illegal constructor");
     }}
-    const element = makeDetachedElement(definition.name, HTML_NAMESPACE);
+    const element = makeDetachedElement(definition.localName, HTML_NAMESPACE);
+    element.__glassCustomElementIs = definition.extends ? definition.name : null;
     Object.defineProperty(element, "__glassCustomElementDefinition", {{
       configurable: true, enumerable: false, writable: true, value: definition,
     }});
@@ -46410,20 +46454,32 @@ fn document_bootstrap(
   globalThis.__glassCreateNativeCustomElement = (targetDocument, tagName, options, namespace) => {{
     const namespaceURI = normalizeElementNamespace(namespace);
     let creationOptions = {{}};
-    if (options !== undefined && options !== null) {{
-      if ((typeof options !== "object" && typeof options !== "function")
-          && typeof options !== "string") throw new TypeError("createElement options must be a dictionary");
+    let hasIsValue = false;
+    let isValue = null;
+    if (typeof options === "string") {{
+      hasIsValue = true;
+      isValue = options;
+    }} else if (options !== undefined && options !== null) {{
+      if (typeof options !== "object" && typeof options !== "function") {{
+        throw new TypeError("createElement options must be a dictionary");
+      }}
       creationOptions = Object(options);
+      if (creationOptions.is !== undefined) {{
+        hasIsValue = true;
+        isValue = String(creationOptions.is);
+      }}
     }}
     const selectedRegistry = creationOptions.customElementRegistry;
+    const registryWasProvided = selectedRegistry !== undefined;
+    if (hasIsValue && registryWasProvided) {{
+      throw new DOMExceptionNative("A custom element registry and is value cannot both be supplied", "NotSupportedError");
+    }}
     if (selectedRegistry !== undefined && selectedRegistry !== null
         && selectedRegistry !== nativeCustomElementState.registry) {{
       throw new DOMExceptionNative("The requested custom element registry is unavailable", "NotSupportedError");
     }}
-    if (creationOptions.is !== undefined && creationOptions.is !== null) {{
-      throw new DOMExceptionNative("Customized built-in elements are not supported by this native slice", "NotSupportedError");
-    }}
     const element = makeDetachedElement(tagName, namespaceURI);
+    if (hasIsValue) element.__glassCustomElementIs = isValue;
     if (targetDocument === document && namespaceURI === HTML_NAMESPACE) {{
       nativeCustomElementTryUpgrade(element);
     }}
@@ -46479,9 +46535,19 @@ fn document_bootstrap(
         throw new DOMExceptionNative("A custom element definition is already running", "NotSupportedError");
       }}
       const definitionOptions = options === undefined || options === null ? {{}} : Object(options);
-      if (definitionOptions.extends !== undefined && definitionOptions.extends !== null) {{
-        throw new DOMExceptionNative("Customized built-in elements are not supported by this native slice", "NotSupportedError");
+      const extendedTag = definitionOptions.extends === undefined
+        ? null
+        : String(definitionOptions.extends);
+      const interfaceName = extendedTag === null
+        ? "HTMLElement"
+        : elementInterfaceNameFor(extendedTag);
+      if (extendedTag !== null
+          && (extendedTag !== extendedTag.toLowerCase()
+            || isValidNativeCustomElementName(extendedTag)
+            || interfaceName === "HTMLUnknownElement")) {{
+        throw new DOMExceptionNative("The extends value is not a supported built-in HTML element", "NotSupportedError");
       }}
+      const localName = extendedTag === null ? elementName : extendedTag;
       if (nativeCustomElementState.definitionsByName.size >= nativeCustomElementLimits.definitions) {{
         throw new RangeError("native custom element definition limit exceeded");
       }}
@@ -46492,6 +46558,16 @@ fn document_bootstrap(
         if (!prototype || (typeof prototype !== "object" && typeof prototype !== "function")
             || !HTMLElementNative.prototype.isPrototypeOf(prototype)) {{
           throw new TypeError("custom element constructor must extend HTMLElement");
+        }}
+        const interfaceConstructor = interfaceName === "HTMLElement"
+          ? HTMLElementNative
+          : elementConstructors[interfaceName];
+        const interfacePrototype = interfaceConstructor.prototype;
+        if (extendedTag !== null && !interfacePrototype.isPrototypeOf(prototype)) {{
+          throw new DOMExceptionNative(
+            "The custom element constructor must extend " + interfaceName,
+            "NotSupportedError",
+          );
         }}
         const callbacks = {{}};
         for (const callbackName of [
@@ -46515,7 +46591,16 @@ fn document_bootstrap(
             }}
           }}
         }}
-        definition = {{ name: elementName, constructor, prototype, callbacks, observedAttributes }};
+        definition = {{
+          name: elementName,
+          localName,
+          extends: extendedTag,
+          interfaceName,
+          constructor,
+          prototype,
+          callbacks,
+          observedAttributes,
+        }};
       }} finally {{ nativeCustomElementState.defining = false; }}
       nativeCustomElementState.definitionsByName.set(elementName, definition);
       nativeCustomElementState.definitionsByConstructor.set(constructor, definition);

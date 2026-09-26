@@ -6375,15 +6375,15 @@ impl NativeDocument {
                     ));
                 }
                 NativeScriptCommand::Focus { node_index } => {
-                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    let id = self.resolve_script_node_id(*node_index, &script_nodes);
                     events.extend(self.apply_script_focus(id)?);
                 }
                 NativeScriptCommand::Blur { node_index } => {
-                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    let id = self.resolve_script_node_id(*node_index, &script_nodes);
                     events.extend(self.apply_script_blur(id)?);
                 }
                 NativeScriptCommand::Click { node_index } => {
-                    let id = NativeNodeId::from_parts(self.generation, *node_index);
+                    let id = self.resolve_script_node_id(*node_index, &script_nodes);
                     if !allow_script_navigation
                         && self.link_href(id).is_some_and(|href| !href.is_empty())
                     {

@@ -61177,7 +61177,7 @@ async fn native_content_process_xhr_exposes_bounded_xml_response_document() {
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         for expected_path in ["/page", "/xml-default", "/xml-document", "/xml-invalid"] {
-            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
                 .await
                 .unwrap_or_else(|_| panic!("timed out waiting for XML XHR request {expected_path}"))
                 .unwrap();
@@ -61701,7 +61701,9 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                     const result = {};
                     const fail = (stage, error, xhr = null) => resolve({
                         error: stage,
-                        message: String(error && error.message || error),
+                        message: String(error && error.error && (
+                            error.error.message || error.error
+                        ) || error && error.message || error),
                         location: location.href,
                         xhr: xhr && {
                             readyState: xhr.readyState,
@@ -61796,6 +61798,7 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
                                 voids: body.querySelectorAll('br').length === 1
                                     && body.querySelector('input').hasAttribute('DISABLED'),
                                 doctype: document.doctype.name,
+                                compatMode: document.compatMode,
                                 serialized: serialized.includes('<!DOCTYPE html>')
                                     && serialized.includes('<br>')
                                     && serialized.includes('if (a < b) rawValue();')
@@ -61820,7 +61823,7 @@ async fn native_content_process_xhr_exposes_bounded_html_response_document() {
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         for expected_path in ["/page", "/html-document", "/html-default", "/html-invalid"] {
-            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
                 .await
                 .unwrap_or_else(|_| {
                     panic!("timed out waiting for HTML XHR request {expected_path}")

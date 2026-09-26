@@ -44,13 +44,16 @@ prescan. These remain incremental parity tasks, not full Encoding/XHR
 conformance. Template content is preserved as a distinct fragment in detached
 XHR response documents, top-level live navigation DOMs, and same-origin frame
 documents; `cloneNode()` template copying is covered by slice 754, and
-target-aware `importNode()` by slice 755; `adoptNode()` remains open. See
+target-aware `importNode()` by slice 755; `adoptNode()` remains open. Its
+planned slice 756 scope is same-browsing-context adoption, not cross-context
+identity transfer. See
 [slice 749](../tasks/native-engine-browser-749.md),
 [slice 750](../tasks/native-engine-browser-750.md), and
 [slice 752](../tasks/native-engine-browser-752.md) and
 [slice 753](../tasks/native-engine-browser-753.md) and
-[slice 754](../tasks/native-engine-browser-754.md) and
-[slice 755](../tasks/native-engine-browser-755.md). Slice 729
+[slice 754](../tasks/native-engine-browser-754.md),
+[slice 755](../tasks/native-engine-browser-755.md), and the
+[planned slice 756](../tasks/native-engine-browser-756.md). Slice 729
 promotes native revisioned semantic observation,
 page inspection/bootstrap, and region expansion into the canonical Rust API.
 Slice 730 promotes native target/frame topology into the canonical Rust API

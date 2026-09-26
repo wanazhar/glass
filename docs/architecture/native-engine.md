@@ -14,9 +14,10 @@ with `encoding_rs`, selects response/override labels, prescans the first 1,024
 bytes using HTML meta/XML rules when those labels are absent or invalid, and
 retains replacement decoding and raw/decoded bounds. HTML response bytes use
 the WHATWG encoding label table; XML and text XHR paths remain separate.
-`adoptNode()` semantics, quirks-mode layout,
-parser-stream reentrancy,
-remote CI, and cross-platform certification remain open.
+`adoptNode()` semantics remain open; slice 756 plans bounded same-context
+adoption, while cross-context node transfer is still unplanned. Quirks-mode
+layout, parser-stream reentrancy, remote CI, and cross-platform certification
+also remain open.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and
@@ -179,7 +180,9 @@ the [slice 748 task](../plan/tasks/native-engine-browser-748.md),
 [slice 752 task](../plan/tasks/native-engine-browser-752.md) and
 [slice 753 task](../plan/tasks/native-engine-browser-753.md) and
 [slice 754 task](../plan/tasks/native-engine-browser-754.md) and
-[slice 755 task](../plan/tasks/native-engine-browser-755.md).
+[slice 755 task](../plan/tasks/native-engine-browser-755.md); the
+[slice 756 adoption contract](../plan/tasks/native-engine-browser-756.md) is
+planned only.
 
 The token-aware TreeSink bridge also preserves MathML `annotation-xml` as the
 HTML integration boundary during `</p>` and `</br>` foreign-content breakouts.

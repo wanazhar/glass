@@ -32,6 +32,10 @@ Slice 755 implements target-document-aware `Document.importNode()` for live
 top-level, same-origin-frame, and inert template-owner Documents. Its focused
 process-backed regression passes locally; this remains a bounded DOM slice,
 not browser-completion evidence.
+Slice 756 plans `Document.adoptNode()` for a node and target within the same
+browsing-context command owner, including its inert template-owner Document;
+cross-context identity transfer remains outside that contract until a native
+transfer path is implemented.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux
@@ -87,6 +91,8 @@ certification remain open. See the [slice 746 task](tasks/native-engine-browser-
 [slice 753 task](tasks/native-engine-browser-753.md),
 [slice 754 task](tasks/native-engine-browser-754.md), and
 [slice 755 task](tasks/native-engine-browser-755.md).
+The [slice 756 task](tasks/native-engine-browser-756.md) is planned, not
+implementation evidence.
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,
 and inherited sandboxed-modals eligibility. Remote CI and cross-platform

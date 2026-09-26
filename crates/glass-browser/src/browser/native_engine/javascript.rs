@@ -37545,6 +37545,10 @@ fn document_bootstrap(
     ? globalThis.__glassTransferredNodeOwners
     : new Map();
   globalThis.__glassTransferredNodeOwners = transferredNodeOwnerRegistry;
+  const pendingTransferredNodeOwnerRegistry = globalThis.__glassPendingTransferredNodeOwners instanceof Map
+    ? globalThis.__glassPendingTransferredNodeOwners
+    : new Map();
+  globalThis.__glassPendingTransferredNodeOwners = pendingTransferredNodeOwnerRegistry;
   const currentNativeOwnerId = String(host.frame_id || host.context_id || "");
   globalThis.__glassRebindTransferredNodeIndex = (temporaryIndex, nodeIndex) => {{
     const temporary = Number(temporaryIndex);
@@ -37552,9 +37556,14 @@ fn document_bootstrap(
     if (!Number.isSafeInteger(temporary) || !Number.isSafeInteger(next)) return;
     const owner = transferredNodeOwnerRegistry.get(temporary);
     if (!owner) return;
+    const wasPending = pendingTransferredNodeOwnerRegistry.has(temporary);
     transferredNodeOwnerRegistry.delete(temporary);
-    if (String(owner.frameId || "") !== currentNativeOwnerId) {{
-      transferredNodeOwnerRegistry.set(next, owner);
+    pendingTransferredNodeOwnerRegistry.delete(temporary);
+    transferredNodeOwnerRegistry.set(next, owner);
+    if (String(owner.frameId || "") === currentNativeOwnerId) {{
+      pendingTransferredNodeOwnerRegistry.delete(next);
+    }} else if (wasPending) {{
+      pendingTransferredNodeOwnerRegistry.set(next, true);
     }}
   }};
   const scriptNodeAliasesByIndex = new Map();
@@ -41516,12 +41525,14 @@ fn document_bootstrap(
         ? sourceDocument.__glassNativeFrameBinding
         : targetDocument.__glassNativeFrameBinding;
       for (const record of identityRecords) {{
-        const {{ node, destinationTemporaryIndex }} = record;
+        const {{ node, sourceIndex, destinationTemporaryIndex }} = record;
         for (const cache of caches) {{
           for (const [alias, cached] of cache) {{
             if (cached === node) cache.delete(alias);
           }}
         }}
+        ownerRoutes.delete(sourceIndex);
+        pendingOwners.delete(sourceIndex);
         if (typeof node.__glassSetNativeIndex === "function") {{
           node.__glassSetNativeIndex(destinationTemporaryIndex);
         }} else {{

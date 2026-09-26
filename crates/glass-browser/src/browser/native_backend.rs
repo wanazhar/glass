@@ -7586,7 +7586,7 @@ mod tests {
         iframe_sandboxed_modals, next_ready_native_browser_effect_source,
     };
     use crate::browser::native_engine::{
-        NativeDialogControlPlane, NativeEngine, NativeEngineConfig,
+        NativeDialogControlPlane, NativeEngine, NativeEngineConfig, NativeNodeSubtreeTransfer,
     };
 
     async fn lifecycle_test_engine(
@@ -7602,6 +7602,76 @@ mod tests {
         engine.set_frame_id(frame_id.to_owned());
         engine.initialize_async().await.unwrap();
         engine
+    }
+
+    #[tokio::test]
+    async fn native_document_adoption_preflight_failures_leave_both_owners_unchanged() {
+        let source_frame_id = "native-context:main";
+        let destination_frame_id = "native-context:frame-1";
+        let config = NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://adoption-transaction.test/source",
+                "<main><p id='source'>source</p></main>",
+            )
+            .unwrap()
+            .with_fixture(
+                "fixture://adoption-transaction.test/destination",
+                "<main><p id='destination'>destination</p></main>",
+            )
+            .unwrap();
+        let mut source = lifecycle_test_engine(
+            config.clone(),
+            "fixture://adoption-transaction.test/source",
+            source_frame_id,
+        )
+        .await;
+        let mut destination = lifecycle_test_engine(
+            config,
+            "fixture://adoption-transaction.test/destination",
+            destination_frame_id,
+        )
+        .await;
+        let source_before = source.document_transfer_draft();
+        let destination_before = destination.document_transfer_draft();
+        let transfers = [NativeNodeSubtreeTransfer {
+            source_index: 1,
+            identities: Vec::new(),
+        }];
+
+        assert!(
+            super::coordinate_native_document_adoption(
+                &mut source,
+                &mut destination,
+                source_frame_id,
+                destination_frame_id,
+                source_before.generation().saturating_add(1),
+                destination_before.generation(),
+                &transfers,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(source.document_transfer_draft(), source_before);
+        assert_eq!(destination.document_transfer_draft(), destination_before);
+
+        assert!(
+            super::coordinate_native_document_adoption(
+                &mut source,
+                &mut destination,
+                source_frame_id,
+                destination_frame_id,
+                source_before.generation(),
+                destination_before.generation(),
+                &transfers,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(source.document_transfer_draft(), source_before);
+        assert_eq!(destination.document_transfer_draft(), destination_before);
+
+        source.close_async().await.unwrap();
+        destination.close_async().await.unwrap();
     }
 
     #[test]

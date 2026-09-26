@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-756`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-757`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -17,15 +17,19 @@ the WHATWG encoding label table; XML and text XHR paths remain separate.
 Slice 756 implements bounded `adoptNode()` within one browsing-context
 command owner, including top-level and same-origin-frame Documents, inert
 template-owner Documents, nested template contents, and same-Document detach.
-Unsupported trees are preflighted against native node/depth bounds; cross-owner
-transfer fails before mutation because frame command routing has no identity-
-transfer protocol. Cross-context transfer, quirks-mode layout, parser-stream
-reentrancy, remote CI, and cross-platform certification remain open.
-Slice 757 is a planned contract for coordinated, identity-preserving adoption
-between same-origin Documents in one top-level browsing-context tree. It has
-not been implemented; independent top-level targets and popups remain outside
-that planned slice. See the
-[slice 757 task](../plan/tasks/native-engine-browser-757.md).
+Slice 757 adds identity-preserving transfer among same-origin Documents in one
+top-level/frame tree. The backend coordinates source and destination document
+candidates, validates both before synchronizing either content worker, attempts
+to restore both snapshots on synchronization failure, and publishes neither Rust
+document until both workers accept the transfer. Retained JavaScript wrappers
+are rebound to the destination identity and route subsequent mutations to the
+new owner after realm refresh. The process-backed regression covers transfer
+in both top/frame directions and between sibling frames. Worker-loss rollback
+has not been fault-injection-tested. Independent top-level targets and popups,
+cross-origin DOM access, custom-element adopted callbacks/registries, and
+Shadow DOM adoption remain outside this slice. Quirks-mode layout,
+parser-stream reentrancy, remote CI, and cross-platform certification also
+remain open. See the [slice 757 task](../plan/tasks/native-engine-browser-757.md).
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and
@@ -222,11 +226,12 @@ implements shallow/deep template-content `cloneNode()` in top-level and
 same-origin-frame realms; slice 755 implements target-aware `importNode()`
 there and in inert template-owner Documents. Slice 756 implements bounded
 same-context `adoptNode()` with identity preservation, detachment, recursive
-inert-template ownership, and atomic bounds checks; cross-context transfer
-remains incomplete. The planned
-[slice 757 contract](../plan/tasks/native-engine-browser-757.md) defines a
-same-origin top-level/frame identity-transfer gate; it is not implementation
-or conformance evidence.
+inert-template ownership, and atomic bounds checks. Slice 757 transfers node
+identity across same-origin top-level/frame owners and preserves later
+destination command routing; worker-loss rollback still lacks fault-injection
+evidence. This remains incremental DOM behavior, not full conformance. The
+[slice 757 task](../plan/tasks/native-engine-browser-757.md) records the
+contract and local evidence.
 Quirks mode does not yet alter CSS/layout, and
 script-stream reentrancy remains incomplete. html5ever documents remaining
 tree-builder differences; the

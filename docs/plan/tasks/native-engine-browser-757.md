@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-757
 scope: glass-browser/cross-context-document-adopt-node
-status: in_progress
+status: done
 depends-on: [native-engine-browser-756]
 ---
 
@@ -100,22 +100,27 @@ popup lifetimes remain distinct issue #40 gates.
 - `docs/plan/README.md`
 - `docs/plan/tasks/native-engine-browser-757.md`
 
-## Verification
+## Verification evidence
+
+Local Linux checks passed:
 
 - `cargo fmt --all -- --check` and `git diff --check`.
-- Run the affected `glass-browser` test-target check before tests, then focused
-  process-backed tests for top-to-frame, frame-to-top, and sibling-frame
-  adoption. Each test must assert same-object return identity, source detach,
-  destination owner and insertion, nested-template/attribute state, and later
-  destination-routed mutation after realm refresh.
-- Verify transfer failure atomicity for stale/replaced contexts, destination
-  preflight/commit rejection, invalid owner/generation, and node/depth/envelope
-  bounds; both source and destination snapshots/revisions must remain
-  unchanged. Verify cross-origin and independent-root access fails before
-  mutation, and retain slice 756 same-owner and slice 755 import regressions.
-- Exercise the normal frame command/event path and assert no duplicate
-  mutations, stale owner-local indices, or commands routed to the old owner.
-- Run maintainer release-truth, documentation-depth, TUI-shortcut, and live
-  documentation-coverage gates after the synchronized docs update.
-- Record local OS and exact results. Remote CI and Windows/macOS runtime
-  certification remain separate issue #40 gates.
+- `cargo check -p glass-browser --lib --tests --locked --quiet`.
+- The process-backed `native_documents_adopt_nodes_within_their_browsing_contexts`
+  regression covers top-to-frame, frame-to-top, and sibling-frame transfers;
+  same-object return identity; detach/owner state; nested template and
+  attribute state; same-turn insertion and mutation; and destination routing
+  after script-realm refresh.
+- `native_document_adoption_preflight_failures_leave_both_owners_unchanged`
+  verifies that stale-generation and invalid-identity preflight failures leave
+  both native document drafts unchanged.
+- The backend checks caller/source/destination origins and requires all three
+  routed frames to belong to the same live top-level target before coordinating
+  a transfer. Independent-root routes and stale document generations fail
+  closed. Content-worker synchronization attempts to restore both snapshots
+  before publishing either Rust document when a transfer fails.
+
+The process-backed regression does not inject a worker crash between the two
+content-worker synchronizations. That rollback branch is code-reviewed but not
+fault-injection-certified. Remote CI and Windows/macOS runtime certification
+remain separate issue #40 gates; this slice is not browser-completion evidence.

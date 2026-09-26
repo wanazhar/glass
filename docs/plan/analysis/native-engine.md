@@ -1,8 +1,7 @@
 # Native engine browser-complete expansion analysis
 
 Status: Active implementation analysis for issue #40. The latest locally
-completed browser expansion slice is `native-engine-browser-756`; slice 757 is
-planned but not implemented. Slice 746
+completed browser expansion slice is `native-engine-browser-757`. Slice 746
 migrates initial navigation documents to a Glass-owned `html5ever` sink; slice
 747 migrates HTML fragments to its bounded context-fragment algorithm; and
 slice 748 routes HTML XHR document responses through the same full-document
@@ -32,8 +31,10 @@ and inert template-owner Documents, with boolean/dictionary depth options and
 destination inert ownership for nested template content. Slice 756 implements
 bounded same-context `adoptNode()` for live and inert Documents, including
 same-Document detach, recursive template-owner reassignment, typed failures,
-and preflight bounds. Cross-context node transfer, full HTML conformance,
-remote CI, and cross-platform certification remain open.
+and preflight bounds. Slice 757 adds same-origin top-level/frame identity
+transfer with coordinated owner synchronization and destination mutation
+routing. Full custom-element behavior, HTML conformance, remote CI, and
+cross-platform certification remain open.
 Issue #40 remains open. Slice 728
 makes the canonical public Rust `BrowserSession`
 native-first with no CDP fallback and names the former CDP-backed API
@@ -48,12 +49,9 @@ prescan. These remain incremental parity tasks, not full Encoding/XHR
 conformance. Template content is preserved as a distinct fragment in detached
 XHR response documents, top-level live navigation DOMs, and same-origin frame
 documents; `cloneNode()` template copying is covered by slice 754,
-target-aware `importNode()` by slice 755, and bounded same-context
-`adoptNode()` by slice 756. The planned
-[slice 757 contract](../tasks/native-engine-browser-757.md) covers
-identity-preserving transfer among same-origin top-level/frame Documents in
-one browsing-context tree; it is not implementation evidence. Independent
-top-level/popup transfer remains open. See
+target-aware `importNode()` by slice 755, bounded same-context `adoptNode()` by
+slice 756, and identity-preserving same-tree owner transfer by slice 757.
+Independent top-level/popup transfer remains open. See
 [slice 749](../tasks/native-engine-browser-749.md),
 [slice 750](../tasks/native-engine-browser-750.md), and
 [slice 752](../tasks/native-engine-browser-752.md) and
@@ -61,7 +59,7 @@ top-level/popup transfer remains open. See
 [slice 754](../tasks/native-engine-browser-754.md),
 [slice 755](../tasks/native-engine-browser-755.md), and
 [slice 756](../tasks/native-engine-browser-756.md), and the
-[planned slice 757](../tasks/native-engine-browser-757.md). Slice 729
+[slice 757](../tasks/native-engine-browser-757.md). Slice 729
 promotes native revisioned semantic observation,
 page inspection/bootstrap, and region expansion into the canonical Rust API.
 Slice 730 promotes native target/frame topology into the canonical Rust API

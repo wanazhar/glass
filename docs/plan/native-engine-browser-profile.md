@@ -176,12 +176,14 @@ submission, custom validity, accessibility semantics, or custom states.
 The [slice 761 contract](tasks/native-engine-browser-761.md) implements
 `formAssociatedCallback` and `formDisabledCallback`, with in-process and
 content-process coverage for upgrade, owner/disabled transitions, and refresh.
-Reset and state-restore callbacks remain unsupported until later slices supply
-the native reset and restoration paths. The [slice 762
-contract](tasks/native-engine-browser-762.md) now defines the next native reset
-implementation boundary: cancelable form reset, supported control defaults,
-reset-button activation, and `formResetCallback()` ordering. State restoration
-and complete form-control Web IDL reflection remain profile requirements.
+Reset and state-restore callbacks were fail-closed until slice 762 added the
+native reset path. Slice 762 implements cancelable reset, supported control
+defaults, and ordered `formResetCallback()` reactions across top-level and
+same-origin frame documents; local and content-process regressions cover
+cancellation, reentrancy, callback exceptions, control-state persistence, and
+reset defaults. Reset-button activation, state restoration, and complete
+form-control Web IDL reflection remain profile requirements; see the
+[slice 762 contract](tasks/native-engine-browser-762.md).
 ### Synchronous JavaScript dialog contract
 
 The native page realm implements the HTML Standard's modal user-prompt

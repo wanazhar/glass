@@ -200,6 +200,10 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         submitter_index: Option<u32>,
     },
+    ResetForm {
+        node_index: u32,
+        perform_reset: bool,
+    },
     Navigate {
         href: String,
         #[serde(default)]
@@ -11707,6 +11711,7 @@ fn host_event_metadata(
         NativeEventKind::KeyDown => ("keydown", true, true),
         NativeEventKind::KeyUp => ("keyup", true, false),
         NativeEventKind::Submit => ("submit", true, true),
+        NativeEventKind::Reset => ("reset", true, true),
         NativeEventKind::Click => ("click", true, true),
         NativeEventKind::MouseOver => ("mouseover", true, true),
         NativeEventKind::MouseEnter => ("mouseenter", false, false),
@@ -11871,6 +11876,7 @@ pub(crate) fn frame_event_batch(
                 NativeEventKind::KeyDown => ("keydown", true, true),
                 NativeEventKind::KeyUp => ("keyup", true, false),
                 NativeEventKind::Submit => ("submit", true, true),
+                NativeEventKind::Reset => ("reset", true, true),
                 NativeEventKind::Click => ("click", true, true),
                 NativeEventKind::MouseOver => ("mouseover", true, true),
                 NativeEventKind::MouseEnter => ("mouseenter", false, false),
@@ -11941,6 +11947,7 @@ pub(crate) fn validate_frame_script_command(
                 | NativeScriptCommand::SetCustomValidity { .. }
                 | NativeScriptCommand::CheckValidity { .. }
                 | NativeScriptCommand::ReportValidity { .. }
+                | NativeScriptCommand::ResetForm { .. }
         ),
     };
     if !supported {
@@ -39388,6 +39395,9 @@ fn document_bootstrap(
         }}
         pushCommand({{ kind: "requestSubmitForm", node_index: entry.nodeIndex, submitter_index: submitter === null ? null : submitter.nodeIndex }});
       }},
+      reset() {{
+        return nativeFormReset(this, pushCommand);
+      }},
       checkValidity() {{
         const valid = validityFlags(entry).valid;
         if (!valid) pushCommand({{ kind: "checkValidity", node_index: entry.nodeIndex }});
@@ -40086,6 +40096,19 @@ fn document_bootstrap(
         selected = Boolean(next);
         pushCommand({{ kind: "setSelected", node_index: entry.nodeIndex, selected }});
       }}
+    }});
+    Object.defineProperty(element, "__glassSetFormResetState", {{
+      enumerable: false,
+      configurable: false,
+      value(next) {{
+        if (Object.prototype.hasOwnProperty.call(next, "value")) value = String(next.value);
+        if (Object.prototype.hasOwnProperty.call(next, "checked")) checked = Boolean(next.checked);
+        if (Object.prototype.hasOwnProperty.call(next, "selected")) selected = Boolean(next.selected);
+        if (next.clearFiles) files = makeNativeFileList([]);
+        if (selectionStart !== null) selectionStart = 0;
+        if (selectionEnd !== null) selectionEnd = 0;
+        if (selectionDirection !== null) selectionDirection = "none";
+      }},
     }});
     Object.defineProperty(element, "__glassSetScrollState", {{
       enumerable: false,
@@ -41244,6 +41267,13 @@ fn document_bootstrap(
       case "setCustomValidity": element.setCustomValidity(command.message); break;
       case "checkValidity": element.checkValidity(); break;
       case "reportValidity": element.reportValidity(); break;
+      case "resetForm":
+        pushCurrentDocumentCommand({{
+          kind: "resetForm",
+          node_index: nodeIndex,
+          perform_reset: Boolean(command.perform_reset),
+        }});
+        break;
       default: throw new TypeError("native frame command is unsupported");
     }}
     return true;
@@ -46220,6 +46250,7 @@ fn document_bootstrap(
       reactionErrors: [],
       formOwners: new WeakMap(),
       formDisabledStates: new WeakMap(),
+      formResetting: new WeakSet(),
       defining: false,
       upgrading: 0,
       directConstructions: 0,
@@ -46234,6 +46265,9 @@ fn document_bootstrap(
   }}
   if (!(nativeCustomElementState.formDisabledStates instanceof WeakMap)) {{
     nativeCustomElementState.formDisabledStates = new WeakMap();
+  }}
+  if (!(nativeCustomElementState.formResetting instanceof WeakSet)) {{
+    nativeCustomElementState.formResetting = new WeakSet();
   }}
   if (!Number.isSafeInteger(nativeCustomElementState.reactionHead)
       || nativeCustomElementState.reactionHead < 0
@@ -46381,6 +46415,131 @@ fn document_bootstrap(
       parent = parent.parentElement;
     }}
     return null;
+  }};
+  const nativeFormControlOwnerFor = (element, treeElements, firstElementById) => {{
+    if (!element || !["BUTTON", "INPUT", "SELECT", "TEXTAREA"].includes(element.tagName)) return null;
+    const formReference = element.getAttribute("form");
+    if (formReference !== null) {{
+      if (formReference === "") return null;
+      const firstMatch = firstElementById.get(formReference);
+      return firstMatch && firstMatch.tagName === "FORM" ? firstMatch : null;
+    }}
+    let parent = element.parentElement;
+    while (parent) {{
+      if (parent.tagName === "FORM") return parent;
+      parent = parent.parentElement;
+    }}
+    return null;
+  }};
+  const nativeSelectDisplaySizeIsOne = select => {{
+    const rawSize = select.getAttribute("size");
+    if (rawSize === null) return true;
+    const digits = /^[\t\n\f\r ]*([0-9]+)/.exec(rawSize)?.[1];
+    return digits === undefined || /^0*1$/.test(digits);
+  }};
+  const nativeSelectOptionIsDisabled = option => {{
+    if (option.hasAttribute("disabled")) return true;
+    let parent = option.parentElement;
+    while (parent && parent.tagName !== "SELECT") {{
+      if (parent.tagName === "OPTGROUP" && parent.hasAttribute("disabled")) return true;
+      parent = parent.parentElement;
+    }}
+    return false;
+  }};
+  const nativeFormReset = (form, enqueueCommand) => {{
+    if (!form || form.tagName !== "FORM") throw new TypeError("reset requires a form");
+    const resetting = nativeCustomElementState.formResetting;
+    if (resetting.has(form)) return undefined;
+    resetting.add(form);
+    try {{
+      const event = createEvent("reset", {{ bubbles: true, cancelable: true }});
+      const performReset = dispatchTarget(form, event);
+      const root = nodeIsConnected(form)
+        ? form.ownerDocument || document
+        : nativeFormAssociatedTreeRootFor(form);
+      const elements = nativeCustomElementElementsInTree(root);
+      const firstElementById = nativeFormAssociatedFirstElementById(elements);
+      if (performReset) {{
+        for (const control of elements) {{
+          if (nativeFormControlOwnerFor(control, elements, firstElementById) !== form) continue;
+          if (control.tagName === "INPUT") {{
+            const type = String(control.getAttribute("type") || "text").toLowerCase();
+            if (typeof control.__glassSetFormResetState === "function") {{
+              control.__glassSetFormResetState({{
+                value: type === "file" ? "" : control.getAttribute("value") || "",
+                checked: control.hasAttribute("checked"),
+                clearFiles: type === "file",
+              }});
+            }}
+          }} else if (control.tagName === "TEXTAREA") {{
+            if (typeof control.__glassSetFormResetState === "function") {{
+              control.__glassSetFormResetState({{ value: control.textContent || "" }});
+            }}
+          }} else if (control.tagName === "SELECT") {{
+            const options = elements.filter((option) =>
+              option.tagName === "OPTION" && nativeFormAssociatedIsWithin(option, control)
+            );
+            const selected = options.filter((option) => option.hasAttribute("selected"));
+            const multiple = control.hasAttribute("multiple");
+            let selectedOptions = selected;
+            if (!multiple) {{
+              selectedOptions = selected.length > 0
+                ? [selected[selected.length - 1]]
+                : nativeSelectDisplaySizeIsOne(control)
+                  ? options.filter(option => !nativeSelectOptionIsDisabled(option)).slice(0, 1)
+                  : [];
+            }}
+            const selectedSet = new Set(selectedOptions);
+            for (const option of options) {{
+              if (typeof option.__glassSetFormResetState === "function") {{
+                option.__glassSetFormResetState({{ selected: selectedSet.has(option) }});
+              }}
+            }}
+            if (typeof control.__glassSetFormResetState === "function") {{
+              control.__glassSetFormResetState({{ value: selectedOptions.length > 0 ? selectedOptions[0].value : "" }});
+            }}
+          }}
+        }}
+        const checkedRadioNames = new Set();
+        for (let index = elements.length - 1; index >= 0; index -= 1) {{
+          const control = elements[index];
+          if (nativeFormControlOwnerFor(control, elements, firstElementById) !== form
+              || control.tagName !== "INPUT"
+              || String(control.getAttribute("type") || "text").toLowerCase() !== "radio"
+              || !control.hasAttribute("checked")) continue;
+          const name = control.getAttribute("name");
+          if (name === null || name === "") continue;
+          if (checkedRadioNames.has(name)) {{
+            if (typeof control.__glassSetFormResetState === "function") {{
+              control.__glassSetFormResetState({{ checked: false }});
+            }}
+          }} else {{
+            checkedRadioNames.add(name);
+          }}
+        }}
+      }}
+      enqueueCommand({{
+        kind: "resetForm",
+        node_index: Number(form.nodeIndex),
+        perform_reset: performReset,
+      }});
+      if (performReset) {{
+        nativeCustomElementState.upgrading += 1;
+        try {{
+          for (const element of elements) {{
+            if (nativeFormAssociatedOwnerFor(element, elements, firstElementById) === form) {{
+              nativeCustomElementQueueCallback(element, "formResetCallback", []);
+            }}
+          }}
+        }} finally {{
+          nativeCustomElementState.upgrading = Math.max(0, nativeCustomElementState.upgrading - 1);
+          nativeCustomElementDrainReactions();
+        }}
+      }}
+      return undefined;
+    }} finally {{
+      resetting.delete(form);
+    }}
   }};
   const nativeFormAssociatedValue = (value) => {{
     if (value === null) return {{ kind: "null" }};
@@ -46929,7 +47088,7 @@ fn document_bootstrap(
             if (callback !== undefined && typeof callback !== "function") {{
               throw new TypeError(callbackName + " must be callable");
             }}
-            if (["formResetCallback", "formStateRestoreCallback"].includes(callbackName)
+            if (callbackName === "formStateRestoreCallback"
                 && callback !== undefined) {{
               throw new DOMExceptionNative(
                 callbackName + " is not supported by this native profile",
@@ -48093,6 +48252,20 @@ fn document_bootstrap(
           queueFrameCommand(currentBinding, {{ kind: "setSelected", node_index: entry.nodeIndex, selected }});
         }},
       }});
+      Object.defineProperty(projected, "__glassSetFormResetState", {{
+        enumerable: false,
+        configurable: false,
+        value(next) {{
+          if (Object.prototype.hasOwnProperty.call(next, "value")) value = String(next.value);
+          if (Object.prototype.hasOwnProperty.call(next, "checked")) checked = Boolean(next.checked);
+          if (Object.prototype.hasOwnProperty.call(next, "selected")) selected = Boolean(next.selected);
+        }},
+      }});
+      if (projected.tagName === "FORM") Object.defineProperty(projected, "reset", {{
+        enumerable: false,
+        configurable: false,
+        value() {{ return nativeFormReset(projected, command => queueFrameCommand(currentBinding, command)); }},
+      }});
       Object.defineProperty(projected, "ownerDocument", {{
         enumerable: false,
         configurable: false,
@@ -48804,6 +48977,20 @@ fn document_bootstrap(
       Object.defineProperty(projected, "value", {{ enumerable: true, configurable: false, get() {{ return value; }}, set(next) {{ value = String(next); queueFrameCommand(currentBinding, {{ kind: "setValue", node_index: nodeIndex, value }}); }} }});
       Object.defineProperty(projected, "checked", {{ enumerable: true, configurable: false, get() {{ return checked; }}, set(next) {{ checked = Boolean(next); queueFrameCommand(currentBinding, {{ kind: "setChecked", node_index: nodeIndex, checked }}); }} }});
       Object.defineProperty(projected, "selected", {{ enumerable: true, configurable: false, get() {{ return selected; }}, set(next) {{ selected = Boolean(next); queueFrameCommand(currentBinding, {{ kind: "setSelected", node_index: nodeIndex, selected }}); }} }});
+      Object.defineProperty(projected, "__glassSetFormResetState", {{
+        enumerable: false,
+        configurable: false,
+        value(next) {{
+          if (Object.prototype.hasOwnProperty.call(next, "value")) value = String(next.value);
+          if (Object.prototype.hasOwnProperty.call(next, "checked")) checked = Boolean(next.checked);
+          if (Object.prototype.hasOwnProperty.call(next, "selected")) selected = Boolean(next.selected);
+        }},
+      }});
+      if (projected.tagName === "FORM") Object.defineProperty(projected, "reset", {{
+        enumerable: false,
+        configurable: false,
+        value() {{ return nativeFormReset(projected, command => queueFrameCommand(currentBinding, command)); }},
+      }});
       Object.defineProperty(projected, "ownerDocument", {{
         enumerable: false,
         configurable: false,

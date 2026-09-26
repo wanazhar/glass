@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-761`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-762`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -76,11 +76,15 @@ owner/disabled-state reconciliation across custom-element upgrades and DOM
 mutations. Reset and state-restore callbacks remain fail-closed until their
 corresponding native paths exist; see the
 [slice 761 task](../plan/tasks/native-engine-browser-761.md).
-Slice 762 is in progress for cancelable native form reset, reset-button
-activation, built-in control default restoration, and ordered
-`formResetCallback()` reactions. Its exact boundary is recorded in the
-[slice 762 task](../plan/tasks/native-engine-browser-762.md); state restoration
-and full form-control Web IDL reflection remain open.
+Slice 762 implements cancelable native form reset and built-in control default
+restoration with ordered `formResetCallback()` reactions in top-level and
+same-origin frame documents. Focused local and content-process tests cover
+cancellation, reentrancy, callback error recovery, explicit form ownership,
+file clearing, custom-validity preservation, select fallback, radio groups,
+and refreshed state. Reset-button activation, state restoration, complete
+form-control Web IDL reflection, remote CI, and cross-platform certification
+remain open. See the [slice 762 task](../plan/tasks/native-engine-browser-762.md)
+for exact verification evidence.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

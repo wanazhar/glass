@@ -27,19 +27,25 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion slices are complete through `native-engine-browser-744`.
+browser expansion slices are complete through `native-engine-browser-746`.
 Slice 744 disables and asserts against nested Linux user namespaces in the
-Bubblewrap content worker. A control-versus-restricted namespace test and a
-process-backed page-loading regression pass locally. Remote CI and
-cross-platform certification remain open; this is not browser-completion
-evidence.
-Slice 745 is active: it adds OS-enforced content-worker memory ceilings on
-Linux and Windows while preserving stricter inherited Linux limits. Its
-Linux address-space and process-backed page checks pass. The Windows target
-check stops in the `ring` dependency because this host has no MSVC-compatible
-C compiler. The Job Object API snippet type-checks, but full Windows crate and
-runtime/CI evidence remain pending. See the
-[slice 745 task](tasks/native-engine-browser-745.md).
+Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
+ceilings on Linux and Windows while preserving stricter inherited Linux
+limits. Linux address-space and process-backed page checks pass. The Windows
+target check stops in the `ring` dependency because this host has no
+MSVC-compatible C compiler; the changed Job Object API block type-checks
+against cached `windows-sys` metadata. Full Windows crate/runtime validation,
+remote CI, and cross-platform certification remain issue-level gates. This is
+not browser-completion evidence.
+Slice 746 completes the initial navigation-document parser migration to
+`html5ever` through a Glass-owned tree sink. Its temporary allocations are
+capped at twice the configured node budget and its depth limit is enforced
+during construction. The locked scoped check, 177 parser-filtered unit tests,
+and process-backed HTTP navigation regression (1/1) passed. Documentation
+truth, depth, shortcut, and coverage gates also passed locally. Fragment and
+XHR parser routes, full HTML conformance, remote CI, and cross-platform
+certification remain open; this is not browser-completion evidence. See the
+[slice 746 task](tasks/native-engine-browser-746.md).
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,
 and inherited sandboxed-modals eligibility. Remote CI and cross-platform

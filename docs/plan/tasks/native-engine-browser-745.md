@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-745
 scope: glass-browser/content-worker-address-space-ceiling
-status: in-progress
+status: done
 depends_on: [native-engine-browser-744]
 ---
 
@@ -70,8 +70,8 @@ these are not identical metrics.
 - The Windows `cargo check` was attempted for the installed
   `x86_64-pc-windows-msvc` target but stopped in the `ring` dependency before
   compiling `glass-browser`: this host has no MSVC-compatible C compiler. The
-  Windows Job Object change was independently type-checked against the
-  already-built `windows-sys` metadata; full-crate cross-compilation and
-  Windows runtime behavior remain unverified pending a Windows runner.
+  changed Job Object API block was independently type-checked against the
+  already-built `windows-sys` metadata. This completes the source slice; full
+  Windows crate/runner validation remains an issue-level platform gate.
 - Documentation and final formatting gates are recorded after closeout; slice
-  status remains in progress until the Windows implementation is validated.
+  status is complete locally. No Windows runtime or macOS behavior is claimed.

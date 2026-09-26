@@ -5,8 +5,8 @@
 //! capability has an explicit resource and security contract.
 
 use super::config::{
-    MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, is_file_url, is_network_url, validate_context_id,
-    validate_url_text, validate_window_name, without_fragment,
+    MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES, MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, is_file_url,
+    is_network_url, validate_context_id, validate_url_text, validate_window_name, without_fragment,
 };
 use super::css::{
     FontStyleValue, FontWeightValue, parse_font_stretch_range, parse_font_weight_range,
@@ -25,6 +25,9 @@ use super::fetch_stream::{
     spawn_native_fetch_upload_source,
 };
 use super::font::{MAX_NATIVE_FONT_BYTES, NativeFontBook};
+use super::html_parser::{
+    HtmlParsedAttribute, HtmlTreeSinkFailure, parse_fragment_with_limits as parse_html5_fragment,
+};
 use super::interaction::{
     MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FORM_BODY_BYTES, MAX_NATIVE_SCRIPT_COMMAND_BYTES,
     NativeEventKind, validate_native_key,
@@ -54,7 +57,8 @@ use hmac::{Hmac, Mac};
 use rquickjs::function::This;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
-    ArrayBuffer, CaughtError, Coerced, Context, Error, FromJs, Function, Module, Runtime, Value,
+    ArrayBuffer, CaughtError, Coerced, Context, Ctx, Error, FromJs, Function, Module, Runtime,
+    Value,
 };
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
@@ -7651,13 +7655,17 @@ pub(crate) fn execute_inline_scripts(
                 href,
                 timing,
                 node_index,
+                nonce,
                 integrity,
+                parser_inserted,
                 ..
             } if is_file_url(document_url) => {
-                match loader.load_local_file_script(
+                match loader.load_local_file_script_with_policy(
                     document_url,
                     &href,
                     MAX_NATIVE_SCRIPT_BYTES,
+                    parser_inserted,
+                    nonce.as_deref(),
                     integrity.as_deref(),
                 ) {
                     Ok(Some(resource)) => {
@@ -7678,7 +7686,9 @@ pub(crate) fn execute_inline_scripts(
                 href,
                 timing,
                 node_index,
+                nonce,
                 integrity,
+                parser_inserted,
                 ..
             } if is_file_url(document_url) => {
                 let request_url = match resolve_local_file_module_script_url(document_url, &href) {
@@ -7688,10 +7698,12 @@ pub(crate) fn execute_inline_scripts(
                         continue;
                     }
                 };
-                match loader.load_local_file_script(
+                match loader.load_local_file_script_with_policy(
                     document_url,
                     &request_url,
                     MAX_NATIVE_SCRIPT_BYTES,
+                    parser_inserted,
+                    nonce.as_deref(),
                     integrity.as_deref(),
                 ) {
                     Ok(Some(resource)) => {
@@ -7889,10 +7901,12 @@ fn load_local_file_module_graph_with_import_map_and_existing(
                 ));
             }
             let resource = loader
-                .load_local_file_script(
+                .load_local_file_script_with_policy(
                     document_url,
                     &target,
                     MAX_NATIVE_SCRIPT_BYTES,
+                    true,
+                    None,
                     import_map.integrity_for_url(&target),
                 )?
                 .ok_or_else(|| NativeEngineError::Network {
@@ -12110,6 +12124,7 @@ impl NativeJavaScriptRuntime {
         let dialog_url = Arc::new(Mutex::new(String::new()));
         context
             .with(|ctx| {
+                install_native_html_fragment_parser(ctx.clone())?;
                 ctx.eval::<(), _>(
                     r#"Object.defineProperty(globalThis, "__glassParseJSONModule", {
                       value: JSON.parse,
@@ -16711,6 +16726,67 @@ fn install_native_url_source<'js>(ctx: rquickjs::Ctx<'js>) -> Result<(), NativeE
         })
 }
 
+fn install_native_html_fragment_parser<'js>(ctx: Ctx<'js>) -> Result<(), Error> {
+    let parse_fragment = Function::new(
+        ctx.clone(),
+        |source: String,
+         context_namespace: String,
+         context_name: String,
+         context_attributes_json: String,
+         context_element_depth: u32|
+         -> String {
+            let error_response = |kind: &str| serde_json::json!({ "ok": false, "error": kind });
+            let response = if source.len() > crate::browser_backend::MAX_TEXT_BYTES {
+                error_response("byteLimit")
+            } else if context_attributes_json.len() > MAX_NATIVE_SCRIPT_BYTES {
+                error_response("invalidContext")
+            } else if context_element_depth as usize > MAX_NATIVE_DOM_DEPTH {
+                error_response("depthLimit")
+            } else {
+                match serde_json::from_str::<Vec<HtmlParsedAttribute>>(&context_attributes_json) {
+                    Err(_) => error_response("invalidContext"),
+                    Ok(context_attributes) => match parse_html5_fragment(
+                        &source,
+                        &context_namespace,
+                        &context_name,
+                        &context_attributes,
+                        true,
+                        context_element_depth as usize,
+                        MAX_NATIVE_NODES.saturating_mul(2),
+                        MAX_NATIVE_DOM_DEPTH,
+                    ) {
+                        Ok(fragment) => serde_json::json!({
+                            "ok": true,
+                            "fragment": fragment,
+                        }),
+                        Err(HtmlTreeSinkFailure::InvalidTree(_)) => {
+                            error_response("invalidContext")
+                        }
+                        Err(HtmlTreeSinkFailure::NodeLimitExceeded { .. }) => {
+                            error_response("nodeLimit")
+                        }
+                        Err(HtmlTreeSinkFailure::DomDepthExceeded { .. }) => {
+                            error_response("depthLimit")
+                        }
+                    },
+                }
+            };
+            serde_json::to_string(&response)
+                .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization"}"#.into())
+        },
+    )?;
+    ctx.globals()
+        .set("__glassParseHtmlFragmentHost", parse_fragment)?;
+    ctx.eval::<(), _>(
+        r#"Object.defineProperty(globalThis, "__glassParseHtmlFragmentHost", {
+          value: globalThis.__glassParseHtmlFragmentHost,
+          writable: false,
+          configurable: false,
+          enumerable: false,
+        });"#,
+    )
+}
+
 #[derive(Debug, Deserialize)]
 struct NativeSyncXhrRequest {
     #[serde(rename = "documentUrl")]
@@ -20815,6 +20891,51 @@ mod native_selector_tests {
         assert_eq!(
             evaluation.value,
             serde_json::json!([true, true, true, true, true, true, true, true])
+        );
+    }
+    #[test]
+    fn javascript_attribute_selectors_use_html_default_case_rules() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("attribute-default-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::parse(
+            "<form id='form'><input id='field'><div id='state'></div><div id='custom' data-value='MiXeD'></div></form>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("attribute default document must parse");
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const form = document.querySelector("#form");
+                    const field = document.querySelector("#field");
+                    const state = document.querySelector("#state");
+                    const custom = document.querySelector("#custom");
+                    form.setAttribute("method", "POST");
+                    form.setAttribute("enctype", "APPLICATION/X-WWW-FORM-URLENCODED");
+                    field.setAttribute("type", "TeXt");
+                    state.setAttribute("dir", "RTL");
+                    state.setAttribute("contenteditable", "TRUE");
+                    return [
+                        form.matches("[method=post]"),
+                        form.matches("[enctype=application/x-www-form-urlencoded]"),
+                        field.matches("[type=text]"),
+                        !field.matches("[type=text s]"),
+                        state.matches("[dir=rtl]"),
+                        !state.matches("[dir=rtl s]"),
+                        state.matches("[contenteditable=true]"),
+                        !custom.matches("[data-value=mixed]"),
+                        custom.matches("[data-value=mixed i]"),
+                        !form.matches("[method=post s]"),
+                    ];
+                })()"##,
+                &document,
+                "fixture://attribute-default.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("default attribute selectors must evaluate");
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true, true, true, true, true, true, true])
         );
     }
 }
@@ -38448,1056 +38569,116 @@ fn document_bootstrap(
         : match;
     }})
     .replace(/&amp;/gi, "&");
-  const populateDetachedFragment = (fragment, markup, createElement, createText, createComment) => {{
-    const stack = [fragment];
-    let forceHtmlContext = false;
-    const rawSource = String(markup);
-    const source = rawSource.includes("\r") ? rawSource.replace(/\r\n?/g, "\n") : rawSource;
-    const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
-    const rawTextElements = htmlRawTextElements;
-    const rcdataElements = new Set(["textarea", "title"]);
-    const rawTextFragmentContextElements = new Set([
-      "script", "style", "xmp", "iframe", "noembed", "noframes", "noscript",
-    ]);
-    const tableStructureElements = new Set(["table", "tbody", "tfoot", "thead", "tr"]);
-    const tableSpecialStartTags = new Set([
-      "caption", "col", "colgroup", "tbody", "tfoot", "thead", "tr", "td", "th",
-      "table", "style", "script", "template", "form",
-    ]);
-    const tableCellStructuralStartTags = new Set([
-      "caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr",
-    ]);
-    const tableLevelCellStructuralStartTags = new Set([
-      "caption", "col", "colgroup", "tbody", "tfoot", "thead",
-    ]);
-    const tableFosterLocation = () => {{
-      const current = stack[stack.length - 1];
-      if (!current || current.namespaceURI !== HTML_NAMESPACE
-          || !tableStructureElements.has(String(current.localName || "").toLowerCase())) return null;
-      for (let index = stack.length - 1; index > 0; index -= 1) {{
-        const candidate = stack[index];
-        if (candidate.namespaceURI !== HTML_NAMESPACE || candidate.localName !== "table") continue;
-        const fosterParent = candidate.__glassParent || null;
-        return fosterParent
-          ? {{ parent: fosterParent, before: candidate }}
-          : {{ parent: fragment, before: null }};
-      }}
-      return {{ parent: fragment, before: null }};
-    }};
-    const insertParsedNode = (parent, node, before = null) =>
-      before ? parent.insertBefore(node, before) : parent.appendChild(node);
-    const activeFormatting = [];
-    const htmlFormattingNames = new Set([
-      "a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small",
-      "strike", "strong", "tt", "u",
-    ]);
-    const htmlSpecialTreeNames = new Set([
-      "address", "applet", "area", "article", "aside", "base", "basefont", "bgsound",
-      "blockquote", "body", "br", "button", "caption", "center", "col", "colgroup",
-      "dd", "details", "dir", "div", "dl", "dt", "embed", "fieldset", "figcaption",
-      "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5",
-      "h6", "head", "header", "hgroup", "hr", "html", "iframe", "img", "input", "keygen", "li",
-      "link", "listing", "main", "marquee", "menu", "meta", "nav", "noembed", "noframes",
-      "noscript", "object", "ol", "p", "param", "plaintext", "pre", "script", "search",
-      "section", "select", "source", "style", "summary", "table", "tbody", "td", "template",
-      "textarea", "tfoot", "th", "thead", "title", "tr", "track", "ul", "wbr", "xmp",
-    ]);
-    const activeFormattingMarkerNames = new Set([
-      "applet", "caption", "marquee", "object", "template", "td", "th",
-    ]);
-    const markerSensitiveEndNames = new Set([
-      "applet", "caption", "marquee", "object", "table", "tbody", "td", "template",
-      "tfoot", "th", "thead", "tr",
-    ]);
-    const foreignContentBreakoutStartTags = new Set([
-      "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt",
-      "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head", "hr", "i", "img",
-      "li", "listing", "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s", "small",
-      "span", "strong", "strike", "sub", "sup", "table", "tt", "u", "ul", "var",
-    ]);
-    const clearActiveFormattingToMarker = () => {{
-      while (activeFormatting.length) {{
-        if (activeFormatting.pop() === null) break;
-      }}
-    }};
-    const activeFormattingIndex = (name) => {{
-      const first = activeFormatting.lastIndexOf(null) + 1;
-      for (let index = activeFormatting.length - 1; index >= first; index -= 1) {{
-        const entry = activeFormatting[index];
-        if (entry && entry.namespaceURI === HTML_NAMESPACE && entry.localName === name) return index;
-      }}
-      return -1;
-    }};
-    const sameFormattingAttributes = (left, right) => {{
-      const attributes = (element) => Array.from(element.attributes || [])
-        .map((attribute) => JSON.stringify([
-          attribute.namespaceURI || "",
-          attribute.localName || attribute.name,
-          attribute.value,
-        ]))
-        .sort();
-      const leftAttributes = attributes(left);
-      const rightAttributes = attributes(right);
-      return left.localName === right.localName
-        && left.namespaceURI === right.namespaceURI
-        && leftAttributes.length === rightAttributes.length
-        && leftAttributes.every((attribute, index) => attribute === rightAttributes[index]);
-    }};
-    const pushActiveFormatting = (element) => {{
-      const marker = activeFormatting.lastIndexOf(null) + 1;
-      const equivalent = [];
-      for (let index = marker; index < activeFormatting.length; index += 1) {{
-        const entry = activeFormatting[index];
-        if (entry && sameFormattingAttributes(entry, element)) equivalent.push(index);
-      }}
-      if (equivalent.length >= 3) activeFormatting.splice(equivalent[0], 1);
-      activeFormatting.push(element);
-    }};
-    const isScopeBoundary = (element) => {{
-      if (!element || Number(element.nodeType) !== 1) return true;
-      const name = String(element.localName || "").toLowerCase();
-      if (element.namespaceURI === HTML_NAMESPACE) {{
-        return ["applet", "caption", "html", "table", "td", "th", "marquee", "object", "select", "template"].includes(name);
-      }}
-      if (element.namespaceURI === MATHML_NAMESPACE) {{
-        return ["mi", "mo", "mn", "ms", "mtext", "annotation-xml"].includes(name);
-      }}
-      return element.namespaceURI === SVG_NAMESPACE
-        && ["foreignobject", "desc", "title"].includes(name);
-    }};
-    const elementInScope = (target) => {{
-      for (let index = stack.length - 1; index >= 0; index -= 1) {{
-        const candidate = stack[index];
-        if (candidate === stack[0]) return false;
-        if (candidate === target) return true;
-        if (isScopeBoundary(candidate)) return false;
-      }}
-      return false;
-    }};
-    const paragraphInButtonScope = () => {{
-      for (let index = stack.length - 1; index >= 0; index -= 1) {{
-        const candidate = stack[index];
-        if (candidate === stack[0]) return false;
-        if (candidate && Number(candidate.nodeType) === 1
-            && candidate.namespaceURI === HTML_NAMESPACE
-            && candidate.localName === "p") return true;
-        if (isScopeBoundary(candidate)
-            || (candidate && candidate.namespaceURI === HTML_NAMESPACE
-              && candidate.localName === "button")) return false;
-      }}
-      return false;
-    }};
-    const specialTreeElement = (element) => {{
-      const name = String(element && element.localName || "").toLowerCase();
-      if (element && element.namespaceURI === HTML_NAMESPACE) {{
-        return htmlSpecialTreeNames.has(name);
-      }}
-      if (element && element.namespaceURI === MATHML_NAMESPACE) {{
-        return ["mi", "mo", "mn", "ms", "mtext", "annotation-xml"].includes(name);
-      }}
-      return element && element.namespaceURI === SVG_NAMESPACE
-        && ["foreignobject", "desc", "title"].includes(name);
-    }};
-    const assertDetachedTreeDepth = (parent, root) => {{
-      let parentDepth = 0;
-      for (let current = parent; current && Number(current.nodeType) === 1;
-          current = current.__glassParent || null) parentDepth += 1;
-      let subtreeDepth = 0;
-      const pending = [[root, 0]];
-      while (pending.length) {{
-        const [node, depth] = pending.pop();
-        const nextDepth = depth + Number(Number(node.nodeType) === 1);
-        subtreeDepth = Math.max(subtreeDepth, nextDepth);
-        for (const child of Array.from(node.childNodes || [])) pending.push([child, nextDepth]);
-      }}
-      if (parentDepth + subtreeDepth > nativeXmlMaxDepth) throw new Error("native HTML depth limit exceeded");
-    }};
-    const moveParsedNode = (parent, node, before = null) => {{
-      if (before === node) return;
-      insertParsedNode(parent, node, before);
-      assertDetachedTreeDepth(parent, node);
-    }};
-    const insertFormattingClone = (sourceElement, intendedParent, useFoster = true) => {{
-      const foster = useFoster ? tableFosterLocation() : null;
-      const parent = foster ? foster.parent : intendedParent;
-      const clone = createElement(sourceElement.localName, HTML_NAMESPACE);
-      for (const attribute of Array.from(sourceElement.attributes || [])) {{
-        if (attribute.namespaceURI) clone.setAttributeNS(attribute.namespaceURI, attribute.name, attribute.value);
-        else clone.setAttribute(attribute.name, attribute.value);
-      }}
-      insertParsedNode(parent, clone, foster && foster.before);
-      assertDetachedTreeDepth(parent, clone);
-      return clone;
-    }};
-    const reconstructActiveFormatting = (forceHtmlFragmentRoot = false) => {{
-      const current = stack[stack.length - 1];
-      if (!(forceHtmlFragmentRoot && current === stack[0])
-          && current && Number(current.nodeType) === 1 && current.namespaceURI !== HTML_NAMESPACE
-          && !(current.namespaceURI === SVG_NAMESPACE
-            && ["foreignobject", "desc", "title"].includes(current.localName))
-          && !(current.namespaceURI === MATHML_NAMESPACE
-            && (["mi", "mo", "mn", "ms", "mtext"].includes(current.localName)
-              || (current.localName === "annotation-xml"
-                && ["text/html", "application/xhtml+xml"].includes(
-                  String(current.getAttribute("encoding") || "").toLowerCase()))))) return;
-      const last = activeFormatting.length - 1;
-      if (last < 0 || activeFormatting[last] === null || stack.includes(activeFormatting[last])) return;
-      let first = last;
-      while (first > 0 && activeFormatting[first - 1] !== null
-          && !stack.includes(activeFormatting[first - 1])) first -= 1;
-      for (let index = first; index < activeFormatting.length; index += 1) {{
-        const oldElement = activeFormatting[index];
-        if (oldElement === null) continue;
-        const parent = stack[stack.length - 1];
-        const replacement = insertFormattingClone(oldElement, parent);
-        if (stack.length >= nativeXmlMaxDepth) throw new Error("native HTML depth limit exceeded");
-        stack.push(replacement);
-        activeFormatting[index] = replacement;
-      }}
-    }};
-    const adoptActiveFormatting = (subject) => {{
-      const current = stack[stack.length - 1];
-      if (current && Number(current.nodeType) === 1 && current.namespaceURI === HTML_NAMESPACE
-          && current.localName === subject && activeFormattingIndex(subject) < 0) {{
-        stack.pop();
-        return true;
-      }}
-      for (let outer = 0; outer < 8; outer += 1) {{
-        const formattingIndex = activeFormattingIndex(subject);
-        if (formattingIndex < 0) return false;
-        const formattingElement = activeFormatting[formattingIndex];
-        const formattingStackIndex = stack.indexOf(formattingElement);
-        if (formattingStackIndex < 0) {{
-          activeFormatting.splice(formattingIndex, 1);
-          return true;
-        }}
-        if (!elementInScope(formattingElement)) return true;
-        let furthestIndex = -1;
-        for (let index = stack.length - 1; index > formattingStackIndex; index -= 1) {{
-          if (specialTreeElement(stack[index])) {{
-            furthestIndex = index;
-            break;
-          }}
-        }}
-        if (furthestIndex < 0) {{
-          stack.length = formattingStackIndex;
-          activeFormatting.splice(formattingIndex, 1);
-          return true;
-        }}
-        const furthestBlock = stack[furthestIndex];
-        const commonAncestor = stack[formattingStackIndex - 1];
-        if (!commonAncestor) return true;
-        let bookmark = formattingIndex;
-        let node = furthestBlock;
-        let lastNode = furthestBlock;
-        let removedNodeParent = null;
-        let inner = 0;
-        while (true) {{
-          inner += 1;
-          let candidateIndex;
-          const nodeIndex = stack.indexOf(node);
-          if (nodeIndex >= 0) candidateIndex = nodeIndex - 1;
-          else if (removedNodeParent) candidateIndex = stack.indexOf(removedNodeParent);
-          else throw new Error("native HTML adoption agency lost its open node");
-          if (candidateIndex < 0) throw new Error("native HTML adoption agency reached the parser root");
-          const candidate = stack[candidateIndex];
-          if (candidate === formattingElement) break;
-          if (inner > 3) {{
-            const oldActiveIndex = activeFormatting.indexOf(candidate);
-            if (oldActiveIndex >= 0) {{
-              activeFormatting.splice(oldActiveIndex, 1);
-              if (oldActiveIndex < bookmark) bookmark -= 1;
-            }}
-          }}
-          const activeIndex = activeFormatting.indexOf(candidate);
-          if (activeIndex < 0) {{
-            removedNodeParent = candidateIndex > 0 ? stack[candidateIndex - 1] : null;
-            node = candidate;
-            stack.splice(candidateIndex, 1);
-            continue;
-          }}
-          const replacement = insertFormattingClone(candidate, commonAncestor);
-          activeFormatting[activeIndex] = replacement;
-          stack[candidateIndex] = replacement;
-          if (lastNode === furthestBlock) bookmark = activeIndex + 1;
-          moveParsedNode(replacement, lastNode);
-          lastNode = replacement;
-          node = replacement;
-          removedNodeParent = null;
-        }}
-        const foster = tableFosterLocation();
-        moveParsedNode(foster ? foster.parent : commonAncestor, lastNode, foster && foster.before);
-        const furthestChildren = Array.from(furthestBlock.childNodes || []);
-        const replacement = insertFormattingClone(formattingElement, furthestBlock, false);
-        for (const child of furthestChildren) moveParsedNode(replacement, child);
-        moveParsedNode(furthestBlock, replacement);
-        const oldFormattingIndex = activeFormatting.indexOf(formattingElement);
-        if (oldFormattingIndex >= 0) {{
-          const insertionIndex = bookmark - Number(oldFormattingIndex < bookmark);
-          activeFormatting.splice(oldFormattingIndex, 1);
-          activeFormatting.splice(Math.min(insertionIndex, activeFormatting.length), 0, replacement);
-        }}
-        const oldStackIndex = stack.indexOf(formattingElement);
-        const blockStackIndex = stack.indexOf(furthestBlock);
-        if (oldStackIndex < 0 || blockStackIndex < 0) throw new Error("native HTML adoption agency lost a boundary node");
-        stack.splice(oldStackIndex, 1);
-        stack.splice(stack.indexOf(furthestBlock) + 1, 0, replacement);
-      }}
-      return true;
-    }};
-    const consumeFormattingFallbackEnd = (subject) => {{
-      const current = stack[stack.length - 1];
-      if (current && Number(current.nodeType) === 1 && current.namespaceURI !== HTML_NAMESPACE
-          && !(current.namespaceURI === SVG_NAMESPACE
-            && ["foreignobject", "desc", "title"].includes(current.localName))
-          && !(current.namespaceURI === MATHML_NAMESPACE
-            && (["mi", "mo", "mn", "ms", "mtext"].includes(current.localName)
-              || (current.localName === "annotation-xml"
-                && ["text/html", "application/xhtml+xml"].includes(
-                  String(current.getAttribute("encoding") || "").toLowerCase()))))) return false;
-      for (let index = stack.length - 1; index > 0; index -= 1) {{
-        const candidate = stack[index];
-        if (Number(candidate.nodeType) === 1 && candidate.namespaceURI === HTML_NAMESPACE
-            && candidate.localName === subject) {{
-          stack.length = index;
-          return true;
-        }}
-        if (specialTreeElement(candidate)) return true;
-      }}
-      return true;
-    }};
-    const clearMarkersForPoppedElements = (stackBefore) => {{
-      if (!stackBefore) return;
-      for (const element of stackBefore.slice(stack.length).reverse()) {{
-        if (element && element.namespaceURI === HTML_NAMESPACE
-            && activeFormattingMarkerNames.has(element.localName)) clearActiveFormattingToMarker();
-      }}
-    }};
-    const usesForeignCharacterRules = (element) => {{
-      if (!element || Number(element.nodeType) !== 1 || element.namespaceURI === HTML_NAMESPACE) return false;
-      const name = String(element.localName || "").toLowerCase();
-      if (element.namespaceURI === SVG_NAMESPACE) {{
-        return !["foreignobject", "desc", "title"].includes(name);
-      }}
-      if (element.namespaceURI === MATHML_NAMESPACE) {{
-        if (["mi", "mo", "mn", "ms", "mtext"].includes(name)) return false;
-        if (name === "annotation-xml") {{
-          const encoding = String(element.getAttribute("encoding") || "").toLowerCase();
-          return !["text/html", "application/xhtml+xml"].includes(encoding);
-        }}
-        return true;
-      }}
-      return true;
-    }};
-    const prepareForeignContentEndTag = (name) => {{
-      if (forceHtmlContext && stack.length === 1) return "html";
-      const current = stack[stack.length - 1];
-      if (!current || Number(current.nodeType) !== 1
-          || current.namespaceURI === HTML_NAMESPACE) return "html";
-      if (name === "br" || name === "p") {{
-        const stackBefore = stack.slice();
-        while (stack.length > 1 && usesForeignCharacterRules(stack[stack.length - 1])) stack.pop();
-        clearMarkersForPoppedElements(stackBefore);
-        return "breakout";
-      }}
-      let index = stack.length - 1;
-      while (true) {{
-        if (index === 0) return "consume";
-        const candidate = stack[index];
-        if (String(candidate.localName || "").toLowerCase() === name) {{
-          const stackBefore = stack.slice();
-          stack.length = index;
-          clearMarkersForPoppedElements(stackBefore);
-          return "consume";
-        }}
-        index -= 1;
-        if (stack[index].namespaceURI === HTML_NAMESPACE) return "html";
-      }}
-    }};
-    const insertHtmlEndRecoveryElement = (name, pushToStack) => {{
-      const fosterLocation = tableFosterLocation();
-      const parent = fosterLocation ? fosterLocation.parent : stack[stack.length - 1];
-      const element = createElement(
-        name,
-        namespaceForChildElement(parent, name, forceHtmlContext && parent === fragment),
-      );
-      insertParsedNode(parent, element, fosterLocation && fosterLocation.before);
-      if (pushToStack) stack.push(element);
-    }};
-    const appendParsedText = (value) => {{
-      const current = stack[stack.length - 1];
-      const replacement = !(forceHtmlContext && current === fragment)
-        && usesForeignCharacterRules(current) ? "\ufffd" : "";
-      const normalized = String(value).replace(/\u0000/g, replacement);
-      if (!normalized) return;
-      reconstructActiveFormatting(forceHtmlContext && current === fragment);
-      const fosterLocation = /[^\t\n\f\r ]/.test(normalized) ? tableFosterLocation() : null;
-      const insertionParent = fosterLocation ? fosterLocation.parent : stack[stack.length - 1];
-      insertParsedNode(insertionParent, createText(normalized), fosterLocation && fosterLocation.before);
-    }};
-    const shouldAutoClose = (current, next) =>
-      (current === "li" && next === "li")
-      || (current === "p" && [
-        "address", "article", "aside", "blockquote", "details", "div", "dl",
-        "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2",
-        "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "main", "menu",
-        "nav", "ol", "p", "pre", "section", "table", "ul",
-      ].includes(next))
-      || ((current === "dt" || current === "dd") && (next === "dt" || next === "dd"))
-      || (current === "rt" && next === "rt")
-      || (current === "rp" && next === "rp")
-      || (current === "option" && ["option", "optgroup"].includes(next))
-      || (current === "optgroup" && next === "optgroup")
-      || (current === "tr" && ["tr", "tbody", "thead", "tfoot"].includes(next))
-      || (["td", "th"].includes(current) && ["td", "th", "tr", "tbody", "thead", "tfoot"].includes(next))
-      || (current === "thead" && ["tbody", "tfoot"].includes(next))
-      || (current === "tbody" && ["tbody", "tfoot"].includes(next))
-      || (current === "tfoot" && next === "tbody")
-      || (current === "colgroup" && ["colgroup", "tbody", "thead", "tfoot"].includes(next));
-    const prepareHtmlTableCellStructuralStart = (incomingName) => {{
-      if (!tableCellStructuralStartTags.has(incomingName)) return;
-      const current = stack[stack.length - 1];
-      if (!current || current.namespaceURI !== HTML_NAMESPACE) return;
-      let cellIndex = -1;
-      let tableIndex = -1;
-      for (let index = stack.length - 1; index >= 0; index -= 1) {{
-        const candidate = stack[index];
-        const candidateName = String(candidate.localName || "").toLowerCase();
-        if (candidate === stack[0]) break;
-        if (candidate.namespaceURI === SVG_NAMESPACE && candidateName === "foreignobject") break;
-        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
-        if (candidateName === "table") {{
-          if (cellIndex >= 0) tableIndex = index;
-          break;
-        }}
-        if (candidateName === "html" || candidateName === "template") break;
-        if (cellIndex < 0 && (candidateName === "td" || candidateName === "th")) cellIndex = index;
-      }}
-      if (cellIndex < 0 || tableIndex < 0) return;
-      stack.length = cellIndex;
-      if (tableLevelCellStructuralStartTags.has(incomingName)) {{
-        stack.length = tableIndex + 1;
-      }}
-    }};
-    const prepareHtmlTableStart = () => {{
-      const current = stack[stack.length - 1];
-      if (!current || current.namespaceURI !== HTML_NAMESPACE) return true;
-      while (true) {{
-        let tableIndex = -1;
-        for (let index = stack.length - 1; index >= 0; index -= 1) {{
-          const candidate = stack[index];
-          const candidateName = String(candidate.localName || "").toLowerCase();
-          if (candidate.namespaceURI === HTML_NAMESPACE && candidateName === "template") return true;
-          if (candidate.namespaceURI === SVG_NAMESPACE && candidateName === "foreignobject") return true;
-          if (candidate.namespaceURI === HTML_NAMESPACE && candidateName === "table"
-              && candidate !== stack[0]) {{
-            tableIndex = index;
-            break;
-          }}
-        }}
-        if (tableIndex >= 0) {{
-          const hasModeBoundary = stack.slice(tableIndex + 1).some((candidate) => {{
-            const candidateName = String(candidate.localName || "").toLowerCase();
-            return (candidate.namespaceURI === HTML_NAMESPACE
-                && ["td", "th", "caption", "template"].includes(candidateName))
-              || (candidate.namespaceURI === SVG_NAMESPACE && candidateName === "foreignobject");
-          }});
-          if (hasModeBoundary) return true;
-          stack.length = tableIndex;
-          continue;
-        }}
-
-        const context = stack[0];
-        const contextName = String(context && context.localName || "").toLowerCase();
-        const contextEstablishesTableMode = context && context.namespaceURI === HTML_NAMESPACE
-          && ["table", "colgroup", "tbody", "tfoot", "thead", "tr"].includes(contextName);
-        const enteredCellOrCaption = stack.slice(1).some((candidate) =>
-          candidate.namespaceURI === HTML_NAMESPACE
-            && ["td", "th", "caption"].includes(String(candidate.localName || "").toLowerCase()));
-        return !contextEstablishesTableMode || enteredCellOrCaption;
-      }}
-    }};
-    const consumeHtmlTableEnd = () => {{
-      const current = stack[stack.length - 1];
-      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
-      // stack[0] is the fragment context, not an open element in this parser.
-      for (let index = stack.length - 1; index > 0; index -= 1) {{
-        const candidate = stack[index];
-        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
-        const candidateName = String(candidate.localName || "").toLowerCase();
-        if (candidateName === "table") {{
-          stack.length = index;
-          return true;
-        }}
-        if (candidateName === "html" || candidateName === "template") return true;
-      }}
-      // The fragment context itself cannot satisfy table scope.
-      return true;
-    }};
-    const tableModeIgnoredEndTags = new Set([
-      "body", "caption", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr",
-    ]);
-    const consumeHtmlTableColumnGroupEnd = (targetName) => {{
-      if (targetName === "br" || targetName === "p") {{
-        const context = stack[0];
-        if (stack.length === 1 && context === fragment
-            && context.namespaceURI === HTML_NAMESPACE
-            && String(context.localName || "").toLowerCase() === "colgroup") return true;
-      }}
-      if (!tableModeIgnoredEndTags.has(targetName) && targetName !== "br" && targetName !== "p") return false;
-      const current = stack[stack.length - 1];
-      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
-      // stack[0] is fragment context and cannot satisfy column-group/table scope.
-      let columnGroupIndex = -1;
-      for (let index = stack.length - 1; index > 0; index -= 1) {{
-        const candidate = stack[index];
-        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
-        const candidateName = String(candidate.localName || "").toLowerCase();
-        if (["td", "th", "tr", "tbody", "tfoot", "thead", "caption"].includes(candidateName)) return false;
-        if (candidateName === "colgroup" && columnGroupIndex < 0) columnGroupIndex = index;
-        else if (candidateName === "table") {{
-          if (columnGroupIndex < 0) return false;
-          if (targetName === "br" || targetName === "p") return true;
-          if (targetName === "col") return true;
-          if (targetName === "colgroup") {{
-            if (columnGroupIndex === stack.length - 1) stack.length = columnGroupIndex;
-            return true;
-          }}
-          // Other column-group end tags pop the current group and reprocess
-          // in table mode, where these tokens are ignored.
-          if (columnGroupIndex === stack.length - 1) stack.length = columnGroupIndex;
-          return true;
-        }} else if (candidateName === "html" || candidateName === "template") return false;
-      }}
-      return false;
-    }};
-    const consumeHtmlTableStructureEnd = (targetName) => {{
-      const current = stack[stack.length - 1];
-      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
-      // stack[0] is the fragment context, not an open element in this parser.
-      for (let index = stack.length - 1; index > 0; index -= 1) {{
-        const candidate = stack[index];
-        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
-        const candidateName = String(candidate.localName || "").toLowerCase();
-        if (candidateName === targetName) {{
-          stack.length = index;
-          return true;
-        }}
-        if (candidateName === "html" || candidateName === "table" || candidateName === "template") return true;
-      }}
-      // The fragment context itself cannot satisfy table scope.
-      return true;
-    }};
-    const consumeHtmlTableCellIgnoredEnd = (targetName) => {{
-      if (!["body", "caption", "col", "colgroup", "html"].includes(targetName)) return false;
-      const current = stack[stack.length - 1];
-      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
-      // stack[0] is the fragment context and cannot satisfy cell/table scope.
-      let cellInScope = false;
-      for (let index = stack.length - 1; index > 0; index -= 1) {{
-        const candidate = stack[index];
-        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
-        const candidateName = String(candidate.localName || "").toLowerCase();
-        if (candidateName === "td" || candidateName === "th") cellInScope = true;
-        else if (candidateName === "table") return cellInScope;
-        else if (candidateName === "html" || candidateName === "template") return false;
-      }}
-      return false;
-    }};
-    const consumeHtmlTableRowIgnoredEnd = (targetName) => {{
-      if (!["body", "caption", "col", "colgroup", "html"].includes(targetName)) return false;
-      const current = stack[stack.length - 1];
-      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
-      // stack[0] is the fragment context and cannot satisfy row/table scope.
-      let rowContextInScope = false;
-      for (let index = stack.length - 1; index > 0; index -= 1) {{
-        const candidate = stack[index];
-        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
-        const candidateName = String(candidate.localName || "").toLowerCase();
-        if (["td", "th", "caption", "colgroup"].includes(candidateName)) return false;
-        if (["tr", "tbody", "tfoot", "thead"].includes(candidateName)) rowContextInScope = true;
-        else if (candidateName === "table") return rowContextInScope;
-        else if (candidateName === "html" || candidateName === "template") return false;
-      }}
-      return false;
-    }};
-    const consumeHtmlTableCaptionIgnoredEnd = (targetName) => {{
-      if (!["body", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr"].includes(targetName)) return false;
-      const current = stack[stack.length - 1];
-      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
-      // stack[0] is fragment context and cannot satisfy caption/table scope.
-      let captionInScope = false;
-      for (let index = stack.length - 1; index > 0; index -= 1) {{
-        const candidate = stack[index];
-        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
-        const candidateName = String(candidate.localName || "").toLowerCase();
-        if (["td", "th", "tr", "tbody", "tfoot", "thead", "colgroup"].includes(candidateName)) return false;
-        if (candidateName === "caption") captionInScope = true;
-        else if (candidateName === "table") return captionInScope;
-        else if (candidateName === "html" || candidateName === "template") return false;
-      }}
-      return false;
-    }};
-    const consumeHtmlTableModeIgnoredEnd = (targetName) => {{
-      if (!tableModeIgnoredEndTags.has(targetName)) return false;
-      const current = stack[stack.length - 1];
-      if (!current || current.namespaceURI !== HTML_NAMESPACE) return false;
-      // stack[0] is fragment context and cannot satisfy table scope.
-      for (let index = stack.length - 1; index > 0; index -= 1) {{
-        const candidate = stack[index];
-        if (candidate.namespaceURI !== HTML_NAMESPACE) continue;
-        const candidateName = String(candidate.localName || "").toLowerCase();
-        if (["td", "th", "tr", "tbody", "tfoot", "thead", "caption", "colgroup"].includes(candidateName)) return false;
-        if (candidateName === "table") return true;
-        if (candidateName === "html" || candidateName === "template") return false;
-      }}
-      return false;
-    }};
-    const insertImpliedTableElements = (incomingName) => {{
-      const current = stack[stack.length - 1];
-      if (!current || current.namespaceURI !== HTML_NAMESPACE) return;
-      const currentName = String(current.localName || "").toLowerCase();
-      const impliedNames = currentName === "table" && incomingName === "col"
-        ? ["colgroup"]
-        : currentName === "table" && incomingName === "tr"
-        ? ["tbody"]
-        : currentName === "table" && (incomingName === "td" || incomingName === "th")
-          ? ["tbody", "tr"]
-          : (currentName === "tbody" || currentName === "thead" || currentName === "tfoot")
-              && (incomingName === "td" || incomingName === "th")
-            ? ["tr"]
-            : [];
-      for (const impliedName of impliedNames) {{
-        const parent = stack[stack.length - 1];
-        const element = createElement(
-          impliedName,
-          namespaceForChildElement(parent, impliedName),
-        );
-        insertParsedNode(parent, element);
-        stack.push(element);
-      }}
-    }};
-    const findTagEnd = (from) => {{
-      let quote = null;
-      for (let index = from; index < source.length; index += 1) {{
-        const character = source[index];
-        if (quote !== null) {{
-          if (character === quote) quote = null;
-        }} else if (character === "\"" || character === "'") {{
-          quote = character;
-        }} else if (character === ">") {{
-          return index;
-        }}
-      }}
-      return -1;
-    }};
-    const findScriptDataEnd = (from) => {{
-      const isAsciiAlpha = (character) => /^[A-Za-z]$/.test(character);
-      const isDelimiter = (character) => character === " " || character === "\t"
-        || character === "\n" || character === "\r" || character === "\f"
-        || character === "/" || character === ">";
-      let state = "data";
-      let cursor = from;
-      let tagStart = 0;
-      let temporaryBuffer = "";
-      while (cursor < source.length) {{
-        const character = source[cursor];
-        let reconsume = false;
-        switch (state) {{
-          case "data":
-            if (character === "<") state = "less-than";
-            break;
-          case "less-than":
-            if (character === "/") {{
-              tagStart = cursor - 1;
-              temporaryBuffer = "";
-              state = "end-tag-open";
-            }} else if (character === "!") {{
-              state = "escape-start";
-            }} else {{
-              state = "data";
-              reconsume = true;
-            }}
-            break;
-          case "end-tag-open":
-            if (isAsciiAlpha(character)) {{
-              state = "end-tag-name";
-              reconsume = true;
-            }} else {{
-              state = "data";
-              reconsume = true;
-            }}
-            break;
-          case "end-tag-name":
-            if (isAsciiAlpha(character)) {{
-              temporaryBuffer += character.toLowerCase();
-            }} else if (isDelimiter(character)) {{
-              if (temporaryBuffer === "script") {{
-                const end = findTagEnd(cursor);
-                return end < 0 ? null : {{ start: tagStart, end: end + 1 }};
-              }}
-              state = "data";
-              reconsume = true;
-            }} else {{
-              state = "data";
-              reconsume = true;
-            }}
-            break;
-          case "escape-start":
-            if (character === "-") state = "escape-start-dash";
-            else {{ state = "data"; reconsume = true; }}
-            break;
-          case "escape-start-dash":
-            if (character === "-") state = "escaped-dash-dash";
-            else {{ state = "data"; reconsume = true; }}
-            break;
-          case "escaped":
-            if (character === "-") state = "escaped-dash";
-            else if (character === "<") state = "escaped-less-than";
-            break;
-          case "escaped-dash":
-            if (character === "-") state = "escaped-dash-dash";
-            else if (character === "<") state = "escaped-less-than";
-            else state = "escaped";
-            break;
-          case "escaped-dash-dash":
-            if (character === "-") {{}}
-            else if (character === "<") state = "escaped-less-than";
-            else if (character === ">") state = "data";
-            else state = "escaped";
-            break;
-          case "escaped-less-than":
-            if (character === "/") {{
-              tagStart = cursor - 1;
-              temporaryBuffer = "";
-              state = "escaped-end-tag-open";
-            }} else if (isAsciiAlpha(character)) {{
-              temporaryBuffer = "";
-              state = "double-escape-start";
-              reconsume = true;
-            }} else {{
-              state = "escaped";
-              reconsume = true;
-            }}
-            break;
-          case "escaped-end-tag-open":
-            if (isAsciiAlpha(character)) {{
-              state = "escaped-end-tag-name";
-              reconsume = true;
-            }} else {{
-              state = "escaped";
-              reconsume = true;
-            }}
-            break;
-          case "escaped-end-tag-name":
-            if (isAsciiAlpha(character)) {{
-              temporaryBuffer += character.toLowerCase();
-            }} else if (isDelimiter(character)) {{
-              if (temporaryBuffer === "script") {{
-                const end = findTagEnd(cursor);
-                return end < 0 ? null : {{ start: tagStart, end: end + 1 }};
-              }}
-              state = "escaped";
-              reconsume = true;
-            }} else {{
-              state = "escaped";
-              reconsume = true;
-            }}
-            break;
-          case "double-escape-start":
-            if (isAsciiAlpha(character)) {{
-              temporaryBuffer += character.toLowerCase();
-            }} else if (isDelimiter(character)) {{
-              state = temporaryBuffer === "script" ? "double-escaped" : "escaped";
-            }} else {{
-              state = "escaped";
-              reconsume = true;
-            }}
-            break;
-          case "double-escaped":
-            if (character === "-") state = "double-escaped-dash";
-            else if (character === "<") state = "double-escaped-less-than";
-            break;
-          case "double-escaped-dash":
-            if (character === "-") state = "double-escaped-dash-dash";
-            else if (character === "<") state = "double-escaped-less-than";
-            else state = "double-escaped";
-            break;
-          case "double-escaped-dash-dash":
-            if (character === "-") {{}}
-            else if (character === "<") state = "double-escaped-less-than";
-            else if (character === ">") state = "data";
-            else state = "double-escaped";
-            break;
-          case "double-escaped-less-than":
-            if (character === "/") {{
-              temporaryBuffer = "";
-              state = "double-escape-end";
-            }} else {{
-              state = "double-escaped";
-              reconsume = true;
-            }}
-            break;
-          case "double-escape-end":
-            if (isAsciiAlpha(character)) {{
-              temporaryBuffer += character.toLowerCase();
-            }} else if (isDelimiter(character)) {{
-              state = temporaryBuffer === "script" ? "escaped" : "double-escaped";
-            }} else {{
-              state = "double-escaped";
-              reconsume = true;
-            }}
-            break;
-          default:
-            throw new TypeError("invalid native script-data tokenizer state");
-        }}
-        if (!reconsume) cursor += 1;
-      }}
-      return null;
-    }};
-    const findSpecialEnd = (from, name) => {{
-      if (String(name).toLowerCase() === "script") return findScriptDataEnd(from);
-      const lowerSource = source.toLowerCase();
-      const needle = "</" + name.toLowerCase();
-      let candidate = lowerSource.indexOf(needle, from);
-      while (candidate >= 0) {{
-        const afterName = candidate + needle.length;
-        const boundary = source[afterName];
-        if (boundary === undefined || /[\s/>]/.test(boundary)) {{
-          const end = findTagEnd(afterName);
-          if (end >= 0) return {{ start: candidate, end: end + 1 }};
-        }}
-        candidate = lowerSource.indexOf(needle, candidate + 1);
-      }}
-      return null;
-    }};
-    let cursor = 0;
-    const fragmentSpecialTextName = Number(fragment && fragment.nodeType) === 1
-      ? String(fragment.localName || "").toLowerCase()
-      : "";
-    if (fragmentSpecialTextName === "plaintext") {{
-      if (source.length > cursor) {{
-        appendParsedText(source.slice(cursor).replace(/\u0000/g, "\ufffd"));
-      }}
-      cursor = source.length;
-    }} else if ((fragmentSpecialTextName !== "script"
-        || fragment.namespaceURI === HTML_NAMESPACE)
-        && (rawTextFragmentContextElements.has(fragmentSpecialTextName)
-            || rcdataElements.has(fragmentSpecialTextName))) {{
-      const rawText = rawTextFragmentContextElements.has(fragmentSpecialTextName);
-      const special = findSpecialEnd(cursor, fragmentSpecialTextName);
-      const textEnd = special ? special.start : source.length;
-      if (textEnd > cursor) {{
-        const text = source.slice(cursor, textEnd);
-        appendParsedText((rawText ? text : decodeHtmlEntities(text)).replace(/\u0000/g, "\ufffd"));
-      }}
-      cursor = special ? special.end : source.length;
+  const populateDetachedFragment = (
+    fragment,
+    markup,
+    createElement,
+    createText,
+    createComment,
+    contextElement = fragment,
+  ) => {{
+    const source = String(markup);
+    if (source.length > storageValueLimit) {{
+      throw new RangeError("native HTML fragment exceeds its source limit");
     }}
-    while (cursor < source.length) {{
-      let parent = stack[stack.length - 1];
-      if (source.startsWith("<!--", cursor)) {{
-        const end = source.indexOf("-->", cursor + 4);
-        const commentEnd = end < 0 ? source.length : end;
-        parent.appendChild(createComment(source.slice(cursor + 4, commentEnd).replace(/\u0000/g, "\ufffd")));
-        cursor = end < 0 ? source.length : end + 3;
-        continue;
-      }}
-      if (source[cursor] !== "<") {{
-        const end = source.indexOf("<", cursor);
-        const textEnd = end < 0 ? source.length : end;
-        if (textEnd > cursor) {{
-          appendParsedText(decodeHtmlEntities(source.slice(cursor, textEnd)));
-        }}
-        cursor = textEnd;
-        continue;
-      }}
-      if (source.startsWith("<!", cursor) || source.startsWith("<?", cursor)) {{
-        const end = findTagEnd(cursor + 2);
-        const declaration = source.slice(cursor + 2, end < 0 ? source.length : end);
-        if (!/^doctype(?:\s|$)/i.test(declaration)) {{
-          parent.appendChild(createComment(declaration.replace(/\u0000/g, "\ufffd")));
-        }}
-        cursor = end < 0 ? source.length : end + 1;
-        continue;
-      }}
-      if (source.startsWith("</", cursor)) {{
-        const end = findTagEnd(cursor + 2);
-        if (end < 0) {{
-          appendParsedText(decodeHtmlEntities(source.slice(cursor)));
-          break;
-        }}
-        const closing = /^\s*([A-Za-z][A-Za-z0-9:_-]*)/.exec(source.slice(cursor + 2, end));
-        if (!closing) {{
-          appendParsedText(decodeHtmlEntities(source.slice(cursor, end + 1)));
-          cursor = end + 1;
-          continue;
-        }}
-        const name = closing[1].toLowerCase();
-        const foreignEndTag = prepareForeignContentEndTag(name);
-        if (foreignEndTag === "breakout" && stack.length === 1 && stack[0] === fragment) {{
-          forceHtmlContext = true;
-        }}
-        if (foreignEndTag === "consume") {{
-          cursor = end + 1;
-          continue;
-        }}
-        const stackBefore = markerSensitiveEndNames.has(name) ? stack.slice() : null;
-        const consumed = (name === "table" && consumeHtmlTableEnd())
-          || consumeHtmlTableColumnGroupEnd(name)
-          || (["tbody", "tfoot", "thead", "tr", "td", "th"].includes(name)
-            && consumeHtmlTableStructureEnd(name))
-          || consumeHtmlTableCellIgnoredEnd(name)
-          || consumeHtmlTableRowIgnoredEnd(name)
-          || consumeHtmlTableCaptionIgnoredEnd(name)
-          || consumeHtmlTableModeIgnoredEnd(name);
-        if (consumed) {{
-          clearMarkersForPoppedElements(stackBefore);
-          cursor = end + 1;
-          continue;
-        }}
-        if (name === "br") {{
-          reconstructActiveFormatting(forceHtmlContext && stack[stack.length - 1] === fragment);
-          insertHtmlEndRecoveryElement("br", false);
-          cursor = end + 1;
-          continue;
-        }}
-        if (name === "p" && !paragraphInButtonScope()) {{
-          reconstructActiveFormatting(forceHtmlContext && stack[stack.length - 1] === fragment);
-          insertHtmlEndRecoveryElement("p", true);
-        }}
-        if (htmlFormattingNames.has(name)) {{
-          if (adoptActiveFormatting(name) || consumeFormattingFallbackEnd(name)) {{
-            cursor = end + 1;
-            continue;
-          }}
-        }}
-        for (let index = stack.length - 1; index > 0; index -= 1) {{
-          const candidate = stack[index];
-          if (candidate.namespaceURI === HTML_NAMESPACE
-              && String(candidate.localName || "").toLowerCase() === name) {{
-            stack.length = index;
-            break;
-          }}
-          if (specialTreeElement(candidate)) break;
-        }}
-        clearMarkersForPoppedElements(stackBefore);
-        cursor = end + 1;
-        continue;
-      }}
-      const end = findTagEnd(cursor + 1);
-      if (end < 0) {{
-        appendParsedText(decodeHtmlEntities(source.slice(cursor)));
-        break;
-      }}
-      const rawTag = source.slice(cursor + 1, end);
-      const opening = /^\s*([A-Za-z][A-Za-z0-9:_-]*)/.exec(rawTag);
-      if (!opening) {{
-        cursor = end + 1;
-        continue;
-      }}
-      const normalizedName = opening[1].toLowerCase();
-      let selfClosing = /\/\s*$/.test(rawTag);
-      const attributeSource = rawTag
-        .slice(opening[0].length)
-        .replace(/\/\s*$/, "");
-      const attributes = /([A-Za-z_:][A-Za-z0-9:._-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+)))?/g;
-      const parsedAttributes = [];
-      const seenParsedAttributes = new Set();
-      let attribute;
-      while ((attribute = attributes.exec(attributeSource)) !== null) {{
-        const attributeName = attribute[1].toLowerCase();
-        if (seenParsedAttributes.has(attributeName)) continue;
-        seenParsedAttributes.add(attributeName);
-        const value = attribute[2] !== undefined
-          ? attribute[2]
-          : attribute[3] !== undefined
-            ? attribute[3]
-            : attribute[4] !== undefined
-              ? attribute[4]
-              : "";
-        parsedAttributes.push([attributeName, decodeHtmlEntities(value).replace(/\u0000/g, "\ufffd")]);
-      }}
-      const foreignBreakout = foreignContentBreakoutStartTags.has(normalizedName)
-        || (normalizedName === "font" && parsedAttributes.some(([name]) =>
-          ["color", "face", "size"].includes(name.toLowerCase())));
-      if (foreignBreakout && usesForeignCharacterRules(stack[stack.length - 1])) {{
-        const stackBeforeBreakout = stack.slice();
-        while (stack.length > 1 && usesForeignCharacterRules(stack[stack.length - 1])) stack.pop();
-        clearMarkersForPoppedElements(stackBeforeBreakout);
-        selfClosing = false;
-        forceHtmlContext ||= stack.length === 1
-          && stack[0] === fragment
-          && usesForeignCharacterRules(fragment);
-      }}
-      if (normalizedName === "table") {{
-        const stackBeforeTable = stack.slice();
-        const processTable = prepareHtmlTableStart();
-        clearMarkersForPoppedElements(stackBeforeTable);
-        if (!processTable) {{
-          cursor = end + 1;
-          continue;
-        }}
-      }}
-      const stackLengthBeforeCellRecovery = stack.length;
-      prepareHtmlTableCellStructuralStart(normalizedName);
-      if (stack.length < stackLengthBeforeCellRecovery) clearActiveFormattingToMarker();
-      while (stack.length > 1
-          && shouldAutoClose(stack[stack.length - 1].localName, normalizedName)) {{
-        stack.pop();
-      }}
-      insertImpliedTableElements(normalizedName);
-      const hiddenInput = normalizedName === "input" && parsedAttributes.some(([name, value]) =>
-        name.toLowerCase() === "type" && value.toLowerCase() === "hidden");
-      if (!tableSpecialStartTags.has(normalizedName) && !hiddenInput) {{
-        reconstructActiveFormatting(forceHtmlContext && stack[stack.length - 1] === fragment);
-        const nestedFormattingStart = (normalizedName === "a" && activeFormattingIndex("a") >= 0)
-          || (normalizedName === "nobr" && activeFormattingIndex("nobr") >= 0
-            && elementInScope(activeFormatting[activeFormattingIndex("nobr")]));
-        if (nestedFormattingStart) {{
-          adoptActiveFormatting(normalizedName);
-          reconstructActiveFormatting(forceHtmlContext && stack[stack.length - 1] === fragment);
-        }}
-      }}
-      const fosterLocation = tableSpecialStartTags.has(normalizedName) || hiddenInput
-        ? null
-        : tableFosterLocation();
-      parent = fosterLocation ? fosterLocation.parent : stack[stack.length - 1];
-      const element = createElement(
-        opening[1],
-        namespaceForChildElement(parent, normalizedName, forceHtmlContext && parent === fragment),
-      );
-      for (const [name, value] of parsedAttributes) {{
-        const adjusted = nativeHtmlAdjustForeignAttribute(name, element.namespaceURI);
-        if (!element.hasAttribute(adjusted.name)) {{
-          if (typeof element.__glassSetParsedAttribute !== "function") {{
-            throw new TypeError("native parser element cannot preserve adjusted attributes");
-          }}
-          element.__glassSetParsedAttribute(adjusted.name, value, adjusted.namespaceURI);
-        }}
-      }}
-      insertParsedNode(parent, element, fosterLocation && fosterLocation.before);
-      cursor = end + 1;
-      if ((selfClosing && element.namespaceURI !== HTML_NAMESPACE)
-          || (element.namespaceURI === HTML_NAMESPACE && voidElements.has(element.localName))) continue;
-      if (element.namespaceURI === HTML_NAMESPACE
-          && (rawTextElements.has(element.localName) || rcdataElements.has(element.localName))) {{
-        const special = findSpecialEnd(cursor, element.localName);
-        const textEnd = special ? special.start : source.length;
-        if (textEnd > cursor) element.appendChild(createText(
-          (rawTextElements.has(element.localName)
-            ? source.slice(cursor, textEnd)
-            : decodeHtmlEntities(source.slice(cursor, textEnd))).replace(/\u0000/g, "\ufffd"),
-        ));
-        cursor = special ? special.end : source.length;
-        continue;
-      }}
-      stack.push(element);
-      if (element.namespaceURI === HTML_NAMESPACE) {{
-        if (activeFormattingMarkerNames.has(element.localName)) activeFormatting.push(null);
-        else if (htmlFormattingNames.has(element.localName)) pushActiveFormatting(element);
+    const nativeParser = globalThis.__glassParseHtmlFragmentHost;
+    if (typeof nativeParser !== "function") {{
+      throw new Error("native HTML fragment parser is unavailable");
+    }}
+    const isElement = contextElement && Number(contextElement.nodeType) === 1;
+    const contextName = isElement ? String(contextElement.localName || "") : "div";
+    const contextNamespace = isElement
+      ? String(contextElement.namespaceURI || HTML_NAMESPACE)
+      : HTML_NAMESPACE;
+    const contextAttributes = isElement
+      ? Array.from(contextElement.attributes || [], (attribute) => ({{
+          name: String(attribute.name),
+          value: String(attribute.value),
+          namespace: attribute.namespaceURI ? String(attribute.namespaceURI) : null,
+        }}))
+      : [];
+    let contextDepth = 0;
+    for (let current = isElement ? contextElement : null;
+        current && Number(current.nodeType) === 1;
+        current = current.parentElement || null) {{
+      contextDepth += 1;
+      if (contextDepth > nativeXmlMaxDepth) {{
+        throw new RangeError("native HTML fragment context exceeds its depth limit");
       }}
     }}
+    let response;
+    try {{
+      response = JSON.parse(nativeParser(
+        source,
+        contextNamespace,
+        contextName,
+        JSON.stringify(contextAttributes),
+        contextDepth,
+      ));
+    }} catch (_error) {{
+      throw new Error("native HTML fragment parser failed");
+    }}
+    if (!response || response.ok !== true || !response.fragment
+        || !Array.isArray(response.fragment.nodes)) {{
+      const kind = response && response.error;
+      if (kind === "byteLimit") throw new RangeError("native HTML fragment exceeds its source limit");
+      if (kind === "nodeLimit") throw new RangeError("native HTML fragment exceeds its node limit");
+      if (kind === "depthLimit") throw new RangeError("native HTML fragment exceeds its depth limit");
+      if (kind === "invalidContext") throw new TypeError("native HTML fragment context is invalid");
+      throw new Error("native HTML fragment parser failed");
+    }}
+    const nodes = response.fragment.nodes;
+    const root = nodes[0];
+    if (!root || !root.kind || root.kind.type !== "documentFragment"
+        || !Array.isArray(root.children)) {{
+      throw new Error("native HTML fragment parser returned an invalid tree");
+    }}
+    const buildNode = (index) => {{
+      if (!Number.isInteger(index) || index <= 0 || index >= nodes.length) {{
+        throw new Error("native HTML fragment parser returned an invalid node reference");
+      }}
+      const record = nodes[index];
+      const kind = record && record.kind;
+      if (!kind || !Array.isArray(record.children)) {{
+        throw new Error("native HTML fragment parser returned an invalid node");
+      }}
+      if (kind.type === "text") return createText(String(kind.data));
+      if (kind.type === "comment") return createComment(String(kind.data));
+      if (kind.type !== "element" || !kind.data || !Array.isArray(kind.data.attributes)) {{
+        throw new Error("native HTML fragment parser returned an unsupported node");
+      }}
+      const element = createElement(String(kind.data.name), String(kind.data.namespace));
+      for (const attribute of kind.data.attributes) {{
+        if (!attribute || typeof attribute.name !== "string"
+            || typeof attribute.value !== "string") {{
+          throw new Error("native HTML fragment parser returned an invalid attribute");
+        }}
+        if (attribute.namespace) {{
+          element.setAttributeNS(
+            String(attribute.namespace),
+            attribute.name,
+            attribute.value,
+          );
+        }} else {{
+          element.setAttribute(attribute.name, attribute.value);
+        }}
+      }}
+      const childIndices = record.children.slice();
+      if (record.templateContents !== null && record.templateContents !== undefined) {{
+        const templateContents = nodes[record.templateContents];
+        if (!templateContents || !templateContents.kind
+            || templateContents.kind.type !== "documentFragment"
+            || !Array.isArray(templateContents.children)) {{
+          throw new Error("native HTML fragment parser returned invalid template contents");
+        }}
+        childIndices.push(...templateContents.children);
+      }}
+      for (const childIndex of childIndices) element.appendChild(buildNode(childIndex));
+      return element;
+    }};
+    for (const childIndex of root.children) fragment.appendChild(buildNode(childIndex));
   }};
+
   const installReflectedAttributeProperties = (element) => {{
     Object.defineProperty(element, "id", {{
       enumerable: true,
@@ -40271,8 +39452,8 @@ fn document_bootstrap(
       : String(entry && entry.text || "");
   }};
   const tagNameForEntry = (entry) => {{
-    const localName = String(entry.tagName || "").toLowerCase();
-    return namespaceUriForEntry(entry) === HTML_NAMESPACE ? localName.toUpperCase() : localName;
+    const tagName = String(entry.tagName || "");
+    return namespaceUriForEntry(entry) === HTML_NAMESPACE ? tagName.toLowerCase().toUpperCase() : tagName;
   }};
   const normalizeElementNamespace = (namespace) => {{
     if (namespace === null || namespace === "" || namespace === undefined) return null;
@@ -40530,7 +39711,9 @@ fn document_bootstrap(
       tagName: tagNameForEntry(entry),
       nodeType: 1,
       nodeName: tagNameForEntry(entry),
-      localName: entry.tagName.toLowerCase(),
+      localName: namespaceUriForEntry(entry) === HTML_NAMESPACE
+        ? String(entry.tagName || "").toLowerCase()
+        : String(entry.tagName || ""),
       namespaceURI: namespaceUriForEntry(entry),
       id: entry.attributes.id || "",
       className: entry.attributes.class || "",
@@ -41031,7 +40214,7 @@ fn document_bootstrap(
         const owner = element.__glassParent || null;
         if (!owner || typeof owner.insertBefore !== "function") throw new TypeError("outerHTML requires an attached element");
         const fragment = document.createDocumentFragment();
-        populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText, makeDetachedComment);
+        populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText, makeDetachedComment, owner);
         for (const child of fragment.__glassChildren.slice()) owner.insertBefore(child, element);
         element.remove();
       }},
@@ -41292,9 +40475,12 @@ fn document_bootstrap(
     return element;
   }};
   const makeDetachedElement = (tagName, namespace = HTML_NAMESPACE) => {{
-    const normalized = String(tagName).toLowerCase();
-    if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalized)) throw new TypeError("invalid element name");
     const namespaceURI = normalizeElementNamespace(namespace);
+    const requestedName = String(tagName);
+    const normalized = namespaceURI === HTML_NAMESPACE
+      ? requestedName.toLowerCase()
+      : requestedName;
+    if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalized)) throw new TypeError("invalid element name");
     const nodeIndex = allocateTemporaryNodeIndex();
     const entry = {{
       nodeIndex,
@@ -42758,6 +41944,42 @@ fn document_bootstrap(
       default: throw new SyntaxError("unsupported attribute namespace");
     }}
   }};
+  const selectorAttributeCaseInsensitiveGlobalNames = new Set([
+    "contenteditable", "dir", "draggable", "hidden", "spellcheck", "translate",
+  ]);
+  const selectorAttributeCaseInsensitiveTagNames = Object.freeze({{
+    accept: new Set(["input"]),
+    autocomplete: new Set(["form", "input", "select", "textarea"]),
+    charset: new Set(["meta", "script"]),
+    crossorigin: new Set(["audio", "img", "link", "script", "video"]),
+    decoding: new Set(["img"]),
+    enctype: new Set(["form"]),
+    fetchpriority: new Set(["img", "link", "script"]),
+    formenctype: new Set(["button", "input"]),
+    formmethod: new Set(["button", "input"]),
+    formtarget: new Set(["button", "input"]),
+    "http-equiv": new Set(["meta"]),
+    inputmode: new Set(["input", "textarea"]),
+    kind: new Set(["track"]),
+    loading: new Set(["iframe", "img", "link", "script"]),
+    method: new Set(["form"]),
+    preload: new Set(["audio", "video"]),
+    rel: new Set(["a", "area", "link"]),
+    referrerpolicy: new Set(["a", "area", "iframe", "img", "link", "script"]),
+    scope: new Set(["th"]),
+    shape: new Set(["a", "area"]),
+    target: new Set(["a", "area", "base", "form"]),
+    type: new Set(["button", "input", "link", "object", "ol", "script", "source", "style"]),
+    wrap: new Set(["textarea"]),
+  }});
+  const defaultAttributeCaseInsensitiveForSelector = (element, localName, namespaced) => {{
+    if (namespaced) return false;
+    const name = String(localName).toLowerCase();
+    if (selectorAttributeCaseInsensitiveGlobalNames.has(name)) return true;
+    const tags = selectorAttributeCaseInsensitiveTagNames[name];
+    const tagName = String(element.localName || element.tagName || "").toLowerCase();
+    return Boolean(tags && tags.has(tagName));
+  }};
   const selectorAttribute = (element, expression) => {{
     const match = String(expression).trim().match(
       /^((?:(?:\*|[^\s~|^$!=]+)?\|(?:\*|[^\s~|^$!=]+)|[^\s~|^$!=]+))\s*(?:(!=|[~|^$*]?=)\s*(.*?)\s*)?$/
@@ -42813,7 +42035,9 @@ fn document_bootstrap(
     const actual = candidate === undefined ? null : element.getAttribute(candidate);
     if (!operator) return actual !== null;
     if (actual === null) return operator === "!=";
-    const insensitive = caseMode === "i";
+    const insensitive = caseMode === "i"
+      || (caseMode === null
+        && defaultAttributeCaseInsensitiveForSelector(element, localName, separator >= 0));
     const left = insensitive ? actual.toLowerCase() : actual;
     const right = insensitive ? expected.toLowerCase() : expected;
     switch (operator) {{
@@ -44188,12 +43412,25 @@ fn document_bootstrap(
     }});
   }};
   globalThis.window = globalThis;
+  const nativeDialogHostCall = globalThis.__glassNativeDialogCall;
+  delete globalThis.__glassNativeDialogCall;
+  const parseNativeDialogResult = JSON.parse.bind(JSON);
   const dialogText = (value, field) => {{
-    const text = String(value === undefined || value === null ? "" : value);
+    const text = String(value).replace(/\r\n?/g, "\\n");
     if (text.length > {dialog_text_limit}) throw new RangeError("native dialog " + field + " exceeds its limit");
     return text;
   }};
   let dialogQueued = false;
+  const callNativeDialog = (dialogType, message, defaultValue) => {{
+    if (typeof nativeDialogHostCall !== "function") return null;
+    const encoded = nativeDialogHostCall(dialogType, message, defaultValue);
+    if (encoded === null || encoded === undefined) return null;
+    const result = parseNativeDialogResult(encoded);
+    if (!result || typeof result !== "object") throw new TypeError("native dialog response is invalid");
+    if (typeof result.error === "string") throw new Error(result.error);
+    if (typeof result.accepted !== "boolean") throw new TypeError("native dialog decision is invalid");
+    return result;
+  }};
   const queueDialog = (dialogType, message, defaultValue) => {{
     if (dialogQueued) throw new Error("native JavaScript dialog is already pending");
     dialogQueued = true;
@@ -44204,17 +43441,34 @@ fn document_bootstrap(
       default_value: defaultValue === undefined ? null : dialogText(defaultValue, "default value"),
     }});
   }};
-  globalThis.alert = (message) => {{
-    queueDialog("alert", message);
+  const openNativeDialog = (dialogType, message, defaultValue) => {{
+    const normalizedMessage = dialogText(message, "message");
+    const normalizedDefault = defaultValue === undefined
+      ? undefined
+      : dialogText(defaultValue, "default value");
+    const response = callNativeDialog(dialogType, normalizedMessage, normalizedDefault);
+    if (response !== null) return response;
+    queueDialog(dialogType, normalizedMessage, normalizedDefault);
+    return null;
+  }};
+  globalThis.alert = function alert(message) {{
+    const text = arguments.length === 0 ? "" : dialogText(message, "message");
+    openNativeDialog("alert", text, undefined);
     return undefined;
   }};
-  globalThis.confirm = (message) => {{
-    queueDialog("confirm", message);
-    return false;
+  globalThis.confirm = function confirm(message = "") {{
+    const response = openNativeDialog("confirm", dialogText(message, "message"), undefined);
+    return response === null ? false : response.accepted;
   }};
-  globalThis.prompt = (message, defaultValue = "") => {{
-    queueDialog("prompt", message, defaultValue);
-    return null;
+  globalThis.prompt = function prompt(message = "", defaultValue = "") {{
+    const response = openNativeDialog(
+      "prompt",
+      dialogText(message, "message"),
+      dialogText(defaultValue, "default value"),
+    );
+    if (response === null || !response.accepted) return null;
+    if (typeof response.promptValue !== "string") throw new TypeError("native prompt response is invalid");
+    return response.promptValue;
   }};
   globalThis.__glassHostCommands = commands;
   globalThis.__glassHostCommandBuffer = commands;
@@ -46762,7 +46016,9 @@ fn document_bootstrap(
         tagName: tagNameForEntry(entry),
         nodeType: 1,
         nodeName: tagNameForEntry(entry),
-        localName: String(entry.tagName || "").toLowerCase(),
+        localName: namespaceURI === HTML_NAMESPACE
+          ? String(entry.tagName || "").toLowerCase()
+          : String(entry.tagName || ""),
         namespaceURI,
         id: attributes.id || "",
         className: attributes.class || "",
@@ -47074,7 +46330,7 @@ fn document_bootstrap(
           const owner = projected.__glassParent || null;
           if (!owner || typeof owner.insertBefore !== "function") throw new TypeError("outerHTML requires an attached element");
           const fragment = makeFrameDocumentFragment();
-          populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment);
+          populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment, owner);
           for (const child of fragment.__glassChildren.slice()) owner.insertBefore(child, projected);
           projected.remove();
         }},
@@ -47390,9 +46646,12 @@ fn document_bootstrap(
       installElementStyleAndDataset(element);
     }}
     const makeFrameDetachedElement = (tagName, namespace = HTML_NAMESPACE) => {{
-      const normalized = String(tagName).toLowerCase();
-      if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalized)) throw new TypeError("invalid element name");
       const namespaceURI = normalizeElementNamespace(namespace);
+      const requestedName = String(tagName);
+      const normalized = namespaceURI === HTML_NAMESPACE
+        ? requestedName.toLowerCase()
+        : requestedName;
+      if (!/^[A-Za-z][A-Za-z0-9:_-]*$/.test(normalized)) throw new TypeError("invalid element name");
       let nodeIndex = allocateTemporaryNodeIndex();
       const attributes = {{}};
       const attributeNamespaces = {{}};
@@ -47722,7 +46981,7 @@ fn document_bootstrap(
           const owner = projected.__glassParent || null;
           if (!owner || typeof owner.insertBefore !== "function") throw new TypeError("outerHTML requires an attached element");
           const fragment = makeFrameDocumentFragment();
-          populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment);
+          populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment, owner);
           for (const child of fragment.__glassChildren.slice()) owner.insertBefore(child, projected);
           projected.remove();
         }},
@@ -48411,7 +47670,9 @@ fn document_bootstrap(
       tagName: tagNameForEntry(entry),
       nodeType: 1,
       nodeName: tagNameForEntry(entry),
-      localName: String(entry.tagName || "").toLowerCase(),
+      localName: namespaceUriForEntry(entry) === HTML_NAMESPACE
+        ? String(entry.tagName || "").toLowerCase()
+        : String(entry.tagName || ""),
       namespaceURI: namespaceUriForEntry(entry),
       id: attributes.id || "",
       className: attributes.class || "",

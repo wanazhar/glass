@@ -46,6 +46,16 @@ truth, depth, shortcut, and coverage gates also passed locally. Fragment and
 XHR parser routes, full HTML conformance, remote CI, and cross-platform
 certification remain open; this is not browser-completion evidence. See the
 [slice 746 task](tasks/native-engine-browser-746.md).
+Slice 747 is in progress: committed `innerHTML` and same-turn JavaScript/frame
+projection now use the bounded html5ever context-fragment algorithm. The JS
+projection consumes a structured parse result; the ordered Rust commit parses
+the same source/context again through that algorithm, with parity covered by
+tests. The scoped check, 12 `innerHTML` tests, 10 parser tests, selector/dialog
+regressions, and process-backed HTTP regression (1/1) pass. Formatting,
+release-truth, depth, shortcut, and Markdown-link checks pass. Full docs
+inventory coverage is pending because `target/debug/glass` is not built; this
+gate is not claimed. XHR `responseType="document"` remains on its separate
+parser route. See the [slice 747 task](tasks/native-engine-browser-747.md).
 Slice 743 locally verifies descendant-frame `beforeunload` traversal, a shared
 prompt decision, child-first unload events, ancestor-selection restoration,
 and inherited sandboxed-modals eligibility. Remote CI and cross-platform

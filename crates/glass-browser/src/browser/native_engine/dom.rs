@@ -17,8 +17,9 @@ use super::diagnostics::{
 };
 use super::error::NativeEngineError;
 use super::html_parser::{
-    HtmlParsedDocument, HtmlParsedNodeKind, HtmlTreeSinkFailure,
-    parse_document_with_limits as parse_html5,
+    HtmlParsedAttribute, HtmlParsedFragment, HtmlParsedNode, HtmlParsedNodeKind,
+    HtmlTreeSinkFailure, parse_document_with_limits as parse_html5,
+    parse_fragment_with_limits as parse_html5_fragment,
 };
 use super::image::{
     MAX_NATIVE_IMAGE_FRAMES, MAX_NATIVE_IMAGE_TRANSFER_BYTES, MAX_NATIVE_IMAGE_TRANSFER_PIXELS,
@@ -1107,7 +1108,14 @@ impl NativeDocument {
         document.max_dom_depth = limits.max_dom_depth;
         document.quirks_mode = parsed.quirks_mode;
         document.nodes[0].id = root;
-        document.append_html_parsed_nodes(&parsed, &root_node.children, root, 0, limits)?;
+        document.append_html_parsed_nodes(
+            &parsed.nodes,
+            &root_node.children,
+            root,
+            0,
+            limits.max_nodes,
+            limits.max_dom_depth,
+        )?;
         document.finish_html_parse(
             external_stylesheets,
             allowed_inline_style_nodes,
@@ -1118,15 +1126,15 @@ impl NativeDocument {
 
     fn append_html_parsed_nodes(
         &mut self,
-        parsed: &HtmlParsedDocument,
+        parsed: &[HtmlParsedNode],
         node_indices: &[usize],
         parent: NativeNodeId,
         element_depth: usize,
-        limits: &NativeEngineLimits,
+        max_nodes: usize,
+        max_dom_depth: usize,
     ) -> Result<(), NativeEngineError> {
         for node_index in node_indices {
             let node = parsed
-                .nodes
                 .get(*node_index)
                 .ok_or_else(|| NativeEngineError::Parse {
                     offset: 0,
@@ -1139,7 +1147,8 @@ impl NativeDocument {
                         &node.children,
                         parent,
                         element_depth,
-                        limits,
+                        max_nodes,
+                        max_dom_depth,
                     )?;
                 }
                 HtmlParsedNodeKind::DocumentType {
@@ -1154,7 +1163,7 @@ impl NativeDocument {
                             public_id: (!public_id.is_empty()).then(|| public_id.clone()),
                             system_id: (!system_id.is_empty()).then(|| system_id.clone()),
                         },
-                        limits.max_nodes,
+                        max_nodes,
                     )?;
                 }
                 HtmlParsedNodeKind::Element {
@@ -1162,10 +1171,10 @@ impl NativeDocument {
                     namespace,
                     attributes,
                 } => {
-                    if element_depth >= limits.max_dom_depth {
+                    if element_depth >= max_dom_depth {
                         return Err(NativeEngineError::limit(
                             "DOM depth",
-                            limits.max_dom_depth,
+                            max_dom_depth,
                             element_depth.saturating_add(1),
                         ));
                     }
@@ -1187,7 +1196,7 @@ impl NativeDocument {
                             name: name.clone(),
                             attributes: attribute_map,
                         },
-                        limits.max_nodes,
+                        max_nodes,
                     )?;
                     if let Some(native_node) = self.raw_node_mut(id) {
                         native_node.state.namespace_uri = Some(namespace.clone());
@@ -1195,14 +1204,17 @@ impl NativeDocument {
                     }
                     let mut children = node.children.clone();
                     if let Some(template_contents_index) = node.template_contents {
-                        let template_contents = parsed
-                            .nodes
-                            .get(template_contents_index)
-                            .ok_or_else(|| NativeEngineError::Parse {
-                                offset: 0,
-                                reason: "HTML template has invalid contents".into(),
+                        let template_contents =
+                            parsed.get(template_contents_index).ok_or_else(|| {
+                                NativeEngineError::Parse {
+                                    offset: 0,
+                                    reason: "HTML template has invalid contents".into(),
+                                }
                             })?;
-                        if !matches!(template_contents.kind, HtmlParsedNodeKind::DocumentFragment) {
+                        if !matches!(
+                            &template_contents.kind,
+                            HtmlParsedNodeKind::DocumentFragment
+                        ) {
                             return Err(NativeEngineError::Parse {
                                 offset: 0,
                                 reason: "HTML template contents are not a fragment".into(),
@@ -1215,22 +1227,15 @@ impl NativeDocument {
                         &children,
                         id,
                         element_depth.saturating_add(1),
-                        limits,
+                        max_nodes,
+                        max_dom_depth,
                     )?;
                 }
                 HtmlParsedNodeKind::Comment(value) => {
-                    self.add_node(
-                        parent,
-                        NativeNodeKind::Comment(value.clone()),
-                        limits.max_nodes,
-                    )?;
+                    self.add_node(parent, NativeNodeKind::Comment(value.clone()), max_nodes)?;
                 }
                 HtmlParsedNodeKind::Text(value) => {
-                    self.add_node(
-                        parent,
-                        NativeNodeKind::Text(value.clone()),
-                        limits.max_nodes,
-                    )?;
+                    self.add_node(parent, NativeNodeKind::Text(value.clone()), max_nodes)?;
                 }
                 HtmlParsedNodeKind::ProcessingInstruction { .. } => {
                     return Err(NativeEngineError::Parse {
@@ -1695,7 +1700,6 @@ impl NativeDocument {
                                 parent.index,
                                 &value,
                                 &BTreeMap::new(),
-                                false,
                             )?;
                         } else {
                             document.add_node(
@@ -1715,12 +1719,7 @@ impl NativeDocument {
                         .raw_node(parent)
                         .is_some_and(|node| node.namespace_uri() != Some(HTML_NAMESPACE_URI))
                     {
-                        document.apply_script_inner_html(
-                            parent.index,
-                            &value,
-                            &BTreeMap::new(),
-                            false,
-                        )?;
+                        document.apply_script_inner_html(parent.index, &value, &BTreeMap::new())?;
                     } else {
                         let decoded = decode_html_character_data(&value, false);
                         if !decoded.is_empty() {
@@ -6083,7 +6082,7 @@ impl NativeDocument {
                     self.apply_script_document_title(value)?;
                 }
                 NativeScriptCommand::SetInnerHtml { node_index, value } => {
-                    self.apply_script_inner_html(*node_index, value, &script_nodes, true)?;
+                    self.apply_script_inner_html(*node_index, value, &script_nodes)?;
                 }
                 NativeScriptCommand::RemoveNode { node_index } => {
                     let id = self.resolve_script_node_id(*node_index, &script_nodes);
@@ -6835,7 +6834,6 @@ impl NativeDocument {
         node_index: u32,
         value: &str,
         script_nodes: &BTreeMap<u32, NativeNodeId>,
-        fragment_context: bool,
     ) -> Result<(), NativeEngineError> {
         if value.len() > MAX_LOCATOR_BYTES {
             return Err(NativeEngineError::limit(
@@ -6845,418 +6843,189 @@ impl NativeDocument {
             ));
         }
         let id = self.resolve_script_node_id(node_index, script_nodes);
-        let (target_name, old_children) = {
+        let (context_name, context_namespace, context_attributes, old_children, context_depth) = {
             let target = self
                 .script_node(id, script_nodes)
                 .ok_or(NativeEngineError::DetachedTarget)?;
-            let Some(target_name) = target.element_name() else {
+            let Some(context_name) = target.element_name() else {
                 return Err(NativeEngineError::TargetNotActionable {
                     reason: "script innerHTML requires an element".into(),
                 });
             };
-            (target_name.to_owned(), target.children().to_vec())
+            let context_attributes = target
+                .attributes()
+                .into_iter()
+                .flat_map(|attributes| attributes.iter())
+                .map(|(name, value)| HtmlParsedAttribute {
+                    name: name.clone(),
+                    value: value.clone(),
+                    namespace: target.state.attribute_namespaces.get(name).cloned(),
+                })
+                .collect::<Vec<_>>();
+            (
+                context_name.to_owned(),
+                target
+                    .namespace_uri()
+                    .unwrap_or(HTML_NAMESPACE_URI)
+                    .to_owned(),
+                context_attributes,
+                target.children().to_vec(),
+                self.element_depth(id),
+            )
         };
-        if target_name.is_empty() {
+        if context_name.is_empty() {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "script innerHTML requires an element".into(),
             });
         }
+
+        let temporary_node_limit = self.max_nodes.saturating_mul(2);
+        let parsed = parse_html5_fragment(
+            value,
+            &context_namespace,
+            &context_name,
+            &context_attributes,
+            true,
+            context_depth,
+            temporary_node_limit,
+            self.max_dom_depth,
+        )
+        .map_err(|failure| match failure {
+            HtmlTreeSinkFailure::InvalidTree(reason) => NativeEngineError::Parse {
+                offset: 0,
+                reason: reason.into(),
+            },
+            HtmlTreeSinkFailure::NodeLimitExceeded { actual } => NativeEngineError::limit(
+                "temporary HTML parser nodes",
+                temporary_node_limit,
+                actual,
+            ),
+            HtmlTreeSinkFailure::DomDepthExceeded { actual } => {
+                NativeEngineError::limit("DOM depth", self.max_dom_depth, actual)
+            }
+        })?;
+        let fragment_root = parsed
+            .nodes
+            .first()
+            .filter(|root| matches!(&root.kind, HtmlParsedNodeKind::DocumentFragment))
+            .ok_or_else(|| NativeEngineError::Parse {
+                offset: 0,
+                reason: "HTML fragment parser returned an invalid root".into(),
+            })?;
+        let parsed_node_count = self.count_validated_html_fragment_nodes(
+            &parsed,
+            &fragment_root.children,
+            context_depth,
+        )?;
         let available_nodes = self.max_nodes.saturating_sub(self.nodes.len());
-        let max_tokens = available_nodes.saturating_mul(2).saturating_add(1).max(1);
-        let tokens = if fragment_context {
-            tokenize_inner_html(value, max_tokens, &target_name)?
-        } else {
-            tokenize(value, max_tokens)?
-        };
+        if parsed_node_count > available_nodes {
+            return Err(NativeEngineError::limit(
+                "DOM nodes",
+                self.max_nodes,
+                self.nodes.len().saturating_add(parsed_node_count),
+            ));
+        }
+
+        // Parse and validate the complete replacement before detaching the old
+        // subtree. A typed parser or budget failure therefore leaves it intact.
         for child in old_children {
             self.detach_subtree(child)?;
         }
-        let mut stack = vec![id];
-        let mut fragment_html_context = false;
-        let mut active_formatting = ActiveFormattingList::new();
-        for token in tokens {
-            match token {
-                HtmlToken::StartTag {
-                    name,
-                    attributes,
-                    mut self_closing,
-                } => {
-                    if prepare_foreign_content_breakout_start_tag(
-                        self,
-                        &mut stack,
-                        &name,
-                        &attributes,
-                        &mut active_formatting,
-                    )? {
-                        self_closing = false;
-                        fragment_html_context |= stack.len() == 1
-                            && stack.first() == Some(&id)
-                            && stack.last().is_some_and(|current| {
-                                parser_uses_foreign_character_rules(self, *current)
-                            });
-                    }
-                    if name == "table" {
-                        let stack_before = stack.clone();
-                        let process_table =
-                            prepare_html_table_start_token(self, &mut stack, Some(id))?;
-                        clear_markers_for_popped_elements(
-                            self,
-                            &stack_before,
-                            &stack,
-                            &mut active_formatting,
-                        );
-                        if !process_table {
-                            continue;
-                        }
-                    }
-                    let stack_len_before_cell_recovery = stack.len();
-                    prepare_html_table_cell_structural_start_token(
-                        self,
-                        &mut stack,
-                        Some(id),
-                        &name,
-                    )?;
-                    if stack.len() < stack_len_before_cell_recovery {
-                        clear_active_formatting_to_marker(&mut active_formatting);
-                    }
-                    while stack.len() > 1
-                        && stack.last().is_some_and(|current| {
-                            self.raw_node(*current)
-                                .and_then(NativeNode::element_name)
-                                .is_some_and(|current_name| should_auto_close(current_name, &name))
-                        })
-                    {
-                        stack.pop();
-                    }
-                    self.insert_implied_html_table_elements(&mut stack, &name)?;
-                    if !is_table_special_start_tag(&name, &attributes) {
-                        reconstruct_active_formatting_elements(
-                            self,
-                            &mut stack,
-                            &mut active_formatting,
-                            Some(id),
-                            fragment_html_context,
-                        )?;
-                        let nested_formatting_start =
-                            (name == "a" && active_formatting_entry_index(self, &active_formatting, "a").is_some())
-                                || (name == "nobr"
-                                    && active_formatting_entry_index(
-                                        self,
-                                        &active_formatting,
-                                        "nobr",
-                                    )
-                                    .is_some_and(|index| {
-                                        matches!(active_formatting[index], ActiveFormattingEntry::Element(active_id)
-                                            if html_element_is_in_scope(self, &stack, active_id, Some(id)))
-                                    }));
-                        if nested_formatting_start {
-                            adopt_active_formatting_element(
-                                self,
-                                &mut stack,
-                                &mut active_formatting,
-                                Some(id),
-                                &name,
-                            )?;
-                            reconstruct_active_formatting_elements(
-                                self,
-                                &mut stack,
-                                &mut active_formatting,
-                                Some(id),
-                                fragment_html_context,
-                            )?;
-                        }
-                    }
-                    let foster_location = if is_table_special_start_tag(&name, &attributes) {
-                        None
-                    } else {
-                        html_table_foster_location(self, &stack, Some(id))?
-                    };
-                    let parent = foster_location
-                        .map(|(parent, _)| parent)
-                        .or_else(|| stack.last().copied())
-                        .ok_or_else(|| NativeEngineError::Parse {
-                            offset: 0,
-                            reason: "fragment parser lost its element parent".into(),
-                        })?;
-                    let current_depth = self.element_depth(parent);
-                    if current_depth >= self.max_dom_depth {
+        self.append_html_parsed_nodes(
+            &parsed.nodes,
+            &fragment_root.children,
+            id,
+            context_depth,
+            self.max_nodes,
+            self.max_dom_depth,
+        )?;
+        if parsed.parse_error_count > 0 {
+            let detail = format!("html-fragment-parse-errors-{}", parsed.parse_error_count);
+            if self.diagnostics.len() < super::diagnostics::MAX_NATIVE_DIAGNOSTICS {
+                self.diagnostics.push(NativeDiagnostic::new(
+                    NativeDiagnosticCode::MalformedHtml,
+                    NativeDiagnosticSource::Document,
+                    0,
+                    &detail,
+                ));
+            } else {
+                self.diagnostics_truncated = true;
+            }
+        }
+        self.computed_styles = None;
+        self.capture_attached_content_security_policy_meta();
+        Ok(())
+    }
+
+    fn count_validated_html_fragment_nodes(
+        &self,
+        parsed: &HtmlParsedFragment,
+        node_indices: &[usize],
+        element_depth: usize,
+    ) -> Result<usize, NativeEngineError> {
+        let mut count = 0_usize;
+        for node_index in node_indices {
+            let node = parsed
+                .nodes
+                .get(*node_index)
+                .ok_or_else(|| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "HTML fragment parser returned an invalid child index".into(),
+                })?;
+            match &node.kind {
+                HtmlParsedNodeKind::DocumentFragment => {
+                    count = count.saturating_add(self.count_validated_html_fragment_nodes(
+                        parsed,
+                        &node.children,
+                        element_depth,
+                    )?);
+                }
+                HtmlParsedNodeKind::Element { .. } => {
+                    if element_depth >= self.max_dom_depth {
                         return Err(NativeEngineError::limit(
                             "DOM depth",
                             self.max_dom_depth,
-                            current_depth.saturating_add(1),
+                            element_depth.saturating_add(1),
                         ));
                     }
-                    let kind = NativeNodeKind::Element {
-                        name: name.clone(),
-                        attributes,
-                    };
-                    let child = match foster_location {
-                        Some((parent, Some(before))) => {
-                            self.add_node_before(parent, before, kind, self.max_nodes)?
-                        }
-                        Some((parent, None)) => self.add_node(parent, kind, self.max_nodes)?,
-                        None => self.add_node(parent, kind, self.max_nodes)?,
-                    };
-                    self.assign_parsed_namespace_to_node_with_html_context(
-                        child,
-                        parent,
-                        fragment_html_context && parent == id,
-                    )?;
-                    self.adjust_parsed_foreign_attributes(child)?;
-                    let html_namespace_element = self
-                        .raw_node(child)
-                        .is_some_and(|node| node.namespace_uri() == Some(HTML_NAMESPACE_URI));
-                    let html_void_element = html_namespace_element && is_void_element(&name);
-                    if (!self_closing || html_namespace_element) && !html_void_element {
-                        stack.push(child);
-                        if self
-                            .raw_node(child)
-                            .is_some_and(|node| node.namespace_uri() == Some(HTML_NAMESPACE_URI))
-                        {
-                            if is_active_formatting_marker_element(&name) {
-                                active_formatting.push(ActiveFormattingEntry::Marker);
-                            } else if is_html_formatting_element(&name) {
-                                push_active_formatting_element(
-                                    self,
-                                    &mut active_formatting,
-                                    child,
-                                )?;
-                            }
-                        }
-                    }
-                }
-                HtmlToken::EndTag(name) => {
-                    let foreign_end_tag = prepare_foreign_content_end_tag(
-                        self,
-                        &mut stack,
-                        &name,
-                        &mut active_formatting,
-                        fragment_html_context,
-                    )?;
-                    if foreign_end_tag == ForeignContentEndTagDisposition::Breakout
-                        && stack.len() == 1
-                        && stack.first() == Some(&id)
-                    {
-                        fragment_html_context = true;
-                    }
-                    if foreign_end_tag == ForeignContentEndTagDisposition::Consumed {
-                        continue;
-                    }
-                    let stack_before = is_marker_sensitive_end_tag(&name).then(|| stack.clone());
-                    let consumed = (name == "table"
-                        && consume_html_table_end_token(self, &mut stack, Some(id))?)
-                        || consume_html_table_column_group_end_token(
-                            self,
-                            &mut stack,
-                            Some(id),
-                            &name,
-                        )?
-                        || (matches!(
-                            name.as_str(),
-                            "tbody" | "tfoot" | "thead" | "tr" | "td" | "th"
-                        ) && consume_html_table_structure_end_token(
-                            self,
-                            &mut stack,
-                            Some(id),
-                            &name,
-                        )?)
-                        || consume_html_table_cell_ignored_end_token(
-                            self,
-                            &stack,
-                            Some(id),
-                            &name,
-                        )?
-                        || consume_html_table_row_ignored_end_token(self, &stack, Some(id), &name)?
-                        || consume_html_table_caption_ignored_end_token(
-                            self,
-                            &stack,
-                            Some(id),
-                            &name,
-                        )?
-                        || consume_html_table_mode_ignored_end_token(
-                            self,
-                            &stack,
-                            Some(id),
-                            &name,
-                        )?;
-                    if consumed {
-                        if let Some(before) = stack_before.as_deref() {
-                            clear_markers_for_popped_elements(
-                                self,
-                                before,
-                                &stack,
-                                &mut active_formatting,
-                            );
-                        }
-                        continue;
-                    }
-                    if name == "br" {
-                        reconstruct_active_formatting_elements(
-                            self,
-                            &mut stack,
-                            &mut active_formatting,
-                            Some(id),
-                            fragment_html_context,
-                        )?;
-                        insert_html_end_tag_recovery_element(
-                            self,
-                            &mut stack,
-                            Some(id),
-                            fragment_html_context,
-                            "br",
-                            false,
-                        )?;
-                        continue;
-                    }
-                    if name == "p" && !html_paragraph_is_in_button_scope(self, &stack, Some(id)) {
-                        reconstruct_active_formatting_elements(
-                            self,
-                            &mut stack,
-                            &mut active_formatting,
-                            Some(id),
-                            fragment_html_context,
-                        )?;
-                        insert_html_end_tag_recovery_element(
-                            self,
-                            &mut stack,
-                            Some(id),
-                            fragment_html_context,
-                            "p",
-                            true,
-                        )?;
-                    }
-                    if is_html_formatting_element(&name) {
-                        if adopt_active_formatting_element(
-                            self,
-                            &mut stack,
-                            &mut active_formatting,
-                            Some(id),
-                            &name,
-                        )? {
-                            continue;
-                        }
-                        if consume_formatting_fallback_end_tag(self, &mut stack, Some(id), &name) {
-                            continue;
-                        }
-                    }
-                    process_html_any_other_end_tag(self, &mut stack, &name)?;
-                    if let Some(before) = stack_before.as_deref() {
-                        clear_markers_for_popped_elements(
-                            self,
-                            before,
-                            &stack,
-                            &mut active_formatting,
-                        );
-                    }
-                }
-                HtmlToken::Text(value) => {
-                    if !value.is_empty() {
-                        let current = *stack.last().ok_or_else(|| NativeEngineError::Parse {
-                            offset: 0,
-                            reason: "fragment parser lost its text insertion mode".into(),
-                        })?;
-                        let foreign_content = !(fragment_html_context && current == id)
-                            && parser_uses_foreign_character_rules(self, current);
-                        let decoded = decode_html_character_data(&value, foreign_content);
-                        if decoded.is_empty() {
-                            continue;
-                        }
-                        reconstruct_active_formatting_elements(
-                            self,
-                            &mut stack,
-                            &mut active_formatting,
-                            Some(id),
-                            fragment_html_context,
-                        )?;
-                        let foster_location = if decoded
-                            .as_bytes()
-                            .iter()
-                            .any(|byte| !byte.is_ascii_whitespace())
-                        {
-                            html_table_foster_location(self, &stack, Some(id))?
-                        } else {
-                            None
-                        };
-                        let parent = foster_location
-                            .map(|(parent, _)| parent)
-                            .or_else(|| stack.last().copied())
-                            .ok_or_else(|| NativeEngineError::Parse {
+                    let mut children = node.children.clone();
+                    if let Some(contents_index) = node.template_contents {
+                        let contents = parsed.nodes.get(contents_index).ok_or_else(|| {
+                            NativeEngineError::Parse {
                                 offset: 0,
-                                reason: "fragment parser lost its text parent".into(),
-                            })?;
-                        let kind = NativeNodeKind::Text(decoded);
-                        match foster_location {
-                            Some((parent, Some(before))) => {
-                                self.add_node_before(parent, before, kind, self.max_nodes)?;
+                                reason: "HTML fragment template has invalid contents".into(),
                             }
-                            Some((parent, None)) => {
-                                self.add_node(parent, kind, self.max_nodes)?;
-                            }
-                            None => {
-                                self.add_node(parent, kind, self.max_nodes)?;
-                            }
-                        }
-                    }
-                }
-                HtmlToken::FragmentRawText(value) => {
-                    if !value.is_empty() {
-                        let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
-                            offset: 0,
-                            reason: "fragment parser lost its context raw-text parent".into(),
                         })?;
-                        self.add_node(parent, NativeNodeKind::Text(value), self.max_nodes)?;
-                    }
-                }
-                HtmlToken::RawText(value) => {
-                    if !value.is_empty() {
-                        let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
-                            offset: 0,
-                            reason: "fragment parser lost its raw-text parent".into(),
-                        })?;
-                        if self
-                            .raw_node(parent)
-                            .is_some_and(|node| node.namespace_uri() != Some(HTML_NAMESPACE_URI))
-                        {
-                            self.apply_script_inner_html(
-                                parent.index,
-                                &value,
-                                script_nodes,
-                                false,
-                            )?;
-                        } else {
-                            self.add_node(parent, NativeNodeKind::Text(value), self.max_nodes)?;
+                        if !matches!(&contents.kind, HtmlParsedNodeKind::DocumentFragment) {
+                            return Err(NativeEngineError::Parse {
+                                offset: 0,
+                                reason: "HTML fragment template contents are not a fragment".into(),
+                            });
                         }
+                        children.extend_from_slice(&contents.children);
                     }
+                    count = count.saturating_add(1).saturating_add(
+                        self.count_validated_html_fragment_nodes(
+                            parsed,
+                            &children,
+                            element_depth.saturating_add(1),
+                        )?,
+                    );
                 }
-                HtmlToken::RcData(value) => {
-                    let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
+                HtmlParsedNodeKind::DocumentType { .. }
+                | HtmlParsedNodeKind::Comment(_)
+                | HtmlParsedNodeKind::Text(_) => {
+                    count = count.saturating_add(1);
+                }
+                HtmlParsedNodeKind::Document | HtmlParsedNodeKind::ProcessingInstruction { .. } => {
+                    return Err(NativeEngineError::Parse {
                         offset: 0,
-                        reason: "fragment parser lost its RCDATA parent".into(),
-                    })?;
-                    if self
-                        .raw_node(parent)
-                        .is_some_and(|node| node.namespace_uri() != Some(HTML_NAMESPACE_URI))
-                    {
-                        self.apply_script_inner_html(parent.index, &value, script_nodes, false)?;
-                    } else {
-                        let decoded = decode_html_character_data(&value, false);
-                        if !decoded.is_empty() {
-                            self.add_node(parent, NativeNodeKind::Text(decoded), self.max_nodes)?;
-                        }
-                    }
+                        reason: "HTML fragment parser returned an unsupported node".into(),
+                    });
                 }
-                HtmlToken::Comment(value) => {
-                    let parent = *stack.last().ok_or_else(|| NativeEngineError::Parse {
-                        offset: 0,
-                        reason: "fragment parser lost its comment parent".into(),
-                    })?;
-                    self.add_node(parent, NativeNodeKind::Comment(value), self.max_nodes)?;
-                }
-                HtmlToken::Doctype { .. } => {}
             }
         }
-        self.capture_attached_content_security_policy_meta();
-        Ok(())
+        Ok(count)
     }
 
     fn apply_script_remove_node(
@@ -13856,6 +13625,46 @@ mod tests {
     }
 
     #[test]
+    fn script_inner_html_node_limit_failure_preserves_the_existing_subtree() {
+        let mut document = NativeDocument::parse(
+            "<main><p id='root'>old <strong>content</strong></p></main>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let root = document.find_element_by_id("root").unwrap();
+        let original = document.element_inner_html(root, 1024);
+        document.max_nodes = document.nodes.len();
+
+        let result = document.apply_script_commands(&[NativeScriptCommand::SetInnerHtml {
+            node_index: root.index(),
+            value: "<span>replacement</span>".into(),
+        }]);
+
+        assert!(result.is_err(), "the configured node budget is exhausted");
+        assert_eq!(document.element_inner_html(root, 1024), original);
+    }
+
+    #[test]
+    fn script_inner_html_depth_limit_failure_preserves_the_existing_subtree() {
+        let mut document = NativeDocument::parse(
+            "<main><p id='root'>old <strong>content</strong></p></main>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+        let root = document.find_element_by_id("root").unwrap();
+        let original = document.element_inner_html(root, 1024);
+        document.max_dom_depth = document.element_depth(root).saturating_add(1);
+
+        let result = document.apply_script_commands(&[NativeScriptCommand::SetInnerHtml {
+            node_index: root.index(),
+            value: "<span><b>replacement</b></span>".into(),
+        }]);
+
+        assert!(result.is_err(), "the replacement exceeds the DOM depth cap");
+        assert_eq!(document.element_inner_html(root, 1024), original);
+    }
+
+    #[test]
     fn script_inner_html_fosters_table_text_and_elements_before_nested_table() {
         let mut document = NativeDocument::parse(
             "<main id='root'><p id='old'>old</p></main>",
@@ -14103,6 +13912,103 @@ mod tests {
             document.element_inner_html(target, 1024),
             "<tbody><tr><td id=\"direct-cell\">direct</td></tr></tbody>"
         );
+    }
+
+    #[test]
+    fn javascript_inner_html_uses_the_contextual_html5ever_tree_for_svg() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("svg-fragment-parser-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                    svg.innerHTML = "<foreignObject><p id='html-child'>html</p></foreignObject><linearGradient id='gradient'></linearGradient>";
+                    const foreignObject = svg.firstElementChild;
+                    const htmlChild = foreignObject.firstElementChild;
+                    const gradient = svg.lastElementChild;
+                    document.querySelector("#root").appendChild(svg);
+                    return [
+                        foreignObject.localName === "foreignObject",
+                        foreignObject.namespaceURI === "http://www.w3.org/2000/svg",
+                        htmlChild.namespaceURI === "http://www.w3.org/1999/xhtml",
+                        gradient.localName === "linearGradient",
+                        gradient.namespaceURI === "http://www.w3.org/2000/svg",
+                    ];
+                })()"##,
+                &document,
+                "fixture://svg-fragment-context.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("SVG fragment context must use html5ever namespace rules");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true, true])
+        );
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("the contextual SVG fragment must commit unchanged");
+        let gradient = document.find_element_by_id("gradient").unwrap();
+        assert_eq!(
+            document.node(gradient).and_then(NativeNode::element_name),
+            Some("linearGradient")
+        );
+        assert_eq!(
+            document.node(gradient).and_then(NativeNode::namespace_uri),
+            Some("http://www.w3.org/2000/svg")
+        );
+    }
+
+    #[test]
+    fn javascript_inner_html_uses_rawtext_script_and_plaintext_contexts_same_turn() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("text-state-fragment-test")
+            .expect("native JavaScript runtime must construct");
+        let mut document =
+            NativeDocument::parse("<main id='root'></main>", &NativeEngineLimits::default())
+                .unwrap();
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                    const cases = [
+                        ["textarea", "one<b>two</textarea><i>three", "one<b>twothree", "i"],
+                        ["style", "one<b>two</style><i>three", "one<b>twothree", "i"],
+                        ["script", "one<b>two</script><i>three", "one<b>twothree", "i"],
+                        ["plaintext", "one<b>two</plaintext><i>three", "one<b>two</plaintext><i>three", null],
+                    ];
+                    return cases.map(([name, source, expectedText, expectedElement]) => {
+                        const element = document.createElement(name);
+                        element.setAttribute("id", name);
+                        element.innerHTML = source;
+                        const actualElement = element.firstElementChild;
+                        document.querySelector("#root").appendChild(element);
+                        return element.textContent === expectedText
+                            && (actualElement ? actualElement.localName : null) === expectedElement;
+                    });
+                })()"##,
+                &document,
+                "fixture://text-state-fragment.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("fragment tokenization must follow each context's tokenizer state");
+
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!([true, true, true, true])
+        );
+        document
+            .apply_script_commands(&evaluation.commands)
+            .expect("same-turn context fragments must commit through html5ever");
+        for name in ["textarea", "style", "script", "plaintext"] {
+            let node = document
+                .find_element_by_id(name)
+                .expect("context element must be committed");
+            assert!(document.node(node).is_some());
+        }
     }
 
     #[test]

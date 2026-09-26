@@ -19450,7 +19450,15 @@ async fn native_runtime_session_loads_bounded_external_http_html_without_cdp() {
                     "200 OK",
                     "text/html; charset=utf-8",
                     None,
-                    "<title>Native HTTP</title><p>External native page</p>",
+                    concat!(
+                        "<title>Native HTTP</title><p>External native page</p>",
+                        "<script>const fragment=document.createElement('div');",
+                        "fragment.innerHTML='<table><tr><td>parsed</td></tr></table>';",
+                        "const table=fragment.firstElementChild;",
+                        "document.body.appendChild(fragment);",
+                        "document.title=table && table.firstElementChild.localName==='tbody'",
+                        "?'Native HTTP':'native fragment parse failed';</script>",
+                    ),
                 )
             } else {
                 ("200 OK", "application/json", None, "{\"not\":\"html\"}")
@@ -19474,7 +19482,7 @@ async fn native_runtime_session_loads_bounded_external_http_html_without_cdp() {
     let evidence = session.evidence(EvidenceLevel::Compact).await.unwrap();
     assert_eq!(evidence.url, format!("http://{address}/page#section"));
     assert_eq!(evidence.title, "Native HTTP");
-    assert_eq!(evidence.visible_text, "External native page");
+    assert_eq!(evidence.visible_text, "External native page parsed");
 
     let error = session
         .navigate(format!("http://{address}/not-html"))

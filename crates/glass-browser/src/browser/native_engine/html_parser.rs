@@ -14,7 +14,10 @@ use html5ever::tokenizer::{
     BufferQueue, EndTag, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
 use html5ever::tree_builder::TreeBuilder;
-use html5ever::{Attribute, ExpandedName, QualName, TokenizerResult, local_name, ns};
+use html5ever::{
+    Attribute, ExpandedName, LocalName, Namespace, Prefix, QualName, TokenizerResult, local_name,
+    ns,
+};
 
 const MAX_RETAINED_PARSE_ERRORS: usize = 128;
 
@@ -60,14 +63,21 @@ impl HtmlNode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct HtmlParsedAttribute {
     pub(crate) name: String,
     pub(crate) value: String,
     pub(crate) namespace: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(
+    tag = "type",
+    content = "data",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub(crate) enum HtmlParsedNodeKind {
     Document,
     DocumentFragment,
@@ -89,12 +99,20 @@ pub(crate) enum HtmlParsedNodeKind {
     Text(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct HtmlParsedNode {
     pub(crate) kind: HtmlParsedNodeKind,
     pub(crate) children: Vec<usize>,
     /// Index of the parser-only DocumentFragment associated with a template.
     pub(crate) template_contents: Option<usize>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HtmlParsedFragment {
+    pub(crate) nodes: Vec<HtmlParsedNode>,
+    pub(crate) parse_error_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -403,6 +421,58 @@ impl NativeHtmlTreeSink {
             parse_error_count: parse_error_count.get().min(MAX_RETAINED_PARSE_ERRORS),
             sink_failure: sink_failure.get(),
         }
+    }
+
+    fn into_parsed_fragment(
+        self,
+        roots: Vec<Handle>,
+    ) -> Result<HtmlParsedFragment, HtmlTreeSinkFailure> {
+        let failure = self.sink_failure.get();
+        let parse_error_count = self.parse_error_count.get().min(MAX_RETAINED_PARSE_ERRORS);
+        if let Some(failure) = failure {
+            return Err(failure);
+        }
+
+        let mut nodes = vec![HtmlParsedNode {
+            kind: HtmlParsedNodeKind::DocumentFragment,
+            children: Vec::new(),
+            template_contents: None,
+        }];
+        let mut pending = Vec::with_capacity(roots.len());
+        for root in roots {
+            let child_index = nodes.len();
+            nodes.push(Self::parsed_node(&root));
+            nodes[0].children.push(child_index);
+            pending.push((root, child_index));
+        }
+        while let Some((node, output_index)) = pending.pop() {
+            let children = node.children.borrow().clone();
+            let template_contents = match &node.kind {
+                HtmlNodeKind::Element {
+                    template_contents, ..
+                } => template_contents.borrow().clone(),
+                _ => None,
+            };
+            let mut child_work =
+                Vec::with_capacity(children.len() + usize::from(template_contents.is_some()));
+            for child in children {
+                let child_index = nodes.len();
+                nodes.push(Self::parsed_node(&child));
+                nodes[output_index].children.push(child_index);
+                child_work.push((child, child_index));
+            }
+            if let Some(contents) = template_contents {
+                let contents_index = nodes.len();
+                nodes.push(Self::parsed_node(&contents));
+                nodes[output_index].template_contents = Some(contents_index);
+                child_work.push((contents, contents_index));
+            }
+            pending.extend(child_work.into_iter().rev());
+        }
+        Ok(HtmlParsedFragment {
+            nodes,
+            parse_error_count,
+        })
     }
 }
 
@@ -805,6 +875,124 @@ pub(crate) fn parse_document_with_limits(
     tokenizer.sink.tree_builder.sink.finish()
 }
 
+pub(crate) fn parse_fragment_with_limits(
+    source: &str,
+    context_namespace: &str,
+    context_name: &str,
+    context_attributes: &[HtmlParsedAttribute],
+    scripting_enabled: bool,
+    context_element_depth: usize,
+    max_nodes: usize,
+    max_dom_depth: usize,
+) -> Result<HtmlParsedFragment, HtmlTreeSinkFailure> {
+    const MAX_CONTEXT_NAME_BYTES: usize = 256;
+    const MAX_CONTEXT_ATTRIBUTES: usize = 1_024;
+
+    if context_namespace.len() > MAX_CONTEXT_NAME_BYTES
+        || context_name.is_empty()
+        || context_name.len() > MAX_CONTEXT_NAME_BYTES
+        || context_attributes.len() > MAX_CONTEXT_ATTRIBUTES
+    {
+        return Err(HtmlTreeSinkFailure::InvalidTree(
+            "HTML fragment context exceeds its bounds",
+        ));
+    }
+    if context_element_depth > max_dom_depth {
+        return Err(HtmlTreeSinkFailure::DomDepthExceeded {
+            actual: context_element_depth,
+        });
+    }
+
+    let namespace = Namespace::from(context_namespace);
+    let is_html_context = context_namespace == "http://www.w3.org/1999/xhtml";
+    let normalized_name = if is_html_context {
+        context_name.to_ascii_lowercase()
+    } else {
+        context_name.to_owned()
+    };
+    let last_start_tag_name = normalized_name.clone();
+    let context_name = QualName::new(None, namespace.clone(), LocalName::from(normalized_name));
+    let attributes = context_attributes
+        .iter()
+        .map(|attribute| {
+            if attribute.name.len() > MAX_CONTEXT_NAME_BYTES
+                || attribute.value.len() > crate::browser_backend::MAX_TEXT_BYTES
+                || attribute
+                    .namespace
+                    .as_ref()
+                    .is_some_and(|namespace| namespace.len() > MAX_CONTEXT_NAME_BYTES)
+            {
+                return Err(HtmlTreeSinkFailure::InvalidTree(
+                    "HTML fragment context attribute exceeds its bounds",
+                ));
+            }
+            let (prefix, local_name) = attribute
+                .name
+                .split_once(':')
+                .map_or((None, attribute.name.as_str()), |(prefix, local_name)| {
+                    (Some(prefix), local_name)
+                });
+            let prefix = prefix.map(Prefix::from);
+            let namespace = Namespace::from(attribute.namespace.as_deref().unwrap_or(""));
+            Ok(Attribute {
+                name: QualName::new(prefix, namespace, LocalName::from(local_name)),
+                value: StrTendril::from(attribute.value.as_str()),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let sink = NativeHtmlTreeSink::new(max_nodes, max_dom_depth);
+    let mut flags = ElementFlags::default();
+    let normalized_context_name = context_name.local.to_string();
+    flags.mathml_annotation_xml_integration_point = context_namespace
+        == "http://www.w3.org/1998/Math/MathML"
+        && normalized_context_name == "annotation-xml"
+        && context_attributes.iter().any(|attribute| {
+            attribute.namespace.is_none()
+                && attribute.name.eq_ignore_ascii_case("encoding")
+                && (attribute.value.eq_ignore_ascii_case("text/html")
+                    || attribute
+                        .value
+                        .eq_ignore_ascii_case("application/xhtml+xml"))
+        });
+    let context = sink.create_element(context_name, attributes, flags);
+    context.element_depth.set(context_element_depth);
+    if let HtmlNodeKind::Element {
+        template_contents, ..
+    } = &context.kind
+    {
+        if let Some(contents) = template_contents.borrow().as_ref() {
+            contents.element_depth.set(context_element_depth);
+        }
+    }
+
+    let tree_builder =
+        TreeBuilder::new_for_fragment(sink, context.clone(), None, Default::default());
+    let initial_state = tree_builder.tokenizer_state_for_context_elem(scripting_enabled);
+    let token_sink = NativeHtmlTokenSink { tree_builder };
+    let tokenizer = Tokenizer::new(
+        token_sink,
+        TokenizerOpts {
+            initial_state: Some(initial_state),
+            last_start_tag_name: Some(last_start_tag_name),
+            ..TokenizerOpts::default()
+        },
+    );
+    let input = BufferQueue::default();
+    input.push_back(StrTendril::from(source));
+    while !matches!(tokenizer.feed(&input), TokenizerResult::Done) {}
+    debug_assert!(input.is_empty());
+    tokenizer.end();
+
+    let sink = tokenizer.sink.tree_builder.sink;
+    let parser_root = sink.document.children.borrow().first().cloned().ok_or(
+        HtmlTreeSinkFailure::InvalidTree("HTML fragment parser lost its synthetic root"),
+    )?;
+    parser_root.element_depth.set(context_element_depth);
+    let roots = parser_root.children.borrow().clone();
+    sink.into_parsed_fragment(roots)
+}
+
 #[cfg(test)]
 fn parse_document(source: &str) -> HtmlParsedDocument {
     parse_document_with_limits(source, 8_192, 128)
@@ -813,9 +1001,17 @@ fn parse_document(source: &str) -> HtmlParsedDocument {
 #[cfg(test)]
 mod tests {
     use super::{
-        HtmlParsedNodeKind, HtmlParsedQuirksMode, HtmlTreeSinkFailure, parse_document,
-        parse_document_with_limits,
+        HtmlParsedAttribute, HtmlParsedFragment, HtmlParsedNodeKind, HtmlParsedQuirksMode,
+        HtmlTreeSinkFailure, parse_document, parse_document_with_limits,
+        parse_fragment_with_limits,
     };
+
+    const HTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
+
+    fn parse_fragment(source: &str, namespace: &str, context_name: &str) -> HtmlParsedFragment {
+        parse_fragment_with_limits(source, namespace, context_name, &[], true, 0, 8_192, 128)
+            .expect("fragment should parse within the test limits")
+    }
 
     fn child<'a>(nodes: &'a [super::HtmlParsedNode], parent: usize, name: &str) -> usize {
         nodes[parent]
@@ -959,5 +1155,211 @@ mod tests {
             parsed.sink_failure,
             Some(HtmlTreeSinkFailure::DomDepthExceeded { actual: 4 })
         );
+    }
+
+    #[test]
+    fn html_fragment_parser_uses_table_context_and_builds_implied_containers() {
+        let parsed = parse_fragment("<tr><td>cell", HTML_NAMESPACE, "table");
+        let tbody = child(&parsed.nodes, 0, "tbody");
+        let tr = child(&parsed.nodes, tbody, "tr");
+        let td = child(&parsed.nodes, tr, "td");
+        assert!(parsed.nodes[td].children.iter().any(|index| {
+            matches!(&parsed.nodes[*index].kind, HtmlParsedNodeKind::Text(value) if value == "cell")
+        }));
+    }
+
+    #[test]
+    fn html_fragment_parser_initializes_rcdata_from_its_context() {
+        let parsed = parse_fragment("one<b>two</title><i>three", HTML_NAMESPACE, "title");
+        let text = parsed.nodes[0]
+            .children
+            .iter()
+            .filter_map(|index| match &parsed.nodes[*index].kind {
+                HtmlParsedNodeKind::Text(value) => Some(value.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(text, "one<b>two");
+        assert!(parsed.nodes[0].children.iter().any(|index| {
+            matches!(&parsed.nodes[*index].kind, HtmlParsedNodeKind::Element { name, .. } if name == "i")
+        }));
+    }
+
+    #[test]
+    fn html_fragment_parser_respects_rawtext_script_and_plaintext_contexts() {
+        let cases = [
+            (
+                "textarea",
+                "one<b>two</textarea><i>three",
+                "one<b>two",
+                Some("i"),
+            ),
+            ("style", "one<b>two</style><i>three", "one<b>two", Some("i")),
+            (
+                "script",
+                "one<b>two</script><i>three",
+                "one<b>two",
+                Some("i"),
+            ),
+            (
+                "plaintext",
+                "one<b>two</plaintext><i>three",
+                "one<b>two</plaintext><i>three",
+                None,
+            ),
+        ];
+
+        for (context_name, source, expected_text, expected_element) in cases {
+            let parsed = parse_fragment(source, HTML_NAMESPACE, context_name);
+            let root = &parsed.nodes[0];
+            let text = root
+                .children
+                .iter()
+                .filter_map(|index| match &parsed.nodes[*index].kind {
+                    HtmlParsedNodeKind::Text(value) => Some(value.as_str()),
+                    _ => None,
+                })
+                .collect::<String>();
+            let elements = root
+                .children
+                .iter()
+                .filter_map(|index| match &parsed.nodes[*index].kind {
+                    HtmlParsedNodeKind::Element { name, .. } => Some(name.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(text, expected_text, "context: {context_name}");
+            assert_eq!(
+                elements,
+                expected_element.into_iter().collect::<Vec<_>>(),
+                "context: {context_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn html_fragment_parser_caps_retained_error_diagnostics() {
+        let parsed = parse_fragment("<p><b>x</p>", HTML_NAMESPACE, "div");
+        assert!(parsed.parse_error_count <= super::MAX_RETAINED_PARSE_ERRORS);
+    }
+
+    #[test]
+    fn html_fragment_parser_preserves_svg_context_and_html_integration_points() {
+        let parsed = parse_fragment(
+            "<foreignObject><p>html</p></foreignObject><circle />",
+            "http://www.w3.org/2000/svg",
+            "svg",
+        );
+        let foreign_object = child(&parsed.nodes, 0, "foreignObject");
+        let HtmlParsedNodeKind::Element {
+            namespace: foreign_namespace,
+            ..
+        } = &parsed.nodes[foreign_object].kind
+        else {
+            panic!("foreignObject must be an element");
+        };
+        assert_eq!(foreign_namespace, "http://www.w3.org/2000/svg");
+        let paragraph = child(&parsed.nodes, foreign_object, "p");
+        let HtmlParsedNodeKind::Element {
+            namespace: paragraph_namespace,
+            ..
+        } = &parsed.nodes[paragraph].kind
+        else {
+            panic!("paragraph must be an element");
+        };
+        assert_eq!(paragraph_namespace, HTML_NAMESPACE);
+        let circle = child(&parsed.nodes, 0, "circle");
+        let HtmlParsedNodeKind::Element {
+            namespace: circle_namespace,
+            ..
+        } = &parsed.nodes[circle].kind
+        else {
+            panic!("circle must be an element");
+        };
+        assert_eq!(circle_namespace, "http://www.w3.org/2000/svg");
+    }
+
+    #[test]
+    fn html_fragment_parser_exposes_template_contents_as_a_parser_fragment() {
+        let parsed = parse_fragment("<table><tr><td>x", HTML_NAMESPACE, "template");
+        let table = child(&parsed.nodes, 0, "table");
+        let tbody = child(&parsed.nodes, table, "tbody");
+        assert!(parsed.nodes[tbody]
+            .children
+            .iter()
+            .any(|index| matches!(parsed.nodes[*index].kind, HtmlParsedNodeKind::Element { ref name, .. } if name == "tr")));
+    }
+
+    #[test]
+    fn html_fragment_parser_serializes_a_structured_tree_for_the_js_projection() {
+        let parsed = parse_fragment("<p>same tree</p>", HTML_NAMESPACE, "div");
+        let value = serde_json::to_value(parsed).expect("fragment result must serialize");
+        assert_eq!(value["nodes"][0]["kind"]["type"], "documentFragment");
+        assert_eq!(value["nodes"][1]["kind"]["type"], "element");
+        assert_eq!(value["nodes"][1]["kind"]["data"]["name"], "p");
+        assert_eq!(value["nodes"][2]["kind"]["type"], "text");
+        assert_eq!(value["nodes"][2]["kind"]["data"], "same tree");
+    }
+
+    #[test]
+    fn html_fragment_parser_checks_context_aware_depth_during_tree_construction() {
+        let failure = parse_fragment_with_limits(
+            "<span><b>deep</b></span>",
+            HTML_NAMESPACE,
+            "div",
+            &[],
+            true,
+            1,
+            128,
+            2,
+        )
+        .expect_err("fragment must not exceed the context-relative depth limit");
+        assert_eq!(failure, HtmlTreeSinkFailure::DomDepthExceeded { actual: 3 });
+    }
+
+    #[test]
+    fn html_fragment_parser_bounds_temporary_nodes_and_reports_the_limit() {
+        let failure = parse_fragment_with_limits(
+            "<span>one</span><b>two</b>",
+            HTML_NAMESPACE,
+            "div",
+            &[],
+            true,
+            0,
+            6,
+            128,
+        )
+        .expect_err("fragment parse must stay within the temporary node cap");
+        assert!(matches!(
+            failure,
+            HtmlTreeSinkFailure::NodeLimitExceeded { .. }
+        ));
+    }
+
+    #[test]
+    fn html_fragment_parser_uses_mathml_annotation_encoding_as_integration_point() {
+        let parsed = parse_fragment_with_limits(
+            "<svg><g></p><span id='after'></span></g></svg>",
+            "http://www.w3.org/1998/Math/MathML",
+            "annotation-xml",
+            &[HtmlParsedAttribute {
+                name: "encoding".into(),
+                value: "APPLICATION/XHTML+XML".into(),
+                namespace: None,
+            }],
+            true,
+            0,
+            8_192,
+            128,
+        )
+        .expect("MathML context should parse");
+        let paragraph = child(&parsed.nodes, 0, "p");
+        let after = element_by_id(&parsed.nodes, "after");
+        assert_eq!(parent(&parsed.nodes, after), 0);
+        let HtmlParsedNodeKind::Element { namespace, .. } = &parsed.nodes[paragraph].kind else {
+            panic!("p must be an element");
+        };
+        assert_eq!(namespace, HTML_NAMESPACE);
     }
 }

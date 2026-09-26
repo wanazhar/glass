@@ -38,7 +38,10 @@ paths. Its focused tests cover cancellation, reentrancy, callback error
 recovery, reset defaults, and persistence; exact evidence is
 [recorded here](tasks/native-engine-browser-762.md). These are implementation
 checkpoints, not browser-completion evidence; issue #40 remains open for the
-full Core Web Profile, conformance, platform, and release gates.
+full Core Web Profile, conformance, platform, and release gates. Slice 763 is
+in progress for reset-button activation through native click and JavaScript
+`.click()` paths; its contract is
+[recorded here](tasks/native-engine-browser-763.md).
 Slice 755 implements target-document-aware `Document.importNode()` for live
 top-level, same-origin-frame, and inert template-owner Documents. Its focused
 process-backed regression passes locally; this remains a bounded DOM slice,
@@ -109,6 +112,9 @@ and same-origin-frame regressions plus scoped compile and documentation checks.
 Reset-button activation, full form-control Web IDL reflection, complete value
 sanitization, state restoration, WPT conformance, remote CI, and issue #40
 completion remain open. See the [slice 762 contract](tasks/native-engine-browser-762.md).
+Slice 763 defines the next boundary for native activation of reset buttons;
+general keyboard-generated button activation remains part of the broader input
+workstream.
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

@@ -1079,7 +1079,7 @@ mod tests {
     }
 
     #[test]
-    fn html_document_parser_honors_scripting_disabled_for_noscript() {
+    fn xhr_html_response_document_parser_honors_scripting_disabled_for_noscript() {
         let parsed = parse_document_with_limits_and_scripting(
             "<!doctype html><body><noscript><p id='fallback'>visible</p></noscript></body>",
             128,
@@ -1088,7 +1088,11 @@ mod tests {
         );
         assert_eq!(parsed.sink_failure, None);
         let fallback = element_by_id(&parsed.nodes, "fallback");
-        let noscript = child(&parsed.nodes, parent(&parsed.nodes, fallback), "noscript");
+        let noscript = parent(&parsed.nodes, fallback);
+        assert!(matches!(
+            &parsed.nodes[noscript].kind,
+            HtmlParsedNodeKind::Element { name, .. } if name == "noscript"
+        ));
         assert_eq!(child(&parsed.nodes, noscript, "p"), fallback);
     }
 

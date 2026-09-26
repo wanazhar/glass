@@ -3,9 +3,13 @@
 Status: The latest locally completed browser expansion is
 `native-engine-browser-746`; issue #40 remains open. Slice 746 moves initial
 navigation documents from the handwritten tree builder to `html5ever` through
-a Glass-owned `TreeSink`; fragment and XHR parser routes remain separate and
-full conformance is not claimed. Its local parser and process-backed
-navigation tests and documentation gates pass. Slice 745 adds an
+a Glass-owned `TreeSink`. Slice 747 also moves fragment commits and the
+same-turn projection to the bounded html5ever fragment algorithm; its code and
+focused tests are committed, with the live documentation inventory gate
+pending the `glass` CLI binary. The XHR HTML-document route remains on a
+separate handwritten parser. Full conformance is not claimed. Slice 746's
+local parser and process-backed navigation tests and documentation gates pass.
+Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and
 the Windows API block are locally checked; full Windows crate/runtime, remote
@@ -108,8 +112,8 @@ limit failure publishes a partial document. html5ever parse errors become a
 bounded sanitized `MalformedHtml` diagnostic. The parsed quirks mode is carried
 through content-process snapshots and exposed as `document.compatMode`.
 The initial standards route is intentionally allowed to differ from the
-hand-maintained fragment/XHR routes on malformed documents until those routes
-are migrated; the route-specific tests preserve that boundary rather than
+hand-maintained XHR HTML-document route on malformed documents until that route
+is migrated; route-specific tests preserve that boundary rather than
 normalizing standards output to the legacy tree. For example, `</p>` and
 `</br>` in column-group insertion mode are reprocessed through table rules,
 creating foster-parented HTML `<p>`/`<br>` nodes before the table; a later
@@ -128,6 +132,17 @@ tests, and process-backed HTTP regression pass. Release-truth, documentation
 depth, shortcut, and Markdown-link checks also pass. The full documentation
 inventory gate still needs the missing `glass` CLI binary; it has not been
 claimed as passed.
+
+Slice 748 is the active XHR HTML-document parser migration. The current
+`responseType="document"` HTML path is a separate handwritten parser; the
+target is the same bounded Glass-owned html5ever document sink used by
+navigation, with the XHR-required scripting-disabled setting. The result stays
+a detached read-only response document: it does not execute scripts or load
+resources. Preserve MIME selection, response URL, DOM namespaces, and the
+existing read-only surface. The current byte-to-string UTF-8 path, full
+template `DocumentFragment` exposure, and complete XHR/Web IDL semantics remain
+separate conformance work; see the
+[slice 748 task](../plan/tasks/native-engine-browser-748.md).
 
 The token-aware TreeSink bridge also preserves MathML `annotation-xml` as the
 HTML integration boundary during `</p>` and `</br>` foreign-content breakouts.
@@ -153,10 +168,11 @@ document source → html5ever tokenizer/tree builder → Glass TreeSink
 This slice does not finish the HTML platform. The current Glass DOM projection
 still flattens template contents into the template element, quirks mode does
 not yet alter CSS/layout, script-stream reentrancy remains incomplete, and XHR
-`responseType="document"` still uses its separate parser route. html5ever
+`responseType="document"` remains on its separate route until slice 748 is
+verified. html5ever
 documents remaining tree-builder differences; the pinned GCWP conformance
 corpus and explicit treatment of each failure are still promotion gates. See
-[slice 747](../plan/tasks/native-engine-browser-747.md).
+[slice 748](../plan/tasks/native-engine-browser-748.md).
 
 Earlier completed slices include
 `native-engine-browser-696` through

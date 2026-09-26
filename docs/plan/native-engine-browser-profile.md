@@ -89,6 +89,21 @@ It is never an implicit fallback for a native request.
 | `accessibility` | semantic and assistive surface | roles, states, properties, name/description computation, focus, actions, and incremental updates for the declared DOM/layout surface | accessibility-tree differential fixtures and action/focus tests |
 | `glass-integration` | public Glass contract | stable backend capability profile, navigation, targets, DOM/AX/evidence, actions, key input, script/evaluate, waits/events, screenshots, contexts, storage, downloads/uploads, prompts, CLI, MCP, and TUI parity | all normal operations pass in native-only mode with no hidden CDP process/socket |
 
+### XHR document responses
+
+For a Window `XMLHttpRequest` whose response type is `document`, only an HTML
+or XML final MIME type produces a response `Document`. HTML bytes use the HTML
+parser with scripting disabled and a known definite encoding; XML uses the XML
+parser with scripting support disabled and returns null on a well-formedness
+or encoding failure. Parsed response documents do not load referenced
+resources or apply XSLT. See the [XHR document-response algorithm](https://xhr.spec.whatwg.org/#document-response).
+
+The current native HTML-response route receives a UTF-8-decoded string before
+tree construction. Replacing its HTML tree builder does not certify response
+charset selection or byte decoding; that remains part of the XHR/Encoding
+conformance gate. Worker-specific `responseType` behavior is also separate
+from the HTML document parser route.
+
 ### Synchronous JavaScript dialog contract
 
 The native page realm implements the HTML Standard's modal user-prompt

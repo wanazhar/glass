@@ -13427,6 +13427,79 @@ async fn native_external_blank_link_creates_popup_target() {
 }
 
 #[tokio::test]
+async fn native_content_process_keyboard_link_default_actions_open_blank_target() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("keyboard popup request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = match request.split_whitespace().nth(1) {
+                Some("/popup-parent") => {
+                    "<title>HTTP keyboard opener</title><a id='open' target='_blank' href='/popup-child'>Open popup</a><script>globalThis.cancelPopup = true; document.getElementById('open').addEventListener('click', event => { if (cancelPopup) event.preventDefault(); });</script>"
+                }
+                Some("/popup-child") => "<title>HTTP keyboard popup</title><p>keyboard popup</p>",
+                other => panic!("unexpected keyboard popup request path: {other:?}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/popup-parent")),
+    )
+    .await
+    .unwrap();
+    session
+        .script("document.getElementById('open').focus(); true")
+        .await
+        .unwrap();
+    let canceled = session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert!(canceled.accepted);
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 1);
+    assert_eq!(
+        session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+        format!("http://{address}/popup-parent")
+    );
+
+    session
+        .script("globalThis.cancelPopup = false; document.getElementById('open').focus(); true")
+        .await
+        .unwrap();
+    let opened = session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert!(opened.accepted);
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let opener = targets.iter().find(|target| target.active).unwrap();
+    assert_eq!(opener.url, format!("http://{address}/popup-parent"));
+    assert_eq!(opener.title, "HTTP keyboard opener");
+    let popup = targets.iter().find(|target| !target.active).unwrap();
+    assert_eq!(popup.url, format!("http://{address}/popup-child"));
+    assert_eq!(popup.title, "HTTP keyboard popup");
+    assert_eq!(popup.opener_id.as_deref(), Some("native-context"));
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_form_target_creates_popup_and_keeps_opener() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -13603,6 +13676,45 @@ async fn native_page_script_blank_target_link_creates_popup_target() {
             .title,
         "Script opener"
     );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_keyboard_link_default_actions_open_blank_target() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://keyboard-popup-parent",
+            "<title>Keyboard opener</title><a id='open' target='_blank' href='fixture://keyboard-popup-child'>Open popup</a>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://keyboard-popup-child",
+            "<title>Keyboard popup</title><p>keyboard popup</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://keyboard-popup-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+    session
+        .script("document.getElementById('open').focus(); true")
+        .await
+        .unwrap();
+
+    let outcome = session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert!(outcome.accepted);
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert!(targets[0].active);
+    assert_eq!(targets[0].url, "fixture://keyboard-popup-parent");
+    let popup = &targets[1];
+    assert!(!popup.active);
+    assert_eq!(popup.url, "fixture://keyboard-popup-child");
+    assert_eq!(popup.title, "Keyboard popup");
+    assert_eq!(popup.opener_id.as_deref(), Some("native-context"));
     session.close().await.unwrap();
 }
 
@@ -19827,7 +19939,7 @@ async fn native_direct_click_owns_external_link_navigation() {
 }
 
 #[tokio::test]
-async fn native_external_download_link_transfers_cross_origin_bytes() {
+async fn native_external_keyboard_link_default_actions_preserve_download() {
     let _guard = native_content_process_test_lock().lock().await;
     let start_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let start_address = start_listener.local_addr().unwrap();
@@ -19838,7 +19950,7 @@ async fn native_external_download_link_transfers_cross_origin_bytes() {
         let request = read_http_request(&mut stream).await;
         assert_eq!(request.split_whitespace().nth(1), Some("/start"));
         let body = format!(
-            "<title>Download</title><a id='file' href='http://{download_address}/asset.bin' download='report.bin'>Download</a>"
+            "<title>Download</title><a id='click-file' href='http://{download_address}/asset.bin' download='click-report.bin'>Click download</a><a id='keyboard-file' href='http://{download_address}/asset.bin' download='keyboard-report.bin'>Keyboard download</a>"
         );
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -19847,16 +19959,18 @@ async fn native_external_download_link_transfers_cross_origin_bytes() {
         stream.write_all(response.as_bytes()).await.unwrap();
     });
     let download_server = tokio::spawn(async move {
-        let (mut stream, _) = download_listener.accept().await.unwrap();
-        let request = read_http_request(&mut stream).await;
-        assert_eq!(request.split_whitespace().nth(1), Some("/asset.bin"));
-        let body = b"native-download-bytes";
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        stream.write_all(response.as_bytes()).await.unwrap();
-        stream.write_all(body).await.unwrap();
+        for _ in 0..2 {
+            let (mut stream, _) = download_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some("/asset.bin"));
+            let body = b"native-download-bytes";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+        }
     });
 
     let mut engine = NativeEngine::new(
@@ -19867,7 +19981,7 @@ async fn native_external_download_link_transfers_cross_origin_bytes() {
     let initial_revision = engine.revision();
     engine
         .action_async(NativeAction::Click {
-            target: "id=file".into(),
+            target: "id=click-file".into(),
         })
         .await
         .unwrap();
@@ -19876,8 +19990,22 @@ async fn native_external_download_link_transfers_cross_origin_bytes() {
         engine.snapshot().unwrap().url,
         format!("http://{start_address}/start")
     );
+    engine
+        .evaluate_async("document.getElementById('keyboard-file').focus()")
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        format!("http://{start_address}/start")
+    );
     let queued = engine.download_ids().unwrap();
-    assert_eq!(queued, vec!["native-download-1"]);
+    assert_eq!(queued, vec!["native-download-1", "native-download-2"]);
 
     let download_directory = std::env::temp_dir().join(format!(
         "glass-native-download-{}-{}",
@@ -19893,7 +20021,7 @@ async fn native_external_download_link_transfers_cross_origin_bytes() {
         .await
         .unwrap();
     assert_eq!(outcome.guid, "native-download-1");
-    assert_eq!(outcome.suggested_filename, "report.bin");
+    assert_eq!(outcome.suggested_filename, "click-report.bin");
     assert_eq!(outcome.state, "completed");
     assert_eq!(
         outcome.received_bytes,
@@ -19901,11 +20029,29 @@ async fn native_external_download_link_transfers_cross_origin_bytes() {
     );
     assert!(outcome.sha256.is_some());
     assert_eq!(
-        fs::read(download_directory.join("report.bin")).unwrap(),
+        fs::read(download_directory.join("click-report.bin")).unwrap(),
         b"native-download-bytes"
     );
-    assert_eq!(engine.completed_download_count().unwrap(), 1);
-    assert_eq!(engine.download_ids().unwrap(), vec!["native-download-1"]);
+    let keyboard_outcome = engine
+        .wait_for_download_async(&download_directory, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(keyboard_outcome.guid, "native-download-2");
+    assert_eq!(keyboard_outcome.suggested_filename, "keyboard-report.bin");
+    assert_eq!(keyboard_outcome.state, "completed");
+    assert_eq!(
+        keyboard_outcome.received_bytes,
+        b"native-download-bytes".len() as u64
+    );
+    assert_eq!(
+        fs::read(download_directory.join("keyboard-report.bin")).unwrap(),
+        b"native-download-bytes"
+    );
+    assert_eq!(engine.completed_download_count().unwrap(), 2);
+    assert_eq!(
+        engine.download_ids().unwrap(),
+        vec!["native-download-1", "native-download-2"]
+    );
     engine.close_async().await.unwrap();
     fs::remove_dir_all(&download_directory).unwrap();
     start_server.await.unwrap();

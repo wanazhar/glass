@@ -307,6 +307,15 @@ order, fallback, worker survival, and a later healthy controlled fetch. This
 focused slice does not establish complete Service Worker Fetch or WPT
 conformance; see the [slice 796 task](tasks/native-engine-browser-796.md).
 
+Slice 797 reports registered Service Worker `install` and `activate` callback
+exceptions at the worker global, continues later listeners, and leaves
+`waitUntil()` settlement responsible for lifecycle success or failure. Its
+process-backed HTTP regression checks global error-event state/order, both
+fulfilled lifecycle actions, activation and control, and absence of page error
+events. It does not add `oninstall`/`onactivate` handler attributes or certify
+rejected-lifetime, full lifecycle, or WPT conformance; see the
+[slice 797 task](tasks/native-engine-browser-797.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

@@ -3731,6 +3731,17 @@ event. Existing async response/body regressions pass; complete Service Worker
 Fetch and WPT conformance remain open. See
 [task 796](../plan/tasks/native-engine-browser-796.md).
 
+Slice 797 reports synchronous exceptions from registered Service Worker
+`install` and `activate` listeners at ServiceWorkerGlobalScope and continues
+later callbacks. The process-backed registration regression verifies exact-
+`true` cancellation for an Error and an uncanceled primitive error, report
+ordering/state, fulfilled `waitUntil(skipWaiting())` and
+`waitUntil(clients.claim())`, activation, page control, and absence of client
+error events. The lifecycle dispatch still settles from its existing
+`Promise.all(waitUntilPromises)` path; event-handler attributes and rejected
+lifecycle-promise certification remain separate. See
+[task 797](../plan/tasks/native-engine-browser-797.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

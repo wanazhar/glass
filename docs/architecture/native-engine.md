@@ -5288,6 +5288,21 @@ the command-state persistence boundary. See
 This is not full focus-chain, shadow-scope, inertness, keyboard, WPT, platform,
 or remote-CI conformance.
 
+### Light-DOM inert focus (slice 776)
+
+Native focus checks the candidate and its DOM ancestors for the no-namespace
+`inert` attribute. The shared `HTMLElement.inert` property reflects that
+boolean attribute, so script property writes use the normal Rust-owned
+attribute command and are visible to the next sequential/programmatic focus
+operation. Local JavaScript focus projections suppress event delivery before
+they could optimistically focus an inert descendant; the Rust owner performs
+the same check, including image-map DOM anchors. Local and HTTP(S)
+same-origin-frame process-backed tests cover reflection, inherited inertness,
+dynamic changes, and focus order. This is not full flattened-tree or
+modal-dialog inertness, nor the pointer, editing, selection, find-in-page, or
+accessibility behavior of inert subtrees. See
+[`native-engine-browser-776`](../plan/tasks/native-engine-browser-776.md).
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

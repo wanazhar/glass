@@ -31992,6 +31992,16 @@ fn document_bootstrap(
   const nativeFormAssociatedDisabledForFocus = (element) =>
     nativeFormAssociatedDisabledStatesForFocus instanceof WeakMap
       && nativeFormAssociatedDisabledStatesForFocus.get(element) === true;
+  const nativeInertForFocus = (element) => {{
+    let current = element;
+    while (current) {{
+      if (typeof current.hasAttribute === "function" && current.hasAttribute("inert")) {{
+        return true;
+      }}
+      current = current.parentElement;
+    }}
+    return false;
+  }};
   const timers = globalThis.__glassTimers instanceof Map
     ? globalThis.__glassTimers
     : new Map();
@@ -38350,6 +38360,7 @@ fn document_bootstrap(
     installTabIndexProperty(element);
     for (const [property, attribute] of [
       ["disabled", "disabled"], ["hidden", "hidden"], ["multiple", "multiple"],
+      ["inert", "inert"],
       ["required", "required"], ["readOnly", "readonly"], ["autofocus", "autofocus"],
       ["open", "open"], ["controls", "controls"], ["loop", "loop"],
       ["muted", "muted"], ["autoplay", "autoplay"], ["reversed", "reversed"],
@@ -39454,7 +39465,8 @@ fn document_bootstrap(
         return dispatchTarget(this, event);
       }},
       focus() {{
-        if (this.disabled || this.hidden || nativeFormAssociatedDisabledForFocus(this)) return;
+        if (this.disabled || this.hidden || nativeFormAssociatedDisabledForFocus(this)
+            || nativeInertForFocus(this)) return;
         setLocalFocus(this);
       }},
       blur() {{
@@ -48023,7 +48035,8 @@ fn document_bootstrap(
             tokens.every((token) => String(candidate.className).split(/\s+/).includes(token))));
         }},
         focus() {{
-          if (this.disabled || this.hidden || nativeFormAssociatedDisabledForFocus(this)) return;
+          if (this.disabled || this.hidden || nativeFormAssociatedDisabledForFocus(this)
+              || nativeInertForFocus(this)) return;
           dispatchTarget(this, createEvent("focus"));
           queueFrameCommand(currentBinding, {{ kind: "focus", node_index: entry.nodeIndex }});
         }},

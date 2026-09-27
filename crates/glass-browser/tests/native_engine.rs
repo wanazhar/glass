@@ -10140,6 +10140,141 @@ async fn native_content_process_shared_worker_reuses_named_runtime_and_ports() {
 }
 
 #[tokio::test]
+async fn native_content_process_reports_shared_worker_connect_callback_errors_at_global() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let page = r#"<script>
+globalThis.sharedEvents = [];
+globalThis.ownerErrors = [];
+const connectShared = () => {
+  const worker = new SharedWorker('/shared-connect-errors.js', { name: 'glass-shared-connect-errors' });
+  worker.onerror = event => ownerErrors.push('handler:' + event.message);
+  worker.addEventListener('error', event => ownerErrors.push('listener:' + event.message));
+  worker.port.onmessage = event => sharedEvents.push(event.data);
+  worker.port.start();
+  return worker;
+};
+globalThis.shared = connectShared();
+globalThis.sharedAgain = connectShared();
+</script><main>shared worker connect errors</main>"#;
+    let worker_script = r#"let connection = 0;
+let reportStart = 0;
+const reports = [];
+onerror = (message, filename, line, column, error) => {
+  const cancel = message === 'onconnect failure';
+  reports.push({ phase: 'onerror', message, filename, line, column, errorIsError: error instanceof Error, cancel });
+  return cancel;
+};
+addEventListener('error', event => reports.push({
+  phase: 'error-listener', message: event.message, defaultPrevented: event.defaultPrevented,
+  cancelable: event.cancelable, targetIsGlobal: event.target === globalThis,
+  currentTargetIsGlobal: event.currentTarget === globalThis,
+}));
+onconnect = () => {
+  connection += 1;
+  reportStart = reports.length;
+  if (connection === 1) throw new Error('onconnect failure');
+};
+addEventListener('connect', () => {
+  if (connection === 2) throw 'connect listener failure';
+});
+addEventListener('connect', event => {
+  const port = event.ports[0];
+  port.start();
+  port.postMessage({
+    kind: 'connected', connection, connectDefaultPrevented: event.defaultPrevented,
+    reports: reports.slice(reportStart),
+  });
+});"#;
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            ("/shared-page", "text/html", page),
+            (
+                "/shared-connect-errors.js",
+                "text/javascript",
+                worker_script,
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/shared-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let worker_url = format!("http://{address}/shared-connect-errors.js");
+    assert_eq!(
+        engine.evaluate_async("sharedEvents").await.unwrap(),
+        serde_json::json!([
+            {
+                "kind": "connected",
+                "connection": 1,
+                "connectDefaultPrevented": false,
+                "reports": [
+                    {
+                        "phase": "onerror",
+                        "message": "onconnect failure",
+                        "filename": worker_url,
+                        "line": 0,
+                        "column": 0,
+                        "errorIsError": true,
+                        "cancel": true,
+                    },
+                    {
+                        "phase": "error-listener",
+                        "message": "onconnect failure",
+                        "defaultPrevented": true,
+                        "cancelable": true,
+                        "targetIsGlobal": true,
+                        "currentTargetIsGlobal": true,
+                    },
+                ],
+            },
+            {
+                "kind": "connected",
+                "connection": 2,
+                "connectDefaultPrevented": false,
+                "reports": [
+                    {
+                        "phase": "onerror",
+                        "message": "connect listener failure",
+                        "filename": worker_url,
+                        "line": 0,
+                        "column": 0,
+                        "errorIsError": false,
+                        "cancel": false,
+                    },
+                    {
+                        "phase": "error-listener",
+                        "message": "connect listener failure",
+                        "defaultPrevented": false,
+                        "cancelable": true,
+                        "targetIsGlobal": true,
+                        "currentTargetIsGlobal": true,
+                    },
+                ],
+            },
+        ])
+    );
+    assert_eq!(
+        engine.evaluate_async("ownerErrors").await.unwrap(),
+        serde_json::json!([])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_shared_worker_reuses_named_runtime_and_ports() {
     let config = NativeEngineConfig::default()
         .with_fixture(

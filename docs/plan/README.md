@@ -216,6 +216,12 @@ SharedWorker and Service Worker port paths and regular transfer regressions
 also pass. Page, BroadcastChannel, and generic scheduler behavior did not
 change; complete worker/WPT conformance remains open. See the
 [slice 793 task](tasks/native-engine-browser-793.md).
+Slice 794 is scoped to Service Worker MessagePort callback exceptions. It will
+report these failures at the Service Worker global, keep them from being
+forwarded to page clients, and verify that later listeners, replies, and the
+worker remain available. DedicatedWorker, SharedWorker, page, BroadcastChannel,
+and general scheduler behavior remain unchanged. See the
+[slice 794 contract](tasks/native-engine-browser-794.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

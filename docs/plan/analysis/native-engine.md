@@ -3725,6 +3725,17 @@ healthy fetch. Existing asynchronous response regressions pass. This does not
 claim full Service Worker Fetch or WPT conformance; see
 [task 796](../tasks/native-engine-browser-796.md).
 
+Slice 797 reports each synchronous exception from a registered Service Worker
+`install` or `activate` callback at the worker global, then continues listener
+dispatch. It does not turn callback errors into lifecycle-promise rejection:
+the existing `Promise.all(waitUntilPromises)` settlement still controls the
+transition. The process-backed HTTP regression observes global report order
+and cancellation state, later listener execution, fulfilled `skipWaiting()`
+and `clients.claim()`, active state, page control, and no client error event.
+Event-handler attributes, rejected-lifetime certification, complete lifecycle
+semantics, and WPT conformance remain open; see
+[task 797](../tasks/native-engine-browser-797.md).
+
 Slice 793 installs the dedicated-owner forwarding mode of the worker error
 reporter for native MessagePorts in DedicatedWorker realms. The process-backed
 transferred-port test covers exact-`true` global cancellation, one uncanceled

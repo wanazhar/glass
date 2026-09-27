@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-797
 scope: glass-browser/service-worker-install-activate-callback-errors
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-796]
 ---
 
@@ -89,7 +89,34 @@ changing lifecycle success/failure decisions made by `waitUntil()` promises.
 
 ## Implementation and verification
 
-Commit this contract before implementation. Record the exact process-backed
-regression and scoped local verification commands here after implementation.
-Remote CI and complete Service Worker lifecycle/WPT conformance remain issue
-#40 gates.
+Contract checkpoint: `423adf1c`; implementation and process-backed regression:
+`378e6222`.
+
+The lifecycle dispatcher now catches each registered callback's synchronous
+exception independently and reports it via
+`reportWorkerCallbackException(error, false)`. It continues the callback
+snapshot and leaves its original `Promise.all(waitUntilPromises)` settlement
+unchanged: a fulfilled wait still permits the transition, while a rejected
+wait remains a lifecycle rejection. No dedicated regression for rejected
+`waitUntil()` was added in this slice; the settlement implementation itself
+was not modified.
+
+The process-backed HTTP regression
+`native_content_process_service_worker_lifecycle_callback_errors_continue`
+registers an install listener that throws an `Error` handled by exact-`true`
+global `onerror`, followed by a listener using `waitUntil(skipWaiting())`. Its
+activate listener throws an uncanceled primitive, followed by a listener using
+`waitUntil(clients.claim())`. The page receives snapshots proving report order,
+global ErrorEvent state, continued dispatch, activated state, controller
+ownership, and no page error event.
+
+Passed locally:
+
+- `cargo check -p glass-browser --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine --locked native_content_process_service_worker_lifecycle_callback_errors_continue -- --exact` (1 passed).
+- Direct regressions from `target/debug/deps/native_engine-d4489efcb3153c24`: `native_content_process_service_worker_message_callback_errors_stay_global` and `native_content_process_service_worker_fetch_callback_errors_continue_and_fallback` (1 passed each).
+- `cargo fmt --all -- --check` and `git diff --check`.
+
+The integration target emits existing native-DOM dead-code warnings. Remote CI
+and complete Service Worker lifecycle, rejected-lifetime regression coverage,
+cross-platform certification, and WPT conformance remain issue #40 gates.

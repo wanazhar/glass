@@ -8955,14 +8955,14 @@ impl NativeDocument {
 
     pub(crate) fn link_href(&self, id: NativeNodeId) -> Option<&str> {
         let node = self.node(id)?;
-        (node.element_name() == Some("a") && self.semantic_role(id) == Some("link"))
+        (node.element_name() == Some("a"))
             .then(|| node.attribute("href"))
             .flatten()
     }
 
     pub(crate) fn link_download_attribute(&self, id: NativeNodeId) -> Option<&str> {
         let node = self.node(id)?;
-        if node.element_name() != Some("a") || self.semantic_role(id) != Some("link") {
+        if node.element_name() != Some("a") || node.attribute("href").is_none() {
             return None;
         }
         let attributes = node.attributes()?;
@@ -8982,7 +8982,7 @@ impl NativeDocument {
             return false;
         };
         node.element_name() == Some("a")
-            && self.semantic_role(id) == Some("link")
+            && node.attribute("href").is_some()
             && node
                 .attribute("target")
                 .is_some_and(|target| target.trim().eq_ignore_ascii_case("_blank"))
@@ -9190,6 +9190,13 @@ impl NativeDocument {
             }),
             _ => false,
         }
+    }
+
+    pub(crate) fn has_native_keyboard_link_activation(&self, id: NativeNodeId) -> bool {
+        self.is_attached(id)
+            && self.node(id).is_some_and(|node| {
+                node.element_name() == Some("a") && node.attribute("href").is_some()
+            })
     }
 
     pub(crate) fn reset_form_controls(

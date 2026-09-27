@@ -28,7 +28,10 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is complete through
-`native-engine-browser-765`. Slices 758 and 759 implement the autonomous and
+`native-engine-browser-766`. Slice 766 implements native hyperlink Enter
+activation across local, process-backed, and same-origin frame paths; see the
+[slice 766 task](tasks/native-engine-browser-766.md) for local evidence and
+remaining boundaries. Slices 758 and 759 implement the autonomous and
 customized-built-in custom-element contracts for the currently mapped HTML
 interfaces. Slice 760 implements bounded `ElementInternals` form values and
 `FormData(form)` integration; slice 761 implements form-owner and disabled-

@@ -196,6 +196,12 @@ navigation evidence uses configured `fixture://` URLs and the existing
 HTTP(S) navigation or full keyboard conformance. See the
 [slice 762](tasks/native-engine-browser-762.md) and
 [slice 763](tasks/native-engine-browser-763.md) contracts.
+Slice 766 implements Enter activation for focused native `<a href>` hyperlinks
+through the existing click and navigation owners in local, process-backed, and
+same-origin frame paths. Regressions cover cancellation, live post-click
+`href`, event order, and Space non-activation. The profile remains unsatisfied
+for link modifier gestures, image-map areas, complete keyboard conformance, and
+the broader Core Web Profile; see the [slice 766 task](tasks/native-engine-browser-766.md).
 Slice 764 implements keyboard activation for focused native button controls
 in process-backed network documents: Enter activates on keydown and Space on
 keyup after an uncanceled keydown. The shared click/default path handles reset

@@ -67,6 +67,7 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -1007,6 +1008,74 @@ pub(crate) struct NativeScriptEvaluation {
     pub(crate) value: serde_json::Value,
     pub(crate) commands: Vec<NativeScriptCommand>,
     pub(crate) top_level_await_pending: bool,
+    pub(crate) worker_script_error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct NativeWorkerScriptErrorReport {
+    handled: bool,
+    message: String,
+}
+
+enum NativeClassicWorkerScriptExecution<'js> {
+    Completed,
+    RuntimeError(Value<'js>),
+}
+
+fn execute_classic_worker_script<'js>(
+    ctx: Ctx<'js>,
+    source: &str,
+    worker_url: &str,
+) -> Result<NativeClassicWorkerScriptExecution<'js>, NativeEngineError> {
+    let filename = CString::new(worker_url).map_err(|_| NativeEngineError::Worker {
+        operation: "compile native Worker script".into(),
+        reason: "native Worker URL contained a null byte".into(),
+    })?;
+    let raw_context = ctx.as_raw().as_ptr();
+    let source = CString::new(source).map_err(|_| NativeEngineError::Worker {
+        operation: "compile native Worker script".into(),
+        reason: "native Worker script source contained a null byte".into(),
+    })?;
+    let source_len = rquickjs::qjs::size_t::try_from(source.as_bytes().len()).map_err(|_| {
+        NativeEngineError::limit(
+            "native Worker script source",
+            MAX_NATIVE_SCRIPT_BYTES,
+            source.as_bytes().len(),
+        )
+    })?;
+    // SAFETY: the context is live for the duration of the call, both input
+    // buffers remain valid, and the source is NUL-terminated just as it is in
+    // rquickjs-core's eval_raw wrapper. The explicit source length excludes
+    // that terminator and bounds the read.
+    // Compile-only returns an owned bytecode value for JS_EvalFunction.
+    let bytecode = unsafe {
+        rquickjs::qjs::JS_Eval(
+            raw_context,
+            source.as_ptr(),
+            source_len,
+            filename.as_ptr(),
+            (rquickjs::qjs::JS_EVAL_TYPE_GLOBAL | rquickjs::qjs::JS_EVAL_FLAG_COMPILE_ONLY) as i32,
+        )
+    };
+    if bytecode.tag == rquickjs::qjs::JS_TAG_EXCEPTION as i64 {
+        let reason = CaughtError::from_error(&ctx, Error::Exception);
+        return Err(NativeEngineError::Worker {
+            operation: "compile native Worker script".into(),
+            reason: format!("native Worker script compilation failed: {reason}"),
+        });
+    }
+    // SAFETY: bytecode is the owned global-script result produced above, and
+    // JS_EvalFunction consumes it exactly once. The context remains live.
+    let result = unsafe { rquickjs::qjs::JS_EvalFunction(raw_context, bytecode) };
+    if result.tag == rquickjs::qjs::JS_TAG_EXCEPTION as i64 {
+        return Ok(NativeClassicWorkerScriptExecution::RuntimeError(
+            ctx.catch(),
+        ));
+    }
+    // SAFETY: successful JS_EvalFunction returns an owned JS value associated
+    // with this live context; the worker script's completion value is ignored.
+    unsafe { rquickjs::qjs::JS_FreeValue(raw_context, result) };
+    Ok(NativeClassicWorkerScriptExecution::Completed)
 }
 
 /// A same-origin DOM operation emitted by one page realm for a different
@@ -2224,6 +2293,7 @@ impl NativeWorkerRegistry {
                     evaluation_count,
                 ));
             }
+            let worker_script_error = evaluation.worker_script_error;
             let mut closed = false;
             let message_port_commands = self
                 .workers
@@ -2372,6 +2442,15 @@ impl NativeWorkerRegistry {
                         ));
                     }
                 }
+            }
+            if let Some(error) = worker_script_error {
+                self.queue_message(NativeWorkerMessage {
+                    worker_id: current_worker_id,
+                    data: serde_json::Value::Null,
+                    error: Some(error),
+                    transfer_ports: Vec::new(),
+                    object_urls: Vec::new(),
+                })?;
             }
             if closed {
                 self.workers.remove(&current_worker_id);
@@ -14781,6 +14860,7 @@ impl NativeJavaScriptRuntime {
                     value: serde_json::Value::Null,
                     commands,
                     top_level_await_pending,
+                    worker_script_error: None,
                 });
             };
             let json = json.to_string().map_err(|_| NativeEngineError::Worker {
@@ -14810,6 +14890,7 @@ impl NativeJavaScriptRuntime {
                 value: result,
                 commands,
                 top_level_await_pending,
+                worker_script_error: None,
             })
         });
         if let Ok(mut current) = self.deadline.lock() {
@@ -14850,7 +14931,16 @@ impl NativeJavaScriptRuntime {
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         self.set_dynamic_module_imports_enabled(true)?;
         self.register_dynamic_import_referrer(worker_url)?;
-        self.evaluate_worker_source(worker_id, worker_url, None, source, import_script_counts)
+        let bootstrap = worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            import_script_counts,
+            false,
+        )?;
+        self.evaluate_worker_source_with_bootstrap_and_event_impl(
+            worker_id, worker_url, None, source, bootstrap, false, false, None, true,
+        )
     }
 
     /// Evaluate one module dedicated-worker turn using the prefetched module
@@ -15093,6 +15183,32 @@ impl NativeJavaScriptRuntime {
         await_promise: bool,
         dispatch: Option<NativeWorkerDispatch<'_>>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        self.evaluate_worker_source_with_bootstrap_and_event_impl(
+            worker_id,
+            worker_url,
+            module_name,
+            source,
+            bootstrap,
+            service_worker,
+            await_promise,
+            dispatch,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_worker_source_with_bootstrap_and_event_impl(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        module_name: Option<&str>,
+        source: &str,
+        bootstrap: String,
+        service_worker: bool,
+        await_promise: bool,
+        dispatch: Option<NativeWorkerDispatch<'_>>,
+        capture_classic_worker_error: bool,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if worker_id == 0 {
             return Err(NativeEngineError::invalid(
                 "native Worker id",
@@ -15121,6 +15237,7 @@ impl NativeJavaScriptRuntime {
         if let Ok(mut current) = self.deadline.lock() {
             *current = Some(deadline);
         }
+        let mut worker_script_error = None;
         let result = self.context.with(|ctx| {
             install_native_crypto_sources(ctx.clone())?;
             install_native_sync_xhr_source(
@@ -15247,6 +15364,61 @@ impl NativeJavaScriptRuntime {
                             CaughtError::from_error(&ctx, error)
                         ),
                     })?
+            } else if capture_classic_worker_error && !service_worker {
+                match execute_classic_worker_script(ctx.clone(), source, worker_url)? {
+                    NativeClassicWorkerScriptExecution::Completed => {
+                        ctx.eval::<Value, _>("undefined").map_err(|error| {
+                            NativeEngineError::Worker {
+                                operation: "serialize native Worker result".into(),
+                                reason: format!(
+                                    "native Worker result could not be created: {}",
+                                    CaughtError::from_error(&ctx, error)
+                                ),
+                            }
+                        })?
+                    }
+                    NativeClassicWorkerScriptExecution::RuntimeError(exception) => {
+                        let reporter: Function = ctx
+                            .globals()
+                            .get("__glassReportWorkerScriptError")
+                            .map_err(|error| NativeEngineError::Worker {
+                                operation: "report native Worker script error".into(),
+                                reason: format!(
+                                    "native Worker error reporter was unavailable: {}",
+                                    CaughtError::from_error(&ctx, error)
+                                ),
+                            })?;
+                        let report_json: String = reporter
+                            .call((exception,))
+                            .map_err(|error| NativeEngineError::Worker {
+                                operation: "report native Worker script error".into(),
+                                reason: format!(
+                                    "native Worker error event could not be dispatched: {}",
+                                    CaughtError::from_error(&ctx, error)
+                                ),
+                            })?;
+                        let report: NativeWorkerScriptErrorReport =
+                            serde_json::from_str(&report_json).map_err(|_| {
+                                NativeEngineError::Worker {
+                                    operation: "report native Worker script error".into(),
+                                    reason: "native Worker error reporter returned invalid data"
+                                        .into(),
+                                }
+                            })?;
+                        if !report.handled {
+                            worker_script_error = Some(report.message);
+                        }
+                        ctx.eval::<Value, _>("undefined").map_err(|error| {
+                            NativeEngineError::Worker {
+                                operation: "serialize native Worker result".into(),
+                                reason: format!(
+                                    "native Worker result could not be created: {}",
+                                    CaughtError::from_error(&ctx, error)
+                                ),
+                            }
+                        })?
+                    }
+                }
             } else {
                 ctx.eval(source)
                     .map_err(|error| NativeEngineError::Worker {
@@ -15411,6 +15583,7 @@ impl NativeJavaScriptRuntime {
                 value,
                 commands: worker_commands,
                 top_level_await_pending,
+                worker_script_error,
             })
         });
         if let Ok(mut current) = self.deadline.lock() {
@@ -16114,6 +16287,7 @@ impl NativeJavaScriptRuntime {
                 value: serde_json::Value::Null,
                 commands: document_commands,
                 top_level_await_pending: false,
+                worker_script_error: None,
             })
         });
         if let Ok(mut current) = self.deadline.lock() {
@@ -22795,6 +22969,9 @@ fn worker_bootstrap(
   let onMessage = typeof globalThis.__glassWorkerOnMessage === "function"
     ? globalThis.__glassWorkerOnMessage
     : null;
+  let onError = typeof globalThis.__glassWorkerOnError === "function"
+    ? globalThis.__glassWorkerOnError
+    : null;
   let onConnect = typeof globalThis.__glassWorkerOnConnect === "function"
     ? globalThis.__glassWorkerOnConnect
     : null;
@@ -22802,6 +22979,7 @@ fn worker_bootstrap(
     ? globalThis.__glassWorkerOnSecurityPolicyViolation
     : null;
   let closed = globalThis.__glassWorkerClosed === true;
+  let workerErrorReporting = globalThis.__glassWorkerErrorReporting === true;
   const dispatch = (type, event) => {{
     const handler = type === "message"
       ? onMessage
@@ -27941,6 +28119,52 @@ fn worker_bootstrap(
     event.eventPhase = 0;
     return null;
   }};
+  globalThis.__glassReportWorkerScriptError = (error) => {{
+    let message;
+    try {{
+      message = error && (typeof error === "object" || typeof error === "function")
+        && "message" in error
+        ? String(error.message)
+        : String(error);
+    }} catch (_error) {{
+      message = "Script error.";
+    }}
+    message = Array.from(message).slice(0, 4096).join("");
+    if (workerErrorReporting) return JSON.stringify({{ handled: false, message }});
+    workerErrorReporting = true;
+    globalThis.__glassWorkerErrorReporting = true;
+    const event = new WorkerErrorEventNative("error", {{
+      message,
+      filename: workerUrl,
+      lineno: 0,
+      colno: 0,
+      error,
+      cancelable: true,
+    }});
+    event.target = globalThis;
+    event.currentTarget = globalThis;
+    event.eventPhase = 2;
+    try {{
+      const handler = onError;
+      if (typeof handler === "function") {{
+        let result;
+        try {{
+          result = handler.call(globalThis, event.message, event.filename, event.lineno, event.colno, event.error);
+        }} catch (_error) {{}}
+        if (result === true) event.defaultPrevented = true;
+      }}
+      const callbacks = listeners.get("error") || [];
+      for (const callback of callbacks.slice()) {{
+        try {{ callback.call(globalThis, event); }} catch (_error) {{}}
+      }}
+    }} finally {{
+      event.currentTarget = null;
+      event.eventPhase = 0;
+      workerErrorReporting = false;
+      globalThis.__glassWorkerErrorReporting = false;
+    }}
+    return JSON.stringify({{ handled: event.defaultPrevented, message: event.message }});
+  }};
   globalThis.__glassDispatchWorkerCspViolations = (violations) => {{
     if (!Array.isArray(violations)) throw new TypeError("native Worker CSP violations are invalid");
     return violations.map((descriptor) => {{
@@ -27972,14 +28196,22 @@ fn worker_bootstrap(
   }};
   globalThis.__glassWorkerListeners = listeners;
   globalThis.__glassWorkerOnMessage = onMessage;
+  globalThis.__glassWorkerOnError = onError;
   globalThis.__glassWorkerOnConnect = onConnect;
   globalThis.__glassWorkerOnSecurityPolicyViolation = onSecurityPolicyViolation;
+  globalThis.__glassWorkerErrorReporting = workerErrorReporting;
   globalThis.__glassHostCommands = commands;
   Object.defineProperty(globalThis, "onmessage", {{
     configurable: true,
     enumerable: true,
     get() {{ return onMessage; }},
     set(value) {{ onMessage = typeof value === "function" ? value : null; globalThis.__glassWorkerOnMessage = onMessage; }},
+  }});
+  Object.defineProperty(globalThis, "onerror", {{
+    configurable: true,
+    enumerable: true,
+    get() {{ return onError; }},
+    set(value) {{ onError = typeof value === "function" ? value : null; globalThis.__glassWorkerOnError = onError; }},
   }});
   Object.defineProperty(globalThis, "onconnect", {{
     configurable: true,
@@ -44905,7 +45137,10 @@ fn document_bootstrap(
   const workerDispatch = (worker, type, event) => {{
     const handler = worker["on" + type];
     if (typeof handler === "function") {{
-      try {{ handler.call(worker, event); }} catch (_error) {{}}
+      let result;
+      try {{ result = handler.call(worker, event); }} catch (_error) {{}}
+      if (type === "error" && event.cancelable === true && result === false)
+        event.defaultPrevented = true;
     }}
     const listeners = worker.__glassWorkerListeners[type] || [];
     for (const listener of listeners.slice()) {{
@@ -44919,17 +45154,26 @@ fn document_bootstrap(
     const worker = workers.get(Number(workerId)) || sharedWorkers.get(Number(workerId));
     if (!worker || worker.__glassTerminated || !payload || typeof payload !== "object") return null;
     if (payload.error !== undefined && payload.error !== null) {{
-      const error = {{
-        type: "error",
-        message: String(payload.error),
-        filename: worker.url,
-        lineno: 0,
-        colno: 0,
-        error: null,
-        target: worker,
-        currentTarget: worker,
-      }};
-      workerDispatch(worker, "error", error);
+      const ErrorEventConstructor = globalThis.__glassErrorEventConstructor || globalThis.ErrorEvent;
+      const errorEvent = typeof ErrorEventConstructor === "function"
+        ? new ErrorEventConstructor("error", {{
+            message: String(payload.error),
+            filename: worker.url,
+            lineno: 0,
+            colno: 0,
+            error: null,
+            cancelable: true,
+          }})
+        : Object.assign(createEvent("error", {{ cancelable: true }}), {{
+            message: String(payload.error), filename: worker.url,
+            lineno: 0, colno: 0, error: null,
+          }});
+      errorEvent.target = worker;
+      errorEvent.currentTarget = worker;
+      errorEvent.eventPhase = 2;
+      workerDispatch(worker, "error", errorEvent);
+      errorEvent.currentTarget = null;
+      errorEvent.eventPhase = 0;
     }} else {{
       if (Array.isArray(payload.object_urls))
         globalThis.__glassInstallObjectUrlTransfers(payload.object_urls);

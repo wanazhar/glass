@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-787
 scope: glass-browser/classic-dedicated-worker-startup-runtime-errors
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-786]
 ---
 
@@ -68,6 +68,8 @@ can still be processed.
 ## Paths
 
 - `crates/glass-browser/src/browser/native_engine/javascript.rs`
+- `crates/glass-browser/src/browser/native_engine/content_process.rs`
+- `crates/glass-browser/src/browser/native_engine/service_worker.rs`
 - `crates/glass-browser/tests/native_engine.rs`
 - `docs/architecture/native-engine.md`
 - `docs/plan/native-engine-browser-profile.md`
@@ -76,4 +78,24 @@ can still be processed.
 
 ## Verification
 
-Pending implementation and focused verification.
+Passed locally:
+
+- `rustfmt --edition 2024 --check crates/glass-browser/src/browser/native_engine/javascript.rs crates/glass-browser/src/browser/native_engine/content_process.rs crates/glass-browser/src/browser/native_engine/service_worker.rs crates/glass-browser/tests/native_engine.rs`
+- `cargo check -p glass-browser --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- --exact native_local_dedicated_worker_startup_errors_report_and_forward --test-threads=1`
+  (1 passed; verifies exact-true worker-global cancellation, uncanceled owner
+  forwarding and event order, later worker-message handling, and distinct
+  syntax-error reporting)
+- `python3 scripts/check-release-documentation.py --require-previous-version`
+  (1,415 Markdown documents; 0 current-claim failures)
+- `python3 scripts/check-documentation-depth.py`
+  (93 current guides routed/audited; 19 substantive contracts)
+- `python3 scripts/check-tui-shortcuts.py`
+  (15 implementation help keys; 63 documentation markers)
+- `python3 scripts/check-documentation-coverage.py`
+  (1,415 Markdown files; 346 MCP tools, 17 examples, 22 public modules)
+- `git diff --check`
+
+The scoped Cargo check/test pass with existing dead-code warnings in the
+native DOM module. Remote CI, full worker/WPT conformance, cross-platform
+certification, and issue #40 native-only production gates remain open.

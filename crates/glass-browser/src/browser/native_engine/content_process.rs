@@ -5779,6 +5779,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                         .chain(page_scripts.event_source_commands)
                                                         .collect(),
                                                     top_level_await_pending: false,
+                                                    worker_script_error: None,
                                                 },
                                             )
                                             .await;
@@ -6271,6 +6272,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         value,
                         commands,
                         top_level_await_pending,
+                        ..
                     }) if commands.is_empty()
                         && !top_level_await_pending
                         && websocket_connections.is_empty()
@@ -6289,6 +6291,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         value,
                         commands,
                         top_level_await_pending,
+                        ..
                     }) => {
                         let history = extract_history_commands(&commands);
                         if let Err(error) = apply_content_runtime_history(
@@ -6339,6 +6342,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 value: value.clone(),
                                 commands,
                                 top_level_await_pending,
+                                worker_script_error: None,
                             },
                         )
                         .await;

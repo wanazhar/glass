@@ -3669,8 +3669,10 @@ worker. Worker and service-worker root requests use the `worker-src` fallback
 chain (`child-src`, `script-src`, then `default-src`); `importScripts()` and
 worker module dependencies use the worker's script-source policy instead.
 Report-only records name the effective directive without changing the load
-decision. This bounded correction does not claim complete CSP or WPT
-conformance; see [task 790](../plan/tasks/native-engine-browser-790.md).
+decision. A blocked Service Worker registration/update rejects its API promise
+without terminating the page content process; failed updates retain the
+installed registration. This bounded correction does not claim complete CSP
+or WPT conformance; see [task 790](../plan/tasks/native-engine-browser-790.md).
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader

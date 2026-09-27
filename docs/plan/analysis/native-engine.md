@@ -3671,9 +3671,11 @@ evidence are recorded in
 Slice 790 separates CSP request destinations: worker creation checks
 `worker-src` → `child-src` → `script-src` → `default-src`, while classic
 `importScripts()` and worker module dependencies use the active worker's
-script-source policy. Report-only violations retain the selected directive
-and remain non-blocking. Full CSP source matching, policy inheritance, and
-WPT conformance remain open. See
+script-source policy. A blocked Service Worker registration or update rejects
+its API promise instead of terminating the page process, and a failed update
+retains its existing registration. Report-only violations retain the selected
+directive and remain non-blocking. Full CSP source matching, policy
+inheritance, and WPT conformance remain open. See
 [task 790](../plan/tasks/native-engine-browser-790.md).
 
 The completed

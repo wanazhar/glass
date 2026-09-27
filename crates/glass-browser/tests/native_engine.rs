@@ -11191,7 +11191,7 @@ async fn native_content_process_beforeunload_waits_for_exact_user_decision() {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let request = read_http_request(&mut stream).await;
                 assert_eq!(request.split_whitespace().nth(1), Some("/start"));
-                let body = "<script>addEventListener('beforeunload', event => { event.preventDefault(); event.returnValue = 'site-authored warning'; globalThis.warningRan = 'yes'; }); addEventListener('pagehide', () => globalThis.pagehideRan = 'yes'); addEventListener('unload', () => globalThis.unloadRan = 'yes');</script><button id='activate'>Activate</button><title>Start</title>";
+                let body = "<script>addEventListener('pagehide', () => globalThis.pagehideRan = 'yes'); addEventListener('unload', () => globalThis.unloadRan = 'yes');</script><button id='activate'>Activate</button><title>Start</title>";
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
@@ -11226,6 +11226,28 @@ async fn native_content_process_beforeunload_waits_for_exact_user_decision() {
                 })
                 .await
                 .unwrap();
+            assert_eq!(
+                session
+                    .script(native_beforeunload_return_semantics_script())
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!([
+                    [false, true, true, "42", true],
+                    [true, true, true, "", false],
+                    [true, true, true, "", false],
+                    [false, true, true, "", true],
+                    [false, true, true, "false", true],
+                    [false, true, true, "preserved", true],
+                    [false, true, true, "23", true],
+                    true,
+                    true,
+                    [false, true, true, "7", true],
+                    true,
+                    [true, false],
+                    [false, true],
+                ])
+            );
 
             let first_navigation_session = Arc::clone(&session);
             let first_navigation_url = format!("http://{address}/next");
@@ -70545,6 +70567,74 @@ fn native_window_onerror_return_semantics_script() -> &'static str {
       body.removeAttribute('onerror');
       window.onerror = null;
       return [specialCase, falseCase, plainCase, attributeCase];
+    })()"#
+}
+
+fn native_beforeunload_return_semantics_script() -> &'static str {
+    r#"(() => {
+      const observed = [];
+      const observer = event => observed.push(event);
+      window.addEventListener('beforeunload', observer);
+      const dispatchHost = () => {
+        const result = globalThis.__glassDispatchHostEvents([{
+          node_index: 4294967295,
+          type: 'beforeunload',
+          bubbles: false,
+          cancelable: true,
+        }])[0];
+        const event = observed.pop();
+        return [result, event instanceof BeforeUnloadEvent, event.cancelable,
+          event.returnValue, event.defaultPrevented];
+      };
+
+      window.onbeforeunload = function() {
+        globalThis.beforeUnloadHandlerThis = this === window;
+        return 42;
+      };
+      const numericReturn = dispatchHost();
+      window.onbeforeunload = () => null;
+      const nullReturn = dispatchHost();
+      window.onbeforeunload = () => undefined;
+      const undefinedReturn = dispatchHost();
+      window.onbeforeunload = () => '';
+      const emptyReturn = dispatchHost();
+      window.onbeforeunload = () => false;
+      const falseReturn = dispatchHost();
+      window.onbeforeunload = event => {
+        event.returnValue = 'preserved';
+        return 'replacement';
+      };
+      const preservedReturnValue = dispatchHost();
+      window.onbeforeunload = event => {
+        event.returnValue = 23;
+        return null;
+      };
+      const explicitlyConvertedReturnValue = dispatchHost();
+
+      window.onbeforeunload = () => 'not special for a plain Event';
+      const plainEvent = new Event('beforeunload', { cancelable: true });
+      const plainEventResult = window.dispatchEvent(plainEvent);
+      const plainEventCase = [plainEventResult, plainEvent.defaultPrevented];
+      window.onbeforeunload = () => false;
+      const plainFalseEvent = new Event('beforeunload', { cancelable: true });
+      const plainFalseResult = window.dispatchEvent(plainFalseEvent);
+      const plainFalseCase = [plainFalseResult, plainFalseEvent.defaultPrevented];
+
+      const body = document.body;
+      body.setAttribute('onbeforeunload',
+        'globalThis.beforeUnloadAttributeThis = this === window; return 7;');
+      const bodyAlias = body.onbeforeunload === window.onbeforeunload;
+      const bodyAttributeReturn = dispatchHost();
+      body.removeAttribute('onbeforeunload');
+      window.removeEventListener('beforeunload', observer);
+      window.onbeforeunload = function() {
+        globalThis.warningRan = 'yes';
+        return 'site-authored warning';
+      };
+      return [numericReturn, nullReturn, undefinedReturn, emptyReturn, falseReturn,
+        preservedReturnValue, explicitlyConvertedReturnValue,
+        globalThis.beforeUnloadHandlerThis, bodyAlias, bodyAttributeReturn,
+        globalThis.beforeUnloadAttributeThis, plainEventCase, plainFalseCase];
     })()"#
 }
 

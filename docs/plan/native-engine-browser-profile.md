@@ -161,8 +161,9 @@ against the element and exact source before the value is installed; a blocked
 replacement does not overwrite an active routed handler. Unchanged projected
 attributes do not reactivate the listener during snapshot refresh. Ordinary
 element content attributes remain element-owned. This does not complete
-inline-handler lexical environments, remaining `onerror`/`onbeforeunload`
-legacy behavior, CSP reporting, or event/WPT conformance; see the
+inline-handler lexical environments, CSP reporting, or event/WPT conformance;
+the separate Window `onerror` and typed `onbeforeunload` paths are recorded in
+slices 782 and 784 below. See the
 [slice 781 task](tasks/native-engine-browser-781.md).
 
 Generated script-report `ErrorEvent`s are cancelable. At Window, the special
@@ -170,8 +171,8 @@ five-argument `onerror` invocation applies only to `ErrorEvent` objects of
 type `error`; an exact `true` return sets cancellation, while a plain
 `Event("error")` uses the ordinary event argument. Local tests cover direct
 dispatch (including a non-cancelable synthetic `ErrorEvent`), a body handler
-alias, and uncaught script reports. General error-reporting policy and
-remaining `onbeforeunload` behavior are separate work. See the
+alias, and uncaught script reports. General error-reporting policy remains
+separate work. See the
 [slice 782 task](tasks/native-engine-browser-782.md).
 
 Ordinary event-handler callbacks in the shared DOM IDL and HTML
@@ -183,12 +184,15 @@ Worker-specific event dispatch wrappers remain separate work. See the
 
 Slice 784 implements the typed Window `onbeforeunload` return path on native
 `BeforeUnloadEvent`s: `null`/`undefined` do not cancel, other values are
-converted to `DOMString` and cancel, and the first returned string fills an
-empty `returnValue`. Explicit `returnValue` assignments use `DOMString`
-conversion. This feeds the already-existing host prompt gate without changing
-sticky-activation policy or exposing page-provided prompt text. Plain
-`Event("beforeunload")` does not take the special return path. Conversion
-exception reporting remains open; see the
+converted to `DOMString` and cancel, including an empty string, and the
+converted callback value fills `returnValue` only when it is empty. Explicit
+`returnValue` assignments use `DOMString` conversion. This feeds the
+already-existing host prompt gate without changing sticky-activation policy or
+exposing page-provided prompt text. Plain `Event("beforeunload")` keeps
+ordinary exact-`false` handler semantics rather than the special return path.
+The internal event brand survives document-script bootstrap refreshes so
+cached handlers work with newly created events. Conversion exception reporting
+remains open; see the
 [slice 784 task](tasks/native-engine-browser-784.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,

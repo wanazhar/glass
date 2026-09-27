@@ -147,7 +147,8 @@ tests cover both handler sources; see the
 [slice 783 task](tasks/native-engine-browser-783.md).
 Slice 784 connects Window `onbeforeunload`'s nullable-`DOMString` callback
 return and `BeforeUnloadEvent.returnValue` to the existing cancellation and
-prompt gate; it does not change prompt policy. See the
+prompt gate, including refresh-stable event branding and plain-Event behavior;
+local process-backed coverage retains the existing prompt policy. See the
 [slice 784 task](tasks/native-engine-browser-784.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the

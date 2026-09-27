@@ -10410,6 +10410,200 @@ addEventListener('message', event => {
 }
 
 #[tokio::test]
+async fn native_content_process_service_worker_message_callback_errors_stay_global() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let page = r#"<script>
+globalThis.swEvents = [];
+globalThis.clientErrors = [];
+navigator.serviceWorker.addEventListener('message', event => swEvents.push(event.data));
+navigator.serviceWorker.addEventListener('error', event => clientErrors.push(['container', event.message]));
+globalThis.registrationPromise = navigator.serviceWorker.register('/sw-global-message-errors.js', { scope: '/' });
+</script><main>service worker global message errors</main>"#;
+    let worker_script = r#"const trace = [];
+const reports = [];
+let traceStart = 0;
+let reportStart = 0;
+addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+onerror = (message, filename, line, column, error) => {
+  const cancel = message === 'handled service worker message error';
+  reports.push({ phase: 'onerror', message, cancel, errorIsError: error instanceof Error });
+  trace.push('global:onerror:' + message);
+  return cancel;
+};
+addEventListener('error', event => {
+  reports.push({
+    phase: 'error-listener', message: event.message, defaultPrevented: event.defaultPrevented,
+    cancelable: event.cancelable, targetIsGlobal: event.target === self,
+    currentTargetIsGlobal: event.currentTarget === self,
+  });
+  trace.push('global:error:' + event.message);
+});
+onmessage = event => {
+  const kind = event.data.kind;
+  traceStart = trace.length;
+  reportStart = reports.length;
+  trace.push('global:onmessage:' + kind);
+  if (kind === 'handled') throw new Error('handled service worker message error');
+};
+addEventListener('message', event => {
+  const kind = event.data.kind;
+  trace.push('message:listener-one:' + kind);
+  if (kind === 'unhandled') throw 'unhandled service worker message error';
+});
+addEventListener('message', async event => {
+  const kind = event.data.kind;
+  trace.push('message:listener-two:' + kind);
+  const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
+  const client = clients.find(candidate => candidate.url.endsWith('/service-global-message-errors'));
+  client?.postMessage({
+    kind: 'reply', request: kind,
+    trace: trace.slice(traceStart), reports: reports.slice(reportStart),
+  });
+});"#;
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            ("/service-global-message-errors", "text/html", page),
+            (
+                "/sw-global-message-errors.js",
+                "application/javascript",
+                worker_script,
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/service-global-message-errors")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(reg => { globalThis.activeServiceWorker = reg.active; reg.active.addEventListener('error', event => clientErrors.push(['service-worker', event.message])); return [reg.active.state, navigator.serviceWorker.controller !== null]; })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["activated", true])
+    );
+
+    for (kind, trace, reports) in [
+        (
+            "handled",
+            vec![
+                "global:onmessage:handled",
+                "global:onerror:handled service worker message error",
+                "global:error:handled service worker message error",
+                "message:listener-one:handled",
+                "message:listener-two:handled",
+            ],
+            serde_json::json!([
+                { "phase": "onerror", "message": "handled service worker message error", "cancel": true, "errorIsError": true },
+                {
+                    "phase": "error-listener", "message": "handled service worker message error",
+                    "defaultPrevented": true, "cancelable": true,
+                    "targetIsGlobal": true, "currentTargetIsGlobal": true,
+                },
+            ]),
+        ),
+        (
+            "unhandled",
+            vec![
+                "global:onmessage:unhandled",
+                "message:listener-one:unhandled",
+                "global:onerror:unhandled service worker message error",
+                "global:error:unhandled service worker message error",
+                "message:listener-two:unhandled",
+            ],
+            serde_json::json!([
+                { "phase": "onerror", "message": "unhandled service worker message error", "cancel": false, "errorIsError": false },
+                {
+                    "phase": "error-listener", "message": "unhandled service worker message error",
+                    "defaultPrevented": false, "cancelable": true,
+                    "targetIsGlobal": true, "currentTargetIsGlobal": true,
+                },
+            ]),
+        ),
+        (
+            "alive",
+            vec![
+                "global:onmessage:alive",
+                "message:listener-one:alive",
+                "message:listener-two:alive",
+            ],
+            serde_json::json!([]),
+        ),
+    ] {
+        assert_eq!(
+            engine
+                .evaluate_async(&format!(
+                    "navigator.serviceWorker.controller.postMessage({{ kind: '{kind}' }}); true"
+                ))
+                .await
+                .unwrap(),
+            serde_json::json!(true),
+        );
+        let mut response = None;
+        for _ in 0..8 {
+            let page_state = engine
+                .evaluate_async(
+                    "({ swEvents, clientErrors, workerState: activeServiceWorker.state })",
+                )
+                .await
+                .unwrap();
+            response = page_state["swEvents"]
+                .as_array()
+                .and_then(|events| {
+                    events
+                        .iter()
+                        .find(|event| event["request"] == serde_json::json!(kind))
+                })
+                .cloned();
+            if response.is_some() {
+                break;
+            }
+            engine
+                .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+                .await
+                .unwrap();
+        }
+        let response = response.expect("Service Worker client reply arrives in bounded page turns");
+        assert_eq!(
+            response,
+            serde_json::json!({
+                "kind": "reply", "request": kind, "trace": trace, "reports": reports,
+            }),
+            "Service Worker global callback recovery for {kind}",
+        );
+        let page_state = engine
+            .evaluate_async("({ swEvents, clientErrors, workerState: activeServiceWorker.state })")
+            .await
+            .unwrap();
+        assert_eq!(
+            page_state["swEvents"].as_array().unwrap().last(),
+            Some(&response)
+        );
+        assert_eq!(page_state["clientErrors"], serde_json::json!([]));
+        assert_eq!(page_state["workerState"], serde_json::json!("activated"));
+    }
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_service_worker_timer_on_next_page_turn() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

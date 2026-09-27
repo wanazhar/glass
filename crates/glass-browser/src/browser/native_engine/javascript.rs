@@ -1557,6 +1557,7 @@ impl NativeDedicatedWorker {
                 import_script_counts,
                 self.is_module,
                 true,
+                true,
                 false,
             )?
         };
@@ -15043,6 +15044,7 @@ impl NativeJavaScriptRuntime {
             import_script_counts,
             false,
             true,
+            true,
             false,
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event_impl(
@@ -15086,6 +15088,7 @@ impl NativeJavaScriptRuntime {
             worker_url,
             self.now_ms(),
             &BTreeMap::new(),
+            true,
             true,
             true,
             false,
@@ -15260,6 +15263,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             import_script_counts,
             module_name.is_some(),
+            true,
             true,
             false,
         )?;
@@ -23037,7 +23041,8 @@ fn worker_bootstrap(
     now_ms: u64,
     import_script_counts: &BTreeMap<String, usize>,
     is_module: bool,
-    capture_message_callback_errors: bool,
+    report_message_callback_errors: bool,
+    forward_message_callback_errors: bool,
     capture_connect_callback_errors: bool,
 ) -> Result<String, NativeEngineError> {
     let worker_url = serde_json::to_string(worker_url).map_err(|_| NativeEngineError::Worker {
@@ -23061,7 +23066,12 @@ fn worker_bootstrap(
         })?;
     let message_channel_script = message_channel_bootstrap();
     let is_module = if is_module { "true" } else { "false" };
-    let capture_message_callback_errors = if capture_message_callback_errors {
+    let report_message_callback_errors = if report_message_callback_errors {
+        "true"
+    } else {
+        "false"
+    };
+    let forward_message_callback_errors = if forward_message_callback_errors {
         "true"
     } else {
         "false"
@@ -23079,7 +23089,8 @@ fn worker_bootstrap(
   const initialImportScriptCounts = {import_script_counts};
   const initialWorkerCryptoBytes = {initial_random_bytes};
   const isModuleWorker = {is_module};
-  const captureMessageCallbackErrors = {capture_message_callback_errors};
+  const reportMessageCallbackErrors = {report_message_callback_errors};
+  const forwardMessageCallbackErrors = {forward_message_callback_errors};
   const captureConnectCallbackErrors = {capture_connect_callback_errors};
   globalThis.__glassWorkerId = workerId;
   globalThis.__glassMessageRealmKey = "worker:" + String(workerId);
@@ -23163,8 +23174,8 @@ fn worker_bootstrap(
     if (typeof handler === "function") {{
       let result;
       try {{ result = handler.call(globalThis, event); }} catch (error) {{
-        if (type === "message" && captureMessageCallbackErrors)
-          reportWorkerCallbackException(error, true);
+        if (type === "message" && reportMessageCallbackErrors)
+          reportWorkerCallbackException(error, forwardMessageCallbackErrors);
         else if (type === "connect" && captureConnectCallbackErrors)
           reportWorkerCallbackException(error, false);
       }}
@@ -23174,8 +23185,8 @@ fn worker_bootstrap(
     const callbacks = listeners.get(type) || [];
     for (const callback of callbacks.slice()) {{
       try {{ callback.call(globalThis, event); }} catch (error) {{
-        if (type === "message" && captureMessageCallbackErrors)
-          reportWorkerCallbackException(error, true);
+        if (type === "message" && reportMessageCallbackErrors)
+          reportWorkerCallbackException(error, forwardMessageCallbackErrors);
         else if (type === "connect" && captureConnectCallbackErrors)
           reportWorkerCallbackException(error, false);
       }}
@@ -28357,9 +28368,9 @@ fn worker_bootstrap(
       message: report.message,
     }});
   }};
-  if (captureMessageCallbackErrors || captureConnectCallbackErrors) {{
+  if (reportMessageCallbackErrors || captureConnectCallbackErrors) {{
     globalThis.__glassReportWorkerMessagePortCallbackException = (error) =>
-      reportWorkerCallbackException(error, captureMessageCallbackErrors);
+      reportWorkerCallbackException(error, forwardMessageCallbackErrors);
   }}
   globalThis.__glassDispatchWorkerCspViolations = (violations) => {{
     if (!Array.isArray(violations)) throw new TypeError("native Worker CSP violations are invalid");
@@ -28478,7 +28489,8 @@ fn worker_bootstrap(
         initial_random_bytes = initial_random_bytes,
         now_ms = now_ms,
         import_script_counts = import_script_counts,
-        capture_message_callback_errors = capture_message_callback_errors,
+        report_message_callback_errors = report_message_callback_errors,
+        forward_message_callback_errors = forward_message_callback_errors,
         capture_connect_callback_errors = capture_connect_callback_errors,
         message_channel_script = message_channel_script,
     );
@@ -28499,6 +28511,7 @@ fn service_worker_bootstrap(
         now_ms,
         import_script_counts,
         is_module,
+        true,
         false,
         false,
     )?;
@@ -28526,6 +28539,7 @@ fn shared_worker_bootstrap(
         now_ms,
         import_script_counts,
         is_module,
+        false,
         false,
         true,
     )?;

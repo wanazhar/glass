@@ -5303,6 +5303,22 @@ modal-dialog inertness, nor the pointer, editing, selection, find-in-page, or
 accessibility behavior of inert subtrees. See
 [`native-engine-browser-776`](../plan/tasks/native-engine-browser-776.md).
 
+### Bubbling focus transition events (slice 777)
+
+Native focus state changes produce `blur` then bubbling `focusout` for the old
+target, followed by `focus` then bubbling `focusin` for the new target. The
+paired events carry the opposite endpoint as `relatedTarget`; unmatched entry
+or exit uses null. Direct script focus/blur, Rust-owned keyboard traversal,
+content-process event delivery, and same-origin parent-frame projection use
+the same event names and ordering. Focus events are projected as `FocusEvent`
+instances with `UIEvent.view` and `detail`. Native keyboard transitions retain
+one-event-at-a-time dispatch so listener commands are reconciled before the
+next event, while the complete pair supplies relation metadata to each event.
+Local, HTTP(S) child-process, and parent-projection regressions cover this
+behavior. Complete focus Web IDL/reentrancy, shadow retargeting, platform
+focus-chain behavior, WPT, and remote CI remain open. See
+[`native-engine-browser-777`](../plan/tasks/native-engine-browser-777.md).
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

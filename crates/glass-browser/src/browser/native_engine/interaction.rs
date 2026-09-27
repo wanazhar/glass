@@ -259,7 +259,9 @@ pub enum NativeAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeEventKind {
     Blur,
+    FocusOut,
     Focus,
+    FocusIn,
     ReadyStateChange,
     DomContentLoaded,
     Load,

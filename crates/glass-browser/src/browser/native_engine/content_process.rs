@@ -52,8 +52,8 @@ use super::javascript::{
     NativeWorkerRegistry, NativeWorkerWebSocketCommand, apply_document_commands_with_font_face_ack,
     apply_page_script_evaluation, diff_indexed_db_changes, execute_dynamic_page_scripts,
     execute_page_scripts, host_click_event_batch_with_modifiers, host_event_batch,
-    host_key_event_batch, host_key_event_batch_with_modifiers, host_submit_event_batch,
-    load_indexed_db_profile, load_service_worker_cache_profile,
+    host_event_batch_at, host_key_event_batch, host_key_event_batch_with_modifiers,
+    host_submit_event_batch, load_indexed_db_profile, load_service_worker_cache_profile,
     load_service_worker_registration_profiles, load_web_storage_profile, native_module_loader_name,
     order_page_scripts, page_script_sources_to_scripts, resolve_module_request_url,
     save_service_worker_cache_profile, save_web_storage_profile, static_module_requests,
@@ -9797,8 +9797,12 @@ fn mutate_type_with_event_bridge(
     let mut scroll_commands = Vec::new();
     let mut events = next.apply_type(node_id, text)?;
     let default_events = events.clone();
-    for (event_node, event_kind) in default_events {
-        let event_batch = host_event_batch(&[(event_node.index(), event_kind)])?;
+    let default_event_metadata = default_events
+        .iter()
+        .map(|(node_id, kind)| (node_id.index(), *kind))
+        .collect::<Vec<_>>();
+    for index in 0..default_events.len() {
+        let event_batch = host_event_batch_at(&default_event_metadata, index)?;
         let Some(event_batch) = event_batch else {
             continue;
         };
@@ -9911,8 +9915,12 @@ fn mutate_form_action_with_event_bridge(
         NativeFormAction::Upload(files) => next.apply_upload(node_id, &files)?,
     };
     let default_events = events.clone();
-    for (event_node, event_kind) in default_events {
-        let event_batch = host_event_batch(&[(event_node.index(), event_kind)])?;
+    let default_event_metadata = default_events
+        .iter()
+        .map(|(node_id, kind)| (node_id.index(), *kind))
+        .collect::<Vec<_>>();
+    for index in 0..default_events.len() {
+        let event_batch = host_event_batch_at(&default_event_metadata, index)?;
         let Some(event_batch) = event_batch else {
             continue;
         };
@@ -10266,8 +10274,12 @@ fn mutate_key_event_with_event_bridge(
     {
         let default_events = next.apply_key_default(focused_id, key, modifiers)?;
         events.extend(default_events.clone());
-        for (event_node, event_kind) in default_events {
-            let Some(event_batch) = host_event_batch(&[(event_node.index(), event_kind)])? else {
+        let default_event_metadata = default_events
+            .iter()
+            .map(|(node_id, kind)| (node_id.index(), *kind))
+            .collect::<Vec<_>>();
+        for index in 0..default_events.len() {
+            let Some(event_batch) = host_event_batch_at(&default_event_metadata, index)? else {
                 continue;
             };
             let evaluation = runtime.evaluate_with_host_events(
@@ -10516,8 +10528,12 @@ fn mutate_key_shortcut_with_event_bridge(
             Vec::new()
         };
         events.extend(default_events.clone());
-        for (event_node, event_kind) in default_events {
-            let event_batch = host_event_batch(&[(event_node.index(), event_kind)])?;
+        let default_event_metadata = default_events
+            .iter()
+            .map(|(node_id, kind)| (node_id.index(), *kind))
+            .collect::<Vec<_>>();
+        for index in 0..default_events.len() {
+            let event_batch = host_event_batch_at(&default_event_metadata, index)?;
             let Some(event_batch) = event_batch else {
                 continue;
             };
@@ -14628,7 +14644,9 @@ fn script_navigation_target(
 fn event_kind_text(kind: NativeEventKind) -> &'static str {
     match kind {
         NativeEventKind::Blur => "blur",
+        NativeEventKind::FocusOut => "focusout",
         NativeEventKind::Focus => "focus",
+        NativeEventKind::FocusIn => "focusin",
         NativeEventKind::ReadyStateChange => "readystatechange",
         NativeEventKind::DomContentLoaded => "DOMContentLoaded",
         NativeEventKind::Load => "load",
@@ -14661,7 +14679,9 @@ fn event_kind_text(kind: NativeEventKind) -> &'static str {
 fn parse_event_kind(value: &str) -> Option<NativeEventKind> {
     match value {
         "blur" => Some(NativeEventKind::Blur),
+        "focusout" => Some(NativeEventKind::FocusOut),
         "focus" => Some(NativeEventKind::Focus),
+        "focusin" => Some(NativeEventKind::FocusIn),
         "readystatechange" => Some(NativeEventKind::ReadyStateChange),
         "DOMContentLoaded" => Some(NativeEventKind::DomContentLoaded),
         "load" => Some(NativeEventKind::Load),

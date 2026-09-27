@@ -1120,6 +1120,8 @@ pub(crate) struct NativeHostEvent {
     pub(crate) shift_key: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) submitter_node_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) related_target_node_index: Option<u32>,
 }
 
 /// A bounded event observed by a child browsing context and delivered to its
@@ -1134,6 +1136,8 @@ pub(crate) struct NativeFrameEvent {
     pub(crate) bubbles: bool,
     pub(crate) cancelable: bool,
     pub(crate) persisted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) related_target_node_index: Option<u32>,
 }
 
 /// A bounded batch of frame events for one same-origin parent projection.
@@ -11704,7 +11708,9 @@ fn host_event_metadata(
 ) -> NativeHostEvent {
     let (event_type, bubbles, cancelable) = match kind {
         NativeEventKind::Blur => ("blur", false, false),
+        NativeEventKind::FocusOut => ("focusout", true, false),
         NativeEventKind::Focus => ("focus", false, false),
+        NativeEventKind::FocusIn => ("focusin", true, false),
         NativeEventKind::ReadyStateChange => ("readystatechange", false, false),
         NativeEventKind::DomContentLoaded => ("DOMContentLoaded", false, false),
         NativeEventKind::Load => ("load", false, false),
@@ -11745,6 +11751,7 @@ fn host_event_metadata(
         meta_key: false,
         shift_key: false,
         submitter_node_index,
+        related_target_node_index: None,
     }
 }
 
@@ -11756,12 +11763,55 @@ pub(crate) fn host_event_batch(
     if events.is_empty() {
         return Ok(None);
     }
-    Ok(Some(
-        events
+    let mut metadata = events
+        .iter()
+        .map(|(node_index, kind)| host_event_metadata(*node_index, *kind, None))
+        .collect::<Vec<_>>();
+    for (index, (_, kind)) in events.iter().enumerate() {
+        if let Some(related_target_node_index) = focus_related_target_index(events, index, *kind) {
+            metadata[index].related_target_node_index = Some(related_target_node_index);
+        }
+    }
+    Ok(Some(metadata))
+}
+
+fn focus_related_target_index(
+    events: &[(u32, NativeEventKind)],
+    index: usize,
+    kind: NativeEventKind,
+) -> Option<u32> {
+    match kind {
+        NativeEventKind::Blur | NativeEventKind::FocusOut => events
             .iter()
-            .map(|(node_index, kind)| host_event_metadata(*node_index, *kind, None))
-            .collect(),
-    ))
+            .skip(index + 1)
+            .find(|(_, candidate)| {
+                matches!(candidate, NativeEventKind::Focus | NativeEventKind::FocusIn)
+            })
+            .map(|(node_index, _)| *node_index),
+        NativeEventKind::Focus | NativeEventKind::FocusIn => events[..index]
+            .iter()
+            .rev()
+            .find(|(_, candidate)| {
+                matches!(candidate, NativeEventKind::Blur | NativeEventKind::FocusOut)
+            })
+            .map(|(node_index, _)| *node_index),
+        _ => None,
+    }
+}
+
+pub(crate) fn host_event_batch_at(
+    events: &[(u32, NativeEventKind)],
+    index: usize,
+) -> Result<Option<Vec<NativeHostEvent>>, NativeEngineError> {
+    let (node_index, kind) = events.get(index).copied().ok_or_else(|| {
+        NativeEngineError::invalid(
+            "native host event index",
+            "must identify an event in the transition batch",
+        )
+    })?;
+    let mut event = host_event_metadata(node_index, kind, None);
+    event.related_target_node_index = focus_related_target_index(events, index, kind);
+    Ok(Some(vec![event]))
 }
 
 pub(crate) fn host_click_event_batch_with_modifiers(
@@ -11849,6 +11899,7 @@ pub(crate) fn host_key_event_batch_with_modifiers(
         meta_key: modifiers & 4 != 0,
         shift_key: modifiers & 8 != 0,
         submitter_node_index: None,
+        related_target_node_index: None,
     }]))
 }
 
@@ -11886,12 +11937,14 @@ pub(crate) fn frame_event_batch(
             events.len(),
         ));
     }
-    let events = events
+    let mut metadata = events
         .iter()
         .map(|(node_index, generation, kind)| {
             let (event_type, bubbles, cancelable) = match kind {
                 NativeEventKind::Blur => ("blur", false, false),
+                NativeEventKind::FocusOut => ("focusout", true, false),
                 NativeEventKind::Focus => ("focus", false, false),
+                NativeEventKind::FocusIn => ("focusin", true, false),
                 NativeEventKind::ReadyStateChange => ("readystatechange", false, false),
                 NativeEventKind::DomContentLoaded => ("DOMContentLoaded", false, false),
                 NativeEventKind::Load => ("load", false, false),
@@ -11926,12 +11979,33 @@ pub(crate) fn frame_event_batch(
                 bubbles,
                 cancelable,
                 persisted: false,
+                related_target_node_index: None,
             }
         })
         .collect::<Vec<_>>();
+    for (index, (_, _, kind)) in events.iter().enumerate() {
+        let related_target_node_index = match kind {
+            NativeEventKind::Blur | NativeEventKind::FocusOut => events
+                .iter()
+                .skip(index + 1)
+                .find(|(_, _, candidate)| {
+                    matches!(candidate, NativeEventKind::Focus | NativeEventKind::FocusIn)
+                })
+                .map(|(node_index, _, _)| *node_index),
+            NativeEventKind::Focus | NativeEventKind::FocusIn => events[..index]
+                .iter()
+                .rev()
+                .find(|(_, _, candidate)| {
+                    matches!(candidate, NativeEventKind::Blur | NativeEventKind::FocusOut)
+                })
+                .map(|(node_index, _, _)| *node_index),
+            _ => None,
+        };
+        metadata[index].related_target_node_index = related_target_node_index;
+    }
     Ok(Some(NativeFrameEventBatch {
         frame_id: frame_id.to_owned(),
-        events,
+        events: metadata,
     }))
 }
 
@@ -17918,7 +17992,9 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
             if !matches!(
                 event.event_type.as_str(),
                 "blur"
+                    | "focusout"
                     | "focus"
+                    | "focusin"
                     | "readystatechange"
                     | "DOMContentLoaded"
                     | "load"
@@ -17951,6 +18027,17 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
                     "must be a supported native event",
                 ));
             }
+            if event.related_target_node_index.is_some()
+                && !matches!(
+                    event.event_type.as_str(),
+                    "blur" | "focusout" | "focus" | "focusin"
+                )
+            {
+                return Err(NativeEngineError::invalid(
+                    "native frame event related target",
+                    "is supported only for focus events",
+                ));
+            }
         }
     }
     for command in &events.frame_script_commands {
@@ -17972,7 +18059,9 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
         if !matches!(
             event.event_type.as_str(),
             "blur"
+                | "focusout"
                 | "focus"
+                | "focusin"
                 | "readystatechange"
                 | "DOMContentLoaded"
                 | "load"
@@ -18031,6 +18120,17 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
             return Err(NativeEngineError::invalid(
                 "native host event submitter",
                 "submitter metadata requires a submit event",
+            ));
+        }
+        if event.related_target_node_index.is_some()
+            && !matches!(
+                event.event_type.as_str(),
+                "blur" | "focusout" | "focus" | "focusin"
+            )
+        {
+            return Err(NativeEngineError::invalid(
+                "native host event related target",
+                "is supported only for focus events",
             ));
         }
     }
@@ -37460,6 +37560,7 @@ fn document_bootstrap(
       defaultPrevented: false,
       returnValue: "",
       persisted: Boolean(settings.persisted),
+      relatedTarget: settings.relatedTarget === undefined ? null : settings.relatedTarget,
       submitter: settings.submitter === undefined ? null : settings.submitter,
       state: settings.state === undefined ? null : settings.state,
       oldURL: settings.oldURL === undefined ? "" : String(settings.oldURL),
@@ -37481,6 +37582,16 @@ fn document_bootstrap(
     }});
     if (typeof globalThis.Event === "function" && globalThis.Event.prototype) {{
       try {{ Object.setPrototypeOf(event, globalThis.Event.prototype); }} catch (_error) {{}}
+    }}
+    return event;
+  }};
+  const createFocusEvent = (type, options) => {{
+    const settings = options && typeof options === "object" ? options : {{}};
+    const event = createEvent(type, options);
+    event.view = settings.view === undefined ? globalThis : settings.view;
+    event.detail = Number.isFinite(Number(settings.detail)) ? Math.trunc(Number(settings.detail)) : 0;
+    if (typeof globalThis.FocusEvent === "function" && globalThis.FocusEvent.prototype) {{
+      try {{ Object.setPrototypeOf(event, globalThis.FocusEvent.prototype); }} catch (_error) {{}}
     }}
     return event;
   }};
@@ -39473,7 +39584,8 @@ fn document_bootstrap(
         if (!this.focused) return;
         this.focused = false;
         pushCommand({{ kind: "blur", node_index: entry.nodeIndex }});
-        dispatchTarget(this, createEvent("blur"));
+        dispatchTarget(this, createFocusEvent("blur", {{ relatedTarget: null }}));
+        dispatchTarget(this, createFocusEvent("focusout", {{ bubbles: true, relatedTarget: null }}));
       }},
       scrollTo(leftOrOptions = 0, top = 0) {{
         if (leftOrOptions && typeof leftOrOptions === "object") {{
@@ -41505,12 +41617,14 @@ fn document_bootstrap(
     const current = elements.find((element) => element.focused && element !== target) || null;
     if (current) {{
       current.focused = false;
-      dispatchTarget(current, createEvent("blur"));
+      dispatchTarget(current, createFocusEvent("blur", {{ relatedTarget: target }}));
+      dispatchTarget(current, createFocusEvent("focusout", {{ bubbles: true, relatedTarget: target }}));
     }}
     if (target.focused) return;
     target.focused = true;
     pushCommand({{ kind: "focus", node_index: target.nodeIndex }});
-    dispatchTarget(target, createEvent("focus"));
+    dispatchTarget(target, createFocusEvent("focus", {{ relatedTarget: current }}));
+    dispatchTarget(target, createFocusEvent("focusin", {{ bubbles: true, relatedTarget: current }}));
   }};
   const asNativeCollection = (values, constructorName) => {{
     const constructor = globalThis[constructorName];
@@ -43963,10 +44077,17 @@ fn document_bootstrap(
           ? globalThis
           : elements.find((element) => element.nodeIndex === descriptor.node_index) || null;
       if (!target) throw new TypeError("native event target is detached");
-      const event = createEvent(descriptor.type, {{
+      const eventType = String(descriptor.type);
+      const focusEvent = ["blur", "focusout", "focus", "focusin"].includes(eventType);
+      const eventFactory = focusEvent ? createFocusEvent : createEvent;
+      const event = eventFactory(eventType, {{
         bubbles: Boolean(descriptor.bubbles),
         cancelable: Boolean(descriptor.cancelable),
         persisted: Boolean(descriptor.persisted),
+        view: globalThis,
+        relatedTarget: descriptor.related_target_node_index == null
+          ? null
+          : elements.find((element) => element.nodeIndex === descriptor.related_target_node_index) || null,
         key: descriptor.key,
         code: descriptor.code,
         altKey: Boolean(descriptor.alt_key),
@@ -47711,6 +47832,9 @@ fn document_bootstrap(
   const frameDocumentCache = globalThis.__glassFrameDocumentCache instanceof Map
     ? globalThis.__glassFrameDocumentCache
     : new Map();
+  const nativeFrameFocusedNodeIndices = globalThis.__glassNativeFrameFocusedNodeIndices instanceof Map
+    ? globalThis.__glassNativeFrameFocusedNodeIndices
+    : new Map();
   const frameTemplateContentsOwnerDocuments = globalThis.__glassFrameTemplateContentsOwnerDocuments instanceof Map
     ? globalThis.__glassFrameTemplateContentsOwnerDocuments
     : new Map();
@@ -47718,10 +47842,29 @@ fn document_bootstrap(
     ? globalThis.__glassFrameWindowCache
     : new Map();
   globalThis.__glassFrameDocumentCache = frameDocumentCache;
+  globalThis.__glassNativeFrameFocusedNodeIndices = nativeFrameFocusedNodeIndices;
   globalThis.__glassFrameTemplateContentsOwnerDocuments = frameTemplateContentsOwnerDocuments;
   globalThis.__glassFrameWindowCache = frameWindowCache;
   const projectedFrameMatches = (element, selector, scope = element) => {{
     return matchesSelector(element, selector, scope);
+  }};
+  const nativeFrameFocusKey = (binding) =>
+    frameIdentifier(binding) + "\\u0000" + String(binding.generation || "");
+  const nativeFrameFocusedNodeIndex = (binding) => {{
+    const key = nativeFrameFocusKey(binding);
+    if (nativeFrameFocusedNodeIndices.has(key)) return nativeFrameFocusedNodeIndices.get(key);
+    const elements = binding.document && Array.isArray(binding.document.elements)
+      ? binding.document.elements
+      : [];
+    const focused = elements.find((entry) => entry && entry.focused === true);
+    const candidate = focused
+      ? Number(focused.focusAnchorNodeIndex == null
+        ? focused.nodeIndex
+        : focused.focusAnchorNodeIndex)
+      : null;
+    const nodeIndex = Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : null;
+    nativeFrameFocusedNodeIndices.set(key, nodeIndex);
+    return nodeIndex;
   }};
   const makeFrameDocument = (
     binding,
@@ -48037,11 +48180,29 @@ fn document_bootstrap(
         focus() {{
           if (this.disabled || this.hidden || nativeFormAssociatedDisabledForFocus(this)
               || nativeInertForFocus(this)) return;
-          dispatchTarget(this, createEvent("focus"));
+          const frameKey = nativeFrameFocusKey(currentBinding);
+          const previousIndex = nativeFrameFocusedNodeIndex(currentBinding);
+          const frameDocument = makeFrameDocument(currentBinding);
+          const previous = previousIndex === null
+            ? null
+            : frameDocument.__glassEventTargetForNode(previousIndex);
+          if (previous === this) return;
+          if (previous) {{
+            dispatchTarget(previous, createFocusEvent("blur", {{ relatedTarget: this, view: frameDocument.defaultView }}));
+            dispatchTarget(previous, createFocusEvent("focusout", {{ bubbles: true, relatedTarget: this, view: frameDocument.defaultView }}));
+          }}
+          nativeFrameFocusedNodeIndices.set(frameKey, Number(entry.nodeIndex));
+          dispatchTarget(this, createFocusEvent("focus", {{ relatedTarget: previous || null, view: frameDocument.defaultView }}));
+          dispatchTarget(this, createFocusEvent("focusin", {{ bubbles: true, relatedTarget: previous || null, view: frameDocument.defaultView }}));
           queueFrameCommand(currentBinding, {{ kind: "focus", node_index: entry.nodeIndex }});
         }},
         blur() {{
-          dispatchTarget(this, createEvent("blur"));
+          const frameKey = nativeFrameFocusKey(currentBinding);
+          if (nativeFrameFocusedNodeIndex(currentBinding) !== Number(entry.nodeIndex)) return;
+          const frameDocument = makeFrameDocument(currentBinding);
+          nativeFrameFocusedNodeIndices.set(frameKey, null);
+          dispatchTarget(this, createFocusEvent("blur", {{ relatedTarget: null, view: frameDocument.defaultView }}));
+          dispatchTarget(this, createFocusEvent("focusout", {{ bubbles: true, relatedTarget: null, view: frameDocument.defaultView }}));
           queueFrameCommand(currentBinding, {{ kind: "blur", node_index: entry.nodeIndex }});
         }},
         click() {{
@@ -49850,10 +50011,28 @@ fn document_bootstrap(
       if (nodeIndex !== 4294967295 && Number(descriptor.generation) !== generation) continue;
       const target = projectedDocument.__glassEventTargetForNode(nodeIndex);
       if (!target) throw new TypeError("native frame event target is detached");
-      const event = createEvent(descriptor.type, {{
+      const eventType = String(descriptor.type);
+      const focusEvent = ["blur", "focusout", "focus", "focusin"].includes(eventType);
+      const eventFactory = focusEvent ? createFocusEvent : createEvent;
+      const event = eventFactory(eventType, {{
         bubbles: Boolean(descriptor.bubbles),
         cancelable: Boolean(descriptor.cancelable),
+        view: projectedDocument.defaultView,
+        relatedTarget: descriptor.related_target_node_index == null
+          ? null
+          : projectedDocument.__glassEventTargetForNode(Number(descriptor.related_target_node_index)) || null,
       }});
+      const focusKey = nativeFrameFocusKey(binding);
+      if (descriptor.type === "blur" || descriptor.type === "focusout") {{
+        if (nativeFrameFocusedNodeIndex(binding) === nodeIndex) {{
+          nativeFrameFocusedNodeIndices.set(focusKey,
+            descriptor.related_target_node_index == null
+              ? null
+              : Number(descriptor.related_target_node_index));
+        }}
+      }} else if (descriptor.type === "focus" || descriptor.type === "focusin") {{
+        nativeFrameFocusedNodeIndices.set(focusKey, nodeIndex);
+      }}
       delivered.push(dispatchTarget(target, event));
     }}
     return delivered;
@@ -50116,6 +50295,30 @@ fn document_bootstrap(
   const EventNative = globalThis.__glassEventConstructor || function Event(type, options) {{
     return globalThis.__glassCreateEvent(type, options);
   }};
+  const UIEventNative = globalThis.__glassUIEventConstructor || function UIEvent(type, options) {{
+    const event = globalThis.__glassCreateEvent(type, options);
+    const settings = options && typeof options === "object" ? options : {{}};
+    event.view = settings.view === undefined ? null : settings.view;
+    const detail = Number(settings.detail);
+    event.detail = Number.isFinite(detail) ? Math.trunc(detail) : 0;
+    try {{ Object.setPrototypeOf(event, UIEventNative.prototype); }} catch (_error) {{}}
+    return event;
+  }};
+  const FocusEventNative = globalThis.__glassFocusEventConstructor || function FocusEvent(type, options) {{
+    const event = new UIEventNative(type, options);
+    const settings = options && typeof options === "object" ? options : {{}};
+    event.relatedTarget = settings.relatedTarget === undefined ? null : settings.relatedTarget;
+    try {{ Object.setPrototypeOf(event, FocusEventNative.prototype); }} catch (_error) {{}}
+    return event;
+  }};
+  if (typeof globalThis.__glassUIEventConstructor !== "function") {{
+    UIEventNative.prototype = Object.create(EventNative.prototype);
+    UIEventNative.prototype.constructor = UIEventNative;
+  }}
+  if (typeof globalThis.__glassFocusEventConstructor !== "function") {{
+    FocusEventNative.prototype = Object.create(UIEventNative.prototype);
+    FocusEventNative.prototype.constructor = FocusEventNative;
+  }}
   const hasProgressEventConstructor = typeof globalThis.__glassProgressEventConstructor === "function";
   const ProgressEventNative = hasProgressEventConstructor
     ? globalThis.__glassProgressEventConstructor
@@ -50190,6 +50393,8 @@ fn document_bootstrap(
     return event;
   }};
   globalThis.__glassEventConstructor = EventNative;
+  globalThis.__glassUIEventConstructor = UIEventNative;
+  globalThis.__glassFocusEventConstructor = FocusEventNative;
   globalThis.__glassProgressEventConstructor = ProgressEventNative;
   globalThis.__glassCustomEventConstructor = CustomEventNative;
   globalThis.__glassStorageEventConstructor = StorageEventNative;
@@ -50198,6 +50403,8 @@ fn document_bootstrap(
   globalThis.__glassSecurityPolicyViolationEventConstructor = SecurityPolicyViolationEventNative;
   globalThis.__glassCreateEvent = createEvent;
   globalThis.Event = EventNative;
+  globalThis.UIEvent = UIEventNative;
+  globalThis.FocusEvent = FocusEventNative;
   globalThis.ProgressEvent = ProgressEventNative;
   globalThis.CustomEvent = CustomEventNative;
   globalThis.StorageEvent = StorageEventNative;

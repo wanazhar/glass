@@ -109,7 +109,9 @@ the shared event owner, preserving listener position on handler replacement
 and removing the handler on null assignment. Owner-keyed state survives frame
 projection refreshes. Local, process-backed, and same-origin parent-projection
 tests cover target/`this`, replacement, and clearing; inline event-handler
-attributes and `body`/`frameset` Window-target remapping remain open. See the
+attributes continue through the existing generic handler path, whose
+focus-specific CSP/projection parity this slice does not certify;
+`body`/`frameset` Window-target remapping remains open. See the
 [slice 778 task](tasks/native-engine-browser-778.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the

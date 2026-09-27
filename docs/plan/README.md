@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-796`. Slice 767 verifies native hyperlink Enter
+`native-engine-browser-798`. Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the
 [slice 767 task](tasks/native-engine-browser-767.md) for local evidence and
@@ -262,6 +262,12 @@ and context, error reporting/continuation, fulfilled lifecycle waits, worker
 activation, page control, and no client error. Full Web IDL/EventTarget and
 WPT behavior remain open; exact evidence is in the
 [slice 798 task](tasks/native-engine-browser-798.md).
+Slice 799 contracts worker-global `messageerror` delivery when structured
+clone decoding fails, including the `onmessageerror` handler slot, worker
+survival, and process-backed Dedicated Worker/Service Worker coverage. The
+contract is committed; implementation evidence is pending. MessagePort and
+page-side Worker proxy decode failures remain separate. See the
+[slice 799 task](tasks/native-engine-browser-799.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

@@ -4539,7 +4539,7 @@ impl NativeEngine {
                         .document
                         .has_native_keyboard_link_activation(focused_node))
                 .then_some(focused_node);
-                let node_index = focused_node.index();
+                let node_index = self.document.keyboard_event_target(focused_node).index();
                 let mutation = {
                     let process =
                         self.content_process
@@ -4563,7 +4563,8 @@ impl NativeEngine {
             NativeAction::KeyUp { key } => {
                 validate_native_key(&key)?;
                 let key = normalize_native_keyboard_key(key);
-                let node_index = self.document.focused_node().index();
+                let focused_node = self.document.focused_node();
+                let node_index = self.document.keyboard_event_target(focused_node).index();
                 let mutation = {
                     let process =
                         self.content_process
@@ -4592,7 +4593,7 @@ impl NativeEngine {
                         .document
                         .has_native_keyboard_link_activation(focused_node))
                 .then_some(focused_node);
-                let node_index = focused_node.index();
+                let node_index = self.document.keyboard_event_target(focused_node).index();
                 let default_allowed = should_apply_native_key_default(&key, modifiers);
                 let apply_default = default_allowed
                     && (key == "Tab"
@@ -7127,14 +7128,20 @@ impl NativeEngine {
         validate_native_key(key)?;
         let mut document = self.document.clone();
         let mut history_commands = Vec::new();
-        let mut events = vec![(id, kind)];
+        let event_target = document.keyboard_event_target(id);
+        let mut events = vec![(event_target, kind)];
         let was_button = document.has_native_keyboard_button_activation(id);
         let was_link = document.has_native_keyboard_link_activation(id);
         let was_checkable_kind = document.keyboard_checkable_kind(id);
         let was_radio_arrow_target =
             document.can_apply_radio_group_arrow_navigation(id, key, modifiers);
-        let evaluation =
-            self.evaluate_local_key_event_with_modifiers(&document, id, kind, key, modifiers)?;
+        let evaluation = self.evaluate_local_key_event_with_modifiers(
+            &document,
+            event_target,
+            kind,
+            key,
+            modifiers,
+        )?;
         let event_allowed = evaluation
             .as_ref()
             .and_then(|evaluation| evaluation.value.as_array())
@@ -7238,7 +7245,8 @@ impl NativeEngine {
         validate_native_key(key)?;
         let mut document = self.document.clone();
         let mut history_commands = Vec::new();
-        let mut events = vec![(id, NativeEventKind::KeyDown)];
+        let keydown_target = document.keyboard_event_target(id);
+        let mut events = vec![(keydown_target, NativeEventKind::KeyDown)];
         let keyboard_button_target = document.has_native_keyboard_button_activation(id);
         let keyboard_checkable_kind = document.keyboard_checkable_kind(id);
         let keyboard_radio_arrow_target =
@@ -7247,7 +7255,7 @@ impl NativeEngine {
             key == "Enter" && document.has_native_keyboard_link_activation(id);
         let keydown = self.evaluate_local_key_event_with_modifiers(
             &document,
-            id,
+            keydown_target,
             NativeEventKind::KeyDown,
             key,
             modifiers,
@@ -7317,7 +7325,7 @@ impl NativeEngine {
             )?;
         }
 
-        let keyup_target = document.focused_node();
+        let keyup_target = document.keyboard_event_target(document.focused_node());
         events.push((keyup_target, NativeEventKind::KeyUp));
         if let Some(evaluation) = self.evaluate_local_key_event_with_modifiers(
             &document,

@@ -174,6 +174,7 @@ pub(crate) struct NativeElementState {
     checked: bool,
     indeterminate: bool,
     focused: bool,
+    focus_anchor_node_index: Option<u32>,
     hovered: bool,
     user_interacted: bool,
     selected: bool,
@@ -200,6 +201,7 @@ impl NativeElementState {
             checked: attributes.contains_key("checked"),
             indeterminate: false,
             focused: false,
+            focus_anchor_node_index: None,
             user_interacted: false,
             hovered: false,
             selected: attributes.contains_key("selected"),
@@ -463,6 +465,8 @@ pub(crate) struct NativeElementStateWire {
     pub(crate) indeterminate: bool,
     #[serde(default)]
     pub(crate) focused: bool,
+    #[serde(default)]
+    pub(crate) focus_anchor_node_index: Option<u32>,
     #[serde(default)]
     pub(crate) hovered: bool,
     #[serde(default)]
@@ -747,6 +751,8 @@ pub(crate) struct NativeScriptElementSnapshot {
     pub(crate) disabled: bool,
     pub(crate) hidden: bool,
     pub(crate) focused: bool,
+    #[serde(default)]
+    pub(crate) focus_anchor_node_index: Option<u32>,
     #[serde(default)]
     pub(crate) hovered: bool,
     #[serde(default)]
@@ -3168,6 +3174,7 @@ impl NativeDocument {
                     checked: node.state.checked,
                     indeterminate: node.state.indeterminate,
                     focused: node.state.focused,
+                    focus_anchor_node_index: node.state.focus_anchor_node_index,
                     hovered: node.state.hovered,
                     user_interacted: node.state.user_interacted,
                     selected: node.state.selected,
@@ -3684,6 +3691,7 @@ impl NativeDocument {
                     checked: wire_node.state.checked,
                     indeterminate: wire_node.state.indeterminate,
                     focused: wire_node.state.focused,
+                    focus_anchor_node_index: wire_node.state.focus_anchor_node_index,
                     hovered: wire_node.state.hovered,
                     user_interacted: wire_node.state.user_interacted,
                     selected: wire_node.state.selected,
@@ -4274,6 +4282,35 @@ impl NativeDocument {
             inline_style_element_reports: BTreeMap::new(),
             inline_style_attribute_reports: BTreeMap::new(),
         };
+        for node in &document.nodes {
+            let Some(anchor_index) = node.state.focus_anchor_node_index else {
+                continue;
+            };
+            let anchor = document
+                .nodes
+                .get(
+                    usize::try_from(anchor_index).map_err(|_| NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "content process returned an invalid focus anchor index".into(),
+                    })?,
+                )
+                .map(NativeNode::id)
+                .ok_or_else(|| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an out-of-range focus anchor".into(),
+                })?;
+            if !node.state.focused
+                || node.element_name() != Some("area")
+                || !document
+                    .image_map_area_focus_anchors(node.id())
+                    .contains(&anchor)
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid image-map focus anchor".into(),
+                });
+            }
+        }
         document.normalize_select_defaults();
         document.mark_inline_style_reports_seen();
         document.mark_content_security_policy_meta_processed();
@@ -5059,6 +5096,7 @@ impl NativeDocument {
                     disabled: self.is_disabled(node.id()),
                     hidden: self.is_hidden(node.id()),
                     focused: node.state.focused,
+                    focus_anchor_node_index: node.state.focus_anchor_node_index,
                     hovered: node.state.hovered,
                     user_interacted: node.state.user_interacted,
                     validity,
@@ -5619,6 +5657,59 @@ impl NativeDocument {
             current = node.parent();
         }
         None
+    }
+
+    fn image_map_area_focus_anchors(&self, area_id: NativeNodeId) -> Vec<NativeNodeId> {
+        let Some(area) = self.node(area_id) else {
+            return Vec::new();
+        };
+        let Some(map_id) = self.image_map_for_area(area_id) else {
+            return Vec::new();
+        };
+        if area.element_name() != Some("area")
+            || !self.is_hyperlink_element(area_id)
+            || !image_map_area_has_nonempty_shape(area)
+            || self.is_hidden(area_id)
+            || self.is_disabled(area_id)
+        {
+            return Vec::new();
+        }
+
+        let mut anchors = Vec::new();
+        let mut pending = vec![self.root];
+        while let Some(id) = pending.pop() {
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            if node.element_name() == Some("img")
+                && self.is_attached(id)
+                && !self.is_hidden_for_layout(id)
+                && self.image_map_for_image(id) == Some(map_id)
+            {
+                anchors.push(id);
+            }
+            pending.extend(node.children().iter().rev().copied());
+        }
+        anchors
+    }
+
+    pub(crate) fn keyboard_event_target(&self, focused_node: NativeNodeId) -> NativeNodeId {
+        if self.node(focused_node).and_then(NativeNode::element_name) != Some("area") {
+            return focused_node;
+        }
+        let anchors = self.image_map_area_focus_anchors(focused_node);
+        let selected = self
+            .node(focused_node)
+            .and_then(|node| node.state.focus_anchor_node_index)
+            .and_then(|index| {
+                anchors
+                    .iter()
+                    .find(|anchor| anchor.index() == index)
+                    .copied()
+            });
+        selected
+            .or_else(|| anchors.first().copied())
+            .unwrap_or(focused_node)
     }
 
     pub(crate) fn image_map_area_has_visible_image(
@@ -6212,64 +6303,104 @@ impl NativeDocument {
         &mut self,
         reverse: bool,
     ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
-        let mut focusable = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(order, node)| {
-                if !self.is_attached(node.id())
-                    || self.is_hidden(node.id())
-                    || self.is_disabled(node.id())
-                    || node.element_name() == Some("area")
-                {
-                    return None;
+        let mut tree_order = Vec::new();
+        let mut pending = vec![self.root];
+        while let Some(id) = pending.pop() {
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            tree_order.push(id);
+            pending.extend(node.children().iter().rev().copied());
+        }
+        let mut order_by_node = vec![usize::MAX; self.nodes.len()];
+        for (order, id) in tree_order.iter().enumerate() {
+            if let Ok(index) = usize::try_from(id.index())
+                && let Some(node_order) = order_by_node.get_mut(index)
+            {
+                *node_order = order;
+            }
+        }
+        let mut focusable = Vec::new();
+        for (order, id) in tree_order.iter().copied().enumerate() {
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            if !self.is_attached(id) || self.is_disabled(id) {
+                continue;
+            }
+            let Some(role) = self.semantic_role(id) else {
+                continue;
+            };
+            if !matches!(
+                role,
+                "button" | "link" | "textbox" | "checkbox" | "radio" | "combobox"
+            ) {
+                continue;
+            }
+            let tab_index = node
+                .attribute("tabindex")
+                .and_then(parse_native_tab_index)
+                .unwrap_or(0);
+            if tab_index < 0 {
+                continue;
+            }
+            if node.element_name() == Some("area") {
+                if self.is_hidden(id) {
+                    continue;
                 }
-                let role = self.semantic_role(node.id())?;
-                if !matches!(
-                    role,
-                    "button" | "link" | "textbox" | "checkbox" | "radio" | "combobox"
-                ) {
-                    return None;
+                for anchor in self.image_map_area_focus_anchors(id) {
+                    let Some(anchor_order) = usize::try_from(anchor.index())
+                        .ok()
+                        .and_then(|index| order_by_node.get(index))
+                        .copied()
+                        .filter(|order| *order != usize::MAX)
+                    else {
+                        continue;
+                    };
+                    focusable.push((tab_index, anchor_order, order, id, Some(anchor)));
                 }
-                let tab_index = node
-                    .attribute("tabindex")
-                    .and_then(|value| value.parse::<i32>().ok())
-                    .unwrap_or(0);
-                (tab_index >= 0).then_some((tab_index, order, node.id()))
-            })
-            .collect::<Vec<_>>();
-        focusable.sort_by_key(|(tab_index, order, _)| {
+            } else if !self.is_hidden(id) {
+                focusable.push((tab_index, order, order, id, None));
+            }
+        }
+        focusable.sort_by_key(|(tab_index, anchor_order, element_order, _, _)| {
             (
                 if *tab_index > 0 { 0 } else { 1 },
                 (*tab_index).max(0),
-                *order,
+                *anchor_order,
+                *element_order,
             )
         });
         let Some((current_index, _)) =
             focusable
                 .iter()
                 .enumerate()
-                .find_map(|(index, (_, _, id))| {
+                .find_map(|(index, (_, _, _, id, anchor))| {
                     self.node(*id)
-                        .is_some_and(|node| node.state.focused)
+                        .is_some_and(|node| {
+                            node.state.focused
+                                && node.state.focus_anchor_node_index
+                                    == anchor.map(NativeNodeId::index)
+                        })
                         .then_some((index, *id))
                 })
         else {
-            let Some((_, _, id)) = (if reverse {
+            let Some((_, _, _, id, anchor)) = (if reverse {
                 focusable.last().copied()
             } else {
                 focusable.first().copied()
             }) else {
                 return Ok(Vec::new());
             };
-            return Ok(self.focus_element(id));
+            return Ok(self.focus_element_with_anchor(id, anchor));
         };
         let next_index = if reverse {
             current_index.checked_sub(1).unwrap_or(focusable.len() - 1)
         } else {
             (current_index + 1) % focusable.len()
         };
-        Ok(self.focus_element(focusable[next_index].2))
+        let (_, _, _, id, anchor) = focusable[next_index];
+        Ok(self.focus_element_with_anchor(id, anchor))
     }
 
     /// Return the bounded text-control selection as character offsets and a
@@ -7257,6 +7388,16 @@ impl NativeDocument {
                 reason: "only supported semantic controls can receive focus".into(),
             });
         }
+        if self.node(id).and_then(NativeNode::element_name) == Some("area") {
+            let anchor = self
+                .image_map_area_focus_anchors(id)
+                .into_iter()
+                .next()
+                .ok_or_else(|| NativeEngineError::TargetNotActionable {
+                    reason: "image-map link has no focusable rendered shape".into(),
+                })?;
+            return Ok(self.focus_element_with_anchor(id, Some(anchor)));
+        }
         Ok(self.focus_element(id))
     }
 
@@ -7268,10 +7409,12 @@ impl NativeDocument {
         if !node.state.focused {
             return Ok(Vec::new());
         }
-        self.node_mut(id)
+        let state = &mut self
+            .node_mut(id)
             .ok_or(NativeEngineError::DetachedTarget)?
-            .state
-            .focused = false;
+            .state;
+        state.focused = false;
+        state.focus_anchor_node_index = None;
         Ok(vec![(id, NativeEventKind::Blur)])
     }
 
@@ -8776,6 +8919,14 @@ impl NativeDocument {
         Ok(())
     }
     fn focus_element(&mut self, id: NativeNodeId) -> Vec<(NativeNodeId, NativeEventKind)> {
+        self.focus_element_with_anchor(id, None)
+    }
+
+    fn focus_element_with_anchor(
+        &mut self,
+        id: NativeNodeId,
+        focus_anchor: Option<NativeNodeId>,
+    ) -> Vec<(NativeNodeId, NativeEventKind)> {
         let focused_ids = self
             .nodes
             .iter()
@@ -8787,14 +8938,18 @@ impl NativeDocument {
         for focused_id in focused_ids {
             if let Some(node) = self.node_mut(focused_id) {
                 node.state.focused = false;
+                node.state.focus_anchor_node_index = None;
                 events.push((focused_id, NativeEventKind::Blur));
             }
         }
-        if let Some(node) = self.node_mut(id)
-            && !node.state.focused
-        {
+        if let Some(node) = self.node_mut(id) {
+            let focus_changed = !node.state.focused
+                || node.state.focus_anchor_node_index != focus_anchor.map(NativeNodeId::index);
             node.state.focused = true;
-            events.push((id, NativeEventKind::Focus));
+            node.state.focus_anchor_node_index = focus_anchor.map(NativeNodeId::index);
+            if focus_changed {
+                events.push((id, NativeEventKind::Focus));
+            }
         }
         self.initialize_selection_if_needed(id);
         events
@@ -9631,10 +9786,16 @@ impl NativeDocument {
     }
 
     pub(crate) fn has_native_keyboard_link_activation(&self, id: NativeNodeId) -> bool {
-        self.is_attached(id)
-            && self.node(id).is_some_and(|node| {
-                node.element_name() == Some("a") && node.attribute("href").is_some()
-            })
+        if !self.is_attached(id) {
+            return false;
+        }
+        match self.node(id).and_then(NativeNode::element_name) {
+            Some("a") => self
+                .node(id)
+                .is_some_and(|node| node.attribute("href").is_some()),
+            Some("area") => !self.image_map_area_focus_anchors(id).is_empty(),
+            _ => false,
+        }
     }
 
     pub(crate) fn reset_form_controls(
@@ -12477,12 +12638,7 @@ fn image_content_point(
 }
 
 fn image_map_shape_contains(node: &NativeNode, x: f64, y: f64) -> bool {
-    let shape = match node.attribute("shape") {
-        Some(value) if value.eq_ignore_ascii_case("default") => NativeImageMapShape::Default,
-        Some(value) if value.eq_ignore_ascii_case("circle") => NativeImageMapShape::Circle,
-        Some(value) if value.eq_ignore_ascii_case("poly") => NativeImageMapShape::Polygon,
-        _ => NativeImageMapShape::Rectangle,
-    };
+    let shape = image_map_shape(node);
     if shape == NativeImageMapShape::Default {
         return true;
     }
@@ -12529,6 +12685,63 @@ fn image_map_shape_contains(node: &NativeNode, x: f64, y: f64) -> bool {
     }
 }
 
+fn image_map_area_has_nonempty_shape(node: &NativeNode) -> bool {
+    let shape = image_map_shape(node);
+    if shape == NativeImageMapShape::Default {
+        return true;
+    }
+    let mut coordinates = parse_image_map_coordinates(node.attribute("coords"));
+    match shape {
+        NativeImageMapShape::Default => true,
+        NativeImageMapShape::Rectangle => {
+            if coordinates.len() < 4 {
+                return false;
+            }
+            coordinates.truncate(4);
+            let (mut left, mut top, mut right, mut bottom) = (
+                coordinates[0],
+                coordinates[1],
+                coordinates[2],
+                coordinates[3],
+            );
+            if left > right {
+                std::mem::swap(&mut left, &mut right);
+            }
+            if top > bottom {
+                std::mem::swap(&mut top, &mut bottom);
+            }
+            left < right && top < bottom
+        }
+        NativeImageMapShape::Circle => coordinates.len() >= 3 && coordinates[2] > 0.0,
+        NativeImageMapShape::Polygon => {
+            if coordinates.len() < 6 {
+                return false;
+            }
+            if !coordinates.len().is_multiple_of(2) {
+                coordinates.pop();
+            }
+            let xs = coordinates.iter().step_by(2).copied();
+            let (min_x, max_x) = xs.fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), x| {
+                (min.min(x), max.max(x))
+            });
+            let ys = coordinates.iter().skip(1).step_by(2).copied();
+            let (min_y, max_y) = ys.fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), y| {
+                (min.min(y), max.max(y))
+            });
+            min_x < max_x && min_y < max_y
+        }
+    }
+}
+
+fn image_map_shape(node: &NativeNode) -> NativeImageMapShape {
+    match node.attribute("shape") {
+        Some(value) if value.eq_ignore_ascii_case("default") => NativeImageMapShape::Default,
+        Some(value) if value.eq_ignore_ascii_case("circle") => NativeImageMapShape::Circle,
+        Some(value) if value.eq_ignore_ascii_case("poly") => NativeImageMapShape::Polygon,
+        _ => NativeImageMapShape::Rectangle,
+    }
+}
+
 fn parse_image_map_coordinates(value: Option<&str>) -> Vec<f64> {
     let Some(value) = value else {
         return Vec::new();
@@ -12569,6 +12782,12 @@ fn parse_image_map_coordinates(value: Option<&str>) -> Vec<f64> {
         );
     }
     coordinates
+}
+
+fn parse_native_tab_index(value: &str) -> Option<i32> {
+    let value = value.trim_matches(|character: char| character.is_ascii_whitespace());
+    let value = value.strip_prefix('+').unwrap_or(value);
+    value.parse::<i32>().ok()
 }
 
 fn image_map_polygon_contains(coords: &[f64], x: f64, y: f64) -> bool {

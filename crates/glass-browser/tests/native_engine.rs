@@ -13370,6 +13370,447 @@ async fn native_image_map_point_actions_route_dead_and_linked_areas() {
 }
 
 #[tokio::test]
+async fn native_image_map_keyboard_focus_and_enter_activation() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://image-map-keyboard",
+            "<a id='before' href='fixture://before'>Before</a><img id='first-image' usemap='#keyboard-map' style='display:block;width:100px;height:100px'><img id='second-image' usemap='#keyboard-map' style='display:block;width:100px;height:100px'><map name='keyboard-map'><area id='dead-area' coords='0,0,10,10'><area id='negative-area' tabindex='-1' shape='default' href='fixture://negative' alt='Skipped'><area id='empty-area' shape='rect' coords='0,0,5' href='fixture://empty' alt='Empty'><area id='keyboard-area' tabindex='2' shape='rect' coords='0,0,99,99' href='fixture://keyboard-stale' alt='Keyboard destination'><area id='zero-area' tabindex='0' shape='default' href='#zero' alt='Natural order destination'></map><a id='after' href='fixture://after'>After</a><script>globalThis.__areaKeyboardTrace = []; globalThis.__cancelAreaKeydown = false; globalThis.__cancelAreaClick = false; globalThis.__mutateAreaHref = false; const firstImage = document.getElementById('first-image'); const area = document.getElementById('keyboard-area'); firstImage.addEventListener('keydown', event => { __areaKeyboardTrace.push('image-keydown:' + event.key + ':' + event.target.id); if (__cancelAreaKeydown && event.key === 'Enter') event.preventDefault(); }); firstImage.addEventListener('keyup', event => __areaKeyboardTrace.push('image-keyup:' + event.key + ':' + event.target.id)); area.addEventListener('keydown', () => __areaKeyboardTrace.push('area-keydown')); area.addEventListener('click', event => { __areaKeyboardTrace.push('area-click:' + event.target.id); if (__cancelAreaClick) event.preventDefault(); if (__mutateAreaHref) { area.setAttribute('href', 'fixture://image-map-keyboard-destination'); area.setAttribute('target', '_blank'); } });</script>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://image-map-keyboard-destination",
+            "<title>Keyboard map destination</title>",
+        )
+        .unwrap()
+        .with_fixture("fixture://keyboard-stale", "<title>Stale area target</title>")
+        .unwrap()
+        .with_fixture("fixture://negative", "<title>Negative area</title>")
+        .unwrap()
+        .with_fixture("fixture://empty", "<title>Empty area</title>")
+        .unwrap()
+        .with_fixture("fixture://before", "<title>Before</title>")
+        .unwrap()
+        .with_fixture("fixture://after", "<title>After</title>")
+        .unwrap()
+        .with_initial_url("fixture://image-map-keyboard");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("first-image")
+    );
+    assert_eq!(
+        session
+            .script("document.getElementById('keyboard-area').matches(':focus')")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(true)
+    );
+
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("second-image")
+    );
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Shift+Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("first-image")
+    );
+
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("second-image")
+    );
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("before")
+    );
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("first-image")
+    );
+    assert_eq!(
+        session
+            .script("document.getElementById('zero-area').matches(':focus')")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(true)
+    );
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("second-image")
+    );
+    assert_eq!(
+        session
+            .script("document.getElementById('zero-area').matches(':focus')")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(true)
+    );
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("after")
+    );
+
+    session
+        .script("globalThis.__areaKeyboardTrace = []; globalThis.__cancelAreaKeydown = true; document.getElementById('keyboard-area').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("globalThis.__areaKeyboardTrace")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            "image-keydown:Enter:first-image",
+            "image-keyup:Enter:first-image"
+        ])
+    );
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("first-image")
+    );
+
+    session
+        .script("globalThis.__areaKeyboardTrace = []; globalThis.__cancelAreaKeydown = false; globalThis.__cancelAreaClick = true; document.getElementById('keyboard-area').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("globalThis.__areaKeyboardTrace")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            "image-keydown:Enter:first-image",
+            "area-click:keyboard-area",
+            "image-keyup:Enter:first-image",
+        ])
+    );
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 1);
+
+    session
+        .script("globalThis.__areaKeyboardTrace = []; globalThis.__cancelAreaClick = false; globalThis.__mutateAreaHref = true; document.getElementById('keyboard-area').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert!(targets.iter().any(|target| {
+        !target.active
+            && target.url == "fixture://image-map-keyboard-destination"
+            && target.opener_id.as_deref() == Some("native-context")
+    }));
+    assert_eq!(
+        session
+            .script("globalThis.__areaKeyboardTrace")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            "image-keydown:Enter:first-image",
+            "area-click:keyboard-area",
+            "image-keyup:Enter:first-image",
+        ])
+    );
+
+    session
+        .script("globalThis.__areaKeyboardTrace = []; globalThis.__mutateAreaHref = false; document.getElementById('keyboard-area').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("globalThis.__areaKeyboardTrace")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["image-keydown: :first-image", "image-keyup: :first-image"])
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_image_map_keyboard_focus_and_same_origin_frame_activation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..5 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let (content_type, extra_headers, body) = match path {
+                "/parent" => (
+                    "text/html",
+                    "",
+                    "<img id='parent-image' usemap='#parent-map' style='display:block;width:100px;height:100px'><map name='parent-map'><area id='parent-area' shape='default' href='/parent-destination' target='_blank' alt='Parent destination'><area id='parent-download' shape='rect' coords='0,0,10,10' href='/download' download='keyboard-map.txt' alt='Download area'></map><iframe id='child' src='/child'></iframe>",
+                ),
+                "/child" => (
+                    "text/html",
+                    "",
+                    "<img id='frame-image' usemap='#frame-map' style='display:block;width:100px;height:100px'><map name='frame-map'><area id='frame-area' shape='default' href='/frame-destination' alt='Frame destination'></map><script>globalThis.__frameKeyboardTrace = []; globalThis.__cancelFrameClick = true; const image = document.getElementById('frame-image'); const area = document.getElementById('frame-area'); image.addEventListener('keydown', event => __frameKeyboardTrace.push('keydown:' + event.target.id)); image.addEventListener('keyup', event => __frameKeyboardTrace.push('keyup:' + event.target.id)); area.addEventListener('click', event => { __frameKeyboardTrace.push('click:' + event.target.id); if (__cancelFrameClick) event.preventDefault(); });</script>",
+                ),
+                "/parent-destination" => ("text/html", "", "<title>Parent popup</title>"),
+                "/frame-destination" => (
+                    "text/html",
+                    "",
+                    "<title>Frame destination</title><p id='frame-destination'>loaded in same-origin frame</p>",
+                ),
+                "/download" => (
+                    "application/octet-stream",
+                    "Content-Disposition: attachment; filename=server-name.txt\r\n",
+                    "image map keyboard download bytes",
+                ),
+                other => panic!("unexpected image-map keyboard request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    let frames = session.native_list_frames().await.unwrap();
+    assert_eq!(frames.len(), 2);
+    let child_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .unwrap()
+        .id
+        .clone();
+
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("parent-image")
+    );
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert!(targets.iter().any(|target| {
+        !target.active && target.url == format!("http://{address}/parent-destination")
+    }));
+
+    let download_directory = std::env::temp_dir().join(format!(
+        "glass-native-image-map-keyboard-download-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&download_directory).unwrap();
+    session
+        .script("document.getElementById('parent-download').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    let download = session
+        .native_wait_for_download(&download_directory, Duration::from_secs(10))
+        .await
+        .unwrap();
+    assert_eq!(download.suggested_filename, "keyboard-map.txt");
+    assert_eq!(
+        fs::read(download_directory.join("keyboard-map.txt")).unwrap(),
+        b"image map keyboard download bytes"
+    );
+    fs::remove_dir_all(&download_directory).unwrap();
+
+    session.native_select_frame(&child_id).await.unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("frame-image")
+    );
+    session
+        .script("globalThis.__frameKeyboardTrace = []; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("location.pathname").await.unwrap().value,
+        serde_json::json!("/child")
+    );
+    assert_eq!(
+        session
+            .script("globalThis.__frameKeyboardTrace")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            "keydown:frame-image",
+            "click:frame-area",
+            "keyup:frame-image"
+        ])
+    );
+    session
+        .script("globalThis.__frameKeyboardTrace = []; globalThis.__cancelFrameClick = false; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("location.pathname").await.unwrap().value,
+        serde_json::json!("/frame-destination")
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_form_targets_keep_opener_and_reuse_named_targets() {
     let config = NativeEngineConfig::default()
         .with_fixture(

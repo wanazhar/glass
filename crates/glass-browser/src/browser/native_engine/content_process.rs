@@ -10191,15 +10191,16 @@ fn mutate_key_event_with_event_bridge(
         ));
     }
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
-    if current.focused_node() != node_id {
+    let focused_id = current.focused_node();
+    if current.keyboard_event_target(focused_id) != node_id {
         return Err(NativeEngineError::TargetNotActionable {
             reason: "key event target is not the focused page target".into(),
         });
     }
-    let keyboard_link_target = current.has_native_keyboard_link_activation(node_id);
-    let keyboard_checkable_kind = current.keyboard_checkable_kind(node_id);
+    let keyboard_link_target = current.has_native_keyboard_link_activation(focused_id);
+    let keyboard_checkable_kind = current.keyboard_checkable_kind(focused_id);
     let radio_arrow_target =
-        current.can_apply_radio_group_arrow_navigation(node_id, key, modifiers);
+        current.can_apply_radio_group_arrow_navigation(focused_id, key, modifiers);
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = Vec::new();
@@ -10260,10 +10261,10 @@ fn mutate_key_event_with_event_bridge(
     if kind == NativeEventKind::KeyDown
         && event_allowed
         && radio_arrow_target
-        && next.focused_node() == node_id
-        && next.can_apply_radio_group_arrow_navigation(node_id, key, modifiers)
+        && next.focused_node() == focused_id
+        && next.can_apply_radio_group_arrow_navigation(focused_id, key, modifiers)
     {
-        let default_events = next.apply_key_default(node_id, key, modifiers)?;
+        let default_events = next.apply_key_default(focused_id, key, modifiers)?;
         events.extend(default_events.clone());
         for (event_node, event_kind) in default_events {
             let Some(event_batch) = host_event_batch(&[(event_node.index(), event_kind)])? else {
@@ -10296,14 +10297,15 @@ fn mutate_key_event_with_event_bridge(
             events.extend(effects);
         }
     }
-    let keyboard_button_target_remains = next.has_native_keyboard_button_activation(node_id);
-    let keyboard_link_target_remains =
-        key == "Enter" && keyboard_link_target && next.has_native_keyboard_link_activation(node_id);
+    let keyboard_button_target_remains = next.has_native_keyboard_button_activation(focused_id);
+    let keyboard_link_target_remains = key == "Enter"
+        && keyboard_link_target
+        && next.has_native_keyboard_link_activation(focused_id);
     let keyboard_checkable_target_remains = key == " "
         && activate_space_on_keyup
         && keyboard_checkable_kind
-            .is_some_and(|expected| next.keyboard_checkable_kind(node_id) == Some(expected));
-    let should_activate = next.focused_node() == node_id
+            .is_some_and(|expected| next.keyboard_checkable_kind(focused_id) == Some(expected));
+    let should_activate = next.focused_node() == focused_id
         && ((kind == NativeEventKind::KeyDown
             && key == "Enter"
             && event_allowed
@@ -10320,7 +10322,7 @@ fn mutate_key_event_with_event_bridge(
             document_url,
             document_origin,
             viewport,
-            node_index,
+            focused_id.index(),
             0,
             loader.as_deref_mut(),
         )?;
@@ -10435,20 +10437,21 @@ fn mutate_key_shortcut_with_event_bridge(
         ));
     }
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
-    if current.focused_node() != node_id {
+    let focused_id = current.focused_node();
+    if current.keyboard_event_target(focused_id) != node_id {
         return Err(NativeEngineError::TargetNotActionable {
             reason: "shortcut target is not the focused page target".into(),
         });
     }
     let radio_arrow_target =
-        current.can_apply_radio_group_arrow_navigation(node_id, key, modifiers);
+        current.can_apply_radio_group_arrow_navigation(focused_id, key, modifiers);
     let text_default_target = current
         .focused_text_control()
-        .is_ok_and(|focused| focused == node_id);
-    let keyboard_button_target = current.has_native_keyboard_button_activation(node_id);
-    let keyboard_checkable_kind = current.keyboard_checkable_kind(node_id);
+        .is_ok_and(|focused| focused == focused_id);
+    let keyboard_button_target = current.has_native_keyboard_button_activation(focused_id);
+    let keyboard_checkable_kind = current.keyboard_checkable_kind(focused_id);
     let keyboard_link_target =
-        key == "Enter" && current.has_native_keyboard_link_activation(node_id);
+        key == "Enter" && current.has_native_keyboard_link_activation(focused_id);
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = Vec::new();
@@ -10494,21 +10497,21 @@ fn mutate_key_shortcut_with_event_bridge(
         false,
     )?;
     events.extend(effects);
-    if keydown_allowed && apply_default && next.focused_node() == node_id {
+    if keydown_allowed && apply_default && next.focused_node() == focused_id {
         let default_events = if key == "Tab" {
             next.apply_tab_focus(modifiers & 8 != 0)?
         } else if radio_arrow_target {
-            if next.can_apply_radio_group_arrow_navigation(node_id, key, modifiers) {
-                next.apply_key_default(node_id, key, modifiers)?
+            if next.can_apply_radio_group_arrow_navigation(focused_id, key, modifiers) {
+                next.apply_key_default(focused_id, key, modifiers)?
             } else {
                 Vec::new()
             }
         } else if text_default_target
             && next
                 .focused_text_control()
-                .is_ok_and(|focused| focused == node_id)
+                .is_ok_and(|focused| focused == focused_id)
         {
-            next.apply_key_default(node_id, key, modifiers)?
+            next.apply_key_default(focused_id, key, modifiers)?
         } else {
             Vec::new()
         };
@@ -10547,9 +10550,9 @@ fn mutate_key_shortcut_with_event_bridge(
     }
     if keydown_allowed
         && key == "Enter"
-        && next.focused_node() == node_id
-        && ((keyboard_button_target && next.has_native_keyboard_button_activation(node_id))
-            || (keyboard_link_target && next.has_native_keyboard_link_activation(node_id)))
+        && next.focused_node() == focused_id
+        && ((keyboard_button_target && next.has_native_keyboard_button_activation(focused_id))
+            || (keyboard_link_target && next.has_native_keyboard_link_activation(focused_id)))
     {
         dispatch_scroll_events(
             &mut next,
@@ -10567,7 +10570,7 @@ fn mutate_key_shortcut_with_event_bridge(
             document_url,
             document_origin,
             viewport,
-            node_index,
+            focused_id.index(),
             0,
             loader.as_deref_mut(),
         )?;
@@ -10579,7 +10582,7 @@ fn mutate_key_shortcut_with_event_bridge(
         ));
         next = clicked;
     }
-    let keyup_node_id = next.focused_node();
+    let keyup_node_id = next.keyboard_event_target(next.focused_node());
     let keyup_event_batch = host_key_event_batch_with_modifiers(
         keyup_node_id.index(),
         NativeEventKind::KeyUp,
@@ -10618,11 +10621,11 @@ fn mutate_key_shortcut_with_event_bridge(
     events.extend(effects);
     let keyboard_checkable_target_remains = modifiers == 0
         && keyboard_checkable_kind
-            .is_some_and(|expected| next.keyboard_checkable_kind(node_id) == Some(expected));
+            .is_some_and(|expected| next.keyboard_checkable_kind(focused_id) == Some(expected));
     if keydown_allowed
         && key == " "
-        && next.focused_node() == node_id
-        && ((keyboard_button_target && next.has_native_keyboard_button_activation(node_id))
+        && next.focused_node() == focused_id
+        && ((keyboard_button_target && next.has_native_keyboard_button_activation(focused_id))
             || keyboard_checkable_target_remains)
     {
         dispatch_scroll_events(
@@ -10641,7 +10644,7 @@ fn mutate_key_shortcut_with_event_bridge(
             document_url,
             document_origin,
             viewport,
-            node_index,
+            focused_id.index(),
             0,
             loader.as_deref_mut(),
         )?;

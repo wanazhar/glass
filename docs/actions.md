@@ -55,6 +55,15 @@ The guard is available for navigation, click, popup click, double-click, type,
 clear, check, uncheck, select, scroll, fill-form, drag, keyboard, and upload
 operations.
 
+The CLI accepts `--alt`, `--control`, `--meta`, and `--shift` on `click` and
+`click-at`. MCP accepts the same state as an optional `modifiers` object, and
+Rust callers use `SemanticAction::ClickWithModifiers`. The native click event
+exposes these flags before default handling. On native hyperlinks, Control,
+Meta, or Shift opens one background browsing context; canceling the click
+suppresses it. This is a Glass headless convention, not platform-specific
+window/tab behavior. External runtime adapters reject non-empty modifier
+state.
+
 ## Result
 
 A successful action returns bounded evidence:

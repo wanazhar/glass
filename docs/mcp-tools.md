@@ -133,8 +133,8 @@ rules from [semantic execution](semantic-execution.md).
 | `preflightNavigation` | Check URL policy without Chrome, DNS, or confirmation-token consumption. |
 | `navigate` | Navigate and return revision-aware page and identity metadata. |
 | `preflight` | Resolve a target and clickability without input, focus, scroll, or revision change. |
-| `click` | Click one unique locator or revisioned reference. |
-| `clickAt` | Policy-gated exact viewport-coordinate click; never retargeted. |
+| `click` | Click one unique locator or revisioned reference; optional `modifiers` object accepts `alt`, `control`, `meta`, and `shift` booleans. |
+| `clickAt` | Policy-gated exact viewport-coordinate click; never retargeted; accepts the same optional modifier object. |
 | `clickExpectPopup` | Click and return exactly one causally verified popup. |
 | `doubleClick` | Double-click one unique actionable target. |
 | `hover` | Move the pointer over one actionable target. |

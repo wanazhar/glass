@@ -518,6 +518,18 @@ fn action_source(action: &SemanticAction) -> Result<String, BrowserBackendError>
             "(() => {{ const e = document.querySelector({}); if (!e) return false; e.click(); return true; }})()",
             selector(target)?
         )),
+        SemanticAction::ClickWithModifiers { target, modifiers } => {
+            if !modifiers.is_empty() {
+                return Err(BrowserBackendError::UnsupportedOperation {
+                    operation: "action".into(),
+                    reason: "modifier-aware click is implemented by the native browser runtime only".into(),
+                });
+            }
+            Ok(format!(
+                "(() => {{ const e = document.querySelector({}); if (!e) return false; e.click(); return true; }})()",
+                selector(target)?
+            ))
+        }
         SemanticAction::Type { target, text } => Ok(format!(
             "(() => {{ const e = document.querySelector({}); if (!e) return false; e.focus(); e.value = {}; e.dispatchEvent(new Event('input', {{bubbles: true}})); e.dispatchEvent(new Event('change', {{bubbles: true}})); return true; }})()",
             selector(target)?,
@@ -686,6 +698,22 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.to_string().contains("CSS selector"));
+    }
+
+    #[test]
+    fn modifier_click_fails_closed_when_runtime_cannot_preserve_input_state() {
+        let error = action_source(&SemanticAction::ClickWithModifiers {
+            target: "button.submit".into(),
+            modifiers: crate::browser_backend::ClickModifiers {
+                control: true,
+                ..Default::default()
+            },
+        })
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            BrowserBackendError::UnsupportedOperation { .. }
+        ));
     }
 
     #[tokio::test]

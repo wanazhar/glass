@@ -202,6 +202,10 @@ pub enum NativeAction {
     Click {
         target: String,
     },
+    ClickWithModifiers {
+        target: String,
+        modifiers: u8,
+    },
     DoubleClick {
         target: String,
     },

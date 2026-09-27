@@ -11760,6 +11760,28 @@ pub(crate) fn host_event_batch(
     ))
 }
 
+pub(crate) fn host_click_event_batch_with_modifiers(
+    node_index: u32,
+    modifiers: u8,
+) -> Result<Vec<NativeHostEvent>, NativeEngineError> {
+    if modifiers > 15 {
+        return Err(NativeEngineError::invalid(
+            "native click modifiers",
+            "must be a bit mask from 0 through 15",
+        ));
+    }
+    let mut events = host_event_batch(&[(node_index, NativeEventKind::Click)])?
+        .expect("a single click always produces an event batch");
+    let event = events
+        .first_mut()
+        .expect("a single click always produces one host event");
+    event.alt_key = modifiers & 1 != 0;
+    event.ctrl_key = modifiers & 2 != 0;
+    event.meta_key = modifiers & 4 != 0;
+    event.shift_key = modifiers & 8 != 0;
+    Ok(events)
+}
+
 pub(crate) fn host_submit_event_batch(
     form_index: u32,
     submitter_index: Option<u32>,
@@ -17991,14 +18013,12 @@ fn validate_page_event_batch(events: &NativePageEventBatch) -> Result<(), Native
             }
         } else if event.key.is_some()
             || event.code.is_some()
-            || event.alt_key
-            || event.ctrl_key
-            || event.meta_key
-            || event.shift_key
+            || (event.event_type != "click"
+                && (event.alt_key || event.ctrl_key || event.meta_key || event.shift_key))
         {
             return Err(NativeEngineError::invalid(
-                "native host event keyboard metadata",
-                "keyboard fields require a keydown or keyup event",
+                "native host event modifier metadata",
+                "modifiers require a keydown, keyup, or click event",
             ));
         }
         if event.submitter_node_index.is_some() && event.event_type != "submit" {
@@ -20316,6 +20336,41 @@ mod native_host_event_tests {
             seen.value,
             serde_json::json!([key, key, true, true, true, false])
         );
+    }
+
+    #[test]
+    fn host_click_event_batch_exposes_all_modifier_flags() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("host-click-event-test")
+            .expect("native JavaScript runtime must construct");
+        let document = NativeDocument::empty();
+        let origin = NativeOrigin::Opaque;
+        let viewport = Viewport::default();
+        runtime
+            .evaluate(
+                "globalThis.addEventListener('click', event => { globalThis.__seenClickModifiers = [event.altKey, event.ctrlKey, event.metaKey, event.shiftKey]; event.preventDefault(); }); true",
+                &document,
+                "about:blank",
+                &origin,
+                viewport,
+            )
+            .expect("host click listener must install");
+
+        let events = host_click_event_batch_with_modifiers(u32::MAX, 15)
+            .expect("host click modifier metadata must validate");
+        let evaluation = runtime
+            .evaluate_with_host_events(&events, &document, "about:blank", &origin, viewport)
+            .expect("structured modifier click must dispatch");
+        assert_eq!(evaluation.value, serde_json::json!([false]));
+        let seen = runtime
+            .evaluate(
+                "globalThis.__seenClickModifiers",
+                &document,
+                "about:blank",
+                &origin,
+                viewport,
+            )
+            .expect("modifier flags must remain observable");
+        assert_eq!(seen.value, serde_json::json!([true, true, true, true]));
     }
 }
 

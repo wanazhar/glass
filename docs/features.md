@@ -587,7 +587,9 @@ evidence. Live terminal pixels are ephemeral and latest-frame-only.
 Glass supports unique-target click, double-click, hover, drag, type, clear,
 check, uncheck, select, key/down/up, shortcuts, bounded form fill, upload,
 coordinate click, scroll, dialog accept/dismiss, recognized consent dismissal,
-and popup-expecting click.
+and popup-expecting click. Native `click` and `click-at` also accept explicit
+Alt/Control/Meta/Shift flags; Control, Meta, or Shift on a hyperlink opens one
+background browsing context under the Glass Core Web Profile.
 
 Rust embedders can opt into process-backed, script-blocking native JavaScript
 dialogs through `BrowserSession::connect_native_with_modal_dialogs` and the

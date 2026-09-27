@@ -719,6 +719,12 @@ page drift. Re-observe and resolve again. Unique resolution, actionable state,
 policy, and expected revision are preconditions; failure occurs before input
 when those preconditions cannot be proven.
 
+For an explicit native primary-click modifier state, use
+`SemanticAction::ClickWithModifiers { target, modifiers }` with a
+`ClickModifiers` value. The native runtime exposes the flags to page listeners
+and applies the GCWP hyperlink context rule; browser UI keys and desktop tab
+activation are not inferred.
+
 ## Target and frame topology
 
 The canonical native `BrowserSession` lists page targets and the selected

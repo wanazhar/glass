@@ -42,8 +42,9 @@ use super::javascript::{
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
     apply_document_commands_with_font_face_ack, apply_indexed_db_changes, diff_indexed_db_changes,
-    execute_dynamic_page_scripts, execute_inline_scripts, frame_event_batch, host_event_batch,
-    host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
+    execute_dynamic_page_scripts, execute_inline_scripts, frame_event_batch,
+    host_click_event_batch_with_modifiers, host_event_batch, host_key_event_batch_with_modifiers,
+    host_submit_event_batch, load_indexed_db_profile,
     load_local_file_dynamic_module_graph_with_import_map,
     load_local_file_module_graph_with_import_map, load_service_worker_client_leases,
     load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
@@ -178,6 +179,10 @@ fn should_apply_native_key_default(key: &str, modifiers: i64) -> bool {
                     | "End"
                     | "Tab"
             ))
+}
+
+fn modifier_click_opens_new_target(modifiers: u8) -> bool {
+    modifiers & (2 | 4 | 8) != 0
 }
 
 fn public_cookie_from_profile(
@@ -3979,6 +3984,18 @@ impl NativeEngine {
         action: NativeAction,
     ) -> Result<NativeActionResult, NativeEngineError> {
         self.require_running("action")?;
+        let (action, click_modifiers) = match action {
+            NativeAction::ClickWithModifiers { target, modifiers } => {
+                if modifiers > 15 {
+                    return Err(NativeEngineError::invalid(
+                        "native click modifiers",
+                        "must be a bit mask from 0 through 15",
+                    ));
+                }
+                (NativeAction::Click { target }, modifiers)
+            }
+            action => (action, 0),
+        };
         self.scroll_action_targets_into_view(&action)?;
         if let NativeAction::DoubleClick { target } = action {
             self.action(NativeAction::Click {
@@ -3990,6 +4007,9 @@ impl NativeEngine {
             NativeAction::DoubleClick { .. } => {
                 unreachable!("double-click is handled before the native action match")
             }
+            NativeAction::ClickWithModifiers { .. } => {
+                unreachable!("modifier clicks are normalized before the native action match")
+            }
             NativeAction::Click { target } => {
                 let id = self.resolve_click_target(&target)?;
                 self.require_layout_actionable(id)?;
@@ -3999,9 +4019,14 @@ impl NativeEngine {
                 {
                     if self.javascript.is_some() {
                         self.preflight_local_link_navigation(&self.document, id, &href)?;
-                        return self.action_local_click_with_event_preflight(id);
+                        return self.action_local_click_with_event_preflight(id, click_modifiers);
                     }
-                    return self.activate_link(id, &href, false);
+                    return self.activate_link(
+                        id,
+                        &href,
+                        false,
+                        modifier_click_opens_new_target(click_modifiers),
+                    );
                 }
                 if let Some(form_id) = self.document.submit_control_form(id)
                     && self.javascript.is_none()
@@ -4009,7 +4034,7 @@ impl NativeEngine {
                     return self.action_local_submit_click_without_script(id, form_id);
                 }
                 if self.javascript.is_some() {
-                    return self.action_local_click_with_event_preflight(id);
+                    return self.action_local_click_with_event_preflight(id, click_modifiers);
                 }
                 (self.document.apply_click(id)?, true)
             }
@@ -4161,6 +4186,18 @@ impl NativeEngine {
         action: NativeAction,
     ) -> Result<NativeActionResult, NativeEngineError> {
         self.require_running("action")?;
+        let (action, click_modifiers) = match action {
+            NativeAction::ClickWithModifiers { target, modifiers } => {
+                if modifiers > 15 {
+                    return Err(NativeEngineError::invalid(
+                        "native click modifiers",
+                        "must be a bit mask from 0 through 15",
+                    ));
+                }
+                (NativeAction::Click { target }, modifiers)
+            }
+            action => (action, 0),
+        };
         self.scroll_action_targets_into_view(&action)?;
         if let NativeAction::DoubleClick { target } = action {
             Box::pin(self.action_async(NativeAction::Click {
@@ -4174,7 +4211,16 @@ impl NativeEngine {
             self.deliver_pending_external_storage_events().await?;
         }
         let Some(process) = self.content_process.as_mut() else {
-            return self.action(action);
+            return if click_modifiers == 0 {
+                self.action(action)
+            } else if let NativeAction::Click { target } = action {
+                self.action(NativeAction::ClickWithModifiers {
+                    target,
+                    modifiers: click_modifiers,
+                })
+            } else {
+                unreachable!("only click actions carry pointer modifiers")
+            };
         };
         if !process.refresh_health() {
             return Err(NativeEngineError::worker_failure(
@@ -4198,6 +4244,9 @@ impl NativeEngine {
         match action {
             NativeAction::DoubleClick { .. } => {
                 unreachable!("double-click is handled before the native async action match")
+            }
+            NativeAction::ClickWithModifiers { .. } => {
+                unreachable!("modifier clicks are normalized before the native async action match")
             }
             NativeAction::Check { target } => {
                 self.action_checked_async_with_click(target, true).await
@@ -4236,7 +4285,7 @@ impl NativeEngine {
                                 reason: "native content process is not running".into(),
                             })?;
                     process
-                        .mutate_click_with_event_preflight(id.index())
+                        .mutate_click_with_event_preflight(id.index(), click_modifiers)
                         .await?
                 };
                 let navigation = mutation.navigation.clone();
@@ -4268,7 +4317,8 @@ impl NativeEngine {
                 }
                 if click_allowed && let Some(href) = link_href {
                     let target_url = self.resolve_link_href(&href)?;
-                    let opens_new_target = self.document.link_opens_new_target(id);
+                    let opens_new_target = self.document.link_opens_new_target(id)
+                        || modifier_click_opens_new_target(click_modifiers);
                     let special_navigation = download_attribute.is_some() || opens_new_target;
                     if special_navigation
                         && !self
@@ -4594,6 +4644,7 @@ impl NativeEngine {
         let mut targets = Vec::new();
         match action {
             NativeAction::Click { target }
+            | NativeAction::ClickWithModifiers { target, .. }
             | NativeAction::DoubleClick { target }
             | NativeAction::Hover { target }
             | NativeAction::Type { target, .. }
@@ -6365,6 +6416,37 @@ impl NativeEngine {
         Ok(Some(evaluation))
     }
 
+    fn evaluate_local_click_event(
+        &mut self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+        modifiers: u8,
+    ) -> Result<Option<NativeScriptEvaluation>, NativeEngineError> {
+        let event_batch = host_click_event_batch_with_modifiers(node_id.index(), modifiers)?;
+        let Some(javascript) = self.javascript.as_ref() else {
+            return Ok(None);
+        };
+        javascript.set_scroll_offset(self.scroll_offset);
+        javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
+        self.sync_javascript_history();
+        javascript.set_sync_xhr_loader(&self.loader);
+        let evaluation_result = javascript.evaluate_with_host_events(
+            &event_batch,
+            document,
+            &self.url,
+            &self.origin,
+            self.config.viewport,
+        );
+        if let Some(updated_loader) = javascript.take_sync_xhr_loader() {
+            self.loader.merge_fetch_task_state(updated_loader)?;
+        }
+        let evaluation = evaluation_result?;
+        self.drain_local_popups()?;
+        self.drain_local_dialogs()?;
+        self.persist_local_script_state()?;
+        Ok(Some(evaluation))
+    }
+
     fn evaluate_local_submit_event(
         &mut self,
         document: &NativeDocument,
@@ -6440,6 +6522,7 @@ impl NativeEngine {
     fn action_local_click_with_event_preflight(
         &mut self,
         id: NativeNodeId,
+        modifiers: u8,
     ) -> Result<NativeActionResult, NativeEngineError> {
         let mut document = self.document.clone();
         let mut history_commands = Vec::new();
@@ -6455,7 +6538,7 @@ impl NativeEngine {
         let checkable_pre_activation = document.pre_activate_checkable(id)?;
 
         let click_evaluation = self
-            .evaluate_local_events(&document, &[(id, NativeEventKind::Click)])?
+            .evaluate_local_click_event(&document, id, modifiers)?
             .ok_or_else(|| NativeEngineError::Worker {
                 operation: "native click event preflight".into(),
                 reason: "native JavaScript realm disappeared during click preflight".into(),
@@ -6583,7 +6666,7 @@ impl NativeEngine {
             self.apply_local_history_commands_at(&history_commands, next_revision)?;
         self.record_effects(events);
         if let Some(href) = link_navigation {
-            return self.activate_link(id, &href, true);
+            return self.activate_link(id, &href, true, modifier_click_opens_new_target(modifiers));
         }
         if let Some((form_id, submitter)) = navigation {
             let request = self.document.form_submission_request_with_submitter(
@@ -6982,7 +7065,7 @@ impl NativeEngine {
 
         match navigation {
             Some(NativeLocalKeyboardNavigation::Link { target, href }) => {
-                return self.activate_link(target, &href, true);
+                return self.activate_link(target, &href, true, false);
             }
             Some(NativeLocalKeyboardNavigation::FormSubmit { form_id, submitter }) => {
                 let request = self.document.form_submission_request_with_submitter(
@@ -7636,6 +7719,7 @@ impl NativeEngine {
         id: super::dom::NativeNodeId,
         href: &str,
         click_already_applied: bool,
+        force_new_target: bool,
     ) -> Result<NativeActionResult, NativeEngineError> {
         let target_url = self.resolve_link_href(href)?;
         let revision = if click_already_applied {
@@ -7685,7 +7769,7 @@ impl NativeEngine {
                 accepted: true,
             });
         }
-        if self.document.link_opens_new_target(id) {
+        if force_new_target || self.document.link_opens_new_target(id) {
             let events = if click_already_applied {
                 Vec::new()
             } else {

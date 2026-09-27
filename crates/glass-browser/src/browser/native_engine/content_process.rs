@@ -51,13 +51,14 @@ use super::javascript::{
     NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
     NativeWorkerRegistry, NativeWorkerWebSocketCommand, apply_document_commands_with_font_face_ack,
     apply_page_script_evaluation, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_page_scripts, host_event_batch, host_key_event_batch,
-    host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
-    load_service_worker_cache_profile, load_service_worker_registration_profiles,
-    load_web_storage_profile, native_module_loader_name, order_page_scripts,
-    page_script_sources_to_scripts, resolve_module_request_url, save_service_worker_cache_profile,
-    save_web_storage_profile, static_module_requests, storage_key, validate_message_port_transfers,
-    validate_native_message_payload, validate_native_object_url_transfers,
+    execute_page_scripts, host_click_event_batch_with_modifiers, host_event_batch,
+    host_key_event_batch, host_key_event_batch_with_modifiers, host_submit_event_batch,
+    load_indexed_db_profile, load_service_worker_cache_profile,
+    load_service_worker_registration_profiles, load_web_storage_profile, native_module_loader_name,
+    order_page_scripts, page_script_sources_to_scripts, resolve_module_request_url,
+    save_service_worker_cache_profile, save_web_storage_profile, static_module_requests,
+    storage_key, validate_message_port_transfers, validate_native_message_payload,
+    validate_native_object_url_transfers,
 };
 use super::layout::NativePoint;
 use super::module_import_map::NativeModuleImportMap;
@@ -1827,12 +1828,13 @@ impl NativeContentProcess {
     pub(crate) async fn mutate_click_with_event_preflight(
         &mut self,
         node_index: u32,
+        modifiers: u8,
     ) -> Result<NativeContentMutation, NativeEngineError> {
         let id = self.next_id();
         self.mutate_with_request_kind(
             id,
             "mutate_click_preflight",
-            json!({"node_index": node_index}),
+            json!({"node_index": node_index, "modifiers": modifiers}),
         )
         .await
     }
@@ -6472,6 +6474,23 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "must be a uint32",
                         )
                     })?;
+                let modifiers = request
+                    .get("action")
+                    .and_then(|action| action.get("modifiers"))
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u8::try_from(value).ok())
+                    .unwrap_or(0);
+                if modifiers > 15 {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::invalid(
+                            "content-process click modifiers",
+                            "must be a bit mask from 0 through 15",
+                        ),
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                }
                 let Some(mut committed_url) = document_url.clone() else {
                     let response = content_error_response(
                         id,
@@ -6528,6 +6547,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     document_origin,
                     viewport,
                     node_index,
+                    modifiers,
                     resource_loader.as_mut(),
                 ) {
                     Ok((next, mutation)) => {
@@ -9397,6 +9417,7 @@ fn mutate_click_with_event_preflight(
     document_origin: &NativeOrigin,
     viewport: Viewport,
     node_index: u32,
+    modifiers: u8,
     mut loader: Option<&mut NativeResourceLoader>,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
@@ -9438,13 +9459,7 @@ fn mutate_click_with_event_preflight(
 
     let checkable_pre_activation = next.pre_activate_checkable(node_id)?;
 
-    let click_event_batch =
-        host_event_batch(&[(node_index, NativeEventKind::Click)])?.ok_or_else(|| {
-            NativeEngineError::Worker {
-                operation: "content process click preflight".into(),
-                reason: "native click event batch was empty".into(),
-            }
-        })?;
+    let click_event_batch = host_click_event_batch_with_modifiers(node_index, modifiers)?;
     let click_evaluation = runtime.evaluate_with_host_events(
         &click_event_batch,
         &next,
@@ -10306,6 +10321,7 @@ fn mutate_key_event_with_event_bridge(
             document_origin,
             viewport,
             node_index,
+            0,
             loader.as_deref_mut(),
         )?;
         let mutation = prepend_native_key_effects(click_mutation, events, history, scroll_commands);
@@ -10552,6 +10568,7 @@ fn mutate_key_shortcut_with_event_bridge(
             document_origin,
             viewport,
             node_index,
+            0,
             loader.as_deref_mut(),
         )?;
         activation_mutation = Some(prepend_native_key_effects(
@@ -10625,6 +10642,7 @@ fn mutate_key_shortcut_with_event_bridge(
             document_origin,
             viewport,
             node_index,
+            0,
             loader.as_deref_mut(),
         )?;
         activation_mutation = Some(prepend_native_key_effects(

@@ -725,6 +725,7 @@ impl NativeEngineBackend {
         &self,
         context_id: &str,
         target: &str,
+        modifiers: u8,
     ) -> Result<Option<BackendResponse>, BrowserBackendError> {
         let Some((x, y)) = parse_point_target(target).map_err(native_error)? else {
             return Ok(None);
@@ -754,8 +755,11 @@ impl NativeEngineBackend {
                 .ok_or_else(|| BrowserBackendError::SelectionFailed {
                     reason: "native point target frame disappeared before action dispatch".into(),
                 })?;
-        let action = NativeAction::Click {
-            target: format!("point={local_x},{local_y}"),
+        let target = format!("point={local_x},{local_y}");
+        let action = if modifiers == 0 {
+            NativeAction::Click { target }
+        } else {
+            NativeAction::ClickWithModifiers { target, modifiers }
         };
         let proxy_updates = self.window_proxy_updates(&frame_id)?;
         let (revision, accepted, runtime_effects, owner_id) = self
@@ -800,13 +804,24 @@ impl NativeEngineBackend {
         // when the point belongs to the selected document (or misses the
         // viewport), leave it for the ordinary native action path so the
         // engine can perform hit testing and return a typed action error.
-        if matches!(action, SemanticAction::Click { target } if target.starts_with("point=")) {
+        if matches!(
+            action,
+            SemanticAction::Click { target }
+                | SemanticAction::ClickWithModifiers { target, .. }
+                if target.starts_with("point=")
+        ) {
             return Ok(None);
         }
         let native_action = match action {
             SemanticAction::Click { target } => NativeAction::Click {
                 target: target.clone(),
             },
+            SemanticAction::ClickWithModifiers { target, modifiers } => {
+                NativeAction::ClickWithModifiers {
+                    target: target.clone(),
+                    modifiers: modifiers.native_mask(),
+                }
+            }
             SemanticAction::DoubleClick { target } => NativeAction::DoubleClick {
                 target: target.clone(),
             },
@@ -841,6 +856,7 @@ impl NativeEngineBackend {
         };
         let locator_targets = match action {
             SemanticAction::Click { target }
+            | SemanticAction::ClickWithModifiers { target, .. }
             | SemanticAction::DoubleClick { target }
             | SemanticAction::Hover { target }
             | SemanticAction::Type { target, .. }
@@ -965,6 +981,12 @@ impl NativeEngineBackend {
     ) -> Result<ActionResult, BrowserBackendError> {
         let native_action = match action {
             SemanticAction::Click { target } => NativeAction::Click { target },
+            SemanticAction::ClickWithModifiers { target, modifiers } => {
+                NativeAction::ClickWithModifiers {
+                    target,
+                    modifiers: modifiers.native_mask(),
+                }
+            }
             SemanticAction::DoubleClick { target } => NativeAction::DoubleClick { target },
             SemanticAction::Hover { target } => NativeAction::Hover { target },
             SemanticAction::Drag {
@@ -5720,12 +5742,21 @@ impl BrowserBackend for NativeEngineBackend {
             };
             if let (BackendOperation::Action, BackendRequest::Action(action_request)) =
                 (&operation, &request)
-                && let SemanticAction::Click { target } = &action_request.action
-                && let Some(response) = self
-                    .dispatch_point_click(&action_request.context_id, target)
-                    .await?
             {
-                return Ok(response);
+                let point_click = match &action_request.action {
+                    SemanticAction::Click { target } => Some((target.as_str(), 0)),
+                    SemanticAction::ClickWithModifiers { target, modifiers } => {
+                        Some((target.as_str(), modifiers.native_mask()))
+                    }
+                    _ => None,
+                };
+                if let Some((target, modifiers)) = point_click
+                    && let Some(response) = self
+                        .dispatch_point_click(&action_request.context_id, target, modifiers)
+                        .await?
+                {
+                    return Ok(response);
+                }
             }
             if let (BackendOperation::Action, BackendRequest::Action(action_request)) =
                 (&operation, &request)
@@ -5856,6 +5887,7 @@ impl BrowserBackend for NativeEngineBackend {
                     let updates_focus = matches!(
                         &request.action,
                         SemanticAction::Click { .. }
+                            | SemanticAction::ClickWithModifiers { .. }
                             | SemanticAction::DoubleClick { .. }
                             | SemanticAction::Drag { .. }
                             | SemanticAction::Type { .. }
@@ -5870,6 +5902,12 @@ impl BrowserBackend for NativeEngineBackend {
                     );
                     let action = match request.action {
                         SemanticAction::Click { target } => NativeAction::Click { target },
+                        SemanticAction::ClickWithModifiers { target, modifiers } => {
+                            NativeAction::ClickWithModifiers {
+                                target,
+                                modifiers: modifiers.native_mask(),
+                            }
+                        }
                         SemanticAction::DoubleClick { target } => {
                             NativeAction::DoubleClick { target }
                         }

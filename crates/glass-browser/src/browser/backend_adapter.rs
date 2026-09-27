@@ -421,6 +421,17 @@ async fn execute_action(
             .click(target)
             .await
             .map_err(|error| translate_error("action", error.as_ref()))?,
+        SemanticAction::ClickWithModifiers { modifiers, .. } if !modifiers.is_empty() => {
+            return Err(BrowserBackendError::UnsupportedOperation {
+                operation: "action".into(),
+                reason: "modifier-aware click is implemented by the native browser runtime only"
+                    .into(),
+            });
+        }
+        SemanticAction::ClickWithModifiers { target, .. } => session
+            .click(target)
+            .await
+            .map_err(|error| translate_error("action", error.as_ref()))?,
         SemanticAction::DoubleClick { target } => session
             .double_click(target)
             .await

@@ -1765,6 +1765,11 @@ pub enum SemanticAction {
         #[serde(deserialize_with = "deserialize_bounded_string")]
         target: String,
     },
+    ClickWithModifiers {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        target: String,
+        modifiers: ClickModifiers,
+    },
     DoubleClick {
         #[serde(deserialize_with = "deserialize_bounded_string")]
         target: String,
@@ -1823,6 +1828,36 @@ pub enum SemanticAction {
         delta_x: i32,
         delta_y: i32,
     },
+}
+
+/// Keyboard modifiers held during one primary-button browser click.
+///
+/// The native backend exposes these on the page's cancelable click event and
+/// applies the Glass Core Web Profile's hyperlink-context convention.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClickModifiers {
+    #[serde(default)]
+    pub alt: bool,
+    #[serde(default)]
+    pub control: bool,
+    #[serde(default)]
+    pub meta: bool,
+    #[serde(default)]
+    pub shift: bool,
+}
+
+impl ClickModifiers {
+    pub const fn is_empty(self) -> bool {
+        !(self.alt || self.control || self.meta || self.shift)
+    }
+
+    pub(crate) const fn native_mask(self) -> u8 {
+        (self.alt as u8)
+            | ((self.control as u8) << 1)
+            | ((self.meta as u8) << 2)
+            | ((self.shift as u8) << 3)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2019,9 +2054,10 @@ impl BackendContract for EvidenceResult {
 impl BackendContract for SemanticAction {
     fn validate(&self) -> Result<(), BrowserBackendError> {
         match self {
-            Self::Click { target } | Self::DoubleClick { target } | Self::Hover { target } => {
-                validate_text("action target", target, MAX_TEXT_BYTES)
-            }
+            Self::Click { target }
+            | Self::ClickWithModifiers { target, .. }
+            | Self::DoubleClick { target }
+            | Self::Hover { target } => validate_text("action target", target, MAX_TEXT_BYTES),
             Self::Drag {
                 source,
                 destination,

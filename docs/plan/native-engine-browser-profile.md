@@ -331,22 +331,22 @@ Slice 799 converts direct worker-global structured-clone decode failures into
 `messageerror` delivery, adds the ordered `onmessageerror` EventHandler slot,
 reports callback exceptions using the existing owner policy, and preserves
 worker operation for later valid messages. Process-backed HTTP regressions
-exercise Dedicated Worker and Service Worker dispatch. The Service Worker
-case currently reuses the generic `MessageEvent` shell; its required
-`ExtendableMessageEvent` class, source/origin metadata, and extendable lifetime
-remain a separate required GCWP item. MessagePort and page-side Worker proxy
-decode failures are also outside this slice; see
+exercise Dedicated Worker and Service Worker dispatch. At that checkpoint the
+Service Worker case reused the generic `MessageEvent` shell; Slice 800 now
+provides the required `ExtendableMessageEvent`, source/origin metadata, and
+extendable lifetime. MessagePort and page-side Worker proxy decode failures
+are also outside this slice; see
 [slice 799](tasks/native-engine-browser-799.md).
 
-Slice 800 contracts native page-to-Service-Worker `message` and
+Slice 800 implements native page-to-Service-Worker `message` and
 `messageerror` delivery as trusted `ExtendableMessageEvent`s, not
 `MessageEvent`s. The event preserves the sending client's projected identity
-and serialized origin, exposes the bounded frozen ports array, and extends the
-worker event turn while active `waitUntil()` promises settle, including
-continuation-added promises. Rejections are drained without becoming a
-synchronous `postMessage()` exception or client error event. This contract
-does not certify all Client/WindowClient Web IDL, other message source kinds,
-or full Service Worker conformance; implementation evidence is pending. See
+and serialized origin, exposes the frozen ports array, and extends the worker
+turn while active `waitUntil()` promises settle, including continuation-added
+promises. Rejections are drained without becoming a synchronous
+`postMessage()` exception or client error event. Focused local regressions
+pass; this does not certify all Client/WindowClient Web IDL, other message
+source kinds, remote CI, or full Service Worker conformance. See
 [slice 800](tasks/native-engine-browser-800.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,

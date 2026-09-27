@@ -3761,22 +3761,21 @@ Worker globals expose an ordered `onmessageerror` slot with HTML-style
 replacement, clearing, and reactivation behavior; callback errors follow the
 existing worker-global reporting policy and dispatch snapshots skip a slot
 deactivated during delivery. HTTP(S) process regressions verify Dedicated
-Worker and current Service Worker dispatch recovery plus later valid work.
-The Service Worker path still uses its existing generic `MessageEvent` shell
-and lacks required `ExtendableMessageEvent` identity, client `source`/`origin`,
-and `waitUntil()` lifetime handling; those remain explicit issue #40 work, not
-conformance evidence. MessagePort and page-side Worker proxy decode failures
-are separate. See
+Worker and Service Worker dispatch recovery plus later valid work. At that
+checkpoint the Service Worker path still used the generic `MessageEvent`
+shell; Slice 800 supersedes it with `ExtendableMessageEvent`, validated client
+`source`/`origin`, and `waitUntil()` lifetime handling. MessagePort and
+page-side Worker proxy decode failures are separate. See
 [task 799](../plan/tasks/native-engine-browser-799.md).
 
-Slice 800 contracts the page-to-Service-Worker `message` and `messageerror`
-path to use trusted `ExtendableMessageEvent`s with the sending client's
-projection and origin, plus active-event `waitUntil()` settlement through the
-existing host-command loop. It explicitly preserves the specification's
-`ExtendableEvent` inheritance rather than treating these as `MessageEvent`s.
-The contract records rejection behavior and the still-open full Client
-interfaces; implementation and process-backed verification remain pending.
-See [task 800](../plan/tasks/native-engine-browser-800.md).
+Slice 800 implements the page-to-Service-Worker `message` and `messageerror`
+path with trusted `ExtendableMessageEvent`s, the sending client's validated
+projection and serialized origin, and active-event `waitUntil()` settlement
+through the existing host-command loop. The event preserves the specified
+`ExtendableEvent` inheritance rather than deriving from `MessageEvent`.
+Focused local process-backed behavior and malformed-envelope dispatch tests
+pass; remote CI, full Client interfaces, and full Service Worker conformance
+remain open. See [task 800](../plan/tasks/native-engine-browser-800.md).
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader

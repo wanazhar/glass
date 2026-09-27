@@ -7842,11 +7842,12 @@ async fn resolve_service_worker_commands(
             }
             NativeScriptCommand::ServiceWorkerPostMessage {
                 scope,
+                source_origin,
                 data,
                 transfer_ports,
             } => {
                 registry
-                    .post_message(loader, &scope, &data, &transfer_ports)
+                    .post_message(loader, &scope, &source_origin, &data, &transfer_ports)
                     .await?;
                 pending.extend(runtime.take_service_worker_commands());
             }

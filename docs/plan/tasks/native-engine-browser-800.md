@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-800
 scope: glass-browser/service-worker-extendable-message-events
-status: contracted
+status: completed locally
 depends-on: [native-engine-browser-799]
 ---
 
@@ -78,13 +78,14 @@ through its `waitUntil()` promises.
   client-message commands produced by the message event's lifetime work. Keep
   sender-side structured serialization/transfer errors synchronous and
   unchanged; preserve normal transferred-port delivery.
-- Add process-backed HTTP(S) coverage for normal and malformed messages. Check
-  event constructor/prototype identity and fields, sender origin/source ID and
-  URL, a functional source reply, frozen ports, and no message dispatch on a
-  failed decode. Exercise `waitUntil()` with an asynchronous host operation,
-  extension from a pending continuation, late-call `InvalidStateError`, a
-  rejected lifetime promise, and delivery of a later valid message without a
-  client error or worker termination.
+- Add process-backed HTTP(S) coverage for normal messages. Check event
+  constructor/prototype identity and fields, sender origin/source ID and URL,
+  a functional source reply, frozen ports, and `waitUntil()` with an
+  asynchronous host operation, continuation-added work, late-call
+  `InvalidStateError`, a rejected lifetime promise, and later-message delivery
+  without a client error or worker termination. Exercise malformed internal
+  clone envelopes at the runtime dispatch boundary; the page serializer cannot
+  produce such an envelope, so no public corruption hook is added.
 - Do not broaden this slice to ServiceWorkerClient-to-page `postMessage`,
   MessagePort/SharedWorker-port events, worker-client or MessagePort source
   variants, page-side Worker proxy decoding, transfer rollback, all
@@ -120,4 +121,32 @@ through its `waitUntil()` promises.
 
 ## Implementation and verification
 
-Contract checkpoint only. Implementation and regression evidence are pending.
+The page-to-worker command now carries the page's serialized origin. The
+registry verifies it against both the current client URL and registration
+origin, resolves the sender from its validated client projection, and only
+then registers transfer routes. The runtime dispatches through a dedicated
+Service Worker message path, constructs `ExtendableMessageEvent` for both
+`message` and decode-failure `messageerror`, and waits for its active lifetime
+promises. The host dispatcher is captured and removed from the worker global
+before worker-authored script runs, so worker code cannot forge a trusted host
+dispatch. Rejected lifetime promises are consumed without changing the
+sender's synchronous result or reporting a client/global error. The existing
+host settlement loop continues to process fetch, cache, and client-message
+commands from the event lifetime; transferred MessagePort delivery remains
+unchanged.
+
+Passed locally:
+
+- `cargo check -p glass-browser --lib --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine native_content_process_service_worker_message_events_extend_lifetime --locked --quiet` (1 passed)
+- `cargo test -p glass-browser --lib malformed_service_worker_message_dispatches_extendable_messageerror --locked --quiet` (1 passed)
+- `cargo test -p glass-browser --test native_engine native_content_process_service_worker_transfers_message_port_round_trip --locked --quiet` (1 passed)
+- `cargo test -p glass-browser --test native_engine native_content_process_service_worker_message_callback_errors_stay_global --locked --quiet` (1 passed)
+- `cargo fmt --all -- --check`, `git diff --check`
+
+The normal message/lifetime regression is process-backed over local HTTP. The
+malformed envelope is tested at the runtime dispatch boundary, not through a
+page-originated process path, because normal page serialization cannot emit
+malformed clone data. Remote CI, full Client/WindowClient interfaces,
+cross-platform behavior, and full Service Worker/WPT conformance remain open
+issue #40 work.

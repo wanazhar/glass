@@ -1271,15 +1271,57 @@ impl NativeServiceWorkerRegistry {
         &mut self,
         loader: &mut NativeResourceLoader,
         scope: &str,
+        source_origin: &str,
         data: &Value,
         transfer_ports: &[NativeMessagePortTransfer],
     ) -> Result<(), NativeEngineError> {
         let Some(worker_id) = self.registrations.get(scope).map(|worker| worker.id) else {
             return Ok(());
         };
+        validate_url_text("native service worker message origin", source_origin)?;
+        let current_client_url = self.current_client_url.as_deref().ok_or_else(|| {
+            NativeEngineError::invalid(
+                "native service worker message source",
+                "current client is unavailable",
+            )
+        })?;
+        let current_client = Url::parse(without_fragment(current_client_url)).map_err(|_| {
+            NativeEngineError::invalid(
+                "native service worker message source",
+                "current client URL is invalid",
+            )
+        })?;
+        let source_origin_state = NativeOrigin::from_url(&current_client)?;
+        let scope_url = Url::parse(without_fragment(scope)).map_err(|_| {
+            NativeEngineError::invalid("native service worker scope", "URL is invalid")
+        })?;
+        if source_origin_state != NativeOrigin::from_url(&scope_url)?
+            || source_origin_state.serialized() != source_origin
+        {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "service worker message source must match the current same-origin client"
+                    .into(),
+            });
+        }
         validate_message_port_transfers(transfer_ports)?;
-        self.register_page_transfers(worker_id, transfer_ports)?;
         let clients = self.client_states_for_worker(scope)?;
+        let source = clients
+            .iter()
+            .find(|client| {
+                client.get("clientId").and_then(Value::as_str) == Some(&self.current_client_id)
+            })
+            .cloned()
+            .filter(|client| {
+                client.get("clientUrl").and_then(Value::as_str)
+                    == Some(without_fragment(current_client_url))
+            })
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native service worker message source",
+                    "current client is missing from the validated worker projection",
+                )
+            })?;
+        self.register_page_transfers(worker_id, transfer_ports)?;
         let evaluation = {
             let worker = self
                 .registrations
@@ -1291,6 +1333,9 @@ impl NativeServiceWorkerRegistry {
                 &worker.script_url,
                 data,
                 transfer_ports,
+                &source,
+                source_origin,
+                worker.is_module,
             )
         };
         let evaluation = match evaluation {

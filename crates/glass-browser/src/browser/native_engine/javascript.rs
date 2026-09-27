@@ -347,6 +347,7 @@ pub(crate) enum NativeScriptCommand {
     },
     ServiceWorkerPostMessage {
         scope: String,
+        source_origin: String,
         data: serde_json::Value,
         #[serde(default)]
         transfer_ports: Vec<NativeMessagePortTransfer>,
@@ -1329,6 +1330,9 @@ enum NativeWorkerDispatch<'a> {
     },
     ServiceWorkerLifecycle {
         event_type: &'a str,
+    },
+    ServiceWorkerMessage {
+        payload: &'a serde_json::Value,
     },
     WebSocket {
         socket_id: u32,
@@ -14274,6 +14278,7 @@ impl NativeJavaScriptRuntime {
             }
             NativeScriptCommand::ServiceWorkerPostMessage {
                 scope,
+                source_origin,
                 data,
                 transfer_ports,
             } => {
@@ -14283,6 +14288,14 @@ impl NativeJavaScriptRuntime {
                         "native service worker scope",
                         MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
                         scope.len(),
+                    ));
+                }
+                validate_url_text("native service worker message origin", source_origin)?;
+                if source_origin.len() > MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native service worker message origin",
+                        MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
+                        source_origin.len(),
                     ));
                 }
                 let encoded = serde_json::to_vec(data).map_err(|_| NativeEngineError::Worker {
@@ -15384,11 +15397,34 @@ impl NativeJavaScriptRuntime {
                         CaughtError::from_error(&ctx, error)
                     ),
                 })?;
+            let service_worker_message_dispatch = if service_worker {
+                let dispatcher: Function = ctx
+                    .globals()
+                    .get("__glassDispatchServiceWorkerMessage")
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "prepare native Service Worker message dispatcher".into(),
+                        reason: format!(
+                            "native Service Worker message dispatcher was unavailable: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?;
+                ctx.eval::<(), _>("delete globalThis.__glassDispatchServiceWorkerMessage;")
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "protect native Service Worker message dispatcher".into(),
+                        reason: format!(
+                            "native Service Worker message dispatcher could not be hidden: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?;
+                Some(dispatcher)
+            } else {
+                None
+            };
             if service_worker {
                 dispatch_service_worker_clients(&ctx, &self.service_worker_clients())?;
             }
             let await_dispatch = if let Some(dispatch) = dispatch {
-                dispatch_worker_event(ctx.clone(), dispatch)?
+                dispatch_worker_event(ctx.clone(), dispatch, service_worker_message_dispatch)?
             } else {
                 false
             };
@@ -15864,11 +15900,16 @@ impl NativeJavaScriptRuntime {
         worker_url: &str,
         data: &serde_json::Value,
         transfer_ports: &[NativeMessagePortTransfer],
+        source: &serde_json::Value,
+        source_origin: &str,
+        is_module: bool,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         validate_message_port_transfers(transfer_ports)?;
         let payload = serde_json::json!({
             "data": data,
             "transfer_ports": transfer_ports,
+            "source": source,
+            "source_origin": source_origin,
         });
         validate_native_message_payload(&payload, "native service worker message")?;
         let bootstrap = service_worker_bootstrap(
@@ -15876,7 +15917,7 @@ impl NativeJavaScriptRuntime {
             worker_url,
             self.now_ms(),
             &BTreeMap::new(),
-            false,
+            is_module,
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event(
             worker_id,
@@ -15885,12 +15926,8 @@ impl NativeJavaScriptRuntime {
             "undefined;",
             bootstrap,
             true,
-            false,
-            Some(NativeWorkerDispatch::Message {
-                data,
-                transfer_ports,
-                object_urls: &[],
-            }),
+            true,
+            Some(NativeWorkerDispatch::ServiceWorkerMessage { payload: &payload }),
         )
     }
 
@@ -18930,9 +18967,10 @@ fn dispatch_page_callback(
     Ok(())
 }
 
-fn dispatch_worker_event(
-    ctx: rquickjs::Ctx<'_>,
+fn dispatch_worker_event<'js>(
+    ctx: rquickjs::Ctx<'js>,
     dispatch: NativeWorkerDispatch<'_>,
+    service_worker_message_dispatch: Option<Function<'js>>,
 ) -> Result<bool, NativeEngineError> {
     Ok(match dispatch {
         NativeWorkerDispatch::SharedWorkerConnect { transfer_ports } => {
@@ -19113,6 +19151,20 @@ fn dispatch_worker_event(
             )?;
             true
         }
+        NativeWorkerDispatch::ServiceWorkerMessage { payload } => {
+            let dispatcher =
+                service_worker_message_dispatch.ok_or_else(|| NativeEngineError::Worker {
+                    operation: "dispatch native service worker message".into(),
+                    reason: "native Service Worker message dispatcher was unavailable".into(),
+                })?;
+            dispatch_worker_promise_with_function(
+                &ctx,
+                dispatcher,
+                "native service worker message",
+                payload,
+            )?;
+            true
+        }
         NativeWorkerDispatch::WebSocket {
             socket_id,
             payload,
@@ -19191,7 +19243,6 @@ fn dispatch_worker_promise(
     operation: &str,
     payload: &serde_json::Value,
 ) -> Result<(), NativeEngineError> {
-    let payload = native_structured_payload(ctx, payload, operation)?;
     let dispatch: Function =
         ctx.globals()
             .get(global_name)
@@ -19202,6 +19253,16 @@ fn dispatch_worker_promise(
                     CaughtError::from_error(ctx, error)
                 ),
             })?;
+    dispatch_worker_promise_with_function(ctx, dispatch, operation, payload)
+}
+
+fn dispatch_worker_promise_with_function<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    dispatch: Function<'js>,
+    operation: &str,
+    payload: &serde_json::Value,
+) -> Result<(), NativeEngineError> {
+    let payload = native_structured_payload(ctx, payload, operation)?;
     let promise: Value =
         dispatch
             .call::<_, Value>((payload,))
@@ -28564,6 +28625,121 @@ fn worker_bootstrap(
     Ok(bootstrap)
 }
 
+#[cfg(test)]
+mod service_worker_message_event_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn malformed_service_worker_message_dispatches_extendable_messageerror() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("sw-messageerror-dispatch")
+            .expect("native JavaScript runtime is available");
+        let worker_url = "https://message-events.example/sw.js";
+        let source = json!({
+            "clientId": "message-client",
+            "clientUrl": "https://message-events.example/page",
+            "clientType": "window",
+            "frameType": "top-level",
+            "visibilityState": "visible",
+            "focused": true,
+            "controlled": true,
+        });
+        runtime.set_service_worker_clients(vec![source.clone()]);
+        runtime
+            .evaluate_service_worker_source(
+                7,
+                worker_url,
+                None,
+                r#"
+globalThis.messageCount = 0;
+globalThis.messageErrorObservation = null;
+addEventListener('message', () => { messageCount += 1; });
+addEventListener('messageerror', event => {
+  globalThis.messageErrorObservation = {
+    type: event.type,
+    isTrusted: event.isTrusted,
+    isEvent: event instanceof Event,
+    isExtendableEvent: event instanceof ExtendableEvent,
+    isExtendableMessageEvent: event instanceof ExtendableMessageEvent,
+    isMessageEvent: event instanceof MessageEvent,
+    dataIsNull: event.data === null,
+    origin: event.origin,
+    lastEventId: event.lastEventId,
+    sourceId: event.source.id,
+    sourceUrl: event.source.url,
+    portsLength: event.ports.length,
+    portsFrozen: Object.isFrozen(event.ports),
+  };
+  event.waitUntil(Promise.resolve());
+  event.source.postMessage({ kind: 'messageerror-reply' });
+});
+"#,
+                &BTreeMap::new(),
+            )
+            .expect("Service Worker source evaluates");
+        let malformed = json!({
+            "__glassMessageClone": "glass-native-structured-clone-v1",
+            "root": { "ref": 0 },
+            "nodes": [{ "type": "invalid-node" }],
+        });
+        let evaluation = runtime
+            .dispatch_service_worker_message(
+                7,
+                worker_url,
+                &malformed,
+                &[],
+                &source,
+                "https://message-events.example",
+                false,
+            )
+            .expect("malformed clone is delivered as messageerror");
+        assert!(!evaluation.top_level_await_pending);
+        assert!(evaluation.commands.iter().any(|command| matches!(
+            command,
+            NativeScriptCommand::ServiceWorkerClientPostMessage {
+                worker_id: 7,
+                client_id,
+                ..
+            } if client_id == "message-client"
+        )));
+
+        let bootstrap =
+            service_worker_bootstrap(7, worker_url, runtime.now_ms(), &BTreeMap::new(), false)
+                .expect("Service Worker bootstrap is valid");
+        let observation = runtime
+            .evaluate_worker_source_with_bootstrap(
+                7,
+                worker_url,
+                None,
+                "({ messageCount, messageErrorObservation })",
+                bootstrap,
+                true,
+                false,
+            )
+            .expect("Service Worker event result remains inspectable")
+            .value;
+        assert_eq!(observation["messageCount"], 0);
+        assert_eq!(
+            observation["messageErrorObservation"],
+            json!({
+                "type": "messageerror",
+                "isTrusted": true,
+                "isEvent": true,
+                "isExtendableEvent": true,
+                "isExtendableMessageEvent": true,
+                "isMessageEvent": false,
+                "dataIsNull": true,
+                "origin": "https://message-events.example",
+                "lastEventId": "",
+                "sourceId": "message-client",
+                "sourceUrl": "https://message-events.example/page",
+                "portsLength": 0,
+                "portsFrozen": true,
+            })
+        );
+    }
+}
+
 fn service_worker_bootstrap(
     worker_id: u32,
     worker_url: &str,
@@ -30346,6 +30522,7 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
       pushCommand({
         kind: "serviceWorkerPostMessage",
         scope: String(this.__glassServiceWorkerScope || ""),
+        source_origin: serviceWorkerOrigin,
         data: envelope.data,
         transfer_ports: envelope.transfer_ports,
       });
@@ -32075,6 +32252,149 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     };
     return Object.freeze(client);
   };
+  const ServiceWorkerExtendableEventNative = typeof globalThis.__glassExtendableEventConstructor === "function"
+    ? globalThis.__glassExtendableEventConstructor
+    : function ExtendableEvent(type, init) {
+        if (!(this instanceof ServiceWorkerExtendableEventNative))
+          throw new TypeError("ExtendableEvent requires new");
+        WorkerEventNative.call(this, type, init);
+      };
+  if (!globalThis.__glassExtendableEventConstructor) {
+    ServiceWorkerExtendableEventNative.prototype = Object.create(WorkerEventNative.prototype);
+    ServiceWorkerExtendableEventNative.prototype.constructor = ServiceWorkerExtendableEventNative;
+    Object.defineProperty(ServiceWorkerExtendableEventNative.prototype, "waitUntil", {
+      configurable: true,
+      writable: true,
+      value() {
+        throw new WorkerDOMExceptionNative(
+          "Service Worker event is not active",
+          "InvalidStateError",
+        );
+      },
+    });
+  }
+  const ServiceWorkerExtendableMessageEventNative = typeof globalThis.__glassExtendableMessageEventConstructor === "function"
+    ? globalThis.__glassExtendableMessageEventConstructor
+    : function ExtendableMessageEvent(type, init) {
+        if (!(this instanceof ServiceWorkerExtendableMessageEventNative))
+          throw new TypeError("ExtendableMessageEvent requires new");
+        const settings = init && typeof init === "object" ? init : {};
+        WorkerEventNative.call(this, type, settings);
+        Object.defineProperties(this, {
+          data: { value: settings.data === undefined ? null : settings.data, enumerable: true },
+          origin: { value: String(settings.origin || ""), enumerable: true },
+          lastEventId: { value: String(settings.lastEventId || ""), enumerable: true },
+          source: { value: settings.source === undefined ? null : settings.source, enumerable: true },
+          ports: {
+            value: Object.freeze(Array.isArray(settings.ports) ? settings.ports.slice() : []),
+            enumerable: true,
+          },
+        });
+      };
+  if (!globalThis.__glassExtendableMessageEventConstructor) {
+    ServiceWorkerExtendableMessageEventNative.prototype = Object.create(
+      ServiceWorkerExtendableEventNative.prototype,
+    );
+    ServiceWorkerExtendableMessageEventNative.prototype.constructor =
+      ServiceWorkerExtendableMessageEventNative;
+  }
+  globalThis.__glassExtendableEventConstructor = ServiceWorkerExtendableEventNative;
+  globalThis.__glassExtendableMessageEventConstructor = ServiceWorkerExtendableMessageEventNative;
+  globalThis.ExtendableEvent = ServiceWorkerExtendableEventNative;
+  globalThis.ExtendableMessageEvent = ServiceWorkerExtendableMessageEventNative;
+  const serviceWorkerPromiseConstructor = globalThis.__glassServiceWorkerPromiseConstructor
+    || Promise;
+  if (!globalThis.__glassServiceWorkerPromiseConstructor) {
+    Object.defineProperty(globalThis, "__glassServiceWorkerPromiseConstructor", {
+      value: serviceWorkerPromiseConstructor,
+      configurable: false,
+      writable: false,
+    });
+  }
+  if (!globalThis.__glassServiceWorkerPromiseResolve) {
+    const promiseResolve = serviceWorkerPromiseConstructor.resolve;
+    Object.defineProperty(globalThis, "__glassServiceWorkerPromiseResolve", {
+      value: value => promiseResolve.call(serviceWorkerPromiseConstructor, value),
+      configurable: false,
+      writable: false,
+    });
+  }
+  const serviceWorkerPromiseResolve = globalThis.__glassServiceWorkerPromiseResolve;
+  const serviceWorkerDispatchMessage = (payload) => {
+    const source = serviceWorkerClientFromState(payload && payload.source);
+    if (!source) throw new TypeError("native Service Worker message source is unavailable");
+    let type = "message";
+    let data = null;
+    let ports = [];
+    try {
+      const envelope = glassMessageDecodeEnvelope(payload);
+      data = envelope.data;
+      ports = Array.isArray(envelope.ports) ? envelope.ports : [];
+    } catch (_error) {
+      type = "messageerror";
+    }
+    const event = new ServiceWorkerExtendableMessageEventNative(type, {
+      data,
+      origin: String(payload.source_origin || ""),
+      lastEventId: "",
+      source,
+      ports,
+      bubbles: false,
+      cancelable: false,
+    });
+    let resolveLifetime;
+    const lifetime = new serviceWorkerPromiseConstructor(resolve => {
+      resolveLifetime = resolve;
+    });
+    let dispatching = true;
+    let pending = 0;
+    let completed = false;
+    const settleLifetime = () => {
+      if (completed || dispatching || pending !== 0) return;
+      completed = true;
+      resolveLifetime(undefined);
+    };
+    const waitUntil = function(value) {
+      if (this !== event)
+        throw new TypeError("ExtendableEvent.waitUntil called on an incompatible receiver");
+      if (!dispatching && pending === 0)
+        throw new WorkerDOMExceptionNative(
+          "Service Worker event is not active",
+          "InvalidStateError",
+        );
+      const promise = serviceWorkerPromiseResolve(value);
+      pending += 1;
+      promise.then(
+        () => { pending -= 1; settleLifetime(); },
+        () => { pending -= 1; settleLifetime(); },
+      );
+    };
+    Object.defineProperty(event, "isTrusted", {
+      value: true,
+      configurable: false,
+      writable: false,
+    });
+    Object.defineProperty(event, "waitUntil", {
+      value: waitUntil,
+      configurable: false,
+      writable: false,
+    });
+    event.target = globalThis;
+    event.currentTarget = globalThis;
+    event.eventPhase = 2;
+    try {
+      dispatch(type, event);
+    } catch (error) {
+      reportWorkerCallbackException(error, false);
+    } finally {
+      event.currentTarget = null;
+      event.eventPhase = 0;
+      dispatching = false;
+      settleLifetime();
+    }
+    return lifetime;
+  };
+  globalThis.__glassDispatchServiceWorkerMessage = serviceWorkerDispatchMessage;
   const serviceWorkerDispatchFetch = (payload) => {
     globalThis.__glassServiceWorkerClientState = payload && typeof payload === "object"
       ? {

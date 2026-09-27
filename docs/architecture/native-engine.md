@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-790`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-791`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -3675,6 +3675,19 @@ registration/update rejects its API promise, and a blocked update preserves the
 installed worker. Focused CSP, fixture, JSON-module, and runtime-import tests
 passed locally. Remote CI and complete CSP/WPT conformance remain open; see
 [task 790](../plan/tasks/native-engine-browser-790.md).
+
+Slice 791 reports exceptions thrown by SharedWorker `onconnect` and registered
+`connect` listeners through the shared worker's global exception reporter.
+Exact-`true` global `onerror` cancellation and error-listener state are
+preserved; callback failure does not suppress later connect listeners or
+connections. These shared-global errors are not forwarded to page
+`SharedWorker` objects. A process-backed two-connection regression verifies
+both callback forms, continued listener/connection delivery, connected-port
+acknowledgements, and no owner error events. MessagePort callback exceptions,
+post-error page-to-worker port delivery, Service Worker callbacks,
+startup-error gaps, and complete worker/WPT conformance remain separate gates;
+post-error port delivery is next slice 792 work. See
+[task 791](../plan/tasks/native-engine-browser-791.md).
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader

@@ -255,6 +255,21 @@ CSP, fixture, JSON-module, and runtime-import tests passed locally. This does
 not claim complete CSP/WPT conformance or remote CI; see the
 [slice 790 task](tasks/native-engine-browser-790.md).
 
+Slice 791 reports exceptions thrown by SharedWorker `onconnect` and registered
+`connect` listeners at the shared worker global before continuing dispatch.
+The existing cancelable worker-global `ErrorEvent`, legacy `onerror`
+five-argument call, exact-`true` cancellation, and later error/connect
+listener delivery are preserved. Unhandled shared-global errors are not
+forwarded to each page's `SharedWorker` object; dedicated-worker forwarding
+remains its separate rule. A process-backed two-connection regression covers
+handler and listener exceptions, cancellation state, later listeners and
+connections, port acknowledgements, and absence of owner error events. This
+does not cover MessagePort callbacks, Service Worker callbacks, or full worker
+error/WPT conformance. An exploratory page-to-worker echo after a connect
+callback exception was not observed; post-error port delivery is next slice
+792 work. See the
+[slice 791 task](tasks/native-engine-browser-791.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

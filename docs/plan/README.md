@@ -27,8 +27,8 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion implementation is complete through
-`native-engine-browser-774`. Slice 767 verifies native hyperlink Enter
+browser expansion implementation is locally complete through
+`native-engine-browser-791`. Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the
 [slice 767 task](tasks/native-engine-browser-767.md) for local evidence and
@@ -191,6 +191,16 @@ active worker. Focused enforced/report-only, fixture, JSON-module, and
 runtime-import tests passed locally. Full CSP/WPT conformance and remote CI
 remain open; see the
 [slice 790 task](tasks/native-engine-browser-790.md).
+Slice 791 reports exceptions from SharedWorker `onconnect` and registered
+`connect` listeners at the shared worker global, applies its existing exact-
+`true` `onerror` cancellation, continues later listeners, and does not fan
+shared-global runtime errors out to individual page `SharedWorker` objects.
+The process-backed two-connection regression verifies both callback forms,
+later listener/connection delivery, global error-event state, connected-port
+acknowledgements, and absence of owner errors. MessagePort callback errors and
+post-error page-to-worker port delivery remain unresolved and are next slice
+792 work, along with complete worker error/WPT behavior; see the
+[slice 791 task](tasks/native-engine-browser-791.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

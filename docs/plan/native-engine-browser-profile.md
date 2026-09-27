@@ -210,6 +210,21 @@ the opener. Target initialization runs in a separate Tokio task so popup
 layout does not inherit the initiating action's stack. See the
 [slice 767 task](tasks/native-engine-browser-767.md). Modifier gestures,
 image-map areas, and complete keyboard conformance remain open.
+
+For primary-button hyperlink activation, GCWP adopts a Glass-owned modifier
+convention: Control, Meta, or Shift requests one new background browsing
+context; the initiating context remains selected. This is a product-level
+mapping, not a requirement of the HTML hyperlink algorithm. The click event
+must expose the caller's Alt/Control/Meta/Shift state before default handling,
+and canceling that event suppresses context creation. Existing `download`
+attribute behavior and URL/security policy take precedence. Alt alone does not
+implicitly download an arbitrary link. Because Glass exposes browsing contexts
+rather than desktop windows/tabs, Shift uses the same background-target model
+as Control and Meta. Right/middle-button gestures remain outside this slice.
+Slice 770 implements the modifier-aware action path and tests local,
+process-backed, and same-origin-frame behavior; see
+[`native-engine-browser-770`](tasks/native-engine-browser-770.md). This is not
+complete pointer-input conformance.
 Slice 768 implements the bounded keyboard-input contract: unmodified
 Space on a focused, enabled native checkbox or radio synthesizes click
 activation on keyup through the shared checkable-control owner. It covers

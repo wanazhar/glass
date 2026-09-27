@@ -28,7 +28,8 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is complete through
-`native-engine-browser-768`. Slice 767 verifies native hyperlink Enter
+`native-engine-browser-769`; modifier-aware hyperlink clicks are in progress
+as `native-engine-browser-770`. Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the
 [slice 767 task](tasks/native-engine-browser-767.md) for local evidence and
@@ -46,7 +47,12 @@ revalidation after keydown listeners across local, process-backed, and
 same-origin-frame paths. Its scoped package check and focused tests pass, and
 independent review found no blocking issue. The task records exact evidence
 and a nonblocking test-coverage note; this does not claim complete keyboard
-conformance.
+conformance. Slice 770 adds explicit click modifier state to the semantic
+action and native event path. GCWP maps Control/Meta/Shift primary clicks on
+links to one background native target while preserving click cancellation,
+existing download handling, and navigation policy; see the
+[slice 770 task](tasks/native-engine-browser-770.md). It is in progress and
+does not establish full pointer or browser conformance.
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

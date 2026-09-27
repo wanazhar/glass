@@ -37653,8 +37653,12 @@ fn document_bootstrap(
         }}
         if (specialWindowError && result === true) {{
           event.defaultPrevented = true;
-        }} else if (!specialWindowError && state.contentAttribute && result === false
-            && event && typeof event.preventDefault === "function") event.preventDefault();
+        }} else if (type === "beforeunload") {{
+          if (state.contentAttribute && result === false
+              && event && typeof event.preventDefault === "function") event.preventDefault();
+        }} else if (!specialWindowError && result === false) {{
+          event.defaultPrevented = true;
+        }}
         return result;
       }};
       eventHandlers.set(key, state);
@@ -40176,7 +40180,12 @@ fn document_bootstrap(
       try {{ handler = Function("event", value); }} catch (_error) {{ return; }}
       const registered = (event) => {{
         try {{
-          if (handler.call(element, event) === false && event && typeof event.preventDefault === "function") event.preventDefault();
+          if (handler.call(element, event) !== false || !event) return;
+          if (type === "beforeunload") {{
+            if (typeof event.preventDefault === "function") event.preventDefault();
+          }} else {{
+            event.defaultPrevented = true;
+          }}
         }} catch (_error) {{}}
       }};
       const owner = inlineAttributeOwner();
